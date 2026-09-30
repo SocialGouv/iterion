@@ -222,6 +222,15 @@ func TestResume_anUnreadTeardownKeepsTheBankBeforeIt(t *testing.T) {
 	}
 }
 
+// parkWorkflow is scratchWorkflow with an LLM router, which runs in the
+// sandbox, and a condition router, which does not.
+func parkWorkflow() *ir.Workflow {
+	wf := scratchWorkflow()
+	wf.Nodes["route"] = &ir.RouterNode{BaseNode: ir.BaseNode{ID: "route"}, RouterMode: ir.RouterLLM}
+	wf.Nodes["pick"] = &ir.RouterNode{BaseNode: ir.BaseNode{ID: "pick"}, RouterMode: ir.RouterCondition}
+	return wf
+}
+
 // TestLastScratchPark_readsTheRecordThatDecides: which record decides, what
 // ages a bank, and what the resume surface may decide without the run's
 // lock, over each order of the events that matter.
@@ -231,7 +240,14 @@ func TestLastScratchPark_readsTheRecordThatDecides(t *testing.T) {
 	unknown := store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{"banked": false, "empty": false, "unknown": true, "reason": "gone"}}
 	refused := store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{"banked": false, "empty": false, "reason": "over the cap"}}
 	ran := store.Event{Type: store.EventNodeFinished, NodeID: "report"}
+	measured := store.Event{Type: store.EventNodeFinished, NodeID: "measure"}
+	failed := store.Event{Type: store.EventNodeFinished, NodeID: "report", Data: map[string]any{"error": "exec: command terminated with exit code 137"}}
 	answered := store.Event{Type: store.EventNodeFinished, NodeID: "report", Data: map[string]any{nodeFinishedAnswered: true}}
+	routed := store.Event{Type: store.EventNodeFinished, NodeID: "route"}
+	picked := store.Event{Type: store.EventNodeFinished, NodeID: "pick"}
+	rewound := store.Event{Type: store.EventRunRewound, NodeID: "report", Data: map[string]any{"dropped_nodes": []string{"report"}}}
+	forcedWithout := store.Event{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": false, "forced": true, "reason": "gone"}}
+	forcedStale := store.Event{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": true, "bytes": 10, "stale": true}}
 	started := store.Event{Type: store.EventRunStarted}
 	resumed := store.Event{Type: store.EventRunResumed}
 	cases := []struct {
@@ -249,6 +265,12 @@ func TestLastScratchPark_readsTheRecordThatDecides(t *testing.T) {
 		{"an unread teardown, then a refusal", []store.Event{unknown, refused}, scratchPark{recorded: true, reason: "over the cap"}, true, true},
 		{"a bank, then an answered finish", []store.Event{banked, answered}, scratchPark{recorded: true, banked: true}, false, false},
 		{"a bank, then a finish that ran", []store.Event{banked, ran}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
+		{"a bank, then a node that failed", []store.Event{banked, failed}, scratchPark{recorded: true, banked: true}, false, false},
+		{"a bank, then an LLM router", []store.Event{banked, routed}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
+		{"a bank, then a condition router", []store.Event{banked, picked}, scratchPark{recorded: true, banked: true}, false, false},
+		{"a bank, a node, then a rewind that dropped it", []store.Event{banked, ran, rewound}, scratchPark{recorded: true, banked: true}, false, false},
+		{"a bank, two nodes, then a rewind that dropped one", []store.Event{banked, measured, ran, rewound}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
+		{"a bank, a rewind, then the node again", []store.Event{banked, ran, rewound, ran}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
 		{"a start, then a bank", []store.Event{started, banked}, scratchPark{recorded: true, banked: true}, false, false},
 		{"a start, then a refusal", []store.Event{started, refused}, scratchPark{recorded: true, reason: "over the cap"}, true, true},
 		{"a bank, then an execution that wrote no record", []store.Event{banked, resumed}, scratchPark{recorded: true, banked: true, superseded: true}, false, false},
@@ -256,6 +278,10 @@ func TestLastScratchPark_readsTheRecordThatDecides(t *testing.T) {
 		{"a refusal, then an execution that wrote no record", []store.Event{refused, resumed}, scratchPark{recorded: true, reason: "over the cap", superseded: true}, true, false},
 		{"a bank, then an execution whose teardown could not read", []store.Event{banked, resumed, ran, unknown}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
 		{"a bank, then an execution that banked again", []store.Event{banked, resumed, ran, banked}, scratchPark{recorded: true, banked: true}, false, false},
+		{"a bank forced past, then an unread teardown", []store.Event{banked, resumed, forcedWithout, ran, unknown}, scratchPark{recorded: true, unknown: true, reason: "gone"}, false, false},
+		{"a bank forced past, then an execution that wrote no record", []store.Event{banked, resumed, forcedWithout, ran}, scratchPark{recorded: true, forsaken: true, superseded: true}, false, false},
+		{"a stale bank forced back", []store.Event{banked, ran, resumed, forcedStale}, scratchPark{recorded: true, banked: true, superseded: true}, false, false},
+		{"a stale bank forced back, then a node", []store.Event{banked, ran, resumed, forcedStale, ran, unknown}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -271,21 +297,21 @@ func TestLastScratchPark_readsTheRecordThatDecides(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := lastScratchPark(ctx, s, scratchWorkflow(), runID)
+			got, err := lastScratchPark(ctx, s, parkWorkflow(), runID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got != tc.want {
 				t.Fatalf("park %+v, want %+v", got, tc.want)
 			}
-			cause, err := scratchRefusal(ctx, s, scratchWorkflow(), runID)
+			cause, err := scratchRefusal(ctx, s, parkWorkflow(), runID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if (cause != "") != tc.engine {
 				t.Fatalf("engine: refusal %q, want refused=%v", cause, tc.engine)
 			}
-			serr := ValidateResumeScratch(ctx, s, mustLoadRun(t, s, runID), scratchWorkflow(), false)
+			serr := ValidateResumeScratch(ctx, s, mustLoadRun(t, s, runID), parkWorkflow(), false)
 			if (serr != nil) != tc.surface {
 				t.Fatalf("surface: %v, want refused=%v", serr, tc.surface)
 			}
@@ -740,5 +766,110 @@ func TestBankScratchOnCleanup_aLaterTryDoesNotForgetWhatAnEarlierOneSaw(t *testi
 			}
 			tc.check(t, rec)
 		})
+	}
+}
+
+// racingTar runs commands like podRun; its first races archives come back
+// the way GNU tar reports a member that changed while it read it.
+type racingTar struct {
+	*podRun
+	races, tars int
+}
+
+func (r *racingTar) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	res, err := r.podRun.Exec(ctx, argv, opts)
+	if err != nil || res.ExitCode != 0 || !strings.Contains(strings.Join(argv, " "), "-czf") {
+		return res, err
+	}
+	r.tars++
+	if r.tars <= r.races {
+		fmt.Fprintf(opts.Stderr, "tar: ./server.log: file changed as we read it\n%s\n", sandbox.KubectlRemoteExit1)
+		res.ExitCode = 1
+	}
+	return res, nil
+}
+
+// TestBankScratch_aRaceIsArchivedAgainThenNamed: an archive that caught a
+// member changing may hold no state the scratch was ever in. tar runs
+// again; a clean archive is banked as such, and one that raced on every
+// try is banked with the members it caught named.
+func TestBankScratch_aRaceIsArchivedAgainThenNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		races, tars int
+		raced       []string
+	}{
+		{"a race, then a clean archive", 1, 2, nil},
+		{"a race on every archive", 99, scratchTarAttempts, []string{"./server.log"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-raced"
+			if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "server.log"), []byte("listening\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			run := &racingTar{podRun: &podRun{scratch: dir}, races: tc.races}
+			got := bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), runID, scratchBankMaxBytes)
+			if !got.banked || run.tars != tc.tars || fmt.Sprint(got.raced) != fmt.Sprint(tc.raced) {
+				t.Fatalf("banked=%v after %d archive(s), raced %v; want banked after %d, raced %v (%+v)", got.banked, run.tars, got.raced, tc.tars, tc.raced, got)
+			}
+		})
+	}
+}
+
+// racingPods starts pods like podDriver whose teardown's tar races on
+// every archive.
+type racingPods struct{ *podDriver }
+
+func (d racingPods) Start(ctx context.Context, p sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {
+	run, err := d.podDriver.Start(ctx, p, info)
+	if err != nil {
+		return nil, err
+	}
+	return &racingTar{podRun: run.(*podRun), races: 99}, nil
+}
+
+// TestResume_aRacedBankIsRestoredAndSaysSo: a bank whose members raced on
+// every archive is restored, and the restore says it holds them as caught.
+func TestResume_aRacedBankIsRestoredAndSaysSo(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-raced-restore"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "server.log"), []byte("listening\n"), 0o644)
+	})
+	x.on("report", func(map[string]any) (map[string]any, error) {
+		_, err := os.Stat(filepath.Join(d.scratch(), "server.log"))
+		return map[string]any{}, err
+	})
+	eng := func(drv sandbox.Driver) *Engine {
+		return New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+			"docker": func() (sandbox.Driver, error) { return drv, nil },
+		}))
+	}
+	if err := eng(racingPods{d}).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	banked := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
+	if len(banked) != 1 || banked[0].Data["banked"] != true || banked[0].Data["raced"] == nil {
+		t.Fatalf("want the raced bank recorded with its members, got %v", dataOf(banked))
+	}
+	if err := eng(d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
+	if len(restored) != 1 || restored[0].Data["restored"] != true || restored[0].Data["raced"] != true {
+		t.Fatalf("want the restore of a raced bank to say so, got %v", dataOf(restored))
 	}
 }

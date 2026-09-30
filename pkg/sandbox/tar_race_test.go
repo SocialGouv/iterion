@@ -1,6 +1,9 @@
 package sandbox
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestOnlyTarRaceWarnings: tar's warnings for a tree that changed while it
 // was archived are recognised alone, with or without the trailer kubectl
@@ -22,10 +25,21 @@ func TestOnlyTarRaceWarnings(t *testing.T) {
 		{"kubectl's own failure", "error: unable to upgrade connection: container not found", false},
 		{"another exit code's trailer", "tar: ./a: file changed as we read it\ncommand terminated with exit code 2", false},
 		{"a warning without tar's prefix", "./a.log: file changed as we read it", false},
+		{"a socket beside a racing writer", "tar: ./server.log: file changed as we read it\ntar: ./app.sock: socket ignored\n" + KubectlRemoteExit1, true},
+		{"a socket alone", "tar: ./app.sock: socket ignored", false},
 		{"nothing", "", false},
 	} {
 		if got := OnlyTarRaceWarnings(tc.stderr); got != tc.want {
 			t.Errorf("%s: OnlyTarRaceWarnings(%q) = %v, want %v", tc.name, tc.stderr, got, tc.want)
 		}
+	}
+}
+
+// TestTarRace_namesTheMembers: the members a race names, a socket's notice
+// named as none.
+func TestTarRace_namesTheMembers(t *testing.T) {
+	members, only := TarRace("tar: ./state.db: file changed as we read it\ntar: ./floor.json.tmp: File removed before we read it\ntar: ./app.sock: socket ignored\ntar: .: file changed as we read it\n" + KubectlRemoteExit1)
+	if !only || strings.Join(members, " ") != "./state.db ./floor.json.tmp ." {
+		t.Fatalf("TarRace = %q, %v; want the three raced members, a race only", members, only)
 	}
 }

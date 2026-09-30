@@ -1054,6 +1054,10 @@ func (r *Run) cmdContext(ctx context.Context, args []string, streamPayload strin
 		c.Stdin = strings.NewReader(streamPayload)
 	}
 	proc.DetachProcessGroup(c)
+	// A cancelled context kills kubectl, not a child it spawned (the process
+	// group is detached): a credential plugin still holding the pipes would
+	// keep Wait blocked past the caller's deadline (kubectlCmdContext).
+	c.WaitDelay = 2 * time.Second
 	return c
 }
 

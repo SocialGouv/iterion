@@ -50,25 +50,36 @@ pods the same way.
   `sandbox_scratch_banked {banked, empty, unknown, bytes, reason}`. Both are
   written under the run's identity and past its cancellation (a drain, a lost
   lease or an operator's cancel reaches the teardown first). A failure
-  another try may cure — a blip on the exec, tar caught mid-write, an upload
-  that failed — is tried again, and so is the record. tar runs untranslated
-  (`LC_ALL=C`): its warnings for a file changed or removed while it read it,
-  with the line `kubectl exec` adds to them, leave a complete archive, which
-  is banked. A scratch the teardown cannot even list — the sandbox is
-  already gone — is `unknown`: nobody knows whether it held anything. It
-  does not replace a bank recorded before it: the lost sandbox started from
-  that bank, which is still stored.
+  another try may cure — a blip on the exec, a failed tar, an upload that
+  failed — is tried again, and so is the record; a later try never replaces
+  what an earlier one saw with less (files, then empty, then nothing). tar
+  runs untranslated (`LC_ALL=C`). A member it catches changing or vanishing
+  while it reads it (its warnings, with the line `kubectl exec` adds) leaves
+  an archive that may hold no state the scratch was ever in — a file torn
+  between two writes, a file renamed into place missing — so tar runs again
+  while it races; the last archive is banked with the raced members named
+  (`raced`), and its restore says so. Its notice for a socket, which no
+  archive holds, is neutral. A scratch the teardown cannot even list — the
+  sandbox is already gone — is `unknown`: nobody knows whether it held
+  anything. It does not replace a bank recorded before it: the lost sandbox
+  started from that bank, which is still stored.
 - **Cap.** 256 MiB compressed. Past it, or on a tar or upload failure, or in
   a store that keeps no bank, nothing is stored and the event names why.
 - **Resume, before anything moves the run.** A run whose last teardown
   recorded a non-empty scratch it could not bank is refused
   `SCRATCH_NOT_PORTABLE` (a deterministic failure code). So is a run that
-  moved past its bank: an agent, tool or subbot node finished after the last
-  `sandbox_scratch_banked`, which only a sandbox lost without a teardown
-  leaves behind — restored, the bank would revert what that node wrote. The
-  engine-side kinds (a human node, a router, a compute) never wrote there,
-  nor did a paused node — a human node or an agent that asked — that a
-  resume records as finished by its answer (`node_finished {answered}`). The
+  moved past its bank: a node that runs in the sandbox — an agent, a judge,
+  a tool, a subbot, an LLM router — finished after the bank was recorded,
+  which only a sandbox lost without a teardown leaves behind: restored, the
+  bank would revert what that node wrote. Only a node that succeeded counts:
+  one that failed re-runs from the checkpoint. The engine-side kinds (a
+  human node, a condition router, a compute) never wrote there, nor did a
+  paused node — a human node or an agent that asked — that a resume records
+  as finished by its answer (`node_finished {answered}`). A rewind takes
+  back the nodes it dropped. A resume that went on without the bank
+  (`--force` past a bank that is gone) forsakes it: nothing is restored or
+  refused over it later; one that restored a stale bank with `--force` makes
+  it the run's scratch again. The
   resume surface refuses from a record the run's latest execution wrote,
   before a cloud resume is flipped to `queued`. A latest execution that wrote
   none may still be banking — the run already reads paused or failed while
@@ -108,3 +119,17 @@ pods the same way.
   or unknown record.** The resume goes on without it, as before banking
   existed. Refusing would stop every hard-killed run, most of which never
   write the scratch.
+- **The engine's check holds under the run's lock** only if the lock is held
+  through a cancelled run's teardown: the runner keeps refreshing the lease
+  until the engine returns (#1991). A pod whose lease lapsed while it was
+  alive still unwinds, and banks, as a split-brain writer.
+- **Staleness is read from the timeline's `node_finished` events.** A branch
+  writes its node's finish best-effort: one lost to a store outage leaves a
+  bank looking fresh. Stamping the record with the checkpoint's progress,
+  and comparing it with the checkpoint a resume runs from, would read
+  staleness from the fact itself — the next step if that case is met.
+- **Not covered: races busybox tar does not report.** It exits 0 without a
+  warning for a member rewritten, renamed or removed while it reads it; no
+  check on its output can see them.
+- **Not covered: sparse files.** A sparse file is banked compressed and
+  restored dense (tar runs without `--sparse`, which busybox tar lacks).

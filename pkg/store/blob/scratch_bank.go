@@ -2,11 +2,14 @@ package blob
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 // ScratchBanker is the optional streaming surface for a parked run's
@@ -53,12 +56,24 @@ func (c *S3Client) OpenScratchBank(ctx context.Context, runID string) (io.ReadCl
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		if isS3NotFound(err) {
+		if isS3NoSuchKey(err) {
 			return nil, fmt.Errorf("%w: %s", ErrArtifactNotFound, key)
 		}
 		return nil, fmt.Errorf("blob: open scratch bank %s: %w", key, err)
 	}
 	return out.Body, nil
+}
+
+// isS3NoSuchKey reports GetObject's answer for a key that does not exist.
+// A 404 without that code — a proxy's empty no-route answer — says nothing
+// of the object: a bank read so is gone to no one, and is read again.
+func isS3NoSuchKey(err error) bool {
+	var nsk *types.NoSuchKey
+	if errors.As(err, &nsk) {
+		return true
+	}
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey"
 }
 
 func (c *S3Client) DeleteScratchBank(ctx context.Context, runID string) error {

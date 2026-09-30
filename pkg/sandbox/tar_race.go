@@ -16,31 +16,52 @@ const KubectlRemoteExit1 = "command terminated with exit code 1"
 // under: its messages untranslated.
 const TarLocale = "C"
 
-// OnlyTarRaceWarnings reports whether stderr, from a GNU tar that exited 1
-// under TarLocale, carries its warnings for a tree that changed while it was
-// archived and nothing else but the exit-code trailer of `kubectl exec`,
-// through which a kubernetes sandbox runs it. kubectl reports its own
-// failures with exit 1 too, on other lines, so the content tells them apart.
-func OnlyTarRaceWarnings(stderr string) bool {
-	seen := false
+// tarNeutralNotices are GNU tar's notices that leave the archive as whole
+// as it can be: a socket, which no archive holds.
+var tarNeutralNotices = []string{"socket ignored"}
+
+// TarRace reads the stderr of a GNU tar that exited 1 under TarLocale: the
+// members it named as changed or removed while it read them, and whether
+// nothing else is there but notices that leave the archive whole and the
+// exit-code trailer of `kubectl exec`, through which a kubernetes sandbox
+// runs it. kubectl reports its own failures with exit 1 too, on other
+// lines, so the content tells them apart. The archive then holds what tar
+// caught of those members, which may be no state they were ever in.
+func TarRace(stderr string) (members []string, onlyRace bool) {
+	only := true
 	for _, line := range strings.Split(stderr, "\n") {
 		line = strings.TrimSpace(line)
+		body, isTar := strings.CutPrefix(line, "tar: ")
 		switch {
 		case line == "" || line == KubectlRemoteExit1:
-		case strings.HasPrefix(line, "tar: ") && isTarRaceWarning(line):
-			seen = true
+		case !isTar:
+			only = false
 		default:
-			return false
+			if member, ok := cutNotice(body, tarRaceWarnings); ok {
+				members = append(members, member)
+			} else if _, ok := cutNotice(body, tarNeutralNotices); !ok {
+				only = false
+			}
 		}
 	}
-	return seen
+	return members, only && len(members) > 0
 }
 
-func isTarRaceWarning(line string) bool {
-	for _, w := range tarRaceWarnings {
-		if strings.HasSuffix(line, w) {
-			return true
+// OnlyTarRaceWarnings reports whether stderr, from a GNU tar that exited 1
+// under TarLocale, names members that changed while it read them and
+// nothing that failed (TarRace).
+func OnlyTarRaceWarnings(stderr string) bool {
+	_, only := TarRace(stderr)
+	return only
+}
+
+// cutNotice returns the member a tar notice names, when body is one of
+// notices about it.
+func cutNotice(body string, notices []string) (member string, ok bool) {
+	for _, n := range notices {
+		if member, ok = strings.CutSuffix(body, ": "+n); ok {
+			return member, true
 		}
 	}
-	return false
+	return "", false
 }
