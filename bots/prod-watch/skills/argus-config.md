@@ -96,9 +96,14 @@ overrides).
   a `deadline_secs` above that needs a longer run. The delivery has until the time the
   budget keeps for it — at least a minute —, the required sinks first, a
   sink that timed out once not asked again that tick (20 s a post); the
-  state commit has its own window (90 s) for the push and the pull, 60 s
-  a call; `git add` and `git commit` run as long as they take (a hook or
-  a signing agent waiting on a passphrase holds the tick until the run's
+  state commit's push and pull have what the budget leaves them (all but
+  its last 30 s — a slow remote takes it, a hung one ends the tick,
+  named; half a minute at least, even when a slow commit hook spent the
+  rest — the run's budget may then end it first, unnamed; a run with no
+  budget gives them no window: a hung remote then holds the tick and the
+  state lock, and the next ticks wait on it);
+  `git add` and `git commit` run as long as they take (a hook or a
+  signing agent waiting on a passphrase holds the tick until the run's
   budget ends it).
 - `sentry` — absent or `null`: the lane is off. `base_url` (https, no
   query, fragment or credentials; the prefix of the ONE clickable link
@@ -321,7 +326,9 @@ managed secret under the name `forge_token` (see vuln-watch's
   public DSN is one way there — raise the caps or tighten `min_level`
   (past `max_alerts_per_lane`, the flood's issues are named in notes of
   their kind the tick they come, and their follow-ups fold too — set a
-  rate limit on the DSN key in Sentry to stop it at the source). **`sentry: … carried no
+  rate limit on the DSN key in Sentry to stop it at the source: a
+  sustained flood also grows the state, a record per issue kept for
+  `forget_after_days`). **`sentry: … carried no
   Link header`** — a proxy between the runner and Sentry strips it: no
   list can be read whole, so the lane never arms (or its cursor stays)
   until the proxy passes it. **`sentry: gap — the cursor was older
@@ -344,12 +351,15 @@ managed secret under the name `forge_token` (see vuln-watch's
   partial reasons — the runner's clock and Sentry's (its front, its
   backend) disagree by more than `overlap_minutes` (a minute at least):
   fix NTP on the late side, or raise `overlap_minutes` past the skew.
-  Nothing goes silent meanwhile: a last event past the bound is read as
-  the runner's now (the issue counts as firing — its "not observed any
-  more" can come late by up to the skew, never early), an activity date
-  past it is not taken (the regression posts once its date falls under
-  the bound), and a `Date` past it leaves the cursor on the runner's
-  clock.
+  Nothing goes silent meanwhile: a last event past the bound is a
+  sighting at the runner's now (the issue counts as firing — its "not
+  observed any more" can come late by up to the skew, never early), an
+  activity date past it is not taken (the regression posts once its date
+  falls under the bound), and a `Date` past it leaves the cursor on the
+  runner's clock. A last event Sentry itself stores ahead (its clock
+  jumped: an issue keeps the latest stamp an event gave it) keeps the
+  issue firing until real time catches up — resolve or merge it in
+  Sentry.
 - **The run FAILS with "the fetches can wait N s at worst (…)"** — the
   release endpoint, the probes (their retry and lookup counted) and the
   lanes' deadlines add up

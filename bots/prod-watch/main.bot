@@ -641,10 +641,11 @@ tool plan:
     ## health probe in turn, each lane's deadline. The rest is the leak
     ## scan's, the delivery's, the state commit's and the engine's own.
     ## The delivery's deadline counts from here, the entry node: the
-    ## engine's start before it (seconds) and the state commit's window
-    ## (90 s) come out of AFTER_DELIVERY_SECS. The budget is the run's
-    ## effective one — `iterion run --max-duration` raises or lowers it —,
-    ## less what the run already spent; none (0): nothing kills the tick.
+    ## engine's start before it (seconds) and the state commit come out of
+    ## AFTER_DELIVERY_SECS — the state commit takes what the budget has left
+    ## when it runs (commit_state). The budget is the run's effective one —
+    ## `iterion run --max-duration` raises or lowers it —, less what the run
+    ## already spent; none (0): nothing kills the tick.
     run_cap = float({{run.max_duration_seconds}} or 0)
     RUN_BUDGET_SECS = max(1, int(run_cap - float({{run.elapsed_seconds}} or 0))) if run_cap > 0 else 0
     AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = 240, 150
@@ -2143,10 +2144,12 @@ tool poll_sentry:
             return
         rec = records.get(i['id'])
         seen = iso(i.get('lastSeen'))
-        if seen and seen > horizon():
-            ## Read as this runner's now: an event happened, as recent as it can
-            ## tell — never saved ahead of it, never read as no event (the issue
-            ## would be said idle, then forgotten, while it fires).
+        clamped = bool(seen) and seen > horizon()
+        if clamped:
+            ## A sighting at this runner's now: an event happened, newer than any
+            ## stamp this runner could save (each stayed under a bound that only
+            ## moves forward) — never saved ahead of it, never read as no event
+            ## (the issue would be said idle, then forgotten, while it fires).
             stats['future'] += 1
             seen = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
         if rec is None:
@@ -2167,10 +2170,12 @@ tool poll_sentry:
                    ## The lists count events over their 90 days (or the retention); the by-id
                    ## answer counts the issue's whole life, every environment.
                    'count_scope': 'total' if source == 'tracked' else '90d', 'transition_checked': False,
-                   'transition_tried': False}
+                   'transition_tried': False, 'seen_ahead': False}
             records[i['id']] = rec
         elif seen and (not rec['last_seen'] or seen > rec['last_seen']):
             rec['last_seen'] = seen
+        if clamped:
+            rec['seen_ahead'] = True
         if source == 'tracked':
             ## The by-id answer carries the issue's current status.
             rec['status'] = word(i.get('status'))
@@ -3063,7 +3068,7 @@ tool leak_scan:
                     return scrub(v, 'sentry', {}, seen, (), per)[:cap]
                 item = {k: rec.get(k) for k in ('id', 'short_id', 'level', 'status', 'substatus', 'category', 'last_seen', 'count',
                                                 'user_count', 'in_new', 'in_transition', 'in_tracked', 'transition_at', 'transition_kind',
-                                                'count_scope', 'transition_checked', 'transition_tried')}
+                                                'count_scope', 'transition_checked', 'transition_tried', 'seen_ahead')}
                 item.update({'title': clean('title', 200), 'culprit': clean('culprit', 200), 'meta_type': clean('meta_type', 120),
                              'meta_value': clean('meta_value', 300), 'meta_filename': clean('meta_filename', 200),
                              'meta_function': clean('meta_function', 120)})
@@ -3322,6 +3327,17 @@ tool decide:
                 'count': (it or {}).get('count') if (it or {}).get('count') is not None else int(rec.get('count') or 0),
                 'first_seen': rec.get('first_seen'), 'prev_severity': rec.get('severity') or '',
                 'transition_at': transition_at, 'log_title': short}
+    def s_stamp_check(rec, it):
+        ## A clean activity check dates the check; one tried and not clean (a
+        ## date not taken, a lookup that failed) undates it — an issue with no
+        ## transition date recorded is undated again: first in line, and a cap
+        ## that leaves it out is said. Any try is a turn, in state generations.
+        if it.get('transition_checked'):
+            rec['transition_checked_at'] = now_iso
+        elif it.get('transition_tried'):
+            rec['transition_checked_at'] = None
+        if it.get('transition_tried'):
+            rec['transition_checked_gen'] = state['generation']
     def s_record(it, fp):
         rec = incidents.get(fp)
         if rec is None:
@@ -3390,10 +3406,7 @@ tool decide:
                 rec['transition_at'] = it['transition_at']
             elif it.get('in_transition') and it.get('transition_kind') in ('regressed', 'escalating'):
                 rec['transition_at'] = s_as_of
-            if it.get('transition_checked'):
-                rec['transition_checked_at'] = now_iso
-            if it.get('transition_tried'):
-                rec['transition_checked_gen'] = state['generation']
+            s_stamp_check(rec, it)
             if it.get('last_seen'):
                 rec['sentry_last_seen'] = it['last_seen']
         if sentry_walk.get('answered') and sentry_walk.get('new_complete'):
@@ -3419,16 +3432,16 @@ tool decide:
             ## it, never against a severity a lowered max_severity re-capped.
             said_sev = (prev or {}).get('announced_severity') or prev_sev
             rec = s_record(it, fp)
-            if it.get('transition_checked'):
-                rec['transition_checked_at'] = now_iso
-            if it.get('transition_tried'):
-                rec['transition_checked_gen'] = state['generation']
+            s_stamp_check(rec, it)
             ## Read this tick, by id or in a list: the by-id reads take turns
             ## from the least recently read — in state generations —, a fresh
             ## issue joining the back, never ahead of the ones it would starve.
             rec['tracked_read_gen'] = state['generation']
             sev_now = s_sev(it.get('level') or '')
-            sighted = bool(it.get('last_seen')) and (not prev_seen or it['last_seen'] > prev_seen)
+            ## A last event past the bound (seen_ahead) is newer than any stamp
+            ## saved: a sighting, whatever a stamp saved ahead of this runner —
+            ## under the bound, or by a runner ahead — says.
+            sighted = bool(it.get('last_seen')) and (not prev_seen or it['last_seen'] > prev_seen or bool(it.get('seen_ahead')))
             ## Closed in Sentry right now (read by id: resolved, archived …):
             ## its events are no news — Sentry keeps ingesting an archived
             ## issue's — so no reminder, no escalation, and the closing note
@@ -3489,7 +3502,9 @@ tool decide:
                 ## read open again: against what the channel last heard.
                 rec['severity'] = sev_now
             if sighted:
-                rec['sentry_last_seen'] = it['last_seen']
+                ## Never back: a stamp saved ahead of this runner stays until a
+                ## later one (moved back, the next read would sight it again).
+                rec['sentry_last_seen'] = max(prev_seen or '', it['last_seen'])
                 rec['last_seen'] = now_iso
                 if not closed_now:
                     rec['quiet_noted'] = False
@@ -4513,6 +4528,14 @@ tool commit_state:
     state_commit = {{input.state_commit}}
     ws = {{input.workspace}}
     state_dir = {{input.state_dir}}
+    ## What the run's effective budget has left as this node starts (the
+    ## clock the engine kills the run by, carried across a resume), less the
+    ## engine's own end: the push and the pull's window. None without a
+    ## budget — nothing kills the tick.
+    run_cap = float({{run.max_duration_seconds}} or 0)
+    AFTER_COMMIT_SECS = 30
+    commit_left = run_cap - float({{run.elapsed_seconds}} or 0) - AFTER_COMMIT_SECS if run_cap > 0 else None
+    t0 = time.monotonic()
     os.chdir(ws)
 
     STATE_FILES = ['state.json', 'alertlog.jsonl', 'ticks.jsonl']
@@ -4575,17 +4598,21 @@ tool commit_state:
                              'user.email/user.name on the workspace clone (or in the runner image). git said: ' +
                              ((committed.stderr or committed.stdout or '')[-400:]).strip())
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'HEAD'
-        ## The remote answers within the state commit's window, or the tick
-        ## ends here, named: a remote that hangs must not hold the run past
-        ## its budget.
-        COMMIT_SECS = 90
-        push_until = time.monotonic() + COMMIT_SECS
+        ## The remote answers within the state commit's window — what the
+        ## run's budget has left, half a minute at least —, or the tick ends
+        ## here, named: a remote that hangs must not hold the run past its
+        ## budget, and a slow one has what the run has left. Without a budget,
+        ## no window. poll() waits 2**31-1 ms at most: a longer window waits
+        ## that long a call.
+        push_start = time.monotonic()
+        push_until = None if commit_left is None else max(t0 + commit_left, push_start + 30)
+        POLL_MAX_SECS = 2 ** 31 // 1000 - 1
         def net(args):
             ## (A window already spent times the call out at once.)
-            left = push_until - time.monotonic()
+            left = None if push_until is None else max(0.01, min(POLL_MAX_SECS, push_until - time.monotonic()))
             p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
             try:
-                out, err = p.communicate(timeout=max(0.01, min(60, left)))
+                out, err = p.communicate(timeout=left)
             except subprocess.TimeoutExpired:
                 ## The whole group — a hook, a remote helper, ssh: none
                 ## outlives the call.
@@ -4612,8 +4639,9 @@ tool commit_state:
                                      'replays. git said: ' + (rebased.stderr or '')[-400:].strip())
         except subprocess.TimeoutExpired as e:
             subprocess.run(['git', 'rebase', '--abort'], capture_output=True)
-            raise SystemExit('prod-watch: git ' + str(e.cmd[1]) + ' did not answer within the state commit window (' + str(COMMIT_SECS) +
-                             ' s) -- the state was committed locally and is NOT pushed, so this tick may replay next run')
+            raise SystemExit('prod-watch: git ' + str(e.cmd[1]) + ' did not answer within the state commit window (' +
+                             str(int(push_until - push_start)) + ' s, what the run budget left it) -- the state was committed locally and '
+                             'is NOT pushed, so this tick may replay next run; give the run more time (iterion run --max-duration)')
         raise SystemExit('prod-watch: git push failed after 5 retries (non-fast-forward or network)')
 
     os.makedirs(state_dir, exist_ok=True)

@@ -660,3 +660,82 @@ func TestProdWatch_ARunnerBehindForgetsNoFiringIssue(t *testing.T) {
 		})
 	}
 }
+
+// TestProdWatch_AStampSavedAheadHoldsNoSighting: Sentry runs 70 min ahead of
+// the runner (tolerance 60) — an event 15 min old in Sentry's frame is under
+// the bound, saved as it came, 55 min ahead of the runner; the next events,
+// past the bound, are sightings all the same: the issue firing at level fatal
+// escalates at once, and the stamp saved ahead never moves back.
+func TestProdWatch_AStampSavedAheadHoldsNoSighting(t *testing.T) {
+	t.Parallel()
+	for name, ahead := range map[string]time.Duration{"control in sync": 0, "Sentry 70 min ahead, overlap 60": 70 * time.Minute} {
+		name, ahead := name, ahead
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixture(t, "prod-watch/main.bot")
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, nil))
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "9801", ShortID: strp("PROJ-9801"), Title: "t", FirstProcessed: now, LastSeen: now, Count: 1})
+			if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:PROJ-9801:medium" {
+				t.Fatalf("setup: %v", got)
+			}
+			h.sentry.mu.Lock()
+			h.sentry.dateOffset = ahead
+			h.sentry.mu.Unlock()
+			h.sentry.edit("9801", func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(ahead - 15*time.Minute) })
+			time.Sleep(1100 * time.Millisecond)
+			sentryTick(t, h, wf)
+			saved := fmt.Sprint(sentryIncident(t, h, "9801")["sentry_last_seen"])
+			time.Sleep(1100 * time.Millisecond)
+			h.sentry.edit("9801", func(i *pwSentryIssue) {
+				i.LastSeen = time.Now().Add(ahead - time.Second)
+				i.Level = "fatal"
+				i.Count = 90
+			})
+			o := sentryTick(t, h, wf)
+			if got := sentryAlerts(o); !strings.Contains(strings.Join(got, " "), "escalated:PROJ-9801:high") {
+				t.Fatalf("%s: an issue firing at level fatal this minute did not escalate: %v (walk partial %v)", name, got,
+					o["poll_sentry"]["walk"].(map[string]any)["partial"])
+			}
+			if after := fmt.Sprint(sentryIncident(t, h, "9801")["sentry_last_seen"]); after < saved {
+				t.Fatalf("%s: the saved last event moved back, %s -> %s: the next read would sight it again", name, saved, after)
+			}
+		})
+	}
+}
+
+// TestProdWatch_SentryACheckWithADateNotTakenLeavesADatelessIssueUndated: an
+// issue checked once cleanly and found without a date (its activity holds a
+// set_unresolved only) is re-checked in turn; its next check drops a date a
+// year ahead — no date recorded, it is undated again: when
+// max_transition_checks leaves it out, the walk says so.
+func TestProdWatch_SentryACheckWithADateNotTakenLeavesADatelessIssueUndated(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_transition_checks"] = 1 }))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "4901", ShortID: strp("PROJ-4901"), Title: "r", Substatus: strp("regressed"),
+		FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now,
+		Acts: []pwSentryAct{{Type: "set_unresolved", At: now}}})
+	sentryTick(t, h, wf)
+	if sentryIncident(t, h, "4901")["transition_checked_at"] == nil {
+		t.Fatalf("setup: the clean check that found no date did not date the check")
+	}
+	h.sentry.edit("4901", func(i *pwSentryIssue) {
+		i.Acts = append(i.Acts, pwSentryAct{Type: "set_regression", At: time.Now().Add(365 * 24 * time.Hour)})
+	})
+	if o := sentryTick(t, h, wf); !pwSaysAhead(o) {
+		t.Fatalf("setup: the activity dated a year ahead went unsaid: %v", o["poll_sentry"]["walk"])
+	}
+	h.sentry.put(&pwSentryIssue{ID: "4902", ShortID: strp("PROJ-4902"), Title: "r2", Substatus: strp("regressed"),
+		FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: time.Now(),
+		Acts: []pwSentryAct{{Type: "set_regression", At: time.Now()}}})
+	walk := sentryTick(t, h, wf)["poll_sentry"]["walk"].(map[string]any)
+	if walk["checks_cut"] != true || !strings.Contains(fmt.Sprint(walk["partial"]), "transition checks capped") {
+		t.Fatalf("an issue whose transition date is unknown again, left out by the cap, went unsaid: %v", walk)
+	}
+}

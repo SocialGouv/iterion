@@ -280,9 +280,10 @@ whole and the cursor stays. The cursor's `since` is Sentry's own
 header is missing or runs ahead of it by more than `overlap_minutes` —
 the walk says `clock: local`). Every stamp Sentry writes is bounded so,
 the tolerance being `overlap_minutes` (a minute at least): an issue's
-`lastSeen` past it is read as the runner's now — an event happened, as
-recent as the runner can tell: never saved ahead of it, never read as no
-event (the issue would be said idle while it fires) —, an activity's
+`lastSeen` past it is a sighting at the runner's now — an event happened,
+newer than any stamp the runner saved: never saved ahead of it, never
+read as no event (the issue would be said idle while it fires), and a
+stamp already saved ahead of the runner stays —, an activity's
 date past it is not taken and the issue stays re-checked; the walk
 counts them among its partial reasons. A server, a front whose clock
 runs ahead or a runner behind never mutes a path in silence. `deadline_secs`
