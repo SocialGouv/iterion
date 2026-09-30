@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.217.5](https://github.com/SocialGouv/iterion/compare/v3.217.4...v3.217.5) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** a resume refused before its claim goes back to the status it came from ([#1988](https://github.com/SocialGouv/iterion/issues/1988)) ([0958eb6](https://github.com/SocialGouv/iterion/commit/0958eb6bdc9dcf6a8b3174c17a694aa50bf440ba))
+
+    <details><summary>why</summary>
+
+    A cloud resume flips the run to queued before it is published. When it is refused before anything claims the run — by the engine (RESUME_INVALID: a copy-based subbot child resumed on its own, an incompatible artifact contract; LAUNCH_FAILED: admission denied) or by the runner itself (IR_UNLOADABLE, BOT_REQUIRES_NEWER_ENGINE) — the verdict is deterministic: the runner acks it and never redelivers. The engine's refusals wrote no status, so the run sat queued until the orphan sweeper, past the…
+
+    </details>
+
 ## [3.217.4](https://github.com/SocialGouv/iterion/compare/v3.217.3...v3.217.4) (2026-09-30)
 
 ### Bug Fixes
