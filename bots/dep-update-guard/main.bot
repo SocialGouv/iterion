@@ -1581,20 +1581,31 @@ tool arm_automerge:
 
     # Where the forge cannot be reached at all there is nothing to disarm, and
     # the refusal - when there is one - is the more useful of the two reasons:
-    # it is about the bump, not about the plumbing.
+    # it is about the bump, not about the plumbing. But a refusal the forge
+    # never hears about leaves any live commitment standing with nobody able
+    # to take it down, and a PR left in a state the verdict contradicts must
+    # SAY so - the same clause the failed read/write exit below carries.
+    def unreachable(why):
+        if refusal:
+            out(False, refusal + " | a commitment to merge may still stand: "
+                       "the forge was unreachable (" + why + ")")
+        out(False, why)
+
     m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls)/(\d+)", s(pr_url))
     if not m:
-        out(False, refusal or ("auto-merge arming is GitHub-only; no-op for " + (s(pr_url) or "(no pr_url)")))
+        unreachable("auto-merge arming is GitHub-only; no-op for " + (s(pr_url) or "(no pr_url)"))
     host, owner, repo, num = m.group(1), m.group(2), m.group(3), int(m.group(4))
     if host != "github.com":
-        out(False, refusal or ("auto-merge arming is GitHub-only; no-op for " + host))
+        # A GHES host is the case that bites: an arming CAN stand there, and
+        # this bot only speaks to api.github.com.
+        unreachable("auto-merge arming is GitHub-only; no-op for " + host)
 
     token = ""
     tref = s(token_ref)
     if tref:
         token = (open(tref).read().strip() if os.path.exists(tref) else tref)
     if not token:
-        out(False, refusal or "no forge_token bound")
+        unreachable("no forge_token bound")
 
     def graphql(query, variables):
         req = urllib.request.Request(

@@ -649,24 +649,49 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	// because a refusal now has to take down an arming an earlier pass left:
 	// the property that matters is that nothing merges, not that nothing is
 	// read. Asserting "zero calls" on those would forbid the takedown.
+	//
+	// `still` is the clause a refusal owes when it could not reach the forge
+	// (#1635): a live arming may still stand with nobody able to take it down,
+	// and the PR is then left in a state the verdict contradicts — allowed,
+	// but never silently. "Zero calls" stays asserted on those rows: the point
+	// is the MESSAGE, not new forge traffic.
 	for _, tc := range []struct {
 		name   string
 		subs   map[string]string
 		want   string
 		silent bool
+		still  string
 	}{
-		{"off by default", map[string]string{"{{vars.arm_automerge}}": "False"}, "off", true},
-		{"held bump", map[string]string{"{{input.verdict}}": `"hold_security"`}, "not green", false},
-		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}, "not green", false},
-		{"pending human decision", map[string]string{"{{input.verdict}}": `"needs_decision"`}, "not green", false},
-		{"alignment missing from the branch", map[string]string{"{{input.verdict}}": `"hold_lost_alignment"`}, "not green", false},
-		{"unknown verdict", map[string]string{"{{input.verdict}}": `"probably_fine"`}, "not green", false},
+		{"off by default", map[string]string{"{{vars.arm_automerge}}": "False"}, "off", true, ""},
+		{"held bump", map[string]string{"{{input.verdict}}": `"hold_security"`}, "not green", false, ""},
+		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}, "not green", false, ""},
+		{"pending human decision", map[string]string{"{{input.verdict}}": `"needs_decision"`}, "not green", false, ""},
+		{"alignment missing from the branch", map[string]string{"{{input.verdict}}": `"hold_lost_alignment"`}, "not green", false, ""},
+		{"unknown verdict", map[string]string{"{{input.verdict}}": `"probably_fine"`}, "not green", false, ""},
 		// A verdict whose status never reached the PR must not merge it: the
 		// gate is what the repo actually gates on.
-		{"gate never landed", map[string]string{"{{input.gate_posted}}": "False"}, "did not land", false},
-		{"gate red", map[string]string{"{{input.gate_state}}": `"failure"`}, "merge gate is failure", false},
-		{"non-github forge", map[string]string{"{{input.pr_url}}": `"https://gitlab.com/a/b/-/merge_requests/3"`}, "GitHub-only", true},
-		{"no token", map[string]string{"{{secrets.forge_token.path}}": `""`}, "no forge_token", true},
+		{"gate never landed", map[string]string{"{{input.gate_posted}}": "False"}, "did not land", false, ""},
+		{"gate red", map[string]string{"{{input.gate_state}}": `"failure"`}, "merge gate is failure", false, ""},
+		{"non-github forge", map[string]string{"{{input.pr_url}}": `"https://gitlab.com/a/b/-/merge_requests/3"`}, "GitHub-only", true, ""},
+		{"no token", map[string]string{"{{secrets.forge_token.path}}": `""`}, "no forge_token", true, ""},
+		// The same refusals with a HOLD on the table: the arming an earlier
+		// pass may have placed is just as alive, and nothing can reach it.
+		{"held bump, non-github forge", map[string]string{
+			"{{input.verdict}}": `"hold_security"`,
+			"{{input.pr_url}}":  `"https://gitlab.com/a/b/-/merge_requests/3"`},
+			"not green", true, "may still stand"},
+		{"held bump, GHES host the bot cannot speak to", map[string]string{
+			"{{input.verdict}}": `"hold_security"`,
+			"{{input.pr_url}}":  `"https://github.acme.example/acme/widgets/pull/7"`},
+			"not green", true, "may still stand"},
+		{"held bump, no token", map[string]string{
+			"{{input.verdict}}":            `"hold_security"`,
+			"{{secrets.forge_token.path}}": `""`},
+			"not green", true, "may still stand"},
+		{"held bump, unparseable pr_url", map[string]string{
+			"{{input.verdict}}": `"hold_security"`,
+			"{{input.pr_url}}":  `"not a url"`},
+			"not green", true, "may still stand"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res, calls, _ := run(t, tc.subs)
@@ -676,6 +701,9 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			reason, _ := res["reason"].(string)
 			if !strings.Contains(reason, tc.want) {
 				t.Errorf("reason = %q, want it to mention %q", reason, tc.want)
+			}
+			if tc.still != "" && !strings.Contains(reason, tc.still) {
+				t.Errorf("reason = %q, want it to warn that a commitment %s — the refusal could not reach the forge", reason, tc.still)
 			}
 			// The property worth pinning on every refusal: nothing that could
 			// land the bump was sent.
