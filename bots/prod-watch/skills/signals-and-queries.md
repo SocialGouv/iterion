@@ -220,12 +220,13 @@ reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
   Resolved and archived issues never appear in an unresolved list, so a
   regression arrives as an issue the lane may never have tracked; it is
   dated by its own activity (`set_regression` / `set_escalating`), at
-  most `max_transition_checks` lookups a tick: the undated ones first (an
-  undated one the cap leaves is a loss — partial coverage), then the
-  re-checks of dated ones an event arrived after (a new regression needs
-  a new event), least recently checked first — a deferred re-check keeps
-  its date and waits its turn, so busy regressed issues never starve a
-  new one. Every dated one is re-checked in turn, whether or not an event
+  most `max_transition_checks` lookups a tick: the ones never checked
+  first (one the cap leaves is a loss — partial coverage), then the
+  re-checks — of dated ones, and of ones a check left undated (an issue
+  unresolved through the API reads REGRESSED with a `set_unresolved`
+  only) — least recently checked first: a deferred re-check keeps its
+  date and waits its turn, so neither busy regressed issues nor
+  undatable ones ever starve a new one. Every dated one is re-checked in turn, whether or not an event
   moved in the watched environment: substatus and activities are
   project-wide, so a second regression can come from another environment.
   A transition dated before the arming (minus the overlap) or before the
@@ -238,8 +239,9 @@ reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
   the issue leaves a list read whole. Dated however late, it posts, and
   every transition alert says when it happened (`dated …`). One dated
   after the arming that the floor still makes history is named in the
-  coverage note — carried until a note says it. The level floor does not
-  apply to an issue the lane already knows.
+  coverage note, after the lane's losses — carried until a note says it;
+  past 100 names the oldest are counted, not named. The level floor does
+  not apply to an issue the lane already knows.
 - **tracked** — the alerted (or pending) issues by id — open, being
   reprocessed, or archived (Sentry reopens an archived issue as ongoing)
   — their current status and last event. Over `max_tracked` they take
@@ -251,7 +253,9 @@ An explicit `query` always: without one Sentry applies its default
 vanish. The environment is checked first (an unknown one answers an
 empty list — indistinguishable from "no issue"). Only the `cursor=` value
 of the `Link` header is followed, never its URL; a short page with
-`results="true"` is not the end. The cursor's `since` is Sentry's own
+`results="true"` is not the end, and a page with no `Link` header (a
+proxy stripping it) is an error, never the end: the list is not read
+whole and the cursor stays. The cursor's `since` is Sentry's own
 `Date` (the runner's clock, read before the first request, only when
 the header is missing — the walk says `clock: local`). `deadline_secs`
 is a wall clock over each exchange: a server or proxy trickling bytes
@@ -279,9 +283,12 @@ the recorded one posts `REGRESSED IN SENTRY` / `ESCALATING IN SENTRY` —
 tracked or not, backlog or not, with or without a new event this tick
 (the substatus is project-wide, the counts environment-scoped); an
 untracked issue of the new list posts NEW; an alerted issue whose last
-event moved is a sighting — `ESCALATED` when its level-mapped severity
-rose, `STILL OPEN` once per `renotify_hours` (neither while an alert of
-it is pending); an alerted issue Sentry reports closed gets one note
+event moved is a sighting — `OPEN AGAIN IN SENTRY` when the channel's
+last word was its closing note and it is read open (Sentry reopens an
+issue archived for a while as ongoing, with no transition), `ESCALATED`
+when its level-mapped severity rose above the one the channel last
+heard, `STILL OPEN` once per `renotify_hours` (none of them while an
+alert of it is pending); an alerted issue Sentry reports closed gets one note
 naming the status (`RESOLVED IN SENTRY`, `ARCHIVED IN SENTRY`, `DELETED
 OR MERGED IN SENTRY` — after any pending alert of it went out) and, while
 it stays closed, its events are no news (Sentry keeps ingesting an
@@ -291,12 +298,23 @@ again); one idle for `quiet_after_hours` (read by id this tick) one
 alert the per-run cap cuts stays PENDING and is re-emitted every tick
 until posted (a new issue, a dated transition or an escalation does not
 recur by itself — an escalation stays pending at the severity it
-reached), ahead of the tick's fresh alerts, oldest first — and the kinds
-holding one start their rank's turns; a cut closing note is re-emitted
+reached, dropped if a lowered `max_severity` brings it back to what the
+channel already heard), ahead of the tick's fresh alerts, oldest first —
+and the kinds holding one start their rank's turns; a cut closing note is re-emitted
 from the recorded status, and a posted transition owes its closing note
 again. The same holds for a Sentry leak class, a new log template and a
 log leak class, while their lane is on (off, the pending record waits,
-and retention may forget it, like a pending Sentry issue's). Anything
+and retention may forget it, like a pending Sentry issue's). The Sentry
+lane and the log templates — data anyone can mint incidents in (a
+public DSN, log lines carrying user input) — post at most
+`--var max_alerts_per_lane` (5) alerts of one kind (new, escalated,
+still open, not observed any more) one by one per tick, the most severe
+first (pending ones first among equals); the others are named in ONE
+note of that kind, which says them: a Sentry issue named there becomes
+backlog (followed in Sentry — no reminder, escalation or note of its
+own; a transition still posts), and a note cut by the cap keeps each
+member pending. A flood neither drowns the channel, nor queues a backlog
+behind the cap, nor comes back as a flood of follow-ups. Anything
 else read is tracked silently: a backlog issue
 never posts on mere recurrence, and an issue merely re-read for
 `forget_after_days` leaves the tracked set — not while it is still in
@@ -311,8 +329,9 @@ from the configured base URL, org and the digit id — never the API's
 `permalink`, rendered only when it is exactly that shape. Severity comes
 from the level (`severity` map), capped by `max_severity` — a lowered cap
 applies to the severities the lane already recorded too. A severity never
-goes down on its own otherwise, and never rises while the issue is closed
-(the reopening's sighting says the escalation).
+goes down on its own otherwise; an escalation is measured against the
+severity the channel last heard, so one reached while the issue was
+closed is said when it is read open again.
 
 **Redaction.** Titles, culprits and metadata go to the scratch handoff
 only; `leak_scan` scrubs every field (bounded first, cut to display size
@@ -330,22 +349,28 @@ leak classes cover issue text only.
 event from another environment moves them); the "last event" of a
 sighting is an event time (tolerance = `overlap_minutes`); a public DSN
 lets anyone create issues — a flood pushes the lists into their caps
-(partial coverage, named) and the alerts into the per-run cap (pending,
-delivered over the next ticks; inside one rank each alert kind — a
-Sentry issue, a Sentry leak, a log template, a log leak, a probe —
-takes its turn under the cap, so a flood never holds it against
-another). Issue text anyone can write never pings nor links: every value
+(partial coverage, named) and its new issues into one note a tick
+(inside one rank each alert kind — a Sentry issue, a Sentry leak, a log
+template, a log leak, a probe — takes its turn under the cap, so a
+flood never holds it against another). Issue text anyone can write never pings nor links: every value
 a message quotes — title, culprit, any lane's field, a sample — renders
 as inline code, where Mattermost parses neither mentions nor links —
 flattened to one line first, U+2424 included (Mattermost's markdown
 reads that symbol as a line break, which would end the span), control
-characters dropped (Mattermost cannot store a NUL); the label's own words
-render as written — every markdown character in them escaped, so no
-emphasis, link, tag or autolink can wrap a value — a value is never
-scanned for placeholders, and a message over `max_message_chars` is cut
-on a line boundary. Escaping alone
-is not enough: the autolinker takes a host after a hyphen, a word
-character or a parenthesis, whatever precedes it.
+characters dropped (Mattermost cannot store a NUL), an empty value
+rendered as nothing (an empty span would pair with the next value's
+backtick). Escaping a value alone is not enough: the autolinker takes a
+host after a hyphen, a word character or a parenthesis, whatever
+precedes it. The label's own words render as written, and none of their
+markdown can wrap a value: emphasis, code, link and LaTeX characters are
+escaped, `&` and `<` are entities (the server rewrites `<url|text>`
+first), `$` becomes its full-width form (inline LaTeX ignores a
+backslash), a dot after a letter or digit is escaped (the autolinker
+reads `www.` through a zero-width space) and a zero-width space goes
+before a scheme's colon — a server's custom URL schemes included.
+Parentheses and plain colons stay as written, so a push notification
+shows the label's own text. A value is never scanned for placeholders,
+and a message over `max_message_chars` is cut on a line boundary.
 
 ## Health probes
 

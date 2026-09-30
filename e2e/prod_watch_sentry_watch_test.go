@@ -285,8 +285,8 @@ func TestProdWatch_SentryLoweredMaxSeverityCapsKnownIncidents(t *testing.T) {
 }
 
 // TestProdWatch_SentryEscalationWhileArchivedIsSaidOnReopen: an archived
-// issue's events raise nothing silently: reopened, its first sighting at the
-// higher level posts ESCALATED.
+// issue's events raise nothing silently: reopened, its first sighting says
+// it is open again, at the higher level.
 func TestProdWatch_SentryEscalationWhileArchivedIsSaidOnReopen(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -321,8 +321,8 @@ func TestProdWatch_SentryEscalationWhileArchivedIsSaidOnReopen(t *testing.T) {
 		seq = append(seq, sentryAlerts(sentryTick(t, h, wf))...)
 		h.sentry.edit("30", func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(3 * time.Second) })
 	}
-	if !anyPrefix(seq, "escalated:P-30:high") {
-		t.Fatalf("reopened and firing at fatal (last announced medium), no ESCALATED: %v (severity %v)", seq, sentryIncident(t, h, "30")["severity"])
+	if !anyPrefix(seq, "reopened:P-30:high") {
+		t.Fatalf("reopened and firing at fatal (last announced medium), not said open again at high: %v (severity %v)", seq, sentryIncident(t, h, "30")["severity"])
 	}
 }
 

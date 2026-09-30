@@ -21,7 +21,7 @@ func sentryPlan(t *testing.T, h *pwHarness, wfPath string) (map[string]any, map[
 	t.Helper()
 	wf := compileFixture(t, wfPath)
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile, "sentry_token": h.sentryTokenFile}
 	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 	if err != nil {
@@ -119,6 +119,7 @@ func TestProdWatch_SentryAttackerTextCannotPingOrLink(t *testing.T) {
 	h.writeConfig(t, sentryOnly(h, nil))
 	sentryTick(t, h, wf)
 	now := time.Now()
+	h.setMaxPerLane(20) // every culprit renders in its own alert
 	cases := []struct{ culprit, rendered string }{
 		{"@here @jo please re-login at www.evillogin.example/reset", "@here @jo please re-login at www.evillogin.example/reset"},
 		{"please re-login at -sso-portal.com/reset", "please re-login at -sso-portal.com/reset"},
@@ -438,7 +439,7 @@ func TestProdWatch_SentryForeignIncidentFieldIsRefusedByName(t *testing.T) {
 			}
 			h.setState(t, st)
 			vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-				"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+				"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, nil))
 			if err == nil || !strings.Contains(stderr, c.field) || strings.Contains(stderr, "Traceback") {
 				t.Fatalf("a foreign %s was not refused by name: err=%v %s", c.field, err, stderr)
@@ -597,10 +598,13 @@ func TestProdWatch_SentryControlCharactersNeverReachThePost(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
-	h.writeConfig(t, sentryOnly(h, nil))
+	h.writeConfig(t, func(cfg map[string]any) {
+		sentryOnly(h, nil)(cfg)
+		cfg["labels"] = map[string]any{"sentry_issue": "Sentry\x00 issue\x1b[31m", "sentry_detail": "{level}\x07 · {culprit}"}
+	})
 	sentryTick(t, h, wf)
 	now := time.Now()
-	h.sentry.put(&pwSentryIssue{ID: "4601", ShortID: strp("P-4601"), Title: "boom\x00 x", Culprit: "a\x00b\x07c\x1b[31md\u0085e",
+	h.sentry.put(&pwSentryIssue{ID: "4601", ShortID: strp("P-4601"), Title: "boom\x00 x", Culprit: "a\x00b\x07c\x1b[31md\u0085e\u009bf",
 		FirstProcessed: now, LastSeen: now, Count: 1})
 	n := len(h.bodies())
 	sentryTick(t, h, wf)
@@ -631,6 +635,15 @@ func TestProdWatch_SentryLabelsCannotBreakACodeSpan(t *testing.T) {
 		"a markdown link around a value": "{level} · [search](https://s.example/?q={culprit})",
 		"angle brackets around a value":  "{level} · <{culprit}>",
 		"a Slack link around a value":    "{level} · <https://s.example/?q={culprit}|search>",
+		"strong emphasis by underscores": "{level} · __{culprit}__",
+		"emphasis by an underscore":      "{level} · _{culprit}_",
+		"a strike around a value":        "{level} · ~~{culprit}~~",
+		"inline LaTeX around a value":    "{level} · $ {culprit} $",
+		"a tel: scheme before a value":   "{level} · tel:{culprit}",
+		"the mattermost: scheme":         "{level} · mattermost://x/{culprit}",
+		"a custom scheme before a value": "{level} · vscode://file/{culprit}",
+		"an image around a value":        "{level} · ![{culprit}](https://i.example/a.png)",
+		"www. right before a value":      "{level} · see www.{culprit}",
 	} {
 		name, label := name, label
 		t.Run(name, func(t *testing.T) {
@@ -661,6 +674,32 @@ func TestProdWatch_SentryLabelsCannotBreakACodeSpan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestProdWatch_SentryAnEmptyValueOpensNoSpan: a value empty once flattened
+// (whitespace, control characters) renders as nothing — an empty span, two
+// backticks, would pair with the next value's backtick and flip every span
+// after it.
+func TestProdWatch_SentryAnEmptyValueOpensNoSpan(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		sentryOnly(h, nil)(cfg)
+		cfg["labels"] = map[string]any{"sentry_detail": "{culprit}{level} · {count}"}
+	})
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "4701", ShortID: strp("P-4701"), Title: "x", Culprit: " \t\u0007 ", FirstProcessed: now, LastSeen: now, Count: 3})
+	n := len(h.bodies())
+	sentryTick(t, h, wf)
+	body := strings.Join(h.bodies()[n:], "\n")
+	if !strings.Contains(body, "`error` · `3`") {
+		t.Fatalf("setup: the detail line did not render:\n%s", body)
+	}
+	if strings.Contains(body, "``") {
+		t.Fatalf("an empty value rendered as an empty span:\n%s", body)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
@@ -185,6 +186,7 @@ type pwHarness struct {
 	sentry                               *pwSentry // the fake Sentry (prod_watch_sentry_test.go)
 	sentryTokenFile                      string
 	alertCap                             atomic.Int64 // tick()'s max_alerts when set (0: the bot's default 20)
+	laneCap                              atomic.Int64 // tick()'s max_alerts_per_lane + 1 when set (0: the bot's default 5)
 }
 
 const pwToken = "glsa_test_token_0123456789"
@@ -425,7 +427,7 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 	outs := map[string]map[string]any{}
 	vars := map[string]any{
 		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000,
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000,
 	}
 	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile, "sentry_token": h.sentryTokenFile}
 	h.stderrs = map[string]string{}
@@ -458,7 +460,7 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"sentry": plan["sentry"], "sentry_ok": sentry["ok"], "sentry_truncated": sentry["truncated"], "sentry_errors": sentry["errors"],
 		"sentry_walk": sentry["walk"], "sentry_issues": sentry["issues"],
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(),
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(), "max_alerts_per_lane": h.maxPerLane(),
 	})
 	notify := run("notify", map[string]any{
 		"alerts": decide["alerts"], "overflow_count": decide["overflow_count"], "stale_sources": decide["stale_sources"],
@@ -628,7 +630,7 @@ func TestProdWatch_LokiWindowPagingAndTruncation(t *testing.T) {
 	h.lines.Store(lines)
 
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 10}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 10}
 	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}
 	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 	if err != nil {
@@ -992,7 +994,7 @@ func TestProdWatch_PlanGuards(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 	plan := func(secretPath string) (map[string]any, string, error) {
 		return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, map[string]string{"grafana_token": secretPath}))
 	}
@@ -1168,7 +1170,7 @@ func TestProdWatch_LokiSameNanosecondAcrossPages(t *testing.T) {
 		{TS: base + 200, Line: "ERROR epsilon", Container: "api", Q: "errors-q"},
 	})
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 	secrets := map[string]string{"grafana_token": h.tokenFile}
 	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 	if err != nil {
@@ -1216,7 +1218,7 @@ func TestProdWatch_LokiOverlapAfterTruncation(t *testing.T) {
 	}
 	h.lines.Store(lines)
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 2}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 2}
 	secrets := map[string]string{"grafana_token": h.tokenFile}
 	plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 	if err != nil {
@@ -1331,7 +1333,7 @@ func TestProdWatch_LokiInvertedWindowIsAnError(t *testing.T) {
 		cfg["loki"].(map[string]any)["queries"] = map[string]any{"errors": "errors-q"}
 	})
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 	secrets := map[string]string{"grafana_token": h.tokenFile}
 	plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 	if err != nil {
@@ -1418,7 +1420,7 @@ func TestProdWatch_LokiGroupWiderThanCapDrainsAcrossTicks(t *testing.T) {
 	lines = append(lines, pwLine{TS: base + int64(5*time.Second), Line: "ERROR after", Container: "api", Q: "errors-q"})
 	h.lines.Store(lines)
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 2}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 2}
 	secrets := map[string]string{"grafana_token": h.tokenFile}
 	poll := func() map[string]any {
 		t.Helper()
@@ -1569,37 +1571,35 @@ func pwOutsideCode(line string) string {
 }
 
 // pwUnescapedActives lists what, outside inline code, Mattermost would still
-// read as markdown or a link: an unescaped emphasis, link, tag or table
-// opener, a live URL scheme, a bare www.
+// read as markdown or a link around a value: an unescaped emphasis, strike,
+// link, image or inline-LaTeX opener, an unpaired backtick, a raw `<` (a tag,
+// an autolink, a Slack link the server rewrites), a scheme's colon with no
+// zero-width space before it and text after it, a dot after a letter or
+// digit (a host) unescaped.
 func pwUnescapedActives(line string) []string {
 	var found []string
-	var plain strings.Builder
+	scheme := func(r rune) bool {
+		return r < 128 && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '+' || r == '.' || r == '-')
+	}
 	rs := []rune(line)
 	for i := 0; i < len(rs); i++ {
 		switch c := rs[i]; {
 		case c == '\\' && i+1 < len(rs):
-			plain.WriteRune(' ')
 			i++
 		case c == '`':
 			j := strings.IndexRune(string(rs[i+1:]), '`')
 			if j < 0 {
-				plain.WriteString(string(rs[i:]))
+				found = append(found, "`")
 				i = len(rs)
 				continue
 			}
 			i += len([]rune(string(rs[i+1:])[:j])) + 1
-			plain.WriteRune(' ')
-		default:
-			if strings.ContainsRune("*_[]()<>~|!#", c) {
-				found = append(found, string(c))
-			}
-			plain.WriteRune(c)
-		}
-	}
-	low := strings.ToLower(plain.String())
-	for _, live := range []string{"http://", "https://", "www.", "mailto:"} {
-		if strings.Contains(low, live) {
-			found = append(found, live)
+		case strings.ContainsRune("*_~[]$<", c):
+			found = append(found, string(c))
+		case c == ':' && i > 0 && scheme(rs[i-1]) && (i+1 == len(rs) || !unicode.IsSpace(rs[i+1])):
+			found = append(found, string(rs[i-1])+":")
+		case c == '.' && i > 0 && rs[i-1] < 128 && (unicode.IsLetter(rs[i-1]) || unicode.IsDigit(rs[i-1])):
+			found = append(found, string(rs[i-1])+".")
 		}
 	}
 	return found
@@ -1745,7 +1745,7 @@ func (h *pwHarness) cursorTickWith(t *testing.T, wf *ir.Workflow, vars map[strin
 		"loki_ok": loki["ok"], "loki_truncated": loki["truncated"], "loki_errors": loki["errors"], "loki_per_query": loki["per_query"],
 		"prom_ok": true, "prom_errors": []any{}, "release": "unknown", "release_known": false,
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20,
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5,
 	}
 	for k, v := range decideExtra {
 		decideIn[k] = v
@@ -1766,7 +1766,7 @@ func (h *pwHarness) cursorTickWith(t *testing.T, wf *ir.Workflow, vars map[strin
 
 func cursorVars(h *pwHarness, maxWindowMin, lagSec, maxLines int) map[string]any {
 	return map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": maxWindowMin, "ingest_lag_seconds": lagSec, "max_lines": maxLines}
+		"max_window_minutes": maxWindowMin, "fetch_timeout_secs": 20, "ingest_lag_seconds": lagSec, "max_lines": maxLines}
 }
 
 func lokiOnly(page, overlap int) func(cfg map[string]any) {
@@ -2518,7 +2518,7 @@ func TestProdWatch_CoverageNoteCarriesTheLaneErrorAndRefiresOnChange(t *testing.
 			"loki_ok": loki["ok"], "loki_truncated": loki["truncated"], "loki_errors": loki["errors"], "loki_per_query": loki["per_query"],
 			"prom_ok": true, "prom_errors": []any{}, "release": "unknown", "release_known": false,
 			"lanes": map[string]any{"loki": true, "prometheus": false, "probes": true}, "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-			"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20,
+			"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5,
 		})
 		notify := run("notify", map[string]any{
 			"alerts": decide["alerts"], "overflow_count": decide["overflow_count"], "stale_sources": decide["stale_sources"],
@@ -2732,7 +2732,7 @@ func TestProdWatch_ProxyEnvDoesNotDisarmTheGuard(t *testing.T) {
 	h := newPWHarness(t)
 	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, map[string]any{
 		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
 	if err != nil {
 		t.Fatalf("plan: %v %s", err, stderr)
 	}
@@ -2773,7 +2773,7 @@ func TestProdWatch_GrafanaSchemeIsALaneError(t *testing.T) {
 	h.writeConfig(t, func(cfg map[string]any) { cfg["grafana"].(map[string]any)["base_url"] = "http://grafana.example" })
 	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, map[string]any{
 		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
 	if err != nil {
 		t.Fatalf("plan admits the config; the lane carries the refusal: %v %s", err, stderr)
 	}
@@ -2896,7 +2896,7 @@ func TestProdWatch_UnknownAggNeverMeansMax(t *testing.T) {
 	h := newPWHarness(t)
 	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, map[string]any{
 		"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}, map[string]string{"grafana_token": h.tokenFile}))
 	if err != nil {
 		t.Fatalf("plan: %v %s", err, stderr)
 	}
@@ -2984,7 +2984,8 @@ func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 			"loki_errors": true, "loki_per_query": true, "prom_ok": true, "prom_errors": true, "release": true, "release_known": true,
 			"sentry": true, "sentry_ok": true, "sentry_truncated": true, "sentry_errors": true, "sentry_walk": true, "sentry_issues": true,
 			"lanes": true, "app": true, "workspace": true, "state_dir": true, "scratch_dir": true, "renotify_hours": true,
-			"quiet_after_hours": true, "forget_after_days": true, "source_stale_hours": true, "max_alerts": true},
+			"quiet_after_hours": true, "forget_after_days": true, "source_stale_hours": true, "max_alerts": true,
+			"max_alerts_per_lane": true},
 		"notify": {"alerts": true, "overflow_count": true, "stale_sources": true, "sinks": true, "labels": true, "app": true, "sentry": true,
 			"release": true, "release_known": true, "dry_run": true, "max_message_chars": true},
 		"commit_state": {"state_next_file": true, "alertlog_file": true, "tick_file": true, "generation": true,
@@ -3060,7 +3061,7 @@ func pwDecide(t *testing.T, wf *ir.Workflow, h *pwHarness, signals map[string]an
 		"loki_errors": []any{}, "loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}}, "prom_ok": true, "prom_errors": []any{},
 		"release": "", "release_known": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": true},
 		"app": map[string]any{"name": "demo"}, "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20,
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5,
 	}
 	for k, v := range inputs {
 		in[k] = v
@@ -3643,7 +3644,7 @@ func TestProdWatch_TrickledEndpointsFailAtTheirTimeout(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	vars := func(h *pwHarness) map[string]any {
 		return map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-			"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+			"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 	}
 	cases := []struct {
 		name  string

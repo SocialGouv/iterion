@@ -79,6 +79,7 @@ type pwSentry struct {
 	failBody       string        // the body of a failNext answer (server text the lane must withhold)
 	dateOffset     time.Duration // the Date header is the server's clock shifted by this
 	rawDate        string        // the Date header, verbatim (a broken server or proxy)
+	noLink         bool          // list pages carry no Link header (a proxy that strips it)
 }
 
 func strp(s string) *string { return &s }
@@ -361,8 +362,10 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 		if s.badCursor {
 			next = "../../x"
 		}
-		w.Header().Set("Link", fmt.Sprintf(`<https://evil.invalid/api/0/organizations/org/issues/?cursor=0:0:1>; rel="previous"; results="false"; cursor="0:0:1", `+
-			`<https://evil.invalid/api/0/organizations/org/issues/?cursor=%s>; rel="next"; results="%t"; cursor="%s"`, next, more, next))
+		if !s.noLink {
+			w.Header().Set("Link", fmt.Sprintf(`<https://evil.invalid/api/0/organizations/org/issues/?cursor=0:0:1>; rel="previous"; results="false"; cursor="0:0:1", `+
+				`<https://evil.invalid/api/0/organizations/org/issues/?cursor=%s>; rel="next"; results="%t"; cursor="%s"`, next, more, next))
+		}
 		out := []map[string]any{}
 		for _, i := range page {
 			out = append(out, s.payload(i, env))
@@ -378,6 +381,17 @@ func (h *pwHarness) maxAlerts() int {
 		return int(n)
 	}
 	return 20
+}
+
+// setMaxPerLane sets tick()'s max_alerts_per_lane (0 folds every alert of a
+// minting lane into the note of its kind).
+func (h *pwHarness) setMaxPerLane(n int) { h.laneCap.Store(int64(n) + 1) }
+
+func (h *pwHarness) maxPerLane() int {
+	if n := h.laneCap.Load(); n > 0 {
+		return int(n) - 1
+	}
+	return 5
 }
 
 // sentryOnly: a config whose only lane is Sentry (plus the healthy sink), so
@@ -952,7 +966,7 @@ func TestProdWatch_SentryErrorsAreNamed(t *testing.T) {
 		h.writeConfig(t, sentryOnly(h, nil))
 		h.sentry.failNext("project", 401)
 		vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-			"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+			"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 		secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile, "sentry_token": h.sentryTokenFile}
 		plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 		if err != nil {
@@ -1006,7 +1020,7 @@ func TestProdWatch_SentryPlanGuards(t *testing.T) {
 			h := newPWHarness(t)
 			h.writeConfig(t, sentryOnly(h, c.mod))
 			vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-				"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+				"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, nil))
 			if err == nil || !strings.Contains(stderr, c.want) {
 				t.Fatalf("want a refusal naming %q, got err=%v stderr=%s", c.want, err, stderr)
@@ -1020,7 +1034,7 @@ func TestProdWatch_SentryPlanGuards(t *testing.T) {
 		h.setState(t, map[string]any{"version": 1, "generation": 1, "cursors": map[string]any{"sentry": map[string]any{
 			"identity": map[string]any{"base_url": h.srv.URL}, "armed_at": "x", "since": "y", "at": "z"}}, "incidents": map[string]any{}, "health": map[string]any{}})
 		vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-			"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+			"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 		_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, nil))
 		if err == nil || !strings.Contains(stderr, "cursors.sentry.identity") {
 			t.Fatalf("a foreign Sentry cursor was not refused by name: err=%v stderr=%s", err, stderr)

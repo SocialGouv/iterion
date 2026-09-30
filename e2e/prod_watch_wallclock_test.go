@@ -64,7 +64,7 @@ func TestProdWatch_TheWallClockSurvivesAnAddressThatHangs(t *testing.T) {
 				cfg["sentry"] = map[string]any{"base_url": base, "org": "org", "project": "proj", "deadline_secs": 10}
 			})
 			vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-				"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+				"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 			secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile, "sentry_token": h.sentryTokenFile}
 			plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 			if err != nil {
@@ -92,8 +92,14 @@ func TestProdWatch_TheWallClockSurvivesAnAddressThatHangs(t *testing.T) {
 			if took > 18*time.Second {
 				t.Fatalf("%s: the second address trickled on unbounded, %v (its wall clock was spent in the first connect): %v", node, took, out)
 			}
-			// The failure must be the wall clock's, not a refused connection.
-			if o := fmt.Sprint(out); !strings.Contains(o, "ExchangeTimeout") && !strings.Contains(o, "deadline") {
+			// The failure must be the wall clock's, not a refused connection:
+			// poll_sentry's is its deadline, the chassis' an exchange timeout.
+			byClock := strings.Contains(fmt.Sprint(out), "ExchangeTimeout")
+			if node == "poll_sentry" {
+				walk, _ := out["walk"].(map[string]any)
+				byClock = strings.Contains(fmt.Sprint(out["errors"]), "DeadlineReached") || walk["deadline_hit"] == true
+			}
+			if !byClock {
 				t.Fatalf("%s: stopped in %v, but not by its wall clock: %v", node, took, out)
 			}
 			if node == "probe_http" && strings.Contains(fmt.Sprint(out), "ok:true") {
@@ -120,7 +126,7 @@ func TestProdWatch_NoAlarmOutlivesItsExchange(t *testing.T) {
 				cfg["sentry"] = map[string]any{"base_url": h.srv.URL, "org": "org", "project": "proj", "environment": "preprod"}
 			})
 			vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-				"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+				"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 			secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile, "sentry_token": h.sentryTokenFile}
 			plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 			if err != nil {
@@ -179,7 +185,7 @@ func TestProdWatch_ASlowButSteadyGrafanaAnswerIsRead(t *testing.T) {
 		cfg["grafana"] = map[string]any{"base_url": slow.URL, "loki_uid": "loki", "prometheus_uid": "prom"}
 	})
 	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}
 	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 	if err != nil {

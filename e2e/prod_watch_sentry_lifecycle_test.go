@@ -355,7 +355,7 @@ func TestProdWatch_SentryLaneThatNeverAnsweredIsNotHealthy(t *testing.T) {
 		h.sentry.delay = 11 * time.Second
 		h.sentry.mu.Unlock()
 		vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-			"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+			"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 		secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile, "sentry_token": h.sentryTokenFile}
 		plan, _, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
 		if err != nil {
@@ -798,8 +798,8 @@ func TestProdWatch_SentryArchivedIssueStaysTracked(t *testing.T) {
 	st := h.state(t)
 	st["incidents"].(map[string]any)["sentry:91"].(map[string]any)["last_notified"] = time.Now().Add(-25 * time.Hour).UTC().Format(time.RFC3339)
 	h.setState(t, st)
-	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "reminder:P-91:medium" {
-		t.Fatalf("a reopened archived issue firing again (last notified 25 h ago) was not read as a sighting: %v", got)
+	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "reopened:P-91:medium" {
+		t.Fatalf("a reopened archived issue firing again was not read as a sighting (after its archived note: REOPENED): %v", got)
 	}
 }
 
@@ -1001,7 +1001,7 @@ func TestProdWatch_SentryCountLabelNamesItsScope(t *testing.T) {
 	h.sentry.put(&pwSentryIssue{ID: "3301", ShortID: strp("P-3301"), Title: "x", FirstProcessed: now, LastSeen: now, Count: 7})
 	n := len(h.bodies())
 	sentryTick(t, h, wf)
-	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event\(s\) in 14 days`) {
+	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event(s) in 14 days`) {
 		t.Fatalf("the NEW alert does not name the lists' 14 days:\n%s", b)
 	}
 	// Hours later, out of the new-issue window: read by id only.
@@ -1017,7 +1017,7 @@ func TestProdWatch_SentryCountLabelNamesItsScope(t *testing.T) {
 	if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "reminder:P-3301:medium" {
 		t.Fatalf("setup: want a reminder, got %v", got)
 	}
-	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event\(s\) in total`) {
+	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event(s) in total`) {
 		t.Fatalf("a count read by id does not say \"in total\":\n%s", b)
 	}
 }
@@ -1034,7 +1034,7 @@ func TestProdWatch_SentryBaseURLIsComparedAsTheHostItNames(t *testing.T) {
 		h := newPWHarness(t)
 		h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["base_url"] = base }))
 		vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-			"max_window_minutes": 60, "ingest_lag_seconds": 0, "max_lines": 5000}
+			"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
 		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, nil))
 		if err != nil {
 			t.Fatalf("plan %q: %v %s", base, err, stderr)

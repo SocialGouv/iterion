@@ -162,6 +162,12 @@ vars:
   ## re-fire next tick; the overflow is announced explicitly.
   max_alerts_per_run: int = 20
 
+  ## Alerts of one kind (new, escalated, still open, not observed any
+  ## more) a lane whose data mints incidents (Sentry issues — anyone
+  ## holding the public DSN creates them —, log templates) posts one by one
+  ## per tick; the rest are named in one note. 0 folds them all.
+  max_alerts_per_lane: int = 5
+
   ## Per-MESSAGE character budget at delivery (under Mattermost's
   ## 16383-char post limit).
   max_message_chars: int = 14000
@@ -333,6 +339,7 @@ schema decide_input:
   forget_after_days: int
   source_stale_hours: int
   max_alerts: int
+  max_alerts_per_lane: int
 
 schema decide_output:
   ## Alerts to post this tick, rendered by notify: [{fingerprint, kind,
@@ -423,6 +430,9 @@ tool plan:
     max_window_min = int({{vars.max_window_minutes}})
     ingest_lag = int({{vars.ingest_lag_seconds}})
     max_lines = int({{vars.max_lines}})
+    fetch_timeout = int({{vars.fetch_timeout_secs}})
+    if fetch_timeout < 1:
+        raise SystemExit('prod-watch: fetch_timeout_secs must be at least 1, got ' + str(fetch_timeout))
     os.chdir(ws)
     if mode != 'watch':
         raise SystemExit('prod-watch: invalid mode ' + repr(mode) + ' -- only mode=watch exists in this slice')
@@ -508,6 +518,15 @@ tool plan:
         if norm_probes and not grafana.get('prometheus_uid'):
             raise SystemExit('prod-watch: prometheus probes are configured but config.grafana.prometheus_uid is missing')
     grafana['base_url'] = (grafana.get('base_url') or '').rstrip('/')
+    ## Each Grafana lane (Loki, Prometheus) stops starting requests once it
+    ## has run grafana.deadline_secs: a Grafana answering slowly cannot
+    ## spend the time the delivery needs.
+    g_deadline = grafana.get('deadline_secs')
+    if g_deadline is None:
+        g_deadline = 120
+    if isinstance(g_deadline, bool) or not isinstance(g_deadline, int) or not 10 <= g_deadline <= 600:
+        raise SystemExit('prod-watch: config.grafana.deadline_secs must be an integer in [10, 600], got ' + repr(g_deadline)[:40])
+    grafana['deadline_secs'] = g_deadline
 
     ## ── http probes ────────────────────────────────────────────────
     http_probes = []
@@ -621,6 +640,26 @@ tool plan:
                                'environment': s_env or ''},
                   'link_prefix': s_base + '/organizations/' + sentry_cfg['org'] + '/issues/'}
 
+    ## ── the run's budget ───────────────────────────────────────────
+    ## A tick the budget kills (budget.max_duration below: 12 minutes)
+    ## posts nothing, the app-down probe included: every wait before the
+    ## delivery must fit in it at its worst — the release endpoint, each
+    ## health probe in turn, each lane's deadline. The rest is the leak
+    ## scan's, the delivery's, the state commit's and the engine's own.
+    RUN_BUDGET_SECS, AFTER_FETCH_SECS = 720, 240
+    waits = [('release', fetch_timeout if release['source'] != 'none' else 0),
+             ('probes', sum(p['timeout_secs'] for p in http_probes)),
+             ('loki', grafana['deadline_secs'] if queries else 0),
+             ('prometheus', grafana['deadline_secs'] if norm_probes else 0),
+             ('sentry', sentry['deadline_secs'] if sentry['enabled'] else 0)]
+    worst = sum(w for _, w in waits)
+    if worst > RUN_BUDGET_SECS - AFTER_FETCH_SECS:
+        raise SystemExit('prod-watch: the fetches can wait ' + str(worst) + ' s at worst (' +
+                         ', '.join(n + ' ' + str(w) + ' s' for n, w in waits if w) + '), over the ' +
+                         str(RUN_BUDGET_SECS - AFTER_FETCH_SECS) + ' s the 12-minute run budget keeps for them: a tick the '
+                         'budget kills posts nothing, the health probes included -- lower grafana.deadline_secs, '
+                         'sentry.deadline_secs, a probe timeout_secs or fetch_timeout_secs')
+
     ## English defaults; the config's `labels` map overrides any subset —
     ## this bot bakes in no language (deterministic messages included).
     labels = {
@@ -650,12 +689,14 @@ tool plan:
         'sentry_resolved': 'resolved in Sentry',
         'sentry_archived': 'archived in Sentry',
         'sentry_closed': 'deleted or merged in Sentry',
+        'sentry_reopened': 'open again in Sentry',
         'sentry_open': 'open in Sentry',
         'sentry_dated': 'dated {date}',
         'sentry_leak': 'personal data or secret detected in Sentry issue text',
         'sentry_leak_detail': 'class {class} in {count} issue(s): {sources}',
         'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
         'overflow': '{n} more alert(s) exceeded the per-run cap; they stay open and will fire on the next tick',
+        'folded_detail': '{n} more incident(s) of this kind this tick, not posted one by one: {names}',
         'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
         'halted': 'watchdog halted since {since}: {reason}',
         'severity': 'severity',
@@ -724,7 +765,7 @@ tool plan:
             refuse_state(where + '.fields', rec['fields'], 'an object')
         ## The Sentry incident's own fields — each written by decide as a
         ## string, an ISO timestamp, a boolean or null.
-        for f in ('short_id', 'level', 'link', 'substatus', 'status', 'pending'):
+        for f in ('short_id', 'level', 'link', 'substatus', 'status', 'pending', 'announced_severity'):
             if rec.get(f) is not None and not isinstance(rec[f], str):
                 refuse_state(where + '.' + f, rec[f], 'a string')
         for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since', 'transition_seen_at'):
@@ -862,8 +903,13 @@ tool plan:
     if state.get('sentry_identity') is not None and not isinstance(state.get('sentry_identity'), str):
         refuse_state('sentry_identity', state.get('sentry_identity'), 'a string')
     unsaid = state.get('sentry_history_unsaid')
-    if unsaid is not None and (not isinstance(unsaid, list) or not all(isinstance(x, str) for x in unsaid)):
-        refuse_state('sentry_history_unsaid', unsaid, 'a list of strings')
+    if unsaid is not None and (not isinstance(unsaid, list) or
+                               not all(isinstance(x, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}', x)
+                                       for x in unsaid)):
+        refuse_state('sentry_history_unsaid', unsaid, 'a list of <short id>@<YYYY-MM-DDTHH:MM> history keys')
+    dropped = state.get('sentry_history_dropped')
+    if dropped is not None and not (is_int(dropped) and dropped >= 0):
+        refuse_state('sentry_history_dropped', dropped, 'a count')
     if sentry['enabled']:
         ## The identity key decide stamps on the state on every tick the lane
         ## is on — armed or not — so a switch during a bootstrap that never
@@ -1167,43 +1213,48 @@ tool poll_loki:
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
     _opener = urllib.request.build_opener(_NoRedirect())
-    ## A wall clock over each HTTP exchange: an answer trickling in a byte
-    ## at a time resets the socket timeout on every byte — the status line,
-    ## the headers, the body — so an alarm bounds it (fetch_timeout_secs is
-    ## the escape hatch). Not an OSError: the connect loop would swallow it
-    ## and try the next address unbounded; and never retried — the answer
-    ## was too slow, not lost.
+    ## A wall clock over each HTTP call: an answer trickling in a byte at a
+    ## time resets the socket timeout on every byte — the status line, the
+    ## headers, the body — so an alarm bounds the call, its retry included:
+    ## six fetch timeouts (a page may be large and arrive slowly), never past
+    ## the lane's grafana.deadline_secs, after which no request starts. Not
+    ## an OSError: the connect loop would swallow it and try the next
+    ## address unbounded.
     class ExchangeTimeout(Exception):
         pass
     def _exchange_alarm(signum, frame):
         raise ExchangeTimeout('the answer outlasted its wall clock (it trickled in, or never finished)')
     signal.signal(signal.SIGALRM, _exchange_alarm)
+    lane_deadline = time.monotonic() + int(grafana.get('deadline_secs') or 120)
 
     def get(path, params):
         url = base + path + '?' + urlencode(params)
         req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
                                                    'User-Agent': 'prod-watch/0.1 (iterion)'})
-        last = None
-        for attempt in (0, 1):
-            if attempt:
-                time.sleep(2)
-            try:
-                ## A page may be large: its wall clock is six fetch timeouts.
-                signal.setitimer(signal.ITIMER_REAL, timeout * 6)
-                with _opener.open(req, timeout=timeout) as r:
-                    return json.loads(r.read(32 * 1024 * 1024).decode('utf-8'))
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403):
-                    raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
-                                            'lacks datasource query rights, or the token expired (' + path + ')')
-                last = e
-                if e.code < 500 and e.code != 429:
-                    raise
-            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
-                last = e
-            finally:
-                signal.setitimer(signal.ITIMER_REAL, 0)
-        raise last
+        left = lane_deadline - time.monotonic()
+        if left < 1:
+            raise LaneError('the lane passed its grafana.deadline_secs: this request never started')
+        signal.setitimer(signal.ITIMER_REAL, min(timeout * 6, left))
+        try:
+            last = None
+            for attempt in (0, 1):
+                if attempt:
+                    time.sleep(2)
+                try:
+                    with _opener.open(req, timeout=timeout) as r:
+                        return json.loads(r.read(32 * 1024 * 1024).decode('utf-8'))
+                except urllib.error.HTTPError as e:
+                    if e.code in (401, 403):
+                        raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
+                                                'lacks datasource query rights, or the token expired (' + path + ')')
+                    last = e
+                    if e.code < 500 and e.code != 429:
+                        raise
+                except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                    last = e
+            raise last
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
 
     def word(v):
         ## An upstream enum (a status) travels; any other text is withheld.
@@ -1544,42 +1595,48 @@ tool poll_prom:
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
     _opener = urllib.request.build_opener(_NoRedirect())
-    ## A wall clock over each HTTP exchange: an answer trickling in a byte
-    ## at a time resets the socket timeout on every byte — the status line,
-    ## the headers, the body — so an alarm bounds it (fetch_timeout_secs is
-    ## the escape hatch). Not an OSError: the connect loop would swallow it
-    ## and try the next address unbounded; and never retried — the answer
-    ## was too slow, not lost.
+    ## A wall clock over each HTTP call: an answer trickling in a byte at a
+    ## time resets the socket timeout on every byte — the status line, the
+    ## headers, the body — so an alarm bounds the call, its retry included:
+    ## six fetch timeouts (a page may be large and arrive slowly), never past
+    ## the lane's grafana.deadline_secs, after which no request starts. Not
+    ## an OSError: the connect loop would swallow it and try the next
+    ## address unbounded.
     class ExchangeTimeout(Exception):
         pass
     def _exchange_alarm(signum, frame):
         raise ExchangeTimeout('the answer outlasted its wall clock (it trickled in, or never finished)')
     signal.signal(signal.SIGALRM, _exchange_alarm)
+    lane_deadline = time.monotonic() + int(grafana.get('deadline_secs') or 120)
 
     def get(path, params):
         url = base + path + '?' + urlencode(params)
         req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
                                                    'User-Agent': 'prod-watch/0.1 (iterion)'})
-        last = None
-        for attempt in (0, 1):
-            if attempt:
-                time.sleep(2)
-            try:
-                signal.setitimer(signal.ITIMER_REAL, timeout * 6)
-                with _opener.open(req, timeout=timeout) as r:
-                    return json.loads(r.read(8 * 1024 * 1024).decode('utf-8'))
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403):
-                    raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
-                                            'lacks datasource query rights, or the token expired (' + path + ')')
-                last = e
-                if e.code < 500 and e.code != 429:
-                    raise
-            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
-                last = e
-            finally:
-                signal.setitimer(signal.ITIMER_REAL, 0)
-        raise last
+        left = lane_deadline - time.monotonic()
+        if left < 1:
+            raise LaneError('the lane passed its grafana.deadline_secs: this request never started')
+        signal.setitimer(signal.ITIMER_REAL, min(timeout * 6, left))
+        try:
+            last = None
+            for attempt in (0, 1):
+                if attempt:
+                    time.sleep(2)
+                try:
+                    with _opener.open(req, timeout=timeout) as r:
+                        return json.loads(r.read(8 * 1024 * 1024).decode('utf-8'))
+                except urllib.error.HTTPError as e:
+                    if e.code in (401, 403):
+                        raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') -- the grafana_token service account '
+                                                'lacks datasource query rights, or the token expired (' + path + ')')
+                    last = e
+                    if e.code < 500 and e.code != 429:
+                        raise
+                except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                    last = e
+            raise last
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
 
     def word(v):
         ## An upstream enum (a status, an error type) travels; any other
@@ -1942,6 +1999,11 @@ tool poll_sentry:
             flags['answered'] = True
             for i in body:
                 take(i, name)
+            if headers.get('Link') is None:
+                ## Sentry sets Link on every page of this list: without it the
+                ## end cannot be told from a proxy that stripped the header.
+                raise LaneError('the answer to ' + what + ' carried no Link header (a proxy stripping it?) -- '
+                                'the list cannot be read whole without it')
             cursor = next_cursor(headers.get('Link'))
             if cursor is None:
                 return True
@@ -1995,7 +2057,7 @@ tool poll_sentry:
                 errors.append({'query': 'sentry ' + name, 'error': lane_error(e)})
         transition_list_complete = complete['transition']
         ## Transition dates, from the issue's own activity. UNDATED ones first
-        ## (an untracked issue, or one whose transition was never dated) —
+        ## (an untracked issue, or one never checked) —
         ## one the cap leaves undated is a loss this tick, and the walk says
         ## partial. Then the RE-CHECKS of dated ones an event arrived after
         ## (a new regression needs a new event), least recently checked
@@ -2008,14 +2070,17 @@ tool poll_sentry:
                 continue
             k = known.get(r['id']) or {}
             r['transition_kind'] = r['substatus']
-            if not k.get('transition_at'):
+            if not k.get('transition_at') and not k.get('checked_at'):
                 undated.append(r)
             else:
                 ## Substatus and activities are project-wide, the list's
                 ## lastSeen environment-scoped: a second regression from
                 ## another environment moves nothing here — every dated
-                ## candidate is re-checked in turn.
-                r['transition_at'] = k['transition_at']
+                ## candidate is re-checked in turn. So is one checked whose
+                ## activity held no date (an issue unresolved through the API
+                ## reads REGRESSED with a set_unresolved only): first in line
+                ## every tick, it would hold every other check back.
+                r['transition_at'] = k.get('transition_at')
                 rechecks.append(r)
         undated.sort(key=lambda r: (r['last_seen'] or '', r['id']), reverse=True)
         rechecks.sort(key=lambda r: ((known.get(r['id']) or {}).get('checked_at') or '', r['id']))
@@ -2774,6 +2839,9 @@ tool decide:
     forget_d = int({{input.forget_after_days}})
     stale_h = int({{input.source_stale_hours}})
     max_alerts = int({{input.max_alerts}})
+    max_per_lane = int({{input.max_alerts_per_lane}})
+    if max_per_lane < 0:
+        raise SystemExit('prod-watch: max_alerts_per_lane must be 0 or more, got ' + str(max_per_lane))
     os.chdir(ws)
     os.makedirs(scratch, exist_ok=True)
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -2972,6 +3040,7 @@ tool decide:
             del incidents[fp]
         s_state.pop('sentry', None)
         state.pop('sentry_history_unsaid', None)
+        state.pop('sentry_history_dropped', None)
     if s_on:
         state['sentry_identity'] = sentry_cfg.get('identity_key') or ''
         ## A lowered max_severity caps what the lane already recorded too —
@@ -3030,6 +3099,11 @@ tool decide:
             prev = incidents.get(fp)
             prev_seen = (prev or {}).get('sentry_last_seen')
             prev_sev = (prev or {}).get('severity') or ''
+            ## What the channel last heard: an escalation is measured against
+            ## it, never against a severity a lowered max_severity re-capped.
+            said_sev = (prev or {}).get('announced_severity') or prev_sev
+            ## Its last word was the closing note (archived, resolved).
+            prev_closed_said = bool((prev or {}).get('quiet_noted')) and ((prev or {}).get('status') or '') not in S_OPEN
             rec = s_record(it, fp)
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
@@ -3080,13 +3154,18 @@ tool decide:
             elif word_ is None and rec.get('alerted') and sighted and not closed_now and not rec.get('pending'):
                 ## (A pending alert goes out first: a reminder must not stand
                 ## in for a pending regression.)
-                if RANK.get(sev_now, 0) > RANK.get(prev_sev or 'low', 0):
+                if prev_closed_said and it.get('in_tracked'):
+                    ## Read open again, and firing: news — Sentry reopens an
+                    ## issue archived for a while as ongoing, no transition.
+                    word_ = 'reopened'
+                elif RANK.get(sev_now, 0) > RANK.get(said_sev or 'low', 0):
                     word_ = 'escalated'
                 elif rec.get('last_notified') and not said_within(rec['last_notified'], renotify_h):
                     word_ = 'reminder'
-            if RANK.get(sev_now, 0) > RANK.get(rec.get('severity') or 'low', 0) and not closed_now:
+            if RANK.get(sev_now, 0) > RANK.get(rec.get('severity') or 'low', 0):
                 ## Never down on its own (a lowered max_severity is re-applied
-                ## above); not while closed — the reopening's sighting says it.
+                ## above). Raised while closed, it is said when the issue is
+                ## read open again: against what the channel last heard.
                 rec['severity'] = sev_now
             if sighted:
                 rec['sentry_last_seen'] = it['last_seen']
@@ -3129,7 +3208,13 @@ tool decide:
             sid = fp.split(':', 1)[1]
             it = s_issues.get(sid)
             read_now = (it is not None and it.get('in_tracked')) or sid in s_requested
-            if rec.get('pending') in ('new', 'regressed', 'escalating', 'escalated'):
+            if (rec.get('pending') == 'escalated' and rec.get('announced_severity')
+                    and RANK.get(rec.get('severity') or 'low', 0) <= RANK.get(rec['announced_severity'], 0)):
+                ## A pending escalation a lowered max_severity brought back to
+                ## what the channel already heard is no news any more.
+                rec['pending'] = None
+                rec['pending_since'] = None
+            if rec.get('pending') in ('new', 'regressed', 'escalating', 'escalated', 'reopened'):
                 ## Cut by the per-run cap on an earlier tick: re-emitted until
                 ## posted (ahead of fresh alerts: see the cap below), from this
                 ## tick's text when the issue was read, from its short id and
@@ -3331,8 +3416,10 @@ tool decide:
     for x in s_history:
         if x not in s_unsaid:
             s_unsaid.append(x)
+    ## Past 100 names the oldest go, counted: a note says how many.
+    s_dropped = int(state.get('sentry_history_dropped') or 0) + max(0, len(s_unsaid) - 100)
     s_unsaid = s_unsaid[-100:]
-    coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors or s_unsaid
+    coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors or s_unsaid or s_dropped
                              or (lanes.get('sentry') and (sentry_errors or sentry_truncated))) else 'full'
     gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
     truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
@@ -3349,10 +3436,13 @@ tool decide:
     if signals.get('templates_cut'):
         pieces.append(('cut', 'template list cut: ' + str(signals.get('templates_total') or '?') +
                        ' templates, the 200 with the most live lines kept'))
+    if s_dropped:
+        pieces.append(('sentry history dropped', 'sentry: ' + str(s_dropped) + ' more transition(s) recorded as history after the '
+                       'arming, not posted — their names passed the carry of 100'))
     for x in s_unsaid:
         lbl, _, at = x.partition('@')
-        pieces.insert(0, ('sentry history: ' + x, 'sentry: ' + lbl + ' regressed or escalated at ' + at + ' after the arming but was '
-                          'dated only past max_catchup_hours — recorded as history, not posted'))
+        pieces.append(('sentry history: ' + x, 'sentry: ' + lbl + ' regressed or escalated at ' + at + ' after the arming but was '
+                       'dated only past max_catchup_hours — recorded as history, not posted'))
     if s_on and not s_armed_now:
         ## A bootstrap that could not read the new-issue list whole posts
         ## nothing — said, not hidden behind a healthy lane.
@@ -3393,6 +3483,10 @@ tool decide:
             posted_kinds[c] = now_iso
     state['coverage_posted'] = posted_kinds
     state['sentry_history_unsaid'] = [x for x in s_unsaid if ('sentry history: ' + x) not in said]
+    if s_dropped and 'sentry history dropped' not in said:
+        state['sentry_history_dropped'] = s_dropped
+    else:
+        state.pop('sentry_history_dropped', None)
 
     ## A NEW alert the cap cut on an earlier tick whose trigger does not
     ## recur by itself — a log template, a leak class (Loki or Sentry) — is
@@ -3419,9 +3513,41 @@ tool decide:
             return (0, str(rec.get('pending_since') or ''))
         return (1, '')
     alerts.sort(key=pending_first)
+    ## A lane whose data MINTS incidents — Sentry issues (anyone holding the
+    ## public DSN creates them), log templates (log lines carry user input)
+    ## — posts at most max_alerts_per_lane alerts of one kind (new,
+    ## escalated, still open, not observed any more) one by one per tick,
+    ## the most severe first (pending ones first among equals); the others
+    ## are named in ONE note of that kind that stands for them: posted, it
+    ## says each of them — a Sentry issue named there becomes backlog,
+    ## followed in Sentry: no reminder, escalation or note of its own, a
+    ## transition still posts —; cut by the cap, each stays pending. A flood
+    ## can neither drown the channel, nor queue a backlog that holds a real
+    ## alert back for days, nor come back as a flood of follow-ups.
+    minted = {}
+    for a in alerts:
+        if a.get('kind') in ('sentry', 'loki') and a.get('state') in ('new', 'escalated', 'reminder', 'quiet'):
+            minted.setdefault((a['kind'], a['state']), []).append(a)
+    for (kind, word), group in sorted(minted.items()):
+        if len(group) <= max_per_lane:
+            continue
+        group.sort(key=lambda a: RANK.get(a['severity'], 0), reverse=True)
+        folded = group[max_per_lane:]
+        drop = set(id(a) for a in folded)
+        alerts = [a for a in alerts if id(a) not in drop]
+        names = [str(a.get('log_title') or a.get('title_arg') or a['fingerprint'])[:60] for a in folded]
+        alerts.append({'fingerprint': 'folded:' + kind + ':' + word, 'kind': kind, 'state': word,
+                       'severity': max((a['severity'] for a in folded), key=lambda v: RANK.get(v, 0)),
+                       'title_key': folded[0].get('title_key'), 'title_arg': '', 'detail_key': 'folded_detail',
+                       'fields': {'n': len(folded), 'names': ', '.join(names)}, 'evidence': {},
+                       'count': sum(int(a.get('count') or 0) for a in folded),
+                       'first_seen': min(str(a.get('first_seen') or now_iso) for a in folded), 'prev_severity': '',
+                       'log_title': ', '.join(names)[:400],
+                       'members': [{'fp': a['fingerprint'], 'severity': a['severity'], 'prev_severity': a.get('prev_severity') or ''}
+                                   for a in folded]})
 
     ## ── priority, cap, staging ────────────────────────────────────
-    order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
+    order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reopened': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
     alerts.sort(key=lambda a: (RANK.get(a['severity'], 0), order.get(a['state'], 0)), reverse=True)
     ## Inside one rank the lanes take turns, so a flood on one lane (a public
     ## DSN creating issues) cannot hold the cap against another's alerts
@@ -3451,9 +3577,24 @@ tool decide:
     ## un-noted quiet flag, so the same rule re-selects it next tick. A
     ## Sentry fact that will not recur by itself (a new issue, a dated
     ## transition) is kept PENDING and re-emitted until posted.
-    for a in posted:
+    def with_members(sel):
+        ## A fold stands for its members: posted, it said each of them;
+        ## deferred, each stays pending.
+        for a in sel:
+            yield a
+            for m in a.get('members') or []:
+                yield {'fingerprint': m['fp'], 'kind': a['kind'], 'state': a['state'], 'severity': m['severity'],
+                       'prev_severity': m.get('prev_severity') or '', 'folded': True}
+    for a in with_members(posted):
         rec = incidents.get(a['fingerprint'])
         if rec is None:
+            continue
+        if a.get('folded') and a['kind'] == 'sentry' and a['state'] == 'new':
+            ## Named in a fold: known, followed in Sentry — backlog.
+            rec['backlog'] = True
+            rec['pending'] = None
+            rec['pending_since'] = None
+            rec['pending_transition_at'] = None
             continue
         if a['state'] in ('quiet', 'resolved'):
             rec['quiet_noted'] = True
@@ -3475,7 +3616,8 @@ tool decide:
                 rec['transition_seen_at'] = None
             if a['state'] not in ('quiet', 'resolved'):
                 rec['backlog'] = False
-    for a in deferred:
+                rec['announced_severity'] = a['severity']
+    for a in with_members(deferred):
         rec = incidents.get(a['fingerprint'])
         if rec is not None and a['state'] == 'escalated' and a.get('prev_severity') and a['kind'] != 'sentry':
             ## The chassis re-derives an escalation from the present (a
@@ -3484,7 +3626,7 @@ tool decide:
             ## from a sighting that will not recur: it stays pending, at the
             ## severity it reached.
             rec['severity'] = a['prev_severity']
-        if rec is not None and a['kind'] == 'sentry' and a['state'] in ('new', 'regressed', 'escalating', 'escalated'):
+        if rec is not None and a['kind'] == 'sentry' and a['state'] in ('new', 'regressed', 'escalating', 'escalated', 'reopened'):
             rec['pending'] = a['state']
             rec['pending_transition_at'] = a.get('transition_at')
             rec['pending_since'] = rec.get('pending_since') or now_iso
@@ -3535,7 +3677,7 @@ tool decide:
             cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'frontier_ns': str(info.get('frontier_ns') or info['covered_to_ns']),
                           'at': now_iso, 'band': list(info.get('band') or []), 'band_base_ns': str(info.get('band_base_ns') or 0),
                           'overlap_from_ns': str(info.get('overlap_from_ns') or 0), 'history_to_ns': str(info.get('history_next_ns') or 0)}
-    needs_analysis = any(a['state'] in ('new', 'escalated', 'regressed', 'escalating') and a['kind'] in ('probe', 'prom', 'loki', 'sentry')
+    needs_analysis = any(a['state'] in ('new', 'escalated', 'regressed', 'escalating', 'reopened') and a['kind'] in ('probe', 'prom', 'loki', 'sentry')
                          for a in posted)
 
     ## Zero-façade guard: if EVERY configured lane errored this tick there
@@ -3590,7 +3732,7 @@ tool notify:
   output: notify_output
   language: py
   script: |
-    import json, os, re, sys, urllib.request
+    import json, os, re, sys, time, signal, urllib.request
     from urllib.parse import urlsplit
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     alerts = {{input.alerts}} or []
@@ -3625,26 +3767,35 @@ tool notify:
         ## which reads it as one before parsing: it would end a code span.
         t = re.sub(r'[\s\u2424]+', ' ', str(s if s is not None else ''))
         return re.sub(r'[\x00-\x08\x0e-\x1f\x7f-\x9f]', '', t).strip()[:cap]   # a NUL: the post is refused
-    def inert(s, cap=300):
-        ## Untrusted text (a log line, a metric title, a container name) is
-        ## rendered with every markdown active escaped and bare URL schemes
-        ## defanged: a line an attacker influenced must never become a
-        ## clickable link, a heading or a second alert block in the channel.
-        t = re.sub(r'([\\`*_\[\]()~>|#!-])', lambda m: '\\' + m.group(1), flat(s, cap))
-        return re.sub(r'(?i)(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t)
     def code(s, cap=300):
         ## Inline code renders no markdown; a URL scheme is still defanged so
-        ## nothing a reader copies out of the span is a live link either.
+        ## nothing a reader copies out of the span is a live link either. An
+        ## empty value renders as nothing: an empty span (two backticks)
+        ## would pair with the next value's backtick.
         t = flat(s, cap).replace('`', "'")
+        if not t:
+            return ''
         return '`' + re.sub(r'(?i)(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
-    def lab(t):
-        ## The label's own words are the operator's, rendered as written:
-        ## every markdown active in them escaped (emphasis, a link, a tag or
-        ## an autolink around a placeholder would swallow the value's code
-        ## span), `&`/`<`/`$` as entities, a URL scheme defanged.
-        t = re.sub(r'([\\`*_{}\[\]()#+\-.!|~>])', lambda m: '\\' + m.group(1), str(t))
-        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', '&#36;')
-        return re.sub(r'(?i)(https?|ftp|mailto|tel|mattermost):', lambda m: m.group(1) + chr(8203) + ':', t)
+    def lab(t, cap=None):
+        ## An operator's label renders as written, and none of its markdown
+        ## can wrap, open or link around a value's code span: emphasis, code,
+        ## link characters are escaped, and a dot after a letter or digit
+        ## (the autolinker reads `www.` and `host.tld/` through a zero-width
+        ## space); `&` and `<` are entities (the server rewrites `<url|text>`
+        ## before any markdown); `$` is its full-width form (inline LaTeX
+        ## ignores a backslash before it); a zero-width space precedes a colon
+        ## after a letter or digit unless a space follows — every scheme, the
+        ## server's custom ones included. Parentheses, plain colons and emoji
+        ## codes stay as written: a push notification shows the label's own
+        ## text. A control character is dropped (a NUL gets the post
+        ## refused); a capped label is one line.
+        t = re.sub(r'[\x00-\x08\x0e-\x1f\x7f-\x9f]', '', str(t if t is not None else ''))
+        if cap is not None:
+            t = re.sub(r'[\s\u2424]+', ' ', t).strip()[:cap]
+        t = re.sub(r'([\\`*_~\[\]])', lambda m: '\\' + m.group(1), t)
+        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', chr(0xFF04))
+        t = re.sub(r'(?<=[A-Za-z0-9])\.', r'\\.', t)
+        return re.sub(r'(?<=[A-Za-z0-9+.-]):(?!\s)', chr(8203) + ':', t)
     def fmt(label, /, **kw):
         ## Every value filled into a label is inline code: a Sentry culprit, a
         ## container, a URL — anything an attacker can write — can neither
@@ -3667,8 +3818,9 @@ tool notify:
         closed = {'resolved': 'sentry_resolved', 'ignored': 'sentry_archived'}.get(str((a.get('evidence') or {}).get('status') or ''), 'sentry_closed')
         marker = {'new': labels.get('alert'), 'escalated': labels.get('escalated'), 'reminder': labels.get('reminder'), 'quiet': labels.get('quiet'),
                   'regressed': labels.get('sentry_regressed'), 'escalating': labels.get('sentry_escalating'),
+                  'reopened': labels.get('sentry_reopened'),
                   'resolved': labels.get(closed)}.get(state) or state
-        lines = [ICON.get(sev, ':bell:') + ' **' + inert(marker, 40).upper() + ' · ' + inert(scope, 100) + ' — ' + inert(head, 120) + '**']
+        lines = [ICON.get(sev, ':bell:') + ' **' + lab(str(marker).upper(), 40) + ' · ' + lab(scope, 100) + ' — ' + lab(head, 120) + '**']
         if a.get('title_arg'):
             lines.append(code(a['title_arg'], 200))
         fields = a.get('fields') or {}
@@ -3681,13 +3833,13 @@ tool notify:
             meta.append(fmt('sentry_dated', date=str(a['transition_at'])[:16]))
         if release:
             meta.append(lab(labels.get('release', 'release')) + ' ' + code(release, 60) +
-                        ('' if release_known else ' (' + inert(labels.get('release_unverified', 'unverified'), 40) + ')'))
+                        ('' if release_known else ' (' + lab(labels.get('release_unverified', 'unverified'), 40) + ')'))
         lines.append(' · '.join(meta))
         ev = a.get('evidence') or {}
         if ev.get('sample'):
             lines.append('> ' + code(ev['sample'], 300))
         if ev.get('sample_masked'):
-            lines.append('> ' + inert(labels.get('sample', 'masked sample'), 40) + ': ' + code(ev['sample_masked'], 120))
+            lines.append('> ' + lab(labels.get('sample', 'masked sample'), 40) + ': ' + code(ev['sample_masked'], 120))
         ## The bot's ONE clickable link: a Sentry issue, built by decide from
         ## the configured base URL and org and a digits-only id — rendered
         ## only when it is exactly that shape under the configured prefix;
@@ -3698,7 +3850,7 @@ tool notify:
                 and re.fullmatch(re.escape(prefix) + r'[0-9]{1,20}/', link)):
             short = ev.get('short_id') if isinstance(ev.get('short_id'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', ev['short_id']) \
                 else link[len(prefix):-1]
-            lines.append(inert(labels.get('sentry_open', 'open in Sentry'), 40) + ': [' + short.replace('_', '\\_') + '](' + link + ')')
+            lines.append(lab(labels.get('sentry_open', 'open in Sentry'), 40) + ': [' + short.replace('_', '\\_') + '](' + link + ')')
         messages.append((sev, chr(10).join(lines), False))
     ## Meta notices — overflow, a silent source, partial coverage — are
     ## about the WATCHDOG's own sight, not an incident's severity: they
@@ -3708,7 +3860,7 @@ tool notify:
         messages.append(('medium', ':warning: ' + fmt('overflow', n=overflow), True))
     for s in stale:
         if s.get('source') == 'coverage':
-            text = ':warning: ' + inert(labels.get('coverage_partial', 'coverage partial'), 300)
+            text = ':warning: ' + lab(labels.get('coverage_partial', 'coverage partial'), 300)
             if s.get('reasons'):
                 text += chr(10) + '> ' + code(str(s.get('reasons')), 600)
             messages.append(('medium', text, True))
@@ -3765,17 +3917,36 @@ tool notify:
             return False
         return bool(parts and parts.scheme in ('http', 'https') and parts.hostname and parts.username is None and parts.password is None
                     and port_ok and url.isascii() and url.isprintable() and ' ' not in url)
+    ## Each post has a wall clock (a sink trickling its answer) and the
+    ## delivery a window: a post that cannot start in it fails like one
+    ## refused — nothing is consumed, the tick replays — instead of the run
+    ## budget killing the tick mid-delivery.
+    class ExchangeTimeout(Exception):
+        pass
+    def _exchange_alarm(signum, frame):
+        raise ExchangeTimeout('the sink did not answer within its wall clock')
+    signal.signal(signal.SIGALRM, _exchange_alarm)
+    DELIVERY_SECS = 90
+    deliver_until = time.monotonic() + DELIVERY_SECS
     for idx, s, p in payloads:
         url = whmap[s['webhook']]
         try:
             if not usable(url):
                 raise ValueError('the URL of this webhook in the webhooks secret is not one http(s) URL')
+            left = deliver_until - time.monotonic()
+            if left < 1:
+                raise ExchangeTimeout('the delivery window (' + str(DELIVERY_SECS) + ' s) closed before this post')
             req = urllib.request.Request(url, data=json.dumps(p).encode('utf-8'),
                                          headers={'Content-Type': 'application/json', 'User-Agent': 'prod-watch (iterion)'}, method='POST')
-            with urllib.request.urlopen(req, timeout=20):
-                delivered += 1
-                msgs_ok.add(idx)
-                targets.append(str(s['webhook']) + '->' + str(p['channel'] or 'default'))
+            signal.setitimer(signal.ITIMER_REAL, min(20, left))
+            try:
+                with urllib.request.urlopen(req, timeout=20):
+                    pass
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            delivered += 1
+            msgs_ok.add(idx)
+            targets.append(str(s['webhook']) + '->' + str(p['channel'] or 'default'))
         except Exception as e:
             failures.append(str(s['webhook']) + ': ' + type(e).__name__ + ': ' + str(e).replace(str(url), '<the webhook URL>')[:200])
             if s.get('required', True):
@@ -3805,7 +3976,7 @@ tool commit_state:
   output: commit_output
   language: py
   script: |
-    import json, os, fcntl, subprocess
+    import json, os, fcntl, subprocess, time, signal
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     state_next = {{input.state_next_file}}
     alertlog_delta = {{input.alertlog_file}}
@@ -3876,22 +4047,45 @@ tool commit_state:
                              'user.email/user.name on the workspace clone (or in the runner image). git said: ' +
                              ((committed.stderr or committed.stdout or '')[-400:]).strip())
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'HEAD'
-        for _ in range(5):
-            pushed = subprocess.run(['git', 'push', 'origin', 'HEAD'], capture_output=True, text=True)
-            if pushed.returncode == 0:
-                return True
-            err = (pushed.stderr or '')[-400:]
-            if 'could not read Username' in err or 'Authentication failed' in err or 'terminal prompts disabled' in err or 'Permission denied' in err:
-                raise SystemExit('prod-watch: git push was refused for lack of credentials -- the state was committed locally and is '
-                                 'NOT pushed, so this tick may replay next run. Bind the forge_token secret (or run with '
-                                 'state_commit=false). git said: ' + err.strip())
-            rebased = subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br], capture_output=True, text=True)
-            if rebased.returncode != 0:
-                subprocess.run(['git', 'rebase', '--abort'], capture_output=True)
-                if before:
-                    subprocess.run(['git', 'reset', '--soft', before], capture_output=True)
-                raise SystemExit('prod-watch: could not rebase onto origin/' + br + ' to retry the push -- aborting; the tick '
-                                 'replays. git said: ' + (rebased.stderr or '')[-400:].strip())
+        ## The remote answers within the state commit's window, or the tick
+        ## ends here, named: a remote that hangs must not hold the run past
+        ## its budget.
+        COMMIT_SECS = 90
+        push_until = time.monotonic() + COMMIT_SECS
+        def net(args):
+            ## (A window already spent times the call out at once.)
+            left = push_until - time.monotonic()
+            p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            try:
+                out, err = p.communicate(timeout=max(0.01, min(60, left)))
+            except subprocess.TimeoutExpired:
+                ## The whole group — a hook, a remote helper, ssh: none
+                ## outlives the call.
+                os.killpg(p.pid, signal.SIGKILL)
+                p.communicate()
+                raise
+            return subprocess.CompletedProcess(args, p.returncode, out, err)
+        try:
+            for _ in range(5):
+                pushed = net(['git', 'push', 'origin', 'HEAD'])
+                if pushed.returncode == 0:
+                    return True
+                err = (pushed.stderr or '')[-400:]
+                if 'could not read Username' in err or 'Authentication failed' in err or 'terminal prompts disabled' in err or 'Permission denied' in err:
+                    raise SystemExit('prod-watch: git push was refused for lack of credentials -- the state was committed locally and is '
+                                     'NOT pushed, so this tick may replay next run. Bind the forge_token secret (or run with '
+                                     'state_commit=false). git said: ' + err.strip())
+                rebased = net(['git', 'pull', '--rebase', '--autostash', 'origin', br])
+                if rebased.returncode != 0:
+                    subprocess.run(['git', 'rebase', '--abort'], capture_output=True)
+                    if before:
+                        subprocess.run(['git', 'reset', '--soft', before], capture_output=True)
+                    raise SystemExit('prod-watch: could not rebase onto origin/' + br + ' to retry the push -- aborting; the tick '
+                                     'replays. git said: ' + (rebased.stderr or '')[-400:].strip())
+        except subprocess.TimeoutExpired as e:
+            subprocess.run(['git', 'rebase', '--abort'], capture_output=True)
+            raise SystemExit('prod-watch: git ' + str(e.cmd[1]) + ' did not answer within the state commit window (' + str(COMMIT_SECS) +
+                             ' s) -- the state was committed locally and is NOT pushed, so this tick may replay next run')
         raise SystemExit('prod-watch: git push failed after 5 retries (non-fast-forward or network)')
 
     os.makedirs(state_dir, exist_ok=True)
@@ -4071,7 +4265,8 @@ workflow prod_watch:
     quiet_after_hours: "{{vars.quiet_after_hours}}",
     forget_after_days: "{{vars.forget_after_days}}",
     source_stale_hours: "{{vars.source_stale_hours}}",
-    max_alerts: "{{vars.max_alerts_per_run}}"
+    max_alerts: "{{vars.max_alerts_per_run}}",
+    max_alerts_per_lane: "{{vars.max_alerts_per_lane}}"
   }
 
   decide -> notify with {

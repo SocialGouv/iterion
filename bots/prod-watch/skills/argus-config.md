@@ -59,6 +59,9 @@ overrides).
   **datasource proxy** (`/api/datasources/proxy/uid/<uid>/…`) with the
   `grafana_token` secret as a bearer token; the service account needs
   datasource query rights (Viewer is enough on a default Grafana).
+  `deadline_secs` (120, 10–600): each Grafana lane — Loki, Prometheus —
+  starts no request after running that long, and the one running then
+  stops there; the queries or probes left are the lane's errors.
 - `loki.queries` — a map name → LogQL. Every query feeds the redaction
   scan; every query EXCEPT the one named **`leak_sweep`** also produces
   error templates. Keep `leak_sweep` broad (all lines of the namespace):
@@ -80,9 +83,16 @@ overrides).
   `timeout_secs` (10) bounds it end to end, redirects included: an app
   trickling its answer fails the probe as a timeout. Every other fetch is
   bounded by `--var fetch_timeout_secs` (20): the release endpoint end to
-  end, a Grafana call within six of them (a large page arriving slowly is
-  legitimate; a stall trips the socket timeout first). A fetch that runs
-  out of its wall clock is not retried.
+  end, a Grafana call — its one retry included — within six of them (a
+  large page arriving slowly is legitimate; a stall trips the socket
+  timeout first) and never past its lane's `grafana.deadline_secs`.
+  **The run's budget** (12 minutes) must hold every wait before the
+  delivery at its worst: the release endpoint, the probes' timeouts one
+  after the other, each lane's deadline. `plan` refuses a config whose
+  sum passes 480 s (a tick the budget kills posts nothing, the health
+  probes included), naming each wait; the delivery (90 s window, 20 s a
+  post) and the state commit (90 s window, 60 s a git call) have their
+  own.
 - `sentry` — absent or `null`: the lane is off. `base_url` (https, no
   query, fragment or credentials; the prefix of the ONE clickable link
   the bot renders), `org` and `project` (slugs), `environment` (strongly
@@ -122,8 +132,13 @@ overrides).
   English defaults live in the bot's `plan` node; placeholders in braces
   are substituted with each value as inline code (neither a mention nor
   a link can come out of it), truncated to 200 characters; the label's
-  own words render as written, every markdown character in them included
-  (a label cannot format, link or tag).
+  own words render as written — its markdown, links and LaTeX are shown,
+  never live (a label cannot format, link or tag), while parentheses,
+  colons and emoji codes stay as they are. `sentry_reopened` says an
+  archived issue is open again; `folded_detail` words the note naming
+  the alerts of one kind past `--var max_alerts_per_lane` (5) — its
+  header is the kind's own (new, escalated, still open, not observed any
+  more).
 
 ## The secrets
 
@@ -278,7 +293,12 @@ managed secret under the name `forge_token` (see vuln-watch's
   (tracked ids over `max_tracked` are not a cause: they take turns). Nothing is concluded from absence that
   tick (no "not observed any more"); a flood of distinct issues from a
   public DSN is one way there — raise the caps or tighten `min_level`
-  (pending alerts survive either). **`sentry: gap — the cursor was older
+  (past `max_alerts_per_lane`, the flood's new issues are named in one
+  note a tick and become backlog; nothing queues behind them — set a rate
+  limit on the DSN key in Sentry to stop it at the source). **`sentry: … carried no
+  Link header`** — a proxy between the runner and Sentry strips it: no
+  list can be read whole, so the lane never arms (or its cursor stays)
+  until the proxy passes it. **`sentry: gap — the cursor was older
   than max_catchup_hours …`** — issues first processed in the named
   interval were never read as new (a loss, said once). **`sentry: NOT
   ARMED — …`** — the bootstrap could not read the new-issue list whole
@@ -290,8 +310,15 @@ managed secret under the name `forge_token` (see vuln-watch's
   after the arming but was dated only past max_catchup_hours — recorded as
   history, not posted`** — a transition the lane first saw too late to call
   news (it was off, the level floor was lowered, or the issue was new to
-  it): never posted, and named until a note has said it (the note's
-  budget can defer it to a later tick).
+  it): never posted, and named until a note has said it (after the lane's
+  losses: the note's budget can defer it to a later tick). **`sentry: N
+  more transition(s) recorded as history …`** — past 100 names waiting,
+  the oldest are counted instead.
+- **The run FAILS with "the fetches can wait N s at worst (…)"** — the
+  release endpoint, the probes' timeouts and the lanes' deadlines add up
+  past what the 12-minute budget keeps before the delivery: lower
+  `grafana.deadline_secs`, `sentry.deadline_secs`, a probe's
+  `timeout_secs` or `fetch_timeout_secs` as the message names them.
 - **The run FAILS with "NO sinks are configured"** — there were alerts and
   nowhere to send them. Deliberate: a schedule reporting success while
   delivering nothing is the silent-green outcome this bot exists to end.
