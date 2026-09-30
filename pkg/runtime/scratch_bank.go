@@ -227,11 +227,14 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 	// Only in a sandbox whose commands run in a process namespace of their
 	// own: the same signal from a host shell would stop the host's.
 	var unquiesced string
+	quiesced := false
 	if pi, ok := run.(sandbox.ProcessIsolated); ok && pi.ProcessIsolated() {
 		if q, err := run.Exec(ctx, []string{"sh", "-c", "kill -STOP -1 2>/dev/null; exit 0"}, sandbox.ExecOpts{}); err != nil {
 			unquiesced = "the sandbox's processes could not be stopped: " + err.Error()
 		} else if q.ExitCode != 0 {
 			unquiesced = fmt.Sprintf("stopping the sandbox's processes exited %d", q.ExitCode)
+		} else {
+			quiesced = true
 		}
 	}
 	// GNU tar exits 1 when a member changed or vanished while it read it
@@ -290,6 +293,12 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 3*time.Since(started) {
 			break
 		}
+	}
+	if quiesced {
+		// The archive is taken: the stopped processes go on, so they end
+		// when the sandbox is shut down instead of holding its grace
+		// period (an entrypoint such as tini waits on a stopped child).
+		_, _ = run.Exec(ctx, []string{"sh", "-c", "kill -CONT -1 2>/dev/null; exit 0"}, sandbox.ExecOpts{})
 	}
 	archive, size, raced := cur, capped.n, []string(nil)
 	switch {

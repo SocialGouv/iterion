@@ -58,9 +58,12 @@ pods the same way.
   next), so nothing writes what it reads — a write tar reports nothing of,
   a file moved between two directories, a page written through a shared
   mapping, would tear the archive in silence. Only a sandbox whose commands
-  run in a process namespace of their own is stopped (docker, kubernetes:
-  `sandbox.ProcessIsolated`); a quiesce that fails is recorded
-  (`unquiesced`). tar runs untranslated (`LC_ALL=C`). A member it catches
+  run in a process namespace of their own is stopped
+  (`sandbox.ProcessIsolated`): a kubernetes pod, and a container whose
+  process namespace, read when it started, is its own — a runtime default
+  such as podman's `pidns = "host"` rules it out. A quiesce that fails is
+  recorded (`unquiesced`); once the archive is taken the processes go on,
+  so the sandbox's shutdown is not held. tar runs untranslated (`LC_ALL=C`). A member it catches
   changing or vanishing while it reads it (its warnings, with the line
   `kubectl exec` adds) leaves an archive that may hold no state the scratch
   was ever in — a file torn between two writes, a file renamed into place
@@ -79,7 +82,11 @@ pods the same way.
 - **Subbot children.** A child that can park (a human gate, an interactive
   node) is refused adoption into its parent's sandbox when that sandbox's
   scratch lives in the container, as under a copy-based parent: parked, the
-  child is resumed on its own, in a sandbox without that scratch.
+  child is resumed on its own, in a sandbox without that scratch. A child
+  adopted there that parks anyway — a recovery pause, an operator's pause,
+  a cost cap — records it (`sandbox_shared {scratch_container_local}`), and
+  its own resume is refused `SCRATCH_NOT_PORTABLE`; `--force` goes on
+  without the scratch.
 - **Resume, before anything moves the run.** A run whose last teardown
   recorded a non-empty scratch it could not bank is refused
   `SCRATCH_NOT_PORTABLE` (a deterministic failure code). So is a run that

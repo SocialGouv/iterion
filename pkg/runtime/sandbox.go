@@ -2155,6 +2155,29 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 				Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it in a sandbox of its own, where its later commits do not reach the parent's tree",
 			}
 		}
+		// A child parked for any reason — a declared gate is refused at
+		// adoption, but a recovery pause, an operator's pause or a cost cap
+		// park it all the same — resumes without the parent's scratch when
+		// that scratch lived in the parent's container.
+		if cl, _ := ev.Data["scratch_container_local"].(bool); cl {
+			if e.forceResume {
+				if e.logger != nil {
+					e.logger.Warn("runtime: run %s executed in its parent run %s's sandbox, whose scratch lives in the container; resumed with --force it starts without that scratch", r.ID, r.ParentRunID)
+				}
+				if err := e.emit(ctx, r.ID, store.EventSandboxShared, "", map[string]any{
+					"adopted": false, "forced": true, "parent_run": r.ParentRunID,
+					"reason": "resumed with --force outside the parent: without the parent's container-local scratch",
+				}); err != nil && e.logger != nil {
+					e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+				}
+				return nil
+			}
+			return &RuntimeError{
+				Code:    ErrCodeScratchNotPortable,
+				Message: fmt.Sprintf("run %s executed in its parent run %s's sandbox, whose ${PROJECT_SCRATCH_DIR} lives in the container; resumed on its own it would start without that scratch", r.ID, r.ParentRunID),
+				Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it without the parent's scratch",
+			}
+		}
 		return nil
 	}
 	return nil
@@ -2247,8 +2270,9 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	}
 	if err := emitForSandbox(store.EventSandboxShared, map[string]any{
 		"adopted": true, "driver": shared.Run.Driver(), "workspace": shared.WorkspaceFolder,
-		"parent_run": e.parentRunID, "copy_based": copyBased, "skills_written_through": pushed,
-		"file_secrets_declared": fileSecrets, "devbox_declared": devboxDeclared,
+		"parent_run": e.parentRunID, "copy_based": copyBased, "scratch_container_local": shared.ScratchContainerLocal,
+		"skills_written_through": pushed,
+		"file_secrets_declared":  fileSecrets, "devbox_declared": devboxDeclared,
 		"board_endpoint_inherited": shared.BoardEndpoint != "", "ask_user_inherited": shared.AskUserEndpoint != "",
 		"attachments_mounted": false,
 	}); err != nil && e.logger != nil {

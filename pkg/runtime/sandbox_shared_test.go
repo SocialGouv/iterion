@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -380,6 +381,18 @@ func TestRefuseResumeOfSharedChild(t *testing.T) {
 			t.Fatalf("err = %v, want RESUME_INVALID naming the parent", err)
 		}
 	})
+	t.Run("container-local scratch lineage: refused, typed", func(t *testing.T) {
+		e, r := mk(t, "run-c6", map[string]any{"adopted": true, "copy_based": false, "scratch_container_local": true}, nil)
+		err := e.refuseResumeOfSharedChild(ctx, r)
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(rt.Hint, "resume the parent") {
+			t.Fatalf("err = %v, want SCRATCH_NOT_PORTABLE naming the parent", err)
+		}
+		e.forceResume = true
+		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
+			t.Fatalf("--force: err = %v, want the resume let through", err)
+		}
+	})
 	t.Run("bind-mount lineage: resumes", func(t *testing.T) {
 		e, r := mk(t, "run-c2", map[string]any{"adopted": true, "copy_based": false}, nil)
 		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
@@ -627,5 +640,36 @@ func TestSharedSandboxCopyBasedClassificationPinsEachDriver(t *testing.T) {
 	}
 	if sharedSandboxIsCopyBased((*docker.Run)(nil)) {
 		t.Fatal("the docker driver bind-mounts the workspace: not copy-based")
+	}
+}
+
+// TestStartSandboxShared_recordsAContainerLocalScratch: an adopted child
+// records whether its parent's scratch lives in the container — what its own
+// resume, after any pause, is refused over (refuseResumeOfSharedChild).
+func TestStartSandboxShared_recordsAContainerLocalScratch(t *testing.T) {
+	wf := &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}}
+	ctx := context.Background()
+	for _, local := range []bool{true, false} {
+		e, _, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: bindOnly{&sharedFakeRun{}}, WorkspaceFolder: "/workspace", ScratchContainerLocal: local})
+		runID := fmt.Sprintf("run-scratch-local-%v", local)
+		if _, err := st.CreateRun(ctx, runID, "child", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.startSandbox(ctx, runID, e.workDir, "", nil); err != nil {
+			t.Fatalf("startSandbox: %v", err)
+		}
+		evs, err := st.LoadEvents(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got any
+		for _, ev := range evs {
+			if ev.Type == store.EventSandboxShared {
+				got = ev.Data["scratch_container_local"]
+			}
+		}
+		if got != local {
+			t.Fatalf("an adopted child under a scratch local=%v recorded %v", local, got)
+		}
 	}
 }

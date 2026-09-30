@@ -1134,24 +1134,26 @@ func TestBankScratch_quiescesTheSandboxBeforeTarReadsIt(t *testing.T) {
 		}
 		return bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), "run-scratch-quiesce", scratchBankMaxBytes)
 	}
-	order := func(cmds []string) (quiesce, tar int) {
-		quiesce, tar = -1, -1
+	order := func(cmds []string) (quiesce, tar, resume int) {
+		quiesce, tar, resume = -1, -1, -1
 		for i, c := range cmds {
 			switch {
 			case strings.Contains(c, "kill -STOP -1") && quiesce < 0:
 				quiesce = i
 			case strings.Contains(c, "-czf") && tar < 0:
 				tar = i
+			case strings.Contains(c, "kill -CONT -1") && resume < 0:
+				resume = i
 			}
 		}
-		return quiesce, tar
+		return quiesce, tar, resume
 	}
 	t.Run("a sandbox of its own", func(t *testing.T) {
 		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}}
 		got := bank(t, run)
-		q, tar := order(run.cmds)
-		if !got.banked || got.unquiesced != "" || q < 1 || tar < q {
-			t.Fatalf("banked=%v unquiesced=%q, commands %q: want the listing, then the quiesce, then tar", got.banked, got.unquiesced, run.cmds)
+		q, tar, resume := order(run.cmds)
+		if !got.banked || got.unquiesced != "" || q < 1 || tar < q || resume < tar {
+			t.Fatalf("banked=%v unquiesced=%q, commands %q: want the listing, the quiesce, tar, then the processes resumed", got.banked, got.unquiesced, run.cmds)
 		}
 	})
 	t.Run("a quiesce that fails", func(t *testing.T) {
@@ -1163,7 +1165,7 @@ func TestBankScratch_quiescesTheSandboxBeforeTarReadsIt(t *testing.T) {
 	t.Run("a sandbox that may run on the host", func(t *testing.T) {
 		run := &hostRecorder{podRun: &podRun{scratch: scratch(t)}}
 		got := bank(t, run)
-		if q, _ := order(run.cmds); !got.banked || q >= 0 {
+		if q, _, resume := order(run.cmds); !got.banked || q >= 0 || resume >= 0 {
 			t.Fatalf("banked=%v, commands %q: a sandbox not isolated must never be signalled", got.banked, run.cmds)
 		}
 	})
