@@ -858,7 +858,10 @@ func TestProdWatch_SentryTrickledExchangeStopsAtTheDeadline(t *testing.T) {
 // matched from where its run starts, a placeholder's braces and a shout-case
 // value are read without backtracking, and the NFKC fold's output is cut
 // (U+FDFA folds to eighteen characters). Quadratic, each shape took seconds
-// for a few dozen lines, and the run budget dies long before max_lines.
+// for a few dozen lines, and the run budget dies long before max_lines. The
+// fold's line costs its normalization whatever the cut, so its bound is wide:
+// it catches a class that backtracks, and TestProdWatch_LeakScanReadsTheFoldUpToItsCut
+// pins the cut itself.
 func TestProdWatch_LeakScanStaysLinearOnCraftedLines(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -871,7 +874,7 @@ func TestProdWatch_LeakScanStaysLinearOnCraftedLines(t *testing.T) {
 		{"an email-class run without an at sign", 120, 3 * time.Second, func(i int) string { return strings.Repeat("㏂", 3990) + strconv.Itoa(i) }},
 		{"a secret value of open braces", 60, 2500 * time.Millisecond, func(i int) string { return "password=" + strings.Repeat("{", 3980) + strconv.Itoa(i) }},
 		{"a flag value shout-cased but for its end", 300, 2 * time.Second, func(i int) string { return "--pass " + strings.Repeat("A_", 1990) + "!" + strconv.Itoa(i) }},
-		{"a line NFKC multiplies", 200, 4 * time.Second, func(i int) string { return strings.Repeat("ﷺ", 3990) + strconv.Itoa(i) }},
+		{"a line NFKC multiplies", 200, 10 * time.Second, func(i int) string { return strings.Repeat("ﷺ", 3990) + strconv.Itoa(i) }},
 	}
 	for _, c := range cases {
 		c := c
@@ -900,5 +903,46 @@ func TestProdWatch_LeakScanStaysLinearOnCraftedLines(t *testing.T) {
 				t.Fatalf("%d crafted lines took %v (limit %v): a class backtracks on them", c.lines, d, c.limit)
 			}
 		})
+	}
+}
+
+// TestProdWatch_LeakScanReadsTheFoldUpToItsCut: the classes read a line's NFKC
+// fold up to 8000 characters — a card 7200 folded characters in is counted,
+// one 9000 in is not, and nothing past the cut is scanned or handed on.
+func TestProdWatch_LeakScanReadsTheFoldUpToItsCut(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	raw := filepath.Join(h.scratch, "raw-fold.jsonl")
+	var b strings.Builder
+	for i, n := range []int{400, 500} { // U+FDFA folds to 18 characters: 7200, then 9000, before the card
+		rec, _ := json.Marshal(map[string]any{"q": "errors", "ts": strconv.Itoa(1_700_000_000_000_000_000 + i),
+			"line": strings.Repeat("\uFDFA", n) + " carte 4111 1111 1111 1111", "stream": map[string]any{"container": "web"}})
+		b.Write(rec)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(raw, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+		"raw_file": raw, "per_query": map[string]any{"errors": map[string]any{"lines": 2, "history_to_ns": "0"}},
+		"app": map[string]any{"name": "demo"}, "scratch_dir": h.scratch}, nil, nil))
+	if err != nil {
+		t.Fatalf("leak_scan: %v %s", err, stderr)
+	}
+	sb, _ := os.ReadFile(out["signals_file"].(string))
+	var sig map[string]any
+	if err := json.Unmarshal(sb, &sig); err != nil {
+		t.Fatal(err)
+	}
+	cards := 0.0
+	for _, l := range sig["leak"].([]any) {
+		if m := l.(map[string]any); m["class"] == "card" {
+			cards += m["count"].(float64)
+		}
+	}
+	if out["lines_scanned"].(float64) != 2 || cards != 1 {
+		t.Fatalf("the card before the fold's cut is counted, the one past it is not: scanned=%v cards=%v leaks=%v",
+			out["lines_scanned"], cards, sig["leak"])
 	}
 }

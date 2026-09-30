@@ -955,24 +955,27 @@ tool plan:
         sentry['new_since'] = new_from.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         known, tracked = {}, []
         plan_now = now_dt.replace(microsecond=0).isoformat()
+        ## A stamp this bot wrote orders a queue — the by-id reads, the
+        ## transition re-checks: one a clock running ahead wrote is taken for
+        ## none, first in line, the next real stamp replacing it (clamped to
+        ## now it would always look freshest and never take its turn).
+        def past(stamp):
+            st = str(stamp or '')
+            return st if st <= plan_now else ''
         if same:
             for ifp, rec in (state.get('incidents') or {}).items():
                 sid = ifp.split(':', 1)[1] if ifp.startswith('sentry:') else ''
                 if rec.get('kind') != 'sentry' or not re.fullmatch(r'[0-9]{1,20}', sid):
                     continue
                 known[sid] = {'transition_at': rec.get('transition_at'), 'last_seen': rec.get('sentry_last_seen'),
-                              'checked_at': rec.get('transition_checked_at')}
+                              'checked_at': past(rec.get('transition_checked_at'))}
                 ## Tracked by id: what is pending, and what was alerted and can
                 ## still change by itself — open; archived (Sentry reopens it as
                 ## ongoing); resolved (unresolved by hand — the issue page's
                 ## button, a bulk action — it is ongoing, in neither list).
                 if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved')
                                           in ('unresolved', 'reprocessing', 'ignored', 'resolved')):
-                    ## A stamp from a clock running ahead is taken for none: read
-                    ## first, the read replacing it — clamped to now it would always
-                    ## look freshest and never take its turn.
-                    ra = rec.get('tracked_read_at') or ''
-                    tracked.append((rec.get('status') == 'resolved' and not rec.get('pending'), ra if ra <= plan_now else '', sid))
+                    tracked.append((rec.get('status') == 'resolved' and not rec.get('pending'), past(rec.get('tracked_read_at')), sid))
         ## The open ones first, then the resolved ones (read for a reopening
         ## by hand, best effort), the least recently read first in each: over
         ## max_tracked they take turns — none left out for ever — and the cut
@@ -2118,7 +2121,7 @@ tool poll_sentry:
                    'meta_value': text(md.get('value')), 'meta_filename': text(md.get('filename'), 400),
                    'meta_function': text(md.get('function'), 400),
                    'in_new': False, 'in_transition': False, 'in_tracked': False, 'transition_at': None, 'transition_kind': None,
-                   ## The lists count events over their 14-day window; the by-id
+                   ## The lists count events over their 90 days (or the retention); the by-id
                    ## answer counts the issue's whole life, every environment.
                    'count_scope': 'total' if source == 'tracked' else '90d', 'transition_checked': False}
             records[i['id']] = rec
@@ -2136,10 +2139,10 @@ tool poll_sentry:
     ## the lane sees an event; lifetime and filtered drop only their
     ## sub-objects, and an empty groupStatsPeriod skips the timeline.
     COLLAPSE = {'collapse': ['lifetime', 'filtered'], 'groupStatsPeriod': ''}
-    ## A list only returns issues with an event inside its window: 90 days
-    ## (Sentry clamps it to the retention) is as far back as Relay accepts an
-    ## event's own time — a new issue whose first event came late (an SDK's
-    ## offline cache) is still in the new list.
+    ## A list only returns issues with an event inside its window: 90 days,
+    ## which Sentry clamps to its retention, reaches as far back as it keeps
+    ## events — a new issue whose first event came late (an SDK's offline
+    ## cache) is still in the new list.
     LIST_PERIOD = '90d'
     def seen_stats(body, what):
         ## An answer carrying no seen stats at all was stripped of them (a
@@ -3054,11 +3057,10 @@ tool decide:
         raise SystemExit('prod-watch: max_alerts_per_lane must be 0 or more, got ' + str(max_per_lane))
     msg_chars = int({{input.max_message_chars}})
     if msg_chars < 1500:
-        ## A note names its members inside one message, the header and the
-        ## meta line around them: below this, clipping would drop the names
-        ## of members stamped as said.
-        raise SystemExit('prod-watch: max_message_chars must be 1500 or more (a note of folded alerts names its members '
-                         'inside one message), got ' + str(msg_chars))
+        ## A note's names take the message budget less 1000 characters, left
+        ## to its header, labels and meta line.
+        raise SystemExit('prod-watch: max_message_chars must be 1500 or more (a note of folded alerts leaves 1000 characters '
+                         'to its header and labels, and names its members in the rest), got ' + str(msg_chars))
     os.chdir(ws)
     os.makedirs(scratch, exist_ok=True)
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -3080,6 +3082,13 @@ tool decide:
         ## notified, a source warned — counts only in the past: one a clock
         ## running ahead wrote reads as not said.
         return 0 <= age_h(iso) < hours
+    def past(stamp):
+        ## A stamp this bot wrote orders a queue — a pending alert, an owed
+        ## note: one a clock running ahead wrote is taken for none, first in
+        ## line, the next real stamp replacing it (clamped to now it would
+        ## always look freshest and never take its turn).
+        st = str(stamp or '')
+        return st if st <= now_iso else ''
 
     def iso_of_ns(ts):
         try:
@@ -3740,15 +3749,13 @@ tool decide:
     def pending_first(a):
         rec = incidents.get(a['fingerprint']) or {}
         if rec.get('pending') and a.get('state') not in ('quiet', 'resolved'):
-            return (0, str(rec.get('pending_since') or ''))
+            return (0, past(rec.get('pending_since')))
         return (1, '')
     ## A note derived again from the state (an idle, a reminder, a closing
     ## note) that a tick had no room for comes first once it is owed: the
     ## oldest owed first (both sorts below are stable).
-    ## (A stamp from a clock running ahead is taken for the oldest: first.)
     def owed_key(a):
-        o = str((incidents.get(a['fingerprint']) or {}).get('note_owed_at') or now_iso)
-        return o if o <= now_iso else ''
+        return past((incidents.get(a['fingerprint']) or {}).get('note_owed_at') or now_iso)
     alerts.sort(key=owed_key)
     alerts.sort(key=pending_first)
     order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reopened': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
@@ -3774,6 +3781,8 @@ tool decide:
         status = ({'resolved': 'resolved', 'ignored': 'ignored'}.get(str((a.get('evidence') or {}).get('status') or ''), 'closed')
                   if a['state'] == 'resolved' else '')
         return (a['kind'], a['state'], a['severity'], status)
+    ## The names a note takes: the message budget less what its header,
+    ## labels and meta line take — notify goes on in parts when they take more.
     names_budget = min(3000, msg_chars - 1000)
     minted, taken = {}, {}
     for a in sorted((a for a in alerts if a.get('kind') in ('sentry', 'loki')), key=rank_key, reverse=True):
@@ -4063,13 +4072,15 @@ tool notify:
     socket.getaddrinfo = _bounded_getaddrinfo
 
     def clip(text, n):
-        ## Cut on a line boundary: a cut inside a value's code span would
-        ## leave it open and the rest rendered as markdown.
+        ## Cut on a line boundary — the one at n itself included: a cut inside
+        ## a value's code span would leave it open and the rest rendered as
+        ## markdown.
         if len(text) <= n:
             return text
         head = text[:n]
-        if head.rfind(chr(10)) > 0:
-            return head[:head.rfind(chr(10))]
+        cut = n if text[n] == chr(10) else head.rfind(chr(10))
+        if cut > 0:
+            return text[:cut]
         return head[:head.rfind('`')] if head.count('`') % 2 else head
     def flat(s, cap=300):
         ## U+2424 (SYMBOL FOR NEWLINE) is a line break to Mattermost's markdown,
@@ -4136,29 +4147,29 @@ tool notify:
         return fmt_capped(label, {}, **kw)
 
     scope = flat(app.get('name'), 60) + ('/' + flat(app.get('environment'), 40) if app.get('environment') else '')
-    messages = []
-    for a in alerts:
+    ## A state's marker label; a closed Sentry issue's note names its status:
+    ## resolved, archived, or gone (deleted, merged).
+    MARKERS = {'new': 'alert', 'escalated': 'escalated', 'reminder': 'reminder', 'quiet': 'quiet',
+               'regressed': 'sentry_regressed', 'escalating': 'sentry_escalating', 'reopened': 'sentry_reopened'}
+    CLOSED = {'resolved': 'sentry_resolved', 'ignored': 'sentry_archived'}
+    def header(sev, state, status, title_key):
+        key = CLOSED.get(status, 'sentry_closed') if state == 'resolved' else MARKERS.get(state)
+        marker = (labels.get(key) if key else None) or state
+        head = labels.get(title_key or 'alert') or (title_key or 'alert')
+        return ICON.get(sev, ':bell:') + ' **' + lab(str(marker).upper(), 40) + ' · ' + lab(scope, 100) + ' — ' + lab(head, 120) + '**'
+    def render(a, fields, detail_key, count):
+        ## An alert's lines: its header, title, detail, meta line, evidence
+        ## and link.
         sev = a.get('severity') or 'medium'
         state = a.get('state') or 'new'
-        head = labels.get(a.get('title_key') or 'alert') or (a.get('title_key') or 'alert')
-        ## A closed Sentry issue's note names its status: resolved, archived,
-        ## or gone (deleted, merged).
-        closed = {'resolved': 'sentry_resolved', 'ignored': 'sentry_archived'}.get(str((a.get('evidence') or {}).get('status') or ''), 'sentry_closed')
-        marker = {'new': labels.get('alert'), 'escalated': labels.get('escalated'), 'reminder': labels.get('reminder'), 'quiet': labels.get('quiet'),
-                  'regressed': labels.get('sentry_regressed'), 'escalating': labels.get('sentry_escalating'),
-                  'reopened': labels.get('sentry_reopened'),
-                  'resolved': labels.get(closed)}.get(state) or state
-        lines = [ICON.get(sev, ':bell:') + ' **' + lab(str(marker).upper(), 40) + ' · ' + lab(scope, 100) + ' — ' + lab(head, 120) + '**']
+        lines = [header(sev, state, str((a.get('evidence') or {}).get('status') or ''), a.get('title_key'))]
         if a.get('title_arg'):
             lines.append(code(a['title_arg'], 200))
-        fields = a.get('fields') or {}
-        if a.get('detail_key'):
-            ## A note of folded alerts names every member: decide sized it to
-            ## the message budget.
-            lines.append(fmt_capped(a['detail_key'], {'names': max_chars} if a.get('members') else {}, **{k: v for k, v in fields.items()}))
+        if detail_key:
+            lines.append(fmt_capped(detail_key, {'names': max_chars} if a.get('members') else {}, **fields))
         meta = [lab(labels.get('severity', 'severity')) + ' ' + sev.upper(),
                 fmt('new_since', date=(a.get('first_seen') or '')[:16]),
-                fmt('count', n=a.get('count') or 0)]
+                fmt('count', n=count or 0)]
         if state in ('regressed', 'escalating') and a.get('transition_at'):
             meta.append(fmt('sentry_dated', date=str(a['transition_at'])[:16]))
         if release:
@@ -4181,13 +4192,65 @@ tool notify:
             short = ev.get('short_id') if isinstance(ev.get('short_id'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', ev['short_id']) \
                 else link[len(prefix):-1]
             lines.append(lab(labels.get('sentry_open', 'open in Sentry'), 40) + ': [' + short.replace('_', '\\_') + '](' + link + ')')
-        text = chr(10).join(lines)
-        if a.get('members') and len(text) > max_chars:
-            ## A note stamped as said every member it names: clipped, it would
-            ## drop names it said. Refused by name, the tick not consumed.
-            raise SystemExit('prod-watch: a note of folded alerts renders ' + str(len(text)) + ' characters, over max_message_chars ' +
-                             str(max_chars) + ' -- its names would be cut; shorten the labels (a label renders escaped: & becomes &amp;)')
-        messages.append((sev, text, False))
+        return lines
+
+    ## A note stamps as said every member it names: none is ever cut. Its
+    ## names line comes before its meta line and the clip cuts on a line
+    ## boundary, so a note goes out whole while its header and names line
+    ## fit max_message_chars (the clip may drop its meta line), in parts past
+    ## that: each repeats the header and names its own members, the last says
+    ## the members held for the next ticks. A name renders in NAME_CAP
+    ## characters at most, and the labels always leave one member the room
+    ## (checked every tick, below).
+    NAME_CAP = 130
+    def note_part(a, chunk, last):
+        fields = dict(a.get('fields') or {}, n=len(chunk), names=', '.join(str(m.get('name') or '')[:NAME_CAP] for m in chunk),
+                      more=((a.get('fields') or {}).get('more') or 0) if last else 0)
+        return render(a, fields, a.get('detail_key') if last else 'folded_detail', sum(int(m.get('count') or 0) for m in chunk))
+    def names_kept(lines):
+        ## What the clip must keep of a note: its header and its names line.
+        return len(chr(10).join(lines[:2]))
+    def note_parts(a):
+        members = a['members']
+        whole = note_part(a, members, True)
+        if names_kept(whole) <= max_chars:
+            return [whole]
+        parts, chunk = [], []
+        for m in members:
+            if chunk and max(names_kept(note_part(a, chunk + [m], True)), names_kept(note_part(a, chunk + [m], False))) > max_chars:
+                parts.append(note_part(a, chunk, False))
+                chunk = []
+            chunk.append(m)
+        parts.append(note_part(a, chunk, True))
+        return parts
+
+    ## Every tick, whatever the data: the labels, the app and the budget
+    ## leave a note the room to name one member — the longest header of the
+    ## kinds decide folds (Sentry issues, log templates: NOTE_TITLES), the
+    ## longer fold label with eight-digit numbers, and a name of NAME_CAP
+    ## scheme-looking characters (a zero-width space before each colon). A
+    ## config that could not say one fails its first tick and its dry run,
+    ## never the tick of a flood.
+    NOTE_TITLES = ('sentry_issue', 'loki_template')
+    wide = 10 ** 8 - 1
+    worst_name = ('ftp:' * NAME_CAP)[:NAME_CAP]
+    states = [(st, '') for st in MARKERS] + [('resolved', st) for st in ('resolved', 'ignored', 'closed')]
+    worst_head = max(len(header(sev, st, status, tk)) for sev in ICON for st, status in states for tk in NOTE_TITLES)
+    worst_names = max(len(fmt_capped(k, {'names': max_chars}, n=wide, names=worst_name, more=wide))
+                      for k in ('folded_detail', 'folded_detail_more'))
+    if worst_head + 1 + worst_names > max_chars:
+        raise SystemExit('prod-watch: these labels leave a note of folded alerts no room to name one member within max_message_chars ' +
+                         str(max_chars) + ': its header renders up to ' + str(worst_head) + ' characters and its names line up to ' +
+                         str(worst_names) + ' with one name -- shorten the state, title or fold labels (a label renders escaped: & '
+                         'becomes &amp;) or the app name, or raise max_message_chars')
+
+    messages = []
+    for a in alerts:
+        sev = a.get('severity') or 'medium'
+        if a.get('members'):
+            messages += [(sev, chr(10).join(lines), False) for lines in note_parts(a)]
+        else:
+            messages.append((sev, chr(10).join(render(a, a.get('fields') or {}, a.get('detail_key'), a.get('count'))), False))
     ## Meta notices — overflow, a silent source, partial coverage — are
     ## about the WATCHDOG's own sight, not an incident's severity: they
     ## bypass the per-sink threshold and reach every sink, so a config that

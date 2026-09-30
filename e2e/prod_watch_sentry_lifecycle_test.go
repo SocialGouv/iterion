@@ -989,8 +989,9 @@ func TestProdWatch_SentryReprocessingIsOpen(t *testing.T) {
 }
 
 // TestProdWatch_SentryCountLabelNamesItsScope: the lists count events over
-// their 14 days, the by-id answer over the issue's whole life — a NEW alert
-// says "in 14 days", a reminder read by id only says "in total".
+// their 90 days (or the retention), the by-id answer over the issue's whole life
+// — a NEW alert says "in 90 days" and its users, a reminder read by id only says
+// "in total" and no users.
 func TestProdWatch_SentryCountLabelNamesItsScope(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -998,11 +999,11 @@ func TestProdWatch_SentryCountLabelNamesItsScope(t *testing.T) {
 	h.writeConfig(t, sentryOnly(h, nil))
 	sentryTick(t, h, wf)
 	now := time.Now()
-	h.sentry.put(&pwSentryIssue{ID: "3301", ShortID: strp("P-3301"), Title: "x", FirstProcessed: now, LastSeen: now, Count: 7})
+	h.sentry.put(&pwSentryIssue{ID: "3301", ShortID: strp("P-3301"), Title: "x", FirstProcessed: now, LastSeen: now, Count: 7, Users: 9})
 	n := len(h.bodies())
 	sentryTick(t, h, wf)
-	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event(s) in 90 days`) {
-		t.Fatalf("the NEW alert does not name the lists' 90 days:\n%s", b)
+	if b := strings.Join(h.bodies()[n:], "\n"); !strings.Contains(b, `event(s) in 90 days`) || !strings.Contains(b, "`9` user(s)") {
+		t.Fatalf("the NEW alert does not name the lists' 90 days and its users:\n%s", b)
 	}
 	// Hours later, out of the new-issue window: read by id only.
 	h.sentry.edit("3301", func(i *pwSentryIssue) {

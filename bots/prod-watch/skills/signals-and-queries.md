@@ -259,9 +259,9 @@ error, never read as "no event"):
   the least recently read first in each — an issue read in a list this
   tick counts as read, so a fresh one joins the back: over `max_tracked`
   they take turns, none left out for ever, and a coverage note of its own
-  says the cut once the open ones pass it — whatever else the lane says
-  (a resolved one starves only then; `max_tracked` 0 turns the reads
-  off). An issue asked
+  says the cut once the open ones take every read while others wait —
+  whatever else the lane says (the resolved ones that wait are counted;
+  `max_tracked` 0 turns the reads off). An issue asked
   and absent from the answer (deleted, merged) was read too, nothing
   more: it keeps its turn until retention forgets it.
 
@@ -336,7 +336,8 @@ most severe first (pending ones first inside a rank); the others are
 NAMED in notes of their kind (a state at one severity), which the
 per-run cap never cuts, each within the message budget
 (`max_message_chars` less 1000, 3000 at most; `decide` refuses a budget
-under 1500). A fact — a new issue or template, a transition, a
+under 1500) — and past `max_message_chars` in parts, each naming its own
+members, never a name cut. A fact — a new issue or template, a transition, a
 reopening, an escalation: what the tick read, bounded by its caps, and
 that will not recur by itself — is named in full, in as many notes as its
 names need; what is derived again from the state every tick — a
@@ -409,7 +410,8 @@ glued to what follows is text). A label is one line (a blank line would
 open a block: a table splits a value's span at `|`), and a value that
 renders as nothing joins the words around it. Parentheses and plain
 colons stay as written. A value is never scanned for placeholders,
-and a message over `max_message_chars` is cut on a line boundary.
+and a message over `max_message_chars` is cut on a line boundary (a
+line ending at the limit is kept).
 
 ## Health probes
 

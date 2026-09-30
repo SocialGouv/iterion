@@ -116,7 +116,8 @@ overrides).
   `max_tracked` (issues re-read by id each tick; 200 — the open ones
   first, then the resolved ones, each taking turns least recently read
   first, an issue read in a list counting as read; a coverage note says
-  the cut once the open ones pass it; 0 turns the by-id reads off), `deadline_secs` (120, a wall clock: the walk stops there, partial,
+  the cut once the open ones take every read while others wait, the
+  resolved ones that wait counted; 0 turns the by-id reads off), `deadline_secs` (120, a wall clock: the walk stops there, partial,
   never the tick's death), `max_catchup_hours` (24, above
   `overlap_minutes`: a cursor older than that — the lane turned off, a
   long outage — opens at the floor and declares the gap instead of
@@ -149,8 +150,10 @@ overrides).
   next ticks (`{more}`) — their header is the kind's own; both hold
   `{names}` exactly once, in 400 characters at most (plan refuses an
   override otherwise: a note says its members by name, within the
-  message), and notify refuses — by name, the tick not consumed — a note
-  its clip would cut (a label renders escaped: `&` becomes `&amp;`).
+  message). A note never loses a name: past `max_message_chars` it goes
+  out in parts, each naming its own members; and every tick, notify
+  refuses — by name, flood or not — labels that leave a note no room for
+  one name (a label renders escaped: `&` becomes `&amp;`).
 
 ## The secrets
 
@@ -302,8 +305,9 @@ managed secret under the name `forge_token` (see vuln-watch's
 - **`sentry: partial walk (…)`** in a coverage note — a list stopped at
   `max_issues`, the activity lookups at `max_transition_checks`, the
   deadline passed, or an issue was malformed; the causes are named
-  (open issues over `max_tracked` have their own note, **`sentry: N tracked issues for max_tracked M
-  reads a tick`**: they take turns — raise it; a deleted issue keeps its turn until retention forgets
+  (open issues that take every read while others wait have their own note, **`sentry: N tracked
+  issues for max_tracked M reads a tick`**: they take turns, or take every read while resolved ones
+  wait, counted — raise it; a deleted issue keeps its turn until retention forgets
   it). Nothing is concluded from absence that
   tick (no "not observed any more"); a flood of distinct issues from a
   public DSN is one way there — raise the caps or tighten `min_level`

@@ -220,12 +220,13 @@ func TestProdWatch_SentryAnEscalationFloodIsNamedWhole(t *testing.T) {
 }
 
 // TestProdWatch_ANotesNamesFitDespiteSchemeLookingNames: inline code puts a
-// zero-width space before a scheme's colon — template names full of `ftp:` grow
-// in the message; the names budget counts it, so a note at max_message_chars 4000
-// still delivers every name it stamps as said.
+// zero-width space before a scheme's colon — template names full of `https:`,
+// `mailto:`, `ftp:` grow in the message; the names budget counts it, so each note
+// at max_message_chars 4000 goes out whole — one message, every member named, its
+// meta line kept (a budget that missed it would push the meta line past the clip).
 func TestProdWatch_ANotesNamesFitDespiteSchemeLookingNames(t *testing.T) {
 	t.Parallel()
-	for scheme, reps := range map[string]int{"ftp:": 29, "HTTP:": 23} {
+	for scheme, reps := range map[string]int{"https:": 19, "mailto:": 16, "ftp:": 29, "HTTP:": 23} {
 		scheme, reps := scheme, reps
 		t.Run(scheme, func(t *testing.T) {
 			t.Parallel()
@@ -243,21 +244,43 @@ func pwNamesFitCase(t *testing.T, scheme string, reps int) {
 	if err != nil {
 		t.Fatalf("decide: %v %s", err, lastN(stderr, 400))
 	}
-	// A fold label as long as plan allows (400): with the expansion uncounted, the names line passes the clip.
+	// A fold label as long as plan allows (400) and a long count label: the note's overhead near the 1000
+	// characters the budget leaves it — with the expansion uncounted, the names push the note into a second part.
 	label := "{n} more of this kind this tick, not posted one by one " + strings.Repeat("(the operator's long wording) ", 11) + ": {names}"
 	if len(label) > 400 {
 		t.Fatalf("setup: the label is %d characters, plan allows 400", len(label))
 	}
+	count := "{n} occurrence(s) " + strings.Repeat("(the operator's long wording) ", 11)
 	nout, nerr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": out["alerts"], "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
-		"labels": map[string]any{"folded_detail": label}, "app": map[string]any{"name": "demo"},
+		"labels": map[string]any{"folded_detail": label, "count": count}, "app": map[string]any{"name": "demo"},
 		"release": "", "release_known": false, "dry_run": true, "max_message_chars": 4000, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, lastN(nerr, 400))
 	}
-	text := fmt.Sprint(nout["messages"])
+	notes, parts := 0, 0
+	for _, a := range out["alerts"].([]any) {
+		if len(pwMembers(a)) > 0 {
+			notes++
+		}
+	}
+	var texts []string
+	for _, m := range nout["messages"].([]any) {
+		text := m.(map[string]any)["text"].(string)
+		texts = append(texts, text)
+		if strings.Contains(text, "not posted one by one") {
+			parts++
+			if !strings.Contains(text, "occurrence(s) (the operator") {
+				t.Fatalf("%s: a note lost its meta line to the clip (%d characters): the names budget missed their expansion", scheme, len([]rune(text)))
+			}
+		}
+	}
+	if notes == 0 || parts != notes {
+		t.Fatalf("%s: %d note(s) went out in %d message(s): the names budget missed their expansion", scheme, notes, parts)
+	}
+	all := strings.Join(texts, "\n")
 	for k := 0; k < 60; k++ {
-		if !strings.Contains(text, fmt.Sprintf("E%02d %s", k, scheme[:2])) {
+		if !strings.Contains(all, fmt.Sprintf("E%02d %s", k, scheme[:2])) {
 			t.Fatalf("%s: template E%02d, marked said, is named in no message delivered whole", scheme, k)
 		}
 	}

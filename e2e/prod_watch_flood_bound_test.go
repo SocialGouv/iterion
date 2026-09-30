@@ -219,9 +219,9 @@ func TestProdWatch_ANotesNamesStayWithin3000Characters(t *testing.T) {
 	}
 }
 
-// TestProdWatch_AMessageBudgetTooSmallForANoteIsRefused: a note names its
-// members inside one message; a max_message_chars that cannot hold them is
-// refused by name — never a note clipped of the names it stamps as said.
+// TestProdWatch_AMessageBudgetTooSmallForANoteIsRefused: a note's names take
+// the message budget less 1000 characters; a max_message_chars that leaves them
+// no room is refused by name.
 func TestProdWatch_AMessageBudgetTooSmallForANoteIsRefused(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
