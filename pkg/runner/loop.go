@@ -2057,6 +2057,27 @@ func (r *Runner) releasesRefusedResumes(msg *queue.RunMessage) bool {
 	return err == nil
 }
 
+// verdictFromStatuses is the statuses the runner's own verdict on msg moves
+// the run from. A resume the run is still queued for is left to the release
+// (releaseRefusedResume), which puts it back where it came from — a paused
+// run keeps its pending question: leftToRelease, and queued is not among
+// them. A resume whose run the queue no longer holds queued — a redelivery
+// after a nak, an orphan adopted and promoted, a launch redelivered as a
+// resume — takes the verdict, as a launch does.
+func (r *Runner) verdictFromStatuses(msg *queue.RunMessage) (from []store.RunStatus, leftToRelease bool) {
+	from = store.RunnerVerdictFromStatuses()
+	if !r.releasesRefusedResumes(msg) {
+		return from, false
+	}
+	kept := make([]store.RunStatus, 0, len(from))
+	for _, s := range from {
+		if s != store.RunStatusQueued {
+			kept = append(kept, s)
+		}
+	}
+	return kept, true
+}
+
 // outcomeSideEffectsFire reports whether a delivery ending on the plain
 // dispatch path (no park) is a FINAL disposition that must fire the
 // run-outcome side effects (completion webhook + run.<outcome> event). A
@@ -2810,16 +2831,14 @@ func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, ca
 	// image carries a checkpoint worth every node already paid for — a nil
 	// there would erase the anchor the aligned fleet resumes from. The
 	// expected set keeps the cancelled-wins guard: a run the operator
-	// cancelled meanwhile is not flipped back.
-	// A resume goes back where it came from instead (releaseRefusedResume):
-	// a paused run keeps its pending question.
-	if r.releasesRefusedResumes(msg) {
-		// Left to the release.
-	} else if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
+	// cancelled meanwhile is not flipped back. A resume still queued goes
+	// back where it came from instead (verdictFromStatuses).
+	from, leftToRelease := r.verdictFromStatuses(msg)
+	if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
 		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
-		store.RunnerVerdictFromStatuses()); err != nil {
+		from); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
-	} else if !changed {
+	} else if !changed && !leftToRelease {
 		r.cfg.Logger.Warn("runner: run %s: the unloadable-IR verdict was declined (status drifted) — the document does not carry IR_UNLOADABLE", msg.RunID)
 	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{

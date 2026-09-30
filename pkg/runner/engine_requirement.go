@@ -82,16 +82,16 @@ func (r *Runner) failBotRequiresNewerEngine(ctx context.Context, msg *queue.RunM
 		required = m.Requires.Iterion
 	}
 	// UpdateRunOutcome keeps the cancelled-wins guard: a run the operator
-	// cancelled meanwhile is not flipped back into a failure. A resume goes
-	// back where it came from instead (releaseRefusedResume): a paused run
-	// keeps its pending question, and resumes once the fleet is aligned.
-	if r.releasesRefusedResumes(msg) {
-		// Left to the release.
-	} else if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailed, cause.Error(),
+	// cancelled meanwhile is not flipped back into a failure. A resume still
+	// queued goes back where it came from instead (verdictFromStatuses): a
+	// paused run keeps its pending question, and resumes once the fleet is
+	// aligned.
+	from, leftToRelease := r.verdictFromStatuses(msg)
+	if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailed, cause.Error(),
 		store.RunOutcomeMeta{Code: store.FailureBotRequiresNewerEngine, Continuation: store.ContinuationFinal},
-		store.RunnerVerdictFromStatuses()); err != nil {
+		from); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not record the engine requirement refusal: %v", msg.RunID, err)
-	} else if !changed {
+	} else if !changed && !leftToRelease {
 		r.cfg.Logger.Warn("runner: run %s: the engine-requirement verdict was declined (status drifted) — the document does not carry BOT_REQUIRES_NEWER_ENGINE", msg.RunID)
 	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{

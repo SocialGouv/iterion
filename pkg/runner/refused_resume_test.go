@@ -174,6 +174,24 @@ func TestRunnerVerdicts_leaveAResumeToTheRelease(t *testing.T) {
 			if run, _ := st.LoadRun(ctx, msg.RunID); run.Status == store.RunStatusQueued || run.FailureCode != tc.code {
 				t.Fatalf("a launch lost the runner's verdict: %s %q", run.Status, run.FailureCode)
 			}
+
+			// A resume whose run is no longer queued — an orphan adopted and
+			// promoted, a redelivery after a nak — takes the verdict: the
+			// release has nothing to move.
+			st, msg = queuedResume(t, store.RunStatusFailedResumable, store.RunStatusFailedResumable)
+			if _, err := st.UpdateRunOutcome(ctx, msg.RunID, store.RunStatusFailedResumable, "orphaned",
+				store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationRedeliveryPending},
+				[]store.RunStatus{store.RunStatusQueued}); err != nil {
+				t.Fatal(err)
+			}
+			r = &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+			tc.write(r, msg, tc.err)
+			if got := r.releaseRefusedResume(msg, tc.err, iterlog.Nop()); got != "" {
+				t.Fatalf("released a run the queue no longer holds to %q", got)
+			}
+			if run, _ := st.LoadRun(ctx, msg.RunID); run.FailureCode != tc.code || run.ContinuationState != store.ContinuationFinal {
+				t.Fatalf("a resume of an adopted orphan lost the runner's verdict: %s %q %q", run.Status, run.FailureCode, run.ContinuationState)
+			}
 		})
 	}
 }
