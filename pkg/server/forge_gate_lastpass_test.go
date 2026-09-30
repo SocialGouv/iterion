@@ -53,7 +53,7 @@ func runUpdatedAt(t *testing.T, s *Server, runID string) time.Time {
 
 // While the net is still trying, a stuck check is not news: the sweep re-offers
 // the same run every minute and would otherwise emit ~60 identical lines an
-// hour, per replica, burying the branches that carry new information.
+// hour, burying the branches that carry new information.
 func TestGateSweepAbstain_StaysQuietWhileTheNetIsStillTrying(t *testing.T) {
 	s, runID, logs := abstainingSweepFixture(t)
 	at := runUpdatedAt(t, s, runID)

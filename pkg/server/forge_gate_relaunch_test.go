@@ -244,10 +244,11 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
-	// The gate sweep runs unelected on every replica, so two replicas can race
-	// past the List pre-check before either card commits. The deterministic
-	// card id is what serialises them: the loser's Create is refused by the
-	// store, and neither a second card NOR a second PR comment lands.
+	// Two offers of one dead run can still race past the List pre-check before
+	// either card commits — the event path beside the elected sweep, or two
+	// sweeps across a lease hand-over. The deterministic card id is what
+	// serialises them: the loser's Create is refused by the store, and neither
+	// a second card NOR a second PR comment lands.
 	t.Run("two replicas racing the escalation file one card and one comment", func(t *testing.T) {
 		w := build(t, nil)
 		rc := &fakeReviewClient{}
@@ -347,9 +348,9 @@ func TestGateRelaunch(t *testing.T) {
 	})
 
 	// "Duplicate" is not "the replacement died". The idempotency claim is a
-	// read-then-insert and the gate sweep runs UNELECTED on every replica, so
-	// two passes landing on one dead run give one launch and one duplicate —
-	// for the same, live, replacement. Escalating on that files a card telling
+	// read-then-insert and two offers can still land on one dead run (the
+	// event path beside the elected sweep), giving one launch and one
+	// duplicate — for the same, live, replacement. Escalating on that files a card telling
 	// a human the automation is out of moves while the replacement is alive and
 	// reviewing.
 	t.Run("a relaunch still in flight does not escalate", func(t *testing.T) {

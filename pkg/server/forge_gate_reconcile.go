@@ -271,8 +271,8 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// Warn on the EVENT path, and on the sweep's LAST pass over this run.
 	// The sweep re-offers the same run every minute for the whole lookback, so
 	// a run sitting in a permanent abstain branch — a lost grant, an
-	// unreachable forge — would log the identical line ~60 times an hour per
-	// replica and bury the branches that carry new information. But Debug is
+	// unreachable forge — would log the identical line ~60 times an hour and
+	// bury the branches that carry new information. But Debug is
 	// suppressed at the info level deployments run at, so those passes said
 	// NOTHING at all: the one Warn the event path emits dies with the pod, and
 	// a check stuck for a day leaves nothing to diagnose it with. The last

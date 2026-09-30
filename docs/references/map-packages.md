@@ -146,6 +146,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/internal/storekit` | holds the generic skeletons behind iterion's paired Mongo+memory store backends (pkg/audit, pkg/pat, pkg/cloudsched, pkg/webhooks,… | — |
 | `pkg/internal/strutil` | holds tiny string helpers that have no direct stdlib equivalent and were otherwise copy-pasted across packages. | — |
 | `pkg/knowledge` | defines the backend-agnostic contract for iterion's shared memory / knowledge system: the MemoryStore interface, the SpaceRef identity model (the… | `MemoryStore` |
+| `pkg/lease` | elects one holder per named lease across the replicas of a deployment, so a periodic net runs on ONE replica instead of every one. | `Store` |
 | `pkg/liveledger` | keeps a committed, single-file record of the LAST run of every `task test:live:*` target. | `TB` |
 | `pkg/log` | provides a leveled logger with emoji-rich console output for the iterion workflow engine. | — |
 | `pkg/mail` | iterion's minimal transactional mailer: stdlib SMTP (explicit STARTTLS) + embedded templates for the two flows that need email — invitations and… | `Mailer` |

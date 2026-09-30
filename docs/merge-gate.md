@@ -936,7 +936,7 @@ one API read.
 
 Every 30th pass reaches the full **horizon** instead — `gateSweepHorizon`,
 anchored on `retrypolicy.DefaultMaxWait` (8 days) — and so does the first pass
-after a start or a rollout. The outage this net exists for is a provider usage
+of every term of the elected sweeper (below), at boot as after a hand-over. The outage this net exists for is a provider usage
 window, and a weekly one shuts for days: measured 2026-09-15, seven runs died
 on one weekly cap and two gating runs kept a `pending` required check for 81
 hours, because every pass that could have answered them had stopped 80 hours
@@ -950,11 +950,11 @@ ones, which are precisely the batch-death runs the horizon exists for. A deep
 pass that runs out of budget therefore **returns its cursor**, and the next one
 resumes there; when it exhausts the window (or the cursor cannot advance) it
 starts fresh at the newest end. Successive deep passes descend toward the
-horizon instead of starving its far edge. The cursor is per-replica and in
-memory: the repair is idempotent, so a lost cursor costs a re-scan, and two
-replicas at different depths cover more of the window rather than less. The
-fast pass always starts at the newest end, so a deep pass parked in the past
-never delays a fresh death.
+horizon instead of starving its far edge. The cursor lives in memory on the
+elected replica, for its term: the repair is idempotent, so a term that ends
+costs its successor a re-scan from the newest end and nothing else. The fast
+pass always starts at the newest end, so a deep pass parked in the past never
+delays a fresh death.
 
 What keeps a long reach safe is not the bound but the repair's own live reads:
 it stands down on a closed or merged pull request, on a head that has moved
@@ -987,13 +987,39 @@ produced **116 status writes on one head in 15 minutes**
 speaks for, which separates "mine" from "another's" with no bookkeeping a
 second replica would not share.
 
-The sweep is **not elected** — the repair is idempotent by re-reading the live
-status, so a leader would buy nothing. One consequence needs care: the
-relaunch's once-per-head bound is a read-then-insert claim, so two replicas
-offering one dead run give a launch and a *duplicate*. A duplicate alone is
-therefore not evidence the replacement died; the board card that tells a human
-"automation is out of moves" is filed only once the named run has itself
-stopped.
+The sweep is **elected**: it runs on the one replica holding the
+`merge-gate-sweeper` lease ([`pkg/lease`](../pkg/lease),
+[ADR-117](adr/117-server-side-leader-lease-for-idempotent-nets.md)). The repair
+is idempotent — it re-reads the live status — so running it on every replica
+was never *wrong*, only N times as *expensive*: every offer spends forge reads
+from the App installation's hourly budget, and at ten replicas the sweep alone
+exhausted that budget every hour (#2002). The holder renews its lease every
+sweep interval and releases it on shutdown, so a rollout hands the sweep over
+within one interval; a holder that dies is outlived by the lease's TTL (three
+intervals) and replaced at most one interval later; every term opens with a
+deep pass.
+
+Two offers of one dead run can still meet — the event path runs on whichever
+replica its queue group picks, beside the sweep, and a lease handed over
+mid-stall overlaps two sweeps for the length of the stall. So the relaunch's
+once-per-head bound stays a read-then-insert claim, and two offers give a
+launch and a *duplicate*. A duplicate alone is therefore not evidence the
+replacement died; the board card that tells a human "automation is out of
+moves" is filed only once the named run has itself stopped.
+
+Reading it in production: the replica holding a term logs `merge-gate sweeper:
+<replica> re-offering dead gating runs …` when the term opens and `lease
+"merge-gate-sweeper": <replica> released` when it ends; the lease itself is
+the `merge-gate-sweeper` document of the Mongo `leases` collection (`owner`,
+`expires_at`). Every replica logs one line per hour in which it sent forge
+requests — `forge HTTP: N requests in the hour ending 2026-09-30T15:00Z —
+<host> <rest|graphql> <lane>=<n>, …` — when its next request arrives, and
+flushes the hour it was counting when it stops; a partial hour carries `(counted
+from …)` or `(until …, stopping)`. The `merge-gate-sweeper` lane is what the
+sweep spent that hour. The count is of attempts as the forge client sends them
+— each redirect hop, each answer whatever its status, a rate-limited 403
+included — so it is close to the budget spent, not identical: a token mint is
+counted and spends no REST budget.
 
 Finally, when a repair genuinely declines to act, **it says so**. Every branch
 past "this run held a publish grant and died" now logs the reason it is posting
@@ -1080,8 +1106,9 @@ travel together in both directions: a deployment with **no board** (no
 `failure` status is then the only surface carrying the interruption — worth
 knowing before pointing a board-less deployment at a required check. Card and
 comment are bounded to once per (PR, head) by a **deterministic card id**
-(UUIDv5 of team/repo/PR/head): the
-sweep runs unelected on every replica, and two replicas racing past a
+(UUIDv5 of team/repo/PR/head): two
+offers of one dead run can still race (the event path beside the elected
+sweep, or two sweeps across a lease hand-over), and two racers past a
 List-based dedup would each file the card AND each post the comment — the
 store's unique-id insert is what serialises them. A required check dying
 repeatedly on one revision is a structural signal (a run budget too short for
