@@ -56,6 +56,7 @@ type pwSentryIssue struct {
 	Meta           map[string]any
 	Env            string
 	Acts           []pwSentryAct
+	ActsFail       int               // non-zero: every lookup of the issue's activities answers this status
 	Raw            map[string]string // payload fields sent verbatim as JSON: a lone surrogate, a count in foreign digits
 }
 
@@ -250,7 +251,9 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 			s.mu.Lock()
 			i, ok := s.issues[id]
 			var acts []map[string]any
+			failWith := 0
 			if ok {
+				failWith = i.ActsFail
 				sorted := append([]pwSentryAct(nil), i.Acts...)
 				sort.Slice(sorted, func(a, b int) bool { return sorted[a].At.After(sorted[b].At) })
 				for _, a := range sorted {
@@ -258,6 +261,10 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 				}
 			}
 			s.mu.Unlock()
+			if failWith != 0 {
+				w.WriteHeader(failWith)
+				return
+			}
 			if !ok {
 				notFound()
 				return

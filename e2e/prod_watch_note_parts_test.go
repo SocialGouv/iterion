@@ -3,6 +3,7 @@ package e2e
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -264,11 +265,12 @@ func TestProdWatch_ANoteCheckMeetsItsWriterAtTheBoundary(t *testing.T) {
 	name := strings.Repeat("ftp:", 50) // 200 characters: NAME_CAP renders 130 of them
 	for _, c := range []struct {
 		name, kind, state, sev, status, marker, title string
-		exact                                         bool
+		exact, held                                   bool
 	}{
-		{"sentry", "sentry", "reopened", "medium", "", "sentry_reopened", "sentry_issue", true},
-		{"loki", "loki", "reminder", "medium", "", "reminder", "loki_template", true},
-		{"closing", "sentry", "resolved", "low", "closed", "sentry_closed", "sentry_issue", false},
+		{"sentry", "sentry", "reopened", "medium", "", "sentry_reopened", "sentry_issue", true, false},
+		{"loki", "loki", "reminder", "medium", "", "reminder", "loki_template", true, false},
+		{"closing", "sentry", "resolved", "low", "closed", "sentry_closed", "sentry_issue", false, false},
+		{"held", "loki", "reminder", "medium", "", "reminder", "loki_template", true, true},
 	} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
@@ -276,6 +278,11 @@ func TestProdWatch_ANoteCheckMeetsItsWriterAtTheBoundary(t *testing.T) {
 			h := newPWHarness(t)
 			labels := map[string]any{c.marker: strings.Repeat("&", 40), c.title: strings.Repeat("&", 120),
 				"folded_detail": fold, "folded_detail_more": fold}
+			if c.held {
+				// A held note's last part says an eight-digit `more`: the check counts it at that width.
+				labels["folded_detail"] = "{names} " + strings.Repeat("&", 50)
+				labels["folded_detail_more"] = "{names} {more} " + strings.Repeat("&", 100)
+			}
 			_, nerr, err := pwNotifyDry(t, h, labels, 1500, []any{})
 			m := pwCheckLimit.FindStringSubmatch(nerr)
 			if err == nil || m == nil {
@@ -285,7 +292,12 @@ func TestProdWatch_ANoteCheckMeetsItsWriterAtTheBoundary(t *testing.T) {
 			if _, nerr, err := pwNotifyDry(t, h, labels, limit-1, []any{}); err == nil || !strings.Contains(nerr, "no room to name one member") {
 				t.Fatalf("one character under the check's limit (%d) was not refused: %v %s", limit, err, lastN(nerr, 300))
 			}
-			out, nerr, err := pwNotifyDry(t, h, labels, limit, []any{pwOneMemberNote(c.kind, c.state, c.sev, c.status, name)})
+			note := pwOneMemberNote(c.kind, c.state, c.sev, c.status, name)
+			if c.held {
+				note["detail_key"] = "folded_detail_more"
+				note["fields"].(map[string]any)["more"] = 99999999
+			}
+			out, nerr, err := pwNotifyDry(t, h, labels, limit, []any{note})
 			if err != nil {
 				t.Fatalf("at the check's limit (%d) the tick was refused: %v %s", limit, err, lastN(nerr, 300))
 			}
@@ -488,6 +500,10 @@ func TestProdWatch_APartFitsInBothOfItsForms(t *testing.T) {
 					t.Fatalf("member %q is named %d time(s) across %d part(s)", n, strings.Count(all, n), len(texts))
 				}
 			}
+			// The labels leave over 600 characters to these 45-character names: a part holds ten of them at least.
+			if most := (c.members+9)/10 + 1; len(texts) > most {
+				t.Fatalf("%d members went out in %d parts, more than %d: the parts are not packed", c.members, len(texts), most)
+			}
 		})
 	}
 }
@@ -665,5 +681,368 @@ func pwByIdReadsUnderSkew(t *testing.T, skew time.Duration) {
 	}
 	if read["21"] == 0 || read["22"] == 0 || read["23"] == 0 {
 		t.Fatalf("8 ticks, max_tracked 1, a runner %v off taking turns with a correct one: by-id reads per issue %v", skew, read)
+	}
+}
+
+// pwTrickleTemplate: a log template live this tick, as leak_scan hands it to decide.
+func pwTrickleTemplate(id string) map[string]any {
+	return map[string]any{"template_id": id, "template": "ERROR pattern " + id, "count": 3, "count_live": 3,
+		"first_ts": "1", "last_ts": "2", "first_ts_live": "1", "sample": "x", "sample_live": "x", "queries": []any{"errors"},
+		"queries_live": []any{"errors"}, "streams": []any{}, "streams_live": []any{}, "query": "errors", "query_live": "errors"}
+}
+
+// pwPendingTemplate: a NEW log-template alert the per-run cap deferred, pending since `since`.
+func pwPendingTemplate(id, since string) map[string]any {
+	old := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	return map[string]any{"fp": "loki:" + id, "kind": "loki", "sources": []any{"errors"}, "severity": "medium",
+		"title_key": "loki_template", "title_arg": "ERROR pattern " + id, "detail_key": "loki_detail", "fields": map[string]any{},
+		"first_seen": old, "last_seen": old, "count": 3, "alerted": false, "last_notified": nil, "quiet_noted": false,
+		"pending": "new", "pending_since": since}
+}
+
+// pwShiftPending moves every pending_since by d: a runner `d` late sees the
+// others' stamps d later, and the stamps it writes are d early to the others.
+func pwShiftPending(t *testing.T, incidents map[string]any, d time.Duration) {
+	t.Helper()
+	for fp, v := range incidents {
+		rec := v.(map[string]any)
+		s, ok := rec["pending_since"].(string)
+		if !ok || s == "" {
+			continue
+		}
+		tt, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("shift %s pending_since %q: %v", fp, s, err)
+		}
+		rec["pending_since"] = tt.Add(d).UTC().Format("2006-01-02T15:04:05+00:00")
+	}
+}
+
+// pwPendingTrickle: two runners take turns on one state — A correct, B `skew`
+// late (A on even ticks). A per-run cap of 1; one new log template a tick, each
+// recurring while it waits; X, a one-off pattern A deferred 10 minutes ago.
+// Returns what each tick posted and the tick X was posted on (-1: never).
+func pwPendingTrickle(t *testing.T, skew time.Duration) ([]string, int) {
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	now := time.Now()
+	stamp := func(d time.Duration) string { return now.Add(d).UTC().Format("2006-01-02T15:04:05+00:00") }
+	incidents := map[string]any{"loki:x": pwPendingTemplate("x", stamp(-10*time.Minute)),
+		"loki:y0": pwPendingTemplate("y0", stamp(-5*time.Minute-skew))}
+	var posted []string
+	for tick := 0; tick < 8; tick++ {
+		late := tick%2 == 1
+		var recurring []string
+		for fp, v := range incidents {
+			if v.(map[string]any)["pending"] == "new" && fp != "loki:x" && fp != "loki:y0" {
+				recurring = append(recurring, strings.TrimPrefix(fp, "loki:"))
+			}
+		}
+		sort.Strings(recurring)
+		var tpls []any
+		for _, id := range recurring {
+			tpls = append(tpls, pwTrickleTemplate(id))
+		}
+		tpls = append(tpls, pwTrickleTemplate(fmt.Sprintf("n%02d", tick)))
+		if late {
+			pwShiftPending(t, incidents, skew)
+		}
+		out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": tpls, "leak": []any{}}, pwLokiState(incidents),
+			map[string]any{"max_alerts": 1, "max_alerts_per_lane": 20})
+		if err != nil {
+			t.Fatalf("decide tick %d: %v %s", tick, err, lastN(stderr, 400))
+		}
+		var this []string
+		for _, a := range out["alerts"].([]any) {
+			this = append(this, fmt.Sprint(a.(map[string]any)["fingerprint"]))
+		}
+		posted = append(posted, fmt.Sprintf("t%d(%s):%s", tick, map[bool]string{false: "A", true: "B"}[late], strings.Join(this, ",")))
+		incidents = pwStateNext(t, out)["incidents"].(map[string]any)
+		if late {
+			pwShiftPending(t, incidents, -skew)
+		}
+		for _, fp := range this {
+			if fp == "loki:x" {
+				return posted, tick
+			}
+		}
+	}
+	return posted, -1
+}
+
+// TestProdWatch_ALateRunnerHoldsNoPendingAlertBehindFresherOnes: a runner 3 days
+// late takes turns with a correct one, a new template recurring every tick at a
+// per-run cap of 1: the oldest pending alert still goes within a turn. The late
+// runner sees the correct one's stamps as future — they wait first in, first
+// out, never in the order the alerts were emitted (a recurring template first).
+func TestProdWatch_ALateRunnerHoldsNoPendingAlertBehindFresherOnes(t *testing.T) {
+	t.Parallel()
+	if got, at := pwPendingTrickle(t, 0); at != 0 {
+		t.Fatalf("control (one clock): X, the oldest pending alert, must go first: %v", got)
+	}
+	if got, at := pwPendingTrickle(t, 72*time.Hour); at < 0 || at > 2 {
+		t.Fatalf("a runner 3 days late taking turns with a correct one: X, the oldest pending alert, went at tick %d:\n%s",
+			at, strings.Join(got, "\n"))
+	}
+}
+
+// TestProdWatch_ALateRunnerNamesOwedNotesInTheirWritersOrder: idle notes owed by
+// a correct runner, seen by a late one — every owed stamp looks future to it.
+// The notes of the earlier debt still go first (thirty owed ten minutes before
+// thirty more, their ids sorting after them), never in id order.
+func TestProdWatch_ALateRunnerNamesOwedNotesInTheirWritersOrder(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	old := time.Now().Add(-49 * time.Hour).UTC().Format(time.RFC3339)
+	ahead := func(d time.Duration) string {
+		return time.Now().Add(72*time.Hour + d).UTC().Format("2006-01-02T15:04:05+00:00")
+	}
+	incidents := map[string]any{}
+	for k := 0; k < 30; k++ {
+		for _, g := range []struct {
+			prefix string
+			owed   time.Duration
+		}{{"tz", -10 * time.Minute}, {"ta", -5 * time.Minute}} {
+			id := fmt.Sprintf("%s%02d", g.prefix, k)
+			incidents["loki:"+id] = map[string]any{"fp": "loki:" + id, "kind": "loki", "sources": []any{"errors"}, "severity": "medium",
+				"title_key": "loki_template", "title_arg": "ERROR idle " + id + " " + strings.Repeat("x", 100), "detail_key": "loki_detail",
+				"fields": map[string]any{}, "first_seen": old, "last_seen": old, "count": 3, "alerted": true, "last_notified": old,
+				"quiet_noted": false, "note_owed_at": ahead(g.owed)}
+		}
+	}
+	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, pwLokiState(incidents), nil)
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, lastN(stderr, 400))
+	}
+	var said []string
+	for _, a := range out["alerts"].([]any) {
+		m := a.(map[string]any)
+		if ms, ok := m["members"].([]any); ok {
+			for _, x := range ms {
+				said = append(said, fmt.Sprint(x.(map[string]any)["fp"]))
+			}
+			continue
+		}
+		said = append(said, fmt.Sprint(m["fingerprint"]))
+	}
+	if len(said) == 0 || len(said) >= 30 {
+		t.Fatalf("setup: want fewer idle notes said than the earlier debt's thirty, got %d", len(said))
+	}
+	for _, fp := range said {
+		if !strings.HasPrefix(fp, "loki:tz") {
+			t.Fatalf("a note of the later debt (%s) went before the earlier debt was said: %v", fp, said)
+		}
+	}
+}
+
+// TestProdWatch_AFailingLookupHoldsNoCheckSlot: an issue whose activity lookup
+// fails every time (a 5xx, then its retry) takes its turn all the same — under
+// max_transition_checks 1 the other issues are still checked: a dated one's
+// second regression is found; a never-dated one behind a failing never-dated
+// one gets its check.
+func TestProdWatch_AFailingLookupHoldsNoCheckSlot(t *testing.T) {
+	t.Parallel()
+	t.Run("re-checks", func(t *testing.T) {
+		t.Parallel()
+		wf := compileFixture(t, "prod-watch/main.bot")
+		h := newPWHarness(t)
+		h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_transition_checks"] = 1 }))
+		sentryTick(t, h, wf)
+		now := time.Now()
+		ids := []string{"1901", "1902", "1903"}
+		for _, id := range ids {
+			h.sentry.put(&pwSentryIssue{ID: id, ShortID: strp("PROJ-" + id), Title: "r", Substatus: strp("regressed"),
+				FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now, Acts: []pwSentryAct{{Type: "set_regression", At: now}}})
+		}
+		for k := 0; k < 3; k++ {
+			sentryTick(t, h, wf)
+			time.Sleep(1100 * time.Millisecond)
+		}
+		gen := map[string]float64{}
+		for _, id := range ids {
+			g, ok := sentryIncident(t, h, id)["transition_checked_gen"].(float64)
+			if !ok {
+				t.Fatalf("setup: issue %s was never checked", id)
+			}
+			gen[id] = g
+		}
+		sort.Slice(ids, func(a, b int) bool { return gen[ids[a]] < gen[ids[b]] })
+		head, other := ids[0], ids[2] // the least recently checked, first in line; the most recently, last
+		h.sentry.edit(head, func(i *pwSentryIssue) { i.ActsFail = 500 })
+		t1 := time.Now().Add(time.Second)
+		h.sentry.edit(other, func(i *pwSentryIssue) { i.Acts = append(i.Acts, pwSentryAct{Type: "set_regression", At: t1}) })
+		var said []string
+		for k := 0; k < 5; k++ {
+			time.Sleep(1100 * time.Millisecond)
+			said = append(said, sentryAlerts(sentryTick(t, h, wf))...)
+		}
+		if !strings.Contains(strings.Join(said, " "), "regressed:PROJ-"+other) {
+			t.Fatalf("5 ticks, max_transition_checks 1, issue %s's lookup failing every time: the second regression of %s was never said: %v", head, other, said)
+		}
+	})
+	t.Run("never dated", func(t *testing.T) {
+		t.Parallel()
+		wf := compileFixture(t, "prod-watch/main.bot")
+		h := newPWHarness(t)
+		h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_transition_checks"] = 1 }))
+		sentryTick(t, h, wf)
+		now := time.Now()
+		// 1912's last event is the newer: first in the never-dated line, its lookup failing every tick.
+		for _, c := range []struct {
+			id   string
+			seen time.Time
+			fail int
+		}{{"1911", now, 0}, {"1912", now.Add(time.Second), 500}} {
+			h.sentry.put(&pwSentryIssue{ID: c.id, ShortID: strp("PROJ-" + c.id), Title: "r", Substatus: strp("regressed"),
+				FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: c.seen, Acts: []pwSentryAct{{Type: "set_regression", At: now}},
+				ActsFail: c.fail})
+		}
+		for k := 0; k < 4 && sentryIncident(t, h, "1911")["transition_checked_at"] == nil; k++ {
+			time.Sleep(1100 * time.Millisecond)
+			sentryTick(t, h, wf)
+		}
+		if sentryIncident(t, h, "1911")["transition_checked_at"] == nil {
+			t.Fatalf("4 ticks, max_transition_checks 1, the never-dated head's lookup failing every tick: 1911 was never checked")
+		}
+	})
+}
+
+// TestProdWatch_EachPartSaysItsOwnFirstSighting: a note split into parts dates
+// each part to its own members — thirty idle templates first seen 40 days ago
+// down to 11: a later part's meta line says the first sighting of ITS members.
+func TestProdWatch_EachPartSaysItsOwnFirstSighting(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	now := time.Now().UTC()
+	incidents := map[string]any{}
+	first := map[string]string{}
+	var names []string
+	for k := 0; k < 30; k++ {
+		id := fmt.Sprintf("t%02d", k)
+		fs := now.Add(-time.Duration(40-k) * 24 * time.Hour).Format("2006-01-02T15:04:00+00:00")
+		title := fmt.Sprintf("ERROR template number %02d went quiet after a deploy", k)
+		first[id] = fs[:16]
+		names = append(names, id+" "+title)
+		incidents["loki:"+id] = map[string]any{"fp": "loki:" + id, "kind": "loki", "sources": []any{"errors"}, "severity": "medium",
+			"title_key": "loki_template", "title_arg": title, "detail_key": "loki_detail", "fields": map[string]any{},
+			"first_seen": fs, "last_seen": now.Add(-49 * time.Hour).Format(time.RFC3339), "count": k + 1,
+			"alerted": true, "last_notified": now.Add(-49 * time.Hour).Format(time.RFC3339), "quiet_noted": false}
+	}
+	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": []any{}, "leak": []any{}}, pwLokiState(incidents),
+		map[string]any{"max_alerts_per_lane": 0, "max_message_chars": 1500})
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, lastN(stderr, 400))
+	}
+	labels := pwPlanLabels(t, h, map[string]any{"folded_detail": "{n} idle: {names} " + strings.Repeat("&", 200),
+		"folded_detail_more": "{n} idle: {names} — {more} held " + strings.Repeat("&", 200)})
+	nout, nerr, err := pwNotifyDry(t, h, labels, 1500, out["alerts"].([]any))
+	if err != nil {
+		t.Fatalf("notify: %v %s", err, lastN(nerr, 400))
+	}
+	msgs := nout["messages"].([]any)
+	if len(msgs) < 2 {
+		t.Fatalf("setup: want the idle note in parts, got %d message(s)", len(msgs))
+	}
+	dated := 0
+	for i, m := range msgs {
+		lines := strings.Split(m.(map[string]any)["text"].(string), "\n")
+		own := ""
+		for k, n := range names {
+			id := fmt.Sprintf("t%02d", k)
+			if strings.Contains(lines[1], n) && (own == "" || first[id] < own) {
+				own = first[id]
+			}
+		}
+		if len(lines) < 3 || own == "" {
+			continue
+		}
+		if !strings.Contains(lines[2], "`"+own+"`") {
+			t.Fatalf("part %d of %d names members first seen %s at the earliest; its meta line says: %s", i+1, len(msgs), own, lines[2])
+		}
+		if own != first["t00"] {
+			dated++
+		}
+	}
+	if dated == 0 {
+		t.Fatalf("setup: want a part keeping its meta line whose members were first seen after the note's first one")
+	}
+}
+
+// TestProdWatch_ACheckTieNamesEveryLabel: two labels at the same worst length —
+// the refusal names both, so shortening one never moves it to the other.
+func TestProdWatch_ACheckTieNamesEveryLabel(t *testing.T) {
+	t.Parallel()
+	h := newPWHarness(t)
+	fold := "{names} " + strings.Repeat("&", 392)
+	labels := pwPlanLabels(t, h, map[string]any{"folded_detail": fold, "folded_detail_more": fold})
+	_, nerr, err := pwNotifyDry(t, h, labels, 1500, []any{})
+	if err == nil || !strings.Contains(nerr, "(labels.folded_detail; labels.folded_detail_more)") {
+		t.Fatalf("two fold labels at the worst length: the refusal must name both: %v %s", err, lastN(nerr, 400))
+	}
+}
+
+// TestProdWatch_TheCheckCountsMoreOnlyWhereItShows: folded_detail never holds
+// members back — `more` renders 0 there — so the check counts it at that width:
+// its limit is the need of the longest one-member note, no more.
+func TestProdWatch_TheCheckCountsMoreOnlyWhereItShows(t *testing.T) {
+	t.Parallel()
+	h := newPWHarness(t)
+	labels := pwPlanLabels(t, h, map[string]any{"folded_detail": "{n} {names} ({more}) " + strings.Repeat("&", 378)})
+	_, nerr, err := pwNotifyDry(t, h, labels, 1500, []any{})
+	m := pwCheckLimit.FindStringSubmatch(nerr)
+	if err == nil || m == nil {
+		t.Fatalf("setup: at 1500 the check must refuse and name its numbers: %v %s", err, lastN(nerr, 300))
+	}
+	limit := atoiOr(m[1]) + 1 + atoiOr(m[2])
+	name := strings.Repeat("ftp:", 50)
+	var notes []any
+	for _, st := range []string{"new", "escalated", "reminder", "quiet", "regressed", "escalating", "reopened"} {
+		notes = append(notes, pwOneMemberNote("sentry", st, "medium", "", name))
+	}
+	for _, status := range []string{"resolved", "ignored", "closed"} {
+		notes = append(notes, pwOneMemberNote("sentry", "resolved", "medium", status, name))
+	}
+	for _, st := range []string{"new", "escalated", "reminder", "quiet"} {
+		notes = append(notes, pwOneMemberNote("loki", st, "medium", "", name))
+	}
+	out, nerr, err := pwNotifyDry(t, h, labels, 4000, notes)
+	if err != nil {
+		t.Fatalf("setup: at 4000 the notes must render: %v %s", err, lastN(nerr, 300))
+	}
+	need := 0
+	for _, msg := range out["messages"].([]any) {
+		lines := strings.Split(msg.(map[string]any)["text"].(string), "\n")
+		if k := len([]rune(lines[0])) + 1 + len([]rune(lines[1])); k > need {
+			need = k
+		}
+	}
+	if limit != need {
+		t.Fatalf("the check demands %d characters; the longest one-member note needs %d (folded_detail renders `more` as 0)", limit, need)
+	}
+}
+
+// TestProdWatch_SentryNeverServedIssuesGoFirst: an issue no generation ever
+// served — a record kept from before the rotations counted in generations —
+// goes first: it is read before the ones already read.
+func TestProdWatch_SentryNeverServedIssuesGoFirst(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_tracked"] = 1 }))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	for _, id := range []string{"21", "22"} {
+		h.sentry.put(&pwSentryIssue{ID: id, ShortID: strp("P-" + id), Title: "x", FirstProcessed: now, LastSeen: now, Count: 1})
+	}
+	sentryTick(t, h, wf) // new: alerted, read in the list — each carries the generation that served it
+	for _, id := range []string{"21", "22"} {
+		h.sentry.edit(id, func(i *pwSentryIssue) { i.FirstProcessed = now.Add(-3 * time.Hour) })
+	}
+	sentryEditRecord(t, h, "22", func(r map[string]any) { delete(r, "tracked_read_gen") })
+	o := sentryTick(t, h, wf)
+	if got := fmt.Sprint(o["plan"]["sentry"].(map[string]any)["tracked_ids"]); got != "[22]" {
+		t.Fatalf("max_tracked 1: the issue no generation served must be read first, got %s", got)
 	}
 }

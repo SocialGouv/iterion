@@ -2125,7 +2125,8 @@ tool poll_sentry:
                    'in_new': False, 'in_transition': False, 'in_tracked': False, 'transition_at': None, 'transition_kind': None,
                    ## The lists count events over their 90 days (or the retention); the by-id
                    ## answer counts the issue's whole life, every environment.
-                   'count_scope': 'total' if source == 'tracked' else '90d', 'transition_checked': False}
+                   'count_scope': 'total' if source == 'tracked' else '90d', 'transition_checked': False,
+                   'transition_tried': False}
             records[i['id']] = rec
         elif seen and (not rec['last_seen'] or seen > rec['last_seen']):
             rec['last_seen'] = seen
@@ -2258,6 +2259,10 @@ tool poll_sentry:
                 r['transition_at'] = k.get('transition_at')
                 rechecks.append(r)
         undated.sort(key=lambda r: (r['last_seen'] or '', r['id']), reverse=True)
+        ## A lookup that failed (a 5xx, a timeout, a malformed answer) was a
+        ## turn too: the tried go behind the never tried, least recently tried
+        ## first — an issue whose lookup keeps failing never holds a slot.
+        undated.sort(key=lambda r: (known.get(r['id']) or {}).get('checked_gen', -1))
         rechecks.sort(key=lambda r: ((known.get(r['id']) or {}).get('checked_gen', -1), r['id']))
         want = {'regressed': 'set_regression', 'escalating': 'set_escalating'}
         cap = int(cfg.get('max_transition_checks') or 0)
@@ -2269,6 +2274,7 @@ tool poll_sentry:
                     rechecks_deferred += 1
                 continue
             stats['activity_checks'] += 1
+            r['transition_tried'] = True
             try:
                 body, _ = get('/api/0/organizations/' + org + '/issues/' + r['id'] + '/activities/', None,
                               'the activities of issue ' + r['id'])
@@ -2985,7 +2991,7 @@ tool leak_scan:
                     return scrub(v, 'sentry', {}, seen, (), per)[:cap]
                 item = {k: rec.get(k) for k in ('id', 'short_id', 'level', 'status', 'substatus', 'category', 'last_seen', 'count',
                                                 'user_count', 'in_new', 'in_transition', 'in_tracked', 'transition_at', 'transition_kind',
-                                                'count_scope', 'transition_checked')}
+                                                'count_scope', 'transition_checked', 'transition_tried')}
                 item.update({'title': clean('title', 200), 'culprit': clean('culprit', 200), 'meta_type': clean('meta_type', 120),
                              'meta_value': clean('meta_value', 300), 'meta_filename': clean('meta_filename', 200),
                              'meta_function': clean('meta_function', 120)})
@@ -3088,7 +3094,9 @@ tool decide:
         ## A stamp this bot wrote orders a queue — a pending alert, an owed
         ## note: one a clock running ahead wrote is taken for none, first in
         ## line, the next real stamp replacing it (clamped to now it would
-        ## always look freshest and never take its turn).
+        ## always look freshest and never take its turn). Stamps taken for
+        ## none keep their writer's order: a runner running late sees every
+        ## other runner's stamps as future, and they wait first in, first out.
         st = str(stamp or '')
         return st if st <= now_iso else ''
 
@@ -3310,6 +3318,7 @@ tool decide:
                 rec['transition_at'] = s_as_of
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
+            if it.get('transition_tried'):
                 rec['transition_checked_gen'] = state['generation']
             if it.get('last_seen'):
                 rec['sentry_last_seen'] = it['last_seen']
@@ -3338,6 +3347,7 @@ tool decide:
             rec = s_record(it, fp)
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
+            if it.get('transition_tried'):
                 rec['transition_checked_gen'] = state['generation']
             ## Read this tick, by id or in a list: the by-id reads take turns
             ## from the least recently read — in state generations —, a fresh
@@ -3753,13 +3763,14 @@ tool decide:
     def pending_first(a):
         rec = incidents.get(a['fingerprint']) or {}
         if rec.get('pending') and a.get('state') not in ('quiet', 'resolved'):
-            return (0, past(rec.get('pending_since')))
-        return (1, '')
+            return (0, past(rec.get('pending_since')), str(rec.get('pending_since') or ''))
+        return (1, '', '')
     ## A note derived again from the state (an idle, a reminder, a closing
     ## note) that a tick had no room for comes first once it is owed: the
     ## oldest owed first (both sorts below are stable).
     def owed_key(a):
-        return past((incidents.get(a['fingerprint']) or {}).get('note_owed_at') or now_iso)
+        st = (incidents.get(a['fingerprint']) or {}).get('note_owed_at') or now_iso
+        return (past(st), str(st))
     alerts.sort(key=owed_key)
     alerts.sort(key=pending_first)
     order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reopened': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
@@ -3832,7 +3843,8 @@ tool decide:
                           'count': sum(int(a.get('count') or 0) for a in named),
                           'first_seen': min(str(a.get('first_seen') or now_iso) for a in named), 'prev_severity': '',
                           'members': [{'fp': a['fingerprint'], 'severity': a['severity'], 'prev_severity': a.get('prev_severity') or '',
-                                       'transition_at': a.get('transition_at'), 'name': fold_name(a), 'count': a.get('count')}
+                                       'transition_at': a.get('transition_at'), 'name': fold_name(a), 'count': a.get('count'),
+                                       'first_seen': str(a.get('first_seen') or now_iso)}
                                       for a in named]})
 
     ## ── priority, cap, staging ────────────────────────────────────
@@ -4212,7 +4224,11 @@ tool notify:
     def note_part(a, chunk, last):
         fields = dict(a.get('fields') or {}, n=len(chunk), names=', '.join(str(m.get('name') or '')[:NAME_CAP] for m in chunk),
                       more=((a.get('fields') or {}).get('more') or 0) if last else 0)
-        return render(a, fields, a.get('detail_key') if last else 'folded_detail', sum(int(m.get('count') or 0) for m in chunk))
+        ## A part says its own members: their number, their count and the
+        ## first of their first sightings.
+        seen = [str(m['first_seen']) for m in chunk if m.get('first_seen')]
+        return render(dict(a, first_seen=min(seen)) if seen else a, fields, a.get('detail_key') if last else 'folded_detail',
+                      sum(int(m.get('count') or 0) for m in chunk))
     def names_kept(lines):
         ## What the clip must keep of a note: its header and its names line.
         return len(chr(10).join(lines[:2]))
@@ -4236,7 +4252,8 @@ tool notify:
     ## template's note never carries a Sentry state), at every icon (a
     ## closing or idle note always goes out at low, whose icon is up to 4
     ## characters shorter: the check errs on the safe side there), and the
-    ## longer fold label naming one member (`n` 1, `more` of eight digits)
+    ## longer fold label naming one member (`n` 1; `more` of eight digits in
+    ## folded_detail_more, 0 in folded_detail, which never holds members back)
     ## of NAME_CAP scheme-looking characters (a zero-width space before each
     ## colon). A config that could not say one fails its first tick and its
     ## dry run, never the tick of a flood.
@@ -4244,15 +4261,19 @@ tool notify:
                   'loki_template': [(st, '') for st in ('new', 'escalated', 'reminder', 'quiet')]}
     wide = 10 ** 8 - 1
     worst_name = ('ftp:' * NAME_CAP)[:NAME_CAP]
-    worst_head, head_keys = max((len(header(sev, st, status, tk)), (marker_key(st, status), tk))
-                                for tk, states in NOTE_KINDS.items() for st, status in states for sev in ICON)
-    worst_names, fold_key = max((len(fmt_capped(k, {'names': max_chars}, n=1, names=worst_name, more=wide)), k)
-                                for k in ('folded_detail', 'folded_detail_more'))
+    heads = [(len(header(sev, st, status, tk)), 'labels.' + marker_key(st, status) + ' with labels.' + tk)
+             for tk, states in NOTE_KINDS.items() for st, status in states for sev in ICON]
+    folds = [(len(fmt_capped(k, {'names': max_chars}, n=1, names=worst_name, more=more)), 'labels.' + k)
+             for k, more in (('folded_detail', 0), ('folded_detail_more', wide))]
+    worst_head, worst_names = max(n for n, _ in heads), max(n for n, _ in folds)
     if worst_head + 1 + worst_names > max_chars:
+        ## Every label at the worst length is named: shortening one of two
+        ## would only move the refusal to the other.
         raise SystemExit('prod-watch: these labels leave a note of folded alerts no room to name one member within max_message_chars ' +
-                         str(max_chars) + ': its header renders up to ' + str(worst_head) + ' characters (labels.' + head_keys[0] +
-                         ' with labels.' + head_keys[1] + ') and its names line up to ' + str(worst_names) + ' with one name (labels.' +
-                         fold_key + ') -- shorten those labels (a label renders escaped: & becomes &amp;) or the app name, or raise '
+                         str(max_chars) + ': its header renders up to ' + str(worst_head) + ' characters (' +
+                         '; '.join(sorted({k for n, k in heads if n == worst_head})) + ') and its names line up to ' +
+                         str(worst_names) + ' with one name (' + '; '.join(sorted({k for n, k in folds if n == worst_names})) +
+                         ') -- shorten those labels (a label renders escaped: & becomes &amp;) or the app name, or raise '
                          'the max_message_chars var')
 
     messages = []
