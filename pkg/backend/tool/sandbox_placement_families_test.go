@@ -26,6 +26,10 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		// A thin wrapper over RegisterClawBuiltinsWithEnv, which
 		// RegisterClawAll calls: the same tools, no extra names.
 		"RegisterClawBuiltins": "wrapper over RegisterClawBuiltinsWithEnv",
+		// Registers whatever ToolDef the caller hands it; no fixed name for
+		// a placement table to classify.
+		"RegisterBuiltin": "registers a single caller-supplied tool",
+		"RegisterMCP":     "registers a discovered MCP tool; the shape rule classifies those",
 		// Registers ONE tool the caller supplies. There is no fixed name for
 		// a placement table to classify, and the classification of whatever
 		// is passed is the caller's to make.
@@ -57,7 +61,7 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 				bodies[fn.Name.Name] = fn
 				continue
 			}
-			if strings.HasPrefix(fn.Name.Name, "RegisterClaw") {
+			if isToolRegistrar(fn) {
 				exported[fn.Name.Name] = true
 				bodies[fn.Name.Name] = fn
 			}
@@ -72,8 +76,8 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		}
 	}
 
-	calledByAll := registerClawCallsIn(bodies["RegisterClawAll"])
-	calledByHelper := registerClawCallsIn(bodies["buildFullClawRegistry"])
+	calledByAll := registrarCallsIn(bodies["RegisterClawAll"], exported)
+	calledByHelper := registrarCallsIn(bodies["buildFullClawRegistry"], exported)
 
 	var missing []string
 	for name := range exported {
@@ -93,9 +97,41 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 	}
 }
 
-// registerClawCallsIn returns every RegisterClaw* function the body calls,
-// in either spelling (bare, or through a package selector).
-func registerClawCallsIn(fn *ast.FuncDecl) map[string]bool {
+// isToolRegistrar reports whether fn is one of this package's tool-family
+// registrars, by SIGNATURE: exported, first parameter `*Registry`, single
+// `error` result.
+//
+// Not by name prefix. "RegisterClaw*" is a convention this package already
+// breaks twice — RegisterAskUser and RegisterAsyncAsk — so a guard keyed on
+// it goes blind to the next registrar that does not adopt it, which is
+// exactly how a new execution-capable tool reaches a sandboxed node with no
+// placement and gets silently refused.
+func isToolRegistrar(fn *ast.FuncDecl) bool {
+	if fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Params == nil {
+		return false
+	}
+	if len(fn.Type.Params.List) == 0 {
+		return false
+	}
+	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	id, ok := star.X.(*ast.Ident)
+	if !ok || id.Name != "Registry" {
+		return false
+	}
+	res := fn.Type.Results
+	if res == nil || len(res.List) != 1 {
+		return false
+	}
+	errID, ok := res.List[0].Type.(*ast.Ident)
+	return ok && errID.Name == "error"
+}
+
+// registrarCallsIn returns every function the body calls whose name this
+// package exports as a registrar.
+func registrarCallsIn(fn *ast.FuncDecl, registrars map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	if fn == nil || fn.Body == nil {
 		return out
@@ -105,15 +141,15 @@ func registerClawCallsIn(fn *ast.FuncDecl) map[string]bool {
 		if !ok {
 			return true
 		}
+		var name string
 		switch f := call.Fun.(type) {
 		case *ast.Ident:
-			if strings.HasPrefix(f.Name, "RegisterClaw") {
-				out[f.Name] = true
-			}
+			name = f.Name
 		case *ast.SelectorExpr:
-			if strings.HasPrefix(f.Sel.Name, "RegisterClaw") {
-				out[f.Sel.Name] = true
-			}
+			name = f.Sel.Name
+		}
+		if registrars[name] {
+			out[name] = true
 		}
 		return true
 	})

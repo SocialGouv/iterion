@@ -2,6 +2,7 @@ package envtrust
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -43,6 +44,11 @@ func TestThePlantedRecordReachesAChildProcess(t *testing.T) {
 		if !Planted("ITERION_TEST_TRUST") {
 			os.Exit(childMarkerLost)
 		}
+		// A POSITIVE receipt, not just exit 0: a test binary whose
+		// -test.run matches nothing also exits 0, so "the child did not
+		// fail" cannot distinguish "the child agreed" from "the child never
+		// ran a single assertion".
+		fmt.Println(childReceipt)
 		os.Exit(0)
 	}
 
@@ -58,6 +64,10 @@ func TestThePlantedRecordReachesAChildProcess(t *testing.T) {
 	cmd.Env = append(os.Environ(), "ENVTRUST_CHILD=1")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
+		if !strings.Contains(string(out), childReceipt) {
+			t.Fatalf("the child exited 0 without reaching its assertions — an unmatched -test.run does that "+
+				"too, so this test would pass having proved nothing\n%s", out)
+		}
 		return
 	}
 	// Each exit code says which of the two failures happened, and anything
@@ -83,6 +93,10 @@ const (
 	childLaundered  = 3
 	childMarkerLost = 4
 )
+
+// childReceipt is what the child prints once it has actually checked both
+// facts. Its absence is a failure even on exit 0.
+const childReceipt = "envtrust-child-checked-both"
 
 // A forged marker can only ever REMOVE trust, so it needs no protection.
 func TestAMarkerFromTheEnvironmentIsHonoured(t *testing.T) {
@@ -122,5 +136,32 @@ func TestMarkingIsCumulativeAndStable(t *testing.T) {
 		if !Planted(name) {
 			t.Errorf("%s lost from the set", name)
 		}
+	}
+}
+
+// The marker is a comma-joined list with no escaping, and a `.env` key may
+// carry a comma. `ITERION_HOME,HARMLESS=1` therefore reached a child as TWO
+// planted names, the second of which denies the OPERATOR's own home its
+// authority in every descendant — no escalation, but an injectable denial of
+// the operator's own capability, with no diagnostic anywhere.
+func TestAMarkedNameCarryingTheSeparatorNeverReachesAChild(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+	t.Setenv(EnvPlantedNames, "")
+
+	MarkPlanted("ITERION_HOME,HARMLESS", "LEGITIMATE")
+
+	marker := os.Getenv(EnvPlantedNames)
+	if strings.Contains(marker, "ITERION_HOME") {
+		t.Errorf("the marker exported %q: a child splitting on \",\" reads ITERION_HOME as planted and the "+
+			"operator's own home loses its authority there", marker)
+	}
+	if !strings.Contains(marker, "LEGITIMATE") {
+		t.Errorf("a well-formed name must still travel: %q", marker)
+	}
+	// In THIS process the odd name keeps its (harmless) record — it is the
+	// crossing that cannot represent it.
+	if !Planted("ITERION_HOME,HARMLESS") {
+		t.Error("the local record is unchanged; only the marker cannot carry it")
 	}
 }

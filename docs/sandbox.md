@@ -758,7 +758,7 @@ your repo root and `sandbox: auto` will pick them up.
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **sandboxed**: shell and script recipes run inside the container (`bash -c`); a registry-tool recipe (`command: <tool>`) is a launcher closure, so it runs only for a launcher-placed tool and is refused otherwise — under a Verified Action (`postcondition:`) that refusal fails the node whatever its `policy:`, since no rung can make the recipe runnable |
-| MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers are started by the `claude_code` CLI itself (in the container when the node is sandboxed) and beside pi for pi RPC. claw connects them in the LAUNCHER, so under an active sandbox it starts only operator-installed ones — see [MCP servers under a sandbox](#mcp-servers-under-a-sandbox). |
+| MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers are started by the `claude_code` CLI itself (in the container when the node is sandboxed) and beside pi for pi RPC. claw connects them in the LAUNCHER, so under an active sandbox it starts only the operator's — a builtin, or a plugin installed under the iterion home the operator's own environment names, enabled and configured by the operator in both cases — see [MCP servers under a sandbox](#mcp-servers-under-a-sandbox). |
 
 ### Claw backend in sandbox
 
@@ -1057,6 +1057,15 @@ Consequences for a claw node under an active sandbox:
 - the pre-run health check skips those servers rather than probing them: the
   probe IS a connection, and for a stdio server a spawn.
 
+**Name the server when you name a refused server's tool.** The registry also
+resolves a BARE tool name (`search` → `mcp.repo.search`) once that server is
+connected, but a refused server never connects, so nothing links the bare name
+to it — and a refusal that cannot name its server cannot be carried to
+execution. Such a node fails at build instead of falling back; the error names
+the servers this launcher did not start and the spelling that restores the
+fallback. Write `mcp.<server>.<tool>` (or `mcp__<server>__<tool>`) on any
+server that may be refused.
+
 Unsandboxed runs keep every server: the run already executes beside the
 launcher, so a workflow-controlled server there adds no exposure the run does
 not have. The `${VAR}` expansion below follows the same rule and is unchanged
@@ -1067,7 +1076,10 @@ Two related rules travel with this one. A workflow-controlled server's
 `command`/`args`/`url` no longer expand `${VAR}` against the launcher's
 environment (`ITERION_MCP_EXPAND_UNTRUSTED_ENV=true` restores it, and only
 when the operator's own environment carries it — a value a project `.env`
-planted does not enable the hatch); and `list_mcp_resources`,
+planted does not enable the hatch *through that variable*; the expansion also
+follows the sandbox, and the two sandbox tiers ARE read live, so a `.env`
+setting `ITERION_SANDBOX_DEFAULT=none` reaches the same place — tracked
+separately); and `list_mcp_resources`,
 `read_mcp_resource` and `mcp_auth`, which take a server NAME the model writes,
 are restricted to the node's own active MCP servers — and withheld outright
 from an LLM node whose active set is empty, where every call they could make

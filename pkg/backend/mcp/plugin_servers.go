@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"strings"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
@@ -22,17 +23,30 @@ import (
 // sandbox is active. Without the distinction, a repository carrying `.env` and
 // a `default_enabled` manifest would classify its own code as the operator's.
 
-// PluginServersUnavailable returns the reason no plugin MCP server can be
-// contributed to a workflow, or nil when the registry loads.
+// PluginServersUnavailable returns the reason plugin MCP servers are missing
+// from a workflow, or nil when the registry loaded whole.
+//
+// Two reasons, not one. The registry can fail outright, and it can load while
+// SKIPPING an individual plugin whose manifest it could not parse — the
+// second is the one that actually happens, and it takes that plugin's servers
+// off every node while `plugin.Load()` returns no error at all.
+// Registry.loadInstalled records those in LoadSkips precisely so a consumer
+// who needs to have seen every plugin can say so; pkg/runtime already vetoes
+// its contribution mirror on them.
 //
 // PrepareWorkflow reports this through its optional logger, which the run
 // path passes and the read-only analyses (`iterion validate`, the studio
 // compile) have none of. Those surfaces ask here instead and put the answer
 // where their user looks — a validation whose tool list is silently missing
-// every plugin MCP server reads as "no plugins are enabled".
+// a plugin's MCP servers reads as "that plugin contributes none".
 func PluginServersUnavailable() error {
-	if _, err := plugin.Load(); err != nil {
+	reg, err := plugin.Load()
+	if err != nil {
 		return fmt.Errorf("mcp: plugin registry failed to load — NO plugin MCP server is available: %w", err)
+	}
+	if skips := reg.LoadSkips(); len(skips) > 0 {
+		return fmt.Errorf("mcp: %d installed plugin(s) were skipped while loading, so their MCP servers are "+
+			"absent: %s", len(skips), strings.Join(skips, "; "))
 	}
 	return nil
 }
@@ -46,6 +60,13 @@ func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*Ser
 		// is the repository's own whenever a project `.env` selected the home.
 		logger.Warn("mcp: plugin registry failed to load — NO plugin MCP server is available to this run: %v", err)
 		return map[string]*ServerConfig{}
+	}
+	// A registry that loaded but skipped a plugin is the common half of the
+	// same silence: that plugin's servers are gone from every node of the
+	// run, and the load returned no error to say so.
+	if skips := reg.LoadSkips(); len(skips) > 0 {
+		logger.Warn("mcp: %d installed plugin(s) skipped while loading — their MCP servers are NOT available "+
+			"to this run: %s", len(skips), strings.Join(skips, "; "))
 	}
 	out := map[string]*ServerConfig{}
 	for _, p := range reg.Enabled() {

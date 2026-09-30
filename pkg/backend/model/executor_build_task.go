@@ -1265,6 +1265,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// mcp.PrepareWorkflow. Anything reported from inside this loop
 		// therefore has to read which of the two a server was, rather than
 		// assume.
+		var degraded []mcpDegradeReport
 		if e.mcpManager != nil && e.toolRegistry != nil {
 			// The servers the node named a tool on. Those do NOT degrade:
 			// resolveToolsForNode either carries a typed refusal to Execute,
@@ -1297,9 +1298,15 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 					if errors.As(err, &notStartable) {
 						cause = notStartable.Cause
 					}
+					// Origin.String(), not string(Origin): the cast defeats
+					// the Stringer and renders the ZERO value — an
+					// unclassified entry, or a plugin stripped of its
+					// authority — as the empty string. That is exactly the
+					// case this whole boundary is about, and it was the one
+					// the log and the event named as nothing at all.
 					origin := ""
 					if cfg, ok := e.mcpManager.ServerConfig(srv); ok && cfg != nil {
-						origin = string(cfg.Origin)
+						origin = cfg.Origin.String()
 					}
 					// Ambient or asked for: the node's active set holds both,
 					// merged, so the answer comes from the DECLARATION rather
@@ -1308,24 +1315,23 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 					// author reading the target repo's `.mcp.json` for a line
 					// that is in their own `.bot`.
 					source := "ambient"
-					if ir.NodeDeclaresMCPServer(node, srv) {
+					if ir.DeclaresMCPServer(node, e.wfMCP, srv) {
 						source = "declared"
 					}
-					if e.logger != nil {
-						if refused {
-							e.logger.Warn("[%s] %s MCP server %q (origin: %s) is not started by this launcher — "+
-								"the node runs WITHOUT its tools: %v", f.id, source, srv, origin, err)
-						} else {
-							e.logger.Warn("[%s] %s MCP server %q failed to boot — the node runs WITHOUT its tools: %v",
-								f.id, source, srv, err)
-						}
-					}
-					if e.hooks.OnMCPServerDegraded != nil {
-						e.hooks.OnMCPServerDegraded(f.id, MCPServerDegradedInfo{
+					// Held, not emitted. Both the log line and the event
+					// say "the node runs WITHOUT its tools", and resolution
+					// below can still fail the node — a tool named by the
+					// bare MCP shorthand on this very server does exactly
+					// that. A run record whose only trace of the drop is a
+					// sentence the next line contradicts is worse than no
+					// trace: a downstream gate reads it as "ran degraded".
+					degraded = append(degraded, mcpDegradeReport{
+						info: MCPServerDegradedInfo{
 							Server: srv, Source: source, Origin: origin,
 							Refused: refused, Cause: cause, Err: err,
-						})
-					}
+						},
+						refused: refused,
+					})
 					continue
 				}
 				clawTools = append(clawTools, "mcp."+srv+".*")
@@ -1335,6 +1341,8 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		if toolErr != nil {
 			return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
+		// The node WILL run: the drops it runs without are now facts.
+		e.reportMCPDegrades(f.id, degraded)
 		task.ToolDefs = toolDefs
 		// Carried, not raised. A build error aborts the node before its
 		// fallback chain is walked; this refusal must reach Execute, where a
@@ -1843,4 +1851,31 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 // form, since no host wires a subagent runner into it.
 func withClawOrchestrationTools(tools []string) []string {
 	return ensureToolPresent(tools, "agent")
+}
+
+// mcpDegradeReport is one held "this node runs without that server's tools"
+// report, waiting for the node to actually be about to run.
+type mcpDegradeReport struct {
+	info    MCPServerDegradedInfo
+	refused bool
+}
+
+// reportMCPDegrades emits the held reports, once the node's tools have
+// resolved and it is genuinely going to run without them.
+func (e *ClawExecutor) reportMCPDegrades(nodeID string, reports []mcpDegradeReport) {
+	for _, r := range reports {
+		if e.logger != nil {
+			if r.refused {
+				e.logger.Warn("[%s] %s MCP server %q (origin: %s) is not started by this launcher — "+
+					"the node runs WITHOUT its tools: %v", nodeID, r.info.Source, r.info.Server,
+					r.info.Origin, r.info.Err)
+			} else {
+				e.logger.Warn("[%s] %s MCP server %q failed to boot — the node runs WITHOUT its tools: %v",
+					nodeID, r.info.Source, r.info.Server, r.info.Err)
+			}
+		}
+		if e.hooks.OnMCPServerDegraded != nil {
+			e.hooks.OnMCPServerDegraded(nodeID, r.info)
+		}
+	}
 }

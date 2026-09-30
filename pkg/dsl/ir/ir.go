@@ -827,17 +827,29 @@ func NodeActiveMCPServers(n Node) []string {
 	return nil
 }
 
-// NodeDeclaresMCPServer reports whether the node's own `mcp: servers:` block
-// names `server` — the half of its active set the node ASKED for, as opposed
-// to the ambient servers it inherited from the target repository's
-// `.mcp.json`, the plugin catalog or the workflow. ActiveMCPServers holds
-// both, merged, so this is the only place the difference survives.
-func NodeDeclaresMCPServer(n Node, server string) bool {
+// DeclaresMCPServer reports whether the node's own `mcp: servers:` block, or
+// the workflow-level one, names `server` — the half of a node's active set
+// the BOT asked for, as opposed to the ambient servers it inherited from the
+// target repository's `.mcp.json` or the plugin catalog. ActiveMCPServers
+// holds both, merged, so this is the only place the difference survives.
+//
+// Both blocks count, and the workflow one is not optional: `mcp: servers:`
+// at workflow level is the documented spelling for "these servers, on every
+// node", and PrepareWorkflow folds it into each node's active set while
+// leaving the node's own config nil. Reading the node alone therefore called
+// a server the bot declared "ambient".
+func DeclaresMCPServer(n Node, wfMCP *MCPConfig, server string) bool {
+	if mcpConfigNames(wfMCP, server) {
+		return true
+	}
 	ln, ok := n.(LLMNode)
 	if !ok {
 		return false
 	}
-	cfg := ln.GetMCP()
+	return mcpConfigNames(ln.GetMCP(), server)
+}
+
+func mcpConfigNames(cfg *MCPConfig, server string) bool {
 	if cfg == nil {
 		return false
 	}

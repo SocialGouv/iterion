@@ -80,6 +80,12 @@ type ClawExecutor struct {
 	wfCompaction   *ir.Compaction
 	wfCapabilities []string // workflow-level default host capabilities (nil = none)
 	wfSkills       []string // workflow-level default skill-library references (nil = none)
+	// wfMCP is the workflow's own `mcp:` block. A server it names is one the
+	// BOT asked for, and PrepareWorkflow folds it into every node's active
+	// set while leaving the node's own MCP config nil — so without this, the
+	// degrade event calls a server the bot declared "ambient" and sends its
+	// author to read the target repository's `.mcp.json`.
+	wfMCP *ir.MCPConfig
 	// skillHints maps a skill-library name to its description for every skill
 	// referenced by the workflow that RESOLVED in the library at run start
 	// (set by SetSkillHints from the runtime mirror). Per-node, the executor
@@ -859,6 +865,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCompaction:         wf.Compaction,
 		wfCapabilities:       wf.Capabilities,
 		wfSkills:             wf.Skills,
+		wfMCP:                wf.MCP,
 		botID:                wf.Name,
 		routeCooldowns: routeCooldownLedger{
 			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),

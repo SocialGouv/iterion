@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -1253,8 +1254,14 @@ func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedIn
 	// broken — as fields, so a reader of the timeline can tell a repository's
 	// `.mcp.json` from the bot's own declaration, and a refusal from a boot
 	// failure, without parsing the error text.
+	// Always present. An empty Origin means the producer could not name one
+	// — which is itself the answer a reader needs ("nobody vouched for this
+	// server"), and dropping the key made the timeline silent on precisely
+	// the unclassified case.
 	if info.Origin != "" {
 		data["origin"] = info.Origin
+	} else {
+		data["origin"] = mcp.OriginUnknown.String()
 	}
 	if info.Refused {
 		data["refused"] = true

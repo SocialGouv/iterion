@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
@@ -54,7 +56,7 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 		}
 		definition, ok, err := e.resolveSingleToolForNode(ctx, node, name)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, e.bareNameMayBelongToARefusedServer(node, name, err)
 		}
 		if !ok {
 			continue
@@ -379,20 +381,64 @@ func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Nod
 // launcher refused to start, in either spelling the registry resolves.
 // Non-MCP names never match.
 //
-// Every reading of an ambiguous FQN is checked, and a refusal on any of them
-// withholds the tool: `mcp__a__b__c` names server `a` or `a__b` depending on
-// where the tool name starts, and a guard that guesses one advertises a tool
-// whose server this launcher never started.
+// The FQN spelling has exactly ONE reading the registry serves — the server
+// before the LAST `__`, tool names containing `__` included — so there is no
+// ambiguity to widen over here: `mcp__repo__list__all` is served only as
+// `mcp.repo__list.all`, never as `mcp.repo.list__all`. Asking about more than
+// that reading withholds a tool because an unrelated server was refused.
 func refusedMCPServerFor(name string, refused map[string]string) bool {
 	if len(refused) == 0 {
 		return false
 	}
-	for _, server := range tool.MCPServerCandidatesOf(name) {
-		if _, refusedHere := refused[server]; refusedHere {
-			return true
-		}
+	server, ok := tool.MCPServerOf(name)
+	if !ok {
+		return false
 	}
-	return false
+	_, refusedHere := refused[server]
+	return refusedHere
+}
+
+// bareNameMayBelongToARefusedServer enriches a resolution failure when the
+// name carries NO server and one of the node's active servers is one this
+// launcher may not start.
+//
+// The registry resolves a bare `search` to `mcp.repo.search` once that server
+// is connected — which is how an author may legitimately have written it. A
+// refused server is never connected, so its tools are not in the registry and
+// the name resolves to nothing. Worse, the bare spelling cannot name its
+// server, so nothing records the refusal for it either: unlike
+// `mcp.repo.search` it cannot be carried to Execute where a fallback route
+// would serve it, and the node dies here on "unknown tool" — for a `.bot`
+// that works unsandboxed.
+//
+// The unstartable set is read from the START POLICY, not from the collected
+// refusals: those are keyed on names, and a bare name is precisely the one
+// that produces none. The refusal is deliberately not guessed onto the name —
+// that would send the node to a fallback for a tool which may not exist
+// anywhere. The message carries the fact instead.
+func (e *ClawExecutor) bareNameMayBelongToARefusedServer(node ir.Node, name string, err error) error {
+	if err == nil || e.mcpManager == nil {
+		return err
+	}
+	if _, isMCP := tool.MCPServerOf(name); isMCP || strings.Contains(name, ".") || strings.Contains(name, "__") {
+		return err
+	}
+	policy := e.mcpManager.StartPolicy()
+	var servers []string
+	for _, server := range nodeActiveMCPServers(node) {
+		cfg, ok := e.mcpManager.ServerConfig(server)
+		if !ok || cfg == nil || policy.Allows(cfg.Origin) {
+			continue
+		}
+		servers = append(servers, server)
+	}
+	if len(servers) == 0 {
+		return err
+	}
+	sort.Strings(servers)
+	return fmt.Errorf("%w; this launcher did not start %v, so their tools are not in the registry — "+
+		"if %q is one of theirs, name it as mcp.<server>.%s so the refusal reaches the node's fallbacks "+
+		"instead of failing it here", err, servers, name, name)
 }
 
 // mcpServerActiveForNode reports whether `server` is in the node's active MCP
@@ -436,35 +482,42 @@ func activeMCPServersForNames(node ir.Node, names []string) []string {
 	seen := make(map[string]struct{})
 	var servers []string
 	for _, name := range names {
-		var candidates []string
+		var server string
 		// Support wildcard patterns like "mcp.claude_code.*".
 		if tool.IsMCPWildcard(name) {
 			s, err := tool.ParseMCPWildcard(name)
 			if err != nil {
 				continue
 			}
-			candidates = []string{s}
+			server = s
 		} else {
 			// Both spellings the registry resolves: a node that names
 			// `mcp__srv__tool` asks for the same server as one that names
 			// `mcp.srv.tool`, and skipping it here left the server unensured
 			// — and, once a refusal existed to carry, unrecorded, so the
 			// node died at build with "unknown tool" instead of refusing at
-			// execution where its fallbacks could serve it. An FQN whose
-			// tool name itself contains "__" has several readings; the
-			// node's own active set decides which one it meant.
-			candidates = tool.MCPServerCandidatesOf(name)
-		}
-		for _, server := range candidates {
-			if _, ok := active[server]; !ok {
+			// execution where its fallbacks could serve it.
+			//
+			// ONE reading, deliberately: this list is an INSTRUCTION (ensure
+			// these servers, record these refusals), and the registry serves
+			// exactly the reading MCPServerOf returns. Offering more turned
+			// an ambient server that merely shares a name prefix into a
+			// refusal of the whole claw route, and swallowed its degrade
+			// event on the way.
+			s, ok := tool.MCPServerOf(name)
+			if !ok {
 				continue
 			}
-			if _, ok := seen[server]; ok {
-				continue
-			}
-			seen[server] = struct{}{}
-			servers = append(servers, server)
+			server = s
 		}
+		if _, ok := active[server]; !ok {
+			continue
+		}
+		if _, ok := seen[server]; ok {
+			continue
+		}
+		seen[server] = struct{}{}
+		servers = append(servers, server)
 	}
 	return servers
 }

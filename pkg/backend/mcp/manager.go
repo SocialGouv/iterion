@@ -101,10 +101,20 @@ func WithStartPolicy(p StartPolicy) ManagerOption {
 // Tightening also closes the clients the new policy refuses: their
 // server processes are already running beside the launcher, and nothing
 // else would stop them before the run ends.
+// A config the PREDICTION transformed is rebuilt under the settled
+// policy: the launcher-environment expansion of an untrusted server's
+// `${VAR}` is suppressed only to stop the value crossing into a
+// container, so a run that settles WITHOUT one must get its variables
+// back. Left stale, a `command: ${MY_BIN}` blanked on the prediction
+// stayed blanked and failed as an untyped startup error — on the most
+// ordinary local run there is, `sandbox: auto` degrading on a host with
+// no container runtime.
 func (m *Manager) SetStartPolicy(p StartPolicy) {
 	m.policyMu.Lock()
 	m.startPolicy = p
 	m.policyMu.Unlock()
+
+	m.rebuildCatalogFor(p)
 
 	var refused []*serverState
 	m.mu.Lock()
@@ -129,6 +139,51 @@ func (m *Manager) SetStartPolicy(p StartPolicy) {
 		} else {
 			m.logger.Info("mcp: closed %q (origin: %s) — %s", state.cfg.Name, state.cfg.Origin, p)
 		}
+	}
+}
+
+// WithConfigRefresher hands the manager the way back to a config's
+// pre-policy form. It is called on every SetStartPolicy, for the servers
+// that have not been started yet — a live client was built from the
+// config that was in force when it started, and replacing it underneath
+// would make the gate judge one config while the session speaks another.
+func WithConfigRefresher(fn func(StartPolicy) map[string]*ServerConfig) ManagerOption {
+	return func(m *Manager) { m.refreshCatalog = fn }
+}
+
+// rebuildCatalogFor replaces the config of every not-yet-started server
+// with the one the given policy implies. A started server keeps the
+// config it was started from.
+func (m *Manager) rebuildCatalogFor(p StartPolicy) {
+	if m.refreshCatalog == nil {
+		return
+	}
+	fresh := m.refreshCatalog(p)
+	if len(fresh) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name, cfg := range fresh {
+		if cfg == nil {
+			continue
+		}
+		if _, known := m.catalog[name]; !known {
+			// The refresher answers about the catalog it built; a name
+			// that is not in it now is not this manager's to add.
+			continue
+		}
+		clone := cloneServerConfig(cfg)
+		m.catalog[name] = clone
+		state, ok := m.states[name]
+		if !ok {
+			continue
+		}
+		state.mu.Lock()
+		if state.client == nil {
+			state.cfg = clone
+		}
+		state.mu.Unlock()
 	}
 }
 
@@ -184,6 +239,13 @@ type Manager struct {
 	// goroutine when the run's sandbox settles.
 	policyMu    sync.RWMutex
 	startPolicy StartPolicy
+
+	// refreshCatalog rebuilds the catalog under a given policy, for the
+	// parts of a config the policy DECIDES. The policy a manager is built
+	// with is a prediction; without this, anything the prediction
+	// transformed stays transformed after the engine settles the sandbox
+	// for real. See SetStartPolicy.
+	refreshCatalog func(StartPolicy) map[string]*ServerConfig
 }
 
 type serverState struct {

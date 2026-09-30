@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -19,8 +21,11 @@ import (
 // One traversal, several fields: each field of this spec that must be decided
 // at EVERY construction site gets its own test over this sweep. Sites are
 // reported by repo-relative path, so a failure names the file to fix.
-func executorSpecSitesMissing(t *testing.T, field string, exempt map[string]string) []string {
+func executorSpecSitesMissing(t *testing.T, field string, exempt map[string]string, gaveUp *[]string) []string {
 	t.Helper()
+	if gaveUp == nil {
+		gaveUp = &[]string{}
+	}
 
 	repoRoot := filepath.Join("..", "..")
 	var offenders []string
@@ -49,10 +54,25 @@ func executorSpecSitesMissing(t *testing.T, field string, exempt map[string]stri
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		// _test.go files are judged too. The sibling sweep in
+		// pkg/backend/mcp parses every Go file "build tags included",
+		// precisely because two of the sites it guards are `live` e2e tests
+		// no CI job runs — and skipping tests here hid two e2e sites that
+		// build an executor for real. The two sweeps walk the same tree by
+		// the same rules, or one of them is wrong and no reader can tell
+		// which.
+		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
 		rel := filepath.ToSlash(strings.TrimPrefix(path, repoRoot+string(filepath.Separator)))
+		// This package's OWN tests build partial specs on purpose — varying
+		// one field is what they are for. Every other file, test or not, is
+		// a CONSUMER and owes the answer. Same rule, same shape, as the
+		// sibling sweep in pkg/backend/mcp, which skips `pkg/backend/mcp/`
+		// for the identical reason.
+		if strings.HasPrefix(rel, "pkg/runview/") && strings.HasSuffix(rel, "_test.go") {
+			return nil
+		}
 		if _, ok := exempt[rel]; ok {
 			return nil
 		}
@@ -61,8 +81,12 @@ func executorSpecSitesMissing(t *testing.T, field string, exempt map[string]stri
 			t.Errorf("parse %s: %v", rel, perr)
 			return nil
 		}
-		if executorSpecMissesField(file, field) {
+		missing, unread := executorSpecMissesField(file, field)
+		if missing {
 			offenders = append(offenders, rel)
+		}
+		if unread {
+			*gaveUp = append(*gaveUp, rel)
 		}
 		return nil
 	})
@@ -90,7 +114,9 @@ func executorSpecSitesMissing(t *testing.T, field string, exempt map[string]stri
 func TestEveryExecutorConstructionAnswersTheSandboxQuestion(t *testing.T) {
 	exempt := map[string]string{}
 
-	offenders := executorSpecSitesMissing(t, "SandboxTiersKnown", exempt)
+	var gaveUp []string
+	offenders := executorSpecSitesMissing(t, "SandboxTiersKnown", exempt, &gaveUp)
+	assertGiveUpsAreOnTheRecord(t, gaveUp)
 	if len(offenders) > 0 {
 		t.Errorf("these build an executor without saying whether they know the run's sandbox tiers, so the MCP "+
 			"start policy cannot tell \"this surface looked and there is no sandbox\" from \"this surface did not "+
@@ -133,5 +159,30 @@ func TestThePredictedStartPolicyIsPermissiveOnlyWhenTheSurfaceKnows(t *testing.T
 				t.Errorf("predictedStartPolicy = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// expectedGiveUps are the files whose ExecutorSpec the sweep's predicate
+// cannot judge — a spec declared and never handed where the walk can see it,
+// or one whose address escapes to a callee that may well be where the field
+// is set. Judging those would fail correct code, so the predicate gives up;
+// the list exists so the give-up is a decision on the record rather than
+// silence. Empty today.
+var expectedGiveUps = map[string]string{}
+
+func assertGiveUpsAreOnTheRecord(t *testing.T, gaveUp []string) {
+	t.Helper()
+	sort.Strings(gaveUp)
+	for _, rel := range gaveUp {
+		if _, ok := expectedGiveUps[rel]; !ok {
+			t.Errorf("%s builds an ExecutorSpec in a shape this sweep cannot judge, so neither guarded field "+
+				"is checked there. Build the spec as a composite literal, or add it to expectedGiveUps with "+
+				"the reason — and with whatever proves the fields are set.", rel)
+		}
+	}
+	for rel := range expectedGiveUps {
+		if !slices.Contains(gaveUp, rel) {
+			t.Errorf("%s is listed as unjudgeable but the sweep can read it now — drop the entry", rel)
+		}
 	}
 }

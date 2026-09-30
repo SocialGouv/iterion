@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -46,6 +48,17 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 		// what SetSandbox(nil) has to open is the property under test.
 		"pkg/backend/model/executor_mcp_start_policy_test.go": "asserts the zero value, then that the engine opens it",
 	}
+
+	// Files whose option list this walk cannot read. Not exempt — invisible,
+	// which is worse: the list is asserted below so a site drifting into
+	// that shape reddens with its name instead of going quiet.
+	unreadable := []string{}
+	// Empty on purpose. The one file whose options are assembled and spread,
+	// pkg/runview/executor.go, is in `exempt` above — with its reason and
+	// the behavioural test that covers it — and `exempt` is consulted before
+	// the file is parsed, so it never reaches the predicate. Anything that
+	// lands here is a site nobody decided about.
+	expectedUnreadable := map[string]bool{}
 
 	repoRoot := filepath.Join("..", "..", "..")
 	var offenders []string
@@ -91,8 +104,12 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 			t.Errorf("parse %s: %v", rel, perr)
 			return nil
 		}
-		if managerBuiltWithoutAStartPolicy(file, mcpImportName(file)) {
+		missing, gaveUp := managerBuiltWithoutAStartPolicy(file, mcpImportName(file))
+		if missing {
 			offenders = append(offenders, rel)
+		}
+		if gaveUp {
+			unreadable = append(unreadable, rel)
 		}
 		return nil
 	})
@@ -103,7 +120,26 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 		t.Errorf("these build an mcp.Manager without declaring which servers the launcher may start, so they "+
 			"inherit the zero value (operator-installed servers only) — which silently refuses a "+
 			"workflow-declared server: %v\nPass mcp.WithStartPolicy(…) (StartAllServers for a harness that "+
-			"models an unsandboxed run), or add the file to this test's exempt map with a reason.", offenders)
+			"models an unsandboxed run) or call SetStartPolicy on the result, or add the file to this test's "+
+			"exempt map with a reason.", offenders)
+	}
+	// The silence, made loud. A file whose options this walk cannot read is
+	// not judged at all; that is the right call (a false accusation costs as
+	// much as a miss) but it must be VISIBLE, or a site drifting into the
+	// spread shape leaves the guard covering nothing and saying nothing.
+	sort.Strings(unreadable)
+	for _, rel := range unreadable {
+		if !expectedUnreadable[rel] {
+			t.Errorf("%s builds an mcp.Manager with an option list this guard cannot read (a pre-built option "+
+				"value or a spread), so it is judged by nothing. Pass mcp.WithStartPolicy(…) inline, or add it "+
+				"to expectedUnreadable together with the BEHAVIOURAL test that covers it instead.", rel)
+		}
+	}
+	for rel := range expectedUnreadable {
+		if !slices.Contains(unreadable, rel) {
+			t.Errorf("%s is listed as unreadable but this guard can now read it — drop the entry so the file "+
+				"is judged", rel)
+		}
 	}
 }
 
@@ -111,11 +147,22 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 // without a WithStartPolicy argument. It reads the SOURCE rather than
 // scanning text: `NewManager(` inside a comment or a string satisfies a grep,
 // and a call split across lines defeats a line-oriented one.
-func managerBuiltWithoutAStartPolicy(file *ast.File, mcpPkg string) bool {
+func managerBuiltWithoutAStartPolicy(file *ast.File, mcpPkg string) (missing, gaveUp bool) {
 	if mcpPkg == "" {
-		return false // the file does not import this package at all
+		return false, false // the file does not import this package at all
 	}
-	missing := false
+	// A manager armed through the EXPORTED path counts as armed:
+	// SetStartPolicy is documented as the engine's own arming call and is
+	// how the executor does it. Demanding the option instead accused
+	// correct code that uses the public API.
+	armedLater := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if ok && calleeName(call.Fun) == "SetStartPolicy" {
+			armedLater = true
+		}
+		return true
+	})
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok || !isMCPNewManagerCall(call.Fun, mcpPkg) {
@@ -141,14 +188,21 @@ func managerBuiltWithoutAStartPolicy(file *ast.File, mcpPkg string) bool {
 				// A pre-built option value or a spread (`opts...`): the file
 				// assembled its options elsewhere and this walk cannot follow
 				// it. Give it up rather than guess — in a gate a false
-				// accusation costs as much as a miss.
+				// accusation costs as much as a miss. But SAY SO: a site
+				// that drifts into this shape is otherwise invisible, no
+				// count and no list, and the header's promise that "every
+				// site this guard exempts owes a behavioural test" applies
+				// to nobody.
+				gaveUp = true
 				return true
 			}
 		}
-		missing = true
+		if !armedLater {
+			missing = true
+		}
 		return true
 	})
-	return missing
+	return missing, gaveUp
 }
 
 // isMCPNewManagerCall matches `<mcpPkg>.NewManager(…)`, where mcpPkg is the

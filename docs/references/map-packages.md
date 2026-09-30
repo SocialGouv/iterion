@@ -58,7 +58,7 @@
 | `pkg/backend/detect` | probes the host environment for available LLM credentials and CLI binaries, producing a Report consumed by the studio (UI hints) and the runtime… | — | 2 · 22 |
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` | 1 · 10 |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` | 1 · 3 |
-| `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` | 14 · 119 |
+| `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` | 14 · 120 |
 | `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` | 60 · 262 |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — | 1 · 13 |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — | 3 · 42 |
@@ -68,7 +68,7 @@
 | `pkg/backend/secretguard` | protects secret values from leaking through an agent run. | — | 3 · 23 |
 | `pkg/backend/sessionpack` | packs and unpacks CLI session files for ADR-089 persist. | — | 3 · 6 |
 | `pkg/backend/thinktokens` | provides an approximate token count for extended-thinking (reasoning) text. | — | 1 · 1 |
-| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ModelConsultingChecker`, `ToolChecker`, `WatchStore` | 20 · 97 |
+| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ModelConsultingChecker`, `ToolChecker`, `WatchStore` | 20 · 96 |
 | `pkg/backend/tool/privacy` | implements two iterion built-in tools that detect and redact personally identifiable information (PII): - privacy_filter: detect or redact 5… | — | 3 · 14 |
 | `pkg/backend/tool/privacy/detector` | implements the pure-Go PII detection backend used by the privacy_filter / privacy_unfilter built-in tools. | `Rule` | 4 · 12 |
 | `pkg/backend/toolcatalog` | the compile-time view of a node's `tools:` list: which backends the list actually CONSTRAINS, and which bare tool names the run-time registry can… | — | 4 · 15 |

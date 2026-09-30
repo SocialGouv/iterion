@@ -18,6 +18,7 @@ func TestTheExecutorSpecSweepSeesWhatItClaimsTo(t *testing.T) {
 		name    string
 		src     string
 		missing bool
+		unread  bool // the predicate gave up on this shape
 	}{
 		{
 			name: "a literal that sets the field",
@@ -63,6 +64,24 @@ import other "example.com/other"
 func f() { _ = other.ExecutorSpec{} }`,
 		},
 		{
+			// A file that declares its OWN type of that name and never
+			// imports runview. Accusing it names a remedy that does not
+			// type-check there, and the only way out is an exempt entry
+			// about a file the rule has nothing to say about.
+			name: "a package-local type of the same name",
+			src: `package p
+type ExecutorSpec struct{ Name string }
+func f() ExecutorSpec { return ExecutorSpec{Name: "x"} }`,
+		},
+		{
+			// …but a dot-import DOES entitle the bare spelling.
+			name: "a dot-import that omits the field",
+			src: `package p
+import . "github.com/SocialGouv/iterion/pkg/runview"
+func f() { _ = ExecutorSpec{} }`,
+			missing: true,
+		},
+		{
 			name: "field-by-field assignment",
 			src: `package p
 import "github.com/SocialGouv/iterion/pkg/runview"
@@ -83,10 +102,67 @@ func f() {
 			missing: true,
 		},
 		{
+			// A factory that fills the spec and RETURNS it: the caller is
+			// the one that builds. Covered today only because the real site
+			// happens to use a composite literal.
+			name: "a factory that fills a spec and returns it",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func mk() runview.ExecutorSpec {
+	var s runview.ExecutorSpec
+	s.RunID = "r"
+	return s
+}`,
+			missing: true,
+		},
+		{
+			// …and the same shape with the field set is clean.
+			name: "a factory that sets the field",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func mk() runview.ExecutorSpec {
+	var s runview.ExecutorSpec
+	s.RunID = "r"
+	s.BotID = "b"
+	return s
+}`,
+		},
+		{
+			// A zero-value sentinel returned beside an error builds nothing,
+			// so it owes nothing — and must not be reported as unjudgeable
+			// either, which would be noise about a variable nobody uses.
+			name: "a zero-value sentinel returned with an error",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func mk(fail bool) (runview.ExecutorSpec, error) {
+	var zero runview.ExecutorSpec
+	if fail {
+		return zero, nil
+	}
+	s := runview.ExecutorSpec{BotID: "b"}
+	return s, nil
+}`,
+		},
+		{
+			// `BuildExecutor(*spec)` after `new(...)`: the shape a refactor
+			// to a pointer produces, invisible while only bare idents were
+			// collected.
+			name: "new() handed by dereference",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f() {
+	spec := new(runview.ExecutorSpec)
+	spec.RunID = "r"
+	_, _ = runview.BuildExecutor(*spec)
+}`,
+			missing: true,
+		},
+		{
 			// The give-up the predicate's own comment promises: the callee
 			// may be exactly where the field is set, so this correct code
-			// must not be accused.
-			name: "a spec whose address is handed to a helper",
+			// must not be accused — but it IS reported as unjudged.
+			unread: true,
+			name:   "a spec whose address is handed to a helper",
 			src: `package p
 import "github.com/SocialGouv/iterion/pkg/runview"
 func fill(*runview.ExecutorSpec) {}
@@ -102,7 +178,13 @@ func f() {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			if got := executorSpecMissesField(file, "BotID"); got != tc.missing {
+			got, unread := executorSpecMissesField(file, "BotID")
+			if unread != tc.unread {
+				t.Errorf("unread = %v, want %v — the shapes this predicate gives up on must be REPORTED, "+
+					"or a site drifting into one leaves the sweep covering nothing and saying nothing",
+					unread, tc.unread)
+			}
+			if got != tc.missing {
 				verb := "accused correct code"
 				if tc.missing {
 					verb = "did not see a site that omits the field"

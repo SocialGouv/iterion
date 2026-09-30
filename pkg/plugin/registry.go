@@ -517,6 +517,14 @@ func (r *Registry) InstallDir(name string) string {
 
 // CacheDir returns a per-plugin cache directory under the iterion home, used to
 // expand the {{plugin.cache}} placeholder.
+// CacheDir and PluginDir resolve under the LIVE iterion home, which a project
+// `.env` can select — while OperatorControlled answers about the code, the
+// enablement and the configuration, never about these paths. A builtin is the
+// operator's whatever the home is, so a builtin that both ships
+// `default_enabled: true` AND contributes an MCP server would run with a
+// `{{plugin.cache}}` inside a home the repository chose. None does today;
+// before wiring one, resolve these from store.InheritedIterionDataDir or add
+// the path as a fourth leg of the trust check.
 func (r *Registry) CacheDir(name string) string {
 	return filepath.Join(r.home, pluginsSubdir, name, "cache")
 }

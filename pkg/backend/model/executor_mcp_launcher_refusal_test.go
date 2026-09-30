@@ -64,13 +64,6 @@ func TestARefusedMCPServerReachesExecuteRatherThanFailingTheBuild(t *testing.T) 
 		// resolution went ahead, and the node died at build with "unknown
 		// tool" — the one outcome this whole path exists to avoid.
 		{"claude_code FQN spelling", []string{"bash", "mcp__repo__search"}},
-		// An FQN whose TOOL name contains "__" has two readings, and the
-		// splitter resolution uses picks the longer server ("repo__list").
-		// A guard bound to that single pick did not see `repo` refused, so
-		// resolution went ahead on a server that was never started and the
-		// node died at build with "unknown tool" — the one outcome the
-		// whole refusal path exists to avoid.
-		{"FQN with an underscored tool name", []string{"bash", "mcp__repo__list__all"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := refusingExecutor(t)
@@ -388,5 +381,176 @@ func TestAHealthyRefusedServerCarriesNoCause(t *testing.T) {
 	if degraded[0].Cause != nil {
 		t.Errorf("nothing was wrong with this server; a cause here makes every refusal look broken: %v",
 			degraded[0].Cause)
+	}
+}
+
+// A BARE tool name — `search`, which the registry resolves to
+// `mcp.repo.search` once that server is connected — cannot name its server,
+// so unlike the dotted and FQN spellings it cannot be carried to Execute
+// where a fallback route would serve it. The node dies here, and it used to
+// die on "unknown tool": a message that names neither the server nor the
+// reason, for a `.bot` that works unsandboxed and fails sandboxed.
+//
+// The refusal is deliberately NOT guessed onto the name — that would send the
+// node to a fallback for a tool which may not exist anywhere. The message
+// carries the fact instead.
+func TestABareToolNameOnARefusedServerFailsWithTheReason(t *testing.T) {
+	e := refusingExecutor(t)
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash", "search"}, activeMCPServers: []string{"repo"},
+	}
+
+	_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err == nil {
+		t.Fatal("a name nothing resolves must still fail — the refusal is not guessed onto it")
+	}
+	for _, want := range []string{"repo", "mcp.<server>.search", "fallbacks"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must carry %q so the author can act on it: %v", want, err)
+		}
+	}
+}
+
+// And the enrichment must not fire when nothing was refused: an ordinary
+// typo would otherwise be answered with advice about servers that are fine.
+func TestAnUnknownToolWithNoRefusalKeepsItsPlainError(t *testing.T) {
+	e := refusingExecutor(t)
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash", "typpo"},
+	}
+
+	_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err == nil {
+		t.Fatal("an unknown tool must fail")
+	}
+	if strings.Contains(err.Error(), "fallbacks") {
+		t.Errorf("no server was refused here; the advice is noise: %v", err)
+	}
+}
+
+// The FQN spelling names the server before the LAST `__`, so a tool whose own
+// name contains `__` cannot be written that way: `mcp__repo__list__all` is
+// served as `mcp.repo__list.all` and nothing else — the registry never reads
+// it as tool `list__all` on server `repo`.
+//
+// That matters at the boundary, because it decides which server a refusal is
+// recorded against. Widening it to "every reading" looked like a fix and was
+// the opposite: an ambient server sharing a name prefix got swept into the
+// refusal of the whole claw route, and its degrade event was swallowed.
+func TestTheFQNSpellingHasExactlyOneReading(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, s := range []struct{ server, name string }{
+		{"repo", "list__all"},
+		{"repo__list", "all"},
+		{"srv_", "tool"},
+	} {
+		if err := tr.RegisterMCP(s.server, s.name, "d", nil,
+			func(context.Context, json.RawMessage) (string, error) { return "x", nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ ref, want string }{
+		// The trap: the underscored TOOL name is unreachable through the FQN.
+		{"mcp__repo__list__all", "mcp.repo__list.all"},
+		{"mcp.repo.list__all", "mcp.repo.list__all"},
+		// A server name ending in `_` is reached correctly by both.
+		{"mcp__srv___tool", "mcp.srv_.tool"},
+		{"mcp.srv_.tool", "mcp.srv_.tool"},
+	} {
+		t.Run(tc.ref, func(t *testing.T) {
+			td, err := tr.Resolve(tc.ref)
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if td.QualifiedName != tc.want {
+				t.Fatalf("Resolve(%q) = %q, want %q", tc.ref, td.QualifiedName, tc.want)
+			}
+			// And the boundary must read the SAME server the registry did.
+			server, ok := tool.MCPServerOf(tc.ref)
+			if !ok {
+				t.Fatalf("MCPServerOf(%q) found no server for a name that resolves", tc.ref)
+			}
+			if wantServer, _, _ := tool.ParseMCPName(td.QualifiedName); server != wantServer {
+				t.Errorf("the boundary reads server %q where the registry served %q — a refusal would be "+
+					"recorded against the wrong server", server, wantServer)
+			}
+		})
+	}
+}
+
+// `mcp: servers:` at WORKFLOW level is the documented spelling for "these
+// servers, on every node", and PrepareWorkflow folds it into each node's
+// active set while leaving the node's own `mcp:` nil. A `source` read from
+// the node alone therefore called a server the BOT declared "ambient" — and
+// sent its author to read the target repository's `.mcp.json` for a line
+// that is in their own `.bot`. Exactly the misdirection this field removes,
+// reintroduced one level up.
+func TestAWorkflowLevelDeclarationIsNotAmbient(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		wfMCP  *ir.MCPConfig
+		source string
+	}{
+		{"the workflow named it", &ir.MCPConfig{Servers: []string{"repo"}}, "declared"},
+		{"the workflow named another", &ir.MCPConfig{Servers: []string{"elsewhere"}}, "ambient"},
+		{"no workflow block", nil, "ambient"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := refusingExecutor(t)
+			e.wfMCP = tc.wfMCP
+			var degraded []MCPServerDegradedInfo
+			e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+				degraded = append(degraded, info)
+			}
+
+			// The node itself declares nothing — it INHERITED the server.
+			node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+			f := backendFields{
+				id: "n", model: "anthropic/claude-opus-5",
+				tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+			}
+
+			if _, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil); err != nil {
+				t.Fatalf("a refusal must not fail the node: %v", err)
+			}
+			if len(degraded) != 1 {
+				t.Fatalf("expected one drop: %+v", degraded)
+			}
+			if degraded[0].Source != tc.source {
+				t.Errorf("source = %q, want %q", degraded[0].Source, tc.source)
+			}
+		})
+	}
+}
+
+// A drop is only a fact once the node is going to run. The bare MCP
+// shorthand makes the two collide: `tools: [search]` names no server, so the
+// splice degrades `repo` and announces "the node runs WITHOUT its tools" —
+// and resolution then fails the node one line later. A run record whose only
+// trace of the drop is a sentence the next line contradicts is worse than no
+// trace: a downstream gate reads it as "ran degraded".
+func TestNoDegradeEventWhenTheBuildFailsAnyway(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash", "search"}, activeMCPServers: []string{"repo"},
+	}
+
+	_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err == nil {
+		t.Fatal("premise broken: a bare name on a refused server must still fail the build")
+	}
+	if len(degraded) != 0 {
+		t.Errorf("the node never ran, so nothing may claim it ran degraded: %+v", degraded)
 	}
 }

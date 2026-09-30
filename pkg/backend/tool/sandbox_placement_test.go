@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,6 +41,12 @@ func buildFullClawRegistry(t *testing.T) *Registry {
 			RunIDFromCtx: func(_ context.Context) string { return "" },
 		},
 	}
+	// The comment above claims "every optional family switched ON". Prove
+	// it rather than claim it: a new `Include…` flag nobody adds here takes
+	// its family out of the exhaustiveness guard below, silently, and its
+	// first execution-capable tool then reaches a sandboxed node with no
+	// placement — refused with a reason that says nothing.
+	assertEveryOptionalFamilyIsOn(t, defaults)
 	if err := RegisterClawAll(reg, defaults); err != nil {
 		t.Fatalf("RegisterClawAll: %v", err)
 	}
@@ -257,4 +264,51 @@ func (placementWatchStore) AddWatchedIssues(_ context.Context, _ string, ids []s
 
 func (placementWatchStore) RemoveWatchedIssues(_ context.Context, _ string, _ []string) ([]string, error) {
 	return nil, nil
+}
+
+// assertEveryOptionalFamilyIsOn fails if any bool switch on ClawDefaults is
+// left false, or any registry/provider field left nil. Reflection, so a field
+// added to the struct is covered without touching this test.
+func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
+	t.Helper()
+	v := reflect.ValueOf(defaults)
+	ty := v.Type()
+	// Fields a host legitimately leaves unset for THIS harness: they change
+	// how a tool behaves, not whether its family registers.
+	allowedUnset := map[string]string{
+		"Workspace":    "registration does not touch the disk; where tools would run is not what these tests are about",
+		"BashExtraEnv": "extra env for bash, not a family switch",
+		"Subagent":     "nil keeps claw's metadata-only agent tool, which IS the registered form",
+		"AskUser":      "nil keeps the pause/resume handler, which IS the registered form",
+		"Config":       "an empty config map still registers the `config` tool",
+		// RegisterClawAll allocates a fresh empty registry for each of
+		// these when nil, so the family registers either way. Their doc
+		// comment says so; if that ever changes, the family stops
+		// registering and this list is the line to revisit.
+		"Tasks":       "RegisterClawAll allocates one when nil",
+		"Workers":     "RegisterClawAll allocates one when nil",
+		"Teams":       "RegisterClawAll allocates one when nil",
+		"Crons":       "RegisterClawAll allocates one when nil",
+		"LSP":         "RegisterClawAll allocates one when nil",
+		"MCPProvider": "RegisterClawAll wires an empty Registry-backed provider when nil",
+	}
+	for i := 0; i < ty.NumField(); i++ {
+		f, name := v.Field(i), ty.Field(i).Name
+		if _, ok := allowedUnset[name]; ok {
+			continue
+		}
+		switch f.Kind() {
+		case reflect.Bool:
+			if !f.Bool() {
+				t.Fatalf("ClawDefaults.%s is false, so its family is not registered and "+
+					"TestSandboxPlacementCoversEveryRegisteredClawTool never sees its tools — set it here, or "+
+					"add it to allowedUnset with a reason", name)
+			}
+		case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice:
+			if f.IsNil() {
+				t.Fatalf("ClawDefaults.%s is nil, so its family may not register — wire it here, or add it to "+
+					"allowedUnset with a reason", name)
+			}
+		}
+	}
 }

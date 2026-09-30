@@ -300,3 +300,148 @@ func TestTheHatchAdviceKnowsWhereItWasSet(t *testing.T) {
 		t.Errorf("planted: the advice must say the remedy was applied in a place that does not count; got %q", got)
 	}
 }
+
+// The policy a manager is BUILT with is a prediction, and the prediction is
+// wrong on the most ordinary local run there is: `sandbox: auto` is the
+// default, so the launch surface predicts a sandbox, and on a host with no
+// devcontainer or no container runtime the run then settles WITHOUT one.
+//
+// Everything the prediction suppressed has to come back. Left stale, an
+// untrusted server's `command: ${MY_BIN}` stayed BLANK after the relax, with
+// a permanent StartErr — so a project `.mcp.json` that works under
+// `--sandbox none` died under the default, as an untyped startup failure
+// naming neither the variable nor the rule.
+func TestAPredictedSuppressionIsUndoneWhenTheRunSettlesUnsandboxed(t *testing.T) {
+	t.Setenv("ITERION_TEST_MCP_BIN", "/usr/bin/true")
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"repo": {
+				Name: "repo", Origin: string(mcp.OriginProject),
+				Transport: ir.MCPTransportStdio, Command: "${ITERION_TEST_MCP_BIN}",
+			},
+		},
+	}
+
+	// Built on the restrictive PREDICTION: the variable is dropped and the
+	// config is unusable, which is correct while a sandbox is expected.
+	m, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), mcp.StartOperatorServersOnly)
+	if err != nil || m == nil {
+		t.Fatalf("build: %v", err)
+	}
+	cfg, ok := m.ServerConfig("repo")
+	if !ok || cfg.Command != "" || cfg.StartErr == nil {
+		t.Fatalf("premise broken — the prediction must suppress: Command=%q StartErr=%v", cfg.Command, cfg.StartErr)
+	}
+
+	// The engine settles: no sandbox. Nothing crosses into a container, so
+	// there is nothing left to suppress.
+	m.SetStartPolicy(mcp.StartAllServers)
+
+	cfg, ok = m.ServerConfig("repo")
+	if !ok {
+		t.Fatal("the server left the catalog")
+	}
+	if cfg.Command != "/usr/bin/true" {
+		t.Errorf("Command = %q, want the expanded value back: the suppression was decided by a prediction "+
+			"the engine has now contradicted", cfg.Command)
+	}
+	if cfg.StartErr != nil {
+		t.Errorf("StartErr survived the relax, so the server can never start: %v", cfg.StartErr)
+	}
+}
+
+// And the mirror: tightening must not hand an untrusted server its
+// launcher-expanded value. The refresher runs in both directions, so the
+// suppression has to be REAPPLIED, not merely recoverable.
+func TestTighteningReappliesTheSuppression(t *testing.T) {
+	t.Setenv("ITERION_TEST_MCP_BIN", "/usr/bin/true")
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"repo": {
+				Name: "repo", Origin: string(mcp.OriginProject),
+				Transport: ir.MCPTransportStdio, Command: "${ITERION_TEST_MCP_BIN}",
+			},
+		},
+	}
+	m, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), mcp.StartAllServers)
+	if err != nil || m == nil {
+		t.Fatalf("build: %v", err)
+	}
+	if cfg, _ := m.ServerConfig("repo"); cfg.Command != "/usr/bin/true" {
+		t.Fatalf("premise broken — an unsandboxed run expands: %q", cfg.Command)
+	}
+
+	m.SetStartPolicy(mcp.StartOperatorServersOnly)
+
+	cfg, _ := m.ServerConfig("repo")
+	if cfg.Command != "" {
+		t.Errorf("Command = %q — a sandbox settled, so the launcher's value must not travel into the "+
+			"container as this server's config", cfg.Command)
+	}
+}
+
+// An OPERATOR server's config is the operator's own, so it expands either
+// way: a policy change must not take their `${VAR}` away.
+func TestAnOperatorServerKeepsItsExpansionAcrossAPolicyChange(t *testing.T) {
+	t.Setenv("ITERION_TEST_MCP_BIN", "/usr/bin/true")
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"installed": {
+				Name: "installed", Origin: string(mcp.OriginPlugin),
+				Transport: ir.MCPTransportStdio, Command: "${ITERION_TEST_MCP_BIN}",
+			},
+		},
+	}
+	m, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), mcp.StartAllServers)
+	if err != nil || m == nil {
+		t.Fatalf("build: %v", err)
+	}
+	for _, p := range []mcp.StartPolicy{mcp.StartOperatorServersOnly, mcp.StartPolicyUnknown, mcp.StartAllServers} {
+		m.SetStartPolicy(p)
+		if cfg, _ := m.ServerConfig("installed"); cfg.Command != "/usr/bin/true" {
+			t.Errorf("under %v the operator's own server lost its variable: %q", p, cfg.Command)
+		}
+	}
+}
+
+// The silent shape of the same defect: unusableAfterDroppedRefs only refuses
+// a config whose command or url went EMPTY, so a literal `command` with a
+// blanked `${VAR}` ARGUMENT carries no StartErr at all. Under the prediction
+// that is harmless (the server is refused anyway); after the run settles
+// unsandboxed it would START — with a blank credential and nothing, anywhere,
+// saying so. This repo's own `.mcp.json` has exactly that shape.
+func TestABlankedArgumentIsRestoredWhenTheRunSettlesUnsandboxed(t *testing.T) {
+	t.Setenv("ITERION_TEST_MCP_TOKEN", "s3cret-shaped")
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"repo": {
+				Name: "repo", Origin: string(mcp.OriginProject),
+				Transport: ir.MCPTransportStdio, Command: "npx",
+				Args: []string{"-y", "some-mcp-server", "--access-token=${ITERION_TEST_MCP_TOKEN}"},
+			},
+		},
+	}
+	m, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), mcp.StartOperatorServersOnly)
+	if err != nil || m == nil {
+		t.Fatalf("build: %v", err)
+	}
+	cfg, _ := m.ServerConfig("repo")
+	if cfg.StartErr != nil {
+		t.Fatalf("premise broken: this shape carries no StartErr, which is the whole point: %v", cfg.StartErr)
+	}
+	if got := cfg.Args[2]; got != "--access-token=" {
+		t.Fatalf("premise broken: the prediction must blank the argument, got %q", got)
+	}
+
+	m.SetStartPolicy(mcp.StartAllServers)
+
+	cfg, _ = m.ServerConfig("repo")
+	if got := cfg.Args[2]; got != "--access-token=s3cret-shaped" {
+		t.Errorf("the argument stayed blank after the run settled unsandboxed (%q): the server would start "+
+			"with an empty credential, and nothing carries a StartErr for this shape", got)
+	}
+}

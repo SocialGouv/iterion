@@ -252,6 +252,13 @@ func applyDotEnv(path string) bool {
 		if key == "" {
 			continue
 		}
+		// A key carrying the planted-names separator is refused, not set: it
+		// would reach a child as two names, and the extra one denies the
+		// OPERATOR's own environment its authority there. No shell can
+		// export such a name either, so the line is malformed anyway.
+		if strings.Contains(key, ",") {
+			continue
+		}
 		val := strings.TrimSpace(line[eq+1:])
 		// Strip a single surrounding pair of matching quotes.
 		if len(val) >= 2 {

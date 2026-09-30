@@ -81,19 +81,28 @@ documented in [sandbox.md](sandbox.md).
 
 Which servers the launcher starts at all is decided by their ORIGIN — see
 [sandbox.md § MCP servers under a sandbox](sandbox.md#mcp-servers-under-a-sandbox).
-Note that `ITERION_PLUGINS_ENABLE`, `ITERION_PLUGINS_DISABLE`, `ITERION_HOME`
-and `ITERION_PLUGIN_<NAME>_<KEY>` are honoured wherever they come from, but
-only speak for the OPERATOR when the process inherited them: a value a project
+Note that `ITERION_PLUGINS_ENABLE`, `ITERION_HOME` and
+`ITERION_PLUGIN_<NAME>_<KEY>` are honoured wherever they come from, but only
+speak for the OPERATOR when the process inherited them: a value a project
 `.env` filled in still applies and still does not confer the operator's
 authority.
 
-`ITERION_MCP_EXPAND_UNTRUSTED_ENV` is the exception, and the stronger rule: it
-is read **only** from the inherited environment, so a value a project `.env`
-planted does not turn the hatch on at all. The other four change what happens
-and lose only their authority; this one is an operator's consent to read the
-launcher's environment on behalf of a definition the repository controls, and
-a repository cannot consent on the operator's behalf. Setting it in a `.env`
-is reported as such in the diagnostic that names the missing variables.
+`ITERION_PLUGINS_DISABLE` is read live and applied whatever its source, with
+no provenance distinction — deliberately: disabling only ever removes a
+capability, so there is no authority to lose. A project `.env` can therefore
+silence a plugin the operator enabled in their own `plugins.yaml`.
+
+`ITERION_MCP_EXPAND_UNTRUSTED_ENV` is read **only** from the inherited
+environment, so a value a project `.env` planted does not turn the hatch on
+**through this variable**: it is an operator's consent to read the launcher's
+environment on behalf of a definition the repository controls, and a
+repository cannot consent on the operator's behalf. Setting it in a `.env` is
+reported as such in the diagnostic that names the missing variables. It is
+not the only door, though — the expansion also follows the SANDBOX (an
+unsandboxed run expands, because nothing crosses into a container), and
+`ITERION_SANDBOX_DEFAULT` / `ITERION_SANDBOX_OVERRIDE` are read live, so a
+`.env` setting either to `none` makes the run unsandboxed and the expansion
+happens. Closing that family is tracked separately.
 Note that an operator-installed plugin's stdio server inherits the whole
 environment of the launcher process: that is the operator's own binary and
 the operator's choice, but it is worth knowing before enabling one in a pod

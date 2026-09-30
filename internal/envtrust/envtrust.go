@@ -107,9 +107,22 @@ func ensurePlantedLocked() {
 }
 
 // markerLocked renders the set for the child environment. Caller holds mu.
+//
+// A name carrying the separator is left OUT rather than written: the marker
+// is a comma-joined list with no escaping, so such a name reaches the child
+// as two, and the second — `ITERION_HOME,HARMLESS` splitting into
+// `ITERION_HOME` — strips the OPERATOR's own home of its authority in every
+// descendant. That is not an escalation, it is an injectable denial of the
+// operator's own capability, with no diagnostic anywhere. Nothing iterion
+// asks about provenance has a comma in its name, so dropping it costs
+// nothing; applyDotEnv refuses such a key outright, and this is the backstop
+// for every other caller.
 func markerLocked() string {
 	names := make([]string, 0, len(planted))
 	for name := range planted {
+		if strings.Contains(name, ",") {
+			continue
+		}
 		names = append(names, name)
 	}
 	// Sorted so the variable a child inherits does not change from run to run
