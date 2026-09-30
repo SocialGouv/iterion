@@ -3419,7 +3419,11 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	case path != "":
 		body, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("cloudpublisher: read %s: %w", path, err)
+			// The refusal crosses to the client (a launch's 400, a
+			// resume's): name the file, not its absolute path on this
+			// server — the #1934 root cut, with the file's directory as
+			// the root the loader would have used (#1970).
+			return nil, fmt.Errorf("cloudpublisher: read %s: %s", filepath.Base(path), unit.RelTextRoot(filepath.Dir(path), err.Error()))
 		}
 		src = string(body)
 	default:

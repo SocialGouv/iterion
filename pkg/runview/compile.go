@@ -251,17 +251,34 @@ func compileForLaunchUncut(path, source, bundleDir string) (*ir.Workflow, *Compi
 
 // relLaunchError is the #1934 root cut for the launch path's refusals
 // (#1970): the run console answers them verbatim — 400 "launch: %v" — and
-// a refusal of a disk-loaded unit names the server's paths. The cut is the
-// launch path's own, never the CLI's (CompileWorkflowPath and
-// CompileLoadedUnit keep their absolute names: the operator typed them).
-// Only a text the cut rewrites is re-wrapped; anything else — an inline
-// source's map has no root — comes back chain-intact.
+// a refusal of a disk read names the server's paths. The cut is the launch
+// path's own, never the CLI's (CompileWorkflowPath and CompileLoadedUnit
+// keep their absolute names: the operator typed them). The loaded unit's
+// root goes first — the cut the diagnostics get, for the errors that ride
+// no diagnostic — then the roots an error can name BEFORE the unit exists
+// or beside it: the stamped bundle dir, and the directory of the file the
+// launch named (a `cannot read file`, an entrypoint's manifest, the
+// materialised copy an inline-import refusal names). Only a text the cut
+// rewrites is re-wrapped; anything else — an inline source's map has no
+// root — comes back chain-intact.
 func relLaunchError(path, bundleDir string, u *unit.Unit, err error) error {
 	if err == nil {
 		return nil
 	}
+	text := err.Error()
 	if u != nil {
-		return u.RelError(err)
+		text = u.RelText(text)
+	}
+	if bundleDir != "" {
+		text = unit.RelTextRoot(bundleDir, text)
+	}
+	if path != "" {
+		if abs, aerr := filepath.Abs(path); aerr == nil {
+			text = unit.RelTextRoot(filepath.Dir(abs), text)
+		}
+	}
+	if text != err.Error() {
+		return errors.New(text)
 	}
 	return err
 }
@@ -359,9 +376,13 @@ func ResolveBundleFromFilePath(filePath string) (*bundle.Bundle, error) {
 // bundle does not open, with the remedy a bare main.bot beside a manifest
 // needs. subject names the entrypoint and how it stands to the bundle —
 // `x/main.bot is`, or an author document that `stands for` it — so a .bot
-// and the document of that .bot are refused in one set of words.
+// and the document of that .bot are refused in one set of words. The
+// bundle is named by its directory's base name, not its path: the subject
+// already says where the entrypoint lives, and a refusal that crosses to
+// a client (the launch path's 422) must not carry the server's directory
+// layout (#1970).
 func EntrypointBundleError(subject, dir string, err error) error {
-	return fmt.Errorf("%s the entrypoint of bundle %s, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, dir, err)
+	return fmt.Errorf("%s the entrypoint of bundle %q, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, filepath.Base(dir), err)
 }
 
 func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {

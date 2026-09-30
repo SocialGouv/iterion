@@ -57,3 +57,20 @@ func TestMarshalIRFromSpecNamesAMissingIncludeWithoutTheSnapshotRoot(t *testing.
 		t.Errorf("the error discloses the snapshot's absolute path: %v", err)
 	}
 }
+
+// The path-only branch's read refusal — a launch or resume whose recorded
+// file is gone — names the file, never its absolute path on the server
+// (and never twice: the os error repeats the path it was opened with).
+func TestMarshalIRFromSpecNamesAMissingFileWithoutTheHostRoot(t *testing.T) {
+	dir := t.TempDir()
+	_, err := marshalIRFromSpec(filepath.Join(dir, "ghost.bot"), "")
+	if err == nil {
+		t.Fatal("the fixture no longer arms the case: a missing file serialised")
+	}
+	if !strings.Contains(err.Error(), "ghost.bot") {
+		t.Errorf("the error does not name the file: %v", err)
+	}
+	if strings.Contains(err.Error(), dir) {
+		t.Errorf("the error discloses the server's directory layout: %v", err)
+	}
+}
