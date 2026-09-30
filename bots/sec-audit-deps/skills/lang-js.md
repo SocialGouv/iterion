@@ -95,7 +95,7 @@ Run per installed package:
 mkdir -p {{vars.scan_dir}}/heuristics
 npm audit --json > {{vars.scan_dir}}/heuristics/npm-audit.json || true
 
-python3 <<'PY' > {{vars.scan_dir}}/heuristics/js.json
+python3 -I <<'PY' > {{vars.scan_dir}}/heuristics/js.json
 import os, json, hashlib, math, subprocess, re
 # 1. Walk node_modules/**/package.json
 # 2. For each pkg, run signal checks

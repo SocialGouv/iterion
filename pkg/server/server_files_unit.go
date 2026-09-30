@@ -517,6 +517,10 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		return
 	}
 	u := unit.LoadDirWithMain(absPath, absPath, current)
+	// The unit was read from disk, and the refusal below answers the
+	// diagnostic to the client: it names the fragment at fault by its
+	// unit-relative path (#1934).
+	relUnitDiagnostics(u)
 	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
 		httpError(w, http.StatusUnprocessableEntity, "the bot's files do not load as one unit (%s): fix them on disk before saving from the studio", d)
 		return
@@ -656,6 +660,9 @@ func siblingImportersStillCompile(u *unit.Unit, staged map[string][]byte) error 
 			continue
 		}
 		after := unit.LoadDirStaged(sibling, staged)
+		// The sibling was read from disk, and the refusal answers its
+		// diagnostic to the client — relative names (#1934).
+		relUnitDiagnostics(after)
 		if d := firstErrorDiagnostic(after.Diagnostics); d != "" {
 			return fmt.Errorf("saving would break %s, which imports a rewritten fragment: %s", name, d)
 		}
@@ -1138,6 +1145,35 @@ func citeStoredMainWorkflow(stored, probe *unit.Unit) {
 	}
 }
 
+// relUnitDiagnostics rewrites a disk-loaded unit's diagnostics to the
+// unit's relative names, the way the loader's own messages already cite a
+// file (relOf) — for every unit whose diagnostics cross to a client: a
+// refusal's 422 body IS the diagnostic, and an open, an apply or an
+// example's answer carries them in a 200, so either forwarded as is
+// discloses the server's directory layout (#1918, #1934). On disk the
+// loader parses every file under its ABSOLUTE path — an include resolves
+// beside it — and every name a diagnostic of such a unit can carry is
+// Join(Root, Rel): LoadDir, LoadDirWithMain and LoadDirStaged name no file
+// otherwise, and a files map names by Rel already (Root "") — so cutting
+// the root answers the position field and every message that cites a name
+// verbatim, and no Name→Rel table maps a string the cut does not. The one
+// diagnostic text that ever carried an absolute name from OUTSIDE the root
+// — the confinement refusal's resolved path — names the import as written
+// since #1918, loader-side. Only the per-request load handed to a client
+// is rewritten; a unit the server keeps — what an operator's logs hold of
+// it — keeps its absolute names.
+func relUnitDiagnostics(u *unit.Unit) {
+	if u.Root == "" {
+		return // a files map names every file by its rel already
+	}
+	rootPrefix := u.Root + string(os.PathSeparator)
+	for i, d := range u.Diagnostics {
+		d.File = filepath.ToSlash(strings.TrimPrefix(d.File, rootPrefix))
+		d.Message = strings.ReplaceAll(d.Message, rootPrefix, "")
+		u.Diagnostics[i] = d
+	}
+}
+
 // finishClaimed validates the probe of a claimed file list against the
 // claim and assembles the unit the save or the render works from: the
 // stored unit's own entries for the files it holds (their declarations are
@@ -1149,6 +1185,7 @@ func citeStoredMainWorkflow(stored, probe *unit.Unit) {
 // file's.
 func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bool) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
 	citeStoredMainWorkflow(stored, probe)
+	relUnitDiagnostics(probe)
 	if d := firstErrorDiagnostic(probe.Diagnostics); d != "" {
 		return nil, nil, nil, fmt.Errorf("the files the document claims do not load as one unit: %s", d)
 	}
@@ -1371,6 +1408,12 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 		return
 	}
 	staged := ur.stage(req.File, req.Source)
+	// Both units were read from disk, and both the refusal below and the
+	// 200's diagnostics cross to the client — relative names (#1934). The
+	// stored unit's are cut too so the refusal's already-known comparison
+	// (stagedLoadFailure) matches rel against rel.
+	relUnitDiagnostics(ur.unit)
+	relUnitDiagnostics(staged)
 	// What an apply may not carry, refused by name: a staged `import` the
 	// loader cannot follow — a fragment that is not there, a path outside
 	// the bot's lib/ directory, a cycle — or one that pulls in a fragment

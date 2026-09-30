@@ -253,7 +253,7 @@ is the shipped use — carried by all seven campaign bots on their
 ### Ultracode (`reasoning_effort: ultracode`)
 
 `ultracode` is the top of the `reasoning_effort` dial
-(`low|medium|high|xhigh|max|ultracode`) but is a **mode, not a wire
+(`none|low|medium|high|xhigh|max|ultracode`) but is a **mode, not a wire
 value**: Anthropic's API only accepts up to `xhigh`/`max`. It means
 **xhigh + a standing prerogative to orchestrate multi-agent
 workflows**, delivered via a `## Workflow Orchestration` system-prompt

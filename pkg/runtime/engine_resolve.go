@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1041,6 +1040,21 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	return vars
 }
 
+// engineSuppliedVarFns resolves each engine-supplied var name from run
+// state. varExpandFn dispatches through it, so this table IS the list of
+// exceptions — ir.EngineSuppliedVarNames (the launch-time fallback
+// screen's copy of the list) is pinned against it by
+// TestVarExpandFnEngineSuppliedNamesMatchTheScreenList, in both
+// directions: a name added or dropped here without its ir twin reddens
+// the pin.
+var engineSuppliedVarFns = map[string]func(e *Engine) string{
+	"PROJECT_DIR":         (*Engine).projectDirVarValue,
+	"BUNDLE_DIR":          (*Engine).bundleDirVarValue,
+	"BUNDLE_SKILLS_DIR":   (*Engine).bundleSkillsDirVarValue,
+	"PROJECT_MEMORY_DIR":  (*Engine).projectMemoryDirVarValue,
+	"PROJECT_SCRATCH_DIR": (*Engine).projectScratchDirVarValue,
+}
+
 // varExpandFn returns the os.Expand callback var values are resolved
 // with. It lets var values reference ${PROJECT_DIR} (resolved to the
 // engine's workDir, possibly a worktree path) and any other env var.
@@ -1055,102 +1069,113 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 // exactly the value that flows into the run.
 func (e *Engine) varExpandFn() func(string) string {
 	return func(key string) string {
-		if key == "PROJECT_DIR" {
-			// In sandbox mode, ${PROJECT_DIR} must resolve to the
-			// in-container bind-mount target (e.g. /workspace), not
-			// the host worktree path. Tool nodes and prompts using
-			// this var are consumed by processes RUNNING inside the
-			// container — they cannot open /home/<host-user>/...
-			// paths because they're not mounted there. The container
-			// workspace IS the host worktree, just at a different
-			// pathname.
-			if e.containerWorkspace != "" {
-				return e.containerWorkspace
-			}
-			return e.workDir
+		if fn, ok := engineSuppliedVarFns[key]; ok {
+			return fn(e)
 		}
-		if key == "BUNDLE_DIR" {
-			// A bundle is mounted read-only at the runtime's canonical sandbox
-			// path. Outside a sandbox, expose its resolved host directory. Plain
-			// .bot runs deliberately expand to empty: they have no bundle root
-			// and must not accidentally treat the process cwd as one.
-			if e.bundle == nil || e.bundle.Dir == "" {
-				return ""
-			}
-			if e.containerWorkspace != "" {
-				return "/run/iterion/bundle"
-			}
-			return e.bundle.Dir
-		}
-		if key == "BUNDLE_SKILLS_DIR" {
-			// The engine-owned copy of the bundle's skills, reset and
-			// rewritten from the bundle on every mirror pass. A node that
-			// parses a machine-readable `iterion:` block out of a skill reads
-			// it HERE, never from <workspace>/.claude/skills/: that directory
-			// applies the workspace-wins collision policy, so a checkout can
-			// both replace a shipped skill and supply a name the bundle never
-			// shipped. Here a name the bundle does not ship simply does not
-			// exist, which is what makes the "not covered" path observable.
-			//
-			// Unlike ${BUNDLE_DIR} this is NOT the read-only bundle mount:
-			// the kubernetes driver has no host bind mounts, so nothing under
-			// /run/iterion/bundle exists in a pod. The workspace is the one
-			// tree that travels there.
-			if e.containerWorkspace != "" {
-				return ownedSkillsContainerDir(e.containerWorkspace)
-			}
-			return OwnedSkillsDir(e.workDir)
-		}
-		if key == "PROJECT_MEMORY_DIR" {
-			// Project-rooted memory directory, keyed off the run's
-			// repo_root (not the per-run workDir). Resolves to
-			// ~/.iterion/projects/<encoded-repo-root>/memory/ so
-			// dispatcher-spawned bots running in worktrees still share
-			// a memory tree with a whats-next session at the repo root.
-			// The same host path is bind-mounted inside the sandbox
-			// (~/.iterion is auto-mounted by docs/sandbox.md's host_state
-			// contract), so it works in both modes without remapping.
-			base := e.repoRoot
-			if base == "" {
-				base = e.workDir
-			}
-			return memory.WorkspaceMemoryDir(base)
-		}
-		if key == "PROJECT_SCRATCH_DIR" {
-			// Out-of-tree scratch dir for working files a bot must NOT leave
-			// in the target repo (e.g. a chunked review's per-chunk diffs)
-			// so they never pollute the worktree or the run diff.
-			//
-			// Sandboxed: resolve to a fixed container path rather than the
-			// host path, because an image pinning a non-host User cannot
-			// write a host-owned bind (observed EACCES:
-			// branch-improve-loop's plan_chunks, sec-audit-deps'
-			// update_cache).
-			//
-			// That path is BACKED by the per-project host dir, bound on by
-			// applyScratchMount. The backing is load-bearing for any fan-in
-			// through scratch: a sub-bot child runs in its OWN container, so
-			// a purely container-local scratch means the child writes a file
-			// the parent can never read — the child reports success, the
-			// parent reads an empty directory, and the run only fails much
-			// later as "not enough results" (observed on app-concept: four
-			// topic syntheses written to
-			// /tmp/iterion-scratch/<parent>/topics, none visible at fan-in).
-			// It also makes scratch survive the container, so a crashed run
-			// resumes from its own working state.
-			if e.containerWorkspace != "" {
-				return sandboxScratchContainerPath
-			}
-			// Non-sandboxed: host path keyed off repo_root, a sibling of
-			// PROJECT_MEMORY_DIR at ~/.iterion/projects/<key>/scratch/.
-			base := e.repoRoot
-			if base == "" {
-				base = e.workDir
-			}
-			return memory.WorkspaceScratchDir(base)
-		}
-		return os.Getenv(key)
+		// The overlay-then-process chain every other ${ITERION_*:-default}
+		// of the DSL reads (ADR-093): a `vars:` default is an expansion like
+		// the node fields beside it, and must see a stored bot var too.
+		return ir.LookupEnv(key)
 	}
+}
+
+func (e *Engine) projectDirVarValue() string {
+	// In sandbox mode, ${PROJECT_DIR} must resolve to the
+	// in-container bind-mount target (e.g. /workspace), not
+	// the host worktree path. Tool nodes and prompts using
+	// this var are consumed by processes RUNNING inside the
+	// container — they cannot open /home/<host-user>/...
+	// paths because they're not mounted there. The container
+	// workspace IS the host worktree, just at a different
+	// pathname.
+	if e.containerWorkspace != "" {
+		return e.containerWorkspace
+	}
+	return e.workDir
+}
+
+func (e *Engine) bundleDirVarValue() string {
+	// A bundle is mounted read-only at the runtime's canonical sandbox
+	// path. Outside a sandbox, expose its resolved host directory. Plain
+	// .bot runs deliberately expand to empty: they have no bundle root
+	// and must not accidentally treat the process cwd as one.
+	if e.bundle == nil || e.bundle.Dir == "" {
+		return ""
+	}
+	if e.containerWorkspace != "" {
+		return "/run/iterion/bundle"
+	}
+	return e.bundle.Dir
+}
+
+func (e *Engine) bundleSkillsDirVarValue() string {
+	// The engine-owned copy of the bundle's skills, reset and
+	// rewritten from the bundle on every mirror pass. A node that
+	// parses a machine-readable `iterion:` block out of a skill reads
+	// it HERE, never from <workspace>/.claude/skills/: that directory
+	// applies the workspace-wins collision policy, so a checkout can
+	// both replace a shipped skill and supply a name the bundle never
+	// shipped. Here a name the bundle does not ship simply does not
+	// exist, which is what makes the "not covered" path observable.
+	//
+	// Unlike ${BUNDLE_DIR} this is NOT the read-only bundle mount:
+	// the kubernetes driver has no host bind mounts, so nothing under
+	// /run/iterion/bundle exists in a pod. The workspace is the one
+	// tree that travels there.
+	if e.containerWorkspace != "" {
+		return ownedSkillsContainerDir(e.containerWorkspace)
+	}
+	return OwnedSkillsDir(e.workDir)
+}
+
+func (e *Engine) projectMemoryDirVarValue() string {
+	// Project-rooted memory directory, keyed off the run's
+	// repo_root (not the per-run workDir). Resolves to
+	// ~/.iterion/projects/<encoded-repo-root>/memory/ so
+	// dispatcher-spawned bots running in worktrees still share
+	// a memory tree with a whats-next session at the repo root.
+	// The same host path is bind-mounted inside the sandbox
+	// (~/.iterion is auto-mounted by docs/sandbox.md's host_state
+	// contract), so it works in both modes without remapping.
+	base := e.repoRoot
+	if base == "" {
+		base = e.workDir
+	}
+	return memory.WorkspaceMemoryDir(base)
+}
+
+func (e *Engine) projectScratchDirVarValue() string {
+	// Out-of-tree scratch dir for working files a bot must NOT leave
+	// in the target repo (e.g. a chunked review's per-chunk diffs)
+	// so they never pollute the worktree or the run diff.
+	//
+	// Sandboxed: resolve to a fixed container path rather than the
+	// host path, because an image pinning a non-host User cannot
+	// write a host-owned bind (observed EACCES:
+	// branch-improve-loop's plan_chunks, sec-audit-deps'
+	// update_cache).
+	//
+	// That path is BACKED by the per-project host dir, bound on by
+	// applyScratchMount. The backing is load-bearing for any fan-in
+	// through scratch: a sub-bot child runs in its OWN container, so
+	// a purely container-local scratch means the child writes a file
+	// the parent can never read — the child reports success, the
+	// parent reads an empty directory, and the run only fails much
+	// later as "not enough results" (observed on app-concept: four
+	// topic syntheses written to
+	// /tmp/iterion-scratch/<parent>/topics, none visible at fan-in).
+	// It also makes scratch survive the container, so a crashed run
+	// resumes from its own working state.
+	if e.containerWorkspace != "" {
+		return sandboxScratchContainerPath
+	}
+	// Non-sandboxed: host path keyed off repo_root, a sibling of
+	// PROJECT_MEMORY_DIR at ~/.iterion/projects/<key>/scratch/.
+	base := e.repoRoot
+	if base == "" {
+		base = e.workDir
+	}
+	return memory.WorkspaceScratchDir(base)
 }
 
 // validateVarConstraints enforces the constraints a var declares —

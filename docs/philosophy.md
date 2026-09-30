@@ -63,6 +63,7 @@ one. The shipped hatches are the pattern to imitate:
 | The typed remote CLI covers N endpoints | `iterion remote api <METHOD> <path>` reaches all of them | [cloud CLI](cloud-cli.md) |
 | The MCP server exposes curated tools | the `remote_api` tool is the raw passthrough | [MCP server](mcp-server.md) |
 | Host state is auto-mounted | `--sandbox-host-state=none`, `ITERION_SANDBOX_HOST_STATE` | [sandbox](sandbox.md) |
+| A `language: py` tool script runs `python3 -I` | a `command:` names its own interpreter and flags | [DSL](dsl.md) |
 
 ### Corollaries for contributors
 

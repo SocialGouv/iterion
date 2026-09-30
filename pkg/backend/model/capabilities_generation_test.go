@@ -88,3 +88,27 @@ func TestGLMStillHandledBeforeClaudeParsing(t *testing.T) {
 		t.Errorf("glm-5.2: context window %d, want 1M", c.ContextWindow)
 	}
 }
+
+// The window is read from the GLM generation, not matched against known ids:
+// glm-5.3 — the id the catalog's GLM routes default to — was sized at 200K by
+// an exact "glm-5.2" match, a fifth of what z.ai serves it with.
+func TestGLMContextWindowFollowsTheGeneration(t *testing.T) {
+	for id, want := range map[string]int{
+		"glm-5.3":           1_000_000,
+		"glm-5.3-flash":     1_000_000,
+		"anthropic/glm-5.3": 1_000_000,
+		"glm-5.2":           1_000_000,
+		"glm-6":             200_000, // a major no one has measured: conservative
+		"glm-5.1":           200_000,
+		"glm-5":             200_000,
+		"glm-5-0520":        200_000, // a dated snapshot, not minor 520
+		"glm-5-9b":          200_000, // a size, not minor 9
+		"glm-5.10":          1_000_000,
+		"glm-4.6":           200_000,
+		"glm-next":          200_000,
+	} {
+		if got := anthropicCapabilities(id).ContextWindow; got != want {
+			t.Errorf("%s: context window %d, want %d", id, got, want)
+		}
+	}
+}

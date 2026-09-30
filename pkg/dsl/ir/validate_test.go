@@ -1543,6 +1543,34 @@ workflow test:
 	expectNoDiag(t, r, DiagInvalidReasoningEffort)
 }
 
+// TestValidateReasoningEffort_None covers both spellings of the
+// no-reasoning level: bare (the enum form) and quoted (the form the IR
+// validator refused before #1837 even though the model backend already
+// transmits none on Responses for the models that carry it).
+func TestValidateReasoningEffort_None(t *testing.T) {
+	for _, spelling := range []string{"none", `"none"`} {
+		src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "openai/gpt-6-sol"
+  system: sys
+  user: usr
+  reasoning_effort: ` + spelling + `
+
+workflow test:
+  entry: a1
+  a1 -> done
+`
+		r := compileFile(t, src)
+		expectNoDiag(t, r, DiagInvalidReasoningEffort)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // C122 — invalid per-node timeout
 // ---------------------------------------------------------------------------
@@ -1624,12 +1652,18 @@ func TestResolveEffortLiteral(t *testing.T) {
 		want     string
 	}{
 		{name: "enum literal passes through", literal: "max", want: "max"},
+		{name: "none literal passes through", literal: "none", want: "none"},
 		{name: "empty stays empty", literal: "", want: ""},
 		{name: "env-subst with valid default",
 			literal:  "${ITERION_TEST_EFFORT:-max}",
 			envKey:   "ITERION_TEST_EFFORT",
 			envValue: "",
 			want:     "max"},
+		{name: "env expansion to none is not erased",
+			literal:  "${ITERION_TEST_EFFORT:-low}",
+			envKey:   "ITERION_TEST_EFFORT",
+			envValue: "none",
+			want:     "none"},
 		{name: "env wins over default",
 			literal:  "${ITERION_TEST_EFFORT:-max}",
 			envKey:   "ITERION_TEST_EFFORT",

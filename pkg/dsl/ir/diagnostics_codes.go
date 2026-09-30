@@ -91,7 +91,7 @@ const (
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
-	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, the route being decided before the node runs (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
+	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, a dotted path drilling a json var's document included, the route being decided before the node runs — or resolves to a list-typed var's JSON spelling, a name no backend registered (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
@@ -272,4 +272,16 @@ const (
 	DiagWithSecretRef           DiagCode = "C150" // `{{secrets.x}}` in a data mapping or a compute `expr:` — the runtime materialises secrets only at execution sinks (tool command/script/postcondition, action params, prompt body); the mapping and the expr evaluator both resolve to nil
 	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a data mapping or a compute `expr:` — same rule as secrets
 	DiagWithLiteralTypeMismatch DiagCode = "C152" // a `with:` value arrives as a string unless it is exactly one reference: fires on every ref-less literal or interpolated template reaching a `bool`/`int`/`float`/`string[]` field (a string is never one), and on a `json` field for a literal that visibly attempts an encoding (warning at every consumer)
+
+	// C180+ — the var-typing wave (#1604, #1610). Kept in one contiguous
+	// hunk, away from the C15x family another in-flight branch extends.
+	DiagWithWholeRefListToString   DiagCode = "C180" // a `with:` mapping that is exactly one reference to a `string[]` var — or a `json` var whose default document is a list or an object, or absent — delivers the value WHOLE into a field declared `string`, and nothing checks a `with:` value's type at run time (warning, the mirror of C152 in the other direction)
+	DiagVarDefaultUnverifiable     DiagCode = "C181" // a constrained var's default carries a reference compile time cannot resolve — an environment variable, or an engine-supplied name (PROJECT_DIR and kin) the RUN answers itself — so the constraint is checked on NO path for it (warning: named, never silently excused)
+	DiagVarDefaultExpandedViolates DiagCode = "C182" // a constrained var's default whose references are all environment `${VAR:-default}` forms expands — with nothing set in the launch environment — to a value outside its enum / off its pattern (warning, not C126/C161's error: the launch environment decides the actual value)
+
+	// Compute-field enum membership (#1916): a statically-known literal the
+	// runtime enum arm (checkFieldType, pkg/backend/model/validate.go) will
+	// refuse at the node. C180–C182 are claimed by an in-flight branch, so
+	// the band starts at C183.
+	DiagComputeEnumLiteral DiagCode = "C183" // compute field with an enum constraint fed by a static string literal outside the enum (warning — the value fails SCHEMA_VALIDATION at run time)
 )

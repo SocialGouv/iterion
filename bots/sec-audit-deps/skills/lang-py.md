@@ -105,7 +105,7 @@ b) **pyproject.toml entry points / scripts**:
 mkdir -p {{vars.scan_dir}}/heuristics
 pip-audit --format=json --output={{vars.scan_dir}}/heuristics/pip-audit.json || true
 
-python3 <<'PY' > {{vars.scan_dir}}/heuristics/py.json
+python3 -I <<'PY' > {{vars.scan_dir}}/heuristics/py.json
 import os, json, ast, math, glob
 # 1. Walk .venv/lib/*/site-packages/*.dist-info/METADATA
 # 2. For each pkg, locate __init__.py + setup.py

@@ -78,7 +78,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
     if (d?.session === "inherit") sessionGlyph = "\u{1F517}";
     else if (d?.session === "fork") sessionGlyph = "\u{1F500}";
     else if (d?.session === "artifacts_only") sessionGlyph = "\u{1F4E6}";
-    if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
+    if (d?.await) awaitGlyph = "\u{23F3}";
   } else if (kind === "router") {
     const d = declOf(kind, decl);
     if (d?.mode === "llm") {
@@ -94,11 +94,11 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
   } else if (kind === "tool") {
     const d = declOf(kind, decl);
     if (d?.command) subtitle = d.command.length > 20 ? d.command.slice(0, 20) + "..." : d.command;
-    if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
+    if (d?.await) awaitGlyph = "\u{23F3}";
   } else if (kind === "human") {
     const d = declOf(kind, decl);
     if (d?.interaction) subtitle = d.interaction;
-    if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
+    if (d?.await) awaitGlyph = "\u{23F3}";
   } else if (kind === "compute") {
     const d = declOf(kind, decl);
     if (d?.expr?.length) subtitle = `${d.expr.length} expr`;

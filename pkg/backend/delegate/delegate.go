@@ -65,7 +65,10 @@ const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
 // multi-agent workflows): the model is told it may decompose substantial work
 // across parallel subagents and lean toward adversarial verification, without
 // asking first. The orchestration capability is the `agent` subagent tool,
-// which the runtime makes available on the node when ultracode is active.
+// which the runtime makes available on the node when ultracode is active. It
+// also carries the one rule a non-interactive session imposes on that
+// orchestration: background subagents are collected before the final output,
+// because nothing reaches the model after it.
 // See platform.claude.com/docs/en/build-with-claude/mid-conversation-effort-example.
 const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"Ultracode mode is on: optimize for the most exhaustive, correct result, " +
@@ -83,7 +86,12 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"findings, cross-item comparison).\n" +
 	"- Subagents are stateless context-compressors: give each ONE self-contained " +
 	"brief (goal, exact scope and paths, expected report shape) and work from its " +
-	"summary instead of pulling raw exploration into your own context.\n\n" +
+	"summary instead of pulling raw exploration into your own context.\n" +
+	"- Collect before you finish: this session is not interactive, and nothing " +
+	"reaches you once you produce your final output. A subagent launched in the " +
+	"background reports only when you wait on it (in Claude Code: TaskOutput), so " +
+	"collect every one before that output, or run it in the foreground. A " +
+	"subagent still running when you finish is lost, with everything it found.\n\n" +
 	"Quality patterns (pick per task, compose freely):\n" +
 	"- Adversarial verify: for each finding, spawn independent skeptics prompted " +
 	"to REFUTE it; keep only what survives a majority.\n" +
@@ -565,7 +573,7 @@ type Task struct {
 	RepoRoot string
 
 	// ReasoningEffort is the reasoning effort level sent on the wire.
-	// Valid values: "low", "medium", "high", "xhigh", "max". The DSL also
+	// Valid values: "none", "low", "medium", "high", "xhigh", "max". The DSL also
 	// accepts "ultracode", but the runtime remaps that to "xhigh" before
 	// populating this field (see model.wireEffort) and sets Ultracode below.
 	ReasoningEffort string

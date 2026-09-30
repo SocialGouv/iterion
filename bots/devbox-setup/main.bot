@@ -18,34 +18,6 @@ vars:
   ## Repo to set up. Defaults to the run's project dir.
   workspace_dir: string = "${PROJECT_DIR}"
 
-schema preflight_output:
-  workspace_dir: string
-
-schema detect_output:
-  summary:   string
-  packages:  json
-  build_cmd: string
-  test_cmd:  string
-  e2e_cmd:   string
-
-schema generate_input:
-  detected: json
-
-schema generate_output:
-  devbox_json: string
-  notes:       string
-
-schema verify_input:
-  workspace_dir: string
-
-schema verify_output:
-  ok:     bool
-  output: string
-
-schema commit_output:
-  committed: bool
-  output:    string
-
 prompt detect_system:
   You are bootstrapping a reproducible dev environment for the repository
   at {{vars.workspace_dir}}. Read the manifests (go.mod, package.json,
@@ -85,29 +57,6 @@ prompt detect_user:
   it needs. See [[devbox-setup]] for the manifest→toolchain mapping and the
   playwright-browser / non-Nix-tool notes.
 
-## preflight — deterministic entry node. Its only job is to produce the
-## run's FIRST checkpoint before any claude_code agent runs: a failure on
-## the entry node of a run with no checkpoint is terminal (plain `failed`,
-## nothing to resume), and detect_stack's cold-start is exactly where the
-## sandboxed claude CLI has been observed to hang (see
-## docs/bot-runs/devbox-setup.md). With preflight checkpointed first, a
-## detect_stack hang/timeout leaves a `failed_resumable` run instead.
-compute preflight:
-  output: preflight_output
-  expr:
-    workspace_dir: "vars.workspace_dir"
-
-agent detect_stack:
-  backend: "claude_code"
-  model: "${DEVBOX_SETUP_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "low"
-  output: detect_output
-  system: detect_system
-  user: detect_user
-  session: fresh
-  tools: [read_file, glob, grep, bash]
-  tool_max_steps: 30
-
 prompt generate_system:
   Author a PINNED, minimal devbox.json at {{vars.workspace_dir}}/devbox.json
   for the detected stack, per skills/devbox-setup.md. Write ONLY
@@ -142,24 +91,61 @@ prompt generate_user:
   Write {{vars.workspace_dir}}/devbox.json (pinned, minimal). See
   [[devbox-setup]] for the shape, playwright browsers, and non-Nix tools.
 
-agent generate_devbox:
-  backend: "claude_code"
+schema preflight_output:
+  workspace_dir: string
+
+schema detect_output:
+  summary: string
+  packages: json
+  build_cmd: string
+  test_cmd: string
+  e2e_cmd: string
+
+schema generate_input:
+  detected: json
+
+schema generate_output:
+  devbox_json: string
+  notes: string
+
+schema verify_input:
+  workspace_dir: string
+
+schema verify_output:
+  ok: bool
+  output: string
+
+schema commit_output:
+  committed: bool
+  output: string
+
+agent detect_stack:
   model: "${DEVBOX_SETUP_MODEL:-claude-opus-5-5}"
-  reasoning_effort: "medium"
+  backend: "claude_code"
+  output: detect_output
+  system: detect_system
+  user: detect_user
+  tools: [read_file, glob, grep, bash]
+  tool_max_steps: 30
+  reasoning_effort: low
+
+agent generate_devbox:
+  model: "${DEVBOX_SETUP_MODEL:-claude-opus-5-5}"
+  backend: "claude_code"
   input: generate_input
   output: generate_output
   system: generate_system
   user: generate_user
-  session: fresh
   tools: [read_file, write_file, glob, grep, bash]
   tool_max_steps: 50
+  reasoning_effort: medium
 
 ## verify_devbox — deterministic gate: the generated devbox.json must
 ## `devbox install` cleanly (producing devbox.lock). Emits an envelope;
 ## never throws (a failure is reported, not crashed). python3 -c keeps the
 ## JSON emission clean (single quotes are safe inside the double-quoted -c arg).
 tool verify_devbox:
-  command: `WS={{input.workspace_dir}} python3 -c "
+  command: `WS={{input.workspace_dir}} python3 -I -c "
 import os, json, subprocess, pwd
 ws = os.environ['WS']
 # devbox/nix live in the container user real home (e.g. /home/devbox), not
@@ -188,7 +174,7 @@ print(json.dumps({'ok': rc == 0, 'output': tail}))
 ## written but the worktree is discarded at finalize ("no commits produced")
 ## and the bot delivers nothing.
 tool commit_devbox:
-  command: `WS={{input.workspace_dir}} python3 -c "
+  command: `WS={{input.workspace_dir}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ['WS']
 files = [f for f in ('devbox.json', 'devbox.lock') if os.path.isfile(os.path.join(ws, f))]
@@ -202,15 +188,38 @@ print(json.dumps({'committed': r.returncode == 0, 'output': (r.stdout + r.stderr
   input: verify_input
   output: commit_output
 
+## preflight — deterministic entry node. Its only job is to produce the
+## run's FIRST checkpoint before any claude_code agent runs: a failure on
+## the entry node of a run with no checkpoint is terminal (plain `failed`,
+## nothing to resume), and detect_stack's cold-start is exactly where the
+## sandboxed claude CLI has been observed to hang (see
+## docs/bot-runs/devbox-setup.md). With preflight checkpointed first, a
+## detect_stack hang/timeout leaves a `failed_resumable` run instead.
+compute preflight:
+  output: preflight_output
+  expr:
+    workspace_dir: "vars.workspace_dir"
+
 workflow devbox_setup:
-  entry: preflight
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default
   ## and the default slim image already ships everything this bot needs
   ## (node + devbox/nix + the claude CLI).
   worktree: auto
 
+  entry: preflight
+
   preflight -> detect_stack
-  detect_stack -> generate_devbox with { detected: "{{outputs.detect_stack}}" }
-  generate_devbox -> verify_devbox with { workspace_dir: "{{vars.workspace_dir}}" }
-  verify_devbox -> commit_devbox with { workspace_dir: "{{vars.workspace_dir}}" }
+
+  detect_stack -> generate_devbox with {
+    detected: "{{outputs.detect_stack}}"
+  }
+
+  generate_devbox -> verify_devbox with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  verify_devbox -> commit_devbox with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
   commit_devbox -> done

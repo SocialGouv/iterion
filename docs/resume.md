@@ -146,12 +146,26 @@ into a fresh file and refreshes it when it is at or past its expiry lead,
 so the *effective* token can differ even though the sealed blob does not.
 
 When a surface declines to bring a run back, it says so on the timeline:
-**`run_retry_skipped {reason: deterministic, code, error}`** — the
+**`run_retry_skipped {reason: deterministic, code, error, status?}`** — the
 counterpart of `run_retry_scheduled`. Without it a `failed_resumable` row
 whose redelivery was dropped on purpose reads exactly like one still
 waiting for a pod. Measured on run `01a07804` before the classification
 existed: seven resumes of one compute-expression failure in ten minutes,
 each a fresh pod, clone and sandbox.
+
+A cloud resume refused **before anything claims the run** — by the engine (a
+copy-based subbot child resumed on its own, an incompatible artifact contract,
+a scratch that did not travel) or by the runner itself (an IR it cannot load,
+an engine floor it is below) — would otherwise stay `queued`: the publisher
+flipped it there before publishing, and a refusal the runner acks is never
+redelivered. The runner puts the run back in the status the resume came from,
+which the publisher sends along (`ResumeSpec.PriorStatus`; `failed_resumable`
+from an older server): a paused run keeps its pending question, a cancelled
+one its cancel, and the refusal is its `error` (its failure code on
+`failed_resumable`). Only that attempt, and only while nobody claimed it — a
+newer resume or a run the engine claimed is left alone. The event then
+carries `status`, the status the run is back to. The revision the refused
+resume stamped stays recorded: resume with that source, or with `--force`.
 
 ## CLI
 

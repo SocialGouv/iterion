@@ -278,3 +278,31 @@ func TestSubmitResume_MissionExpectedStatusAndReceiptCrossPublisherCAS(t *testin
 		t.Fatalf("mission wire fields lost: %#v", published)
 	}
 }
+
+// TestSubmitResume_PublishesTheStatusItMovedTheRunFrom: the runner puts a
+// resume the engine refused before its claim back where it came from, and
+// only the publisher knows where that is — the queued flip erased it.
+func TestSubmitResume_PublishesTheStatusItMovedTheRunFrom(t *testing.T) {
+	for _, from := range []store.RunStatus{store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable} {
+		t.Run(string(from), func(t *testing.T) {
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := store.WithIdentity(context.Background(), "team", "alice")
+			const runID = "run-prior-status"
+			if err := st.SaveRun(ctx, &store.Run{ID: runID, TenantID: "team", OwnerID: "alice", Status: from}); err != nil {
+				t.Fatal(err)
+			}
+			var published *queue.RunMessage
+			p := &Publisher{store: st, publishRun: func(_ context.Context, msg *queue.RunMessage) error { published = msg; return nil }}
+			spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
+			if err := p.SubmitResume(ctx, spec, &ir.Workflow{Name: "wf"}, &runview.CompiledSource{Hash: "hash"}); err != nil {
+				t.Fatal(err)
+			}
+			if published == nil || published.Resume == nil || published.Resume.PriorStatus != from {
+				t.Fatalf("published resume = %#v, want prior status %s", published, from)
+			}
+		})
+	}
+}

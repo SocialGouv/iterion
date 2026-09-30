@@ -545,8 +545,9 @@ func TestVerifyBuildSkillPromiseMatchesItsBot(t *testing.T) {
 			// makes it true. A skill may say LESS than its bot enforces;
 			// it may never say more.
 			for promise, marker := range map[string]string{
-				"MASKED EXIT STATUS":  "masked_pipelines",
-				"on one line or many": "ends_nonzero",
+				"MASKED EXIT STATUS":              "masked_pipelines",
+				"lifts every `NOT COVERED:` line": "nc_lines",
+				"on one line or many":             "ends_nonzero",
 			} {
 				if strings.Contains(string(body), promise) && !strings.Contains(string(bot), marker) {
 					t.Errorf("%s promises %q but %s implements no %s — the authoring agent writes a verify.sh "+

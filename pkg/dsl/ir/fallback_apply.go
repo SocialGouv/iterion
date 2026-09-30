@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -48,10 +49,19 @@ const RunFallbackName = "run-fallback"
 // once: it honoured a node-level `sandbox:` tier the engine does not
 // have (one sandbox per run), advertising an escape hatch that
 // re-created the exact dispatch failure it claimed to prevent.
-func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
+//
+// vars carries the launch's `--var` overrides, so a node whose
+// `backend:` is a `{{vars.<name>}}` reference is screened by what THIS
+// run resolves — the same reading the dispatch makes (resolveRoutingField:
+// template first, `${…}` after) — rather than passing unscreened as a
+// field nothing decided. The declared defaults under the overrides come
+// from the workflow itself; a reference neither answers stays undecided,
+// as the compiler reads it.
+func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[string]string) []string {
 	if w == nil || len(routes) == 0 {
 		return nil
 	}
+	run := runBackend.withVars(launchVarsView(w, vars))
 
 	var refusals []string
 	for _, n := range w.Nodes {
@@ -69,8 +79,9 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 		// The RUN's reading on both sides: this screen runs in the process
 		// that will dispatch the node, so a dial set in that process's
 		// environment IS the route, where the compiler may only read what
-		// the source declares.
-		nodeBackend := runBackend.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		// the source declares — and the launch's vars decide a `{{vars.x}}`
+		// the source deliberately left open.
+		nodeBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
 		perm := EffectivePermission(nn.GetPermission(), w.Permission)
 		for stage, route := range routes {
 			if route.Backend == "" && route.Model == "" && route.Provider == "" {
@@ -79,7 +90,7 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 			// The route's backend as the run reads it, so an operator's
 			// `--fallback '${DIAL:-claw} …'` is screened by what it
 			// resolves to rather than by its spelling.
-			routeBackend := runBackend.routeName(route.Backend)
+			routeBackend := run.routeName(route.Backend)
 			route.Name = RunFallbackName
 			route.RunStage = stage
 			route.RunStageSet = true
@@ -132,6 +143,167 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool) []string {
 		}
 	}
 	return refusals
+}
+
+// launchVarsView is the vars reading the launch-time screen resolves
+// `{{vars.<name>}}` routing fields against: the declared defaults under
+// the launch's overrides — the two layers resolveVars stacks, in its
+// order, and with its rule that a launch value for a var the workflow
+// does not declare is dropped.
+//
+// Values carry the type resolveVars gives them — ResolveVarText is its
+// one reading of a var's text, shared here — so a `json` var is its
+// parsed document and a dotted `{{vars.cfg.backend}}` drills into it,
+// the executor's own semantics. The expansion pass is resolveVars' too:
+// LookupEnv, the bot-vars overlay then the process environment
+// (varExpandFn ends in it, ADR-093). The reader's own `${…}` pass then
+// runs on the substituted field, resolveRoutingField's second. Storing the
+// raw text instead read every var-held `${…}` once too few, and a reading
+// through another environment than dispatch's screens a backend the run
+// never resolves — or misses one it does.
+//
+// One resolveVars reading the screen cannot reproduce stays UNDECIDED
+// instead: a var whose expansion would CONSULT one of the five names
+// varExpandFn answers from engine state — PROJECT_DIR, BUNDLE_DIR,
+// BUNDLE_SKILLS_DIR, PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR — is omitted
+// (the screen has no workDir, worktree or container workspace; the
+// environment reads them "", decided-empty where dispatch reads a path). The probe
+// reads the text the way dispatch expands THAT TYPE — a json var's string
+// leaves braced-only, keys never — and it counts a name consulted but
+// discarded (`${SET:-${PROJECT_DIR}}` with SET in the environment: the
+// inside-out pass consults the inner segment before the outer
+// short-circuits), which is over-conservative by construction: dispatch
+// decides the outer value where the screen says nothing. Undecided never
+// refuses a route the run would take; it only screens less, the pre-#1606
+// posture for every var. Nil when nothing declares or overrides a var,
+// which reads exactly as before.
+func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
+	if len(w.Vars) == 0 {
+		return nil
+	}
+	var view map[string]any
+	put := func(name string, value any) {
+		if view == nil {
+			view = make(map[string]any, len(w.Vars))
+		}
+		view[name] = value
+	}
+	read := func(name string, raw any, vt VarType) {
+		if referencesEngineSuppliedName(raw, vt) {
+			return
+		}
+		v, err := ResolveVarText(raw, vt, LookupEnv)
+		if err != nil {
+			// resolveVars' own fallback: a coercion failure logs and runs
+			// the RAW value, env-expanded (engine_resolve.go) — a flat
+			// {{vars.b}} reads it, and a drill into it finds nothing, as
+			// into any non-map. Omitting the var instead read the node as
+			// undecided — or left the declared DEFAULT standing over a
+			// failed override — both screening a backend the run never
+			// resolves.
+			if s, isText := raw.(string); isText {
+				put(name, ExpandWithDefault(s, LookupEnv))
+			}
+			return
+		}
+		put(name, v)
+	}
+	for name, v := range w.Vars {
+		if v == nil || !v.HasDefault {
+			continue
+		}
+		read(name, v.Default, v.Type)
+	}
+	for name, s := range overrides {
+		if decl, declared := w.Vars[name]; declared && decl != nil {
+			read(name, s, decl.Type)
+		}
+	}
+	return view
+}
+
+// EngineSuppliedVarNames are the names the engine's varExpandFn answers
+// from run state (pkg/runtime/engine_resolve.go) rather than from any
+// environment the launch-time screen runs with. Exported so the twin is
+// pinned by a pkg/runtime test against varExpandFn itself.
+var EngineSuppliedVarNames = []string{
+	"PROJECT_DIR",
+	"BUNDLE_DIR",
+	"BUNDLE_SKILLS_DIR",
+	"PROJECT_MEMORY_DIR",
+	"PROJECT_SCRATCH_DIR",
+}
+
+// referencesEngineSuppliedName reports whether reading raw as a var of
+// type vt would CONSULT one of the engine-supplied names — the probe
+// reads the text the way dispatch expands that type: the full reading
+// for a scalar, and the braced-only reading of a json document's string
+// LEAVES (expandJSONLeaves — keys are names, never expanded, so
+// `{"note":"$PROJECT_DIR"}` is data, not a reference). CoerceVarValue
+// never errors for VarJSON — a non-JSON text is left a string
+// (var_value.go) — so there is no unparseable-json path to narrate: it
+// is the notJSON arm, probed braced-only as dispatch expands it.
+//
+// Probing with a recording lookup reproduces the names the real expansion
+// reads instead of guessing at the spelling with a substring match
+// (`${PROJECT_DIR2}` is not PROJECT_DIR) — including an INDIRECTED name:
+// resolveBracedSegment parses the outer name from the resolved inner
+// text, so the lookup answers non-listed names through LookupEnv (the
+// reading the screen itself expands with, dispatch's) and `${${A}}`
+// with A=PROJECT_DIR set still consults — and records — PROJECT_DIR.
+// The price is stated on launchVarsView: a name consulted but discarded
+// still counts.
+func referencesEngineSuppliedName(raw any, vt VarType) bool {
+	s, isText := raw.(string)
+	if !isText || !strings.ContainsRune(s, '$') {
+		return false
+	}
+	if vt == VarJSON {
+		out, _ := CoerceVarValue(s, vt)
+		if text, notJSON := out.(string); notJSON {
+			return probesEngineSuppliedName(text, expandPolicy{bracedOnly: true})
+		}
+		found := false
+		expandJSONLeaves(out, func(leaf string) string {
+			if probesEngineSuppliedName(leaf, expandPolicy{bracedOnly: true}) {
+				found = true
+			}
+			return leaf
+		})
+		return found
+	}
+	return probesEngineSuppliedName(s, expandPolicy{})
+}
+
+// probesEngineSuppliedName reports whether expanding s under policy would
+// consult an engine-supplied name. Non-listed names answer through
+// LookupEnv, as at dispatch, so a name reached through an inner expansion is
+// still consulted; a listed name's own value is irrelevant to the probe.
+func probesEngineSuppliedName(s string, policy expandPolicy) bool {
+	found := false
+	expandWithDefault(s, func(name string) string {
+		if slices.Contains(EngineSuppliedVarNames, name) {
+			found = true
+			return ""
+		}
+		return LookupEnv(name)
+	}, policy)
+	return found
+}
+
+// LaunchBackendName resolves ONE backend field the way the launch-time
+// fallback screen reads it: a `{{vars.<name>}}` reference decided by the
+// launch's vars (declared defaults under the overrides, a dotted path
+// drilled into a json var's document), then the field's `${…}` expansion,
+// in the run's order — and "" when the screen cannot name the backend.
+// It is name() only: ApplyRunFallback composes more on top of the same
+// reader (the default_backend: fallthrough for a node field, routeName
+// for a route's `auto`), so this is NOT the screen's verdict, just its
+// field reading. Exported for the drill twin it is pinned against in
+// pkg/backend/model (routing_twin_test) — its only caller; a host
+// screening a launch belongs on ApplyRunFallback itself.
+func LaunchBackendName(w *Workflow, overrides map[string]string, field string) string {
+	return runBackend.withVars(launchVarsView(w, overrides)).name(field)
 }
 
 // ParseRunFallbackFlag parses the `--fallback` / launch-row value into a

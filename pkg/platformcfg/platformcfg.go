@@ -25,8 +25,12 @@ package platformcfg
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 )
@@ -141,7 +145,7 @@ var botVarsInfraPrefixes = []string{
 	"ITERION_ACCESS_", "ITERION_PAT_", "ITERION_COOKIE_",
 	"ITERION_SMTP_", "ITERION_OTLP_", "ITERION_SANDBOX_",
 	"ITERION_USAGE_CAP", "ITERION_BOOTSTRAP_",
-	"ITERION_MODEL_SPECS_", "ITERION_UPDATE_",
+	"ITERION_MODEL_SPECS_", "ITERION_UPDATE_", "ITERION_DISPATCHER_",
 }
 
 // botVarsInfraExact are single infra names outside those namespaces —
@@ -178,20 +182,113 @@ func (b BotVars) Validate() error {
 		return fmt.Errorf("platformcfg: bot_vars: %d keys exceeds the %d-key bound", len(b.Vars), botVarsMaxKeys)
 	}
 	for name, val := range b.Vars {
-		if !botVarNameOK(name) {
-			return fmt.Errorf("platformcfg: bot_vars: %q is not an overridable bot var (want ITERION_A_Z0_9 outside the infra/credential namespaces)", name)
-		}
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("platformcfg: bot_vars: %s: value must not be blank (remove the key to clear the override)", name)
-		}
-		if strings.ContainsAny(val, "\n\r") {
-			return fmt.Errorf("platformcfg: bot_vars: %s: value must be a single line", name)
-		}
-		if len(val) > botVarsMaxValueLen {
-			return fmt.Errorf("platformcfg: bot_vars: %s: value exceeds %d bytes", name, botVarsMaxValueLen)
+		if err := botVarEntryError(name, val); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// ValidateWrite is the admin write's rule for a record that held prevKeys
+// entries before the write: the key bound for a write that grows it, and the
+// entry rule for the keys the write SETS. Entries already stored are not
+// re-judged: a record written under an older rule stays editable and
+// clearable — BotVarsOverlay keeps refusing its non-conforming entries at
+// read time, and RefusedEntries names them — instead of every write failing
+// on an entry the operator never touched.
+func (b BotVars) ValidateWrite(prevKeys int, set []string) error {
+	if len(b.Vars) > botVarsMaxKeys && len(b.Vars) > prevKeys {
+		return fmt.Errorf("platformcfg: bot_vars: %d keys exceeds the %d-key bound", len(b.Vars), botVarsMaxKeys)
+	}
+	for _, name := range set {
+		if err := botVarEntryError(name, b.Vars[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RefusedEntries maps each stored entry the entry rule refuses to the
+// reason — the overrides BotVarsOverlay does not hand out. Nil when every
+// entry conforms.
+func (b BotVars) RefusedEntries() map[string]string {
+	var out map[string]string
+	for name, val := range b.Vars {
+		if err := botVarEntryError(name, val); err != nil {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[name] = err.Error()
+		}
+	}
+	return out
+}
+
+// botVarEntryError is the rule one override must satisfy, shared by the
+// writes (Validate, ValidateWrite) and the read (BotVarsOverlay) so they
+// cannot drift.
+func botVarEntryError(name, val string) error {
+	if !botVarNameOK(name) {
+		return fmt.Errorf("platformcfg: bot_vars: %q is not an overridable bot var (want ITERION_A_Z0_9 outside the infra/credential namespaces)", name)
+	}
+	if strings.TrimSpace(val) == "" {
+		return fmt.Errorf("platformcfg: bot_vars: %s: value must not be blank (remove the key to clear the override)", name)
+	}
+	if strings.ContainsAny(val, "\n\r") {
+		return fmt.Errorf("platformcfg: bot_vars: %s: value must be a single line", name)
+	}
+	if len(val) > botVarsMaxValueLen {
+		return fmt.Errorf("platformcfg: bot_vars: %s: value exceeds %d bytes", name, botVarsMaxValueLen)
+	}
+	if bad := strings.IndexFunc(val, func(r rune) bool { return !botVarValueRune(r) }); bad >= 0 {
+		r, _ := utf8.DecodeRuneInString(val[bad:])
+		return fmt.Errorf("platformcfg: bot_vars: %s: value carries %q — allowed: letters, digits and ._:/@+=,%%-[]", name, r)
+	}
+	return nil
+}
+
+// BotVarsOverlay is the lookup cmd wiring installs with ir.SetEnvOverlay.
+// Each stored value is checked against the write-time rule before it is
+// handed out: Validate guards only the admin write, while a record can also
+// be written by a binary carrying an older rule (server and runner roll out
+// independently) or by hand — and a value that bypassed the charset reaches
+// tool bodies, where a `{{…}}` inside it would be resolved by the reference
+// pass that runs after the env expansion. A refused entry reads as unset, so
+// the pod env and then the .bot default answer instead, and it is logged
+// once per stored value.
+func BotVarsOverlay(res *Resolver[BotVars], warn func(string, ...any)) func(name string) (string, bool) {
+	var warned sync.Map
+	return func(name string) (string, bool) {
+		rec := res.Get(context.Background())
+		if rec == nil {
+			return "", false
+		}
+		v, ok := rec.Vars[name]
+		if !ok {
+			return "", false
+		}
+		if err := botVarEntryError(name, v); err != nil {
+			if _, seen := warned.LoadOrStore(name+"\x00"+v, true); !seen && warn != nil {
+				warn("platformcfg: bot_vars: stored override IGNORED, the pod env and the .bot default apply — %v", err)
+			}
+			return "", false
+		}
+		return v, true
+	}
+}
+
+// botVarValueRune is the value charset. A stored value is substituted RAW
+// into tool and script bodies — `${ITERION_*:-default}` there reads the
+// overlay like every other expansion — so a shell metacharacter would run as
+// code in every tenant's runs. Model ids (brackets included:
+// claude-opus-5-5[1m]), provider chains, efforts, durations, numbers and
+// paths all fit.
+func botVarValueRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	}
+	return strings.ContainsRune("._:/@+=,%-[]", r)
 }
 
 // botVarNameOK is the name gate: ITERION_-prefixed upper snake case, no
@@ -260,9 +357,86 @@ type PlatformCredentials struct {
 	// governs at, since a team is created inside an org without asking the
 	// platform.
 	Orgs []string `bson:"orgs,omitempty" json:"orgs"`
+	// KeysFirst is the shared-tier fill order on one wire family. nil or
+	// false = a forfait takes the family before an API key, which then
+	// funds only the routes that name its provider (or the wire a closed
+	// forfait leaves free); true = the key fills first and the forfait is
+	// the backstop. It governs the platform AND org tiers — the deployment's
+	// posture on spending a subscription it already pays for before a key
+	// billed per token.
+	KeysFirst *bool `bson:"keys_first,omitempty" json:"keys_first"`
+	// FacadeDefault says whether a facade key (z.ai, Moonshot — another
+	// vendor behind the anthropic wire, answering a claude id with its own
+	// model) may become that wire's DEFAULT credential in a shared tier:
+	// "auto" (only in a tier holding no Anthropic-native credential — a
+	// Claude forfait, open or closed, or an anthropic key), "never"
+	// (pinned-only: it funds the routes that name its provider and nothing
+	// else), "always" (whenever the family is free, a closed forfait
+	// falling through to it). nil = the env default, else "auto".
+	FacadeDefault *string `bson:"facade_default,omitempty" json:"facade_default"`
 
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
+}
+
+// The deployment defaults of the two shared-tier ordering knobs (ADR-090:
+// env = default, the record's field = runtime override). ValidateEnv refuses
+// a boot on a value these do not read.
+const (
+	EnvKeysFirst     = "ITERION_PLATFORM_KEYS_FIRST"
+	EnvFacadeDefault = "ITERION_PLATFORM_FACADE_DEFAULT"
+)
+
+// FacadePolicy is FacadeDefault's value space.
+type FacadePolicy string
+
+const (
+	FacadeAuto   FacadePolicy = "auto"
+	FacadeNever  FacadePolicy = "never"
+	FacadeAlways FacadePolicy = "always"
+)
+
+func (f FacadePolicy) valid() bool {
+	return f == FacadeAuto || f == FacadeNever || f == FacadeAlways
+}
+
+// PrefersKeys reports whether the shared tiers fill API keys before forfaits
+// on a wire family: the record's value, else the env default, else false.
+func (p *PlatformCredentials) PrefersKeys() bool {
+	if p != nil && p.KeysFirst != nil {
+		return *p.KeysFirst
+	}
+	v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(EnvKeysFirst)))
+	return err == nil && v
+}
+
+// Facade is the effective facade policy: the record's value, else the env
+// default, else auto.
+func (p *PlatformCredentials) Facade() FacadePolicy {
+	if p != nil && p.FacadeDefault != nil {
+		if f := FacadePolicy(*p.FacadeDefault); f.valid() {
+			return f
+		}
+	}
+	if f := FacadePolicy(strings.ToLower(strings.TrimSpace(os.Getenv(EnvFacadeDefault)))); f.valid() {
+		return f
+	}
+	return FacadeAuto
+}
+
+// ValidateEnv reports an env default neither knob can read — a deployment
+// that set one meant something, and reading it as the built-in default in
+// silence would decide the opposite of what the operator wrote.
+func ValidateEnv() error {
+	if v := strings.TrimSpace(os.Getenv(EnvKeysFirst)); v != "" {
+		if _, err := strconv.ParseBool(v); err != nil {
+			return fmt.Errorf("platformcfg: %s=%q is not a boolean", EnvKeysFirst, v)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv(EnvFacadeDefault)); v != "" && !FacadePolicy(strings.ToLower(v)).valid() {
+		return fmt.Errorf("platformcfg: %s=%q — want auto, never or always", EnvFacadeDefault, v)
+	}
+	return nil
 }
 
 // Enforced reports whether the audience gates anything at all.
@@ -294,6 +468,9 @@ func (p *PlatformCredentials) Allows(orgID, teamID string) bool {
 // the lists) and its symptom is every tenant-less run failing at its first
 // LLM call — a fleet-wide outage expressed as a config typo.
 func (p PlatformCredentials) Validate() error {
+	if p.FacadeDefault != nil && !FacadePolicy(*p.FacadeDefault).valid() {
+		return fmt.Errorf("platformcfg: facade_default %q — want auto, never or always", *p.FacadeDefault)
+	}
 	if p.Enforce == nil || !*p.Enforce {
 		return nil
 	}

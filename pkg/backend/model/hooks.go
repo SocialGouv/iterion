@@ -1118,6 +1118,14 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 	if info.CostUSD > 0 {
 		data["cost_usd"] = info.CostUSD
 	}
+	// The credential route the session ran on ("anthropic-oauth",
+	// "facade:<slot>:<base url>", …) — no key material by construction. The
+	// runner's per-credential ledger books the spend on it: a node's provider
+	// hint decides which credential it spent, and the (backend, model) pair
+	// alone does not carry it.
+	if info.Fingerprint != "" {
+		data["fingerprint"] = info.Fingerprint
+	}
 	if h.logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}

@@ -83,14 +83,42 @@ func TestDefaultPrecedence_CannotSeeAPinnedKey(t *testing.T) {
 }
 
 // An `anthropic` pin reads the pinned channel too: same licence, same class.
-// Without it, a node pinned `provider: anthropic` beside a tenant forfait
-// would be served the forfait — a different instrument than the one the
-// deployment provisioned for the pin.
+// With no forfait in the run, the key a shared tier funded for the pin is the
+// node's only Anthropic credential.
 func TestAnthropicHint_SpendsAPinnedKey(t *testing.T) {
 	resetClaudeCredEnv(t)
 	ctx := ctxWithPinnedCreds(t, nil, map[secrets.Provider]string{secrets.ProviderAnthropic: "platform-anthropic"}, nil)
 	if got := anthropicCredEnvForCLI(ctx, "anthropic", false)["ANTHROPIC_API_KEY"]; got != "platform-anthropic" {
 		t.Errorf("ANTHROPIC_API_KEY = %q, want the pinned key", got)
+	}
+}
+
+// Beside a forfait, the same pin spends the forfait: the pin names the
+// provider, the CLI spends the subscription on its plan, and the pinned key
+// exists for the consumers that cannot (claw, pi). Spending it here moved a
+// Revi review onto a metered org or platform key beside the team's own
+// subscription. The run's own DEFAULT key still wins — it is the run's chosen
+// instrument for the family.
+func TestAnthropicHint_PrefersTheForfaitOverAPinnedSharedKey(t *testing.T) {
+	resetClaudeCredEnv(t)
+	forfait := t.TempDir()
+	ctx := ctxWithPinnedCreds(t, nil,
+		map[secrets.Provider]string{secrets.ProviderAnthropic: "platform-anthropic"},
+		map[string]string{string(secrets.OAuthKindClaudeCode): forfait})
+	env := anthropicCredEnvForCLI(ctx, "anthropic", false)
+	if env["ANTHROPIC_API_KEY"] != "" {
+		t.Errorf("the pinned shared key was spent beside the run's forfait")
+	}
+	if got := env["CLAUDE_CONFIG_DIR"]; got != forfait {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the run's forfait %q", got, forfait)
+	}
+
+	own := ctxWithPinnedCreds(t,
+		map[secrets.Provider]string{secrets.ProviderAnthropic: "tenant-anthropic"},
+		nil,
+		map[string]string{string(secrets.OAuthKindClaudeCode): forfait})
+	if got := anthropicCredEnvForCLI(own, "anthropic", false)["ANTHROPIC_API_KEY"]; got != "tenant-anthropic" {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want the run's own default key", got)
 	}
 }
 

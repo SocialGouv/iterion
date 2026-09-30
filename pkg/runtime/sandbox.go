@@ -1869,7 +1869,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), sandboxShutdownTimeout)
 		defer cancel()
 		active.shutdown(cleanupCtx, e.logger)
 	}
@@ -1884,6 +1884,15 @@ const sandboxWorkspaceExportTimeout = 5 * time.Minute
 // sandboxHeadCaptureTimeout bounds the single pod-side `git rev-parse`
 // that records the workspace HEAD before the export.
 const sandboxHeadCaptureTimeout = 30 * time.Second
+
+// sandboxShutdownTimeout bounds the sandbox's own shutdown at teardown.
+const sandboxShutdownTimeout = 30 * time.Second
+
+// SandboxTeardownBudget bounds what the engine still does in a sandbox once
+// its run was cancelled, before it returns: the workspace HEAD capture, the
+// export, the shutdown. The runner holds the run's lease that long past the
+// cancellation, no longer.
+const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxShutdownTimeout
 
 // WorkspaceIntegrity is the sandbox-side git truth captured at teardown
 // for export-based drivers (kubernetes), BEFORE ExportWorkspace streams

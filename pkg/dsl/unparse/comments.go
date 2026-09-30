@@ -34,7 +34,7 @@ func placeComments(name, text string, f *ast.File) string {
 	}
 	lines, _ := parser.ScanSource(name, text)
 	idx := newTextIndex(lines)
-	ed := &editor{lines: strings.Split(text, "\n")}
+	ed := &editor{lines: strings.Split(text, "\n"), blockBody: blockScalarBodyLines(name, text)}
 	firstCode := 0
 	if len(lines) > 0 {
 		firstCode = lines[0].Line
@@ -200,6 +200,36 @@ type editor struct {
 	after  map[int][]string
 	trail  map[int]string
 	tail   []string
+	// blockBody marks the 1-based line numbers a block scalar's body
+	// occupies: a blank line inserted there is read INTO the value on the
+	// next parse, so the tail's separator blank is skipped when the text
+	// ends on one (#1612).
+	blockBody map[int]bool
+}
+
+// blockScalarBodyLines is the set of 1-based line numbers of text a block
+// scalar's body occupies. A block scalar's string token starts at the `|`
+// of its opener line — a raw string's at a backtick — which is what tells
+// the two multi-line tokens apart here.
+func blockScalarBodyLines(name, text string) map[int]bool {
+	lines := strings.Split(text, "\n")
+	var out map[int]bool
+	for _, t := range parser.NewLexer(name, text).All() {
+		if t.Type != parser.TokenString || t.EndLine <= t.Line || t.Line > len(lines) {
+			continue
+		}
+		rl := []rune(lines[t.Line-1])
+		if t.Column-1 >= len(rl) || rl[t.Column-1] != '|' {
+			continue
+		}
+		if out == nil {
+			out = map[int]bool{}
+		}
+		for i := t.Line + 1; i <= t.EndLine; i++ {
+			out[i] = true
+		}
+	}
+	return out
 }
 
 // placeRun writes a declaration's comments. A paragraph break is honoured
@@ -342,10 +372,19 @@ func (e *editor) addTrail(l parser.CodeLine, text string) {
 	}
 	// The statement's last TOKEN line, never its extent: a `prompt`
 	// header reaches to the end of its body, and a comment written there
-	// would be body text.
+	// would be body text. A block scalar's statement reaches the end of
+	// its body the same way (TokenEnd spans it): written there the comment
+	// would become VALUE text, and on the opener line it is no comment at
+	// all — the lexer skips what follows a `|` (#1612). It goes BELOW the
+	// body, at the property's indent, where the next read carries it on
+	// the same declaration.
 	at := l.TokenEnd
 	if at < l.Line {
 		at = l.End
+	}
+	if e.blockBody[at] {
+		e.addAfter(at, indentOf(l.Col), text, false)
+		return
 	}
 	if _, taken := e.trail[at]; taken {
 		e.addAfter(at, indentOf(l.Col), text, false)
@@ -386,21 +425,27 @@ func (e *editor) render() string {
 		out = append(out, e.after[n]...)
 	}
 	if len(e.tail) > 0 {
-		out = appendTailComments(out, e.tail)
+		out = appendTailComments(out, e.tail, e.blockBody)
 	}
 	return strings.Join(out, "\n")
 }
 
 // appendTailComments puts the file's tail comments after its last line of
-// text, keeping the single trailing newline the writer ends on.
-func appendTailComments(lines, tail []string) []string {
+// text, keeping the single trailing newline the writer ends on. A blank
+// line that IS a block scalar's body line (blockBody) is the value's own
+// trailing newline, not the writer's: it is never trimmed, and when the
+// text ends on a body line the separating blank is skipped — the next read
+// would absorb it into the value.
+func appendTailComments(lines, tail []string, blockBody map[int]bool) []string {
 	last := len(lines)
-	for last > 0 && strings.TrimSpace(lines[last-1]) == "" {
+	for last > 0 && strings.TrimSpace(lines[last-1]) == "" && !blockBody[last] {
 		last--
 	}
 	out := make([]string, 0, len(lines)+len(tail)+1)
 	out = append(out, lines[:last]...)
-	out = append(out, "")
+	if !blockBody[last] {
+		out = append(out, "")
+	}
 	out = append(out, tail...)
 	out = append(out, lines[last:]...)
 	return out

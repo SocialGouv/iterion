@@ -418,7 +418,7 @@ that drives it, and how hard it is asked to think.
 
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
   backend, effort}]`. An `effort` outside
-  `low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
+  `none|low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
   reaches the provider verbatim.
 
 The **effort** override outranks both the node's static `reasoning_effort:`
@@ -497,9 +497,14 @@ that stack. It is resolved per node like every routing field (`model:`,
 `backend:`, `provider:`, `interaction_model:`, a `fallbacks:` route's three
 fields, a verified action's `recovery.model`, the workflow's
 `default_backend:`): a `{{vars.<name>}}` reference
-first — the run's vars are the one namespace that exists before the node
+first — a dotted `{{vars.<doc>.<member>}}` included, drilled into a `json`
+var's document; the run's vars are the one namespace that exists before the node
 runs; any other template warns C148 at compile time and reaches the backend
-as text — then `${VAR}` / `${VAR:-default}` expansion.
+as text — then `${VAR}` / `${VAR:-default}` expansion. A dotted reference
+whose var holds a scalar at run time (a `--var cfg=claw` override replacing
+the declared document) resolves nothing on either side of the launch screen:
+the value holds no members to drill, the text reaches the backend as written
+and the node fails at its first delegation.
 
 Known hints:
 
@@ -584,18 +589,18 @@ hint and the wire model:
 ```iter fragment
 agent reviewer:
   backend: "claude_code"
-  provider: "zai:glm-5.2,anthropic:claude-opus-4-8"   # glm-5.2 on z.ai, claude-opus-4-8 on Anthropic
+  provider: "zai:glm-5.3,anthropic:claude-opus-5-5"   # glm-5.3 on z.ai, claude-opus-5-5 on Anthropic
 ```
 
 This is the case where the chain's two providers serve **different model
-ids over the same Anthropic-wire API** — `glm-5.2` is a z.ai model that
+ids over the same Anthropic-wire API** — `glm-5.3` is a z.ai model that
 Anthropic would reject, so a hint-only swap would break on fall-through.
 The token is split on the **first** colon (a model id that itself
 contains a colon survives intact). An element **without** a model
-(`anthropic` in `zai:glm-5.2,anthropic`) inherits the node's `model:`
+(`anthropic` in `zai:glm-5.3,anthropic`) inherits the node's `model:`
 baseline; an inheriting element after a model-bearing one restores the
 baseline rather than carrying the previous override. A malformed element
-— a colon with an empty provider (`:glm-5.2`) or empty model (`zai:`) —
+— a colon with an empty provider (`:glm-5.3`) or empty model (`zai:`) —
 warns **C172** at compile time. Env expansion still runs on the whole
 field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 `provider:model` separator.
@@ -932,6 +937,16 @@ silently taken — and what makes it visible to the three pre-run
 analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
 crossings the compiler refuses in the `.bot`.
+
+The screen reads a node's backend the way the run itself will: a
+`${VAR:-default}` dial by the launching process's environment, and a
+`{{vars.<name>}}` reference by the launch's vars (the declared defaults
+under that launch's `--var` overrides) — the same template-then-env
+reading `resolveRoutingField` makes at dispatch, var values expanded
+through the bot-vars overlay then the process environment exactly as
+`resolveVars` expands them.
+A reference neither answers stays undecided and is screened as before:
+no opinion, no guess.
 
 The route does **not** propagate into a `subbot:` child. A subbot is a
 different bot with its own routes, its own judges and its own permission
@@ -1276,10 +1291,13 @@ When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider (the detector's
 `SuggestedModel` for the first available provider, in this priority
 order) — currently
-`anthropic/claude-opus-5` for Anthropic,
-`anthropic/glm-5.2` for z.ai,
-`openai/gpt-5.4-mini` for OpenAI, and
-`xai/grok-3` for xAI.
+`anthropic/claude-opus-5-5` for Anthropic,
+`anthropic/glm-5.3` for z.ai,
+`moonshot/kimi-k2` for Moonshot,
+`openai/gpt-6-sol` for OpenAI, and
+`xai/grok-3` for xAI (the `SuggestedModel` fields of
+[`pkg/backend/detect`](../pkg/backend/detect/detect.go), in the order the
+detector lists them).
 
 #### Stream-silence watchdog
 

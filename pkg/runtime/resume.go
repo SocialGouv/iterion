@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1055,13 +1056,10 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 	}
 
 	// Atomically claim the run (compare-and-set) so a second concurrent
-	// resume can't spawn a duplicate execution racing on run.json.
-	// RunStatusQueued is a legitimate from-state on the cloud path: the
-	// publisher flips the run to queued before the runner claims the
-	// resume message (Resume's queued case routed here on the pending
-	// interaction evidence). The CAS still serializes concurrent claims.
-	// The claim also CONSUMES the pause pointer — see claimForResume.
-	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	// resume can't spawn a duplicate execution racing on run.json (and
+	// from the cloud's queued pre-flip too — see claimForResume). The
+	// claim also CONSUMES the pause pointer.
+	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
 
@@ -1188,7 +1186,7 @@ func (e *Engine) resumeFromRecoveryPause(ctx context.Context, r *store.Run, cp *
 	if cp.RecoveryCode != "" {
 		resumeData["recovery_code"] = cp.RecoveryCode
 	}
-	if err := e.claimForResumeWithData(ctx, r, cp, resumeData, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	if err := e.claimForResumeWithData(ctx, r, cp, resumeData, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
 	// A budget pause resumed without a raised cap would re-run the node
@@ -1263,7 +1261,7 @@ func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *stor
 	if err := e.store.PauseRun(ctx, runID, &persisted); err != nil {
 		return fmt.Errorf("runtime: persist parallel resume answer: %w", err)
 	}
-	if err := e.claimForResume(ctx, r, &persisted, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	if err := e.claimForResume(ctx, r, &persisted, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
 
@@ -1437,10 +1435,14 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 // rather than spawn a duplicate execution clobbering run.json. The single
 // choke point for BOTH human-pause resume paths (single-shot answers and
 // the review gate) — a claim without the consumption reopens the
-// stale-pointer window on that path alone. The failed-resumable path
-// claims via claimForFailureResume because it carries resume-data on the
-// emit (its checkpoint holds no pause pointer: failure boundaries never
-// set one, and a pause's pointer was consumed by the resume that used it).
+// stale-pointer window on that path alone. Every claim accepts `queued`
+// besides the statuses it names: the cloud publisher flips the run to
+// queued before the message reaches a runner, and Resume's queued case
+// routes it here on the pending interaction evidence; the CAS still
+// serializes concurrent claims. The failed-resumable path claims via
+// claimForFailureResume because it carries resume-data on the emit (its
+// checkpoint holds no pause pointer: failure boundaries never set one,
+// and a pause's pointer was consumed by the resume that used it).
 func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Checkpoint, allowed ...store.RunStatus) error {
 	return e.claimForResumeWithData(ctx, r, cp, nil, allowed...)
 }
@@ -1456,6 +1458,8 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 			return fmt.Errorf("runtime: durable resume refuses cancelled run %q", r.ID)
 		}
 		allowed = []store.RunStatus{e.expectedResumeStatus}
+	} else if !slices.Contains(allowed, store.RunStatusQueued) {
+		allowed = append(slices.Clone(allowed), store.RunStatusQueued)
 	}
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {

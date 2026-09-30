@@ -52,7 +52,7 @@ every item pending (`notify -> done when not posted`).
 | `workspace_dir` | string | `${PROJECT_DIR}` | Workspace holding the config + state |
 | `mode` | string (enum `collect`, `digest`) | `collect` | Poll feeds, or synthesize and deliver |
 | `category` | string | `""` | Config category key; digest REQUIRES it, collect `""` = all |
-| `config_path` | string | `feed-watch.json` | Workspace-relative config (`.yaml` needs PyYAML) |
+| `config_path` | string | `feed-watch.json` | Workspace-relative config (`.yaml` needs PyYAML in the interpreter's system site-packages: tool nodes run `python3 -I`, which sees neither the user site nor `PYTHONPATH`) |
 | `state_dir` | string | `.feed-watch` | Workspace-relative state root |
 | `dry_run` | bool | `false` | digest: print the would-be payloads, deliver nothing |
 | `silence_alert_days` | int | `3` | Days without a delivered digest before warning on the same sinks; `0` disables |

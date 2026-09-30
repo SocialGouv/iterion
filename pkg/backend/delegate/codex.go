@@ -586,6 +586,12 @@ func (c *codexStderrCapture) String() string {
 	return c.buf.String()
 }
 
+// codex spends the run's ChatGPT forfait before any key pinned for an
+// `openai` route: codexCredEnvForCLI below never reads a pinned key.
+func init() {
+	RegisterForfaitFirst(BackendCodex, string(secrets.ProviderOpenAI))
+}
+
 // codexCredEnvForCLI resolves the per-run Codex credential environment. Keep
 // this shared by the work and formatting passes: the latter resumes the first
 // pass in a new CLI process and otherwise loses tenant-scoped auth.
@@ -830,10 +836,15 @@ func codexNeedsTwoPass(task Task) bool {
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.
-// Codex only supports low/medium/high/max — xhigh maps down to high (matching the
+// The SDK exposes none/low/medium/high/max — xhigh maps down to high (matching the
 // "fall back to highest supported at or below" convention used by Claude Code).
+// "none" maps to the SDK's EffortNone: the models that carry it (GPT-6
+// Sol/Luna) disable reasoning entirely; a model without it is refused by the
+// CLI rather than silently re-leveled here.
 func mapReasoningEffort(s string) codexsdk.Effort {
 	switch s {
+	case "none":
+		return codexsdk.EffortNone
 	case "low":
 		return codexsdk.EffortLow
 	case "medium":

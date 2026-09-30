@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -152,7 +153,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		stopRefresh := make(chan struct{})
 		var once sync.Once
 		cancelRefresh = func() { once.Do(func() { close(stopRefresh) }) }
-		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles)
+		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles, maps.Clone(bundle.OAuthRecordRefs), maps.Clone(bundle.OAuthFingerprints), maps.Clone(bundle.OAuthRecordConnectedAt), maps.Clone(bundle.PoolSourced))
 	}
 	ctx = secrets.WithCredentials(ctx, creds)
 	return ctx, cleanup, nil

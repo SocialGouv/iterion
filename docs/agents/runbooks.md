@@ -66,7 +66,11 @@ the hours this one spent.
   credentials), rotated with one call instead of a k8s-secret edit +
   redeploy, and now **gated by an opt-in audience**
   (`iterion remote admin platform-credentials`) so a tenant with nothing of
-  its own no longer draws on it in silence — and the
+  its own no longer draws on it in silence; a claude node that answers as
+  GLM is a shared tier's z.ai key holding the anthropic wire — a tier's
+  forfait fills its wire first, a z.ai/Moonshot key is its default only as
+  `--facade-default` allows (`auto`: in a tier with no Claude credential),
+  `--keys-first` inverts the order — and the
   one-credential activation of the campaign bots' **cross-model plan
   review** (provision the codex OAuth forfait → `plan_review` resolves
   `on` at the next launch, nothing else to configure) — and
@@ -138,8 +142,9 @@ the hours this one spent.
   fails open restores confidence over real work.
 - [docs/merge-policy.md](../merge-policy.md) — how a change reaches `main`:
   the merge queue, the required checks, and the admin bypass. Read it when
-  **nobody can merge** — three required checks (`test`, `vendor-check`,
-  `golangci`) run on the organisation's self-hosted `arc-runners` scale set,
+  **nobody can merge** — every required check from `tests.yml` (`test`,
+  `race`, `vendor-check`, `mongo-conformance`, `golangci`, `brand`) runs on the
+  organisation's self-hosted `arc-runners` scale set,
   which sits outside this repository and was dead unnoticed for over a year,
   so the first thing to try is the `CI_SELF_HOSTED=off` repository variable
   (a variable, not a commit: repairing by merging does not work when merging
@@ -147,6 +152,14 @@ the hours this one spent.
   against a 20-job organisation cap, and the trap that promoting an advisory
   job to required without deleting its `merge_group` skip produces a silent
   FALSE GREEN rather than a stalled queue.
+- [docs/merge-policy.md#measuring-the-queue](../merge-policy.md#measuring-the-queue)
+  — when **merges feel slow**, before changing anything: `task ci:queue-stats`
+  measures enqueue→merge latency, merges that skipped the queue, the queue
+  builds a direct push discarded (a release or a direct merge is a push to
+  `main`, which rebuilds every group in flight), and which tests failed the
+  queue.
+  [#releases-and-the-queue](../merge-policy.md#releases-and-the-queue) says
+  why a merged PR's release waits for the queue to drain.
 - [docs/resume.md#when-the-final-bank-push-fails](../resume.md#when-the-final-bank-push-fails) — final-bank retries, `bank_state`, failure events and recovery evidence.
 - [Revi's positive/negative audit](../bot-runs/review-pr.md#2026-09-14--falsifiable-claw--gpt-review-proof-1203)
   — when a clean GPT/Claw review looks suspicious: verify actual source/tool

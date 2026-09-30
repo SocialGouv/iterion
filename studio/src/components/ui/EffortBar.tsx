@@ -1,13 +1,15 @@
 // Visual indicator for the LLM reasoning_effort field. Renders the level
 // name plus a 5-cell intensity bar tinted by severity, so users can scan
-// the canvas and tell low/medium/high/xhigh/max/ultracode apart without reading.
+// the canvas and tell none/low/medium/high/xhigh/max/ultracode apart without reading.
+// "none" (no reasoning — GPT-6 Sol/Luna) renders an empty bar.
 // "ultracode" is a mode (xhigh + workflow orchestration), shown full-bar in a
 // distinct accent tone so it reads as "beyond max".
 
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
 export function isEffortLevel(s: string | undefined): s is EffortLevel {
   return (
+    s === "none" ||
     s === "low" ||
     s === "medium" ||
     s === "high" ||
@@ -39,6 +41,7 @@ interface Props {
 }
 
 const FILLED: Record<EffortLevel, number> = {
+  none: 0,
   low: 1,
   medium: 2,
   high: 3,
@@ -48,6 +51,11 @@ const FILLED: Record<EffortLevel, number> = {
 };
 
 const TONE: Record<EffortLevel, { text: string; bar: string; cell: string }> = {
+  none: {
+    text: "text-fg-muted",
+    bar: "bg-fg-muted/20",
+    cell: "bg-fg-muted/60",
+  },
   low: {
     text: "text-fg-muted",
     bar: "bg-fg-muted/30",
@@ -86,7 +94,10 @@ export function EffortBar({ level, live, muted, supported, className, title }: P
   // 4-level model fills 4/4. Else use the global low→max scale.
   const supportedIdx = supported ? supported.indexOf(level) : -1;
   const total = supported && supportedIdx >= 0 ? supported.length : 5;
-  const filled = supportedIdx >= 0 ? supportedIdx + 1 : FILLED[level];
+  // none draws an empty bar on every scale — including a normalised one,
+  // where index 0 + 1 would otherwise paint a cell on exactly the backends
+  // (pi, codex fallback) whose supported list carries the level.
+  const filled = level === "none" ? 0 : supportedIdx >= 0 ? supportedIdx + 1 : FILLED[level];
   const cells = Array.from({ length: total }, (_, i) => i);
   const isModelMax = supportedIdx >= 0 && supportedIdx === total - 1;
   const defaultTitle = muted

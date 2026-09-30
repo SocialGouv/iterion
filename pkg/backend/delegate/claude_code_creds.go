@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -489,6 +490,80 @@ func readForfaitAccessToken(dir string) string {
 	return secrets.AnthropicForfaitAccessToken(dir)
 }
 
+// forfaitSpawn records the forfait access token one CLI spawn was handed and
+// the host dir it was read from. A CLI holds that token for its whole life,
+// while the store's refresh worker rotates the record under it — revoking the
+// token — and the runner rewrites the file with the rotation. The pair tells
+// that stale token apart from a dead credential. Zero when the spawn carried
+// no forfait token.
+type forfaitSpawn struct {
+	dir   string
+	token string
+}
+
+// forfaitSpawnOf reads the forfait token out of the credential env a spawn is
+// about to be handed. Only claudeForfaitEnv sets a non-empty
+// CLAUDE_CODE_OAUTH_TOKEN there, from the run's claude_code dir.
+func forfaitSpawnOf(ctx context.Context, credEnv map[string]string) forfaitSpawn {
+	token := credEnv["CLAUDE_CODE_OAUTH_TOKEN"]
+	if token == "" {
+		return forfaitSpawn{}
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return forfaitSpawn{}
+	}
+	return forfaitSpawn{dir: creds.OAuthDir(string(secrets.OAuthKindClaudeCode)), token: token}
+}
+
+// renewed reports that the forfait file now carries another access token than
+// the one this spawn was handed: the credential was rotated under the running
+// CLI, not rejected.
+func (s forfaitSpawn) renewed() bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	now := readForfaitAccessToken(s.dir)
+	return now != "" && now != s.token
+}
+
+// defaultForfaitRenewalWait covers the runner's follow of the store's record
+// (once a minute, pkg/runner/oauth_refresh.go) with slack: the provider
+// refuses a rotated token at once — measured 16 s after the rotation — and
+// the new one reaches the forfait file on the runner's next pass.
+const defaultForfaitRenewalWait = 75 * time.Second
+
+// renewedWithin is renewed, watched for up to wait: a spawn that carried no
+// forfait token answers at once, and so does a cancelled ctx.
+func (s forfaitSpawn) renewedWithin(ctx context.Context, wait time.Duration) bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if s.renewed() {
+			return true
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(min(time.Second, left)):
+		}
+	}
+}
+
+// forfaitRenewalWait is the backend's bound for renewedWithin.
+func (b *ClaudeCodeBackend) forfaitRenewalWait() time.Duration {
+	if b.renewalWait > 0 {
+		return b.renewalWait
+	}
+	return defaultForfaitRenewalWait
+}
+
 // sandboxed reports that the CLI subprocess will execute inside a REAL
 // sandbox container (docker/kubernetes — not the host-passthrough noop), so
 // forfait credential paths must resolve to in-container locations.
@@ -752,6 +827,25 @@ func facadeHintRefusal(providerHint string, env map[string]string) error {
 	return &ErrNoFacadeCredential{Provider: providerHint, EnvVar: envVar}
 }
 
+// AnthropicRouteSource names the usage-meter source a claude_code session on a
+// route with this provider hint stamps its readings with (stampUsageSource) —
+// the label the runner keys a reading by. It runs the composition
+// setupCredsAndSession runs, host-side and with no task additions, so a
+// pre-flight asking it before the session exists reads the ledger the session
+// will write. refused is true when the delegate refuses the route before
+// spawning — a facade hint with no key reachable: no session, no spend, no
+// reading. A node's own env additions (Task.ExtraEnv) are not composed: they
+// can only move a route that holds no bundle credential, whose readings land
+// on the run's credential-less meter either way.
+func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
+	task := Task{ProviderHint: providerHint}
+	env := anthropicCredEnvForTask(ctx, task)
+	if facadeHintRefusal(providerHint, env) != nil {
+		return "", true
+	}
+	return providerFingerprint(anthropicFingerprintEnvForTask(task, env)), false
+}
+
 // AnthropicWireFacadeSlot maps a usage Reading.Source label back onto the
 // credential slot that paid for it, or "" when the label names no facade.
 //
@@ -951,6 +1045,14 @@ func anthropicFingerprintEnvForTask(task Task, env map[string]string) map[string
 	return out
 }
 
+// claude_code spends the run's Claude forfait before a key a shared tier
+// pinned for an `anthropic` route: the `anthropic` branch below reads the
+// run's own default key, then the forfait, then the pinned key — and the
+// default precedence never reads a pinned key at all.
+func init() {
+	RegisterForfaitFirst(BackendClaudeCode, string(secrets.ProviderAnthropic))
+}
+
 // selectedAnthropicCredEnvForCLI returns authoritative route/credential
 // overrides and whether auth is ambient. An explicit direct hint can clear
 // stale routing fields while still inheriting credentials; those credentials
@@ -966,13 +1068,20 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 			if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
 				return map[string]string{"ANTHROPIC_API_KEY": k}, false
 			}
+			// The forfait before a key a shared tier pinned for the route: a
+			// pin names the PROVIDER, and this CLI spends the subscription on
+			// its plan. The pinned key exists for the consumers that cannot
+			// (claw bills a Claude forfait as extra usage, pi has no bridge to
+			// it); spending it here would move a subscription's work onto a
+			// key billed per token — the org's or the platform's, beside the
+			// tenant's own forfait.
+			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
+				return claudeForfaitEnv(d, sandboxed), false
+			}
 			// Same licence as the facade branch below: an explicit pin may
 			// spend a key a shared tier funded for it.
 			if k := creds.PinnedAPIKey(secrets.ProviderAnthropic); k != "" {
 				return map[string]string{"ANTHROPIC_API_KEY": k}, false
-			}
-			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-				return claudeForfaitEnv(d, sandboxed), false
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the

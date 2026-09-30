@@ -99,10 +99,10 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 					}
 					b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
 					if format {
-						_, _ = b.formatOutput(ctx, task, "review")
+						_, _, _ = b.formatOutput(ctx, task, "review")
 					} else {
 						opts, _ := b.buildTransportOptions(task)
-						opts, _, err := b.setupCredsAndSession(ctx, task, opts)
+						opts, _, _, err := b.setupCredsAndSession(ctx, task, opts)
 						if tc.refusal {
 							if err == nil {
 								t.Fatal("facade was not refused")

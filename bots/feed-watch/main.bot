@@ -57,61 +57,32 @@
 
 dsl: 2
 
-secrets:
-  ## JSON map of webhook name → incoming-webhook URL, e.g.
-  ##   {"mattermost_dev": "https://mm.example.com/hooks/abc..."}
-  ## Config sinks reference entries by NAME so URLs never appear in the
-  ## repo. Mounted as a read-only file; optional so collect mode and
-  ## dry-run digests run with no secret bound.
-  webhooks:
-    as: file
-    optional: true
-
-  ## Forge API token, mounted read-only as a FILE (path/env only, never
-  ## read into a prompt). Used by state_commit=true runs so the cloud
-  ## runner injects it into the clone URL and the bot's `git push` of
-  ## the state dir authenticates. optional: true so a local/host run —
-  ## which authenticates git via the user's host credentials — still
-  ## works with no binding. An org binds its forge credential to this
-  ## name via a bot-secret binding, mirroring dep-update-guard.
-  forge_token:
-    as: file
-    optional: true
-
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## collect = poll feeds into the pending queue (zero-LLM).
   ## digest  = synthesize the queue into a chat message and deliver it.
   mode: string [enum: "collect", "digest"] = "collect"
-
   ## Category key from the config. digest REQUIRES it; collect with ""
   ## polls every category in one run.
   category: string = ""
-
   ## Workspace-relative config file (JSON; .yaml accepted when PyYAML
   ## is installed). See skills/feed-config.md for the format.
   config_path: string = "feed-watch.json"
-
   ## Workspace-relative state root (gitignore it, or set
   ## state_commit=true to version it — required on ephemeral runners).
   state_dir: string = ".feed-watch"
-
   ## digest: prepare the message + print the would-be webhook payloads,
   ## deliver nothing. The message stays in the run artifacts.
   dry_run: bool = false
-
   ## A digest that finds an empty queue exits without posting — correct,
   ## and completely silent. Run after run that reads exactly like a healthy
   ## quiet week, so a broken collector goes unnoticed for days (it did:
   ## 2026-08-13 → 18). After this many days without a DELIVERED digest, the
   ## bot says so on the same sinks, at most once per window. 0 disables.
   silence_alert_days: int = 3
-
   ## Commit (and push) the state dir after each mutation. Needs the
   ## state_dir NOT gitignored and push credentials on the workspace.
   state_commit: bool = false
-
   ## The synthesis model rides FEED_WATCH_MODEL (empty = the resolved
   ## backend's own default): the env form reads the operator's environment
   ## directly, which is what a scheduled bot wants. (A `model: "{{vars.x}}"`
@@ -123,7 +94,6 @@ vars:
   ## equivalent).
   fetch_timeout_secs: int = 20
   max_items_per_feed: int = 30
-
   ## SSRF posture for feed fetching. Default (false) is strict: http/https
   ## only, and any host that resolves to a private / loopback / link-local /
   ## cloud-metadata address is refused — so an untrusted feed URL can never
@@ -133,30 +103,45 @@ vars:
   ## it on a multi-tenant / cloud runner or with the config-share editor
   ## open — it turns the feed list into an SSRF/LFI primitive.
   allow_private_feeds: bool = false
-
   ## digest: newest-N cap on the queue passed to the LLM; older overflow
   ## items are dropped from the queue WITH an explicit count in the
   ## digest message (never silently).
   max_digest_items: int = 150
-
   ## Per-MESSAGE character budget at delivery. A digest above it is split
   ## into consecutive messages, never cut (see the notify node). 14000 sits
   ## under Mattermost's default 16383-char post limit; a Slack sink wants
   ## something lower, which a sink's own `max_chars` sets per-channel.
   max_message_chars: int = 14000
-
   ## Ceiling on the number of messages ONE digest may occupy. Reached only
   ## by an abnormal digest (a runaway synthesis), where posting a dozen
   ## messages in a row is worse than saying so: the last message then
   ## carries the truncation notice. 0 = no ceiling, post whatever it takes.
   max_messages: int = 5
-
   ## Out-of-tree scratch for the fetched-items handoff between collect
   ## nodes (never pollutes the workspace).
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/feed-watch"
 
-## ─── Prompts ────────────────────────────────────────────────────
+secrets:
+  ## JSON map of webhook name → incoming-webhook URL, e.g.
+  ##   {"mattermost_dev": "https://mm.example.com/hooks/abc..."}
+  ## Config sinks reference entries by NAME so URLs never appear in the
+  ## repo. Mounted as a read-only file; optional so collect mode and
+  ## dry-run digests run with no secret bound.
+  webhooks:
+    as: file
+    optional: true
+  ## Forge API token, mounted read-only as a FILE (path/env only, never
+  ## read into a prompt). Used by state_commit=true runs so the cloud
+  ## runner injects it into the clone URL and the bot's `git push` of
+  ## the state dir authenticates. optional: true so a local/host run —
+  ## which authenticates git via the user's host credentials — still
+  ## works with no binding. An org binds its forge credential to this
+  ## name via a bot-secret binding, mirroring dep-update-guard.
+  forge_token:
+    as: file
+    optional: true
 
+## ─── Prompts ────────────────────────────────────────────────────
 prompt synthesize_system:
   You are Vigie, a technology-watch editor. You turn a queue of
   collected feed items into ONE polished digest message, ready to post
@@ -274,7 +259,6 @@ prompt synthesize_user:
   {{input.recent_topics}}
 
 ## ─── Schemas ────────────────────────────────────────────────────
-
 schema plan_output:
   collect: bool
   digest: bool
@@ -471,6 +455,49 @@ schema commit_output:
   committed: bool
   summary: string
 
+## Editorial synthesis — the ONE LLM step, and the ONE node that reads
+## untrusted editorial input, so it is locked down by the workflow
+## `permission: deny` gate above (WebFetch only; no Bash/Read/Write, so an
+## injected editorial cannot reach the mounted secrets or the filesystem).
+## `tools: [web_fetch]` narrows claw's native toolset to match; on
+## claude_code the gate is the real boundary. Backend defaults to
+## claude_code (overridable via FEED_WATCH_BACKEND): it is the ONLY backend
+## allowed to use a Claude Code OAuth-forfait credential (claw refuses the
+## forfait as a third-party-SDK CGU violation, which is what a
+## forfait-backed cloud runner hits when the backend auto-detects to
+## claw). Set FEED_WATCH_BACKEND=claw + FEED_WATCH_MODEL=openai/… to run
+## on the OpenAI family instead (a metered key, or the ChatGPT-forfait
+## via claw's codex OAuth path). No board capabilities: the digest's
+## sink is the chat webhook, and declaring board.* would require the
+## iterion_board MCP server active on every run (it is not on a cloud
+## runner), failing the node at setup even when unused.
+##
+## The gpt_forfait fallback keeps the digest deliverable when the
+## Anthropic subscription window (or iterion's own usage cap on it) is
+## exhausted: usage_window routes the SAME prompt to the OpenAI family
+## through claw, billed on the codex OAuth forfait when no metered key
+## is present. The deny gate survives the route — a sandboxed claw run
+## receives the policy over the IPC and enforces it in-container. The
+## crossing is loud (`model_fallback` event, `_fallback_used` /
+## `_served_by: gpt_forfait` on the output), and the deterministic
+## verify_message firewall downstream judges the digest the same way
+## whoever served it.
+agent synthesize:
+  model: "${FEED_WATCH_MODEL:-}"
+  backend: "${FEED_WATCH_BACKEND:-claude_code}"
+  input: synthesize_input
+  output: synthesize_output
+  system: synthesize_system
+  user: synthesize_user
+  tools: [web_fetch]
+  tool_max_steps: 30
+  reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
+  fallbacks:
+    gpt_forfait:
+      backend: "claw"
+      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-6-sol}"
+      on: [usage_window]
+
 ## ─── Nodes ──────────────────────────────────────────────────────
 
 ## Deterministic entry: validate the mode, load the workspace config,
@@ -478,7 +505,7 @@ schema commit_output:
 ## editorial + sinks). Config problems fail HERE, loudly, before any
 ## network or LLM work.
 tool plan:
-  command: `MODE={{vars.mode}} CATEGORY={{vars.category}} CONFIG={{vars.config_path}} WS={{vars.workspace_dir}} python3 -c "
+  command: `MODE={{vars.mode}} CATEGORY={{vars.category}} CONFIG={{vars.config_path}} WS={{vars.workspace_dir}} python3 -I -c "
 import json, os
 mode = os.environ.get('MODE', '')
 category = os.environ.get('CATEGORY', '')
@@ -492,7 +519,7 @@ if cfg_path.endswith('.yaml') or cfg_path.endswith('.yml'):
     try:
         import yaml
     except ImportError:
-        raise SystemExit('feed-watch: YAML config needs PyYAML, which is not installed -- use a .json config instead')
+        raise SystemExit('feed-watch: YAML config needs PyYAML in the system site-packages of this python3 -- the node runs python3 -I, which sees neither the user site (pip install --user) nor PYTHONPATH; install it system-wide or in a venv, or use a .json config')
     cfg = yaml.safe_load(open(cfg_path, encoding='utf-8'))
 else:
     cfg = json.load(open(cfg_path, encoding='utf-8'))
@@ -525,9 +552,6 @@ print(json.dumps({'collect': collect, 'digest': not collect, 'category': categor
 ## silently produce an empty-but-green collect). The entry list is
 ## handed to dedup_queue via a scratch file, not a node artifact.
 tool fetch_feeds:
-  input: fetch_input
-  output: fetch_output
-  language: py
   script: |
     import json, os, re, gzip, time, email.utils, datetime, socket, ipaddress
     import urllib.request, urllib.error
@@ -759,15 +783,16 @@ tool fetch_feeds:
         json.dump(entries, fh, ensure_ascii=False)
     print(json.dumps({'entries_file': path, 'fetched_count': len(entries), 'feeds_ok': ok, 'feeds_failed': len(errors), 'errors': errors}, ensure_ascii=False))
 
+  language: py
+  input: fetch_input
+  output: fetch_output
+
 ## Deterministic dedup + enqueue. seen.json keeps FIFO caps at Huginn
 ## parity (5000 ids ≈ RssAgent remembered_id_count, 2000 urls ≈
 ## DeDuplicationAgent lookback) so cross-source duplicates (same story
 ## URL from two feeds) are dropped too. Exclusive flock: collect and
 ## digest can fire concurrently from cron.
 tool dedup_queue:
-  input: queue_input
-  output: queue_output
-  language: py
   script: |
     import json, os, fcntl, subprocess
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -883,6 +908,10 @@ tool dedup_queue:
         summary += ' -- ' + str(len(fetch_errors)) + ' feed(s) FAILED: ' + '; '.join((x.get('feed') or '?') for x in fetch_errors)[:600]
     print(json.dumps({'new_count': new_total, 'duplicate_count': dup_total, 'pending_totals': totals, 'committed': committed, 'summary': summary}, ensure_ascii=False))
 
+  language: py
+  input: queue_input
+  output: queue_output
+
 ## Snapshot the category queue for the digest. Empty queue → the
 ## workflow ends here (zero LLM cost). Also loads the last sent
 ## digests as the semantic-dedup context, caps the working set at
@@ -891,9 +920,6 @@ tool dedup_queue:
 ## redirects so the digest links final article URLs, not aggregator
 ## tracking hosts.
 tool load_pending:
-  input: pending_input
-  output: pending_output
-  language: py
   script: |
     import json, os, fcntl, email.utils, datetime, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1133,49 +1159,9 @@ tool load_pending:
                       'digest_title': digest_title, 'sinks': sinks},
                      ensure_ascii=False))
 
-## Editorial synthesis — the ONE LLM step, and the ONE node that reads
-## untrusted editorial input, so it is locked down by the workflow
-## `permission: deny` gate above (WebFetch only; no Bash/Read/Write, so an
-## injected editorial cannot reach the mounted secrets or the filesystem).
-## `tools: [web_fetch]` narrows claw's native toolset to match; on
-## claude_code the gate is the real boundary. Backend defaults to
-## claude_code (overridable via FEED_WATCH_BACKEND): it is the ONLY backend
-## allowed to use a Claude Code OAuth-forfait credential (claw refuses the
-## forfait as a third-party-SDK CGU violation, which is what a
-## forfait-backed cloud runner hits when the backend auto-detects to
-## claw). Set FEED_WATCH_BACKEND=claw + FEED_WATCH_MODEL=openai/… to run
-## on the OpenAI family instead (a metered key, or the ChatGPT-forfait
-## via claw's codex OAuth path). No board capabilities: the digest's
-## sink is the chat webhook, and declaring board.* would require the
-## iterion_board MCP server active on every run (it is not on a cloud
-## runner), failing the node at setup even when unused.
-##
-## The gpt_forfait fallback keeps the digest deliverable when the
-## Anthropic subscription window (or iterion's own usage cap on it) is
-## exhausted: usage_window routes the SAME prompt to the OpenAI family
-## through claw, billed on the codex OAuth forfait when no metered key
-## is present. The deny gate survives the route — a sandboxed claw run
-## receives the policy over the IPC and enforces it in-container. The
-## crossing is loud (`model_fallback` event, `_fallback_used` /
-## `_served_by: gpt_forfait` on the output), and the deterministic
-## verify_message firewall downstream judges the digest the same way
-## whoever served it.
-agent synthesize:
-  backend: "${FEED_WATCH_BACKEND:-claude_code}"
-  model: "${FEED_WATCH_MODEL:-}"
-  reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
-  input: synthesize_input
-  output: synthesize_output
-  system: synthesize_system
-  user: synthesize_user
-  tools: [web_fetch]
-  tool_max_steps: 30
-  session: fresh
-  fallbacks:
-    gpt_forfait:
-      backend: "claw"
-      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-6-sol}"
-      on: [usage_window]
+  language: py
+  input: pending_input
+  output: pending_output
 
 ## Deterministic link firewall between the LLM and delivery. Extracts
 ## every URL from the digest and HARD-FAILS the run if any host is not the
@@ -1186,9 +1172,6 @@ agent synthesize:
 ## tracking / exfiltration link never reaches the channel. Runs before
 ## notify (nothing delivered on rejection → safe to resume after a fix).
 tool verify_message:
-  input: verify_input
-  output: verify_output
-  language: py
   script: |
     import json, re
     from urllib.parse import urlsplit
@@ -1241,6 +1224,10 @@ tool verify_message:
                       'summary': 'verified ' + str(len(seen)) + ' link(s), all item-derived'},
                      ensure_ascii=False))
 
+  language: py
+  input: verify_input
+  output: verify_output
+
 ## Deterministic delivery (no LLM at the last step — a provider
 ## rate-limit cannot sink a finished digest). Posts to every configured
 ## sink.
@@ -1262,9 +1249,6 @@ tool verify_message:
 ## no post id, so the parts cannot be threaded — they are ordinary
 ## consecutive posts, ordered by sequential (blocking) POSTs.
 tool notify:
-  input: notify_input
-  output: notify_output
-  language: py
   script: |
     import json, os, sys, time, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1487,6 +1471,10 @@ tool notify:
                     ' -- ' + str(posts_ok) + ' post(s) ok' +
                     ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
 
+  language: py
+  input: notify_input
+  output: notify_output
+
 ## Announce this category's OWN silence, deterministically and without an
 ## LLM: the queue is empty and no digest has been delivered for
 ## silence_alert_days. It posts to the SAME sinks the digest uses, because
@@ -1498,9 +1486,6 @@ tool notify:
 ## queue and five daily digests exited green, posting nothing and telling
 ## nobody. `finished` is not `delivered`.
 tool notify_silence:
-  input: silence_input
-  output: notify_output
-  language: py
   script: |
     import json, os, sys, datetime, subprocess, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1634,14 +1619,15 @@ tool notify_silence:
                     str(delivered) + '/' + str(len(payloads)) +
                     ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
 
+  language: py
+  input: silence_input
+  output: notify_output
+
 ## Clear EXACTLY the digested snapshot from the queue (items collected
 ## mid-digest survive — safer than Huginn's retained_events:0, which
 ## clears whatever is there), archive the digest for future semantic
 ## dedup, and optionally commit+push the state.
 tool commit_state:
-  input: commit_input
-  output: commit_output
-  language: py
   script: |
     import json, os, fcntl, subprocess, datetime
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -1746,17 +1732,17 @@ tool commit_state:
                       'summary': 'cleared ' + str(cleared) + ' digested item(s); ' + str(len(kept)) + ' left in queue; digest archived as ' + fname},
                      ensure_ascii=False))
 
+  language: py
+  input: commit_input
+  output: commit_output
+
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow feed_watch:
-  entry: plan
-
   ## The state (seen.json / pending.jsonl / digest archive) IS the
   ## product and must persist in the workspace across runs — a run
   ## worktree would isolate the writes and discard them at
   ## finalization (gitignored state never survives). Never auto.
   worktree: none
-
   ## Anti-prompt-injection boundary. `synthesize` takes the per-category
   ## `editorial` (operator- or, with the config-share editor, end-user-
   ## supplied) verbatim into its system prompt. Under claude_code's
@@ -1774,6 +1760,8 @@ workflow feed_watch:
   permission: deny
   allow: ["WebFetch(*)", "TodoWrite"]
 
+  entry: plan
+
   budget:
     max_parallel_branches: 1
     max_duration: "30m"
@@ -1784,8 +1772,9 @@ workflow feed_watch:
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     max_per_feed: "{{vars.max_items_per_feed}}",
     scratch_dir: "{{vars.scratch_dir}}",
-    allow_private: "{{vars.allow_private_feeds}}"
+    allow_private: "{{vars.allow_private_feeds}}",
   }
+
   plan -> load_pending when digest with {
     category: "{{outputs.plan.category}}",
     editorial: "{{outputs.plan.editorial}}",
@@ -1794,7 +1783,7 @@ workflow feed_watch:
     workspace: "{{vars.workspace_dir}}",
     state_dir: "{{vars.state_dir}}",
     max_items: "{{vars.max_digest_items}}",
-    silence_alert_days: "{{vars.silence_alert_days}}"
+    silence_alert_days: "{{vars.silence_alert_days}}",
   }
 
   ## Unreachable (plan hard-fails on an invalid mode) — the compiler
@@ -1806,8 +1795,9 @@ workflow feed_watch:
     errors: "{{outputs.fetch_feeds.errors}}",
     workspace: "{{vars.workspace_dir}}",
     state_dir: "{{vars.state_dir}}",
-    state_commit: "{{vars.state_commit}}"
+    state_commit: "{{vars.state_commit}}",
   }
+
   dedup_queue -> done
 
   ## Empty queue → done with zero LLM cost.
@@ -1824,11 +1814,13 @@ workflow feed_watch:
     dry_run: "{{vars.dry_run}}",
     workspace: "{{vars.workspace_dir}}",
     state_dir: "{{vars.state_dir}}",
-    state_commit: "{{vars.state_commit}}"
+    state_commit: "{{vars.state_commit}}",
   }
+
   notify_silence -> done
 
   load_pending -> done when not has_items
+
   load_pending -> synthesize when has_items with {
     category: "{{outputs.load_pending.category}}",
     digest_title: "{{outputs.load_pending.digest_title}}",
@@ -1840,12 +1832,12 @@ workflow feed_watch:
     span_days: "{{outputs.load_pending.span_days}}",
     recent_topics: "{{outputs.load_pending.recent_topics}}",
     editorial: "{{outputs.load_pending.editorial}}",
-    editorial_nonce: "{{outputs.load_pending.editorial_nonce}}"
+    editorial_nonce: "{{outputs.load_pending.editorial_nonce}}",
   }
 
   synthesize -> verify_message with {
     message_markdown: "{{outputs.synthesize.message_markdown}}",
-    items: "{{outputs.load_pending.items}}"
+    items: "{{outputs.load_pending.items}}",
   }
 
   verify_message -> notify with {
@@ -1855,13 +1847,14 @@ workflow feed_watch:
     category: "{{outputs.load_pending.category}}",
     digest_title: "{{outputs.load_pending.digest_title}}",
     max_message_chars: "{{vars.max_message_chars}}",
-    max_messages: "{{vars.max_messages}}"
+    max_messages: "{{vars.max_messages}}",
   }
 
   ## Only a DELIVERED digest consumes the queue: dry-run and
   ## report-only (no sinks) runs keep every item pending and archive
   ## nothing, so the next real digest still sees them.
   notify -> done when not posted
+
   notify -> commit_state when posted with {
     category: "{{outputs.load_pending.category}}",
     snapshot_ids: "{{outputs.load_pending.snapshot_ids}}",
@@ -1869,6 +1862,7 @@ workflow feed_watch:
     headline: "{{outputs.synthesize.headline}}",
     state_commit: "{{vars.state_commit}}",
     workspace: "{{vars.workspace_dir}}",
-    state_dir: "{{vars.state_dir}}"
+    state_dir: "{{vars.state_dir}}",
   }
+
   commit_state -> done

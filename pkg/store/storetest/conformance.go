@@ -63,6 +63,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
+	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
@@ -480,6 +481,58 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	// the round-trip or the resumed pass's cost is silently discarded.
 	if branch.CostUSD != 1.25 {
 		t.Fatalf("branch cost after round-trip = %v, want 1.25", branch.CostUSD)
+	}
+}
+
+// testQueuedResumeRelease: a resume nobody claimed goes back to the status
+// it came from — a paused run with its pending question — only for its own
+// attempt, and never to a status a resume does not come from.
+func testQueuedResumeRelease(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rel := store.AsQueuedResumeReleaser(s)
+	if rel == nil {
+		t.Skip("backend does not implement QueuedResumeReleaser")
+	}
+	ctx := testCtx()
+	const runID = "run-queued-release"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.PauseRun(ctx, runID, &store.Checkpoint{NodeID: "gate", InteractionID: runID + "_gate"}); err != nil {
+		t.Fatalf("PauseRun: %v", err)
+	}
+	changed, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusPausedWaitingHuman})
+	if err != nil || !changed {
+		t.Fatalf("queued flip = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.QueuedAt == nil {
+		t.Fatalf("LoadRun queued marker = (%v, %v), want non-nil", r, err)
+	}
+	meta := store.RunOutcomeMeta{Code: store.FailureResumeInvalid}
+	if _, err := rel.ReleaseQueuedRunIfAttempt(ctx, runID, store.RunStatusRunning, "refused", r.QueuedAt.Add(time.Second), meta); err == nil {
+		t.Fatal("released to running: want an error, running is not a status a resume comes from")
+	}
+	changed, err = rel.ReleaseQueuedRunIfAttempt(ctx, runID, store.RunStatusPausedWaitingHuman, "refused", r.QueuedAt.Add(-time.Second), meta)
+	if err != nil || changed {
+		t.Fatalf("stale attempt release = (%t, %v), want (false, nil)", changed, err)
+	}
+	changed, err = rel.ReleaseQueuedRunIfAttempt(ctx, runID, store.RunStatusPausedWaitingHuman, "resume refused before its claim", r.QueuedAt.Add(time.Second), meta)
+	if err != nil || !changed {
+		t.Fatalf("current attempt release = (%t, %v), want (true, nil)", changed, err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunStatusPausedWaitingHuman || got.Error != "resume refused before its claim" {
+		t.Fatalf("released run = %s %q, want paused_waiting_human with the refusal", got.Status, got.Error)
+	}
+	if got.Checkpoint == nil || got.Checkpoint.InteractionID != runID+"_gate" {
+		t.Fatalf("the released run lost its pending question: %+v", got.Checkpoint)
+	}
+	if got.FailureCode != "" {
+		t.Fatalf("a paused run carries failure code %q", got.FailureCode)
 	}
 }
 

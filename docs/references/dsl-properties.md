@@ -261,7 +261,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
 | `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
 | `max_tokens` | int | Output-token cap per call |
-| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `reasoning_effort` | one of `none`, `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
 | `timeout` | string | Duration the node may run, e.g. "20m" |
 | `readonly` | bool | Declares the node mutates no workspace file, so it may run beside another branch |
 | `full_access` | bool | Grants the backend its full tool access |
@@ -311,7 +311,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
 | `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
 | `max_tokens` | int | Output-token cap per call |
-| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `reasoning_effort` | one of `none`, `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
 | `timeout` | string | Duration the node may run, e.g. "20m" |
 | `readonly` | bool | Declares the node mutates no workspace file, so it may run beside another branch |
 | `full_access` | bool | Grants the backend its full tool access |
@@ -350,7 +350,7 @@ A node: `router <name>:` at the top level or inside a `group`.
 | `system` | prompt name, or its text as a string | llm mode only (C023 otherwise): The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `user` | prompt name, or its text as a string | llm mode only (C023 otherwise): The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `multi` | bool | llm mode only (C023 otherwise): the model may select several outgoing edges |
-| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `reasoning_effort` | one of `none`, `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | llm mode only (C023 otherwise): Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
 | `over` | string | fan_out_each: expression naming the collection to iterate |
 | `as` | ident | fan_out_each: alias each item is bound to ({{each.<as>}}) |
 | `key` | ident | fan_out_each: item field that names each branch |

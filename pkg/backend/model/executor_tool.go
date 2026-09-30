@@ -604,7 +604,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
 			interp, ext := scriptInterpreter(node.Language)
-			if interp == "" {
+			if len(interp) == 0 {
 				return nil, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
 			}
 			// The script file must be reachable from where the interpreter
@@ -682,33 +682,42 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 		}
 }
 
-// scriptInterpreter maps a `language:` token to the executable name on
-// PATH and a file extension hint (extension is informational, not
-// required by any interpreter). An empty language defaults to sh.
-func scriptInterpreter(language string) (cmd string, ext string) {
+// scriptInterpreter maps a `language:` token to the interpreter argv (the
+// executable on PATH, then its flags) and a file extension hint (extension
+// is informational, not required by any interpreter). An empty language
+// defaults to sh.
+//
+// Python runs isolated (-I). Without it, python puts the script's directory
+// first on sys.path, and the script file can land in the workspace (a
+// copy-based sandbox): a json.py the judged tree carries would replace the
+// standard module inside the node. -I also ignores PYTHON* variables and
+// the user site, so a script body reaches the standard library and the
+// system site-packages only.
+func scriptInterpreter(language string) (argv []string, ext string) {
 	switch language {
 	case "", "sh":
-		return "sh", ".sh"
+		return []string{"sh"}, ".sh"
 	case "bash":
-		return "bash", ".sh"
+		return []string{"bash"}, ".sh"
 	case "js", "node":
-		return "node", ".js"
+		return []string{"node"}, ".js"
 	case "py", "python", "python3":
-		return "python3", ".py"
+		return []string{"python3", "-I"}, ".py"
 	default:
-		return "", ""
+		return nil, ""
 	}
 }
 
 // toolNodeScriptCommand returns a configured *exec.Cmd that invokes the
-// interpreter on the basename of the script temp file. Mirrors
+// interpreter argv (scriptInterpreter) on the script temp file. Mirrors
 // toolNodeCommand for the script-mode path: sandbox-routed if a sandbox
 // is active and the node has not opted out.
-func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, scriptBasename string) *exec.Cmd {
+func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) *exec.Cmd {
+	argv := append(append([]string{}, interpreter...), script)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
+		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{})
 	}
-	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
 	// its lifetime ends with the node's context the same way — see
 	// toolNodeCommand.
@@ -1237,8 +1246,26 @@ func bracedEnvWouldExpand(body string) bool {
 	if idx := strings.Index(body, ":-"); idx != -1 {
 		name = body[:idx]
 	}
-	_, ok := os.LookupEnv(name)
+	_, ok := lookupToolEnv(name)
 	return ok
+}
+
+// lookupToolEnv resolves a tool command's `${NAME}` through the same
+// overlay-then-process chain as every other `${ITERION_*:-default}` of the
+// DSL (ir.LookupEnv, ADR-093): a bot-var setting must reach the command that
+// reads it, not only the node fields beside it — a review table reading
+// ${ITERION_VIBE_EFFORT_CLAUDE:-high} published "high" while the reviewer ran
+// at the stored "max". Presence keeps the process semantics (a set-but-empty
+// variable is present), because it decides whether `${body}` is an env ref or
+// a script template left verbatim; an empty overlay value counts as unset,
+// as it does everywhere else.
+func lookupToolEnv(name string) (string, bool) {
+	if strings.HasPrefix(name, "ITERION_") {
+		if v := ir.LookupEnv(name); v != "" {
+			return v, true
+		}
+	}
+	return os.LookupEnv(name)
 }
 
 // looksLikeEnvRef reports whether body matches the shell convention
@@ -1283,7 +1310,7 @@ func resolveBracedEnvBody(body string) string {
 		defaultVal = body[idx+2:]
 		hasDefault = true
 	}
-	if v, ok := os.LookupEnv(name); ok {
+	if v, ok := lookupToolEnv(name); ok {
 		return v
 	}
 	if hasDefault {

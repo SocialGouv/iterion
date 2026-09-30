@@ -110,7 +110,7 @@ func TestFormatOutput_SandboxExecParity(t *testing.T) {
 			OutputSchema: []byte(`{"type":"object","properties":{"docs_aligned":{"type":"boolean"}}}`),
 		}
 		b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
-		_, _ = b.formatOutput(ctx, task, "sess-643e6598")
+		_, _, _ = b.formatOutput(ctx, task, "sess-643e6598")
 
 		if len(fake.argvs) != 1 {
 			t.Fatalf("expected exactly one sandbox exec, got %d", len(fake.argvs))

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 )
@@ -1925,19 +1926,104 @@ func coverageCommandCapped(t *testing.T, ws, productDir, oraclePath, exclToken, 
 
 func coverageCommandFull(t *testing.T, ws, productDir, oraclePath, exclToken, maxAnchorless, open, close, routes string) string {
 	t.Helper()
+	return coverageCommandTimed(t, ws, productDir, oraclePath, exclToken, maxAnchorless, open, close, routes, shippedProbeTimeout)
+}
+
+// shippedProbeTimeout is the bound the bundle ships for the replayed
+// routes_probe — the one golden-master's harness gives the same command.
+const shippedProbeTimeout = "120"
+
+func coverageCommandTimed(t *testing.T, ws, productDir, oraclePath, exclToken, maxAnchorless, open, close, routes, probeTimeout string) string {
+	t.Helper()
+	rt := routeTableFor(t, ws, oraclePath, routes, probeTimeout)
 	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "coverage_check"), map[string]string{
 		"vars.workspace_dir":               ws,
 		"input.product_dir":                productDir,
 		"input.oracle_path":                oraclePath,
+		"input.routes":                     routesJSON(t, rt.Routes),
+		"input.routes_source":              rt.Source,
+		"input.routes_note":                rt.Note,
+		"input.net_digest":                 digestJSON(t, rt.NetDigest),
 		"vars.coverage_exclusions_heading": exclToken,
 		"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
-		"vars.coverage_routes_file":        routes,
 		"vars.coverage_citation_open":      open,
 		"vars.coverage_citation_close":     close,
 		"vars.coverage_placeholders":       defaultPlaceholders,
 		"vars.coverage_min_prose":          "60",
 		"vars.coverage_max_anchorless":     maxAnchorless,
 	})
+}
+
+// routeTableOut is route_table's answer: the declared routes every route
+// check judges by, resolved once per run at a commit.
+type routeTableOut struct {
+	Routes    []string          `json:"routes"`
+	Source    string            `json:"source"`
+	Note      string            `json:"note"`
+	Degraded  bool              `json:"degraded"`
+	Dropped   int               `json:"dropped"`
+	Log       string            `json:"log"`
+	NetDigest map[string]string `json:"net_digest"`
+}
+
+// snapshotRunBase commits the fixture as it stands, the way a run starts from
+// a commit: route_table reads the net AT that commit, never the working tree.
+func snapshotRunBase(t *testing.T, ws string) string {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+		gittest.Run(t, ws, "init", "-q")
+	}
+	gittest.Run(t, ws, "add", "-A")
+	gittest.Run(t, ws, "commit", "-q", "--allow-empty", "-m", "run base")
+	return gittest.Run(t, ws, "rev-parse", "HEAD")
+}
+
+func routeTableCommand(t *testing.T, ws, oraclePath, baseSHA, routesFile, probeTimeout string) string {
+	t.Helper()
+	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "route_table"), map[string]string{
+		"vars.workspace_dir":                 ws,
+		"input.oracle_path":                  oraclePath,
+		"input.base_sha":                     baseSHA,
+		"vars.oracle_dir":                    ".golden-master",
+		"vars.coverage_routes_file":          routesFile,
+		"vars.coverage_routes_probe_timeout": probeTimeout,
+	})
+}
+
+// routeTableFor runs the REAL route_table over the fixture at a fresh run base,
+// so every gate test judges by the table the producer actually hands over.
+func routeTableFor(t *testing.T, ws, oraclePath, routesFile, probeTimeout string) routeTableOut {
+	t.Helper()
+	base := snapshotRunBase(t, ws)
+	var out routeTableOut
+	runJSON(t, routeTableCommand(t, ws, oraclePath, base, routesFile, probeTimeout), &out)
+	return out
+}
+
+// digestJSON renders route_table's fingerprint of the net the way the engine
+// relays a json output: the gates refuse a net file that no longer matches it.
+func digestJSON(t *testing.T, digest map[string]string) string {
+	t.Helper()
+	if digest == nil {
+		digest = map[string]string{}
+	}
+	raw, err := json.Marshal(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func routesJSON(t *testing.T, routes []string) string {
+	t.Helper()
+	if routes == nil {
+		routes = []string{}
+	}
+	raw, err := json.Marshal(routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 // The shipped citation syntax. A reference is what the page SAYS is one; a
@@ -2093,7 +2179,10 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 		// (`<product_dir>/**/*.md`), so the node must stop the RUN by name
 		// rather than hand the campaign an order it is forbidden to obey.
 		preflight bool
-		sabotage  func(t *testing.T, ws string)
+		// routeTable: the refusal comes from route_table, which resolves the
+		// table once per run before any gate runs — it stops the run there.
+		routeTable bool
+		sabotage   func(t *testing.T, ws string)
 	}{
 		{
 			// A feature the net inventories and the pages no longer carry.
@@ -2248,9 +2337,9 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 			},
 		},
 		{
-			name:      "NET_UNREADABLE: the route table declares nothing",
-			want:      "the declared route table is EMPTY",
-			preflight: true,
+			name:       "NET_UNREADABLE: the route table declares nothing",
+			want:       "declares NO route",
+			routeTable: true,
 			sabotage: func(t *testing.T, ws string) {
 				writeFile(t, ws, ".golden-master/routes.txt", "# every route was commented out\n")
 			},
@@ -2310,6 +2399,11 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := newCoverageFixture(t)
 			tc.sabotage(t, ws)
+			if tc.routeTable {
+				base := snapshotRunBase(t, ws)
+				runExpectingFailure(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, "routes.txt", shippedProbeTimeout), tc.want)
+				return
+			}
 			if tc.preflight {
 				runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), tc.want)
 				return
@@ -2330,8 +2424,9 @@ func TestProductDocsCoverageGateFalsification(t *testing.T) {
 // read. A route first cited on the LAST page must not be refused while the
 // gate is still reading the first — the check lives outside the per-line
 // loop, and the test that proves it cites the route from a page that sorts
-// after every other one. It also settles the DIRECTION of the match: a
-// concrete citation covers the parameterized route it instantiates.
+// after every other one. The route is cited as declared: a concrete value the
+// net never captured is a phantom (see
+// TestProductDocsCoverageGateGroundsAConcretePathOnlyWhereTheNetSawIt).
 func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *testing.T) {
 	requireGitPython(t)
 	// One route the corpus never exercised, documented only from the route
@@ -2346,9 +2441,9 @@ func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *
 		writeRoutes(t, ws)
 		writeFile(t, ws, "docs/demo/z-exports.md", "# The exports\n"+
 			"\n"+
-			"## The export screen — [[ref:/dashboard/exports/9]]\n"+
+			"## The export screen — [[ref:/dashboard/exports/{id}]]\n"+
 			"\n"+
-			"The manager exports the filtered list from [[ref:/dashboard/exports/9]] as\n"+
+			"The manager exports the filtered list from [[ref:/dashboard/exports/{id}]] as\n"+
 			"a CSV file, one row per item, carrying the columns of the current view.\n")
 		got := runCoverage(t, ws)
 		if !got.OK {
@@ -2370,19 +2465,6 @@ func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *
 		got := runCoverage(t, ws)
 		if !got.OK {
 			t.Fatalf("a route whose only citation carries a query was refused — the screen the documentation already describes:\n%s", got.Log)
-		}
-	})
-	t.Run("a concrete citation covers its parameterized route", func(t *testing.T) {
-		ws := newCoverageFixture(t)
-		writeRoutes(t, ws)
-		mutate(t, ws, "docs/demo/README.md",
-			"newest first, each one showing its owner, its status and its last change.",
-			"newest first, each one showing its owner, its status and its last change.\n"+
-				"From this screen the manager exports the list to a CSV file\n"+
-				"([[ref:/dashboard/exports/42]]), one row per item of the current view.")
-		got := runCoverage(t, ws)
-		if !got.OK {
-			t.Fatalf("a concrete citation did not cover the parameterized route it instantiates:\n%s", got.Log)
 		}
 	})
 }
@@ -3164,10 +3246,10 @@ func TestProductDocsCoverageGateRefusesACitedTailWildcard(t *testing.T) {
 	}
 }
 
-// TestProductDocsCoverageGateConfinesTheRoutesFile: `coverage_routes_file` is
-// read from INSIDE the net, like `oracle_dir` — and the repair is a launch
-// var, outside the writeable set, so it stops the run.
-func TestProductDocsCoverageGateConfinesTheRoutesFile(t *testing.T) {
+// TestProductDocsRouteTableConfinesTheRoutesFile: `coverage_routes_file` names
+// a file INSIDE the net, like `oracle_dir` — and the repair is a launch var,
+// outside the writeable set, so route_table stops the run before it starts.
+func TestProductDocsRouteTableConfinesTheRoutesFile(t *testing.T) {
 	requireGitPython(t)
 	outside := filepath.Join(t.TempDir(), "routes.txt")
 	if err := os.WriteFile(outside, []byte(coverageRoutes), 0o644); err != nil {
@@ -3175,20 +3257,8 @@ func TestProductDocsCoverageGateConfinesTheRoutesFile(t *testing.T) {
 	}
 	for _, bad := range []string{outside, "../routes.txt"} {
 		ws := newCoverageFixture(t)
-		cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "coverage_check"), map[string]string{
-			"vars.workspace_dir":               ws,
-			"input.product_dir":                "docs/demo",
-			"input.oracle_path":                filepath.Join(ws, ".golden-master"),
-			"vars.coverage_exclusions_heading": defaultExclusionsToken,
-			"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
-			"vars.coverage_routes_file":        bad,
-			"vars.coverage_citation_open":      citeOpen,
-			"vars.coverage_citation_close":     citeClose,
-			"vars.coverage_placeholders":       defaultPlaceholders,
-			"vars.coverage_min_prose":          "60",
-			"vars.coverage_max_anchorless":     shippedAnchorlessCeiling,
-		})
-		runExpectingFailure(t, cmd, "absolute path or a dot-dot escape")
+		base := snapshotRunBase(t, ws)
+		runExpectingFailure(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, bad, shippedProbeTimeout), "INSIDE the net")
 	}
 }
 
@@ -3781,6 +3851,564 @@ func TestProductDocsCoverageGateDegradesVisiblyWithoutRoutes(t *testing.T) {
 	if !strings.Contains(got.Log, "no declared route table was available") {
 		t.Fatalf("the refusal does not say the check was degraded:\n%s", got.Log)
 	}
+}
+
+// ── The replayed routes_probe ───────────────────────────────────────────────
+// golden-master states its routes through config.json `routes_probe` and
+// replays the command at every gate; a committed table goes stale the moment
+// a change adds a route. With no table committed, the docs gates replay the
+// SAME command — and only for a net INSIDE the docs workspace: a source
+// clone's command is untrusted data, never code.
+
+// probeReadingData is a routes_probe that prints the table the test wrote to
+// routes.data at the workspace root, the cwd the gates run it from.
+const probeReadingData = "import sys\nsys.stdout.write(open('routes.data').read())\n"
+
+// probeNet turns the fixture's net into one that STATES its routes: the
+// committed file goes, config.json declares a probe, the probe prints table.
+func probeNet(t *testing.T, ws, table string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(ws, ".golden-master/routes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "python3 probe.py"}`)
+	writeFile(t, ws, "probe.py", probeReadingData)
+	writeFile(t, ws, "routes.data", table)
+}
+
+// probeConfig writes a config.json whose routes_probe runs script by its
+// ABSOLUTE path, so the command works from any cwd — a guard that fails to
+// stop it cannot hide behind a relative path that happens not to resolve.
+func probeConfig(t *testing.T, net, script string) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]string{"routes_probe": "python3 " + script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, net, "config.json", string(raw))
+}
+
+// pyString renders s as a Python string literal (a JSON string is one for
+// the plain paths these tests use).
+func pyString(t *testing.T, s string) string {
+	t.Helper()
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// TestProductDocsCoverageGateReplaysTheNetsRoutesProbe: no committed table,
+// a net that declares its probe — the gate replays it, and the table it
+// prints is the one the route checks JUDGE by, not a count on the side.
+func TestProductDocsCoverageGateReplaysTheNetsRoutesProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	got := runCoverage(t, ws)
+	if !got.OK || got.Degraded || got.RoutesTotal != 4 {
+		t.Fatalf("the replayed probe was not read as the route table: ok=%v degraded=%v declared=%d, want true/false/4:\n%s", got.OK, got.Degraded, got.RoutesTotal, got.Log)
+	}
+	if !strings.Contains(got.Log, "replayed from the net routes_probe") {
+		t.Fatalf("the log does not say where the route table came from:\n%s", got.Log)
+	}
+	writeFile(t, ws, "routes.data", coverageRoutes+"GET /dashboard/exports\n")
+	got = runCoverage(t, ws)
+	if want := "ROUTE_UNDOCUMENTED -- /dashboard/exports"; got.OK || !strings.Contains(got.Log, want) {
+		t.Fatalf("a route only the replayed probe declares went unchecked (want %q):\n%s", want, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGatePrefersTheCommittedTable: an explicit artifact
+// wins over the command — a probe that disagrees is not consulted.
+func TestProductDocsCoverageGatePrefersTheCommittedTable(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "python3 probe.py"}`)
+	writeFile(t, ws, "probe.py", probeReadingData)
+	writeFile(t, ws, "routes.data", coverageRoutes+"GET /dashboard/exports\n")
+	got := runCoverage(t, ws)
+	if !got.OK || got.RoutesTotal != 4 || strings.Contains(got.Log, "replayed") {
+		t.Fatalf("the probe overrode the committed table: ok=%v declared=%d, want true/4 and no replay:\n%s", got.OK, got.RoutesTotal, got.Log)
+	}
+}
+
+// probeInAClone builds a net in a SEPARATE tree — a source clone — whose probe
+// would leave a marker if anything ran it.
+func probeInAClone(t *testing.T) (net, marker string) {
+	t.Helper()
+	clone := t.TempDir()
+	marker = filepath.Join(t.TempDir(), "EXECUTED")
+	net = filepath.Join(clone, ".golden-master")
+	writeFile(t, net, "corpus.json", coverageCorpus)
+	writeFile(t, net, "feature-coverage.json", coverageInventory)
+	script := filepath.Join(clone, "probe.py")
+	writeFile(t, clone, "probe.py", "open("+pyString(t, marker)+", 'w').write('ran')\nprint('GET /')\n")
+	probeConfig(t, net, script)
+	gittest.Run(t, clone, "init", "-q")
+	gittest.Run(t, clone, "add", "-A")
+	gittest.Run(t, clone, "commit", "-q", "-m", "clone")
+	return net, marker
+}
+
+// TestProductDocsCoverageGateNeverRunsAProbeOutsideTheWorkspace: the clones
+// are someone else's code. A net found there is read as data; its command is
+// never executed, and the degradation says why.
+func TestProductDocsCoverageGateNeverRunsAProbeOutsideTheWorkspace(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	net, marker := probeInAClone(t)
+	var got coverageOut
+	runJSON(t, coverageCommand(t, ws, "docs/demo", net), &got)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("the coverage gate EXECUTED the routes_probe of a net outside the docs workspace — a source clone's command is untrusted data")
+	}
+	if !got.Degraded || !strings.Contains(got.Log, "untrusted input, never executed") {
+		t.Fatalf("the refusal to run the clone's probe is not visible: degraded=%v\n%s", got.Degraded, got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintNeverRunsAProbeOutsideTheWorkspace: the same
+// boundary, held by the map lint's own copy of the replay.
+func TestProductDocsDiagramLintNeverRunsAProbeOutsideTheWorkspace(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	net, marker := probeInAClone(t)
+	var got diagramOut
+	runJSON(t, diagramCommand(t, ws, "docs/demo", net, "routes.txt"), &got)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("the map lint EXECUTED the routes_probe of a net outside the docs workspace — a source clone's command is untrusted data")
+	}
+	if !got.RoutesUnverified || !strings.Contains(got.Log, "untrusted input, never executed") {
+		t.Fatalf("the refusal to run the clone's probe is not visible: unverified=%v\n%s", got.RoutesUnverified, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNamesAFailingProbe: a probe that cannot run here
+// (it needs the application up, say) degrades the check — with ITS cause.
+func TestProductDocsCoverageGateNamesAFailingProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	writeFile(t, ws, "probe.py", "import sys\nsys.stderr.write('no application answers here')\nsys.exit(3)\n")
+	got := runCoverage(t, ws)
+	if !got.Degraded {
+		t.Fatalf("a failing probe did not degrade the check:\n%s", got.Log)
+	}
+	for _, want := range []string{"routes_probe exited 3", "no application answers here"} {
+		if !strings.Contains(got.Log, want) {
+			t.Fatalf("the degradation hides the probe's cause (want %q):\n%s", want, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateBoundsTheProbe: a probe that hangs must not hang
+// the gate; past its bound the table is unavailable, and the log says so.
+func TestProductDocsCoverageGateBoundsTheProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	writeFile(t, ws, "probe.py", "import time\ntime.sleep(5)\nprint('GET /')\n")
+	var got coverageOut
+	runJSON(t, coverageCommandTimed(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), defaultExclusionsToken, shippedAnchorlessCeiling, citeOpen, citeClose, "routes.txt", "1"), &got)
+	if !got.Degraded || !strings.Contains(got.Log, "did not finish within 1 s") {
+		t.Fatalf("the probe ran past its bound unnoticed: degraded=%v\n%s", got.Degraded, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateDegradesOnASilentProbe: a REPLAYED probe that runs
+// and declares nothing — a pipeline run where its source tree is not, say —
+// degrades the route checks with that cause. It never stops the run: the
+// repair (the net's config.json) is outside the run's writeable set.
+func TestProductDocsCoverageGateDegradesOnASilentProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, "# no route here\n")
+	got := runCoverage(t, ws)
+	if !got.Degraded || !strings.Contains(got.Log, "printed NO route") {
+		t.Fatalf("a silent replayed probe did not degrade visibly: degraded=%v\n%s", got.Degraded, got.Log)
+	}
+}
+
+// TestProductDocsRouteTableRefusesAnUnusableBound: the bound is required and
+// must fit the kernel's timers; an unusable value is refused by name, never
+// replaced by a default nor left to overflow inside the probe call.
+func TestProductDocsRouteTableRefusesAnUnusableBound(t *testing.T) {
+	requireGitPython(t)
+	for _, bound := range []string{"0", "-5", "many", "3000000"} {
+		ws := newCoverageFixture(t)
+		probeNet(t, ws, coverageRoutes)
+		base := snapshotRunBase(t, ws)
+		runExpectingFailure(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, "routes.txt", bound), "whole number of seconds")
+	}
+}
+
+// TestProductDocsDiagramLintGroundsOnTheReplayedProbe: the map lint reads the
+// same replayed table — a mapped path only the probe declares is grounded.
+func TestProductDocsDiagramLintGroundsOnTheReplayedProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes+"GET /dashboard/exports\n")
+	page := strings.Replace(diagramMapPage(), "  %% voir", "  list -->|exporte| exports[\"/dashboard/exports — l'export\"]\n  %% voir", 1)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", page)
+	got := runDiagramLint(t, ws)
+	if !got.OK || got.RoutesUnverified {
+		t.Fatalf("the map lint did not ground on the replayed probe: ok=%v unverified=%v\n%s", got.OK, got.RoutesUnverified, got.Log)
+	}
+	if !strings.Contains(got.Log, "replayed from the net routes_probe") {
+		t.Fatalf("the map lint does not say where its route table came from:\n%s", got.Log)
+	}
+}
+
+// ── route_table: the table every route check judges by ────────────────────────
+// Resolved ONCE per run, at a commit, before any page is written, and handed to
+// the gates and agents as data. Each case below pins one way the replay broke
+// in review, and reddens when that exact defect is put back.
+
+// probeScriptNet turns the fixture's net into one whose routes_probe is script.
+func probeScriptNet(t *testing.T, ws, script string) {
+	t.Helper()
+	probeNet(t, ws, coverageRoutes)
+	writeFile(t, ws, "probe.py", script)
+}
+
+func runRouteTable(t *testing.T, ws, timeout string) routeTableOut {
+	t.Helper()
+	return routeTableFor(t, ws, filepath.Join(ws, ".golden-master"), "routes.txt", timeout)
+}
+
+// TestProductDocsRouteTableReadsOnlyWhatACommitCarries: a routes.txt the working
+// tree holds and no commit does — hidden from the scope gate by one ignore line
+// — would let the agent this gate judges write the table it is judged by. The
+// table is read at the run base; the stray file is named and never read.
+func TestProductDocsRouteTableReadsOnlyWhatACommitCarries(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes+"GET /dashboard/exports\n")
+	base := snapshotRunBase(t, ws)
+	writeFile(t, ws, ".golden-master/routes.txt", "GET /\n")
+	writeFile(t, ws, ".git/info/exclude", ".golden-master/routes.txt\n")
+	var got routeTableOut
+	runJSON(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, "routes.txt", shippedProbeTimeout), &got)
+	if got.Source != "probe" || !slicesContain(got.Routes, "/dashboard/exports") {
+		t.Fatalf("an uncommitted routes.txt overrode the table the run base declares: source=%q routes=%v", got.Source, got.Routes)
+	}
+	if !strings.Contains(got.Note, "in no commit and is not read") {
+		t.Fatalf("the stray routes.txt is not named: %q", got.Note)
+	}
+	if cov := runCoverage(t, ws); !strings.Contains(cov.Log, "in no commit and is not read") {
+		t.Fatalf("the verdict does not say the stray routes.txt was set aside:\n%s", cov.Log)
+	}
+	if lint := runDiagramLint(t, ws); !strings.Contains(lint.Log, "in no commit and is not read") {
+		t.Fatalf("the map lint does not say the stray routes.txt was set aside:\n%s", lint.Log)
+	}
+}
+
+// TestProductDocsRouteTableNeverRunsANetThatIsNotTheWorkspacesOwn: a net that
+// lives UNDER the docs workspace but is not its own is someone else's code.
+// Being under the workspace proves nothing about whose net it is: only the net
+// at <workspace>/<oracle_dir>, in the workspace's own repository, is replayed.
+func TestProductDocsRouteTableNeverRunsANetThatIsNotTheWorkspacesOwn(t *testing.T) {
+	requireGitPython(t)
+	for _, tc := range []struct {
+		name    string
+		ownRepo bool
+	}{
+		{"committed in the workspace, away from oracle_dir", false},
+		{"a source clone with a repository of its own", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			clone := filepath.Join(ws, "vendor", "sources", "app")
+			marker := filepath.Join(t.TempDir(), "EXECUTED")
+			net := filepath.Join(clone, ".golden-master")
+			writeFile(t, net, "corpus.json", coverageCorpus)
+			writeFile(t, net, "feature-coverage.json", coverageInventory)
+			writeFile(t, clone, "probe.py", "open("+pyString(t, marker)+", 'w').write('ran')\nprint('GET /')\n")
+			probeConfig(t, net, filepath.Join(clone, "probe.py"))
+			if tc.ownRepo {
+				gittest.Run(t, clone, "init", "-q")
+				gittest.Run(t, clone, "add", "-A")
+				gittest.Run(t, clone, "commit", "-q", "-m", "clone")
+			}
+			base := snapshotRunBase(t, ws)
+			var got routeTableOut
+			runJSON(t, routeTableCommand(t, ws, net, base, "routes.txt", shippedProbeTimeout), &got)
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("route_table EXECUTED the routes_probe of a net under the workspace that is not the workspace's own")
+			}
+			if !got.Degraded || !strings.Contains(got.Note, "untrusted input, never executed") {
+				t.Fatalf("the refusal to run a foreign net's probe is not visible: %+v", got)
+			}
+		})
+	}
+}
+
+// TestProductDocsCatalogIngestRefusesAScratchInsideTheWorkspace: the clones are
+// someone else's code, and in tree they are a place the scope gate can be
+// blinded to. The out-of-tree promise is enforced, not only documented.
+func TestProductDocsCatalogIngestRefusesAScratchInsideTheWorkspace(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	for _, scratch := range []string{filepath.Join(ws, ".cache", "product-docs"), ".scratch", ws} {
+		runExpectingFailure(t, ingestCommand(t, ws, "catalog.yaml", "demo", scratch), "scratch_dir resolves INSIDE the docs workspace")
+	}
+}
+
+// TestProductDocsRouteTableReplaysInAThrowawayCheckout: whatever the probe writes
+// lands in a checkout of the run base that is removed afterwards — never in the
+// docs worktree, where the next pass's scope gate would refuse it forever.
+func TestProductDocsRouteTableReplaysInAThrowawayCheckout(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import os\nos.makedirs('__pycache__', exist_ok=True)\nopen('__pycache__/side.pyc', 'w').write('x')\nopen('SIDE_EFFECT', 'w').write('x')\nprint('GET /')\nprint('GET /dashboard/items')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" || len(got.Routes) != 2 {
+		t.Fatalf("the replay did not read the probe: %+v", got)
+	}
+	if status := gittest.Run(t, ws, "status", "--porcelain", "--untracked-files=all"); status != "" {
+		t.Fatalf("the probe changed the docs worktree — the next scope gate refuses it:\n%s", status)
+	}
+}
+
+// TestProductDocsRouteTableKillsWhatTheProbeStarted: the probe owns a process
+// group, killed when it returns or times out — nothing it started writes after
+// the verdict, whether it timed out or backgrounded a writer and exited.
+func TestProductDocsRouteTableKillsWhatTheProbeStarted(t *testing.T) {
+	requireGitPython(t)
+	t.Run("timed out", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		marker := filepath.Join(t.TempDir(), "LATE_WRITE")
+		probeScriptNet(t, ws, "import time\ntime.sleep(3)\nopen("+pyString(t, marker)+", 'w').write('late')\n")
+		writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "cd . && python3 probe.py; true"}`)
+		got := runRouteTable(t, ws, "1")
+		if !got.Degraded || !strings.Contains(got.Note, "did not finish within 1 s") {
+			t.Fatalf("the timeout is not named: %+v", got)
+		}
+		time.Sleep(4 * time.Second)
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("a probe process outlived its timeout and wrote after the verdict")
+		}
+	})
+	t.Run("backgrounded", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		marker := filepath.Join(t.TempDir(), "LATE_WRITE")
+		// The writer lets go of the probe's output, so the probe is over when
+		// its own process exits — what it left behind is killed then.
+		probeScriptNet(t, ws, "import subprocess\nsubprocess.Popen(['sh', '-c', 'sleep 2; touch '+"+pyString(t, marker)+"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\nprint('GET /')\n")
+		got := runRouteTable(t, ws, shippedProbeTimeout)
+		if got.Source != "probe" {
+			t.Fatalf("the probe was not read: %+v", got)
+		}
+		time.Sleep(3 * time.Second)
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("a process the probe left behind wrote after the verdict")
+		}
+	})
+}
+
+// TestProductDocsRouteTableRunsNoGitHook: the throwaway checkout is git's own
+// plumbing — a hook the environment's git configuration points at (the way a
+// package manager's install step sets core.hooksPath) never runs there. The
+// hook path is injected through git's environment configuration, which the
+// throwaway clone honours exactly as a global one.
+func TestProductDocsRouteTableRunsNoGitHook(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	hooks := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "HOOK_RAN")
+	writeFile(t, hooks, "post-checkout", "#!/bin/sh\ntouch "+shQuote(marker)+"\n")
+	if err := os.Chmod(filepath.Join(hooks, "post-checkout"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+	t.Setenv("GIT_CONFIG_VALUE_0", hooks)
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" {
+		t.Fatalf("the replay did not read the probe: %+v", got)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the throwaway checkout ran a git hook")
+	}
+}
+
+// TestProductDocsRouteTableWaitsForTheProbesExit: the verdict is the probe's
+// own exit status. A probe that lets go of its output and finishes its work a
+// moment later, within the bound, is read — not killed and called a failure.
+func TestProductDocsRouteTableWaitsForTheProbesExit(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import os, sys, time\nprint('GET /')\nprint('GET /dashboard/items')\nsys.stdout.flush()\nos.close(1)\nos.close(2)\ntime.sleep(0.5)\n")
+	// exec: the probe is the only holder of its output, so the end of that
+	// output comes BEFORE its exit.
+	writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "exec python3 probe.py"}`)
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" || len(got.Routes) != 2 {
+		t.Fatalf("a probe that exits cleanly after closing its output was not read: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableSurvivesAnyByte: a byte that is not UTF-8 — a French
+// file name in a build warning — is a character, never a crash of the node.
+func TestProductDocsRouteTableSurvivesAnyByte(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import sys\nsys.stderr.buffer.write(b'note: Cr\\xe9ation.java\\n')\nsys.stdout.buffer.write(b'GET /\\nGET /dashboard/items\\n# caf\\xe9\\n')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" || !slicesContain(got.Routes, "/dashboard/items") {
+		t.Fatalf("a non-UTF-8 byte cost the route table: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableReadsWhatGoldenMasterReads: golden-master reads the
+// probe's stdout and stderr MERGED; a route it states on stderr is a route here.
+func TestProductDocsRouteTableReadsWhatGoldenMasterReads(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import sys\nprint('GET /')\nsys.stdout.flush()\nsys.stderr.write('GET /dashboard/exports\\n')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if !slicesContain(got.Routes, "/dashboard/exports") {
+		t.Fatalf("a route the probe stated on stderr was dropped — golden-master counts it: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableBoundsTheOutput: an output past the bound is not a
+// route table, and reading stops AT the bound — a probe that never stops
+// printing is cut there, not read until the deadline.
+func TestProductDocsRouteTableBoundsTheOutput(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import sys, time\nprint('GET /')\nwhile True:\n    sys.stdout.write('x' * 65536)\n    sys.stdout.flush()\n    time.sleep(0.01)\n")
+	got := runRouteTable(t, ws, "20")
+	if !got.Degraded || !strings.Contains(got.Note, "byte bound") {
+		t.Fatalf("an endless probe output was not cut at the bound: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableSetsAsideFilePaths: a build tool prints absolute file
+// paths; one inside the checkout is chatter, not a route the doc must cite.
+func TestProductDocsRouteTableSetsAsideFilePaths(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import os\nprint(os.path.abspath('probe.py'))\nprint('GET /dashboard/items')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Dropped != 1 || len(got.Routes) != 1 || got.Routes[0] != "/dashboard/items" {
+		t.Fatalf("a file path in the checkout was read as a route: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableCollapsesMethods: GET, POST and DELETE on one path
+// are one screen to document, one route in the table.
+func TestProductDocsRouteTableCollapsesMethods(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt", "GET /\nGET /dashboard/items\nPOST /dashboard/items\nDELETE /dashboard/items\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if len(got.Routes) != 2 {
+		t.Fatalf("one path under three methods was counted %d times: %v", len(got.Routes), got.Routes)
+	}
+}
+
+// TestProductDocsCoverageGateCountsACitedEntryAsItsRoute: a page documents the
+// screen a route serves by citing the corpus ENTRY that captured it — the entry
+// carries the path. Demanding the path as well refused screens the pages
+// describe: on a real net, every route at once.
+func TestProductDocsCoverageGateCountsACitedEntryAsItsRoute(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]", "## One item — [[ref:039]]")
+	got := runCoverage(t, ws)
+	if !got.OK || strings.Contains(got.Log, "ROUTE_UNDOCUMENTED") {
+		t.Fatalf("a route whose screen a page documents through its corpus entry was refused:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateReadsAnEntryPathWithoutItsQuery: an entry that
+// captured /reports?year=2024 exercises the route /reports — the query is how
+// the screen was asked for, not another screen.
+func TestProductDocsCoverageGateReadsAnEntryPathWithoutItsQuery(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, ".golden-master/corpus.json",
+		`{"id": "039", "persona": "manager", "method": "GET", "path": "/dashboard/items/42", "surface": "http"}`,
+		`{"id": "039", "persona": "manager", "method": "GET", "path": "/dashboard/items/42", "surface": "http"},
+  {"id": "050", "persona": "manager", "method": "GET", "path": "/reports?year=2024", "surface": "http"}`)
+	mutate(t, ws, ".golden-master/feature-coverage.json",
+		`{"feature": "items.detail", "entries": ["039"]}`,
+		`{"feature": "items.detail", "entries": ["039"]},
+  {"feature": "reports.yearly", "entries": ["050"]}`)
+	writeFile(t, ws, ".golden-master/routes.txt", coverageRoutes+"GET /reports\n")
+	writeFile(t, ws, "docs/demo/reports.md", "# Reports\n\n## The yearly report — "+ref("050")+"\n\n"+
+		ref("reports.yearly")+" "+ref("050")+" sums one year of items per owner and status: one row per\n"+
+		"owner, the totals at the foot of the table.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a route exercised by a cited entry that carries a query was refused:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintGroundsOnTheCorpus: a screen the net CAPTURED is
+// served even when the declared table misses it (a handler inherited from a
+// generic controller); the map lint does not order it off the map.
+func TestProductDocsDiagramLintGroundsOnTheCorpus(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt", "GET /\nGET /dashboard/items\n")
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	got := runDiagramLint(t, ws)
+	if !got.OK || strings.Contains(got.Log, "PHANTOM_MAP") {
+		t.Fatalf("a mapped screen the corpus captured was refused as phantom:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateOrdersNothingForARoute: the only repair a route
+// refusal may name is the one inside the writeable set — document the screen.
+// Taking a route out of the table is the net's business, not the campaign's.
+func TestProductDocsCoverageGateOrdersNothingForARoute(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt", coverageRoutes+"GET /dashboard/exports\n")
+	got := runCoverage(t, ws)
+	if !strings.Contains(got.Log, "ROUTE_UNDOCUMENTED -- /dashboard/exports") {
+		t.Fatalf("the fixture was meant to leave a route undocumented:\n%s", got.Log)
+	}
+	for _, order := range []string{"move it out", "route table with the reason"} {
+		if strings.Contains(got.Log, order) {
+			t.Fatalf("a route refusal orders %q — the table lives with the net, outside the writeable set:\n%s", order, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateKeepsGapsInSightOfTheLog: the relayed log is capped;
+// a long run of route refusals must not push a feature gap out of it.
+func TestProductDocsCoverageGateKeepsGapsInSightOfTheLog(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	var table strings.Builder
+	table.WriteString(coverageRoutes)
+	for i := 0; i < 70; i++ {
+		fmt.Fprintf(&table, "GET /reports/r%03d\n", i)
+	}
+	writeFile(t, ws, ".golden-master/routes.txt", table.String())
+	mutate(t, ws, "docs/demo/README.md", "[[ref:items.detail]] [[ref:039]] shows", "It shows")
+	got := runCoverage(t, ws)
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("a feature gap was pushed out of the relayed log by route refusals:\n%s", got.Log)
+	}
+}
+
+// slicesContain reports whether list holds want.
+func slicesContain(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestProductDocsCoverageGateReadsItsVocabularyFromTheNet: `001` is ONE
@@ -4588,11 +5216,15 @@ func diagramMapPage() string {
 
 func diagramCommand(t *testing.T, ws, productDir, oraclePath, routes string) string {
 	t.Helper()
+	rt := routeTableFor(t, ws, oraclePath, routes, shippedProbeTimeout)
 	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "diagram_lint"), map[string]string{
-		"vars.workspace_dir":        ws,
-		"input.product_dir":         productDir,
-		"input.oracle_path":         oraclePath,
-		"vars.coverage_routes_file": routes,
+		"vars.workspace_dir":  ws,
+		"input.product_dir":   productDir,
+		"input.oracle_path":   oraclePath,
+		"input.routes":        routesJSON(t, rt.Routes),
+		"input.routes_source": rt.Source,
+		"input.routes_note":   rt.Note,
+		"input.net_digest":    digestJSON(t, rt.NetDigest),
 	})
 }
 
@@ -4744,23 +5376,6 @@ func TestProductDocsDiagramLintDegradesBehindCatchAlls(t *testing.T) {
 	}
 	if !strings.Contains(got.Log, "1 mapped path(s) unverified behind catch-all routes") {
 		t.Fatalf("the summary does not count the unverified tokens:\n%s", got.Log)
-	}
-}
-
-// TestProductDocsDiagramLintNamesAnEscapedRoutesFile: the route table is
-// read from inside the net, never from an absolute path or a dot-dot
-// escape — same rule, same refusal shape as the coverage gate.
-func TestProductDocsDiagramLintNamesAnEscapedRoutesFile(t *testing.T) {
-	requireGitPython(t)
-	ws := newCoverageFixture(t)
-	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
-	var got diagramOut
-	runJSON(t, diagramCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "../routes.txt"), &got)
-	if got.OK {
-		t.Fatalf("a dot-dot route table was accepted:\n%s", got.Log)
-	}
-	if !strings.Contains(got.Log, "absolute path or a dot-dot escape") {
-		t.Fatalf("the refusal does not name the escape:\n%s", got.Log)
 	}
 }
 

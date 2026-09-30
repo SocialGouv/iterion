@@ -1,4 +1,5 @@
 ## Guard fixture — a tool's script reads an input no incoming edge maps.
+
 dsl: 2
 
 prompt work:
@@ -12,14 +13,18 @@ agent seed:
   user: work
 
 tool probe:
-  output: probe_out
-  language: py
   script: |
     import json
     value = {{input.script_never}}
     print(json.dumps({"ok": bool(value)}))
 
+  language: py
+  output: probe_out
+
 workflow tool_script:
+
   entry: seed
+
   seed -> probe
+
   probe -> done

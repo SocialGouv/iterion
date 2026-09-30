@@ -532,9 +532,12 @@ setting > pod env var > the .bot's own default.
   iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
   iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE   # back to env/default
 
-Infra namespaces (Mongo/NATS/JWT/secrets/…) and credential-shaped names
-are refused at write time. Changes reach every replica within the
-resolver TTL (no restart); runs claimed after that expand the new value.
+Infra namespaces (Mongo/NATS/JWT/secrets/…), credential-shaped names and
+values outside letters, digits and ._:/@+=,%-[] are refused at write time.
+A stored entry the current rule refuses (written by an older server) is
+not applied and is listed under "refused": rm it, or set a valid value.
+Changes reach every replica within the resolver TTL (no restart); runs
+claimed after that expand the new value.
 
 Two honesty notes. Values are stored, echoed and audit-logged IN CLEAR —
 never put a secret in a bot var, even under an innocent name. And a var
@@ -620,6 +623,8 @@ var (
 	remotePlatformCredEnforce string
 	remotePlatformCredTeams   string
 	remotePlatformCredOrgs    string
+	remotePlatformCredKeys    string
+	remotePlatformCredFacade  string
 )
 
 var remoteAdminPlatformCredsCmd = &cobra.Command{
@@ -636,9 +641,25 @@ does not by itself cut the fleet off from its only credential.
   iterion remote admin platform-credentials set --orgs <org-id>
   iterion remote admin platform-credentials set --enforce true
   iterion remote admin platform-credentials set --enforce false   # back to open
+  iterion remote admin platform-credentials set --keys-first true # keys before forfaits
+  iterion remote admin platform-credentials set --facade-default never
 
 Enforcing an audience that names nobody is refused: its symptom would be
-every credential-less run failing at its first LLM call.`,
+every credential-less run failing at its first LLM call.
+
+--keys-first sets the shared-tier fill order on one wire family (platform and
+org tiers). By default a forfait takes the family and an API key funds only
+the routes that name its provider, or the wire a closed forfait leaves free;
+true puts the key first and the forfait behind it; "" clears the override back
+to ITERION_PLATFORM_KEYS_FIRST.
+
+--facade-default says whether a facade key (z.ai, Moonshot: another vendor
+answering a claude id with its own model) may become the anthropic wire's
+DEFAULT in a shared tier: auto (the default) only in a tier holding no
+Anthropic-native credential, never (it funds only the routes that name its
+provider), always (whenever the family is free — a closed forfait falls
+through to it); "" clears the override back to ITERION_PLATFORM_FACADE_DEFAULT.
+The GET shows the stored values and the effective ones.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		const path = "/api/admin/settings/platform-credentials"
@@ -665,8 +686,28 @@ every credential-less run failing at its first LLM call.`,
 		if cmd.Flags().Changed("orgs") {
 			body["orgs"] = splitCSV(remotePlatformCredOrgs)
 		}
+		if cmd.Flags().Changed("keys-first") {
+			switch strings.ToLower(strings.TrimSpace(remotePlatformCredKeys)) {
+			case "true", "on", "yes":
+				body["keys_first"] = true
+			case "false", "off", "no":
+				body["keys_first"] = false
+			case "":
+				body["keys_first"] = nil // back to ITERION_PLATFORM_KEYS_FIRST
+			default:
+				return fmt.Errorf("--keys-first wants true|false (or \"\" to clear), got %q", remotePlatformCredKeys)
+			}
+		}
+		if cmd.Flags().Changed("facade-default") {
+			switch v := strings.ToLower(strings.TrimSpace(remotePlatformCredFacade)); v {
+			case "", "auto", "never", "always":
+				body["facade_default"] = v
+			default:
+				return fmt.Errorf("--facade-default wants auto|never|always (or \"\" to clear), got %q", remotePlatformCredFacade)
+			}
+		}
 		if len(body) == 0 {
-			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b]")
+			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b] [--keys-first true|false] [--facade-default auto|never|always]")
 		}
 		raw, err := json.Marshal(body)
 		if err != nil {
@@ -866,6 +907,8 @@ func init() {
 	remoteAdminSandboxCmd.Flags().BoolVar(&remoteSandboxClearImage, "clear-default-image", false, "Clear the override (fall back to the env default / built-in)")
 
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredEnforce, "enforce", "", "true|false — gate who may draw on the platform credentials")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredKeys, "keys-first", "", "true|false — shared tiers fill API keys before forfaits on one wire family (\"\" clears it back to the env default)")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredFacade, "facade-default", "", "auto|never|always — whether a z.ai/Moonshot key may be the anthropic wire's default in a shared tier (\"\" clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredTeams, "teams", "", "Comma-separated team ids admitted (empty string clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredOrgs, "orgs", "", "Comma-separated org ids whose every team is admitted (empty string clears)")
 

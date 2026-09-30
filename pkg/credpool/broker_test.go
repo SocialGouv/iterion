@@ -999,3 +999,41 @@ func TestBroker_AbstentionDoesNotCountTheRequestersOwnPledge(t *testing.T) {
 		t.Errorf("skips = %+v, want none", nd.Skips)
 	}
 }
+
+// A lent subscription names the donor's record, the one the server's refresh
+// worker rotates: the borrower's runner follows it rather than exchanging the
+// donor's refresh token. A lent key has no such record.
+func TestAcquire_lentSubscriptionNamesTheDonorsRecord(t *testing.T) {
+	h := newHarness(t)
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
+	id := secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0)
+	rec, err := h.oauth.GetByID(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connected := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	rec.CreatedAt = connected
+	if err := h.oauth.Upsert(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := h.broker.Acquire(context.Background(), h.request("run-1"))
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if grant.RecordID != id {
+		t.Fatalf("grant record = %q, want the donor's record %q", grant.RecordID, id)
+	}
+	if !grant.RecordConnectedAt.Equal(connected) {
+		t.Fatalf("grant record connected at %s, want the donor's record's connect time %s", grant.RecordConnectedAt, connected)
+	}
+
+	k := newHarness(t)
+	k.donorKey(t, "bob", "anthropic", Limits{MaxUSDPerDay: 5})
+	keyGrant, err := k.broker.Acquire(context.Background(), k.wantKey("run-2", "anthropic"))
+	if err != nil {
+		t.Fatalf("Acquire (key): %v", err)
+	}
+	if keyGrant.RecordID != "" || !keyGrant.RecordConnectedAt.IsZero() {
+		t.Fatalf("a lent API key names OAuth record %q connected at %s", keyGrant.RecordID, keyGrant.RecordConnectedAt)
+	}
+}

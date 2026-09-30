@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -94,13 +95,15 @@ func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *htt
 		return
 	}
 	origin := "default"
-	if rec != nil && (rec.Enforce != nil || len(rec.Teams) > 0 || len(rec.Orgs) > 0) {
+	if rec != nil && (rec.Enforce != nil || len(rec.Teams) > 0 || len(rec.Orgs) > 0 || rec.KeysFirst != nil || rec.FacadeDefault != nil) {
 		origin = "db"
 	}
 	s.writeJSONFor(w, r, platformCredentialsSettingsView{
-		Stored:   rec,
-		Enforced: rec.Enforced(),
-		Origin:   origin,
+		Stored:                 rec,
+		Enforced:               rec.Enforced(),
+		Origin:                 origin,
+		KeysFirstEffective:     rec.PrefersKeys(),
+		FacadeDefaultEffective: string(rec.Facade()),
 	})
 }
 
@@ -119,13 +122,17 @@ func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *htt
 		Enforce *bool     `json:"enforce,omitempty"`
 		Teams   *[]string `json:"teams,omitempty"`
 		Orgs    *[]string `json:"orgs,omitempty"`
+		// true/false set it; "" or null clears it back to the env default.
+		KeysFirst json.RawMessage `json:"keys_first,omitempty"`
+		// "" clears the override back to the env default.
+		FacadeDefault *string `json:"facade_default,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return
 	}
-	if patch.Enforce == nil && patch.Teams == nil && patch.Orgs == nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name at least one field (enforce|teams|orgs)")
+	if patch.Enforce == nil && patch.Teams == nil && patch.Orgs == nil && patch.KeysFirst == nil && patch.FacadeDefault == nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name at least one field (enforce|teams|orgs|keys_first|facade_default)")
 		return
 	}
 	rec, err := s.platformCredsStore.Get(r.Context())
@@ -145,6 +152,25 @@ func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *htt
 	if patch.Orgs != nil {
 		rec.Orgs = *patch.Orgs
 	}
+	if patch.KeysFirst != nil {
+		switch strings.TrimSpace(string(patch.KeysFirst)) {
+		case "true", "false":
+			v := strings.TrimSpace(string(patch.KeysFirst)) == "true"
+			rec.KeysFirst = &v
+		case "null", `""`:
+			rec.KeysFirst = nil
+		default:
+			s.httpErrorFor(w, r, http.StatusBadRequest, "keys_first wants true, false, or \"\" / null to clear it back to %s", platformcfg.EnvKeysFirst)
+			return
+		}
+	}
+	if patch.FacadeDefault != nil {
+		if v := strings.ToLower(strings.TrimSpace(*patch.FacadeDefault)); v == "" {
+			rec.FacadeDefault = nil
+		} else {
+			rec.FacadeDefault = &v
+		}
+	}
 	if err := rec.Validate(); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
@@ -158,7 +184,7 @@ func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *htt
 		s.platformCreds.Invalidate()
 	}
 	s.auditPlatform(r, "", "platform.settings.platform_credentials.updated", "platform_settings", platformcfg.FamilyPlatformCredentials, map[string]any{
-		"enforce": rec.Enforced(), "teams": rec.Teams, "orgs": rec.Orgs,
+		"enforce": rec.Enforced(), "teams": rec.Teams, "orgs": rec.Orgs, "keys_first": rec.PrefersKeys(), "facade_default": string(rec.Facade()),
 	})
 	s.handleAdminGetPlatformCredentials(w, r)
 }
@@ -315,12 +341,15 @@ func (s *Server) handleAdminGetBotVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin := "default"
+	var refused map[string]string
 	if rec != nil && len(rec.Vars) > 0 {
 		origin = "db"
+		refused = rec.RefusedEntries()
 	}
 	s.writeJSONFor(w, r, botVarsSettingsView{
-		Stored: rec,
-		Origin: origin,
+		Stored:  rec,
+		Origin:  origin,
+		Refused: refused,
 		// The bound every replica converges within after a write — the
 		// operator-facing answer to "when does my var take effect".
 		PropagationBoundSeconds: int(platformcfg.DefaultTTL.Seconds()),
@@ -362,6 +391,7 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 	for k, v := range rec.Vars {
 		vars[k] = v
 	}
+	prevKeys := len(vars)
 	rec.Vars = vars
 	// Audit meta carries old→new per touched key. Validate refuses
 	// credential-SHAPED NAMES, but nothing can vouch for the VALUE an
@@ -369,6 +399,7 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 	// clear in the settings doc, this audit trail and every GET — the
 	// CLI help says so, and the surface is super-admin-only.
 	changes := map[string]any{}
+	var set []string
 	for name, v := range patch {
 		old := rec.Vars[name]
 		if v == nil {
@@ -384,8 +415,9 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 		}
 		rec.Vars[name] = *v
 		changes[name] = map[string]string{"old": old, "new": *v}
+		set = append(set, name)
 	}
-	if err := rec.Validate(); err != nil {
+	if err := rec.ValidateWrite(prevKeys, set); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
@@ -439,6 +471,11 @@ type sandboxSettingsView struct {
 type botVarsSettingsView struct {
 	Stored *platformcfg.BotVars `json:"stored"`
 	Origin string               `json:"origin"`
+	// Refused names each stored entry the current rule refuses (written by
+	// an older server or by hand), with the reason: it is NOT applied — the
+	// pod env and the .bot default answer instead — until it is removed or
+	// replaced by a valid value.
+	Refused map[string]string `json:"refused,omitempty"`
 	// PropagationBoundSeconds is the worst-case delay before every replica
 	// enforces a write (the resolver TTL).
 	PropagationBoundSeconds int `json:"propagation_bound_seconds"`
@@ -449,4 +486,9 @@ type platformCredentialsSettingsView struct {
 	Stored   *platformcfg.PlatformCredentials `json:"stored"`
 	Enforced bool                             `json:"enforced"`
 	Origin   string                           `json:"origin"`
+	// The shared-tier ordering the next launch applies: the stored value,
+	// else the env default (ITERION_PLATFORM_KEYS_FIRST /
+	// ITERION_PLATFORM_FACADE_DEFAULT), else the built-in one.
+	KeysFirstEffective     bool   `json:"keys_first_effective"`
+	FacadeDefaultEffective string `json:"facade_default_effective"`
 }
