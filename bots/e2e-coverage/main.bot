@@ -1359,8 +1359,16 @@ if mtext:
             if len(name) < 4:
                 return False
             markers = ('--- SKIP:', 'SKIPPED', '# SKIP', '... ignored', '(skipped)', ' skipped ')
+            # BOUNDARY match, never a raw substring: cited TestFlaky must not
+            # redden on --- SKIP: TestFlakyBackend -- a DIFFERENT test was
+            # skipped. The identifier characters on each side are excluded,
+            # which still matches the genuine report shapes: a go subtest
+            # (TestFlaky/case_a), pytest's path::test_flaky, rust's
+            # tests::test_flaky -- the separator after the name is never an
+            # identifier character.
+            boundary = re.compile('(?<![A-Za-z0-9_])' + re.escape(name) + '(?![A-Za-z0-9_])')
             for line in out.splitlines():
-                if name in line and any(m in line for m in markers):
+                if boundary.search(line) and any(m in line for m in markers):
                     return True
             return False
         def split_refs(cellval):

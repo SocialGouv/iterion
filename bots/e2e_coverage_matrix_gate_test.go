@@ -665,6 +665,11 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		for _, tc := range []struct{ name, path, body, cite, scriptOut string }{
 			{"go", "e2e/flaky_test.go", "package e2e\n\nfunc TestFlaky(t *testing.T) {}\n",
 				"TestFlaky (e2e/flaky_test.go)", "--- SKIP: TestFlaky (0.00s)"},
+			// A go SUBTEST report names the parent with a slash: the boundary
+			// match must still see it — the separator is never an identifier
+			// character.
+			{"go subtest", "e2e/flaky_test.go", "package e2e\n\nfunc TestFlaky(t *testing.T) {}\n",
+				"TestFlaky (e2e/flaky_test.go)", "--- SKIP: TestFlaky/case_a (0.00s)"},
 			{"pytest", "tests/test_flaky.py", "def test_flaky():\n    pass\n",
 				"test_flaky (tests/test_flaky.py)", "tests/test_flaky.py::test_flaky SKIPPED [ 50%]"},
 		} {
@@ -680,6 +685,32 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 				}
 				if !res.Passed {
 					t.Fatalf("the suite verdict stays independent — the run WAS green, the claim is the lie: %+v", res)
+				}
+			})
+		}
+	})
+
+	t.Run("a_skip_report_for_a_name_prefixed_test_is_not_the_cited_one", func(t *testing.T) {
+		// The skip report must name the CITED test on identifier boundaries:
+		// TestFlakyBackend / test_flaky_2 are DIFFERENT tests, and their skip
+		// says nothing about whether TestFlaky / test_flaky ran.
+		for _, tc := range []struct{ name, path, body, cite, scriptOut string }{
+			{"go", "e2e/flaky_test.go",
+				"package e2e\n\nfunc TestFlaky(t *testing.T) {}\nfunc TestFlakyBackend(t *testing.T) {}\n",
+				"TestFlaky (e2e/flaky_test.go)", "--- SKIP: TestFlakyBackend (0.00s)"},
+			{"pytest", "tests/test_flaky.py",
+				"def test_flaky():\n    pass\ndef test_flaky_2():\n    pass\n",
+				"test_flaky (tests/test_flaky.py)", "test_flaky_2 SKIPPED [ 50%]"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ws, scratch := gitWorkspace(t), t.TempDir()
+				verifyScript(t, scratch, "#!/bin/sh\necho '"+tc.scriptOut+"'\nexit 0\n")
+				writeFile(t, ws, tc.path, tc.body)
+				writeFile(t, ws, matrixRel, header+
+					"| a.b | Thing | a | covered-deterministic | "+tc.cite+" | |\n")
+				res := run(t, ws, scratch)
+				if !res.MatrixOK {
+					t.Fatalf("a skip report for %q must not redden the citation of the prefix it shares: %+v", tc.scriptOut, res)
 				}
 			})
 		}
