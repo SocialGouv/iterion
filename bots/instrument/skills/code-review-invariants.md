@@ -137,8 +137,10 @@ the next author trusts it untested. Grep for the *shape* of the violation
 (the raw value in a format string, the unprefixed key) — half-closed
 classes (some sites hashed, some still raw) are the documented residue.
 An untested invariant alone does not block — unless it is a redaction or
-isolation claim the diff makes: an unproven one of those blocks as a
-false-claim defect (§5).
+isolation claim the diff makes: an unproven one of those (no passing test
+in the diff proves it) blocks as a false-claim defect (§5). A reviewer's
+own harness failing to run (the app does not boot here) is said in the
+findings, never a block by itself.
 
 ## 9. Fit and rot — did we build the RIGHT thing, and only that
 

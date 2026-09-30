@@ -156,13 +156,18 @@ the one you must NOT mirror:
   operator's shared state — `-p` isolates neither a published port nor a
   `container_name`, a killed run skips its teardown, and a teardown that
   names no project removes the operator's own. CI runs that suite.
+- **Never the suite your new e2e tests live in** (§1: it is not
+  optional): when it needs a docker service this host cannot run, it is
+  not named not covered — leave the matrix rows it would prove
+  `uncovered`, that reason on each. A campaign whose new tests never ran
+  must not converge.
 - Instead, **name each image CI builds — and each suite you left out — as
   not covered** by the green gate, in your summary AND as the FIRST line
   verify.sh prints (`echo "NOT COVERED: image <Dockerfile path>, built by
   CI only"` before the checks — never after them: a command after the
   last check becomes the script's exit status and hides that check's
   failure). The deterministic gate lifts every `NOT COVERED:` line into
-  the log tail of a green run; your summary is what reaches the PR. The image
+  the log tail of a green run. The image
   build installs the dependency set from the index the
   CI actually uses, which may not carry a version your sandbox already has —
   only CI's own build can say. (Paid: a transitive pin, dragged in by a
@@ -195,7 +200,8 @@ git diff --exit-code || { echo "codegen drift — regenerate + commit the output
 ```
 
 **A check gates only as a plain top-level command, or ended by `|| exit
-1`.** `set -e` ignores a failure in every command of an AND-OR list but
+1`** — and in a pipeline only its last stage gates, `|| exit 1` or not
+(below). `set -e` ignores a failure in every command of an AND-OR list but
 the last (`a && b`, `a || echo …`), in an `if`/`while` condition, anywhere
 inside a `{ }`, `( )` or function placed there (even with `set -e`
 re-armed inside), in a child shell (`sh -c 'a; b'`), and in a command

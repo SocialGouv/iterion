@@ -76,6 +76,9 @@ detected = {
     "a plus for a space in a query string": bool(leaks(one("q=Jean+Pierre"), ["Jean Pierre"])),
     "ascii() of a name (Latin-1 x-escapes)": bool(leaks(one(ascii(name)), [name])),
     "a case fold beyond lower() (sharp s)": bool(leaks(one("WEISSBIER9X"), ["Weißbier9x"])),
+    "a plain-text access line (a non-JSON item)": bool(leaks([b'INFO:     127.0.0.1:5000 - "GET /callback?code=' + tok24.encode() + b'&state=x HTTP/1.1" 200 OK'], [tok24])),
+    "a numeric id (a number, not a string)": bool(leaks([json.dumps({"extra": {"user_id": 918273645501}}).encode()], ["918273645501"])),
+    "an attachment line (not JSON)": bool(leaks([b"session dump: sub=" + tok24.encode()], [tok24])),
 }
 print(json.dumps({"false_leaks": false_leaks, "detected": detected}))
 `
@@ -114,8 +117,8 @@ func TestInstrumentLeaksHelperMatchesDistinctiveRunsOnly(t *testing.T) {
 	if res.FalseLeaks != 0 {
 		t.Errorf("%d of 80 captures holding NO planted value were reported leaking: a run across a uuid4's separators matched an unrelated uuid4", res.FalseLeaks)
 	}
-	if len(res.Detected) != 22 {
-		t.Fatalf("want 22 detection cases, got %d: %v", len(res.Detected), res.Detected)
+	if len(res.Detected) != 25 {
+		t.Fatalf("want 25 detection cases, got %d: %v", len(res.Detected), res.Detected)
 	}
 	for name, ok := range res.Detected {
 		if !ok {

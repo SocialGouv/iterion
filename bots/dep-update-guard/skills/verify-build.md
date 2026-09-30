@@ -218,7 +218,7 @@ the one you must NOT mirror:
   CI only"` before the checks — never after them: a command after the
   last check becomes the script's exit status and hides that check's
   failure). The deterministic gate lifts every `NOT COVERED:` line into
-  the log tail of a green run; your summary is what reaches the PR. The image
+  the log tail of a green run. The image
   build installs the dependency set from the index the
   CI actually uses, which may not carry a version your sandbox already has —
   only CI's own build can say. (Paid: a transitive pin, dragged in by a
@@ -251,7 +251,8 @@ git diff --exit-code || { echo "codegen drift — regenerate + commit the output
 ```
 
 **A check gates only as a plain top-level command, or ended by `|| exit
-1`.** `set -e` ignores a failure in every command of an AND-OR list but
+1`** — and in a pipeline only its last stage gates, `|| exit 1` or not
+(below). `set -e` ignores a failure in every command of an AND-OR list but
 the last (`a && b`, `a || echo …`), in an `if`/`while` condition, anywhere
 inside a `{ }`, `( )` or function placed there (even with `set -e`
 re-armed inside), in a child shell (`sh -c 'a; b'`), and in a command
