@@ -4,7 +4,7 @@ name: 🏷️ Version
 # ruleset), and a direct push to main invalidates every merge group the queue
 # is building: each one is rebuilt from scratch on the new base. Releasing
 # after every merge discards the build of whatever is queued behind it — the
-# second of two entries built in parallel almost always (measured in
+# entries built in parallel with it, almost always (measured in
 # docs/merge-policy.md#releases-and-the-queue). So a merged pull request
 # releases only while no merge group is in flight: the last merge of a burst
 # releases everything the burst landed. The nightly and a workflow_dispatch
