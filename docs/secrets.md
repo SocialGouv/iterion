@@ -131,11 +131,12 @@ form in every hook/log:
   shell rc cannot outrank it there), which turns off the stores where rtk
   keeps the commands it ran and the output lines it left out: a command
   carrying a secret some other way (its raw value, an environment variable),
-  or an output quoting one, leaves nothing there either. A command iterion
-  did not compress — rtk typed by the agent, or run by an operator's own rtk
-  hook — gets the run env from its environment only, which a settings `env`
-  (claude_code: the user's, or the target repository's), the operator's
-  shell rc or `BASH_ENV` can replace.
+  or an output quoting one, leaves nothing there either. On claude_code the
+  run env is pinned in the CLI's `--settings` flag layer too, which a user's
+  or a repository's settings `env` cannot outrank; a command iterion did not
+  compress — rtk typed by the agent, or run by an operator's own rtk hook —
+  still gets it from its environment only, which the operator's shell rc or
+  `BASH_ENV` can replace.
 - Both consume `delegate.Task.MaterializeSecrets` (a closure set by the
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
 - Its mirror, `delegate.Task.UnmaterializeSecrets` (`Guard.Unmaterialize`),

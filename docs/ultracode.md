@@ -36,8 +36,9 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    tools (an unrestricted set already exposes the claw builtins). The
    `claude_code` backend orchestrates through its native `Agent` tool, and
    every subagent runs in the **foreground**: each spawn sets
-   `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so an `Agent` call returns the
-   agent's report as its tool result. To parallelise, the model puts several
+   `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (unless the operator asks for
+   background work, `ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`), so an `Agent`
+   call returns the agent's report as its tool result. To parallelise, the model puts several
    `Agent` calls in one message; they run concurrently. A
    `## Subagents in this session` section states this on every spawn that
    keeps the tool, ultracode or not. The session is one-shot, so a

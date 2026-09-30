@@ -1225,6 +1225,13 @@ tool, ultracode or not, carries a `## Subagents in this session` section
 that says so. A process the node needs running while it works, such as a
 dev server, is started from the shell itself (`nohup … &`).
 
+An operator who wants background work — subagents and shells that run while
+the main agent keeps working — asks for it: `ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`
+pins the switch empty in both layers instead (a `0` would still read as true
+to the CLI), and the `## Subagents in this session` section is left out, the
+CLI's own guidance describing background work. The session then stays open
+until that work comes back — the background lifecycle below.
+
 A Bash command that outlives its timeout is now killed rather than moved to
 the background. So every spawn also pins `BASH_DEFAULT_TIMEOUT_MS` and
 `BASH_MAX_TIMEOUT_MS`, derived from this backend's own watchdogs. While a
@@ -1246,7 +1253,9 @@ a warning that names it.
 
 Every pinned variable rides two layers, so that nothing lower can move it.
 There are four: the switch, the node's auto-memory decision
-(`CLAUDE_CODE_DISABLE_AUTO_MEMORY`), and the two Bash timeouts.
+(`CLAUDE_CODE_DISABLE_AUTO_MEMORY`), and the two Bash timeouts — and, when a
+rewriter is available, its `run_env` (rtk's stores off; see
+[secrets.md](secrets.md)).
 
 - The process environment, which the run's provisioning environment cannot
   override.
@@ -1354,9 +1363,11 @@ ultracode included:
 A name the running CLI does not register costs nothing on
 `--disallowedTools`.
 
-**Background work: the session stays open until it comes back.** Claude
-Code runs subagents asynchronously by default and lets the main agent end
-its turn while they work; a finished task is announced and, when the agent
+**Background work: the session stays open until it comes back.** With
+background work on (`ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`, above) — or
+for the background work the switch does not reach — Claude Code runs
+subagents asynchronously and lets the main agent end its turn while they
+work; a finished task is announced and, when the agent
 is idle, the CLI starts the turn that delivers it by itself. A session that
 returned at its first result killed that work with the process — and under
 `--json-schema` kept the report the turn-end enforcement

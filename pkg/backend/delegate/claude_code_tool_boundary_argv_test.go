@@ -41,7 +41,7 @@ import (
 // reads it — or a "<no settings file: …>" marker.
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
-if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" >> "$ENV_LOG"; fi
+if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s] rtkdb=[%s] rtkrecall=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" "${RTK_DB_PATH-<unset>}" "${RTK_RECALL-<unset>}" >> "$ENV_LOG"; fi
 if [ -n "$SETTINGS_LOG" ]; then
 	settings=; prev=
 	for a in "$@"; do if [ "$prev" = --settings ]; then settings=$a; fi; prev=$a; done

@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -245,7 +246,8 @@ const headlessSubagentRule = "\n\n## Subagents in this session\n\n" +
 // the spawn keeps a subagent tool.
 func claudeCodeSystemPrompt(task Task) string {
 	prompt := task.BuildSystemPrompt()
-	if !claudeKeepsSubagents(task) {
+	if !claudeKeepsSubagents(task) || backgroundTasksOnFromEnv() {
+		// With background work on, the CLI's own guidance describes it.
 		return prompt
 	}
 	if prompt == "" {
@@ -1566,7 +1568,6 @@ func perTaskSpawnOpts(task Task) []claudesdk.Option {
 	env, settings := claudeSpawnPins(task)
 	opts = append(opts, claudesdk.WithSettingsJSON(settings))
 	opts = append(opts, taskExtraEnvOpts(task)...)
-	opts = append(opts, rewriterRunEnvOpts(task)...)
 	if d := claudeCodeThinkingDisplay(); d != "" {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
 	}
@@ -1600,7 +1601,9 @@ func claudeCodeEffort(effort string) string {
 //     operator's personal `~/.claude/projects/<cwd>/memory/`. "0" is not a
 //     no-op: it force-ENABLES over a settings file that turned auto-memory
 //     off;
-//   - BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (claudeBashTimeouts).
+//   - BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (claudeBashTimeouts);
+//   - the rewriter chain's run env (rtk's stores off), when a rewriter is
+//     available.
 //
 // Every one of them rides the process environment AND the flag settings
 // layer (claudeSpawnPins). The CLI does not resolve these variables before
@@ -1615,12 +1618,27 @@ func claudeCodeEffort(effort string) string {
 func claudeEnvPins(task Task) map[string]string {
 	disable, _ := autoMemorySpawn(task)
 	defaultMs, maxMs := claudeBashTimeouts()
-	return map[string]string{
-		backgroundTasksOffEnv: "1",
+	background := "1"
+	if backgroundTasksOnFromEnv() {
+		// Empty, not "0": the CLI tests the variable for truth, and any
+		// non-empty string is one.
+		background = ""
+	}
+	pins := map[string]string{
+		backgroundTasksOffEnv: background,
 		autoMemoryDisableEnv:  disable,
 		bashDefaultTimeoutEnv: strconv.FormatInt(defaultMs, 10),
 		bashMaxTimeoutEnv:     strconv.FormatInt(maxMs, 10),
 	}
+	// The rewriter chain's run env, whatever the compression mode: the agent
+	// may run a rewriter itself, or an operator's own hook may. A settings
+	// `env` would otherwise replace it (rtk's history back on, a secret in
+	// it).
+	for _, kv := range rewrite.NewChain(task.Rewriters).RunEnv() {
+		k, v, _ := strings.Cut(kv, "=")
+		pins[k] = v
+	}
+	return pins
 }
 
 // claudeSpawnPins returns the pinned environment and the one `--settings`

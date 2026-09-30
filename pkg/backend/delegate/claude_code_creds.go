@@ -201,8 +201,26 @@ var headlessWithheldTools = []string{
 // It is one of the variables every spawn pins in two layers, the process
 // environment and the flag settings layer (claudeEnvPins): the CLI rewrites
 // its environment at startup from the settings files it loads, and this key
-// is one a project's settings may set.
+// is one a project's settings may set. ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on
+// pins it empty instead (backgroundTasksOnFromEnv): background work, which
+// the background lifecycle keeps the session open for.
 const backgroundTasksOffEnv = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+
+// backgroundTasksOnFromEnv reads ITERION_CLAUDE_CODE_BACKGROUND_TASKS
+// (unset/other → false; "1"/"true"/"on"/"yes" → true): the operator's opt-in
+// to background work. It lifts the foreground pin (backgroundTasksOffEnv) —
+// subagents and shells may then run while the main agent works — and leaves
+// holding the session open to the background lifecycle
+// (claude_code_background.go), which waits for the work to come back and
+// asks for the report once it has.
+func backgroundTasksOnFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS"))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
+}
 
 // disallowOrchestrationToolsFromEnv reads
 // ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;

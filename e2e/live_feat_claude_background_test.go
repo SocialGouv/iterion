@@ -48,6 +48,9 @@ func TestLive_Feat_ClaudeCodeBackgroundWork(t *testing.T) {
 	}
 
 	run := func(t *testing.T, lifecycle string) (answer string, phases []delegate.BackgroundPhase) {
+		// Subagents run in the foreground unless background work is asked
+		// for; this test is about background work.
+		t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "on")
 		t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", lifecycle)
 		nonce := fmt.Sprintf("NONCE-%d", time.Now().UnixNano())
 		var mu sync.Mutex

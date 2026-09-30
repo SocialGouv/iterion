@@ -321,6 +321,9 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	}
 	bg := newBgLifecycle(bgCfg, tracker, len(task.OutputSchema) > 0, task.ToolMaxSteps, bgWarn, bgEmit)
 	opts = append(opts, claudesdk.WithMessageObserver(tracker.observe))
+	if !bgCfg.enabled && backgroundTasksOnFromEnv() {
+		bgWarn("ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on with ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE off: background work runs, and the session ends at its first result — the work still running dies with it")
+	}
 	if bgCfg.enabled {
 		// The CLI's own signals of what it delivered (see backgroundTracker):
 		// its session state, pinned on — idle would otherwise be reported

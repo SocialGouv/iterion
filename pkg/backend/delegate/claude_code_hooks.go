@@ -532,8 +532,8 @@ var describedByCommand = map[string]bool{"Bash": true, "PowerShell": true, "Moni
 // truth); iterion uses rewriters purely as compressors — never a permission
 // gate — so it always auto-allows the rewritten command. The rewrite runs
 // host-side; the (sandboxed) CLI runs the rewritten command in-container
-// against the bind-mounted rewriter binary (the chain's run env rides both
-// spawns: rewriterRunEnvOpts).
+// against the bind-mounted rewriter binary (the chain's run env is pinned on
+// both spawns: claudeEnvPins).
 func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 	mode := rewrite.ParseMode(task.CompressMode)
 	chain := rewrite.NewChain(task.Rewriters)
@@ -545,19 +545,6 @@ func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 		Matcher: &bashMatcher,
 		Handler: rewriteCommandHandler(chain, mode, task.MaterializeSecrets),
 	}))
-}
-
-// rewriterRunEnvOpts sets the rewriter chain's run env on a CLI spawn, whatever
-// the compression mode — the agent may run a rewriter itself, or an operator's
-// own hook may: it keeps what a command ran and printed out of the rewriter's
-// own stores.
-func rewriterRunEnvOpts(task Task) []claudesdk.Option {
-	var opts []claudesdk.Option
-	for _, kv := range rewrite.NewChain(task.Rewriters).RunEnv() {
-		k, v, _ := strings.Cut(kv, "=")
-		opts = append(opts, claudesdk.WithEnv(k, v))
-	}
-	return opts
 }
 
 // rewriteCommandHandler is the PreToolUse handler that rewrites a Bash

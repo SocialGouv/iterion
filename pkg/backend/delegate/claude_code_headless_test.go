@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
 // headlessWithheldNames is what every claude_code spawn must carry on
@@ -396,4 +401,105 @@ func TestTheSubagentRuleSaysWhatTheSpawnDoes(t *testing.T) {
 			t.Errorf("the subagent rule names %q, which the spawn no longer offers", stale)
 		}
 	}
+}
+
+// An operator who wants background work opts in:
+// ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on pins the CLI's switch EMPTY in both
+// layers — "0" would still read as true to the CLI, and a repository's
+// settings "1" would win without the flag layer — and the system prompt no
+// longer says subagents run in the foreground: the background lifecycle keeps
+// the session open until their work comes back.
+func TestBackgroundTasksOnLiftsTheForegroundPin(t *testing.T) {
+	pinWatchdogs(t)
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "on")
+	task := Task{NodeID: "n", OutputSchema: []byte(schemaOK)}
+	argv, env := spawnArgvEnv(t, task)
+	if len(argv) < 2 {
+		t.Fatalf("expected the Session spawn and at least one formatting pass, got %d spawn(s)", len(argv))
+	}
+	for i := range argv {
+		if got, ok := env[i]["bg"]; !ok || got != "" {
+			t.Errorf("spawn #%d ran with %s=%q, want it set empty: background work was asked for", i+1, backgroundTasksOffEnv, got)
+		}
+		var layer map[string]string
+		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		if got, ok := layer[backgroundTasksOffEnv]; !ok || got != "" {
+			t.Errorf("spawn #%d's flag settings layer has %s=%q (present %v), want it empty: a repository's settings env would switch background work off", i+1, backgroundTasksOffEnv, got, ok)
+		}
+	}
+	if prompt := claudeCodeSystemPrompt(task); strings.Contains(prompt, subagentRuleHeading) {
+		t.Errorf("the system prompt says subagents run in the foreground while background work is on:\n%s", prompt)
+	}
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "")
+	if prompt := claudeCodeSystemPrompt(task); !strings.Contains(prompt, subagentRuleHeading) {
+		t.Fatal("scenario broken: the foreground rule is missing with background work off")
+	}
+}
+
+// The rewriter chain's run env is pinned like the switches are: in the process
+// environment and in the flag settings layer (a repository's or the
+// operator's settings env would otherwise put rtk's history back on), on both
+// spawns, and a provisioning layer's value for one of its names is dropped.
+func TestTheRewritersRunEnvIsPinnedInBothLayers(t *testing.T) {
+	pinWatchdogs(t)
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	rw := filepath.Join(t.TempDir(), "fakerw")
+	if err := os.WriteFile(rw, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", OutputSchema: []byte(schemaOK), ExtraEnv: []string{"RTK_RECALL=1"},
+		Rewriters: []plugin.RewriterSpec{{ID: "rtk", Locate: plugin.LocateSpec{Paths: []string{rw}},
+			Invoke: plugin.InvokeSpec{Argv: []string{"rewrite", "{{command}}"}},
+			RunEnv: map[string]string{"RTK_DB_PATH": "/dev/null/iterion-rtk-history.db", "RTK_RECALL": "0"}}}}
+	argv, env := spawnArgvEnv(t, task)
+	if len(argv) < 2 {
+		t.Fatalf("expected the Session spawn and at least one formatting pass, got %d spawn(s)", len(argv))
+	}
+	for i := range argv {
+		if env[i]["rtkdb"] != "/dev/null/iterion-rtk-history.db" || env[i]["rtkrecall"] != "0" {
+			t.Errorf("spawn #%d ran with RTK_DB_PATH=%s RTK_RECALL=%s, want the run env over the provisioning layer's", i+1, env[i]["rtkdb"], env[i]["rtkrecall"])
+		}
+		var layer map[string]string
+		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		if layer["RTK_DB_PATH"] != "/dev/null/iterion-rtk-history.db" || layer["RTK_RECALL"] != "0" {
+			t.Errorf("spawn #%d's flag settings layer lacks the run env (env=%v): a settings env would put rtk's history back on", i+1, layer)
+		}
+	}
+}
+
+// With background work on and the lifecycle off, a session ends at its first
+// result and kills the work still running: said, not silent.
+func TestBackgroundTasksWithoutTheLifecycleIsWarned(t *testing.T) {
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "on")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "off")
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-claude")
+	if err := os.WriteFile(fake, []byte(fakeClaudeArgv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ARGV_LOG", filepath.Join(dir, "argv.log"))
+	var mu sync.Mutex
+	var warned []string
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
+	b.Logger.SetHook(func(level iterlog.Level, msg string, _ map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if level == iterlog.LevelWarn {
+			warned = append(warned, msg)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, _, err := b.runSession(ctx, "go", Task{NodeID: "n"}, []claudesdk.Option{claudesdk.WithCLIPath(fake)}); err != nil {
+		t.Fatalf("runSession: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, w := range warned {
+		if strings.Contains(w, "ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on") && strings.Contains(w, "LIFECYCLE off") {
+			return
+		}
+	}
+	t.Errorf("no warning for background work without the lifecycle; warnings: %q", warned)
 }
