@@ -80,6 +80,8 @@ func (p *Publisher) fillFromOrg(
 	skippedAPIKeys map[secrets.Provider]skippedAPIKey,
 	skippedForfaits map[string]skippedForfait,
 	pinned map[string]bool,
+	policy sharedTierPolicy,
+	native *tierNative,
 ) {
 	if p.sealer == nil || !p.orgCredentialAudience(ctx, orgID, tenantID) {
 		return
@@ -102,137 +104,155 @@ func (p *Publisher) fillFromOrg(
 	orgScope := secrets.OrgTierTenantID(orgID)
 	meter := usagecap.OrgScope(orgID)
 
-	// Org API keys live under the reserved scope; the ctx tenant must match
-	// or the store's isolation filter (correctly) returns nothing.
-	if p.apiKeys != nil {
-		missing := make([]secrets.Provider, 0, len(allKnownProviders))
-		for _, prov := range allKnownProviders {
-			// A slot an earlier stage funded is NOT rewritten: the first
-			// tier to fill a slot owns it, and a later tier overwriting it
-			// would move the spend onto its own invoice in silence.
-			if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+	// Forfaits BEFORE keys, for the reason fillFromPlatform gives: the first
+	// credential to fill a wire family is what the run's unpinned nodes
+	// spend, and a subscription the org already pays for must win it over a
+	// key billed per token, which then funds only the routes that name it.
+	fillForfaits := func() {
+		// Org forfait blobs under the reserved owner key. Skipped — like the
+		// api-key read below via its `missing` guard — when no OAuth kind is
+		// still fillable, so a run already funded on both wires costs zero
+		// extra store reads here.
+		if p.oauthForfait == nil ||
+			(!fillable(string(secrets.OAuthKindClaudeCode)) && !fillable(string(secrets.OAuthKindCodex))) {
+			return
+		}
+		records, err := p.oauthForfait.ListByUser(ctx, secrets.OrgTierOwnerKey(orgID))
+		if err != nil {
+			p.logger.Warn("cloudpublisher: org oauth list for org %s: %v", orgID, err)
+			return
+		}
+		for _, rec := range records {
+			if !fillable(string(rec.Kind)) {
 				continue
 			}
-			if fillable(string(prov)) {
-				missing = append(missing, prov)
-			}
-		}
-		if len(missing) > 0 {
-			octx := store.WithTenant(ctx, orgScope)
-			resolved, err := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, missing, nil, p.sealer,
-				p.apiKeyUsable(octx, meter, runID, skips), withheld.note)
+			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 			if err != nil {
-				p.logger.Warn("cloudpublisher: org api-key resolve for org %s: %v", orgID, err)
-			} else {
-				usedIDs := make([]string, 0, len(resolved))
-				// Iterate `missing` (allKnownProviders order), NOT the
-				// resolved map: when the org holds two keys on one wire
-				// family (anthropic + zai both map to "anthropic-wire"),
-				// fillable() lets only the first through — and map
-				// iteration order is randomised, so which key funds a run
-				// would flip between launches. The provider slice fixes
-				// the winner.
-				for _, prov := range missing {
-					r, ok := resolved[prov]
-					if !ok || len(r.Plaintext) == 0 || !fillable(string(prov)) {
-						continue
-					}
-					pinnedOnly := fillAPIKeySlot(bundle, taken, prov, string(r.Plaintext))
-					bundle.OrgSourced[string(prov)] = true
-					apiKeyFPs[prov] = r.Fingerprint
-					usedIDs = append(usedIDs, r.KeyID)
-					if pinnedOnly {
-						p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s (pinned route only — its wire family is served by another credential)", runID, orgID, prov, r.Fingerprint)
-					} else {
-						p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s", runID, orgID, prov, r.Fingerprint)
-					}
+				p.logger.Warn("cloudpublisher: unseal org oauth %s/%s: %v", rec.UserID, rec.Kind, err)
+				continue
+			}
+			// Unlike the platform tier, the org tier is NOT the last DB-backed
+			// stop: the pool and the platform sit below it. So a forfait whose
+			// provider window is closed is passed over rather than handed to
+			// the run — the fallback chain can still serve it immediately,
+			// which beats parking until a weekly window resets.
+			// `meter`, not the store scope: the runner records this credential's
+			// readings under usagecap.OrgScope(orgID), so reading any other key
+			// asks a ledger nobody writes.
+			if until, why := p.forfaitWindowClosed(ctx, meter, secrets.OrgTierOwnerKey(orgID), rec, payload); !until.IsZero() {
+				p.logger.Info("cloudpublisher: oauth-forfait(org) SKIPPED for run=%s org=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
+					runID, orgID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+				skips.note(until)
+				if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
+					skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, org: true}
 				}
-				// A provider whose every org key was refused resolves to
-				// nothing under the predicate. Remember what an unfiltered
-				// walk would have chosen: if the end of the resolution finds
-				// that wire still empty — no pool grant, no platform key —
-				// the refused one is restored, because a run that makes one
-				// refused call parks on a durable usage-window retry while a
-				// run published with an empty wire fails on an auth error
-				// nothing retries. The platform tier states the same rule;
-				// omitting it here is what turned a recoverable park into an
-				// outright refusal for an org-funded team.
-				if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
-					fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, refused, nil, p.sealer, nil, withheld.note)
-					if ferr != nil {
-						p.logger.Warn("cloudpublisher: org refused-key fallback resolve: %v", ferr)
-					}
-					for prov, r := range fallback {
-						if len(r.Plaintext) == 0 {
+				continue
+			}
+			bundle.OrgSourced[string(rec.Kind)] = true
+			setOAuthCredential(bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID, rec.CreatedAt)
+			taken[secrets.WireFamily(string(rec.Kind))] = true
+			p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s", runID, orgID, rec.Kind, rec.Fingerprint)
+		}
+	}
+	fillKeys := func() {
+		mayDefault := func() bool { return policy.facadeMayDefault(native) }
+		// Org API keys live under the reserved scope; the ctx tenant must match
+		// or the store's isolation filter (correctly) returns nothing.
+		if p.apiKeys != nil {
+			missing := make([]secrets.Provider, 0, len(allKnownProviders))
+			for _, prov := range allKnownProviders {
+				// A slot an earlier stage funded is NOT rewritten: the first
+				// tier to fill a slot owns it, and a later tier overwriting it
+				// would move the spend onto its own invoice in silence.
+				if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+					continue
+				}
+				family := secrets.WireFamily(string(prov))
+				pin := pinned[strings.ToLower(string(prov))]
+				if sealDecision(prov, taken[family], pin, mayDefault) != sealNone {
+					missing = append(missing, prov)
+				}
+			}
+			if len(missing) > 0 {
+				octx := store.WithTenant(ctx, orgScope)
+				resolved, err := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, missing, nil, p.sealer,
+					p.apiKeyUsable(octx, meter, runID, skips), withheld.note)
+				if err != nil {
+					p.logger.Warn("cloudpublisher: org api-key resolve for org %s: %v", orgID, err)
+				} else {
+					usedIDs := make([]string, 0, len(resolved))
+					// Iterate `missing` (allKnownProviders order), NOT the
+					// resolved map: when the org holds two keys on one wire
+					// family (anthropic + zai both map to "anthropic-wire"),
+					// fillable() lets only the first through — and map
+					// iteration order is randomised, so which key funds a run
+					// would flip between launches. The provider slice fixes
+					// the winner.
+					for _, prov := range missing {
+						r, ok := resolved[prov]
+						if !ok || len(r.Plaintext) == 0 {
 							continue
 						}
-						if _, seen := skippedAPIKeys[prov]; seen {
-							continue // a tenant key's restore takes precedence
+						// Decided again: a key filled earlier in this loop
+						// may have taken the family since.
+						familyTaken := taken[secrets.WireFamily(string(prov))]
+						outcome := sealDecision(prov, familyTaken, pinned[strings.ToLower(string(prov))], mayDefault)
+						if outcome == sealNone {
+							continue
 						}
-						skippedAPIKeys[prov] = skippedAPIKey{
-							plaintext: string(r.Plaintext), keyID: r.KeyID,
-							fingerprint: r.Fingerprint, org: true,
+						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), outcome)
+						bundle.OrgSourced[string(prov)] = true
+						apiKeyFPs[prov] = r.Fingerprint
+						usedIDs = append(usedIDs, r.KeyID)
+						if pinnedOnly {
+							p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s (pinned route only — %s)", runID, orgID, prov, r.Fingerprint, routeOnlyWhy(familyTaken, policy))
+						} else {
+							p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s", runID, orgID, prov, r.Fingerprint)
 						}
 					}
-				}
-				if len(usedIDs) > 0 {
-					ids, t := usedIDs, time.Now().UTC()
-					p.goSafeDetached("org-apikey-markused", func() {
-						bg, cancel := context.WithTimeout(store.WithTenant(context.Background(), orgScope), 5*time.Second)
-						defer cancel()
-						for _, id := range ids {
-							_ = p.apiKeys.MarkUsed(bg, id, t)
+					// A provider whose every org key was refused resolves to
+					// nothing under the predicate. Remember what an unfiltered
+					// walk would have chosen: if the end of the resolution finds
+					// that wire still empty — no pool grant, no platform key —
+					// the refused one is restored, because a run that makes one
+					// refused call parks on a durable usage-window retry while a
+					// run published with an empty wire fails on an auth error
+					// nothing retries. The platform tier states the same rule;
+					// omitting it here is what turned a recoverable park into an
+					// outright refusal for an org-funded team.
+					if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
+						fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", botID, refused, nil, p.sealer, nil, withheld.note)
+						if ferr != nil {
+							p.logger.Warn("cloudpublisher: org refused-key fallback resolve: %v", ferr)
 						}
-					})
+						for prov, r := range fallback {
+							if len(r.Plaintext) == 0 {
+								continue
+							}
+							if _, seen := skippedAPIKeys[prov]; seen {
+								continue // a tenant key's restore takes precedence
+							}
+							skippedAPIKeys[prov] = skippedAPIKey{
+								plaintext: string(r.Plaintext), keyID: r.KeyID,
+								fingerprint: r.Fingerprint, org: true,
+							}
+						}
+					}
+					if len(usedIDs) > 0 {
+						ids, t := usedIDs, time.Now().UTC()
+						p.goSafeDetached("org-apikey-markused", func() {
+							bg, cancel := context.WithTimeout(store.WithTenant(context.Background(), orgScope), 5*time.Second)
+							defer cancel()
+							for _, id := range ids {
+								_ = p.apiKeys.MarkUsed(bg, id, t)
+							}
+						})
+					}
 				}
 			}
 		}
 	}
-
-	// Org forfait blobs under the reserved owner key. Skipped — like the
-	// api-key read above via its `missing` guard — when no OAuth kind is
-	// still fillable, so a run already funded on both wires costs zero
-	// extra store reads here.
-	if p.oauthForfait == nil ||
-		(!fillable(string(secrets.OAuthKindClaudeCode)) && !fillable(string(secrets.OAuthKindCodex))) {
-		return
-	}
-	records, err := p.oauthForfait.ListByUser(ctx, secrets.OrgTierOwnerKey(orgID))
-	if err != nil {
-		p.logger.Warn("cloudpublisher: org oauth list for org %s: %v", orgID, err)
-		return
-	}
-	for _, rec := range records {
-		if !fillable(string(rec.Kind)) {
-			continue
-		}
-		payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
-		if err != nil {
-			p.logger.Warn("cloudpublisher: unseal org oauth %s/%s: %v", rec.UserID, rec.Kind, err)
-			continue
-		}
-		// Unlike the platform tier, the org tier is NOT the last DB-backed
-		// stop: the pool and the platform sit below it. So a forfait whose
-		// provider window is closed is passed over rather than handed to
-		// the run — the fallback chain can still serve it immediately,
-		// which beats parking until a weekly window resets.
-		// `meter`, not the store scope: the runner records this credential's
-		// readings under usagecap.OrgScope(orgID), so reading any other key
-		// asks a ledger nobody writes.
-		if until, why := p.forfaitWindowClosed(ctx, meter, secrets.OrgTierOwnerKey(orgID), rec, payload); !until.IsZero() {
-			p.logger.Info("cloudpublisher: oauth-forfait(org) SKIPPED for run=%s org=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
-				runID, orgID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
-			skips.note(until)
-			if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-				skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, org: true}
-			}
-			continue
-		}
-		bundle.OrgSourced[string(rec.Kind)] = true
-		setOAuthCredential(bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID)
-		taken[secrets.WireFamily(string(rec.Kind))] = true
-		p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s", runID, orgID, rec.Kind, rec.Fingerprint)
-	}
+	policy.inOrder(fillForfaits, fillKeys)
 }
 
 // OrgCredentialAudienceOf is the read the server's org-credential routes

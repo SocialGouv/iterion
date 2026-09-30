@@ -1257,7 +1257,7 @@ tool extract_authoring_context:
   ## streamed through stdin by the host executor, avoiding argv-size failures.
   ## Python is optional: an unavailable/failed parser must not break the chat.
   command: `if ! command -v python3 >/dev/null 2>&1; then printf '%s\n' '{"attached_context":"","initial_authoring_context":""}'; exit 0; fi
-COPI_OPERATOR_MESSAGE={{input.operator_message}} COPI_HOST_EVENT={{input.host_event}} COPI_INITIAL_MESSAGE={{input.initial_message}} python3 -c "
+COPI_OPERATOR_MESSAGE={{input.operator_message}} COPI_HOST_EVENT={{input.host_event}} COPI_INITIAL_MESSAGE={{input.initial_message}} python3 -I -c "
 import json, os
 OPEN = '<active-editor-document>'
 CLOSE = '</active-editor-document>'
@@ -1344,7 +1344,7 @@ tool validate_draft:
   ## helper must degrade to an explicit NOT-verified verdict, not fail the
   ## days-long conversation before the operator can read Copi's draft.
   command: `if ! command -v python3 >/dev/null 2>&1; then printf '%s\n' '{"verified":false,"validated":false,"validate_report":"python3 is not on PATH here — install python3 or run: iterion validate <file>"}'; exit 0; fi
-DRAFT_BOT={{input.draft_bot}} python3 -c "
+DRAFT_BOT={{input.draft_bot}} python3 -I -c "
 import json, os, subprocess, tempfile
 files_dir = os.environ.get('ITERION_ARTIFACT_FILES_DIR', '')
 draft = os.environ.get('DRAFT_BOT', '')

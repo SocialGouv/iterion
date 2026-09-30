@@ -3,6 +3,92 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.1](https://github.com/SocialGouv/iterion/compare/v3.218.0...v3.218.1) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** the run's lease outlives its engine's teardown ([#1991](https://github.com/SocialGouv/iterion/issues/1991)) ([b133e76](https://github.com/SocialGouv/iterion/commit/b133e7675633c5101ab3faf63559a7317bc12941))
+
+    <details><summary>why</summary>
+
+    The heartbeat that refreshes a run's NATS lease ran on the run's context and stopped at its cancellation. A cancelled run — a drain, an operator's cancel, an interruption — still unwinds after that: the engine exports the workspace (up to 5 minutes) and banks the scratch (up to 5 more), past the 60-second lease. A sibling that received the redelivery then took the lock and resumed from a timeline that teardown had not finished writing: a resume that ran without the scratch its predecessor was…
+
+    </details>
+
+## [3.218.0](https://github.com/SocialGouv/iterion/compare/v3.217.5...v3.218.0) (2026-09-30)
+
+### Features
+
+* **credentials:** shared tiers spend forfaits first, route- and path-aware ([#1956](https://github.com/SocialGouv/iterion/issues/1956)) ([298f1e9](https://github.com/SocialGouv/iterion/commit/298f1e96e47dd690da7134a86161270c3fe2b379))
+
+    <details><summary>why</summary>
+
+    A shared tier (org, platform) holding a forfait and an API key on one wire family now gives the family to the forfait; the key funds only the routes that name its provider. One policy snapshot per resolution orders it:
+
+    </details>
+
+## [3.217.5](https://github.com/SocialGouv/iterion/compare/v3.217.4...v3.217.5) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** a resume refused before its claim goes back to the status it came from ([#1988](https://github.com/SocialGouv/iterion/issues/1988)) ([0958eb6](https://github.com/SocialGouv/iterion/commit/0958eb6bdc9dcf6a8b3174c17a694aa50bf440ba))
+
+    <details><summary>why</summary>
+
+    A cloud resume flips the run to queued before it is published. When it is refused before anything claims the run — by the engine (RESUME_INVALID: a copy-based subbot child resumed on its own, an incompatible artifact contract; LAUNCH_FAILED: admission denied) or by the runner itself (IR_UNLOADABLE, BOT_REQUIRES_NEWER_ENGINE) — the verdict is deterministic: the runner acks it and never redelivers. The engine's refusals wrote no status, so the run sat queued until the orphan sweeper, past the…
+
+    </details>
+
+## [3.217.4](https://github.com/SocialGouv/iterion/compare/v3.217.3...v3.217.4) (2026-09-30)
+
+### Bug Fixes
+
+* **runtime:** a review gate resumes from the cloud's queued pre-flip ([#1984](https://github.com/SocialGouv/iterion/issues/1984)) ([68dd3d3](https://github.com/SocialGouv/iterion/commit/68dd3d3efcca03b97261fcd51a683a8082be3d21))
+
+    <details><summary>why</summary>
+
+    The cloud publisher flips a paused run to `queued` before its resume reaches a runner, and Resume's queued case routes a pending interaction to the pause path. Three of the pause path's claims accepted `queued`; the review gate's claimed from `paused_waiting_human` alone. Every cloud resume of a review gate (approve_merge, request_changes, a reply) was therefore refused as a "duplicate resume" — a plain error the runner naks, redelivered until the DLQ parked the run.
+
+    </details>
+* **runtime:** a wait_all failure quotes the branch that failed, not the sibling it cancelled ([#1990](https://github.com/SocialGouv/iterion/issues/1990)) ([106678a](https://github.com/SocialGouv/iterion/commit/106678a985658145b7b605b483ee74b5985f8954))
+
+    <details><summary>why</summary>
+
+    A branch whose failure cancels its siblings is the cause of a wait_all failure; the cancelled siblings carry no verdict of their own. The code and the cause of the aggregate already skipped them (stoppedBranch), but the message quoted the first failed branch by id: when the failing branch sorted after a sibling it cancelled, the run's failure read "run cancelled: context canceled". The spent-budget refusal it quotes and the undecided effect it carries were picked in completion order.
+
+    </details>
+
+## [3.217.3](https://github.com/SocialGouv/iterion/compare/v3.217.2...v3.217.3) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** a lent slot follows the worker's re-stamp, and stops only at the donor's re-connect ([#1976](https://github.com/SocialGouv/iterion/issues/1976)) ([bac754f](https://github.com/SocialGouv/iterion/commit/bac754ff310c64f6dcab77dbcde6ef1a00491d19)), references [#1958](https://github.com/SocialGouv/iterion/issues/1958)
+
+    <details><summary>why</summary>
+
+    A pool-lent slot was held to the fingerprint it was sealed with. The refresh worker re-stamps a record's fingerprint on its own rotations — an unstamped record stamped, a subscription identified as an account, an account demoted to a local meter — so on such a rotation the lent follow refused the record and ended, at the moment the worker's exchange revoked the token the borrower held: its next spawn failed "OAuth access token has been revoked". Reachable for any pledged record connected…
+
+    </details>
+
+## [3.217.2](https://github.com/SocialGouv/iterion/compare/v3.217.1...v3.217.2) (2026-09-30)
+
+### Bug Fixes
+
+* **instrument:** lessons from the graal campaign — redaction-net review, a verified capture helper, no docker in verify.sh ([#1929](https://github.com/SocialGouv/iterion/issues/1929)) ([27b7cd5](https://github.com/SocialGouv/iterion/commit/27b7cd5e995783dadf427ec960885e2a3aa55417))
+
+    <details><summary>why</summary>
+
+    Lessons from the graal observability campaign, landed in the instrument (Obsy) chassis and its ten verify-build siblings.
+
+    </details>
+* **tool-nodes:** python runs isolated in every tool node ([#1968](https://github.com/SocialGouv/iterion/issues/1968)) ([df7eb09](https://github.com/SocialGouv/iterion/commit/df7eb090e0989819b7851b5f4d2445b3770caf1f))
+
+    <details><summary>why</summary>
+
+    A tool node runs with the workspace as its working directory. `python3 -c` (and -m, and stdin) puts that directory first on sys.path, as python puts a script file's own directory, and the engine lands a `language: py` script in the workspace under a copy-based sandbox. A json.py, hashlib.py or subprocess.py at the root of the judged tree, git-ignored or not, replaced the standard module inside the node: a gate whose verdict the tree it judges writes (shown on a docs gate, where a forged corpus…
+
+    </details>
+
 ## [3.217.1](https://github.com/SocialGouv/iterion/compare/v3.217.0...v3.217.1) (2026-09-30)
 
 ### Bug Fixes

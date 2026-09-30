@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
@@ -389,5 +390,70 @@ func TestReviewGate_PerformGateMerge_MessageOverride(t *testing.T) {
 	subject := gittest.Run(t, repo, "log", "-1", "--format=%s", "main")
 	if subject != "custom squash subject" {
 		t.Errorf("squash subject = %q, want custom override", subject)
+	}
+}
+
+// TestReviewGate_ResumesFromTheCloudsQueuedPreFlip: the cloud publisher
+// flips a paused run to queued before the message reaches a runner. The
+// review gate's resume claims it from there, like every other pause path —
+// a claim that named paused_waiting_human alone refused every cloud resume
+// of a review gate as a "duplicate", which the queue redelivered until the
+// DLQ parked it.
+func TestReviewGate_ResumesFromTheCloudsQueuedPreFlip(t *testing.T) {
+	ctx := context.Background()
+	const src = `
+schema v:
+  decision: string
+
+agent impl:
+  model: "test-model"
+  output: v
+
+human gate:
+  interaction: review
+  model: "test-model"
+  output: v
+
+workflow wf:
+  entry: impl
+  worktree: auto
+  impl -> gate
+  gate -> done when "decision == 'approved'"
+  gate -> impl when "decision == 'changes_requested'" as fix_loop(3)
+  gate -> fail
+`
+	cr := ir.Compile(parser.Parse("t.bot", src).File)
+	if cr.Workflow == nil {
+		t.Fatalf("compile failed: %+v", cr.Diagnostics)
+	}
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
+
+	s := tmpStore(t)
+	r, _ := s.CreateRun(ctx, "run-rq", "wf", nil)
+	r.Worktree = true
+	r.WorkDir = wt
+	r.RepoRoot = repo
+	r.BaseCommit = originalTip
+	_ = s.SaveRun(ctx, r)
+	_ = s.PauseRun(ctx, "run-rq", &store.Checkpoint{
+		NodeID:        "gate",
+		InteractionID: "run-rq_gate",
+		Outputs:       map[string]map[string]any{},
+	})
+	if ok, err := s.UpdateRunStatusIf(ctx, "run-rq", store.RunStatusQueued, "", []store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("the publisher's queued pre-flip: ok=%v err=%v", ok, err)
+	}
+
+	eng := New(cr.Workflow, s, newStubExecutor(), WithRunName("rq-run"), WithWorkDir(repo))
+	err := eng.Resume(ctx, "run-rq", map[string]any{reviewActionKey: "request_changes"})
+	if err != nil && strings.Contains(err.Error(), "refusing duplicate resume") {
+		t.Fatalf("the review gate refused its cloud resume as a duplicate: %v", err)
+	}
+	r2, _ := s.LoadRun(ctx, "run-rq")
+	if r2.Status == store.RunStatusQueued {
+		t.Fatalf("the review gate's resume never claimed the queued run (err %v)", err)
 	}
 }

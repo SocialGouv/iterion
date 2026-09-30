@@ -32,7 +32,7 @@ func TestRunExtraEnvReachesHostToolCommands(t *testing.T) {
 		t.Errorf("toolNodeCommand env misses the run-level PATH entry: %v", cmd.Env)
 	}
 
-	script := e.toolNodeScriptCommand(context.Background(), "sh", "x.sh")
+	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh")
 	if !slices.Contains(script.Env, "PATH=/devbox/profile/bin:/usr/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the run-level PATH entry: %v", script.Env)
 	}
@@ -99,7 +99,7 @@ func TestEngineExtraEnvComposesOnTheLaunchLayerAndNeverFeedsBackIntoIt(t *testin
 			t.Errorf("the first composition survived the second: %q", entry)
 		}
 	}
-	script := e.toolNodeScriptCommand(context.Background(), "sh", "x.sh")
+	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh")
 	if !slices.Contains(script.Env, "PATH=/shim-second:/project/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the engine's composed PATH: %v", script.Env)
 	}

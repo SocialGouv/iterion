@@ -32,7 +32,10 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		strategy = ir.AwaitWaitAll
 	}
 
-	// Collect failed branches metadata.
+	// Collect failed branches metadata, in branch-id order: what the aggregate
+	// names, quotes and carries does not depend on the order the branches'
+	// goroutines finished in.
+	ordered := byBranchID(results)
 	var failedBranches []map[string]any
 	// budgetFailures/otherFailures classify why the branches died. A budget
 	// refusal cancels its siblings (cancelOnFirstFailure), so a fan-out killed
@@ -40,7 +43,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	// cancellations carry no verdict of their own and must not mask it.
 	budgetFailures, otherFailures := 0, 0
 	var firstBudgetErr error
-	for _, r := range results {
+	for _, r := range ordered {
 		if r.err != nil {
 			failedBranches = append(failedBranches, map[string]any{
 				"branch_id": r.branchID,
@@ -58,12 +61,6 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			}
 		}
 	}
-
-	// The branches named — the message quotes the first — in branch-id
-	// order, not in the order their goroutines finished.
-	sort.Slice(failedBranches, func(i, j int) bool {
-		return failedBranches[i]["branch_id"].(string) < failedBranches[j]["branch_id"].(string)
-	})
 
 	// Apply await strategy.
 	switch strategy {
@@ -88,7 +85,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 				}
 			}
 			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",
-				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
+				convergenceNodeID, len(failedBranches), quotedBranchError(ordered))
 			// An UNDECIDED remote effect outranks the agreement rule below
 			// and needs no agreement of its own: ONE branch whose mutation
 			// may already have happened is enough to make the aggregate
@@ -102,7 +99,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			// branch, and re-sends the very call whose outcome was unknown.
 			// One action node under a `fan_out_all`, or a `fan_out_each`
 			// over N items, is the whole recipe.
-			if amb := firstAmbiguousBranchErr(results); amb != nil {
+			if amb := firstAmbiguousBranchErr(ordered); amb != nil {
 				return "", &RuntimeError{
 					Code:    ErrCodeAmbiguousEffect,
 					Message: msg,
@@ -375,6 +372,44 @@ func firstAmbiguousBranchErr(results []*branchResult) error {
 		}
 	}
 	return nil
+}
+
+// byBranchID is results in branch-id order.
+func byBranchID(results []*branchResult) []*branchResult {
+	ordered := make([]*branchResult, 0, len(results))
+	for _, r := range results {
+		if r != nil {
+			ordered = append(ordered, r)
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].branchID < ordered[j].branchID })
+	return ordered
+}
+
+// quotedBranchError is the branch error a wait_all failure quotes: the first
+// of ordered that failed by itself — the siblings its failure stopped carry
+// no verdict of their own (stoppedBranch). When every branch was stopped, a
+// deadline is quoted before a cancellation: a node that ran out its own
+// timeout cancels its siblings, and its deadline is what happened.
+func quotedBranchError(ordered []*branchResult) error {
+	var deadline, cancelled error
+	for _, r := range ordered {
+		switch {
+		case r.err == nil:
+		case !stoppedBranch(r.err):
+			return r.err
+		case errors.Is(r.err, context.Canceled) || errors.Is(r.err, ErrRunCancelled):
+			if cancelled == nil {
+				cancelled = r.err
+			}
+		case deadline == nil:
+			deadline = r.err
+		}
+	}
+	if deadline != nil {
+		return deadline
+	}
+	return cancelled
 }
 
 // stoppedBranch says a branch ended because the fan-out was stopped — a

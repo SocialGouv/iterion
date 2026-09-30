@@ -65,52 +65,141 @@ func (w *Workflow) AlwaysReachesLLM() bool {
 	if len(w.Supervisors) > 0 {
 		return true
 	}
-	entry := w.Entry
-	if entry == "" || w.Nodes[entry] == nil {
+	return w.AlwaysReaches(nodeUsesLLM)
+}
+
+// AlwaysReaches reports whether EVERY path from the entry node to a terminal
+// passes through a node wall accepts — the question AlwaysReachesLLM asks,
+// over any wall. A pre-flight that refuses a run in advance asks it with the
+// walls it guards: the run cannot avoid them only when no execution reaches a
+// terminal around every one of them.
+//
+// A node picks ONE outgoing edge, and so does a condition, round-robin or llm
+// router: one free successor frees it. A fan-out router (fan_out_all,
+// fan_out_each) runs its branches, all of them: it is free only when every
+// branch is. The answer is a least fixpoint, so it does not depend on the
+// order nodes or edges are read in, and a cycle that reaches no terminal
+// frees nothing.
+//
+// Conservative like AlwaysReachesLLM: an empty graph, a missing entry, an
+// edge from a reachable node into a node the workflow does not define answer
+// true. Supervisors are not graph nodes and are not consulted: a caller whose
+// walls include them says so itself.
+func (w *Workflow) AlwaysReaches(wall func(Node) bool) bool {
+	out, ok := w.walkable()
+	if !ok {
 		return true
 	}
-
-	// Walk forward from the entry, treating an LLM node as a WALL: paths
-	// through it spend, so they are not explored. Reaching a terminal
-	// without hitting a wall proves a model-free path exists.
-	out := map[string][]string{}
-	for _, e := range w.Edges {
-		if e != nil {
-			out[e.From] = append(out[e.From], e.To)
+	walled := make(map[string]bool, len(w.Nodes))
+	for id, n := range w.Nodes {
+		walled[id] = wall(n)
+	}
+	free := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for id, n := range w.Nodes {
+			if free[id] || walled[id] {
+				continue
+			}
+			next := out[id]
+			var isFree bool
+			switch {
+			case isTerminal(n):
+				isFree = true
+			case runsEveryBranch(n):
+				isFree = len(next) > 0
+				for _, to := range next {
+					if !free[to] {
+						isFree = false
+						break
+					}
+				}
+			default:
+				for _, to := range next {
+					if free[to] {
+						isFree = true
+						break
+					}
+				}
+			}
+			if isFree {
+				free[id] = true
+				changed = true
+			}
 		}
 	}
-	seen := map[string]bool{entry: true}
-	stack := []string{entry}
+	return !free[w.Entry]
+}
+
+// CanReach reports whether some execution from the entry node reaches a node
+// target accepts. Conservative: a graph walkable() refuses answers true.
+func (w *Workflow) CanReach(target func(Node) bool) bool {
+	out, ok := w.walkable()
+	if !ok {
+		return true
+	}
+	seen := map[string]bool{w.Entry: true}
+	stack := []string{w.Entry}
 	for len(stack) > 0 {
 		id := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		node := w.Nodes[id]
-		if node == nil {
-			// An edge into a node the workflow does not define: unwalkable,
-			// so refuse to conclude "a free path exists" from it.
+		if target(w.Nodes[id]) {
 			return true
 		}
-		if nodeUsesLLM(node) {
-			continue // wall
-		}
-		switch node.(type) {
-		case *DoneNode, *FailNode:
-			return false // a terminal reached without spending
-		}
-		next := out[id]
-		if len(next) == 0 {
-			// A dead end that is not a terminal — the runtime would fail
-			// here rather than finish. Not a proof of a free path.
-			continue
-		}
-		for _, to := range next {
+		for _, to := range out[id] {
 			if !seen[to] {
 				seen[to] = true
 				stack = append(stack, to)
 			}
 		}
 	}
-	return true
+	return false
+}
+
+// walkable returns the graph's successor lists, or false when a walk from the
+// entry cannot conclude anything: no nodes, no entry, or an edge from a node
+// the entry reaches into a node the workflow does not define.
+func (w *Workflow) walkable() (map[string][]string, bool) {
+	if w == nil || len(w.Nodes) == 0 || w.Entry == "" || w.Nodes[w.Entry] == nil {
+		return nil, false
+	}
+	out := map[string][]string{}
+	for _, e := range w.Edges {
+		if e != nil {
+			out[e.From] = append(out[e.From], e.To)
+		}
+	}
+	seen := map[string]bool{w.Entry: true}
+	stack := []string{w.Entry}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, to := range out[id] {
+			if w.Nodes[to] == nil {
+				return nil, false
+			}
+			if !seen[to] {
+				seen[to] = true
+				stack = append(stack, to)
+			}
+		}
+	}
+	return out, true
+}
+
+func isTerminal(n Node) bool {
+	switch n.(type) {
+	case *DoneNode, *FailNode:
+		return true
+	}
+	return false
+}
+
+// runsEveryBranch reports whether a node executes ALL its outgoing edges
+// rather than choosing one.
+func runsEveryBranch(n Node) bool {
+	r, ok := n.(*RouterNode)
+	return ok && (r.RouterMode == RouterFanOutAll || r.RouterMode == RouterFanOutEach)
 }
 
 // NodeUsesLLM reports whether one node can call a model — the per-node

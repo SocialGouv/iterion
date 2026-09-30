@@ -87,7 +87,7 @@ If `jq` is missing (exit 127 on a minimal host), build the payload with
 python3 instead — same POST, no other change:
 
 ```sh
-python3 -c 'import json; print(json.dumps({"body": open("/tmp/revi-answer.md").read()}))' > /tmp/revi-payload.json
+python3 -I -c 'import json; print(json.dumps({"body": open("/tmp/revi-answer.md").read()}))' > /tmp/revi-payload.json
 curl -sS -H "PRIVATE-TOKEN: $TOKEN" -H 'Content-Type: application/json' \
   -X POST "https://${HOST}/api/v4/projects/${PROJECT}/merge_requests/${IID}/discussions/${DISCUSSION}/notes" \
   -d @/tmp/revi-payload.json

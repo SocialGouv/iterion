@@ -304,7 +304,7 @@ tool url_gate:
 ## prose. The python guard drops an empty url so the scanner never sees a
 ## malformed directive.
 tool surface_url:
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:

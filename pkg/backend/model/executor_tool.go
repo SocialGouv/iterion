@@ -583,7 +583,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
 			interp, ext := scriptInterpreter(node.Language)
-			if interp == "" {
+			if len(interp) == 0 {
 				return nil, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
 			}
 			// The script file must be reachable from where the interpreter
@@ -661,33 +661,42 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 		}
 }
 
-// scriptInterpreter maps a `language:` token to the executable name on
-// PATH and a file extension hint (extension is informational, not
-// required by any interpreter). An empty language defaults to sh.
-func scriptInterpreter(language string) (cmd string, ext string) {
+// scriptInterpreter maps a `language:` token to the interpreter argv (the
+// executable on PATH, then its flags) and a file extension hint (extension
+// is informational, not required by any interpreter). An empty language
+// defaults to sh.
+//
+// Python runs isolated (-I). Without it, python puts the script's directory
+// first on sys.path, and the script file can land in the workspace (a
+// copy-based sandbox): a json.py the judged tree carries would replace the
+// standard module inside the node. -I also ignores PYTHON* variables and
+// the user site, so a script body reaches the standard library and the
+// system site-packages only.
+func scriptInterpreter(language string) (argv []string, ext string) {
 	switch language {
 	case "", "sh":
-		return "sh", ".sh"
+		return []string{"sh"}, ".sh"
 	case "bash":
-		return "bash", ".sh"
+		return []string{"bash"}, ".sh"
 	case "js", "node":
-		return "node", ".js"
+		return []string{"node"}, ".js"
 	case "py", "python", "python3":
-		return "python3", ".py"
+		return []string{"python3", "-I"}, ".py"
 	default:
-		return "", ""
+		return nil, ""
 	}
 }
 
 // toolNodeScriptCommand returns a configured *exec.Cmd that invokes the
-// interpreter on the basename of the script temp file. Mirrors
+// interpreter argv (scriptInterpreter) on the script temp file. Mirrors
 // toolNodeCommand for the script-mode path: sandbox-routed if a sandbox
 // is active and the node has not opted out.
-func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, scriptBasename string) *exec.Cmd {
+func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) *exec.Cmd {
+	argv := append(append([]string{}, interpreter...), script)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
+		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{})
 	}
-	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
 	// its lifetime ends with the node's context the same way — see
 	// toolNodeCommand.

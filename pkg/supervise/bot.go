@@ -121,6 +121,13 @@ func NewLLMEvaluator() *LLMEvaluator {
 	return &LLMEvaluator{registry: model.NewRegistry()}
 }
 
+// ResolveModel is the model spec a supervisor's evaluator resolves at its
+// first evaluation, in this process and under ctx's credentials: what the
+// runner's usage-cap pre-flight judges before the run starts.
+func ResolveModel(ctx context.Context, specModel, providerHint string) (string, error) {
+	return resolveModel(ctx, specModel, providerHint)
+}
+
 // resolveModel picks the model spec: the spec's pin wins, then the
 // ITERION_DEFAULT_SUPERVISOR_MODEL env override, then the provider
 // family the supervised nodes run on (Spec.ProviderHint — when the env
@@ -142,12 +149,11 @@ func resolveModel(ctx context.Context, specModel, providerHint string) (string, 
 	if env := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL"); env != "" {
 		return env, nil
 	}
-	report := detect.Detect(ctx)
 	ctxFunded := func(string) bool { return false }
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		ctxFunded = ctxFundsProvider(creds)
 	}
-	return resolveModelWith("", providerHint, report.Providers, ctxFunded)
+	return resolveModelWith("", providerHint, detect.Providers(), ctxFunded)
 }
 
 // resolveModelWith is resolveModel's pure tail (pin/env already

@@ -1575,8 +1575,9 @@ os.chdir(ws)
 
 def load_catalog(path):
     ## A .json catalog needs no dependency at all (a generated catalog
-    ## is a legitimate shape). For YAML: PyYAML when the interpreter
-    ## has it; otherwise yq (declared in this bundle devbox.json)
+    ## is a legitimate shape). For YAML: PyYAML when the interpreter's
+    ## system site-packages have it (python3 -I sees neither the user
+    ## site nor PYTHONPATH); otherwise yq (declared in this bundle devbox.json)
     ## rendering the same document as JSON. Neither available is a LOUD
     ## failure -- never a hand-rolled, silently-wrong parse.
     if path.endswith('.json'):
@@ -1592,7 +1593,7 @@ def load_catalog(path):
     try:
         p = subprocess.run(['yq', '-o=json', '.', path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise SystemExit('product-docs: cannot parse the YAML catalog ' + path + ' -- this interpreter has no PyYAML and yq is not on PATH (' + str(exc) + '). yq IS declared in the bot devbox.json, so its absence means the provisioning did not land: the run sandbox_devbox_provisioned event names why in its errors field. Otherwise write the catalog as .json, which needs no parser at all.')
+        raise SystemExit('product-docs: cannot parse the YAML catalog ' + path + ' -- this interpreter has no PyYAML in its system site-packages (python3 -I sees neither the user site nor PYTHONPATH) and yq is not on PATH (' + str(exc) + '). yq IS declared in the bot devbox.json, so its absence means the provisioning did not land: the run sandbox_devbox_provisioned event names why in its errors field. Otherwise write the catalog as .json, which needs no parser at all.')
     if p.returncode != 0:
         raise SystemExit('product-docs: yq failed to parse ' + path + ': ' + (p.stderr or '').strip())
     return json.loads(p.stdout)

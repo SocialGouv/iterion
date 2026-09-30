@@ -232,7 +232,12 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// forwarded env, and it is built with no logger — so a guard placed after
 	// the dispatch would neither refuse nor warn on the default path, silently
 	// spending the balance the operator just closed.
-	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" {
+	//
+	// A GLM id on this provider is z.ai's (GLMOnAnthropicWire): it spends the
+	// z.ai key, never the subscription, so neither the refusal nor the notice
+	// concerns it — beside a Claude forfait it would refuse a node that was
+	// never going to touch the forfait.
+	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" && !GLMOnAnthropicWire(task.Model) {
 		if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 		}
@@ -1203,6 +1208,10 @@ var providerCredentialEnvVars = []string{
 	// operator's, one node on two vendors' infrastructure with nothing said.
 	"MOONSHOT_API_KEY",
 	"MOONSHOT_BASE_URL",
+	// The OpenAI twin: the endpoint a key is spent on, and the one setting
+	// that keeps a ChatGPT forfait off a third-party gateway
+	// (openAIOAuthAllowed) — the host and the container must read the same.
+	"OPENAI_BASE_URL",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
 	// key, which is METERED and billed to its lender.
@@ -1306,8 +1315,11 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// the same run does not see it. That spec IS the pin on this backend
 	// (claw has no `provider:` hint of its own), so it is the licence the
 	// key travels on; forwarding it to every node would put a credential
-	// provisioned for one route into the environment of all of them.
-	if prov := clawPinnedProvider(model); prov != "" {
+	// provisioned for one route into the environment of all of them. After
+	// the run's own key of that provider, never over it: a tenant's
+	// instrument outranks the deployment's, as it does in process
+	// (APIKeyForRoute).
+	if prov := clawPinnedProvider(model); prov != "" && creds.APIKey(prov) == "" {
 		if k := creds.PinnedAPIKey(prov); k != "" {
 			if name := byokEnvVar[prov]; name != "" {
 				env[name] = k
@@ -1332,32 +1344,47 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// …and never against the operator's explicit kill switch:
 		// ITERION_OPENAI_USE_OAUTH=0 is a machine-wide refusal to spend any
 		// subscription, which a per-run credential does not get to overrule.
-		// APIKeyForRoute for the provider THIS node names: a key a shared
-		// tier funded for a pinned `openai/…` node is that node's chosen
-		// instrument, and forcing the forfait would spend the other one.
+		// The run's DEFAULT openai key only: a key a shared tier sealed for
+		// the route alone comes after the ChatGPT forfait, which claw spends
+		// on its plan — the order ResolveWithContext applies in process,
+		// under the same openAIOAuthAllowed.
 		nodeOwnKey := creds.APIKeys[secrets.ProviderOpenAI]
-		if clawPinnedProvider(model) == secrets.ProviderOpenAI {
-			nodeOwnKey = creds.APIKeyForRoute(secrets.ProviderOpenAI)
-		}
-		if nodeOwnKey == "" && os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" {
+		if nodeOwnKey == "" && openAIOAuthAllowed() {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
+	// The refusal crosses whatever the run holds — the in-container factory
+	// would otherwise spend the forfait the host was told never to. Only the
+	// refusal: a host-wide "1" forces the forfait over the ENV key, and here
+	// the run's own key crosses as that env key.
+	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
+		env["ITERION_OPENAI_USE_OAUTH"] = "0"
+	}
 	// The Anthropic twin (#736), and only for a node the forfait can actually
-	// serve. A z.ai/GLM model rides claw's ANTHROPIC provider too — it arrives
-	// as "anthropic/glm-X" and registry.go SYNTHESISES z.ai's base URL from a
-	// bare ZAI_API_KEY — so the wire check below cannot see it: there is no
-	// ANTHROPIC_BASE_URL to inspect. Clearing ZAI_API_KEY for such a node would
-	// remove its only credential channel and leave the forfait bearer asking
-	// api.anthropic.com for a GLM model it cannot serve, breaking exactly the
-	// forfait-carrying tenants this change is for.
-	if !modelServedByZAI(model) {
+	// serve: a claude model on claw's anthropic provider. A z.ai/GLM model
+	// rides that provider too — it arrives as "anthropic/glm-X" and registry.go
+	// SYNTHESISES z.ai's base URL from a bare ZAI_API_KEY — so the wire check
+	// below cannot see it: there is no ANTHROPIC_BASE_URL to inspect. Clearing
+	// ZAI_API_KEY for such a node would remove its only credential channel and
+	// leave the forfait bearer asking api.anthropic.com for a GLM model it
+	// cannot serve; a node on another provider (openrouter/…) has no use for
+	// the Claude forfait at all, and an expired one must not fail it.
+	// clawPinnedProvider answers both: zai for a GLM spec, the spec's own
+	// provider otherwise.
+	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
 		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
 			return nil, err
 		}
 	}
 	return env, nil
 }
+
+// claw declares no forfait-first provider (delegate.RegisterForfaitFirst).
+// On `openai/…` it does spend the ChatGPT forfait before a key pinned for the
+// route — but only while the RUNNER lets it (openAIOAuthAllowed, a
+// ChatGPT-mode blob), which the server's accounting cannot see; a declaration
+// there would leave a key the runner spends unstamped. On `anthropic/…` the
+// key comes first: a Claude forfait on claw is billed as extra usage.
 
 // clawPinnedProvider names the provider a claw model spec PINS — the
 // `<provider>/` prefix, lower-cased — or "" when the spec carries none or
@@ -1369,6 +1396,13 @@ func clawPinnedProvider(model string) secrets.Provider {
 	if err != nil {
 		return ""
 	}
+	// `anthropic/glm-*` rides claw's anthropic provider but is served by
+	// z.ai: the key its route is funded with is z.ai's (prefixOrWiden pins
+	// zai for it), and ZAI_API_KEY is what the in-container registry
+	// synthesises z.ai's base URL from.
+	if GLMOnAnthropicWire(model) {
+		return secrets.ProviderZAI
+	}
 	prov := secrets.Provider(strings.ToLower(strings.TrimSpace(name)))
 	if !prov.Valid() {
 		return ""
@@ -1378,9 +1412,59 @@ func clawPinnedProvider(model string) secrets.Provider {
 
 // modelServedByZAI reports whether a model pinned on claw's anthropic provider
 // is actually served by z.ai's Anthropic-compatible endpoint. Same predicate
-// anthropicCapabilities uses to split the two families apart.
+// anthropicCapabilities uses to split the two families apart. It reads a model
+// ID, not a spec: GLMOnAnthropicWire is the spec-level question.
 func modelServedByZAI(model string) bool {
 	return strings.Contains(strings.ToLower(model), "glm")
+}
+
+// GLMOnAnthropicWire reports whether a model spec names a GLM model on the
+// anthropic wire — bare (`glm-5.3`, as claude_code and pi take it) or on
+// claw's anthropic provider (`anthropic/glm-5.3`). z.ai serves exactly those,
+// through its Anthropic-compatible endpoint, so the credential they spend is
+// the z.ai key whatever holds the wire. A spec naming another provider
+// (`openrouter/z-ai/glm-4.6`) is that provider's route and stays its own.
+func GLMOnAnthropicWire(spec string) bool {
+	spec = strings.TrimSpace(spec)
+	if prefix, id, cut := strings.Cut(spec, "/"); cut {
+		if !strings.EqualFold(strings.TrimSpace(prefix), string(secrets.ProviderAnthropic)) {
+			return false
+		}
+		spec = id
+	}
+	return modelServedByZAI(spec)
+}
+
+// zaiKeyReachable reports whether a route naming zai has a key to spend: the
+// run's own (default, or pinned for the route) or the process's ZAI_API_KEY —
+// the sources the delegates' zai branches read, in that order.
+func zaiKeyReachable(ctx context.Context) bool {
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok && creds.APIKeyForRoute(secrets.ProviderZAI) != "" {
+		return true
+	}
+	return os.Getenv("ZAI_API_KEY") != ""
+}
+
+// RouteProviderHint is the provider hint the executor hands a delegate for
+// one chain element: the element's own, except that a GLM id on the anthropic
+// wire with no hint goes to z.ai on claude_code and pi when a z.ai key is
+// reachable. With no hint the wire's default precedence would hand it to
+// whatever holds the family, and a Claude forfait sends it to
+// api.anthropic.com, which does not serve it; without a reachable key the
+// zai branch would refuse the node before it spawns and leave the ambient
+// z.ai setup (ANTHROPIC_BASE_URL on api.z.ai + ANTHROPIC_AUTH_TOKEN, what
+// z.ai documents for Claude Code) untried, which the default path inherits.
+//
+// The dispatch and the usage-cap pre-flight both ask it, so the pre-flight
+// reads the ledger of the credential the session will actually spend.
+func RouteProviderHint(ctx context.Context, backend, hint, model string) string {
+	h := strings.ToLower(strings.TrimSpace(hint))
+	if (h == "" || h == "auto") &&
+		(backend == delegate.BackendClaudeCode || backend == delegate.BackendPi) &&
+		GLMOnAnthropicWire(model) && zaiKeyReachable(ctx) {
+		return string(secrets.ProviderZAI)
+	}
+	return hint
 }
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so

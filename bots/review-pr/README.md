@@ -191,20 +191,27 @@ Every claude_code node on a claude id — both claude reviewers **and**
 `converge` — pins its provider to `anthropic`, through a dial
 (`ITERION_VIBE_PROVIDER_CLAUDE` for the claude slot, `ITERION_VIBE_PROVIDER_EMIT`
 for the merge step). The pin is **load-bearing**: the wire's credential order
-(secrets.AnthropicWireSlotOrder) puts facade keys (zai, moonshot) FIRST, and a
-z.ai key takes the wire as the run's DEFAULT whenever the forfait is not on it
-— skipped because its window is closed (a provider refusal, or an operator
-usage cap, soft or hard: a launch is a new run), or beaten to it by a shared
-tier that fills its keys before its forfait. An unpinned node then sends its
-claude id to the z.ai facade, which **accepts it and serves GLM in silence**,
-under the claude label — PR #1924's gpt slot did exactly that. Pinned, the
-primary is forced Anthropic-direct (the sealed `anthropic` key if any, else the
-`claude_code` forfait, facade branches skipped). The key wins when both are
-sealed, and that includes a shared tier's `anthropic` key the pin itself funds:
-where an org or platform tier holds one beside the team's forfait, the claude
-nodes spend that metered key rather than the subscription. Keep such a key out
-of the shared tiers, or accept the spend.
-When neither is sealed it falls back to the runner's AMBIENT Anthropic auth
+(secrets.AnthropicWireSlotOrder) puts facade keys (zai, moonshot) FIRST, so a
+z.ai key the run holds as a DEFAULT credential serves every unpinned node of
+the wire, the forfait beside it or not. The team's own z.ai key is always one
+(a team's keys fill before its forfait). A shared tier's is one only where the
+forfait is off the wire — skipped because its window is closed (a provider
+refusal, or an operator usage cap, soft or hard: a launch is a new run), or
+never connected — and the tier's facade policy lets a facade key take a free
+family: under `facade_default: auto`, the default, only in a tier that holds
+no Claude credential of its own; under `always`, anywhere; under `never`,
+nowhere ([cloud-llm-credentials.md](../../docs/cloud-llm-credentials.md)). An
+unpinned node then sends its claude id to the z.ai facade, which **accepts it
+and serves GLM in silence**, under the claude label — PR #1924's gpt slot did
+exactly that. Pinned, the primary is forced Anthropic-direct, facade branches
+skipped: the run's default `anthropic` key if it holds one, else the
+`claude_code` forfait, else an `anthropic` key a shared tier sealed for the
+pin alone. A default key wins over the forfait — the team's own, or a shared
+tier's that took the family (the forfait closed at launch, or `keys_first` in
+a tier holding both); a key an org or platform tier funds only for the pin,
+beside the team's forfait, waits behind it, so the subscription's work stays
+on the subscription.
+When none is sealed it falls back to the runner's AMBIENT Anthropic auth
 (`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` in the pod env) — with none,
 as on iterion.cloud, it fails "Not logged in" (classified auth, no spend) and
 the route below takes it; with one, the pod's account serves the node.

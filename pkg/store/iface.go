@@ -368,6 +368,28 @@ func AsQueuedAttemptStore(s RunStore) QueuedAttemptStore {
 	return capability[QueuedAttemptStore](s)
 }
 
+// QueuedResumeReleaser puts a resume nobody claimed back where it came from.
+type QueuedResumeReleaser interface {
+	// ReleaseQueuedRunIfAttempt moves a queued run to `to` — the status a
+	// resume moved it from — only when its current QueuedAt is not newer
+	// than the delivery's PublishedAt: the same attempt identity, in the
+	// same atomic operation, as FailQueuedRunIfAttempt. runErr and meta
+	// state why, under the transition discipline every status write
+	// follows (a failure code only on the statuses that carry one; the
+	// pause pointer kept on a paused status).
+	ReleaseQueuedRunIfAttempt(ctx context.Context, id string, to RunStatus, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (changed bool, err error)
+}
+
+// AsQueuedResumeReleaser returns the release capability, or nil for a store
+// that has none: the run then stays queued, as it did before the capability.
+func AsQueuedResumeReleaser(s RunStore) QueuedResumeReleaser {
+	if s == nil {
+		return nil
+	}
+	q, _ := s.(QueuedResumeReleaser)
+	return q
+}
+
 // PIDStore is an optional interface implemented only by
 // FilesystemRunStore (Capabilities.PIDFile == true). Cloud (Mongo)
 // stores deliberately do not implement it: detached/reattach is a

@@ -8,7 +8,9 @@ description: feed-watch (Vigie) workspace configuration — the config file form
 feed-watch is fully driven by a config file in the TARGET workspace
 (never by anything baked into the bot). Default path: `feed-watch.json`
 at the workspace root (`--var config_path=` overrides; `.yaml` works
-when PyYAML is installed on the host — JSON needs nothing).
+when PyYAML is in the system site-packages of the host's `python3` — the
+tool node runs `python3 -I`, which sees neither the user site nor
+`PYTHONPATH`; JSON needs nothing).
 
 ## Config format
 

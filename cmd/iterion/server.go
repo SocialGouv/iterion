@@ -363,6 +363,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// instance, like CapPolicy: the admin write invalidates the server's,
 	// this one converges within the resolver's TTL bound.
 	platformCredAudience := platformcfg.NewResolver[platformcfg.PlatformCredentials](stores.platformCreds, logger.Warn)
+	// The shared-tier ordering knobs' env defaults are read on every launch;
+	// a value neither parses is refused here, at boot, rather than read as
+	// the built-in default.
+	if err := platformcfg.ValidateEnv(); err != nil {
+		return err
+	}
 	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
 	// One fetcher for both halves of the plugin-source contract: the
 	// publisher materialises a team's sources at launch, the server verifies

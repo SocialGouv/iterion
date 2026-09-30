@@ -833,7 +833,7 @@ judge plan_review:
 ## verify_run); read-only, ~100ms.
 tool workspace_probe:
   description: "Precondition: workspace_dir is a git repository"
-  command: `WS={{vars.workspace_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} python3 -I -c "
 import os, subprocess, json, sys
 ws = (os.environ.get('WS') or '').strip()
 def refuse(reason):
@@ -855,7 +855,7 @@ print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws}))
 ## the gate stays universal while the verdict stays deterministic. python3 for
 ## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -1104,6 +1104,13 @@ if rc == 0:
             if fresh:
                 rc = 4
                 out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+if rc == 0:
+    # A NOT COVERED line is printed FIRST in verify.sh, off the exit path: a
+    # green run carries it into the log tail, wherever the bot reports it.
+    nc_lines = [l for l in out.splitlines() if l.startswith('NOT COVERED:')]
+    nc_lines = [l for l in dict.fromkeys(nc_lines) if l not in out[-4000:]]
+    if nc_lines:
+        out = out + chr(10) + chr(10).join(nc_lines)
 try:
     with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)

@@ -677,7 +677,7 @@ func TestDeepsecCoverageTravelsWithoutTheLogTail(t *testing.T) {
 func deepsecCoverageReader(t *testing.T) string {
 	t.Helper()
 	body := deepsecCommand(t)
-	const marker = `python3 -c "`
+	const marker = `python3 -I -c "`
 	i := strings.Index(body, `COVERAGE=$(`)
 	if i < 0 {
 		t.Fatal("no COVERAGE assignment in the deepsec command: the node no longer establishes how " +
@@ -685,7 +685,7 @@ func deepsecCoverageReader(t *testing.T) string {
 	}
 	j := strings.Index(body[i:], marker)
 	if j < 0 {
-		t.Fatal("the COVERAGE assignment embeds no python3 -c body")
+		t.Fatal("the COVERAGE assignment embeds no python3 -I -c body")
 	}
 	start := i + j + len(marker)
 	end := strings.Index(body[start:], "\n\" 2>>")

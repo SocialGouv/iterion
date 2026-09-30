@@ -66,7 +66,11 @@ the hours this one spent.
   credentials), rotated with one call instead of a k8s-secret edit +
   redeploy, and now **gated by an opt-in audience**
   (`iterion remote admin platform-credentials`) so a tenant with nothing of
-  its own no longer draws on it in silence — and the
+  its own no longer draws on it in silence; a claude node that answers as
+  GLM is a shared tier's z.ai key holding the anthropic wire — a tier's
+  forfait fills its wire first, a z.ai/Moonshot key is its default only as
+  `--facade-default` allows (`auto`: in a tier with no Claude credential),
+  `--keys-first` inverts the order — and the
   one-credential activation of the campaign bots' **cross-model plan
   review** (provision the codex OAuth forfait → `plan_review` resolves
   `on` at the next launch, nothing else to configure) — and

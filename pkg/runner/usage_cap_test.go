@@ -510,10 +510,11 @@ func TestUsageCapCredKeys_ReadingFollowsTheSessionSource(t *testing.T) {
 	scope := usagecap.TenantScope("team-7")
 
 	cases := []struct{ source, wantFP string }{
-		// Empty (older binary) and the inherited-env label follow the
-		// bundle default: z.ai first, the delegate's own precedence.
+		// Empty (older binary) follows the bundle default: z.ai first, the
+		// delegate's own precedence. The inherited-env label names no bundle
+		// credential and charges none.
 		{"", "fp-zai"},
-		{"anthropic-env", "fp-zai"},
+		{"anthropic-env", ""},
 		{"facade:https://api.z.ai/api/anthropic", "fp-zai"},
 		{"anthropic-direct", "fp-ant"},
 		{"anthropic-oauth", "fp-oauth"},

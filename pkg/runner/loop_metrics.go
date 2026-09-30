@@ -96,8 +96,11 @@ type modelRate struct {
 	known             bool
 }
 
-// routeKey names one (backend, model) pair a run spent on.
-type routeKey struct{ backend, model string }
+// routeKey names one (backend, model) pair a run spent on, and — for a
+// delegate that stamps it — the credential route its session ran on
+// (delegate_finished's `fingerprint`): two nodes of one backend and model
+// can spend two credentials when their provider hints differ.
+type routeKey struct{ backend, model, source string }
 
 // routeTotals is one route's slice of the run's consumption.
 type routeTotals struct {
@@ -170,11 +173,11 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 // Called with m.mu held, alongside the run-total accumulation it mirrors —
 // the two must never diverge, so they are updated in the same critical
 // section.
-func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64, in, out, aggregate int64) {
+func (m *metricsEmitter) addRouteLocked(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	if m.byRoute == nil {
 		m.byRoute = make(map[routeKey]routeTotals)
 	}
-	k := routeKey{backend: backend, model: modelName}
+	k := routeKey{backend: backend, model: modelName, source: source}
 	t := m.byRoute[k]
 	t.costUSD += cost
 	t.inputTokens += in
@@ -183,7 +186,7 @@ func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64,
 	m.byRoute[k] = t
 }
 
-// RouteTotals snapshots what the run spent per (backend, model). The unit
+// RouteTotals snapshots what the run spent per (backend, model, source). The unit
 // per-credential metering charges, because one run can draw on two
 // credentials and the run total belongs to neither.
 func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
@@ -340,7 +343,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
-		m.addRouteLocked(backend, modelName, costDelta, int64(inputT), int64(outputT), 0)
+		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
 		m.mu.Unlock()
 
 		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])
@@ -389,6 +392,13 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		}
 		tokensF := toFloat(evt.Data["tokens"])
 		effective, _ := evt.Data["effective_model"].(string)
+		// Only claude_code's labels name a credential slot the ledger reads
+		// (routeSlot); keying another backend's route on its label would only
+		// split one route in two.
+		var source string
+		if backend == delegate.BackendClaudeCode {
+			source, _ = evt.Data["fingerprint"].(string)
+		}
 
 		// Single critical section: resolve the per-node model name and
 		// accumulate the aggregated token count. Prometheus write
@@ -436,7 +446,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			// either way, and only this way does a reader of the public
 			// per-credential endpoint see "not split" instead of a
 			// confident, wrong input figure (#992).
-			m.addRouteLocked(backend, modelName, costDelta, 0, 0, int64(tokensF))
+			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {

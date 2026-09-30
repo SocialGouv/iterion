@@ -535,7 +535,7 @@ agent forge_report:
 ## scope_mode=full it emits an empty diff and the enumerator walks the
 ## whole tree.
 tool diff_scope:
-  command: `SCOPE_MODE={{vars.scope_mode}} BASE_REF={{vars.base_ref}} HEAD_REF={{vars.head_ref}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -c "
+  command: `SCOPE_MODE={{vars.scope_mode}} BASE_REF={{vars.base_ref}} HEAD_REF={{vars.head_ref}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -I -c "
 import os, sys, json, re, fnmatch, subprocess
 scope = (os.environ.get('SCOPE_MODE') or 'diff').strip().lower()
 base  = (os.environ.get('BASE_REF') or '').strip()
@@ -625,7 +625,7 @@ print(json.dumps({'changed_lockfiles': changed, 'diff_text': diff_text, 'scope_m
 ## ecosystem:name:version (see filter_cached); the checksum is metadata
 ## compared on a hit to catch republish attacks.
 tool normalize_deps:
-  command: `DEPS={{input.deps}} ECOS={{input.ecosystems}} python3 -c "
+  command: `DEPS={{input.deps}} ECOS={{input.ecosystems}} python3 -I -c "
 import os, json, re
 try:    deps_in = json.loads(os.environ.get('DEPS','') or '[]')
 except Exception: deps_in = []
@@ -722,7 +722,7 @@ print(json.dumps({'deps': uniq, 'ecosystems': ecos,
 ## Adding an ecosystem = drop a lang-<id>.md skill with a heuristics
 ## block (+ a parser here only if its output format is new).
 tool run_eco_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -I -c "
 import os, sys, json, re, subprocess
 raw = os.environ.get('ECOS', '[]') or '[]'
 try:
@@ -885,7 +885,7 @@ print(json.dumps({'packages': packages, 'errors': errors}))
 ## DB. (Also keeps the node_modules install-hook / locale signals so a CVE
 ## run still flags an obvious install-time backdoor.)
 tool run_generic_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && (trivy fs --scanners vuln --quiet --format json --output {{vars.scan_dir}}/trivy.json {{vars.workspace_dir}} 2>/dev/null || true) && (command -v osv-scanner >/dev/null 2>&1 && osv-scanner --format json --recursive {{vars.workspace_dir}} > {{vars.scan_dir}}/osv.json 2>/dev/null || true) && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && (trivy fs --scanners vuln --quiet --format json --output {{vars.scan_dir}}/trivy.json {{vars.workspace_dir}} 2>/dev/null || true) && (command -v osv-scanner >/dev/null 2>&1 && osv-scanner --format json --recursive {{vars.workspace_dir}} > {{vars.scan_dir}}/osv.json 2>/dev/null || true) && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} python3 -I -c "
 import os, json
 ws = os.environ.get('WS', '.')
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -1042,7 +1042,7 @@ print(json.dumps({'packages': packages, 'errors': errors}))
 ## (e.g. js-x-ray absent for an npm change) without hard-failing, so a
 ## degraded run is still useful but never silently presented as clean.
 tool coverage_gate:
-  command: `ECOS={{input.ecosystems}} SCAN_DIR={{input.scan_dir}} python3 -c "
+  command: `ECOS={{input.ecosystems}} SCAN_DIR={{input.scan_dir}} python3 -I -c "
 import os, sys, json, re
 scan_dir = os.environ.get('SCAN_DIR', '.')
 raw = os.environ.get('ECOS', '[]') or '[]'
@@ -1126,7 +1126,7 @@ tool load_cache:
   ## All in python (reads the path from env, not inline printf) so an empty
   ## cache yields clean JSON — the old shell form emitted a malformed
   ## line_count ("0 0") and a quoted cache_path on a cold cache.
-  command: `mkdir -p {{vars.cache_dir}} && CACHE_PATH={{vars.cache_path}} python3 -c "
+  command: `mkdir -p {{vars.cache_dir}} && CACHE_PATH={{vars.cache_path}} python3 -I -c "
 import os, json
 p = os.environ.get('CACHE_PATH','').strip()
 try:
@@ -1143,7 +1143,7 @@ print(json.dumps({'cache_path': p, 'raw_jsonl': raw, 'line_count': n}))
 ## already_scanned (cache-hit within ttl at acceptable scanner_version).
 ## Only kind=cve lines are consulted; short TTL (advisories land daily).
 tool filter_cached:
-  command: `DEPS={{input.deps}} RAW={{input.cache_raw_jsonl}} TTL={{input.ttl_days}} SVER={{input.scanner_version}} python3 -c "
+  command: `DEPS={{input.deps}} RAW={{input.cache_raw_jsonl}} TTL={{input.ttl_days}} SVER={{input.scanner_version}} python3 -I -c "
 import os, sys, json, datetime
 deps_json = os.environ.get('DEPS','')
 raw       = os.environ.get('RAW','')
@@ -1206,7 +1206,7 @@ print(json.dumps({'pending': pending, 'already_scanned': already, 'stats': stats
 ## flag, level mapped from severity, location = files_audited[0] or the
 ## package manifest path.
 tool sarif_gen:
-  command: `mkdir -p {{vars.sarif_dir}} && VERDICTS={{input.verdicts}} SARIF_PATH={{input.sarif_path}} python3 -c "
+  command: `mkdir -p {{vars.sarif_dir}} && VERDICTS={{input.verdicts}} SARIF_PATH={{input.sarif_path}} python3 -I -c "
 import os, sys, json
 verdicts = json.loads(os.environ.get('VERDICTS','') or '[]')
 out_path = os.environ['SARIF_PATH']
@@ -1250,7 +1250,7 @@ print(json.dumps({'sarif_path': out_path, 'result_count': len(results)}))
 tool update_cache:
   ## Appends one kind=cve JSONL line per analysed package to the
   ## shared cache. Atomic via append (POSIX guarantees up to PIPE_BUF).
-  command: `VERDICTS={{input.verdicts}} CACHE_PATH={{input.cache_path}} SVER={{input.scanner_version}} python3 -c "
+  command: `VERDICTS={{input.verdicts}} CACHE_PATH={{input.cache_path}} SVER={{input.scanner_version}} python3 -I -c "
 import os, sys, json, datetime
 verdicts_raw = os.environ.get('VERDICTS','')
 verdicts = json.loads(verdicts_raw) if verdicts_raw else []

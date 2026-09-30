@@ -80,7 +80,9 @@ reaper covers case X") must be **provable by tracing the actual deployed
 code path**. A guarantee that only holds in a topology you don't ship is a
 false claim — scope the wording to what the code actually delivers, or make
 the code deliver it. Over-claiming safety is worse than admitting a
-residual gap.
+residual gap. And a guarantee worth writing is worth a test that fails
+when it breaks: assert it at the outbound boundary (the tracker event, the
+log line), not at the producer.
 
 ## 6. Loud failure, never silent masking
 
@@ -90,9 +92,59 @@ error) indistinguishable from "no data" — the panel renders empty, the
 outage is invisible. Log (or propagate) the error before returning the
 empty/degraded state. No silent recovery that hides a root cause.
 
-## 7. Fit and rot — did we build the RIGHT thing, and only that
+## 7. Redaction nets and outbound data paths — attack the net you built
 
-Sections 1–6 catch code that is *wrong*. This one catches code that is
+When the diff adds or touches a **redaction/scrubbing/filter layer** — or
+any code that forwards data to an **outbound sink** (an error tracker, a
+log store, a webhook) — the diff is not done when the layer compiles: it
+is done when **every path a value travels to the sink is covered by the
+net**. The paths that leak are the ones you did not enumerate:
+
+- **Request fields beyond the body**: the query string (OAuth codes, CSRF
+  state), cookies, and headers ride *separate* fields of the event the
+  SDK builds — scrubbing `request.data` alone leaves the rest. And the
+  HTTP server's access log (uvicorn.access, gunicorn, a proxy) prints the
+  raw request line, query string included, straight into the log store.
+- **Stack-trace frame-locals**: SDKs serialize the variables of every
+  frame in a captured stack — a scrubber that only handles the top-level
+  payload misses the same secret repeated inside the locals.
+- **Free-form message interpolation**: a secret pasted into a log
+  message or exception string never meets a key-based rule — it needs a
+  shape-based rule (uuid, token shape) or the leak ships.
+- **Breadcrumbs and secondary payloads**: hooks that only scrub the main
+  event leave breadcrumbs, attachments, nested contexts and process argv
+  (the Python SDK attaches `sys.argv` to every event) untouched.
+
+Verify each path **against a capture endpoint**: boot the instrumented
+process with the sink pointed at a local collector, trigger the paths,
+assert FIRST that every event you triggered arrived as its own item
+(batched items included: logs ship in batches, so wait for the triggered
+record itself), then that no planted value — nor any 8-character run of
+letters and digits of one: a truncated `sub[:8]`, a dash-stripped uuid —
+appears anywhere,
+searched raw AND decoded
+(JSON-unescaped, percent-decoded until stable, numbers and non-JSON items
+included). A unit test with a mock transport proves the code path; the
+capture test proves the net.
+
+## 8. Written invariants must be tested — and their call sites swept
+
+Any guarantee written into code or docs ("the user id never reaches a
+log store", "this never runs without a lock") must have a **test that
+fails when it breaks**, and a **sweep of every call site** that could
+violate it. An invariant written but not asserted is worse than none:
+the next author trusts it untested. Grep for the *shape* of the violation
+(the raw value in a format string, the unprefixed key) — half-closed
+classes (some sites hashed, some still raw) are the documented residue.
+An untested invariant alone does not block — unless it is a redaction or
+isolation claim the diff makes: an unproven one of those (no passing test
+in the diff proves it) blocks as a false-claim defect (§5). A reviewer's
+own harness failing to run (the app does not boot here) is said in the
+findings, never a block by itself.
+
+## 9. Fit and rot — did we build the RIGHT thing, and only that
+
+Sections 1–8 catch code that is *wrong*. This one catches code that is
 *correct but hollow* — it compiles, passes, reviews clean, and still isn't
 what the task needed. Two failure modes, opposite directions:
 
@@ -115,14 +167,14 @@ what the task needed. Two failure modes, opposite directions:
 Conformance to the repo's declared conventions is already covered for
 cross-cutting concerns by §1; here, just confirm the change reads like the
 code around it. This section is judgment, not a checklist — apply it once,
-honestly, and fix what you find in the same pass. It is **advisory**: the
-deterministic build+test gate stays the only thing that blocks shipping — this
-lens sharpens the diff, it never gates it.
+honestly, and fix what you find in the same pass. It is **advisory**: this
+lens never blocks — only a §1–§8 defect and the build+test gate do; it
+sharpens the diff, it never gates it.
 
 ## How to use this in a self-review pass
 
 1. `git diff <base>` and `git diff --stat` — see the *whole* change.
-2. For each new/changed unit, walk sections 1–7. Most changes only touch a
+2. For each new/changed unit, walk sections 1–9. Most changes only touch a
    few; be honest about which apply.
 3. For anything you find, **fix it now** and note it. Do not defer.
 4. Only when a section genuinely doesn't apply (no new state, no new
