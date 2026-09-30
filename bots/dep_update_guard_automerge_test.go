@@ -165,6 +165,15 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 					"data": map[string]any{"mergePullRequest": map[string]any{"clientMutationId": nil}},
 				})
 			case strings.Contains(body.Query, "dequeuePullRequest"):
+				// The dequeue door takes the pull request as `id`, NOT
+				// `pullRequestId` — the API rejects the latter (unlike
+				// enqueue, which takes both that and expectedHeadOid). A
+				// stub answering either shape would certify a mutation
+				// production refuses, so pin it exactly like the head pins
+				// above.
+				if !regexp.MustCompile(`input:\s*\{\s*id:\s*\$id`).MatchString(body.Query) {
+					t.Errorf("dequeue mutation does not pass the pull request as id: %s", body.Query)
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"data": map[string]any{"dequeuePullRequest": map[string]any{"clientMutationId": nil}},
 				})
