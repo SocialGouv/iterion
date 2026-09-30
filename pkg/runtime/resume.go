@@ -339,7 +339,8 @@ func (e *Engine) sourceChange(r *store.Run) (workflowErr, bundleErr error, legac
 
 // alsoNamingSourceChange is a refusal that comes before the source check
 // (the scratch's, a lone child's), naming that check's refusal too when the
-// source changed: the one --force the operator then gives accepts both.
+// source changed: the operator sees every consent the resume needs before
+// giving any.
 func (e *Engine) alsoNamingSourceChange(r *store.Run, refusal error) error {
 	if workflowErr, bundleErr, _ := e.sourceChange(r); workflowErr == nil && bundleErr == nil {
 		return refusal
@@ -1521,7 +1522,7 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 	} else if !slices.Contains(allowed, store.RunStatusQueued) {
 		allowed = append(slices.Clone(allowed), store.RunStatusQueued)
 	}
-	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
+	claimed, claimErr := e.casResumeClaim(ctx, r.ID, allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
@@ -1532,13 +1533,41 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 	return e.markResumed(ctx, r.ID, data)
 }
 
+// casResumeClaim is the compare-and-set of every resume claim: running from
+// one of allowed. With a queued attempt (WithQueuedAttempt) a queued run is
+// claimed only for that attempt, in the same atomic write — a run queued
+// again since the delivery was published is not this engine's — while the
+// other statuses allowed are claimed as always.
+func (e *Engine) casResumeClaim(ctx context.Context, runID string, allowed []store.RunStatus) (bool, error) {
+	if e.queuedAttempt.IsZero() || !slices.Contains(allowed, store.RunStatusQueued) {
+		return e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", allowed)
+	}
+	claimer := store.AsQueuedAttemptClaimer(e.store)
+	if claimer == nil {
+		return false, errors.New("this store cannot claim a queued run for one attempt")
+	}
+	if claimed, err := claimer.ClaimQueuedRunIfAttempt(ctx, runID, e.queuedAttempt); err != nil || claimed {
+		return claimed, err
+	}
+	others := slices.DeleteFunc(slices.Clone(allowed), func(s store.RunStatus) bool { return s == store.RunStatusQueued })
+	if len(others) == 0 {
+		return false, nil
+	}
+	return e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", others)
+}
+
 // markResumed is the tail every resume claim shares once the CAS names
-// this engine the owner: refresh the doc's effective-caps snapshot for
+// this engine the owner: tell the caller the run is claimed
+// (WithOnResumeClaimed), refresh the doc's effective-caps snapshot for
 // the attempt about to run (the budget is re-resolved per attempt, and
 // the platform ceiling is only known here — see stampEffectiveBudget),
 // then emit run_resumed. One tail, so a second resume path cannot ship
 // without the stamp the first one needs.
 func (e *Engine) markResumed(ctx context.Context, runID string, data map[string]any) error {
+	if claimed := e.onResumeClaimed; claimed != nil {
+		e.onResumeClaimed = nil
+		claimed()
+	}
 	e.stampEffectiveBudget(ctx, runID)
 	if e.resumeReceiptID != "" {
 		if data == nil {
@@ -2033,8 +2062,7 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 		}
 		allowed = []store.RunStatus{e.expectedResumeStatus}
 	}
-	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "",
-		allowed)
+	claimed, claimErr := e.casResumeClaim(ctx, runID, allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}

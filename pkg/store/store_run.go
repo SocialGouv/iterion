@@ -656,6 +656,17 @@ func (s *FilesystemRunStore) ReleaseQueuedRunIfAttempt(_ context.Context, id str
 	return s.transitionQueuedAttempt(id, to, runErr, publishedAt, meta)
 }
 
+var _ QueuedAttemptClaimer = (*FilesystemRunStore)(nil)
+
+// ClaimQueuedRunIfAttempt claims the queued attempt publishedAt names — see
+// QueuedAttemptClaimer.
+func (s *FilesystemRunStore) ClaimQueuedRunIfAttempt(_ context.Context, id string, publishedAt time.Time) (bool, error) {
+	if publishedAt.IsZero() {
+		return false, fmt.Errorf("store: claim queued attempt %s without published_at", id)
+	}
+	return s.transitionQueuedAttempt(id, RunStatusRunning, "", publishedAt, RunOutcomeMeta{})
+}
+
 // transitionQueuedAttempt moves the queue attempt publishedAt names, and
 // only that one, out of queued: a later resume refreshes QueuedAt before
 // publishing, so an older delivery cannot touch that new attempt during its

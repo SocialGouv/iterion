@@ -397,6 +397,32 @@ func TestRefuseResumeOfSharedChild(t *testing.T) {
 			t.Fatalf("the scratch's loss accepted: err = %v, want the resume let through", err)
 		}
 	})
+	t.Run("copy-based and container-local lineage (a kubernetes parent): both consents", func(t *testing.T) {
+		e, r := mk(t, "run-c8", map[string]any{"adopted": true, "copy_based": true, "scratch_container_local": true}, nil)
+		for _, tc := range []struct {
+			force, accept bool
+			code          ErrorCode
+			alsoForce     bool
+		}{
+			{false, false, ErrCodeScratchNotPortable, true},
+			{true, false, ErrCodeScratchNotPortable, false},
+			{false, true, ErrCodeResumeInvalid, false},
+		} {
+			e.forceResume, e.acceptScratchLoss = tc.force, tc.accept
+			err := e.refuseResumeOfSharedChild(ctx, r)
+			var rt *RuntimeError
+			if !errors.As(err, &rt) || rt.Code != tc.code || rt.AlsoNeedsForce != tc.alsoForce {
+				t.Fatalf("force=%v accept=%v: err = %v, want %s (also needs force %v)", tc.force, tc.accept, err, tc.code, tc.alsoForce)
+			}
+		}
+		e.forceResume, e.acceptScratchLoss = true, true
+		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
+			t.Fatalf("both consents: err = %v, want the resume let through", err)
+		}
+		if e.pendingForsake["forced"] != true || e.pendingForsake["accepted"] != true {
+			t.Fatalf("the forsake %v, want both consents recorded", e.pendingForsake)
+		}
+	})
 	t.Run("bind-mount lineage: resumes", func(t *testing.T) {
 		e, r := mk(t, "run-c2", map[string]any{"adopted": true, "copy_based": false}, nil)
 		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {

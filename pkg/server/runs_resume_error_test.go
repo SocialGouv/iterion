@@ -438,8 +438,13 @@ workflow dispatcher_child:
 	if err := st.SaveRun(ctx, run); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
+	interactionID := runID + "_gate"
+	if err := st.WriteInteraction(ctx, &store.Interaction{ID: interactionID, RunID: runID, NodeID: "gate", RequestedAt: time.Now().UTC(), Questions: map[string]any{}}); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
 	if err := st.PauseRun(ctx, runID, &store.Checkpoint{
 		NodeID:           "gate",
+		InteractionID:    interactionID,
 		Outputs:          map[string]map[string]any{},
 		LoopCounters:     map[string]int{},
 		ArtifactVersions: map[string]int{},

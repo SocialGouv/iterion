@@ -346,7 +346,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		autoMerge = *opts.AutoMerge
 	}
 
+	claimed := false
 	eng := runtime.New(wf, s, executor, append(resumeOpts,
+		runtime.WithOnResumeClaimed(func() { claimed = true }),
 		runtime.WithLogger(logger),
 		runtime.WithWorkflowHash(wfHash),
 		runtime.WithFilePath(iterFile),
@@ -462,6 +464,12 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	err = eng.Resume(ctx, opts.RunID, answers)
+	if err != nil && !claimed && opts.Background {
+		// A managed runner's stdio goes nowhere, and a resume refused before
+		// its claim leaves the run where it was, its timeline untouched: the
+		// refusal is said where the studio reads the run, its log.
+		logger.Error("resume of run %s refused before it claimed the run, which stays %s: %v", opts.RunID, r.Status, err)
+	}
 	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget, opts.Retry), err, logger)
 	return reportResumeOutcome(p, s, opts.RunID, err, map[string]any{
 		"run_id":   opts.RunID,

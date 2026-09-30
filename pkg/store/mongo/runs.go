@@ -1468,6 +1468,17 @@ func (s *Store) ReleaseQueuedRunIfAttempt(ctx context.Context, id string, to sto
 	return s.transitionQueuedAttempt(ctx, id, to, runErr, publishedAt, meta)
 }
 
+var _ store.QueuedAttemptClaimer = (*Store)(nil)
+
+// ClaimQueuedRunIfAttempt claims the queued attempt publishedAt names — see
+// store.QueuedAttemptClaimer.
+func (s *Store) ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishedAt time.Time) (bool, error) {
+	if publishedAt.IsZero() {
+		return false, fmt.Errorf("store/mongo: claim queued attempt %s without published_at", id)
+	}
+	return s.transitionQueuedAttempt(ctx, id, store.RunStatusRunning, "", publishedAt, store.RunOutcomeMeta{})
+}
+
 // transitionQueuedAttempt moves the queue attempt publishedAt names, and
 // only that one, out of queued: queued_at and status are matched in the SAME
 // update, so a concurrent resume cannot slip a newer attempt between a read

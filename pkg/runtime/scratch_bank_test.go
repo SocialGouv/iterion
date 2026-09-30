@@ -1294,3 +1294,116 @@ func TestResume_aStreamThatBreaksInTheSandboxIsRetried(t *testing.T) {
 		t.Fatalf("the failed restore's teardown banked over the bank (%d → %d)", before, after)
 	}
 }
+
+// refusingSandboxDriver starts pods that refuse the bank's restore, the
+// restore script run for real: over a tar that fails the way a busybox tar
+// run as another user fails a read-only directory with contents
+// (failingTar), or into a scratch path that cannot be made a directory
+// (scratchIsAFile).
+type refusingSandboxDriver struct {
+	*podDriver
+	failingTar     string
+	scratchIsAFile bool
+}
+
+func (d refusingSandboxDriver) Start(ctx context.Context, p sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {
+	run, err := d.podDriver.Start(ctx, p, info)
+	if err != nil {
+		return nil, err
+	}
+	pod := run.(*podRun)
+	if d.scratchIsAFile {
+		if err := os.WriteFile(pod.scratch, []byte("not a directory"), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return refusingSandboxRun{pod, d.failingTar}, nil
+}
+
+type refusingSandboxRun struct {
+	*podRun
+	failingTar string
+}
+
+func (r refusingSandboxRun) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	if r.failingTar == "" || !strings.Contains(strings.Join(argv, " "), "-xzf") {
+		return r.podRun.Exec(ctx, argv, opts)
+	}
+	c := r.Command(ctx, argv, opts)
+	c.Stdin = opts.Stdin
+	c.Env = append(os.Environ(), "PATH="+r.failingTar+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return sandbox.ExecCmd(c, opts)
+}
+
+// TestResume_aBankTheSandboxRefusesIsRefusedByName: a bank the host checked
+// extracts, refused in the sandbox — its tar fails, or the scratch cannot be
+// made — is the sandbox's refusal, not a transport's: SCRATCH_NOT_PORTABLE,
+// the bank held, never retried into the same refusal until the redeliveries
+// run out. A resume accepting the scratch's loss goes on, and says so.
+func TestResume_aBankTheSandboxRefusesIsRefusedByName(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "tar"), []byte("#!/bin/sh\necho 'tar: facts: Cannot mkdir: Permission denied' >&2\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		refuse func(*podDriver) refusingSandboxDriver
+		cause  string
+	}{
+		{"its tar fails", func(d *podDriver) refusingSandboxDriver { return refusingSandboxDriver{podDriver: d, failingTar: bin} }, "tar exited 2"},
+		{"its scratch cannot be made", func(d *podDriver) refusingSandboxDriver {
+			return refusingSandboxDriver{podDriver: d, scratchIsAFile: true}
+		}, "mkdir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-sandbox-refuses"
+			d := &podDriver{root: t.TempDir()}
+			x := newStubExecutor()
+			x.on("measure", func(map[string]any) (map[string]any, error) {
+				if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+					return nil, err
+				}
+				return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
+			})
+			reportRan := false
+			x.on("report", func(map[string]any) (map[string]any, error) {
+				reportRan = true
+				return map[string]any{}, nil
+			})
+			if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+				t.Fatalf("Run: want ErrRunPaused, got %v", err)
+			}
+			before := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked))
+			refusing := tc.refuse(d)
+			eng := func(accept bool) *Engine {
+				return New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithAcceptScratchLoss(accept), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+					"docker": func() (sandbox.Driver, error) { return refusing, nil },
+				}))
+			}
+			err := eng(false).Resume(ctx, runID, map[string]any{"ok": true})
+			var rt *RuntimeError
+			if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(err.Error(), "does not extract in this sandbox") || !strings.Contains(err.Error(), tc.cause) || !strings.Contains(rt.Hint, "--accept-scratch-loss") {
+				t.Fatalf("a bank the sandbox refuses: want SCRATCH_NOT_PORTABLE naming the sandbox's refusal (%q) and the consent, got %v", tc.cause, err)
+			}
+			if reportRan {
+				t.Fatal("the refused resume ran a node without the scratch")
+			}
+			if after := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked)); after != before {
+				t.Fatalf("the refused restore's teardown banked over the bank (%d → %d)", before, after)
+			}
+			if err := eng(true).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+				t.Fatalf("Resume accepting the loss of a bank the sandbox refuses: %v", err)
+			}
+			restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
+			if len(restored) != 1 || restored[0].Data["accepted"] != true || restored[0].Data["restored"] != false || !strings.Contains(fmt.Sprint(restored[0].Data["reason"]), "does not extract in this sandbox") {
+				t.Fatalf("the accepting resume did not record that it went on without the scratch: %v", dataOf(restored))
+			}
+			if !reportRan {
+				t.Fatal("the accepting resume did not go on")
+			}
+		})
+	}
+}

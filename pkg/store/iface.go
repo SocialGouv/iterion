@@ -386,6 +386,22 @@ func AsQueuedResumeReleaser(s RunStore) QueuedResumeReleaser {
 	return capability[QueuedResumeReleaser](s)
 }
 
+// QueuedAttemptClaimer claims a queued run for one delivery's attempt.
+type QueuedAttemptClaimer interface {
+	// ClaimQueuedRunIfAttempt moves a queued run to running only when its
+	// current QueuedAt is not newer than the delivery's PublishedAt: the
+	// same attempt identity, in the same atomic operation, as
+	// ReleaseQueuedRunIfAttempt. A run queued again after the delivery was
+	// published is the newer delivery's to claim, with its own parameters.
+	ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishedAt time.Time) (changed bool, err error)
+}
+
+// AsQueuedAttemptClaimer returns the claim capability, or nil for a store
+// that has none.
+func AsQueuedAttemptClaimer(s RunStore) QueuedAttemptClaimer {
+	return capability[QueuedAttemptClaimer](s)
+}
+
 // PIDStore is an optional interface implemented only by
 // FilesystemRunStore (Capabilities.PIDFile == true). Cloud (Mongo)
 // stores deliberately do not implement it: detached/reattach is a

@@ -212,6 +212,8 @@ type Engine struct {
 	recordRetryPause         time.Duration                        // first pause between tries at writing a record a resume decides from (emitRecord); zero is recordRetryPauseDefault
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
+	onResumeClaimed          func()                               // called once when a resume claims the run (WithOnResumeClaimed)
+	queuedAttempt            time.Time                            // the publication of the delivery a queued resume claims for (WithQueuedAttempt)
 	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision
 	artifactContractsChecked bool                                 // caller already ran the synchronous contract gate for this in-process resume
 	artifactResumePreflight  *ArtifactResumePreflight             // same-run snapshot from the synchronous in-process resume boundary

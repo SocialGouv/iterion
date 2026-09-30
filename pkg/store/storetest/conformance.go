@@ -65,6 +65,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
+	t.Run("QueuedAttemptClaim", func(t *testing.T) { testQueuedAttemptClaim(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
@@ -483,6 +484,58 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	// the round-trip or the resumed pass's cost is silently discarded.
 	if branch.CostUSD != 1.25 {
 		t.Fatalf("branch cost after round-trip = %v, want 1.25", branch.CostUSD)
+	}
+}
+
+// testQueuedAttemptClaim: a queued run is claimed for the attempt a delivery
+// names and no other — a delivery published before the run was queued again
+// does not claim the newer attempt; the attempt's own delivery does, once.
+func testQueuedAttemptClaim(t *testing.T, s store.RunStore) {
+	t.Helper()
+	claimer := store.AsQueuedAttemptClaimer(s)
+	if claimer == nil {
+		t.Skip("backend does not implement QueuedAttemptClaimer")
+	}
+	ctx := testCtx()
+	const runID = "run-queued-claim"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "boom"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	if _, err := claimer.ClaimQueuedRunIfAttempt(ctx, runID, time.Time{}); err == nil {
+		t.Fatal("a claim without published_at: want an error")
+	}
+	changed, err := claimer.ClaimQueuedRunIfAttempt(ctx, runID, time.Now().Add(time.Hour))
+	if err != nil || changed {
+		t.Fatalf("claim of a run not queued = (%t, %v), want (false, nil)", changed, err)
+	}
+	changed, err = s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("queued flip = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.QueuedAt == nil {
+		t.Fatalf("LoadRun queued marker = (%v, %v), want non-nil", r, err)
+	}
+	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(-time.Second))
+	if err != nil || changed {
+		t.Fatalf("claim by a delivery published before the attempt = (%t, %v), want (false, nil)", changed, err)
+	}
+	if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != store.RunStatusQueued {
+		t.Fatalf("after the stale claim: %v (%v), want still queued", got.Status, err)
+	}
+	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
+	if err != nil || !changed {
+		t.Fatalf("claim by the attempt's delivery = (%t, %v), want (true, nil)", changed, err)
+	}
+	if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != store.RunStatusRunning {
+		t.Fatalf("after the claim: %v (%v), want running", got.Status, err)
+	}
+	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
+	if err != nil || changed {
+		t.Fatalf("a second claim of the same attempt = (%t, %v), want (false, nil)", changed, err)
 	}
 }
 

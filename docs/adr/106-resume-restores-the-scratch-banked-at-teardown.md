@@ -97,8 +97,11 @@ pods the same way.
   its own resume refused `SCRATCH_NOT_PORTABLE` from the adoption's record
   (`sandbox_shared {scratch_container_local}`); a resume accepting the
   scratch's loss goes on without it, and what the child writes there never
-  reaches the parent's; the record of that forsake is written once that
-  resume runs, so a check that still refuses it leaves the next resume
+  reaches the parent's. A parent's sandbox that is also copy-based — a
+  kubernetes pod is both — needs `--force` too, for the divergence from the
+  parent's tree: the scratch's refusal comes first and names it. The record
+  of that forsake (`forced`, `accepted`: the consents given) is written once
+  that resume runs, so a check that still refuses it leaves the next resume
   refused. The adoption's record
   is written within its budget, or the child does not execute in the
   parent's sandbox.
@@ -132,7 +135,10 @@ pods the same way.
   before a cloud resume is flipped to `queued`. A latest execution that wrote
   none may still be banking — the run already reads paused or failed while
   its teardown runs — so the surface leaves it to the engine, which checks
-  under the run's lock, before its claim. A resume accepting the scratch's
+  under the run's lock, before its claim. An in-process resume waits for
+  that verdict — the claim, or the refusal — so the operator hears the
+  refusal as the surface's own; a detached runner, whose output goes
+  nowhere, writes it to the run's log. A resume accepting the scratch's
   loss resumes as it stands, and says so — past a scratch its teardown could
   not bank, on the record too (`sandbox_scratch_restored {accepted, reason}`). An `unknown` record is not refused; after a bank, the bank
   still decides. A timeline that cannot be read refuses the resume: it never
@@ -141,14 +147,18 @@ pods the same way.
   path alike). The bank is extracted before the first node
   (`sandbox_scratch_restored {restored, bytes, stale, accepted, reason}`),
   read onto the host and checked to extract first: a failure in the sandbox
-  can then only be a transport's. Every failure holds the bank: the failed
-  sandbox's teardown banks nothing over it (the hold ends with that
-  sandbox). A bank that is gone or does not
-  extract, or a resume that runs without a sandbox, parks the run
+  is then the sandbox's own or a transport's, and the restore script tells
+  them apart by its exit — its tar refused the bank (a scratch it cannot
+  create, a member it cannot recreate, a full disk), or the stream broke
+  (kubectl exits with a code of its own). Every failure holds the bank: the
+  failed sandbox's teardown banks nothing over it (the hold ends with that
+  sandbox). A bank that is gone or does not extract — on the host or in the
+  sandbox — or a resume that runs without a sandbox, parks the run
   `SCRATCH_NOT_PORTABLE`; a resume accepting the scratch's loss goes on
-  without it. A read that fails
-  on the way — the timeline, the store, the stream into the sandbox — parks
-  it without a code: the runner redelivers, and no consent skips it.
+  without it, with what the sandbox's tar extracted before it failed. A read
+  that fails on the way — the timeline, the store, the stream into the
+  sandbox — parks it without a code: the runner redelivers, and no consent
+  skips it.
   A bank restored into a host directory — the run resumed with its host
   state on — hands the scratch over to that directory (`host_backed` on the
   record): from then on no bank decides what a resume on that host finds,
@@ -167,7 +177,9 @@ pods the same way.
   retry of the same engine does not carry it to a loss that execution met;
   the runner applies it only while the run is still queued for the message
   that carried it — a redelivery after that claim, an adoption, a stale
-  attempt does not. Over HTTP the refusal answers `error_code:
+  attempt does not — and the engine claims a queued run only for the
+  attempt its delivery was published for, so no delivery lends its consent,
+  nor its `--force`, to a resume queued after it. Over HTTP the refusal answers `error_code:
   scratch_not_portable` with its hint, and `also_needs_force` when it names
   a change `--force` accepts.
 

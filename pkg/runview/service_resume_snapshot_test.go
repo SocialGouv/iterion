@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -110,18 +111,15 @@ func TestResume_InProcessBudgetWriteDoesNotResurrectAFinishedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// The re-validation under the lock refuses the finished run before any
+	// claim: that refusal is the caller's error.
 	res, err := svc.Resume(ctx, ResumeSpec{
 		RunID:    runID,
 		FilePath: "/opt/iterion/bots/stored-bot/main.bot",
 		Budget:   &ir.BudgetOverrides{MaxCostUSD: 120},
 	})
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-	select {
-	case <-res.Done:
-	case <-runWaitContext(t).Done():
-		t.Fatal("resume did not settle")
+	if res != nil || !errors.Is(err, ErrRunNotResumable) {
+		t.Fatalf("Resume of a run finished under it: started=%v err=%v, want the refusal under the lock (ErrRunNotResumable)", res != nil, err)
 	}
 
 	events, err := st.LoadEvents(ctx, runID)

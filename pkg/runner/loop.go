@@ -2649,6 +2649,16 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if msg.Resume != nil && msg.Resume.AcceptScratchLoss {
 		engineOpts = append(engineOpts, runtime.WithAcceptScratchLoss(true))
 	}
+	if msg.Resume != nil {
+		// The claim of a queued run is this delivery's attempt's, never one
+		// queued since it was published: that resume's own delivery claims
+		// it, with its own consent, --force and answers.
+		if publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC); perr == nil {
+			engineOpts = append(engineOpts, runtime.WithQueuedAttempt(publishedAt))
+		} else {
+			r.cfg.Logger.Warn("runner: run %s: the resume's published_at %q does not parse — its claim of a queued run is by status alone: %v", msg.RunID, msg.PublishedAtRFC, perr)
+		}
+	}
 	if msg.Resume != nil && msg.Resume.ReceiptID != "" {
 		// The publisher already consumed ExpectedStatus in its exact CAS to
 		// queued. The runner claims queued, but must retain the durable

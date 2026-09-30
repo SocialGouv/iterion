@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -534,6 +535,24 @@ func WithForceResume(force bool) EngineOption {
 // a loss that execution met.
 func WithAcceptScratchLoss(accept bool) EngineOption {
 	return func(e *Engine) { e.acceptScratchLoss = accept }
+}
+
+// WithOnResumeClaimed calls fn once, the moment a resume claims the run:
+// past every refusal the engine makes before its claim, before anything of
+// the run executes. A caller that hands the resume to a goroutine reads it
+// to tell a resume the engine refused — fn never called, the run where it
+// was — from one that started.
+func WithOnResumeClaimed(fn func()) EngineOption {
+	return func(e *Engine) { e.onResumeClaimed = fn }
+}
+
+// WithQueuedAttempt makes the resume claim of a queued run the claim of one
+// attempt: the one queued no later than publishedAt, the publication of the
+// delivery this engine executes. A run queued again after it — a cancel, then
+// a new resume — is the newer delivery's to claim, with its own parameters (a
+// consent, --force, answers); this one refuses it.
+func WithQueuedAttempt(publishedAt time.Time) EngineOption {
+	return func(e *Engine) { e.queuedAttempt = publishedAt }
 }
 
 // WithExpectedResumeStatus narrows the resume claim to one exact source

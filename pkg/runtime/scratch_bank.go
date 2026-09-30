@@ -824,10 +824,12 @@ func scratchNotPortable(runID, cause string) error {
 // does not extract, or a resume that runs without a sandbox fails it by name
 // (SCRATCH_NOT_PORTABLE): continuing would run the nodes without their
 // scratch, which only a resume that accepts the scratch's loss does. The bank
-// is checked on the host before anything reaches the sandbox, so every later
-// failure — a read that stops on the way, the stream into the sandbox, its
-// tar — is a transport's: the resume fails without a code and is retried,
-// --force or not.
+// is checked on the host before anything reaches the sandbox, so a later
+// failure is the sandbox's own or a transport's, and the restore script tells
+// them apart: its exit says when the sandbox's tar refused the bank — refused
+// by name, like a bank that is gone — while a read that stops on the way or a
+// stream into the sandbox that breaks is a transport's: the resume fails
+// without a code and is retried, --force or not.
 func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	unread := func(what string, err error) error {
 		e.scratchBankHeld = true
@@ -837,9 +839,9 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	if err != nil {
 		return unread("the last teardown's record of the scratch cannot be read", err)
 	}
-	// gone is a loss only a restore finds: refused by name, unless this
+	// goneWith is a loss only a restore finds: refused by name, unless this
 	// resume accepts the scratch's loss — --force alone never does.
-	gone := func(what string, err error) error {
+	goneWith := func(what, hint string, err error) error {
 		if e.acceptScratchLoss {
 			reason := fmt.Sprintf("%s: %v", what, err)
 			if e.logger != nil {
@@ -854,10 +856,11 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 		return &RuntimeError{
 			Code:    ErrCodeScratchNotPortable,
 			Message: fmt.Sprintf("run %s: %s", runID, what),
-			Hint:    scratchLossHint,
+			Hint:    hint,
 			Cause:   err,
 		}
 	}
+	gone := func(what string, err error) error { return goneWith(what, scratchLossHint, err) }
 	if p.unknown {
 		// Not refused — the scratch may have held nothing — but said.
 		if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "reason": "the last teardown could not read the scratch: " + p.reason}); err != nil && e.logger != nil {
@@ -895,6 +898,9 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	}
 	defer bank.release()
 	if err := restoreScratch(rctx, e.activeShare.Run, sandboxScratchContainerPath, bank.file); err != nil {
+		if errors.Is(err, errSandboxRefusesBank) {
+			return goneWith("the scratch banked at the last teardown does not extract in this sandbox (what its tar extracted before failing stays in the scratch)", scratchRefusedHint, err)
+		}
 		return unread("the scratch banked at the last teardown could not be streamed into the sandbox", err)
 	}
 	data := map[string]any{"restored": true, "bytes": bank.size}
@@ -949,6 +955,17 @@ var errResumedWithoutSandbox = errors.New("no sandbox to restore the scratch int
 // errBankDoesNotExtract is a bank the host refused: truncated, corrupt, not
 // a gzip'd tar, larger than the cap. Retrying reads the same bytes.
 var errBankDoesNotExtract = errors.New("the bank does not extract")
+
+// errSandboxRefusesBank is a bank the host checked extracts, refused in the
+// sandbox by the restore itself: a scratch it cannot create, a member its tar
+// cannot recreate (a read-only directory with contents, extracted as a user
+// that cannot write it), a full disk. Retrying in the same sandbox image is
+// likely to meet the same refusal.
+var errSandboxRefusesBank = errors.New("the sandbox's tar refuses the bank")
+
+// scratchRefusedHint is the hint of a bank the sandbox refused: the bank is
+// kept, so a resume where the sandbox can extract it still restores it.
+const scratchRefusedHint = "the bank is kept: a later resume tries it again, in a sandbox that can extract it; or relaunch the run fresh; or resume it accepting the scratch's loss (--accept-scratch-loss) to continue as it stands"
 
 // fetchedBank is a bank read whole onto the host and checked to extract.
 type fetchedBank struct {
@@ -1027,15 +1044,32 @@ func checkBankExtracts(r io.Reader) error {
 	return zr.Close()
 }
 
-// restoreScratch extracts a bank into dir, inside run.
+// scratchRestoreScript extracts the bank on its stdin into $1. It exits
+// scratchRestoreRefused when the sandbox refuses it — the directory cannot be
+// made, or tar fails — so that a transport which breaks, and exits with a code
+// of its own (kubectl's 1), is not read as the sandbox's refusal.
+const scratchRestoreScript = `mkdir -p "$1" || exit 5
+tar -C "$1" -xzf - && exit 0
+echo "tar exited $?" >&2
+exit 5`
+
+// scratchRestoreRefused is scratchRestoreScript's exit when the sandbox
+// refused the bank.
+const scratchRestoreRefused = 5
+
+// restoreScratch extracts a bank into dir, inside run: errSandboxRefusesBank
+// when the sandbox refused it, any other error a transport's.
 func restoreScratch(ctx context.Context, run sandbox.Run, dir string, body io.Reader) error {
 	var stderr bytes.Buffer
-	res, err := run.Exec(ctx, []string{"sh", "-c", `mkdir -p "$1" && tar -C "$1" -xzf -`, "sh", dir}, sandbox.ExecOpts{Stdin: body, Stderr: &stderr})
+	res, err := run.Exec(ctx, []string{"sh", "-c", scratchRestoreScript, "sh", dir}, sandbox.ExecOpts{Stdin: body, Stderr: &stderr})
 	if err != nil {
 		return err
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("tar exited %d: %s", res.ExitCode, strings.TrimSpace(stderr.String()))
+	switch res.ExitCode {
+	case 0:
+		return nil
+	case scratchRestoreRefused:
+		return fmt.Errorf("%w: %s", errSandboxRefusesBank, strings.TrimSpace(stderr.String()))
 	}
-	return nil
+	return fmt.Errorf("the restore exited %d: %s", res.ExitCode, strings.TrimSpace(stderr.String()))
 }
