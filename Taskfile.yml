@@ -28,6 +28,10 @@ vars:
   COMMIT:
     sh: git rev-parse --short HEAD 2>/dev/null || echo ""
   LDFLAGS: -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v{{.VERSION}} -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit={{.COMMIT}}
+  # The cloud:* tasks name their compose project: a COMPOSE_PROJECT_NAME in
+  # the shell or in .env would otherwise aim them — `down -v
+  # --remove-orphans` included — at another project.
+  CLOUD_COMPOSE: docker compose -p iterion-cloud -f docker-compose.cloud.yml
 
 tasks:
   default:
@@ -1139,24 +1143,24 @@ tasks:
   cloud:up:
     desc: Bring up the cloud-mode local stack (Mongo + NATS + SeaweedFS + iterion)
     cmds:
-      - docker compose -f docker-compose.cloud.yml up -d --build
+      - '{{.CLOUD_COMPOSE}} up -d --build'
 
   cloud:down:
     desc: Tear down the cloud-mode stack including volumes
     cmds:
       # --remove-orphans: also the containers of services the file no
       # longer declares (the MinIO of a stack started before SeaweedFS).
-      - docker compose -f docker-compose.cloud.yml down -v --remove-orphans
+      - '{{.CLOUD_COMPOSE}} down -v --remove-orphans'
 
   cloud:logs:
     desc: Tail logs from every cloud-mode service
     cmds:
-      - docker compose -f docker-compose.cloud.yml logs -f --tail=100
+      - '{{.CLOUD_COMPOSE}} logs -f --tail=100'
 
   cloud:up:deps:
     desc: Bring up only the backing services (Mongo + NATS + SeaweedFS) without iterion
     cmds:
-      - docker compose -f docker-compose.cloud.yml up -d mongo nats seaweedfs s3-init
+      - '{{.CLOUD_COMPOSE}} up -d mongo nats seaweedfs s3-init'
 
   cloud:test:s3:
     desc: Run the S3 gateway compatibility bench against the local stack's SeaweedFS, in its own bucket (after task cloud:up:deps)
@@ -1172,7 +1176,7 @@ tasks:
     cmds:
       # Single quoted arg, not `sh -c '...'` — see studio:dev:backend note
       # (watchexec's default shell re-shells `sh -c`, losing the quoting).
-      - watchexec -r -e go -w cmd -w pkg -- 'docker compose -f docker-compose.cloud.yml up -d --build iterion-server'
+      - watchexec -r -e go -w cmd -w pkg -- '{{.CLOUD_COMPOSE}} up -d --build iterion-server'
 
   changelog:gen:
     desc: Rebuild CHANGELOG.md (current major) + docs/changelog/ archives from git history

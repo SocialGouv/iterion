@@ -130,6 +130,10 @@ task cloud:logs
 task cloud:down              # also removes compose volumes
 ```
 
+A stack started before SeaweedFS replaced MinIO leaves two volumes that
+`cloud:down` no longer knows; remove them once with
+`docker volume rm iterion-cloud_minio-data iterion-cloud_runner-work`.
+
 Desktop, chart, image, and cross-platform packaging tasks are listed by `task --list-all`; use their dedicated runbooks before releasing: [desktop build](desktop-build.md), [desktop release](desktop-release-checklist.md), and [cloud deployment](cloud-deployment.md).
 
 ## Repository structure

@@ -166,11 +166,12 @@ services:
     ports:
       - "4891:4891"
     healthcheck:
-      # /readyz pings Mongo+NATS+S3 with a 1s deadline per dep. A Mongo or
-      # NATS hiccup flips the iterion-server container to unhealthy without
-      # restarting it; S3 is not critical there: with the object store down
-      # /readyz still answers 200, "status":"degraded", the failure in its
-      # "s3" check, and the container stays healthy.
+      # /readyz pings Mongo+NATS+S3 with a 1s deadline per dep. Only Mongo
+      # is critical: with it down /readyz answers 503, and after 30 failed
+      # checks (~150 s) the container turns unhealthy, without a restart.
+      # With NATS or the object store down it answers 200,
+      # "status":"degraded", the failure in that dependency's check, and
+      # the container stays healthy.
       test: ["CMD", "curl", "-fsS", "http://localhost:4891/readyz"]
       interval: 5s
       retries: 30
@@ -188,6 +189,9 @@ services:
       iterion-server:
         condition: service_healthy
     command: ["runner"]
+    # It exits when NATS is not reachable yet (a `docker compose restart`
+    # restarts both at once); come back rather than stay down.
+    restart: on-failure
     environment:
       ITERION_MODE: cloud
       ITERION_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
@@ -199,7 +203,9 @@ services:
       ITERION_S3_ACCESS_KEY_ID: iterion-dev
       ITERION_S3_SECRET_ACCESS_KEY: iterion-dev-secret
       ITERION_S3_USE_PATH_STYLE: "true"
-      ITERION_RUNNER_WORKDIR: /var/lib/iterion/work
+      # The volume is mounted on a directory the image gives to the iterion
+      # user, so a fresh volume starts owned by the runner.
+      ITERION_RUNNER_WORKDIR: /var/lib/iterion
       ITERION_LOG_FORMAT: json
       ITERION_LOG_LEVEL: info
       # Cloud mode refuses to start without a JWT secret: the same value
@@ -212,10 +218,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
-      - runner-work:/var/lib/iterion/work
+      - runner-data:/var/lib/iterion
 
 volumes:
   mongo-data:
   nats-data:
   seaweedfs-data:
-  runner-work:
+  runner-data:
