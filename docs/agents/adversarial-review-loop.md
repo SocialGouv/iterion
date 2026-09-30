@@ -155,9 +155,12 @@ trailers land mid-body, inside the `* ` bullets, where `git interpret-trailers`
 no longer parses them — measured on `7e67663f5`, whose body carries four
 inline `Co-Authored-By:` lines and whose `%(trailers)` prints one. They stay
 **greppable** (`git log --grep='Adversarial-Rounds:' origin/main`) and readable
-by a human, and they parse as real trailers only when the PR squashes a single
-commit. If you want the count to parse on `main`, put it in the squash message
-too.
+by a human. They do not parse on a single-commit PR either: the queue squashes
+with the commit's own message, but GitHub takes `Co-Authored-By:` out of the
+commit's trailer paragraph and re-emits the co-authors — the commit's author
+included, under another address — as a new last paragraph, one below the
+review-cost lines (measured on `086fb8536`). Check a landing with
+`git log -1 --format=%B <sha> | grep Adversarial`, not `%(trailers)`.
 
 An absent trailer is indistinguishable from an oversight — which is exactly the
 ambiguity the signal exists to remove. The trailers are a claim, greppable and
