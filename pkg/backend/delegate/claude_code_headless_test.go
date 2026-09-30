@@ -220,7 +220,7 @@ func TestSandboxedSpawnsRunWithThePinnedEnvironment(t *testing.T) {
 		}
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
 		if formatting {
-			_, _, _ = b.formatOutput(context.Background(), task, "sid")
+			_, _, _, _ = b.formatOutput(context.Background(), task, "sid")
 		} else {
 			_, _ = b.Execute(context.Background(), task)
 		}

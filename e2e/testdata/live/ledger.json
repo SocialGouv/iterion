@@ -92,6 +92,13 @@
       "verdict": "never"
     },
     {
+      "target": "test:live:claude-bg",
+      "last_run": "2026-09-29T17:19:18.058533025Z",
+      "verdict": "pass",
+      "duration_sec": 30,
+      "ref": "45c27cb84780"
+    },
+    {
       "target": "test:live:claw",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"

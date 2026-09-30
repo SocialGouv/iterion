@@ -102,7 +102,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 					var err error
 					var fingerprint string
 					if formatting {
-						_, _, err = b.formatOutput(ctx, task, "env-test")
+						_, _, _, err = b.formatOutput(ctx, task, "env-test")
 					} else {
 						opts, cleanup := b.buildTransportOptions(task)
 						defer cleanup()

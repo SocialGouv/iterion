@@ -42,7 +42,9 @@ type runTurnDoc struct {
 	TextDigest   string               `bson:"text_digest,omitempty"`
 	Usage        store.TurnUsage      `bson:"usage,omitempty"`
 	SessionID    string               `bson:"session_id,omitempty"`
-	MessagesRef  string               `bson:"messages_ref,omitempty"`
+	// TerminatedBackground: see store.TurnCheckpoint.TerminatedBackground.
+	TerminatedBackground []string `bson:"terminated_background,omitempty"`
+	MessagesRef          string   `bson:"messages_ref,omitempty"`
 	// Messages is the raw claw []api.Message blob captured with the turn,
 	// stored inline. The read methods (LoadTurn/ListTurns/LatestTurn/
 	// LoadTurnAtIndex) deliberately do NOT surface it — mirroring the fs
@@ -73,6 +75,8 @@ func (d runTurnDoc) toCheckpoint() *store.TurnCheckpoint {
 		MessagesRef:  d.MessagesRef,
 		GitRef:       d.GitRef,
 		WrittenAt:    d.WrittenAt,
+
+		TerminatedBackground: d.TerminatedBackground,
 	}
 }
 
@@ -121,6 +125,8 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 		Messages:     t.Messages,
 		GitRef:       t.GitRef,
 		WrittenAt:    t.WrittenAt,
+
+		TerminatedBackground: t.TerminatedBackground,
 	}
 	filter := turnKeyFilter(ctx, t.RunID, t.NodeID, t.LoopIter, t.TurnIndex)
 	if _, err := s.runTurns.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {

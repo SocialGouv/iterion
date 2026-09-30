@@ -3,7 +3,10 @@ package rewrite
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/plugin"
@@ -136,5 +139,75 @@ func TestChainComposesTwoRewriters(t *testing.T) {
 	got, changed := chain.Rewrite(context.Background(), On, "x")
 	if !changed || got != "b:a:x" {
 		t.Fatalf("chain compose = %q, want %q", got, "b:a:x")
+	}
+}
+
+// A compressing shell runs with each available rewriter's run env, in chain
+// order and sorted within a spec (a deterministic environment); a rewriter
+// whose binary is absent runs nothing and adds nothing.
+func TestAChainsRunEnvIsItsAvailableRewritersRunEnv(t *testing.T) {
+	first := fakeRewriter(t, "exit 1\n", nil, nil)
+	first.RunEnv = map[string]string{"E": "5", "B": "2", "D": "4", "A": "1", "C": "3"}
+	absent := plugin.RewriterSpec{ID: "absent", Locate: plugin.LocateSpec{Paths: []string{filepath.Join(t.TempDir(), "missing")}},
+		Invoke: plugin.InvokeSpec{Argv: []string{"{{command}}"}}, RunEnv: map[string]string{"ABSENT_STORE": "on"}}
+	last := fakeRewriter(t, "exit 1\n", nil, nil)
+	last.RunEnv = map[string]string{"Z": "last"}
+	got := NewChain([]plugin.RewriterSpec{first, absent, last}).RunEnv()
+	want := []string{"A=1", "B=2", "C=3", "D=4", "E=5", "Z=last"}
+	if !slices.Equal(got, want) {
+		t.Errorf("RunEnv = %v, want %v", got, want)
+	}
+	if env := (*Chain)(nil).RunEnv(); env != nil {
+		t.Errorf("a nil chain's RunEnv = %v", env)
+	}
+}
+
+// A compressed command exports the chain's run env itself, ahead of what it
+// runs: the shell running it may have replaced the environment it was given
+// (claude_code's settings env, the operator's shell rc). A value is quoted;
+// a command no rewriter changed carries nothing.
+func TestACompressedCommandExportsTheRunEnv(t *testing.T) {
+	spec := fakeRewriter(t, "case \"$2\" in git*) printf 'rtk %s' \"$2\";; *) exit 1;; esac\n", nil, nil)
+	spec.RunEnv = map[string]string{"RTK_DB_PATH": "/dev/null/iterion-rtk-history.db", "RTK_RECALL": "0", "RTK_NOTE": "a b'c"}
+	chain := NewChain([]plugin.RewriterSpec{spec})
+	got, changed := chain.Rewrite(context.Background(), On, "git status")
+	if want := `export RTK_DB_PATH=/dev/null/iterion-rtk-history.db RTK_NOTE='a b'\''c' RTK_RECALL=0; rtk git status`; !changed || got != want {
+		t.Errorf("Rewrite = %q (changed %v), want %q", got, changed, want)
+	}
+	if got, changed := chain.Rewrite(context.Background(), On, "ls -la"); changed || got != "ls -la" {
+		t.Errorf("an unchanged command: %q (changed %v)", got, changed)
+	}
+	cmd, _ := chain.Rewrite(context.Background(), On, "git x")
+	sh, err := exec.Command("bash", "-c", strings.Replace(cmd, "rtk git x", `printf '%s|%s|%s' "$RTK_DB_PATH" "$RTK_RECALL" "$RTK_NOTE"`, 1)).Output()
+	if err != nil || string(sh) != "/dev/null/iterion-rtk-history.db|0|a b'c" {
+		t.Errorf("the exported env as the shell reads it: %q %v", sh, err)
+	}
+}
+
+// Ultra mode's flag goes after the rewriter's own name: a rewrite that keeps
+// a leading command of the agent's (`cd x && rtk …`, `FOO=1 rtk …`) runs that
+// command as written.
+func TestUltraFlagNeverLandsOnTheAgentsLeadingCommand(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	spec := fakeRewriter(t, `case "$2" in *"git status"*) printf '%s' "$2" | sed 's/git status/rtk git status/';; *) exit 1;; esac`+"\n", nil, nil)
+	spec.Locate.Bin = "rtk"
+	spec.Invoke.Modes = map[string]plugin.ModeSpec{"ultra": {InjectFlag: "--ultra-compact"}}
+	chain := NewChain([]plugin.RewriterSpec{spec})
+	dir := t.TempDir()
+	for _, c := range []struct{ in, want string }{
+		{"git status", "rtk --ultra-compact git status"},
+		{"cd " + dir + " && git status", "cd " + dir + " && rtk git status"},
+		{"FOO=1 git status", "FOO=1 rtk git status"},
+		{"timeout 10 git status", "timeout 10 rtk git status"},
+	} {
+		got, changed := chain.Rewrite(context.Background(), Ultra, c.in)
+		if !changed || got != c.want {
+			t.Errorf("Rewrite(ultra, %q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// The agent's own leading command still runs: cd accepts the rewrite.
+	got, _ := chain.Rewrite(context.Background(), Ultra, "cd "+dir+" && git status")
+	if out, err := exec.Command("bash", "-c", "rtk() { :; }; "+got).CombinedOutput(); err != nil {
+		t.Errorf("%q: %v %s", got, err, out)
 	}
 }

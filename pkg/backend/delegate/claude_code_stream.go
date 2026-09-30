@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -211,6 +212,12 @@ type sessionMeta struct {
 	// (usageByMsg only stores what each id last contributed).
 	usageByMsg map[string]claudesdk.Usage
 	usageTotal claudesdk.Usage
+
+	// terminatedBackground labels the background work that never reported
+	// back when the session ended — still running, or finished without its
+	// result reaching the agent: it is lost with the process. A later resume
+	// of this transcript is told so (see SessionLedger).
+	terminatedBackground []string
 }
 
 // accumulateAssistantUsage records one streamed assistant message's
@@ -230,6 +237,16 @@ func (sm *sessionMeta) accumulateAssistantUsage(msgID string, u claudesdk.Usage)
 	return sm.usageTotal
 }
 
+// claudeSessionID is a call's session id: the result message's when there is
+// one — the same id, read from the authoritative end of the session — and the
+// streamed one otherwise.
+func claudeSessionID(rm *claudesdk.ResultMessage, sm sessionMeta) string {
+	if rm != nil && rm.SessionID != "" {
+		return rm.SessionID
+	}
+	return sm.sessionID
+}
+
 // applyClaudeCodeSessionMeta merges the streamed session metadata and
 // the final ResultMessage's per-model usage into Result so the runtime
 // can stamp them on the node's output for the studio's run view. The
@@ -245,20 +262,16 @@ func applyClaudeCodeSessionMeta(out *Result, rm *claudesdk.ResultMessage, sm ses
 	out.PeakInputTokens = sm.peakContextLoad
 	out.ThinkingTokens = sm.thinkingTokens
 	out.ThinkingMs = sm.thinkingMs
-	// One rule for the id, so every caller can hand it a zero-valued
-	// Result and get the same answer: the result message's when there is
-	// one — the same id, read from the authoritative end of the session —
-	// and the streamed one otherwise. The rm-less callers are the pause
-	// (where the id then travels the checkpoint) and a stream that died
-	// (where it is reporting only; see sessionMeta.sessionID).
+	out.TerminatedBackgroundTasks = sm.terminatedBackground
+	// One rule for the id (claudeSessionID), so every caller can hand it a
+	// zero-valued Result and get the same answer. The rm-less callers are
+	// the pause (where the id then travels the checkpoint) and a stream that
+	// died (where it is reporting only; see sessionMeta.sessionID).
 	if out.SessionID == "" {
-		out.SessionID = sm.sessionID
+		out.SessionID = claudeSessionID(rm, sm)
 	}
 	if rm == nil {
 		return
-	}
-	if rm.SessionID != "" {
-		out.SessionID = rm.SessionID
 	}
 	if mu, ok := rm.ModelUsage[sm.effectiveModel]; ok {
 		out.ContextWindow = mu.ContextWindow
@@ -290,7 +303,61 @@ func applyClaudeCodeSessionMeta(out *Result, rm *claudesdk.ResultMessage, sm ses
 // stuck in ep_poll without any propagated error). The aborted session
 // returns an error the runtime classifies as resumable, so the recovery
 // dispatcher retries automatically.
-func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task Task, opts []claudesdk.Option) (*claudesdk.ResultMessage, sessionMeta, error) {
+func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task Task, opts []claudesdk.Option) (rm *claudesdk.ResultMessage, meta sessionMeta, err error) {
+	// Background work (see claude_code_background.go): the tracker is fed on
+	// the SDK reader goroutine, ahead of this loop.
+	bgCfg := resolveBackgroundLifecycleConfig()
+	tracker := newBackgroundTracker()
+	tracker.redact = labelRedactor(task)
+	bgWarn := func(format string, args ...any) {
+		b.Logger.Warn("[%s#%d/claude-code] ⏳ "+format, append([]any{task.NodeID, task.Iteration}, args...)...)
+	}
+	var bgEmit func(BackgroundWork)
+	if fn := task.Hooks.OnBackgroundWork; fn != nil {
+		bgEmit = func(w BackgroundWork) {
+			w.Backend = BackendClaudeCode
+			fn(w)
+		}
+	}
+	bg := newBgLifecycle(bgCfg, tracker, len(task.OutputSchema) > 0, task.ToolMaxSteps, bgWarn, bgEmit)
+	opts = append(opts, claudesdk.WithMessageObserver(tracker.observe))
+	if bgCfg.enabled {
+		// The CLI's own signals of what it delivered (see backgroundTracker):
+		// its session state, pinned on — idle would otherwise be reported
+		// while agents still run — and the replay of each message iterion
+		// writes, at the moment a turn takes it.
+		// The CLI's own idle exit is off: the session ends when iterion
+		// decides, not a host setting's delay after an idle.
+		opts = append(opts,
+			claudesdk.WithEnv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1"),
+			claudesdk.WithEnv("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1"),
+			claudesdk.WithEnv("CLAUDE_CODE_EXIT_AFTER_STOP_DELAY", ""),
+			claudesdk.WithReplayUserMessages())
+		// Where each SendMessage ran (backgroundTracker.noteSendExecuted): the
+		// hook runs on the reader goroutine, in the stream's order.
+		sendMatcher := "^SendMessage$"
+		opts = append(opts, claudesdk.WithHook(claudesdk.HookPostToolUse, claudesdk.HookMatcher{
+			Matcher: &sendMatcher,
+			Handler: stampSendExecution(tracker),
+		}))
+		if bgCfg.idleSettle <= 0 {
+			bgWarn("ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE=%s: the session ends on the CLI's first idle — which it can report an instant before a turn it re-kicks, so a node may keep a report that predates a delivery", bgCfg.idleSettle)
+		}
+	}
+	// Work that never reported back when the session ends is lost with the
+	// process: say so, and hand its labels to whoever resumes this transcript
+	// (the session ledger, see SessionLedger).
+	defer func() {
+		reason := "the session ended"
+		if err != nil {
+			reason = "the session ended on an error (" + truncate(redactWith(task.RedactSecrets, err.Error()), 120) + ")"
+		}
+		bg.onExit(reason)
+		if len(bg.terminated) > 0 {
+			meta.terminatedBackground = bgTaskLabels(bg.terminated)
+		}
+	}()
+
 	sess := claudesdk.NewSession(opts...)
 	defer func() { _ = sess.Close() }()
 
@@ -302,6 +369,15 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	// auth pre-flight rejection); non-zero means it crashed (e.g. 127 = "exec
 	// not found in container PATH" surfaced by docker exec, signal exits
 	// reported as 128+signum).
+	// sendTagged writes a message of iterion's own, tagged so the CLI's
+	// replay of it shows when a turn took it.
+	sendTagged := func(msg string) error {
+		uuid := newMessageUUID()
+		// Recorded first: the CLI may replay it before the write returns.
+		tracker.sent(uuid)
+		return sess.SendTagged(ctx, msg, uuid)
+	}
+
 	silentExitErr := func() error {
 		_ = sess.Close()
 		return fmt.Errorf("claude session ended without result message (cli_exit_code=%d)", sess.ExitCode())
@@ -328,18 +404,20 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	// switch to the hot timeout (give claude room for sub-agent runs
 	// or other long tool calls).
 	receivedAny := false
+	// result is the CURRENT turn stream's result: cleared on every re-entry,
+	// while bg.agg keeps every result of the session (spend, final report).
 	var result *claudesdk.ResultMessage
 	// Pass-1 fallback: claude-code's stream-json output sometimes
 	// emits the final `result` event with an empty `result` text
 	// (only token/duration metadata), even when the assistant
 	// produced a substantive final message. Track the last text
-	// content from any AssistantMessage so parseSDKOutput can fall
+	// content of the MAIN agent (a subagent's text rides the same stream
+	// and is not the node's answer), per turn, so parseSDKOutput can fall
 	// back to it when ResultMessage.Result is empty — critical for
 	// sandboxed runs where the formatOutput Pass 2 can't recover
 	// (the in-container session is unreachable from the host
 	// claude that runs the formatting prompt).
 	var lastAssistantText string
-	var meta sessionMeta
 	// lastItemTime anchors the best-effort thinking-time proxy: when an
 	// assistant message leads with thinking, the gap since the previous
 	// stream item is the wall-clock the model spent reasoning before
@@ -352,24 +430,29 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	inFlightTools := make(map[string]string)
 	// Circuit-breaker for degenerate tool-error loops (see
 	// resolveMaxConsecutiveToolErrors): count CONSECUTIVE tool-result
-	// errors, reset on any success, abort when the streak crosses the cap.
+	// errors per agent, reset on any success, abort when a streak crosses the
+	// cap.
 	maxToolErrors := resolveMaxConsecutiveToolErrors()
-	consecutiveToolErrors := 0
+	toolErrStreaks := map[string]int{}
 	currentTimeout := coldTimeout
 	idle := time.NewTimer(currentTimeout)
 	defer idle.Stop()
 
-	// Deadlock guard (see defaultOrchStallTimeout): spawnedTask records whether
-	// the model ever started background work (a subagent, a run_in_background
-	// command); awaitingBlockingTool records whether its most recent turn left
-	// it blocked on TaskOutput/Monitor, stallTool which one. Blocked on a
-	// blocking orchestration tool with nothing to wait on == a hung wait that
-	// can never return → short-circuit the idle budget, then recover in place
-	// (see defaultOrchRecoveryTimeout): recovering is set between the
-	// interrupt and the turn closing, recovered once a recovery was spent —
-	// a second stall on the same session is aborted.
+	// Deadlock guard (see defaultOrchStallTimeout): blockingCalls holds the
+	// main agent's TaskOutput/Monitor calls still waiting for their result
+	// (tool_use id → tool name), stallTool the latest one. Only the main
+	// agent's own messages set or clear it: a subagent streaming meanwhile
+	// does not unblock the parent. Blocked on a blocking orchestration tool
+	// with nothing to wait on == a hung wait that can never return →
+	// short-circuit the idle budget, then recover in place (see
+	// defaultOrchRecoveryTimeout): recovering is set between the interrupt and
+	// the turn closing, recovered once a recovery was spent — a second stall
+	// on the same session is aborted. "Something to wait on" is LIVE state
+	// when the CLI reports its tasks (tracker view) and the lifecycle is on;
+	// spawnedTask — did the model ever start background work — is the rule
+	// otherwise.
 	spawnedTask := false
-	awaitingBlockingTool := false
+	blockingCalls := map[string]string{}
 	stallTool := ""
 	stallIdle := time.Duration(0)
 	recovering := false
@@ -386,6 +469,12 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				Recovered: ok,
 			})
 		}
+	}
+	waitableWork := func() bool {
+		if v := tracker.view(); bg.active(v) && v.visible {
+			return v.waitable
+		}
+		return spawnedTask
 	}
 
 	// Forward-progress watchdog (see defaultNoProgressTimeout): a SECOND timer,
@@ -404,14 +493,23 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 		if progressTimer == nil {
 			return
 		}
-		if !progressTimer.Stop() {
-			select {
-			case <-progressTimer.C:
-			default:
-			}
-		}
+		stopTimer(progressTimer)
 		progressTimer.Reset(noProgress)
 	}
+
+	// The background lifecycle's own timer (see bgLifecycle.timer). While the
+	// parent idles on work that reports only when it is done, that timer
+	// governs and the generic silence / no-progress watchdogs rest.
+	bgTimer := time.NewTimer(time.Hour)
+	stopTimer(bgTimer)
+	defer bgTimer.Stop()
+	var bgKind bgTimerKind
+	genericSuspended := false
+	// turnActive is the loop's OWN reading of whether the CLI is inside a
+	// turn — from the messages this loop has processed. The tracker is fed
+	// ahead of the loop and would call a turn over before its result reached
+	// here (see bgLifecycle.timer).
+	turnActive := false
 
 	for {
 		// Pick the timeout that matches the current phase and reset
@@ -419,10 +517,11 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 		// tokens, tool calls, tool results) flips us into hot mode
 		// and grants the longer budget on every subsequent wait.
 		currentTimeout = resetIdleTimer(idle, receivedAny, coldTimeout, hotTimeout)
-		// If the model is blocked on TaskOutput/Monitor without ever having
-		// spawned a Task, clamp the wait to the short orchestration-stall
+		blocked := len(blockingCalls) > 0
+		// If the model is blocked on TaskOutput/Monitor with no background
+		// work to wait on, clamp the wait to the short orchestration-stall
 		// budget: that wait cannot make progress.
-		if awaitingBlockingTool && !spawnedTask && orchStall > 0 && (currentTimeout <= 0 || orchStall < currentTimeout) {
+		if blocked && !waitableWork() && orchStall > 0 && (currentTimeout <= 0 || orchStall < currentTimeout) {
 			currentTimeout = orchStall
 			idle.Reset(orchStall)
 		}
@@ -431,6 +530,29 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 		if recovering {
 			currentTimeout = orchRecovery
 			idle.Reset(orchRecovery)
+		}
+		bg.episodeCheck(time.Now())
+		var bgD time.Duration
+		var suspend bool
+		bgD, bgKind, suspend = bg.timer(time.Now(), result != nil, turnActive)
+		if suspend && !recovering {
+			stopTimer(idle)
+			currentTimeout = 0
+			if progressTimer != nil {
+				stopTimer(progressTimer)
+			}
+			genericSuspended = true
+		} else if genericSuspended {
+			// A turn started again: the no-progress clock restarts from now.
+			genericSuspended = false
+			resetProgress()
+		}
+		stopTimer(bgTimer)
+		if bgKind != bgTimerNone {
+			if bgD < 0 {
+				bgD = 0
+			}
+			bgTimer.Reset(bgD)
 		}
 
 		select {
@@ -441,16 +563,17 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				// not return and let the model continue on a fresh turn.
 				if result == nil {
 					reportStall(false)
-					return nil, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the session ended while the interrupt was pending (cli_exit_code=%d); aborting for auto-retry", sess.ExitCode()))
+					return bg.final(), meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the session ended while the interrupt was pending (cli_exit_code=%d); aborting for auto-retry", sess.ExitCode()))
 				}
-				if err := sess.Send(ctx, orchStallNudge(stallTool)); err != nil {
+				if err := sendTagged(orchStallNudge(stallTool)); err != nil {
 					reportStall(false)
-					return nil, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: could not send the follow-up (%v); aborting for auto-retry", err))
+					return bg.final(), meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: could not send the follow-up (%v); aborting for auto-retry", err))
 				}
 				items = forwardSessionStream(streamCtx, sess)
 				recovering, recovered = false, true
-				awaitingBlockingTool = false
+				clear(blockingCalls)
 				result = nil
+				lastAssistantText = ""
 				b.Logger.Warn("[%s#%d/claude-code] 🪤 interrupted the pending %s call; the session continues in place with a note that it was waiting on nothing",
 					task.NodeID, task.Iteration, stallTool)
 				reportStall(true)
@@ -459,6 +582,25 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			if !ok {
 				// Stream closed without surfacing an error.
 				if result == nil {
+					if bg.reentries > 0 {
+						_ = sess.Close()
+						if v := tracker.view(); bg.active(v) && v.settled && sess.ExitCode() == 0 {
+							if bg.sourceTurns {
+								// Its last turns may answer a turn source, and no
+								// request for the report can reach it any more.
+								// The idle it exited on delivered what ended before.
+								tracker.settledDelivered()
+								bg.onExit("the CLI exited at rest after turns a task that keeps running may have prompted")
+								return bg.final(), meta, &ErrTransient{Provider: BackendClaudeCode, Reason: "the session's last report may not answer the task",
+									Detail: "the CLI exited at rest after turns a turn source (a monitor, a teammate) may have prompted; no request for the report could reach it"}
+							}
+							// The CLI exited cleanly at rest: everything it waited
+							// for was delivered before it did.
+							bg.settledEnd(time.Now())
+							return bg.final(), meta, nil
+						}
+						return bg.final(), meta, fmt.Errorf("claude session ended while waiting for its background work, with no result for the turn in progress (cli_exit_code=%d)", sess.ExitCode())
+					}
 					return nil, meta, silentExitErr()
 				}
 				// Backfill an empty Result with the captured last
@@ -476,10 +618,29 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				} else {
 					b.Logger.Info("[%s#%d/claude-code] 🏁 stream close: Result nil and no assistant text captured", task.NodeID, task.Iteration)
 				}
-				return result, meta, nil
+				action, msg := bg.atClose(time.Now(), result)
+				if action == bgReturn {
+					return bg.final(), meta, nil
+				}
+				if action == bgReenterAfterSend {
+					if err := sendTagged(msg); err != nil {
+						return bg.final(), meta, fmt.Errorf("claude session: could not send the background-work follow-up: %w", err)
+					}
+				} else {
+					v := tracker.view()
+					b.Logger.Info("[%s#%d/claude-code] ⏳ turn ended with %d background task(s) still running or undelivered — keeping the session open for them: %s",
+						task.NodeID, task.Iteration, len(v.held)+len(v.undelivered), strings.Join(bgTaskLabels(append(v.held, v.undelivered...)), "; "))
+				}
+				items = forwardSessionStream(streamCtx, sess)
+				bg.reentries++
+				result = nil
+				lastAssistantText = ""
+				turnActive = false
+				clear(blockingCalls)
+				continue
 			}
 			if it.err != nil {
-				return result, meta, it.err
+				return bg.final(), meta, it.err
 			}
 			// Any incoming item proves the SDK is alive — flip into
 			// hot-timeout mode for the rest of the session. Log the
@@ -499,17 +660,18 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			switch m := it.msg.(type) {
 			case *claudesdk.SystemMessage:
 				b.handleSystemMessage(m, task, &meta)
+				if m.Subtype == "init" {
+					turnActive = true
+				}
 			case *claudesdk.AssistantMessage:
 				if err := b.handleAssistantMessage(m, task, inFlightTools, &meta, &lastAssistantText, lastItemTime, cancelStream); err != nil {
-					return result, meta, err
+					return bg.final(), meta, err
 				}
-				// Track subagent orchestration for the deadlock guard: a Task
-				// call means real subagents are in play (legit long waits ahead);
-				// a TaskOutput/Monitor call leaves this turn blocked awaiting a
-				// result. Reset awaiting on each assistant turn so only the LATEST
-				// blocking call counts.
-				awaitingBlockingTool = false
-				if recovering {
+				mainAgent := isMainAgentMessage(m.ParentToolUseID)
+				if mainAgent {
+					turnActive = true
+				}
+				if recovering && mainAgent {
 					// The model took the interrupted tool result and went on
 					// by itself: the session is moving again, and this turn's
 					// result is a real one — no follow-up needed.
@@ -518,6 +680,10 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 						task.NodeID, task.Iteration, stallTool)
 					reportStall(true)
 				}
+				// Track orchestration for the deadlock guard: a Task call means
+				// real subagents are in play (legit long waits ahead); a main
+				// agent's TaskOutput/Monitor call leaves its turn blocked until
+				// that call's own result comes back.
 				if m.Message != nil {
 					for _, blk := range m.Message.Content {
 						if tu, ok := blk.(*claudesdk.ToolUseBlock); ok {
@@ -525,31 +691,49 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 							if spawnsBackgroundWork(tu) {
 								spawnedTask = true
 							}
-							if isBlockingOrchestrationTool(tu.Name) {
-								awaitingBlockingTool = true
+							if mainAgent && isBlockingOrchestrationTool(tu.Name) {
+								blockingCalls[tu.ID] = tu.Name
 								stallTool = tu.Name
 							}
 						}
 					}
 				}
 			case *claudesdk.UserMessage:
-				// A tool result came back — the blocking wait (if any) returned.
-				awaitingBlockingTool = false
+				if m.IsReplay {
+					// The CLI re-emitting a message a turn took — the node's own
+					// prompt, or one of iterion's (--replay-user-messages): the
+					// tracker reads it; it is neither the agent's output nor
+					// progress, and never goes to the run log.
+					b.Logger.Debug("[%s#%d/claude-code] ↩️  a turn took a user message (uuid %s)", task.NodeID, task.Iteration, m.UUID)
+					break
+				}
+				// A main-agent tool result came back: the blocking wait it
+				// answers (if any) returned.
+				if isMainAgentMessage(m.ParentToolUseID) && m.Message != nil {
+					for _, blk := range m.Message.Content {
+						if tr, ok := blk.(*claudesdk.ToolResultBlock); ok {
+							delete(blockingCalls, tr.ToolUseID)
+						}
+					}
+				}
 				progressed = true // a tool completed and returned a result
-				if err := b.handleUserMessage(m, task, inFlightTools, &consecutiveToolErrors, maxToolErrors, cancelStream); err != nil {
-					return result, meta, err
+				if err := b.handleUserMessage(m, task, inFlightTools, toolErrStreaks, maxToolErrors, cancelStream); err != nil {
+					return bg.final(), meta, err
 				}
 			case *claudesdk.ResultMessage:
 				result = m
+				turnActive = false
+				clear(blockingCalls)
 				progressed = true // a turn completed
 				backfillEmptyResult(result, lastAssistantText)
+				bg.addResult(m)
 			case *claudesdk.RateLimitEvent:
 				// The provider's own account of how much of the
 				// subscription is left. Not progress: it arrives on a
 				// timer of the CLI's own, and letting it reset the
 				// forward-progress watchdog would mask a spinning session.
 				if err := b.handleRateLimitEvent(m, task, cancelStream); err != nil {
-					return result, meta, err
+					return bg.final(), meta, err
 				}
 			default:
 				if it.msg != nil {
@@ -562,6 +746,56 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			// Advance the thinking-time anchor to this item's arrival so the
 			// next thinking-bearing turn measures only its own reasoning gap.
 			lastItemTime = time.Now()
+		case <-bgTimer.C:
+			now := time.Now()
+			switch bgKind {
+			case bgTimerWait:
+				// The parent is idle and the wait budget is spent: ask for the
+				// report now (it is between turns, so the message starts one).
+				if tracker.cliMovedOn() {
+					continue // a turn is starting; its close decides
+				}
+				action, msg := bg.wrapUp(now, tracker.view(), fmt.Sprintf("the background wait budget (%s) is spent", bgCfg.wait))
+				if action == bgReenterAfterSend {
+					if err := sendTagged(msg); err != nil {
+						return bg.final(), meta, fmt.Errorf("claude session: could not send the background wrap-up: %w", err)
+					}
+				}
+			case bgTimerAutoTurn:
+				if tracker.cliMovedOn() {
+					continue // the CLI started the turn after all
+				}
+				done, msg, endErr := bg.autoTurnExpired(now)
+				if done {
+					b.Logger.Info("[%s#%d/claude-code] ⏳ no further turn after the background work finished — ending the session", task.NodeID, task.Iteration)
+					cancelStream()
+					return bg.final(), meta, endErr
+				}
+				if msg != "" {
+					if err := sendTagged(msg); err != nil {
+						return bg.final(), meta, fmt.Errorf("claude session: could not send the background follow-up: %w", err)
+					}
+				}
+			case bgTimerFinalize:
+				endErr := bg.finalizeExpired()
+				cancelStream()
+				return bg.final(), meta, endErr
+			case bgTimerSettle:
+				// The CLI's idle held: everything it waited for came back and
+				// was delivered.
+				if tracker.cliMovedOn() || !tracker.view().settled {
+					continue
+				}
+				if msg := bg.settle(now); msg != "" {
+					if err := sendTagged(msg); err != nil {
+						return bg.final(), meta, fmt.Errorf("claude session: could not send the background wrap-up: %w", err)
+					}
+					continue
+				}
+				b.Logger.Info("[%s#%d/claude-code] ⏳ the CLI reports idle with all background work delivered — ending the session", task.NodeID, task.Iteration)
+				cancelStream()
+				return bg.final(), meta, nil
+			}
 		case <-idle.C:
 			if currentTimeout <= 0 {
 				continue
@@ -573,7 +807,7 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				b.Logger.Warn("[%s#%d/claude-code] 🪤 the %s interrupt did not close the turn within %s — aborting for auto-retry",
 					task.NodeID, task.Iteration, stallTool, currentTimeout)
 				reportStall(false)
-				return result, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the interrupt did not close the turn within %s; aborting for auto-retry", currentTimeout))
+				return bg.final(), meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the interrupt did not close the turn within %s; aborting for auto-retry", currentTimeout))
 			}
 			// Deadlock case: blocked on TaskOutput/Monitor with nothing to
 			// wait on. Recover in place once (interrupt + follow-up); abort
@@ -581,7 +815,7 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			// cannot be written. The abort keeps "session idle for" in the
 			// message so isDelegateRetryable still classifies it retryable
 			// → the executor auto-re-executes the node.
-			if awaitingBlockingTool && !spawnedTask {
+			if len(blockingCalls) > 0 && !waitableWork() {
 				stallIdle = currentTimeout
 				if !recovered && orchRecovery > 0 {
 					if err := sess.Interrupt(); err == nil {
@@ -603,7 +837,7 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on %s with no background work to wait on for %s — %s",
 					task.NodeID, task.Iteration, stallTool, currentTimeout, outcome)
 				reportStall(false)
-				return result, meta, orchStallError(currentTimeout, stallTool, outcome)
+				return bg.final(), meta, orchStallError(currentTimeout, stallTool, outcome)
 			}
 			cancelStream()
 			phase := "cold"
@@ -614,8 +848,11 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			}
 			b.Logger.Warn("[%s#%d/claude-code] no SDK message for %s (%s phase) — aborting",
 				task.NodeID, task.Iteration, currentTimeout, phase)
-			return result, meta, fmt.Errorf("claude session idle for %s (%s phase) — aborting (set %s to extend, or 0 to disable)", currentTimeout, phase, envHint)
+			return bg.final(), meta, fmt.Errorf("claude session idle for %s (%s phase) — aborting (set %s to extend, or 0 to disable)", currentTimeout, phase, envHint)
 		case <-progressC:
+			if genericSuspended {
+				continue
+			}
 			// The session kept talking (idle timer never fired) but made no
 			// forward progress (no tool call, no result) for the whole
 			// no-progress budget: a spin (re-planning in circles, the
@@ -624,10 +861,21 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			cancelStream()
 			b.Logger.Warn("[%s#%d/claude-code] no forward progress (no tool call/result) for %s while still streaming — aborting for auto-retry (spin/degraded loop)",
 				task.NodeID, task.Iteration, noProgress)
-			return result, meta, fmt.Errorf("claude session idle for %s — no forward progress (no tool call or result while still streaming); aborting for auto-retry (tune ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT, 0 to disable)", noProgress)
+			return bg.final(), meta, fmt.Errorf("claude session idle for %s — no forward progress (no tool call or result while still streaming); aborting for auto-retry (tune ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT, 0 to disable)", noProgress)
 		case <-ctx.Done():
 			cancelStream()
-			return result, meta, ctx.Err()
+			return bg.final(), meta, ctx.Err()
+		}
+	}
+}
+
+// stopTimer stops t and drains a fire that raced the Stop, so the next Reset
+// starts clean.
+func stopTimer(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
 		}
 	}
 }
@@ -783,7 +1031,7 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 	if m.Message == nil {
 		return nil
 	}
-	logAssistantContent(b.Logger, task.NodeID, task.Iteration, m.Message.Content)
+	logAssistantContent(b.Logger, task.NodeID, task.Iteration, m.Message.Content, task.RedactSecrets, task.RedactSecretsSpan)
 	emitToolHooks(task.Hooks, m.Message.Content, inFlightTools)
 	// Peak prompt size across turns ≈ how full the context window got.
 	u := m.Message.Usage
@@ -834,22 +1082,26 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 		// studio's run log (expand/collapse), like tool I/O and 💬 text.
 		b.Logger.LogBlock(iterlog.LevelInfo, "🧠",
 			fmt.Sprintf("[%s#%d/claude-code] thinking ~%d tok, %dms:", task.NodeID, task.Iteration, tokens, ms),
-			turnThinking)
+			redactWith(task.RedactSecrets, turnThinking))
 	} else if redactedThinking {
 		ms := int(time.Since(lastItemTime) / time.Millisecond)
 		meta.thinkingMs += ms
 		b.Logger.Info("[%s#%d/claude-code] 🧠 thinking: %dms (content withheld by provider)", task.NodeID, task.Iteration, ms)
 	}
-	// Capture the latest non-empty text block — the final assistant message
-	// is the model's intended answer (and where it puts the JSON).
+	// Capture the latest non-empty text block of the MAIN agent — its final
+	// assistant message is the model's intended answer (and where it puts the
+	// JSON). A subagent's text rides the same stream and is not that answer.
+	mainAgent := isMainAgentMessage(m.ParentToolUseID)
 	for _, block := range m.Message.Content {
 		if tb, ok := block.(*claudesdk.TextBlock); ok && tb.Text != "" {
-			*lastAssistantText = tb.Text
+			if mainAgent {
+				*lastAssistantText = tb.Text
+			}
 			// Rate-limit detection: Anthropic forfait surfaces quota
 			// exhaustion as a plain assistant text block; bail with a typed
 			// error so the runtime can surface "switch provider" guidance.
 			if isRateLimitMessage(tb.Text) {
-				b.Logger.Warn("[%s#%d/claude-code] 🚦 rate-limit signal in assistant text — aborting: %s", task.NodeID, task.Iteration, truncate(tb.Text, 200))
+				b.Logger.Warn("[%s#%d/claude-code] 🚦 rate-limit signal in assistant text — aborting: %s", task.NodeID, task.Iteration, truncate(redactWith(task.RedactSecrets, tb.Text), 200))
 				cancelStream()
 				detail := strings.TrimSpace(tb.Text)
 				kind, window, resetAt := classifyRateLimit(detail, time.Now())
@@ -881,9 +1133,12 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 // handleUserMessage processes a streamed UserMessage (tool results echoed
 // back to the model). It fires tool hooks and runs the degenerate-tool-error
 // circuit breaker: count CONSECUTIVE tool-result errors, reset on any
-// success, and abort once the streak crosses maxToolErrors. Returns a non-nil
-// error on abort; mutates consecutiveToolErrors in place.
-func (b *ClaudeCodeBackend) handleUserMessage(m *claudesdk.UserMessage, task Task, inFlightTools map[string]string, consecutiveToolErrors *int, maxToolErrors int, cancelStream context.CancelFunc) error {
+// success, and abort once the streak crosses maxToolErrors. The streak is kept
+// per agent (keyed by parent_tool_use_id, "" for the main agent): a
+// subagent's results ride the same stream, and neither one agent's successes
+// nor its failures say anything about another's loop. Returns a non-nil error
+// on abort; mutates toolErrStreaks in place.
+func (b *ClaudeCodeBackend) handleUserMessage(m *claudesdk.UserMessage, task Task, inFlightTools map[string]string, toolErrStreaks map[string]int, maxToolErrors int, cancelStream context.CancelFunc) error {
 	b.Logger.Debug("[%s#%d/claude-code] 👤 user message echoed back", task.NodeID, task.Iteration)
 	if m.Message == nil {
 		return nil
@@ -895,20 +1150,28 @@ func (b *ClaudeCodeBackend) handleUserMessage(m *claudesdk.UserMessage, task Tas
 	// to do but never what it returned. Reuses logAssistantContent's
 	// ToolResultBlock case (user content carries no tool_use/text blocks, so
 	// the other cases are no-ops — no double logging with the assistant path).
-	logAssistantContent(b.Logger, task.NodeID, task.Iteration, m.Message.Content)
+	logAssistantContent(b.Logger, task.NodeID, task.Iteration, m.Message.Content, task.RedactSecrets, task.RedactSecretsSpan)
+	agent := ""
+	if m.ParentToolUseID != nil {
+		agent = *m.ParentToolUseID
+	}
 	for _, block := range m.Message.Content {
 		if tr, ok := block.(*claudesdk.ToolResultBlock); ok {
 			if tr.IsError {
-				*consecutiveToolErrors++
+				toolErrStreaks[agent]++
 			} else {
-				*consecutiveToolErrors = 0
+				toolErrStreaks[agent] = 0
 			}
 		}
 	}
-	if maxToolErrors > 0 && *consecutiveToolErrors >= maxToolErrors {
+	if streak := toolErrStreaks[agent]; maxToolErrors > 0 && streak >= maxToolErrors {
 		cancelStream()
-		b.Logger.Warn("[%s#%d/claude-code] %d consecutive tool errors — aborting degenerate tool-error loop", task.NodeID, task.Iteration, *consecutiveToolErrors)
-		return fmt.Errorf("claude session aborted after %d consecutive tool errors — likely a degenerate tool-error loop (set ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS to tune, 0 to disable)", *consecutiveToolErrors)
+		who := ""
+		if agent != "" {
+			who = " (subagent of tool call " + agent + ")"
+		}
+		b.Logger.Warn("[%s#%d/claude-code] %d consecutive tool errors%s — aborting degenerate tool-error loop", task.NodeID, task.Iteration, streak, who)
+		return fmt.Errorf("claude session aborted after %d consecutive tool errors%s — likely a degenerate tool-error loop (set ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS to tune, 0 to disable)", streak, who)
 	}
 	return nil
 }
@@ -989,12 +1252,59 @@ func toolResultContentText(content any) string {
 	}
 }
 
+// labelRedactor: a background task's label is the CLI's command after
+// materialisation, and it reaches prompts (the wrap-up, a resumed process's
+// note), the session ledger, events and the run log — every known value goes
+// back to its placeholder whatever the sink switch says, then the sink
+// redaction runs.
+func labelRedactor(task Task) func(string) string {
+	un, red := task.UnmaterializeSecrets, task.RedactSecrets
+	if un == nil && red == nil {
+		return nil
+	}
+	return func(s string) string { return redactWith(red, redactWith(un, s)) }
+}
+
+// runLogShowMax bounds what the run log shows of one value;
+// runLogRedactMargin is how far past it the redactor reads at least — as far
+// as the longest known secret value (Task.RedactSecretsSpan) when that is
+// longer — so that a secret straddling the bound is recognised whole.
+// Redacting a whole multi-megabyte value (a base64 image) costs seconds on the
+// stream loop.
+const (
+	runLogShowMax      = 64 << 10
+	runLogRedactMargin = 16 << 10
+)
+
+// redactForRunLog redacts what the run log can show of s and cuts it there.
+// span is the longest text red recognises as one secret (Task.RedactSecretsSpan).
+func redactForRunLog(s string, red func(string) string, span int) string {
+	head, cut := secretguard.RedactHead(s, runLogShowMax, max(runLogRedactMargin, span), red)
+	if cut {
+		head += "\n… (truncated)"
+	}
+	return head
+}
+
+// redactWith applies a Task.RedactSecrets-shaped redactor, nil-safe.
+func redactWith(redact func(string) string, s string) string {
+	if redact == nil {
+		return s
+	}
+	return redact(s)
+}
+
 // logAssistantContent emits human-readable info logs for tool calls, tool
 // results, and text deltas from a single message's content blocks. Called for
 // both AssistantMessage content (tool USE + text) and UserMessage content
 // (tool RESULTS) — each message kind only carries its own block types, so the
-// switch naturally logs the right side without overlap.
-func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, blocks []claudesdk.ContentBlock) {
+// switch naturally logs the right side without overlap. redactSpan is
+// Task.RedactSecretsSpan.
+func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, blocks []claudesdk.ContentBlock, redact func(string) string, redactSpan int) {
+	// The run log is an observational sink: known secret values go back to
+	// their placeholders, token shapes to [redacted] (Task.RedactSecrets) —
+	// a tool's output, or the agent's text, may carry what a command printed.
+	red := func(s string) string { return redactWith(redact, s) }
 	for _, block := range blocks {
 		switch bl := block.(type) {
 		case *claudesdk.ToolUseBlock:
@@ -1005,15 +1315,24 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 					break
 				}
 			}
-			header := fmt.Sprintf("[%s#%d/claude-code] 🔧 %s %s", nodeID, iteration, displayName, toolUseDetail(displayName, bl.Input))
-			logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(displayName, bl.Input))
+			// Every leaf is redacted before the display helpers cut it (a
+			// header detail, a todo item): a secret cut at a bound is no
+			// longer recognisable. They show values only, never a key.
+			input := bl.Input
+			if in, ok := secretguard.RedactLeaves(bl.Input, func(s string) string { return redactForRunLog(s, red, redactSpan) }).(map[string]any); ok {
+				input = in
+			}
+			header := fmt.Sprintf("[%s#%d/claude-code] 🔧 %s %s", nodeID, iteration, displayName, toolUseDetail(displayName, input))
+			logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(displayName, input))
 		case *claudesdk.ToolResultBlock:
 			// Log the tool RESULT as an expandable block (📤 on success, ❌ on
 			// error): a truncated one-line preview in the header, the full
 			// (bounded) output folded underneath — symmetric with the tool
 			// INPUT logged above, and identical to the claw path via the shared
 			// tooldisplay.ResultDisplay.
-			text := toolResultContentText(bl.Content)
+			// The output is redacted before the display cuts it (its first
+			// line, its bounded body).
+			text := redactForRunLog(toolResultContentText(bl.Content), red, redactSpan)
 			if text != "" || bl.IsError {
 				header, body := tooldisplay.ResultDisplay(text)
 				glyph := "📤"
@@ -1034,7 +1353,7 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 				// view handles wrap + per-block expand/collapse).
 				logger.LogBlock(iterlog.LevelInfo, "ℹ️ ",
 					fmt.Sprintf("[%s#%d/claude-code] 💬", nodeID, iteration),
-					bl.Text)
+					red(bl.Text))
 			}
 		}
 	}
@@ -1478,4 +1797,15 @@ func marshalToolInput(input map[string]any) ([]byte, bool) {
 		return nil, false
 	}
 	return b, true
+}
+
+// stampSendExecution is the PostToolUse handler recording where a SendMessage
+// call ran: the CLI fires it once the call returned, ahead of the result.
+func stampSendExecution(tracker *backgroundTracker) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+	return func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+		if in.ToolUseID != nil {
+			tracker.noteSendExecuted(*in.ToolUseID)
+		}
+		return claudesdk.HookOutput{}, nil
+	}
 }

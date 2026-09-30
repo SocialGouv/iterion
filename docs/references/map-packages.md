@@ -54,7 +54,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/ambient` | iterion's switch for what an agent node inherits from its surroundings besides its prompt (ADR-119). | — |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — |
-| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` |
+| `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend`, `SessionLedger` |
 | `pkg/backend/delegate/claudesdk` | provides a Go SDK for the Claude Code CLI. | `ContentBlock`, `MCPServerConfig`, `Message` |
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — |

@@ -1627,6 +1627,12 @@ type NodeSessionSlot struct {
 	ConversationRef string `json:"conversation_ref,omitempty"`
 }
 
+// SessionLedgerEntry is one session's entry of Checkpoint.SessionLedger.
+type SessionLedgerEntry struct {
+	SessionID string   `json:"session_id" bson:"session_id"`
+	Tasks     []string `json:"tasks" bson:"tasks"`
+}
+
 // Checkpoint captures the runtime state at a pause point (human node or
 // backend interaction), enabling exact resume without replaying upstream nodes.
 //
@@ -1723,6 +1729,13 @@ type Checkpoint struct {
 	// thinking-block 400s. Empty on checkpoints written before this field
 	// existed — absent stays "unknown", the conservative reading.
 	BackendSessionFingerprint string `json:"backend_session_fingerprint,omitempty" bson:"backend_session_fingerprint,omitempty"`
+	// SessionLedger is the run's record of background work that died with a
+	// CLI session's last process, one entry per session id (see
+	// delegate.SessionLedger): whichever node resumes that session later — a
+	// retry, a loop re-entry, a resumed run on another replica — tells the
+	// agent the work is gone. Sorted by session id. Absent on checkpoints
+	// written before it existed: an empty ledger, the pre-ledger behaviour.
+	SessionLedger []SessionLedgerEntry `json:"session_ledger,omitempty" bson:"session_ledger,omitempty"`
 	// BackendName identifies which backend was used.
 	BackendName string `json:"backend_name,omitempty" bson:"backend_name,omitempty"`
 	// BackendConversation is the opaque, backend-specific persisted

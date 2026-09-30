@@ -235,6 +235,12 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			Sandbox:         e.sandbox,
 			// ProviderHint is set per-attempt by the chain walker.
 			InboxDrain: e.bindInboxDrain(ctx),
+			// A claude_code router keeps the CLI's native tools, background
+			// agents included: its sessions go through the run's ledger too.
+			SessionLedger:        SessionLedgerFromContext(ctx),
+			RedactSecrets:        e.secretRedactor(),
+			RedactSecretsSpan:    e.secretGuard.LongestLiteral(),
+			UnmaterializeSecrets: e.secretUnmaterializer(),
 		}, nil
 	}
 

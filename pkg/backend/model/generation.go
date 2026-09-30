@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
+
 )
 
 // ---------------------------------------------------------------------------
@@ -142,6 +145,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 
 		// Execute tools and append tool_result message.
 		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		unmaterializeEchoingResults(toolResults, agg.toolUses, opts.MaterializeSecrets, opts.UnmaterializeSecrets)
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
 			// the backend, which converts it into iterion's pause flow.
@@ -572,4 +576,36 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	}
 
 	return partial(totalUsage), fmt.Errorf("model did not produce a %q tool_use block", schemaName)
+}
+
+// clawRawTools: the claw tools whose result shows what the workspace holds —
+// a file, a command's output, a search over files. Their result is left as
+// is: an agent editing a line that holds a secret must see the value the file
+// holds. Every other tool's result — a fetch quoting its URL, a trigger its
+// request, a message, a task or a structured payload echoing what it was
+// given, an MCP tool whatever it reports — goes back to placeholders.
+var clawRawTools = regexp.MustCompile(`^(read_file|bash|repl|grep|workspace_grep|glob|file_edit|lsp|read_image|screenshot|computer_use|diagnostic_shell)$`)
+
+// unmaterializeEchoingResults turns the known secret values an echoing
+// tool's result quotes back into their placeholders, in place.
+func unmaterializeEchoingResults(results []api.ContentBlock, uses []toolUseBlock, materialize, unmaterialize func(string) string) {
+	if unmaterialize == nil {
+		return
+	}
+	// A workspace reader keeps what the workspace holds — unless its call
+	// carried a secret (a grep's pattern, an image's URL): it may quote it.
+	names := make(map[string]string, len(uses))
+	given := make(map[string]bool, len(uses))
+	for _, tu := range uses {
+		names[tu.ID] = tu.Name
+		given[tu.ID] = materialize != nil && string(secretguard.MaterializeJSON([]byte(tu.PartialJSON), materialize)) != tu.PartialJSON
+	}
+	for i := range results {
+		if clawRawTools.MatchString(names[results[i].ToolUseID]) && !given[results[i].ToolUseID] {
+			continue
+		}
+		for j := range results[i].Content {
+			results[i].Content[j].Text = unmaterialize(results[i].Content[j].Text)
+		}
+	}
 }

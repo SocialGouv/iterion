@@ -216,6 +216,7 @@ func cloneRunStateForBranch(parent *runState) *runState {
 		events:                      parent.events,
 		artifactVersions:            parent.artifactVersions,
 		nodeSessions:                cloneNodeSessions(parent.nodeSessions),
+		sessionLedger:               parent.sessionLedger,
 		pauseSessionRef:             parent.pauseSessionRef,
 		lastGraceNode:               parent.lastGraceNode,
 		lastGraceDim:                parent.lastGraceDim,

@@ -72,6 +72,20 @@ type storeAsyncAskHook struct {
 	onPosted func(runID, interactionID string)
 	runID    string
 	nodeID   string
+	// scrub, when set, scrubs the event copy of a question (an observational
+	// sink); the interaction keeps it whole.
+	scrub func(map[string]any) map[string]any
+}
+
+// SetEventScrubber installs the scrub applied to the event copy of a
+// question.
+func (h *storeAsyncAskHook) SetEventScrubber(f func(map[string]any) map[string]any) { h.scrub = f }
+
+func (h *storeAsyncAskHook) eventQuestions(questions map[string]any) map[string]any {
+	if h.scrub == nil {
+		return questions
+	}
+	return h.scrub(questions)
 }
 
 func (h *storeAsyncAskHook) Post(ctx context.Context, q delegate.AsyncQuestion) (string, error) {
@@ -102,7 +116,7 @@ func (h *storeAsyncAskHook) Post(ctx context.Context, q delegate.AsyncQuestion) 
 		NodeID: h.nodeID,
 		Data: map[string]any{
 			"interaction_id": id,
-			"questions":      questions,
+			"questions":      h.eventQuestions(questions),
 			"async":          true,
 		},
 	})

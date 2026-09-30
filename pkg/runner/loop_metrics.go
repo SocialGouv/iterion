@@ -435,6 +435,19 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			outcome = "aborted"
 		}
 		m.reg.DelegateIdleDeadlockTotal.WithLabelValues(backend, normalizeModelLabel(modelName), outcome).Inc()
+	case store.EventDelegateBackground:
+		if m.reg == nil {
+			return
+		}
+		backend, _ := evt.Data["backend"].(string)
+		if backend == "" {
+			backend = "delegate"
+		}
+		phase, _ := evt.Data["phase"].(string)
+		if phase == "" {
+			phase = "unknown"
+		}
+		m.reg.DelegateBackgroundTotal.WithLabelValues(backend, phase).Inc()
 	case store.EventDelegateFinished:
 		backend, _ := evt.Data["backend"].(string)
 		if backend == "" {

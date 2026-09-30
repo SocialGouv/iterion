@@ -239,6 +239,9 @@ contributes:
           on: {}
           ultra: { inject_flag: "--ultra-compact" }  # inserted after the binary name
       sandbox_mount: /usr/local/bin/rtk     # bind-mount the host binary here in sandboxed runs
+      run_env:                              # env of a shell whose commands it compresses (wins over the inherited env)
+        RTK_DB_PATH: /dev/null/iterion-rtk-history.db  # rtk's history: a path nothing can create (no switch in rtk)
+        RTK_RECALL: "0"                     # rtk's store of the output lines it left out: off
   mcp_servers:
     - { name: falcon, transport: stdio, command: falcon,
         args: ["mcp","serve","--snapshot","{{workspace}}/.falcon/artifacts","--repo","{{workspace}}"] }
@@ -253,8 +256,22 @@ Activation-time placeholders in `mcp_servers` and `lifecycle`:
 `{{workspace}}`, `{{plugin.dir}}`, `{{plugin.cache}}`
 (`~/.iterion/plugins/<name>/cache`), and `{{config.<key>}}` for any declared
 config field (see below). The rewriter `{{command}}` placeholder is substituted
-at rewrite time with the full shell command line; a rewriter's `invoke.env` and
-`invoke.argv` also resolve `{{config.<key>}}`.
+at rewrite time with the full shell command line; a rewriter's `invoke.env`,
+`invoke.argv` and `run_env` also resolve `{{config.<key>}}`.
+
+A rewriter's compressed command runs its binary, which may keep what the
+command ran and printed in stores of its own, past the run — secrets included
+([secrets.md](secrets.md)). `run_env` turns them off: iterion sets it on the
+process that runs a compressing node's commands (claude_code's CLI, claw's
+`bash`, a tool node's shell), over the inherited environment and the run's
+own, and a command it compresses exports it first (`export K=v; …`) — the
+shell running it may have replaced that environment (claude_code's
+settings `env`, the operator's shell rc the CLI sources before each
+command), and whatever the node's compression mode (the agent may run the
+rewriter itself). Its names are shell identifiers. To keep rtk's stores for
+iterion's sessions, disable the builtin (`iterion plugin disable rtk`) and
+install a rewriter plugin for rtk that declares no `run_env`, under another
+name — the disabled builtin shadows a plugin named `rtk`.
 
 ## Configuration (`config:`)
 

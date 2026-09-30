@@ -1,6 +1,7 @@
 package delegate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -413,9 +414,10 @@ type ClaudeCodeBackend struct {
 	renewalWait time.Duration
 
 	// formatOutputFn replaces the CLI-spawning formatting pass in tests: the
-	// loop around it — retry, terminal verdict, usage, cost — is where the
-	// accounting defects lived, and it had no seam to be exercised through.
-	formatOutputFn func(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error)
+	// loop around it — retry, terminal verdict, usage, cost, lost background
+	// work — is where the accounting defects lived, and it had no seam to be
+	// exercised through.
+	formatOutputFn func(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, []string, error)
 	// formatRetryDelay overrides the pause before a repeated formatting
 	// attempt: zero means the default, negative means none (tests). Per
 	// backend, not package-wide, so parallel tests cannot race on it.
@@ -439,11 +441,12 @@ func (b *ClaudeCodeBackend) retryDelay() time.Duration {
 	return b.formatRetryDelay
 }
 
-// formatPass runs one formatting pass: the CLI, or the test seam.
-func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, error) {
+// formatPass runs one formatting pass: the CLI, or the test seam. It also
+// returns the background work the pass's process lost (see formatOutput).
+func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, []string, error) {
 	if b.formatOutputFn != nil {
-		rm, err := b.formatOutputFn(ctx, task, sessionID)
-		return rm, forfaitSpawn{}, err
+		rm, lost, err := b.formatOutputFn(ctx, task, sessionID)
+		return rm, forfaitSpawn{}, lost, err
 	}
 	return b.formatOutput(ctx, task, sessionID)
 }
@@ -702,7 +705,8 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 			// Result.Tokens is in+out with no split available here, so it
 			// travels as the aggregate rather than being filed under a
 			// direction it was never measured in (#992).
-			AggregateTokens: result.Tokens,
+			AggregateTokens:           result.Tokens,
+			TerminatedBackgroundTasks: result.TerminatedBackgroundTasks,
 		})
 	}()
 
@@ -748,7 +752,8 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// spurious "No such tool available: StructuredOutput" error. Empirically
 	// the agent still completes its tool work BEFORE finalizing (verified
 	// against claude 2.1.177), so this does not make it rush its output.
-	prompt := task.UserPrompt
+	told := ledgerTerminated(task.SessionLedger, resumedSessionID(task, currentFingerprint))
+	prompt := terminatedBackgroundNote(told, task.UserPrompt)
 	needsTwoPass := len(task.OutputSchema) > 0 && len(task.AllowedTools) > 0
 	if len(task.OutputSchema) > 0 {
 		var schema map[string]any
@@ -837,6 +842,16 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	startTime := time.Now()
 	rm, sessMeta, streamErr := b.runSession(streamCtx, prompt, task, opts)
 	duration := time.Since(startTime)
+	// What the process left behind is recorded under the session it actually
+	// ran (a fork's own new id). What it was told is settled only if it took
+	// the prompt that told it — it answered, or the CLI announced the turn
+	// (init): a process that died on a hook event before that never read the
+	// note, and the next one must still be told.
+	tookPrompt := told
+	if rm == nil && !sessMeta.sessionIDFromInit {
+		tookPrompt = nil
+	}
+	settleLedger(task.SessionLedger, claudeSessionID(rm, sessMeta), tookPrompt, sessMeta.terminatedBackground)
 
 	// Native ask_user capture takes precedence over any error: if the hook
 	// fired, the resulting context cancellation surfaces here as ctx.Err(),
@@ -1324,7 +1339,8 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 	var ranRMs []*claudesdk.ResultMessage
 	for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 		b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
-		fmtRM, fmtSpawn, fmtErr := b.formatPass(ctx, task, rm.SessionID)
+		fmtRM, fmtSpawn, fmtLost, fmtErr := b.formatPass(ctx, task, rm.SessionID)
+		result.TerminatedBackgroundTasks = appendLabels(result.TerminatedBackgroundTasks, fmtLost...)
 		if fmtErr == nil {
 			ranRMs = append(ranRMs, fmtRM)
 			// The pass ran and was billed, whatever its result says: its
@@ -1400,6 +1416,37 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 	return false, result, nil
 }
 
+// resumedSessionID is the transcript this call continues — resumed or forked —
+// or "" when it runs a fresh one (no session, or a fork the fingerprint guard
+// drops).
+func resumedSessionID(task Task, currentFingerprint string) string {
+	if task.SessionID == "" {
+		return ""
+	}
+	if drop, _ := shouldDropSessionFork(task, currentFingerprint); drop {
+		return ""
+	}
+	return task.SessionID
+}
+
+// ledgerTerminated is what a process continuing sessionID must be told (see
+// SessionLedger); nothing without a ledger or a session.
+func ledgerTerminated(l SessionLedger, sessionID string) []string {
+	if l == nil || sessionID == "" {
+		return nil
+	}
+	return l.Terminated(sessionID)
+}
+
+// settleLedger records the end of a process that ran sessionID. A process
+// that never reported a session never took its prompt: nothing is settled.
+func settleLedger(l SessionLedger, sessionID string, told, terminated []string) {
+	if l == nil || sessionID == "" {
+		return
+	}
+	l.Settle(sessionID, told, terminated)
+}
+
 // setupCredsAndSession injects Anthropic-flavoured credentials into the CLI
 // subprocess (single helper so Pass 1 and Pass 2 stay symmetric) and, when
 // the task carries a SessionID, decides whether to resume/fork that session
@@ -1450,7 +1497,8 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 // its CLI-reported cost, not just Pass 1's.
 func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) (*claudesdk.ResultMessage, error) {
 	b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", sessionID)
-	fmtRM, fmtSpawn, fmtErr := b.formatPass(ctx, task, sessionID)
+	fmtRM, fmtSpawn, fmtLost, fmtErr := b.formatPass(ctx, task, sessionID)
+	result.TerminatedBackgroundTasks = appendLabels(result.TerminatedBackgroundTasks, fmtLost...)
 	if fmtErr != nil {
 		b.Logger.Warn("claude-code: recovery formatting pass failed: %v", fmtErr)
 		return nil, nil
@@ -1518,6 +1566,7 @@ func perTaskSpawnOpts(task Task) []claudesdk.Option {
 	env, settings := claudeSpawnPins(task)
 	opts = append(opts, claudesdk.WithSettingsJSON(settings))
 	opts = append(opts, taskExtraEnvOpts(task)...)
+	opts = append(opts, rewriterRunEnvOpts(task)...)
 	if d := claudeCodeThinkingDisplay(); d != "" {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
 	}
@@ -1727,7 +1776,7 @@ func claudeExtraEnvEntries(task Task) (entries [][2]string, overridden []string)
 // task has its native surface withheld here instead. The sentence that used
 // to sit here — "(no tools)" — is what kept that gap invisible for five
 // rounds; what it names is the instruction, not the toolset.
-func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, error) {
+func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, []string, error) {
 	// Use the parent context directly — the runtime already enforces budget
 	// timeouts. Adding a short artificial timeout here risks cancelling the
 	// formatting pass while the CLI is still loading the resumed session.
@@ -1735,7 +1784,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	var schema map[string]any
 	if err := json.Unmarshal(task.OutputSchema, &schema); err != nil {
-		return nil, forfaitSpawn{}, fmt.Errorf("invalid output schema: %w", err)
+		return nil, forfaitSpawn{}, nil, fmt.Errorf("invalid output schema: %w", err)
 	}
 
 	opts := []claudesdk.Option{
@@ -1904,7 +1953,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	opts = append(opts, claudeAmbient(task).settingSourcesOption())
 	credEnv := anthropicCredEnvForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
-		return nil, forfaitSpawn{}, err
+		return nil, forfaitSpawn{}, nil, err
 	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
 
@@ -1922,8 +1971,33 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		prompt += " Do not call any tool other than StructuredOutput; just return the JSON."
 	}
 
-	rm, err := promptWithTimeout(fmtCtx, prompt, killAll, opts...)
-	return rm, forfaitSpawnOf(ctx, credEnv), err
+	// This pass resumes pass 1's transcript in a process of its own, with the
+	// node's tools: it is told what pass 1 lost like any other resume, and
+	// what it launches and never sees report back is lost with its own
+	// process — recorded like pass 1's.
+	tracker := newBackgroundTracker()
+	tracker.redact = labelRedactor(task)
+	opts = append(opts, claudesdk.WithMessageObserver(tracker.observe))
+	told := ledgerTerminated(task.SessionLedger, sessionID)
+	rm, err := promptWithTimeout(fmtCtx, formattingPassNote(told, prompt), killAll, opts...)
+	lost := bgTaskLabels(tracker.view().lost)
+	if len(lost) > 0 {
+		reason := "the formatting pass's process ended"
+		b.Logger.Warn("[%s#%d/claude-code] ⏳ %s: %d background task(s) that never reported back to the agent are lost with it: %s",
+			task.NodeID, task.Iteration, reason, len(lost), strings.Join(lost, "; "))
+		if fn := task.Hooks.OnBackgroundWork; fn != nil {
+			fn(BackgroundWork{Backend: BackendClaudeCode, Phase: BackgroundAbandoned, Running: len(lost), Tasks: lost, Reason: reason})
+		}
+	}
+	// A process that answered — or launched work — took its prompt.
+	if rm != nil || len(lost) > 0 {
+		sid := sessionID
+		if rm != nil {
+			sid = cmp.Or(rm.SessionID, sessionID)
+		}
+		settleLedger(task.SessionLedger, sid, told, lost)
+	}
+	return rm, forfaitSpawnOf(ctx, credEnv), lost, err
 }
 
 // promptWithTimeout wraps claudesdk.Prompt in a goroutine with

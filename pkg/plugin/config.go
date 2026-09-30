@@ -125,8 +125,9 @@ func (r *Registry) ApplyConfig(name string, submitted map[string]string) error {
 // {{config.<key>}} placeholders resolved from each plugin's effective config.
 // {{command}} and {{workspace}}/{{plugin.*}} are left untouched for the
 // rewrite/sandbox layers. This is how operator config reaches a rewriter's
-// invoke env/argv — rewriters run per shell command and carry resolved env,
-// unlike the mcp/lifecycle surfaces which expand via ExpandContext at run time.
+// invoke env/argv and run env — rewriters run per shell command and carry
+// resolved env, unlike the mcp/lifecycle surfaces which expand via
+// ExpandContext at run time.
 func (r *Registry) EnabledRewriterSpecs() []RewriterSpec {
 	contribs := r.EnabledRewriters()
 	out := make([]RewriterSpec, 0, len(contribs))
@@ -137,7 +138,8 @@ func (r *Registry) EnabledRewriterSpecs() []RewriterSpec {
 }
 
 // expandSpecConfig returns a copy of spec with {{config.<key>}} substituted in
-// its invoke argv + env. The registry's manifest is never mutated.
+// its invoke argv + env and its run env. The registry's manifest is never
+// mutated.
 func expandSpecConfig(spec RewriterSpec, cfg map[string]string) RewriterSpec {
 	if len(cfg) == 0 {
 		return spec
@@ -161,6 +163,13 @@ func expandSpecConfig(spec RewriterSpec, cfg map[string]string) RewriterSpec {
 			env[k] = rep.Replace(v)
 		}
 		out.Invoke.Env = env
+	}
+	if len(spec.RunEnv) > 0 {
+		env := make(map[string]string, len(spec.RunEnv))
+		for k, v := range spec.RunEnv {
+			env[k] = rep.Replace(v)
+		}
+		out.RunEnv = env
 	}
 	return out
 }

@@ -614,3 +614,23 @@ func TestMetricsEmitter_newAttemptResetsTheStepGuard(t *testing.T) {
 		t.Fatalf("after an unrelayed second attempt: in %d / aggregate %d, want 1000/500 — the guard must reset per attempt", in, aggregate)
 	}
 }
+
+func TestMetricsEmitter_delegateBackground_countsPerPhase(t *testing.T) {
+	reg := metrics.New()
+	m := newMetricsEmitter(&recordingEmitter{}, reg)
+	for _, phase := range []string{"waiting", "abandoned"} {
+		_, _ = m.AppendEvent(context.Background(), "run-bg", store.Event{
+			Type: store.EventDelegateBackground, RunID: "run-bg", NodeID: "campaign",
+			Data: map[string]any{"backend": "claude_code", "phase": phase},
+		})
+	}
+	for _, phase := range []string{"waiting", "abandoned"} {
+		c, err := reg.DelegateBackgroundTotal.GetMetricWithLabelValues("claude_code", phase)
+		if err != nil {
+			t.Fatalf("GetMetricWithLabelValues: %v", err)
+		}
+		if got := counterValue(t, c); got != 1 {
+			t.Errorf("phase %s = %v, want 1", phase, got)
+		}
+	}
+}

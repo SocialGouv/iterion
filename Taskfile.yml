@@ -221,6 +221,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_SessionInheritValidation -timeout 30m ./e2e/...
 
+  test:live:claude-bg:
+    desc: Run the claude_code background-work live e2e test — a session waits for its background subagent, and with the lifecycle off it does not (requires claude CLI ≥ 2.1.280 + Anthropic credentials; ITERION_LIVE_CLAUDE_CLI pins the binary; ~$0.4/run on haiku)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Feat_ClaudeCodeBackgroundWork -timeout 20m ./e2e/...
+
   test:live:claw:
     desc: Run the claw backend comprehensive coverage live e2e test (requires OPENAI_API_KEY + ANTHROPIC_API_KEY)
     cmds:

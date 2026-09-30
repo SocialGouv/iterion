@@ -19,11 +19,25 @@ declared `secrets:` block.
 Two tiers:
 
 - **Known-value taint (deterministic).** Iterion knows its secret
-  values, so for each it precomputes every textual form — raw, base64
-  (std + url, ±padding), hex (upper/lower), URL-escape, JSON-escape —
-  and matches those literally via a single RE2 alternation. This is the
-  reliable answer to "also detect base64": we match the base64 form of a
-  secret we *hold*, we don't guess. Zero encoding false-negatives.
+  values, so for each it precomputes every textual form — raw (and,
+  for a value ending with a newline, without it, raw and JSON-escaped: a
+  tool printing a file drops it), base64 (std + url, ±padding), hex
+  (upper/lower), URL-escape (Go's, the strict RFC 3986 form, Python's
+  `quote()` default that keeps `/`, and the WHATWG forms a JS runtime
+  writes: query, form-urlencoded, path, fragment, userinfo, component),
+  JSON-escape (Go's, which escapes `&` `<` `>`, and as `JSON.stringify` or
+  `jq` write it) — and matches those literally in one pass: a form of 4 KiB
+  or more (a file secret) and a binary one as a plain string, the others in
+  leftmost-longest RE2 alternations. At a position the longest form wins; a
+  form that starts inside another and runs past it is replaced too, so no
+  part of either shows. This is the reliable answer to "also detect
+  base64": we match the base64 form of a secret we *hold*, we don't
+  guess. What it does not match: a form it does not precompute — base64
+  or hex wrapped at a column width (`base64`, `xxd -p`), a multi-line
+  value printed in part or line by line (`grep`, `head`, a file view that
+  numbers its lines), a binary (non-UTF-8) value that went through a
+  channel decoding it as UTF-8 (the claude_code stream, a Node tool: its
+  invalid bytes arrive as U+FFFD).
 - **Heuristic (for unknown secrets).** The gitleaks-derived detector
   ([`tool/privacy/detector`](../pkg/backend/tool/privacy/detector)) +
   Shannon entropy, plus a recursive base64/hex decode pass that peels one
@@ -36,8 +50,21 @@ Two tiers:
 and unknown token shapes → `[redacted]`, at every **observational**
 sink, before persistence:
 
-- events.jsonl (all event types, via a redacting `AppendEvent` wrapper +
-  `node_finished` output via the engine's `SecretScrubber`),
+- events.jsonl (the backends' events via a redacting `AppendEvent`
+  wrapper, `node_finished` output via the engine's `SecretScrubber`),
+- a node's error, which the engine writes to `run.json`, `run.log`, its
+  own events (`node_recovery`, `run_failed`) and the completion webhook —
+  scrubbed where the executor returns it (`ClawExecutor.Execute`), for
+  every node kind: a failing command's stdout and stderr, an MCP error
+  echoing its input,
+- the engine's events that carry model- or operator-written text: the
+  whole `human_input_requested` payload of a question the run pauses on (a
+  human node's rendered instructions, a fan-out branch's pause, an async
+  question), an LLM router's reasoning, a review's verdict, the answers
+  recorded at a resume or at a review gate (the interaction and the
+  checkpoint keep them whole: the run needs them). A placeholder in them is
+  kept as is — the heuristic pass never redacts one, trailing sentence
+  punctuation included,
 - run.log block bodies, tool sidecar blobs, turn-snapshot conversations.
 
 Values iterion only scrubs — the run's provider keys, the process's own
@@ -75,9 +102,90 @@ form in every hook/log:
 - **claw** `tool` nodes (shell + script) and the in-process tool loop
   (`executeToolsDirect`) call `Guard.Materialize` before exec.
 - **claude_code** uses a `PreToolUse` hook returning `UpdatedInput` with
-  the materialised tool input (the SDK-supported substitution path).
+  the materialised tool input (the SDK-supported substitution path). The
+  placeholders are swapped in the input's decoded strings, never in its JSON
+  text; a shell's (or a monitor's) `description` stays in placeholder form —
+  the CLI labels a background shell with it, or with its command when there
+  is none, and relays that label to the agent when the shell ends.
+- Neither materialises the input of a tool that keeps it rather than runs
+  it — the node's report (claude_code's `StructuredOutput` stores the input
+  it is called with), the session's task list (`TodoWrite`, `TaskCreate`,
+  `TaskUpdate`; claw's `todo_write`, written to disk), a scheduled prompt
+  (`CronCreate` writes it to `.claude/scheduled_tasks.json`,
+  `ScheduleWakeup` sends it back to the model), a memory note
+  (`memory_write`; claw's `memory_write`, the knowledge store the next run
+  loads), a skill's arguments (`Skill`: the CLI injects the skill's body
+  with them), claw's PII vault (`privacy_filter`), a question to the
+  operator (`ask_user`), iterion's own MCP tools (a board issue, a run
+  query): they stay in placeholder form. The auto-memory mirror persists
+  `MEMORY.md` in placeholder form too (the file tools write it with the
+  values).
+- A command naming a secret is not compressed (claude_code's `rtk` hook,
+  claw's agent loop, a tool node's `compress:`): the compressor runs the
+  command it rewrites, and rtk records every command it runs in its
+  history — the value would land there. A shell iterion compresses also
+  runs with the rewriter's `run_env` (rtk's: `RTK_RECALL=0`, and its
+  history database under `/dev/null`, a path nothing can create) — every
+  shell of a node, whatever its mode, as the agent may run rtk itself —,
+  exported by each command it compresses as well (a settings `env` or a
+  shell rc cannot outrank it there), which turns off the stores where rtk
+  keeps the commands it ran and the output lines it left out: a command
+  carrying a secret some other way (its raw value, an environment variable),
+  or an output quoting one, leaves nothing there either. A command iterion
+  did not compress — rtk typed by the agent, or run by an operator's own rtk
+  hook — gets the run env from its environment only, which a settings `env`
+  (claude_code: the user's, or the target repository's), the operator's
+  shell rc or `BASH_ENV` can replace.
 - Both consume `delegate.Task.MaterializeSecrets` (a closure set by the
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
+- Its mirror, `delegate.Task.UnmaterializeSecrets` (`Guard.Unmaterialize`),
+  turns a known value — in any registered encoding — back into its
+  placeholder in what iterion carries from the far side of that boundary into
+  a prompt or the run store — a background task's label is the CLI's command
+  after materialisation. It is not a sink pass: `ITERION_SECRETS_REDACT=off`
+  leaves it on.
+- A verified action's self-repair (`policy: recover`) quotes the failing
+  command and its output to a model: both in placeholder form.
+- Both turn known values back into placeholders in the output of every tool
+  but the workspace readers — stopping a background shell names its command,
+  a notebook edit its new source, a redirected fetch its URL, a task or a
+  message what it was given, a foreground subagent's report whatever it saw,
+  an MCP tool whatever it reports: **claude_code** through a `PostToolUse`
+  hook (`updatedToolOutput`), **claw** before the result enters the
+  conversation. The workspace readers' output — a file (`Read`,
+  `read_file`), a search over files, an edit's snippet, a command's output
+  (`Bash`, `bash`) — is left as is, unless the call itself carried a secret
+  (a search's pattern, an image's URL: it may quote it back) or reads the
+  CLI's background task outputs — a task's file (named by a glob or a
+  variable too), their directory, or the CLI's tmp root (`claude-<uid>`): a
+  command's output, read after the call that ran it. A path in the node's
+  workspace is the workspace's own, whatever its name (a worktree is named
+  by its run's UUID, like the CLI's session directory): an agent editing a
+  line that holds a secret must see the value the file holds.
+  **Known limitations, claude_code only:** a call a permission rule denies is
+  refused with its materialised input quoted to the agent, an MCP tool's
+  error result reaches it as is, a background subagent's report reaches
+  the lead verbatim in its task notification, a monitor's events — each line
+  its command prints — reach the agent as the CLI relays them, and after a
+  compaction the CLI re-announces every background shell or monitor still
+  running with the command it runs — materialised (a foreground command the
+  CLI moves to the background past its timeout included) — no hook runs on
+  any of them. A
+  settings hook iterion does not own (the operator's user settings, the
+  target repository's `.claude/settings.json`, an iterion `hooks` plugin)
+  runs beside iterion's, and the CLI keeps the answer that lands last: one
+  that rewrites a tool's input runs the command with the placeholder, one
+  that rewrites a tool's output can send the value it received to the
+  model. A read of a task's output by a relative path after a `cd` made in
+  an earlier call, or through a variable or a parent of the CLI's tmp
+  directory (`grep -r "$TMPDIR"`), is not recognised as one, and a background
+  task's output file stays in the CLI's tmp directory after the session;
+  and the CLI keeps a tool's
+  original output when the replacement does not match its output schema
+  (iterion keeps the replacement on schema where the original can be off it:
+  a notebook's language, read from its own metadata). Keep a secret out of a
+  command a deny rule may match, or an MCP call that may fail on it (a file
+  secret).
 
 Generic placeholder materialization is currently limited to `claw` and
 `claude_code`. Pi, Kimi, Grok, and Codex leave
@@ -447,7 +555,7 @@ to the LLMs, not what a bot uses inside a run.
 
 | Var | Default | Effect |
 |---|---|---|
-| `ITERION_SECRETS_REDACT` | on | Master: off disables Layer 0 sink redaction (materialization still works). |
+| `ITERION_SECRETS_REDACT` | on | Master: off disables Layer 0 sink redaction (materialization, and its mirror in what iterion writes into a prompt or the run store, still work). |
 | `ITERION_SECRETS_REDACT_HEURISTIC` | on | off keeps known-value redaction but disables the gitleaks/entropy pass. |
 | `ITERION_SECRETS_REDACT_DECODE` | on | off disables the recursive base64/hex decode pass. |
 | `ITERION_SECRETS_REDACT_MIN_SCORE` | 0.7 | Heuristic confidence floor (the 0.6 generic high-entropy rule is excluded by default). |
