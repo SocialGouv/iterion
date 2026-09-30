@@ -49,9 +49,15 @@ pods the same way.
   none. The outcome is an event,
   `sandbox_scratch_banked {banked, empty, unknown, bytes, reason}`. Both are
   written under the run's identity and past its cancellation (a drain, a lost
-  lease or an operator's cancel reaches the teardown first), and the record
-  is retried. A scratch the teardown cannot even list — the sandbox is
-  already gone — is `unknown`: nobody knows whether it held anything.
+  lease or an operator's cancel reaches the teardown first). A failure
+  another try may cure — a blip on the exec, tar caught mid-write, an upload
+  that failed — is tried again, and so is the record. tar runs untranslated
+  (`LC_ALL=C`): its warnings for a file changed or removed while it read it,
+  with the line `kubectl exec` adds to them, leave a complete archive, which
+  is banked. A scratch the teardown cannot even list — the sandbox is
+  already gone — is `unknown`: nobody knows whether it held anything. It
+  does not replace a bank recorded before it: the lost sandbox started from
+  that bank, which is still stored.
 - **Cap.** 256 MiB compressed. Past it, or on a tar or upload failure, or in
   a store that keeps no bank, nothing is stored and the event names why.
 - **Resume, before anything moves the run.** A run whose last teardown
@@ -60,12 +66,17 @@ pods the same way.
   moved past its bank: an agent, tool or subbot node finished after the last
   `sandbox_scratch_banked`, which only a sandbox lost without a teardown
   leaves behind — restored, the bank would revert what that node wrote. The
-  engine-side kinds (the human node a resume records as answered, a router,
-  a compute) never wrote there. The resume surface refuses before a cloud
-  resume is flipped to `queued`, the engine again before its claim;
-  `--force` resumes as it stands, and says so. An `unknown` record is not
-  refused. A timeline that cannot be read refuses the resume: it never reads
-  as "nothing recorded".
+  engine-side kinds (a human node, a router, a compute) never wrote there,
+  nor did a paused node — a human node or an agent that asked — that a
+  resume records as finished by its answer (`node_finished {answered}`). The
+  resume surface refuses from a record the run's latest execution wrote,
+  before a cloud resume is flipped to `queued`. A latest execution that wrote
+  none may still be banking — the run already reads paused or failed while
+  its teardown runs — so the surface leaves it to the engine, which checks
+  under the run's lock, before its claim. `--force` resumes as it stands,
+  and says so. An `unknown` record is not refused; after a bank, the bank
+  still decides. A timeline that cannot be read refuses the resume: it never
+  reads as "nothing recorded".
 - **Resume, after the new sandbox starts** (the pause family and the failure
   path alike). The bank is extracted before the first node
   (`sandbox_scratch_restored {restored, bytes, stale, forced, reason}`),

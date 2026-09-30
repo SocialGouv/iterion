@@ -1429,8 +1429,10 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 		}
 	}
 
-	// Mark human node as finished.
-	if err := e.emit(ctx, runID, store.EventNodeFinished, humanNodeID, nil); err != nil {
+	// Mark the paused node as finished — by its answer, on the engine: an
+	// agent that paused through ask_user does not run again in a sandbox
+	// here, so this finish does not age the run's scratch bank.
+	if err := e.emit(ctx, runID, store.EventNodeFinished, humanNodeID, map[string]any{nodeFinishedAnswered: true}); err != nil {
 		return nil, err
 	}
 	return artifactVersions, nil

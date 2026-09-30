@@ -293,15 +293,24 @@ tar or upload failure, a store that keeps no bank) is refused
 and fail far from the cause. So is a run that moved past its bank — an agent,
 tool or subbot node finished after the last teardown banked, in a sandbox lost
 without a teardown (an OOM kill, a lost node): restored, the bank would revert
-what that node wrote. The resume surface refuses both before anything moves
-the run (the studio and the API answer at once; a cloud resume is never
-flipped to `queued`), and the engine again before its claim. Relaunch the run
-fresh, or resume with `--force` to continue as it stands — without the
-scratch, or with the older bank, marked `stale`. A teardown that cannot even
-list the scratch (the sandbox is already gone) records it as `unknown`: the
+what that node wrote. The resume surface refuses from a record the run's
+latest execution wrote, before anything moves the run (the studio and the API
+answer at once; a cloud resume is never flipped to `queued`). A run reads
+paused or failed while its teardown still banks: when the latest execution
+wrote no record yet, the surface leaves the decision to the engine, which
+checks again under the run's lock, before its claim. Relaunch the run fresh,
+or resume with `--force` to continue as it stands — without the scratch, or
+with the older bank, marked `stale`. The node a resume records as finished by
+its answer (a human node, or an agent that asked) ran in no sandbox: it does
+not age the bank. A teardown that cannot even list the scratch (the sandbox is
+already gone) records it as `unknown`: after a bank, that bank — still stored
+— is what the next resume restores (or refuses as moved past); otherwise the
 resume goes on without it, as it always did, and says so. The teardown writes
 the bank and its record under the run's identity, after the run's
-cancellation, and retries the record.
+cancellation. It tries again what another try may cure — a blip on the exec,
+tar caught mid-write, a failed upload — and retries the record. tar runs
+untranslated (`LC_ALL=C`); its warnings for a file changed or removed while it
+read it leave a complete archive, which is banked.
 
 At resume, the bank is read onto the host and checked to extract before
 anything reaches the sandbox. A bank that is gone or does not extract — or a

@@ -1,0 +1,31 @@
+package sandbox
+
+import "testing"
+
+// TestOnlyTarRaceWarnings: tar's warnings for a tree that changed while it
+// was archived are recognised alone, with or without the trailer kubectl
+// exec adds; anything else on stderr is a failure.
+func TestOnlyTarRaceWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{"a rewritten file", "tar: ./a.log: file changed as we read it\n", true},
+		{"a file listed then removed", "tar: ./tmp/part.json: File removed before we read it\n", true},
+		{"several racing writers", "tar: ./a.log: file changed as we read it\ntar: ./tmp/part.json: File removed before we read it\n", true},
+		{"through kubectl exec", "tar: ./server.log: file changed as we read it\n" + KubectlRemoteExit1 + "\n", true},
+		{"through kubectl exec, removed", "tar: ./.git/index.lock: File removed before we read it\n" + KubectlRemoteExit1, true},
+		{"a racing writer and another tar error", "tar: ./a: file changed as we read it\ntar: ./b: Cannot open: Permission denied", false},
+		{"the same through kubectl exec", "tar: ./a: file changed as we read it\ntar: ./b: Cannot open: Permission denied\n" + KubectlRemoteExit1, false},
+		{"the kubectl trailer alone", KubectlRemoteExit1, false},
+		{"kubectl's own failure", "error: unable to upgrade connection: container not found", false},
+		{"another exit code's trailer", "tar: ./a: file changed as we read it\ncommand terminated with exit code 2", false},
+		{"a warning without tar's prefix", "./a.log: file changed as we read it", false},
+		{"nothing", "", false},
+	} {
+		if got := OnlyTarRaceWarnings(tc.stderr); got != tc.want {
+			t.Errorf("%s: OnlyTarRaceWarnings(%q) = %v, want %v", tc.name, tc.stderr, got, tc.want)
+		}
+	}
+}

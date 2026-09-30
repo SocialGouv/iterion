@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -452,20 +453,6 @@ func TestResume_aRestoreThatFailsKeepsTheBank(t *testing.T) {
 	kept := make([]byte, len(garbage)+1)
 	if n, _ := body.Read(kept); string(kept[:n]) != string(garbage) {
 		t.Fatalf("the bank was replaced after a failed restore: %q", kept[:n])
-	}
-}
-
-func TestOnlyFileChangedWarnings(t *testing.T) {
-	if !onlyFileChangedWarnings("tar: ./a.log: file changed as we read it\ntar: ./b: file changed as we read it\n") {
-		t.Error("tar's own changed-file notices were not recognised")
-	}
-	if !onlyFileChangedWarnings("tar: ./tmp/part.json: File removed before we read it\ntar: ./a.log: file changed as we read it\n") {
-		t.Error("tar's removed-file notice was not recognised")
-	}
-	for _, s := range []string{"", "tar: ./x: Cannot open: Permission denied", "tar: ./a: file changed as we read it\ntar: ./b: Cannot open: Permission denied"} {
-		if onlyFileChangedWarnings(s) {
-			t.Errorf("%q read as changed-file notices only", s)
-		}
 	}
 }
 
@@ -1140,6 +1127,7 @@ func TestResume_aScratchTheTeardownCouldNotReadIsNotRefused(t *testing.T) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	e := scratchEngine(s, x, d)
+	e.scratchBankRetryPause = time.Millisecond
 	e.bankScratchOnCleanup(ctx, runID, &activeSandbox{run: failingListRun{}})
 	got := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
 	if last := got[len(got)-1]; last.Data["unknown"] != true || last.Data["banked"] != false {

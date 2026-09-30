@@ -204,6 +204,7 @@ type Engine struct {
 	// scratch: set when restoring the bank failed, so a partial scratch
 	// never replaces the bank a later resume will retry (ADR-106).
 	scratchBankHeld          bool
+	scratchBankRetryPause    time.Duration                        // first pause between the teardown's banking attempts; zero is scratchBankRetryPauseDefault
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
 	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision
