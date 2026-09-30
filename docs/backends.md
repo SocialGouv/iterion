@@ -1113,14 +1113,89 @@ deployment that would rather not expose the surface at all,
 default keeps that single-subagent surface — see
 [environment-variables.md](environment-variables.md)).
 
-The multi-agent **`Workflow`** tool is a different matter: it is withheld
-from every node that is not `reasoning_effort: ultracode`, knob or not.
-Claude Code arms that tool on the word `ultracode` anywhere in its prompt,
-and a node's prompt carries the content it works on — a PR whose title or
-diff mentions the mode would otherwise switch a reviewer into a background
-multi-agent orchestration the operator never asked for (measured on
-2026-09-05: four `revi/review` runs died at 3–5× their cost cap that way).
-The mode grants the tool; the effort is the escape hatch.
+**Subagents run in the foreground.** A claude_code session is one-shot. It
+ends with the node's final output, and nothing reaches the model after
+that: no completion notification, no scheduled wake-up. Every spawn
+therefore sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`: the main session,
+every structured-output pass, a resumed session, sandboxed or not. With it,
+the CLI runs each `Agent` call in the foreground and returns the agent's
+report as the tool result. It also drops `run_in_background` from the `Agent`
+and `Bash` schemas, and its own Agent guidance says the same. Parallelism
+still works: several `Agent` calls in one message run concurrently, and all
+of them return before the next step. Every spawn that keeps the subagent
+tool, ultracode or not, carries a `## Subagents in this session` section
+that says so. A process the node needs running while it works, such as a
+dev server, is started from the shell itself (`nohup … &`).
+
+A Bash command that outlives its timeout is now killed rather than moved to
+the background. So every spawn also pins `BASH_DEFAULT_TIMEOUT_MS` and
+`BASH_MAX_TIMEOUT_MS`, derived from this backend's own watchdogs. While a
+foreground command runs, the session is silent to them, because the SDK
+drops the CLI's progress lines. A command that outlived the hot idle tier or
+the no-progress tier would abort the whole session.
+
+- The maximum sits under the tighter of the two enabled watchdogs, by a
+  margin: a tenth of it, at least 30 s, at most half of it.
+- The default is half the maximum.
+
+With the defaults (15 min and 25 min) that makes 13 min 30 s and 6 min 45 s.
+With both watchdogs disabled, nothing can abort the session over a silent
+command, so both timeouts become one hour. The CLI's own 2-minute default
+would kill a long command for nothing.
+
+A pinned key set through the run's provisioning environment is ignored, with
+a warning that names it.
+
+Every pinned variable rides two layers, so that nothing lower can move it.
+There are four: the switch, the node's auto-memory decision
+(`CLAUDE_CODE_DISABLE_AUTO_MEMORY`), and the two Bash timeouts.
+
+- The process environment, which the run's provisioning environment cannot
+  override.
+- The one `--settings` object, merged with the auto-memory directory that
+  rides it. At startup the CLI copies the `env` block of every settings
+  source it loads into its environment, in the order user, project, local,
+  flag, policy, and reads these variables live afterwards. Without this
+  layer, a target repository's committed `.claude/settings.json` or the
+  operator's user settings could switch background work back on. They could
+  also turn auto-memory back on, against the operator's personal
+  `~/.claude/projects/<cwd>/memory/`. The flag layer comes after them; only
+  managed policy settings come later.
+
+Why this switch, and not a softer lever. With background work enabled, the
+CLI (2.1.280) runs an agent in the background:
+
+- whenever the call does not say `run_in_background: false`;
+- whenever the agent's definition says `background: true` (the operator's
+  `.claude/agents`, or the target repository's);
+- under its fork and coordinator modes.
+
+In all these cases it tells the model that the report "arrives in a separate
+turn", and it no longer has a tool that waits on a task (`TaskOutput` is
+gone). A documentation-campaign node took the CLI at its word. It launched
+its auditors, ended its turn to wait, and emitted its structured output with
+six of them unread. That happened pass after pass, until the run's budget
+ran out. Only `isolation: "remote"` stays asynchronous: that is a cloud
+agent, gated behind a claude.ai account.
+
+**Tools that hand work to a later turn are withheld from every spawn**,
+ultracode included:
+
+- **`Workflow`**: it only ever runs in the background, and nothing in the
+  session can wait on it. Claude Code also arms it on the word `ultracode`
+  anywhere in its prompt, and a node's prompt carries the content it works
+  on. A PR whose title or diff mentions the mode would switch a reviewer
+  into a background multi-agent orchestration (measured on 2026-09-05: four
+  `revi/review` runs died at 3–5× their cost cap that way).
+- **`ScheduleWakeup`** and **`CronCreate`/`CronDelete`/`CronList`**: they
+  schedule a prompt for a later turn of this session, which never comes. A
+  durable cron is written into the workspace's
+  `.claude/scheduled_tasks.json` instead.
+- **`RemoteTrigger`**: it schedules remote agents under the account the CLI
+  runs on.
+
+A name the running CLI does not register costs nothing on
+`--disallowedTools`.
 
 ### `codex`
 

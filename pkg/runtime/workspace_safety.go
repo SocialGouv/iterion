@@ -459,7 +459,8 @@ func unrestrictedCLIBackendCanWrite(
 	// `claudeNativeTools`, a hardcoded 14-name enumeration of a roster
 	// iterion does not own — the package's own `orchestrationTools` names
 	// `Agent`, `TaskOutput` and `Monitor` outside it, and MCP tools are not
-	// on it either, so all of those survive. On claw the runtime's own
+	// on it either, so which of them survive is the CLI's call (`Monitor` and
+	// every MCP tool do). On claw the runtime's own
 	// `interaction:` append puts `ask_user` back, and the appends below it
 	// `todo_write` and, under `auto_memory:`, `write_file` (C270 says so at
 	// compile time). The loop below cannot see any of it: it iterates the

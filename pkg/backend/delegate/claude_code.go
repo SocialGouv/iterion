@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -155,31 +158,23 @@ var claudeNativeForCanonical = map[string][]string{
 //     nodes (undeclared tools, per-visit npx/chromium boots on loop-heavy
 //     bots, API keys on the argv — issue #506).
 //     ITERION_CLAUDE_CODE_STRICT_MCP=0 restores host inheritance.
-//   - The multi-agent Workflow tool is the ultracode prerogative, so a node
-//     that is not in ultracode mode never sees it. Claude Code arms that tool
-//     on the word "ultracode" anywhere in the prompt, and a node's prompt
-//     carries the content it works on (a PR title, a diff): left in the
-//     toolset, it would let the DATA switch the node into an orchestration
-//     the operator's effort never granted. The single-subagent surface
-//     (Agent/Task/TaskOutput/Monitor) stays by default — that adaptivity is
-//     the point of the backend — and goes with the opt-in knob for a
-//     deployment whose served model family hallucinates task ids and
-//     deadlocks on TaskOutput. An ultracode node keeps the whole
-//     orchestration surface on the spawn that can be gated; the
-//     structured-output spawn of a GATED node keeps none of it, because
-//     nothing there can run the policy (see formatOutput).
+//   - The tools that hand work to a later turn (headlessWithheldTools:
+//     Workflow, the wake-up and cron schedulers, RemoteTrigger) are withheld
+//     from every node, ultracode included. The session is one-shot, so none
+//     of them can deliver. The single-subagent surface (Agent/Task/
+//     TaskOutput/Monitor) stays by default: that adaptivity is the point of
+//     the backend, and backgroundTasksOffEnv makes it run in the foreground.
+//     It goes with the opt-in knob for a deployment whose served model family
+//     hallucinates task ids and deadlocks on TaskOutput. An ultracode node
+//     keeps it on the spawn that can be gated. The structured-output spawn of
+//     a GATED node keeps none of it, because nothing there can run the policy
+//     (see formatOutput).
 func claudeSpawnBounds(task Task) []claudesdk.Option {
 	var opts []claudesdk.Option
 	if strictMCPFromEnv() {
 		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
 	}
-	if !task.Ultracode {
-		disallowed := append([]string(nil), workflowOrchestrationTools...)
-		if disallowOrchestrationToolsFromEnv() {
-			disallowed = append(disallowed, orchestrationTools...)
-		}
-		opts = append(opts, claudesdk.WithDisallowedTools(disallowed...))
-	}
+	opts = append(opts, claudesdk.WithDisallowedTools(claudeSpawnBoundWithheld(task)...))
 	// tool_max_steps caps agentic tool-use iterations. The field was defined
 	// in delegate.Task but never wired into the CLI, so an author who set
 	// `tool_max_steps: 25` got silent infinity — observed with GLM running
@@ -194,6 +189,70 @@ func claudeSpawnBounds(task Task) []claudesdk.Option {
 	return opts
 }
 
+// claudeSpawnBoundWithheld is the half of a spawn's --disallowedTools that
+// claudeSpawnBounds owns: the tools no headless session can use, plus the
+// single-subagent surface when the opt-in knob removes it from a node that is
+// not ultracode.
+func claudeSpawnBoundWithheld(task Task) []string {
+	withheld := append([]string(nil), headlessWithheldTools...)
+	if !task.Ultracode && disallowOrchestrationToolsFromEnv() {
+		withheld = append(withheld, orchestrationTools...)
+	}
+	return withheld
+}
+
+// claudeDeclarationWithheld is the half of a spawn's --disallowedTools that the
+// node's `tools:` declaration owns. It is nil for an undeclared surface.
+func claudeDeclarationWithheld(task Task) []string {
+	if !toolBoundaryApplies(task) {
+		return nil
+	}
+	return claudeNativeDisallowedTools(task.AllowedTools, true, task.DiagnosticShell)
+}
+
+// claudeKeepsSubagents reports whether the spawn Execute makes still offers
+// the model a subagent tool. It reads the same two lists that spawn puts on
+// --disallowedTools, so the answer cannot drift from the argv. `Task` counts
+// as the tool itself: it is the tool on older CLIs, and the current CLI maps
+// the legacy name onto `Agent` (its alias table) before it applies a deny
+// rule.
+func claudeKeepsSubagents(task Task) bool {
+	withheld := append(claudeSpawnBoundWithheld(task), claudeDeclarationWithheld(task)...)
+	return !slices.Contains(withheld, "Agent") && !slices.Contains(withheld, "Task")
+}
+
+// headlessSubagentRule describes, in one place, how subagents behave in a
+// claude_code session. Execute appends it once to the system prompt of every
+// spawn that keeps the subagent tool, ultracode or not. It holds because
+// backgroundTasksOffEnv makes it hold: the text describes the mechanism, it is
+// not the mechanism. The ultracode section grants the orchestration and says
+// nothing about how a subagent returns. A backend-neutral section cannot name
+// this CLI's mechanics, and two statements of one rule drift apart.
+const headlessSubagentRule = "\n\n## Subagents in this session\n\n" +
+	"This session is not interactive. It ends with your final output, and nothing " +
+	"reaches you after that: no completion notification, no scheduled wake-up. " +
+	"Subagents therefore run in the foreground here: an Agent call returns that " +
+	"agent's report as its tool result. To run several at once, put several Agent " +
+	"calls in ONE message. They run concurrently, and every report comes back as " +
+	"a tool result before your next step. Never end your turn to wait for work to " +
+	"finish: anything still running when you produce your final output is lost. " +
+	"A Bash command that outlives its timeout is killed: give it a timeout that " +
+	"fits, and start anything longer with `nohup … &` and poll it."
+
+// claudeCodeSystemPrompt is the text Execute's spawn appends to the CLI's
+// native system prompt: the task's own sections, then the subagent rule when
+// the spawn keeps a subagent tool.
+func claudeCodeSystemPrompt(task Task) string {
+	prompt := task.BuildSystemPrompt()
+	if !claudeKeepsSubagents(task) {
+		return prompt
+	}
+	if prompt == "" {
+		return strings.TrimLeft(headlessSubagentRule, "\n")
+	}
+	return prompt + headlessSubagentRule
+}
+
 // claudeToolOptions turns a node's `tools:` declaration into the two CLI
 // flags that carry it, for ONE spawn. It is a pure function so the decision
 // can be executed rather than reasoned about, and so that every spawn of a
@@ -204,7 +263,7 @@ func claudeSpawnBounds(task Task) []claudesdk.Option {
 // declaration — the two lists stay disjoint there (see formatOutput).
 //
 // It is not the node's whole tool surface: the bounds that do not come from
-// the declaration live in claudeSpawnBounds (`Workflow`-withholding, the
+// the declaration live in claudeSpawnBounds (headlessWithheldTools, the
 // orchestration knob, --strict-mcp-config, --max-turns); the gated-task
 // withholding is NOT one of them — it belongs to formatOutput alone, the
 // spawn that cannot carry the hook, and putting it in the shared helper
@@ -228,9 +287,7 @@ func claudeToolOptions(task Task, extraAllowedTools []string) []claudesdk.Option
 		// WithAllowedTools is an approval list, not an availability boundary.
 		// Remove every undeclared built-in tool as well so a restricted judge
 		// with Read/Glob cannot silently fall back to Bash or a write surface.
-		claudesdk.WithDisallowedTools(
-			claudeNativeDisallowedTools(task.AllowedTools, true, task.DiagnosticShell)...,
-		),
+		claudesdk.WithDisallowedTools(claudeDeclarationWithheld(task)...),
 	}
 }
 
@@ -280,21 +337,21 @@ func claudeNativeDisallowedTools(allowed []string, declared, diagnosticShell boo
 // --allowedTools and on --disallowedTools at once. The orchestration half is
 // the part the roster misses: `claudeNativeTools` happens to carry `Task`, so
 // `Task` was withheld by accident while `Agent` — the spelling the current CLI
-// uses — `TaskOutput` and `Monitor` were not, and `Workflow` survived on an
-// ultracode node. claudeSpawnBounds removes those only for a non-ultracode
-// node, or under an opt-in knob that is off by default; neither condition has
-// anything to do with the gate, and this spawn has no gate at all.
+// uses — `TaskOutput` and `Monitor` were not. claudeSpawnBounds removes those
+// only under an opt-in knob that is off by default and never for an ultracode
+// node; neither condition has anything to do with the gate, and this spawn has
+// no gate at all.
 //
 // It is NOT in claudeSpawnBounds: that helper runs on both spawns, and a
 // withholding that belongs to one of them deleted a gated node's own declared
 // tools when it was put there.
 //
 // What this costs, named rather than assumed: a node whose first pass was cut
-// off mid-orchestration (the `--max-turns` case this pass exists for) can no
-// longer collect its background work here. `bots/whats-next` is the shipped
-// example — ultracode, `permission: deny`, an output schema. The exchange is
-// deliberate: collecting it meant running tools the operator asked to approve,
-// on the one spawn where no approval can be asked.
+// off mid-orchestration (the `--max-turns` case this pass exists for) cannot
+// dispatch a subagent here to finish that work. `bots/whats-next` is the
+// shipped example — ultracode, `permission: deny`, an output schema. The
+// exchange is deliberate: finishing it meant running tools the operator asked
+// to approve, on the one spawn where no approval can be asked.
 //
 // This withholding is the ENFORCED half, and it is incomplete: it names a
 // roster this project does not own, so the tools outside all three lists
@@ -306,19 +363,18 @@ func claudeNativeDisallowedTools(allowed []string, declared, diagnosticShell boo
 func gatedFormattingWithheld() []string {
 	withheld := claudeNativeDisallowedTools(nil, true, false)
 	withheld = append(withheld, orchestrationTools...)
-	withheld = append(withheld, workflowOrchestrationTools...)
-	// What the live CLI STILL registered once the three lists above were
-	// withheld, read from its own `system/init` roster on 2.1.220 rather than
-	// guessed: CronCreate, CronDelete, CronList, EnterWorktree, ExitWorktree,
-	// ReportFindings, ScheduleWakeup, SendMessage, StructuredOutput, TaskStop.
-	// All but StructuredOutput schedule future work, reach another session, or
-	// MOVE THE WORKTREE the session acts in — which is the very thing the
-	// engine's parallel-branch guard protects. StructuredOutput is the one
-	// tool this pass needs and is deliberately kept.
+	withheld = append(withheld, headlessWithheldTools...)
+	// What the live CLI STILL registered once the lists above were withheld,
+	// read from its own `system/init` roster on 2.1.220 rather than guessed:
+	// EnterWorktree, ExitWorktree, ReportFindings, SendMessage,
+	// StructuredOutput, TaskStop. All but StructuredOutput reach another
+	// session or MOVE THE WORKTREE the session acts in — which is the very
+	// thing the engine's parallel-branch guard protects. StructuredOutput is
+	// the one tool this pass needs and is deliberately kept.
 	//
-	// BashOutput, KillShell and RemoteTrigger are withheld too: they register
-	// in other configurations of the same CLI, and withholding a name this
-	// pass has no use for costs nothing.
+	// BashOutput and KillShell are withheld too: they register in other
+	// configurations of the same CLI, and withholding a name this pass has no
+	// use for costs nothing.
 	//
 	// Listed here, in the gated arm alone, so neither `orchestrationTools` nor
 	// the env knob that reads it changes meaning. And the list remains an
@@ -327,8 +383,7 @@ func gatedFormattingWithheld() []string {
 	// what covers whatever the next version adds.
 	withheld = append(withheld,
 		"EnterWorktree", "ExitWorktree",
-		"CronCreate", "CronDelete", "CronList",
-		"ScheduleWakeup", "SendMessage", "RemoteTrigger", "ReportFindings",
+		"SendMessage", "ReportFindings",
 		"BashOutput", "KillShell", "TaskStop")
 	// `Task` is on the native roster AND in orchestrationTools, so the union
 	// repeats it. The argv join dedupes for every caller, but a list that
@@ -423,8 +478,9 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	// Code. --append-system-prompt keeps the native prompt as the base and adds
 	// the workflow's instructions on top. Task.SystemPromptMode is
 	// SystemPromptAppendToNative for this backend, so BuildSystemPrompt emits
-	// author + suffixes only (no iterion-authored base — the native prompt is it).
-	systemPrompt := task.BuildSystemPrompt()
+	// author + suffixes only (no iterion-authored base — the native prompt is it);
+	// claudeCodeSystemPrompt adds the subagent rule this backend owns.
+	systemPrompt := claudeCodeSystemPrompt(task)
 	if systemPrompt != "" {
 		opts = append(opts, claudesdk.WithAppendSystemPrompt(systemPrompt))
 	}
@@ -563,6 +619,13 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	}
 
 	opts = append(opts, perTaskSpawnOpts(task)...)
+	// An ExtraEnv entry for a pinned key is dropped on every spawn. Said once
+	// per delegation, here: the formatting pass drops the same entries.
+	_, overridden := claudeExtraEnvEntries(task)
+	for _, key := range overridden {
+		b.Logger.Warn("[%s#%d/claude-code] ExtraEnv sets %s, which every claude_code spawn pins: the entry is ignored and the pinned value applies",
+			task.NodeID, task.Iteration, key)
+	}
 
 	return opts, sandboxCleanup
 }
@@ -1423,6 +1486,11 @@ func hostSpawnEnv(extra map[string]string) []string {
 // copies is silent and asymmetric — a knob wired into the main pass only lets
 // the CLI change its behaviour halfway through a node, with nothing in the
 // output to show for it.
+//
+// It also carries what every spawn pins whatever the task (claudeSpawnPins):
+// each pinned variable in the process environment here and in the flag
+// settings layer through the one `--settings` object. ExtraEnv never carries a
+// pinned key (claudeExtraEnvEntries), so no provisioning layer can move one.
 func perTaskSpawnOpts(task Task) []claudesdk.Option {
 	effort := task.ReasoningEffort
 	if effort == "" {
@@ -1430,10 +1498,14 @@ func perTaskSpawnOpts(task Task) []claudesdk.Option {
 	}
 	effort = claudeCodeEffort(effort)
 	opts := []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort)}
-	opts = append(opts, autoMemoryOpts(task)...)
+	env, settings := claudeSpawnPins(task)
+	opts = append(opts, claudesdk.WithSettingsJSON(settings))
 	opts = append(opts, taskExtraEnvOpts(task)...)
 	if d := claudeCodeThinkingDisplay(); d != "" {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
+	}
+	for _, key := range slices.Sorted(maps.Keys(env)) {
+		opts = append(opts, claudesdk.WithEnv(key, env[key]))
 	}
 	return opts
 }
@@ -1452,70 +1524,172 @@ func claudeCodeEffort(effort string) string {
 	return effort
 }
 
-// autoMemoryOpts wires the node's resolved auto-memory decision into the CLI
-// spawn. It is emitted for EVERY claude_code node, including the off case,
-// because the CLI's own default is ON: leaving it alone means a bot run reads
-// and writes the operator's personal `~/.claude/projects/<cwd>/memory/`
-// without anyone asking for it.
+// claudeEnvPins is the environment every claude_code spawn pins, whatever the
+// node declares:
 //
-// The switch rides CLAUDE_CODE_DISABLE_AUTO_MEMORY, which the CLI resolves
-// BEFORE any settings file — so both directions beat an operator's
-// `autoMemoryEnabled`, and the node's declared behaviour is what actually
-// happens. "0" is not a no-op there: it force-ENABLES against a settings.json
-// that turned auto-memory off.
+//   - backgroundTasksOffEnv = "1" (see its doc);
+//   - CLAUDE_CODE_DISABLE_AUTO_MEMORY, the node's auto-memory decision
+//     (autoMemorySpawn). It is emitted in the off case too, because the CLI's
+//     own default is ON: left alone, a bot run reads and writes the
+//     operator's personal `~/.claude/projects/<cwd>/memory/`. "0" is not a
+//     no-op: it force-ENABLES over a settings file that turned auto-memory
+//     off;
+//   - BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (claudeBashTimeouts).
 //
-// The directory rides `--settings`, whose values land in the CLI's
-// `flagSettings` layer. That layer outranks user and local settings, and
-// `autoMemoryDirectory` is one key the CLI refuses to read from a checked-in
-// `.claude/settings.json` at all — so the target repository cannot redirect
-// where the memory is written.
-func autoMemoryOpts(task Task) []claudesdk.Option {
-	disable, settings := autoMemorySpawn(task)
-	opts := []claudesdk.Option{claudesdk.WithEnv(autoMemoryDisableEnv, disable)}
-	if len(settings) > 0 {
-		opts = append(opts, claudesdk.WithSettingsJSON(settings))
+// Every one of them rides the process environment AND the flag settings
+// layer (claudeSpawnPins). The CLI does not resolve these variables before
+// its settings: at startup it copies the `env` block of every settings source
+// it loads into its own environment, in the order user, project, local, flag,
+// policy, and reads the variables live afterwards. A target repository's
+// committed .claude/settings.json (loaded under --setting-sources project) or
+// the operator's user settings would otherwise override the process
+// environment: switch background work back on, or turn auto-memory back on
+// against the operator's personal memory. The flag layer comes after them;
+// only managed policy settings come later.
+func claudeEnvPins(task Task) map[string]string {
+	disable, _ := autoMemorySpawn(task)
+	defaultMs, maxMs := claudeBashTimeouts()
+	return map[string]string{
+		backgroundTasksOffEnv: "1",
+		autoMemoryDisableEnv:  disable,
+		bashDefaultTimeoutEnv: strconv.FormatInt(defaultMs, 10),
+		bashMaxTimeoutEnv:     strconv.FormatInt(maxMs, 10),
 	}
-	return opts
 }
 
-// autoMemoryDisableEnv is the CLI's own auto-memory switch, resolved BEFORE
-// any settings file — which is why both directions of the knob ride it.
+// claudeSpawnPins returns the pinned environment and the one `--settings`
+// object that carries it into the CLI's flag settings layer, merged with the
+// auto-memory keys when the node's memory is on. WithSettingsJSON replaces
+// rather than merges, so everything the engine puts in that layer is composed
+// here, once. `autoMemoryDirectory` is one key the CLI refuses to read from a
+// checked-in `.claude/settings.json` at all, so the target repository cannot
+// redirect where the memory is written.
+func claudeSpawnPins(task Task) (env map[string]string, settings []byte) {
+	env = claudeEnvPins(task)
+	_, memory := autoMemorySpawn(task)
+	settings, err := claudeFlagSettings(env, memory)
+	if err != nil {
+		// Strings and a bool cannot fail to marshal. If they somehow did,
+		// enabling auto-memory without pinning the directory would send the
+		// agent's notes to the operator's personal memory instead of the
+		// run's space: stay off rather than write to the wrong place.
+		env[autoMemoryDisableEnv] = "1"
+		settings, _ = claudeFlagSettings(env, nil)
+	}
+	return env, settings
+}
+
+// claudeFlagSettings is the `--settings` object: the pinned environment as an
+// `env` block, and the memory keys when there are any.
+func claudeFlagSettings(env map[string]string, memory map[string]any) ([]byte, error) {
+	settings := map[string]any{"env": env}
+	for key, value := range memory {
+		settings[key] = value
+	}
+	return json.Marshal(settings)
+}
+
+// autoMemoryDisableEnv is the CLI's own auto-memory switch.
 const autoMemoryDisableEnv = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
-// autoMemorySpawn is autoMemoryOpts' decision, split out so the mapping is
+// autoMemorySpawn is the auto-memory decision, split out so the mapping is
 // testable without reaching into the SDK's unexported config. It returns the
 // value for CLAUDE_CODE_DISABLE_AUTO_MEMORY and, when memory is on, the
-// inline settings JSON pinning the directory (nil otherwise).
-func autoMemorySpawn(task Task) (disable string, settings []byte) {
+// settings keys pinning the directory (nil otherwise).
+func autoMemorySpawn(task Task) (disable string, settings map[string]any) {
 	if task.AutoMemoryDir == "" {
 		return "1", nil
 	}
-	raw, err := json.Marshal(map[string]any{
+	return "0", map[string]any{
 		"autoMemoryEnabled":   true,
 		"autoMemoryDirectory": task.AutoMemoryDir,
-	})
-	if err != nil {
-		// A map of a bool and a string cannot fail to marshal; if it somehow
-		// did, enabling auto-memory without pinning the directory would send
-		// the agent's notes to the operator's personal memory instead of the
-		// run's space. Stay off rather than write to the wrong place.
-		return "1", nil
 	}
-	return "0", raw
+}
+
+// The Bash timeout variables the CLI reads live from its environment.
+const (
+	bashDefaultTimeoutEnv = "BASH_DEFAULT_TIMEOUT_MS"
+	bashMaxTimeoutEnv     = "BASH_MAX_TIMEOUT_MS"
+
+	// unboundedBashTimeout is both Bash timeouts when no watchdog is enabled.
+	// Nothing can abort the session over a silent command then, so nothing
+	// kills a command early either: without a timeout of its own, a command
+	// runs as long as the longest one allowed.
+	unboundedBashTimeout = time.Hour
+
+	// bashWatchdogMargin is the least a Bash command's longest timeout stays
+	// under the session's silence watchdog: the CLI still has to kill the
+	// command and report it before the watchdog fires.
+	bashWatchdogMargin = 30 * time.Second
+)
+
+// claudeBashTimeouts returns the default and the maximum Bash timeout, in
+// milliseconds, that every spawn pins.
+//
+// With background work off, a Bash command that outlives its timeout is
+// killed, not moved to the background: the CLI's own default (2 min) kills a
+// long build the model ran without a timeout, and its maximum (10 min) caps
+// what can finish at all. The limit is this backend's own watchdogs. While a
+// foreground command runs, the session is silent to them, because the SDK
+// drops the CLI's tool_progress lines. A command that outlives the hot idle
+// tier or the no-progress tier therefore aborts the whole session.
+//
+// The maximum sits under the tighter of the two enabled watchdogs, by a
+// margin: a tenth of it, at least bashWatchdogMargin, at most half of it. The
+// default is half the maximum. With both watchdogs disabled, both are
+// unboundedBashTimeout: the CLI's own 2 minutes would kill a long command
+// that no watchdog threatens.
+func claudeBashTimeouts() (defaultMs, maxMs int64) {
+	var bound time.Duration
+	for _, watchdog := range []time.Duration{resolveStreamHotTimeout(), resolveNoProgressTimeout()} {
+		if watchdog > 0 && (bound == 0 || watchdog < bound) {
+			bound = watchdog
+		}
+	}
+	if bound == 0 {
+		return unboundedBashTimeout.Milliseconds(), unboundedBashTimeout.Milliseconds()
+	}
+	margin := min(max(bound/10, bashWatchdogMargin), bound/2)
+	maxTimeout := bound - margin
+	// The CLI ignores a value that is not a positive integer of milliseconds.
+	return max((maxTimeout / 2).Milliseconds(), 1), max(maxTimeout.Milliseconds(), 1)
 }
 
 // taskExtraEnvOpts converts Task.ExtraEnv (KEY=value entries — run-level
 // provisioning such as the devbox profile PATH) into per-spawn env
-// options. Entries without an '=' are dropped: they cannot form a valid
-// environment assignment.
+// options.
 func taskExtraEnvOpts(task Task) []claudesdk.Option {
-	opts := make([]claudesdk.Option, 0, len(task.ExtraEnv))
-	for _, kv := range task.ExtraEnv {
-		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
-			opts = append(opts, claudesdk.WithEnv(k, v))
-		}
+	entries, _ := claudeExtraEnvEntries(task)
+	opts := make([]claudesdk.Option, 0, len(entries))
+	for _, kv := range entries {
+		opts = append(opts, claudesdk.WithEnv(kv[0], kv[1]))
 	}
 	return opts
+}
+
+// claudeExtraEnvEntries is Task.ExtraEnv as a claude_code spawn applies it:
+// key/value pairs in order, without entries that have no '=' (they cannot form
+// an assignment) and without the keys every spawn pins (claudeEnvPins), which
+// provisioning does not get to move. Those keys come back as `overridden`, in
+// order, so the Session spawn can say it ignored them. Every reader of
+// ExtraEnv on this backend goes through it: the entries are applied twice per
+// spawn (here and in the credential environment, which comes last), and a key
+// filtered in one of the two comes back through the other.
+func claudeExtraEnvEntries(task Task) (entries [][2]string, overridden []string) {
+	pinned := claudeEnvPins(task)
+	entries = make([][2]string, 0, len(task.ExtraEnv))
+	for _, kv := range task.ExtraEnv {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			continue
+		}
+		if _, isPinned := pinned[k]; isPinned {
+			overridden = append(overridden, k)
+			continue
+		}
+		entries = append(entries, [2]string{k, v})
+	}
+	return entries, overridden
 }
 
 // formatOutput performs the second pass of two-pass execution: resumes the
@@ -1556,9 +1730,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// Every bound this task carries, on THIS spawn too. It is a second CLI
 	// process resuming the same session under the same always-on
 	// bypassPermissions, so a bound appended to one spawn and not the other
-	// is no bound at all: a node that declared `tools: []` was handed the
-	// whole native roster here, and a non-ultracode node kept `Workflow` —
-	// the one tool the DATA in the resumed transcript can arm. No MCP extras:
+	// is no bound at all: without it a node that declared `tools: []` gets
+	// the whole native roster here, and `Workflow` — the one tool the DATA in
+	// the resumed transcript can arm — comes back. No MCP extras:
 	// this pass passes no --mcp-config and reformats text the first pass
 	// already produced.
 	// The permission gate cannot travel to THIS spawn: it is a PreToolUse

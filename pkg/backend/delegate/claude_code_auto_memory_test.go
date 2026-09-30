@@ -3,8 +3,10 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,13 +23,29 @@ func TestAutoMemorySpawn_OffDisablesExplicitly(t *testing.T) {
 		t.Errorf("an off node must actively disable auto-memory, got %q", disable)
 	}
 	if settings != nil {
-		t.Errorf("no settings should be emitted when memory is off: %s", settings)
+		t.Errorf("no memory keys should be pinned when memory is off: %v", settings)
 	}
-	// And the option list actually carries it — the mapping above is only
-	// worth testing if it reaches the spawn.
-	if got := len(autoMemoryOpts(Task{})); got != 1 {
-		t.Errorf("off must emit exactly the env option, got %d options", got)
+	// And the pins actually carry it — the mapping above is only worth
+	// testing if it reaches the spawn, in both layers.
+	env, raw := claudeSpawnPins(Task{})
+	if env[autoMemoryDisableEnv] != "1" {
+		t.Errorf("off must pin %s=1 in the process environment, got %q", autoMemoryDisableEnv, env[autoMemoryDisableEnv])
 	}
+	if got := flagSettingsEnv(t, raw)[autoMemoryDisableEnv]; got != "1" {
+		t.Errorf("off must pin %s=1 in the flag settings layer, got %q", autoMemoryDisableEnv, got)
+	}
+}
+
+// flagSettingsEnv parses the `env` block of a --settings object.
+func flagSettingsEnv(t *testing.T, raw []byte) map[string]string {
+	t.Helper()
+	var parsed struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("the settings object is not valid JSON (%s): %v", raw, err)
+	}
+	return parsed.Env
 }
 
 func TestAutoMemorySpawn_OnPinsDirectory(t *testing.T) {
@@ -39,40 +57,49 @@ func TestAutoMemorySpawn_OnPinsDirectory(t *testing.T) {
 	if disable != "0" {
 		t.Errorf("an on node must force auto-memory on, got %q", disable)
 	}
-	var parsed struct {
-		Enabled bool   `json:"autoMemoryEnabled"`
-		Dir     string `json:"autoMemoryDirectory"`
-	}
-	if err := json.Unmarshal(settings, &parsed); err != nil {
-		t.Fatalf("settings is not valid JSON (%s): %v", settings, err)
-	}
-	if !parsed.Enabled {
+	if settings["autoMemoryEnabled"] != true {
 		t.Error("autoMemoryEnabled must be true")
 	}
-	if parsed.Dir != dir {
-		t.Errorf("autoMemoryDirectory = %q, want %q", parsed.Dir, dir)
+	if settings["autoMemoryDirectory"] != dir {
+		t.Errorf("autoMemoryDirectory = %v, want %q", settings["autoMemoryDirectory"], dir)
 	}
-	if got := len(autoMemoryOpts(Task{AutoMemoryDir: dir})); got != 2 {
-		t.Errorf("on must emit the env option AND the settings option, got %d", got)
+	env, raw := claudeSpawnPins(Task{AutoMemoryDir: dir})
+	if env[autoMemoryDisableEnv] != "0" {
+		t.Errorf("on must pin %s=0 in the process environment, got %q", autoMemoryDisableEnv, env[autoMemoryDisableEnv])
+	}
+	if got := flagSettingsEnv(t, raw)[autoMemoryDisableEnv]; got != "0" {
+		t.Errorf("on must pin %s=0 in the flag settings layer, got %q", autoMemoryDisableEnv, got)
 	}
 }
 
-// The settings blob merges over the operator's own configuration, so it must
-// carry nothing beyond the two memory keys.
-func TestAutoMemorySpawn_SettingsCarryOnlyMemoryKeys(t *testing.T) {
-	_, settings := autoMemorySpawn(Task{AutoMemoryDir: "/tmp/mem"})
-	var parsed map[string]any
-	if err := json.Unmarshal(settings, &parsed); err != nil {
-		t.Fatal(err)
+// The settings object merges over the operator's own configuration, so it
+// must carry nothing beyond the two memory keys and the pinned environment —
+// and the environment nothing beyond the four pinned variables.
+func TestFlagSettingsCarryOnlyMemoryKeysAndThePinnedEnvironment(t *testing.T) {
+	_, memory := autoMemorySpawn(Task{AutoMemoryDir: "/tmp/mem"})
+	if len(memory) == 0 {
+		t.Fatal("memory keys must not be empty when memory is on")
 	}
-	if len(parsed) == 0 {
-		t.Fatal("settings must not be empty when memory is on")
+	for k := range memory {
+		if !strings.HasPrefix(k, "autoMemory") {
+			t.Errorf("the memory half carries an unrelated key %q", k)
+		}
+	}
+	_, raw := claudeSpawnPins(Task{AutoMemoryDir: "/tmp/mem"})
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("the settings object is not valid JSON (%s): %v", raw, err)
 	}
 	for k := range parsed {
-		if !strings.HasPrefix(k, "autoMemory") {
+		if k != "env" && !strings.HasPrefix(k, "autoMemory") {
 			t.Errorf("settings carries an unrelated key %q — it merges over the "+
 				"operator's own settings and must touch nothing else", k)
 		}
+	}
+	env := flagSettingsEnv(t, raw)
+	want := []string{"BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"}
+	if got := slices.Sorted(maps.Keys(env)); !slices.Equal(got, want) {
+		t.Errorf("the env block carries %v, want exactly %v", got, want)
 	}
 }
 
@@ -106,8 +133,8 @@ func TestBuildTransportOptions_CarriesAutoMemory(t *testing.T) {
 	if offEnv[autoMemoryDisableEnv] != "1" {
 		t.Errorf("off spawn env %s = %q, want 1", autoMemoryDisableEnv, offEnv[autoMemoryDisableEnv])
 	}
-	if indexOf(offArgs, "--settings") >= 0 {
-		t.Errorf("off spawn must not emit --settings: %v", offArgs)
+	if idx := indexOf(offArgs, "--settings"); idx >= 0 && strings.Contains(offArgs[idx+1], "autoMemory") {
+		t.Errorf("off spawn must pin no memory key: %v", offArgs)
 	}
 }
 
@@ -137,8 +164,8 @@ func TestPerTaskSpawnOpts_CarriesAutoMemory(t *testing.T) {
 	if offEnv[autoMemoryDisableEnv] != "1" {
 		t.Errorf("off env %s = %q, want 1", autoMemoryDisableEnv, offEnv[autoMemoryDisableEnv])
 	}
-	if indexOf(offArgs, "--settings") >= 0 {
-		t.Errorf("off must not emit --settings: %v", offArgs)
+	if idx := indexOf(offArgs, "--settings"); idx >= 0 && strings.Contains(offArgs[idx+1], "autoMemory") {
+		t.Errorf("off must pin no memory key: %v", offArgs)
 	}
 }
 
