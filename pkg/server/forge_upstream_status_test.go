@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -46,7 +47,11 @@ func TestForgeOAuthAppAutoCreate_UpstreamStatusTaxonomy(t *testing.T) {
 			if w.Code != tc.want {
 				t.Fatalf("upstream %d → status %d, want %d; body=%s", tc.upstream, w.Code, tc.want, w.Body.String())
 			}
-			if got := w.Header().Get("Retry-After"); got != tc.wantRetryHdr {
+			// The header is read from the reset instant when the handler
+			// answers, so a second may pass since the forge's own.
+			got := w.Header().Get("Retry-After")
+			if want, _ := strconv.Atoi(tc.wantRetryHdr); tc.wantRetryHdr == "" && got != "" ||
+				tc.wantRetryHdr != "" && got != tc.wantRetryHdr && got != strconv.Itoa(want-1) {
 				t.Errorf("Retry-After = %q, want %q", got, tc.wantRetryHdr)
 			}
 		})
@@ -73,6 +78,8 @@ func TestForgeUpstreamStatus_Table(t *testing.T) {
 		want int
 	}{
 		{"rate limit", &forge.StatusError{Provider: "gitlab", Op: "o", Code: http.StatusTooManyRequests}, http.StatusTooManyRequests},
+		{"a 403 the forge marked as a limit", &forge.StatusError{Provider: "github", Op: "GET /x", Code: http.StatusForbidden, Limit: true}, http.StatusTooManyRequests},
+		{"a GraphQL rate limit, answered 200", &forge.StatusError{Provider: "github", Op: "POST items", Code: http.StatusOK, Limit: true, Cause: errors.New("graphql: RATE_LIMITED")}, http.StatusTooManyRequests},
 		{"upstream 500", &forge.StatusError{Code: http.StatusInternalServerError}, http.StatusBadGateway},
 		{"upstream 503", &forge.StatusError{Code: http.StatusServiceUnavailable}, http.StatusBadGateway},
 		{"upstream 409 reflects the request", &forge.StatusError{Code: http.StatusConflict}, http.StatusConflict},

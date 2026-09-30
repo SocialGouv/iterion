@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // AppManifest is the GitHub App manifest iterion POSTs to
@@ -241,7 +243,10 @@ func ConvertManifest(ctx context.Context, httpClient *http.Client, webBase, code
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		if err := forge.RateLimitErr("github", "convert manifest", resp.StatusCode, resp.Header, raw); err != nil {
+			return ManifestConversion{}, err
+		}
 		if resp.StatusCode == http.StatusUnprocessableEntity || resp.StatusCode == http.StatusNotFound {
 			return ManifestConversion{}, fmt.Errorf("github: manifest code invalid or expired (HTTP %d)", resp.StatusCode)
 		}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -122,5 +123,58 @@ func TestAppClientMintChain_PreservesLocalPreflight(t *testing.T) {
 				t.Fatalf("%s returned %v with no forge.ErrLocalPreflight — the mint marks it, and this is where the mark is dropped; the route above answers 502 for a key iterion stored", tc.name, err)
 			}
 		})
+	}
+}
+
+// GitHub rate-limits the App's own calls too: a mint answered 403 with the
+// primary-limit headers is a wait — never a missing permission, never the
+// permanent "permissions not granted" that degrades the connection.
+func TestMintInstallationToken_ARateLimitIsAWait(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(15*time.Minute).Unix(), 10))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded for installation ID 99."}`))
+	}))
+	defer srv.Close()
+
+	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr, AppSlug: "iterion"}
+	_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Now(), nil)
+	if errors.Is(err, forge.ErrForbidden) || errors.Is(err, forge.ErrPermissionsNotGranted) {
+		t.Fatalf("err = %v — a rate limit read as a refusal", err)
+	}
+	var se *forge.StatusError
+	if !errors.As(err, &se) || !se.RateLimited() || time.Until(se.ResetAt) < 14*time.Minute {
+		t.Fatalf("err = %v, want a rate-limited *forge.StatusError with the reset", err)
+	}
+}
+
+// The App's other two calls of its own are read the same way.
+func TestAppCallsTypeARateLimit(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit."}`))
+	}))
+	defer srv.Close()
+	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr, AppSlug: "iterion"}
+	calls := map[string]func() error{
+		"InstallationInfo": func() error {
+			_, err := InstallationInfo(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Now())
+			return err
+		},
+		"AppSlug": func() error {
+			_, err := AppSlug(context.Background(), srv.Client(), srv.URL, cfg, time.Now())
+			return err
+		},
+	}
+	for name, call := range calls {
+		err := call()
+		var se *forge.StatusError
+		if errors.Is(err, forge.ErrForbidden) || !errors.As(err, &se) || !se.RateLimited() || time.Until(se.ResetAt) < 118*time.Second || time.Until(se.ResetAt) > 2*time.Minute {
+			t.Errorf("%s: err = %v, want a rate-limited *forge.StatusError with Retry-After 2m", name, err)
+		}
 	}
 }

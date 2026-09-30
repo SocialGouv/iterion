@@ -9,9 +9,11 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
@@ -666,13 +668,13 @@ func TestCheckRunsRefusedByIntegrationIsATypedError(t *testing.T) {
 	}
 }
 
-// A 403 that is NOT a permission gap (rate limit, SAML enforcement) must not
-// be dressed up as one: it stays ErrForbidden, now carrying GitHub's message
-// instead of a bare status.
+// A 403 that is NOT a permission gap (SAML enforcement) must not be dressed up
+// as one: it stays ErrForbidden, now carrying GitHub's message instead of a
+// bare status.
 func TestOtherForbiddenStaysForbiddenWithTheCause(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{"message": "API rate limit exceeded for installation ID 99."})
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "Resource protected by organization SAML enforcement."})
 	}))
 	defer srv.Close()
 	c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
@@ -682,10 +684,44 @@ func TestOtherForbiddenStaysForbiddenWithTheCause(t *testing.T) {
 	}
 	var pe *forge.PermissionError
 	if errors.As(err, &pe) {
-		t.Errorf("a rate-limit 403 must not be reported as a missing permission: %v", err)
+		t.Errorf("a SAML 403 must not be reported as a missing permission: %v", err)
 	}
-	if !strings.Contains(err.Error(), "rate limit") {
+	if !strings.Contains(err.Error(), "SAML enforcement") {
 		t.Errorf("error = %q, want GitHub's own message kept", err.Error())
+	}
+}
+
+// GitHub answers its rate limits 403. Read as a refusal, the operator was told
+// "insufficient scope" while the installation had simply run out of calls; it
+// is typed as the wait it is — never ErrForbidden, never a missing permission —
+// keeping GitHub's message and the reset it announced.
+func TestARateLimited403IsAWaitNotARefusal(t *testing.T) {
+	reset := time.Now().Add(40 * time.Minute).Unix()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset, 10))
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "API rate limit exceeded for installation ID 99."})
+	}))
+	defer srv.Close()
+	c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+	_, err := c.GetPullRequest(context.Background(), "o/r", 12)
+	if errors.Is(err, forge.ErrForbidden) {
+		t.Fatalf("err = %v — a rate limit read as a missing grant", err)
+	}
+	var pe *forge.PermissionError
+	if errors.As(err, &pe) {
+		t.Fatalf("a rate-limit 403 reported as a missing permission: %v", err)
+	}
+	var se *forge.StatusError
+	if !errors.As(err, &se) || !se.RateLimited() {
+		t.Fatalf("err = %v, want a rate-limited *forge.StatusError", err)
+	}
+	if wait := time.Until(se.ResetAt); wait < 39*time.Minute || wait > 41*time.Minute {
+		t.Errorf("ResetAt in %v, want ~40m — GitHub said when the budget resets", wait)
+	}
+	if !strings.Contains(err.Error(), "rate limited") || !strings.Contains(err.Error(), "installation ID 99") {
+		t.Errorf("error = %q, want it named a rate limit and GitHub's own message kept", err.Error())
 	}
 }
 
