@@ -1,7 +1,19 @@
 name: modernize
 display_name: Morphy
 icon: 🧱
-version: 0.5.1
+version: 0.6.0
+## 0.6.0 — the whole contract is read-only inside a lot, not only the plan:
+## lot_verify also refuses a lot that rewrites outcomes.json, brief.yaml,
+## ARBITRAGE.md or the defects register (defects-ledger.json), all beside the
+## plan, one named cause per file, before any gate command runs. The plan
+## check is deny by default (brief_targets, top-level keys and any future
+## field are protected like the gates). In the register a lot may add an
+## entry and rewrite the entries its lot declares in the new `remediates:`
+## (read at the base) — nothing else. A lot that records a fix on an entry
+## its contract does not assign to it is now refused: declare `remediates`.
+## Each file is judged as git would store it (a CRLF checkout is not a
+## rewrite, a clean filter's laundering is), and lot_verify and mark_done
+## read history as committed — a replace ref no longer answers for the base.
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,
