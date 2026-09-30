@@ -1215,6 +1215,18 @@ func TestBankScratchOnCleanup_retriesItsRecordThroughAFailover(t *testing.T) {
 	}
 }
 
+// TestSandboxTeardownBudget_coversTheScratchBank: the lease the runner holds
+// past a cancellation covers every step of the teardown, the scratch's bank
+// included — its archive and upload, its record, the resume of what its
+// quiesce stopped — or a sibling takes the run while its bank still lands.
+func TestSandboxTeardownBudget_coversTheScratchBank(t *testing.T) {
+	steps := sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxShutdownTimeout
+	bank := scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget
+	if SandboxTeardownBudget < steps+bank {
+		t.Fatalf("SandboxTeardownBudget = %s, want at least %s: the teardown's steps (%s) and the scratch bank's (%s)", SandboxTeardownBudget, steps+bank, steps, bank)
+	}
+}
+
 // brokenStreamDriver starts pods whose tar extraction breaks, the way a
 // kubectl exec stream does when its connection drops: an exit code, nothing
 // on the Go side to tell it from a bad archive.

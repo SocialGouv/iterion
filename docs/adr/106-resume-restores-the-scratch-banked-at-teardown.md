@@ -164,7 +164,8 @@ pods the same way.
   write the scratch.
 - **The engine's check holds under the run's lock** only if the lock is held
   through a cancelled run's teardown: the runner keeps refreshing the lease
-  until the engine returns (#1991). A pod whose lease lapsed while it was
+  until the engine returns (#1991), at most the sandbox's teardown budget —
+  the bank's archive, record and resume included — plus a margin. A pod whose lease lapsed while it was
   alive still unwinds, and banks, as a split-brain writer.
 - **Staleness is read from the timeline's `node_finished` events.** A branch
   writes its node's finish best-effort: one lost to a store outage leaves a

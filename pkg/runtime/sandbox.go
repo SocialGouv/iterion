@@ -1888,9 +1888,13 @@ const sandboxShutdownTimeout = 30 * time.Second
 
 // SandboxTeardownBudget bounds what the engine still does in a sandbox once
 // its run was cancelled, before it returns: the workspace HEAD capture, the
-// export, the shutdown. The runner holds the run's lease that long past the
+// export, the scratch's bank (its archive and upload, its record, the resume
+// of the processes its quiesce stopped — each on a budget of its own), the
+// shutdown. The runner holds the run's lease that long past the
 // cancellation, no longer.
-const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxShutdownTimeout
+const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout +
+	scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget +
+	sandboxShutdownTimeout
 
 // WorkspaceIntegrity is the sandbox-side git truth captured at teardown
 // for export-based drivers (kubernetes), BEFORE ExportWorkspace streams
