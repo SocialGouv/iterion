@@ -243,10 +243,16 @@ reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
   past 100 names the oldest are counted, not named. The level floor does
   not apply to an issue the lane already knows.
 - **tracked** — the alerted (or pending) issues by id — open, being
-  reprocessed, or archived (Sentry reopens an archived issue as ongoing)
-  — their current status and last event. Over `max_tracked` they take
-  turns, least recently read first; an issue asked and absent from the
-  answer (deleted, merged) was read too.
+  reprocessed, archived (Sentry reopens an archived issue as ongoing) or
+  resolved (unresolved by hand — the issue page's button, a bulk action —
+  an issue is ongoing, in neither list) — their current status and last
+  event. The issues the channel heard of one by one are read first, then
+  those only named in a note (a flood's) or not said yet, the least
+  recently read first in each; over `max_tracked` they take turns and the
+  walk is partial (the coverage note says so). An issue asked and absent
+  from the answer is gone for good (deleted, merged — the lookup by id
+  filters on nothing else): read, never asked again, its idle note still
+  owed.
 
 An explicit `query` always: without one Sentry applies its default
 (`is:unresolved issue.priority:[high, medium]`) and low-priority issues
@@ -289,8 +295,9 @@ untracked issue of the new list posts NEW; an issue whose last word in
 the channel was its closing note posts `OPEN AGAIN IN SENTRY` the first
 tick it is read open — by id, or in an unresolved list —, event or not
 (Sentry reopens an issue archived for a while as ongoing; an operator
-unresolving a resolved one through the API puts it in the transition
-list, undated); an alerted
+unresolving a resolved one puts it in the transition list through the
+API's single-issue call, undated, and leaves it ongoing — read by id —
+from the issue page or in bulk); an alerted
 issue whose last event moved is a sighting — `ESCALATED` when its
 level-mapped severity rose above the one the channel last heard, `STILL
 OPEN` once per `renotify_hours` (none of them while an alert of it is
@@ -313,15 +320,21 @@ log leak class, while their lane is on (off, the pending record waits,
 and retention may forget it, like a pending Sentry issue's). The Sentry
 lane and the log templates — data anyone can mint incidents in (a
 public DSN, log lines carrying user input) — post at most
-`--var max_alerts_per_lane` (5) alerts of one kind (a state — new, a
-transition, a reopening, an escalation, a reminder, a note — at one
-severity) one by one per tick, pending ones first; the others are NAMED
-in notes of that kind — every one of them, as many notes as the message
-budget needs, each member one line of the alert log — and the per-run
-cap never cuts a note. Each member is then followed like any issue, its
-follow-ups folding the same way. A flood neither drowns the channel, nor
-queues behind the cap, nor hides a real incident: one at a severity the
-flood does not use posts one by one, any other is named. Anything
+`--var max_alerts_per_lane` (5) of their alerts one by one per tick, the
+most severe first (pending ones first inside a rank); the others are
+NAMED in ONE note per kind (a state — new, a transition, a reopening, an
+escalation, a reminder, a note — at one severity) and tick — as many as
+the message budget holds (`max_message_chars` less 1000, 3000 at most;
+`decide` refuses a budget under 1500) — which the per-run cap never
+cuts; the members it has no room for wait like an alert the cap cut
+(pending, or derived again), counted in the note, and the next note names
+them first. The alert log takes one line a message (a note's, the names
+it said). Each member is then followed like any issue — read by id after
+the issues said one by one —, its follow-ups folding the same way. A
+flood neither drowns the channel (a lane posts at most
+`max_alerts_per_lane` alerts and one note per kind a tick) nor holds the
+per-run cap — against another lane, or against its own lane's other
+alerts, named the tick they come. Anything
 else read is tracked silently: a backlog issue
 never posts on mere recurrence, and an issue merely re-read for
 `forget_after_days` leaves the tracked set — not while it is still in
@@ -356,7 +369,7 @@ leak classes cover issue text only.
 event from another environment moves them); the "last event" of a
 sighting is an event time (tolerance = `overlap_minutes`); a public DSN
 lets anyone create issues — a flood pushes the lists into their caps
-(partial coverage, named) and its new issues into one note a tick
+(partial coverage, named) and its issues into one note of a kind a tick
 (inside one rank each alert kind — a Sentry issue, a Sentry leak, a log
 template, a log leak, a probe — takes its turn under the cap, so a
 flood never holds it against another). Issue text anyone can write never pings nor links: every value
@@ -372,13 +385,13 @@ precedes it. The label's own words render as written, and none of their
 markdown can wrap a value: emphasis, code, link and LaTeX characters are
 escaped, `&` and `<` are entities (the server rewrites `<url|text>`
 first), `$` becomes its full-width form (inline LaTeX ignores a
-backslash), a dot where a host could form — before a letter, or ending
-the words right before a value — is escaped (the autolinker reads
-`www.` through a zero-width space) and a zero-width space goes before a
-scheme's colon — a server's custom URL schemes included. Parentheses,
-plain colons, a version's dots and emoji codes stay as written (an emoji
-glued to a value is escaped: its name could be a custom scheme), so a
-push notification shows the label's own text. A value is never scanned for placeholders,
+backslash), a dot after a letter or digit is escaped (the autolinker
+reads `www.` through a zero-width space; a push notification shows the
+backslash) and a zero-width space goes before a colon after a letter or
+digit unless a space follows — every scheme's colon, a server's custom
+URL schemes included, and an emoji code's own (its name could be a
+scheme: a code before a space still renders, one glued to what follows
+is text). Parentheses and plain colons stay as written. A value is never scanned for placeholders,
 and a message over `max_message_chars` is cut on a line boundary.
 
 ## Health probes

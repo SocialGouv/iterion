@@ -394,6 +394,13 @@ func (h *pwHarness) maxPerLane() int {
 	return 5
 }
 
+func (h *pwHarness) maxMsgChars() int {
+	if n := h.msgChars.Load(); n > 0 {
+		return int(n)
+	}
+	return 14000
+}
+
 // sentryOnly: a config whose only lane is Sentry (plus the healthy sink), so
 // a test sees the Sentry lane's alerts and nothing else.
 func sentryOnly(h *pwHarness, mod func(s map[string]any)) func(cfg map[string]any) {
@@ -639,9 +646,10 @@ func TestProdWatch_SentrySecondRegressionAfterResolvePosts(t *testing.T) {
 	}
 }
 
-// TestProdWatch_SentryResolvedNoteOnceThenUntracked: an alerted issue Sentry
-// reports resolved gets one note, and the next plan no longer tracks it.
-func TestProdWatch_SentryResolvedNoteOnceThenUntracked(t *testing.T) {
+// TestProdWatch_SentryResolvedNoteOnceStillFollowed: an alerted issue Sentry
+// reports resolved gets one note, and stays read by id — unresolved by hand
+// (the issue page's button, a bulk action) it is ongoing, in neither list.
+func TestProdWatch_SentryResolvedNoteOnceStillFollowed(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
@@ -658,8 +666,8 @@ func TestProdWatch_SentryResolvedNoteOnceThenUntracked(t *testing.T) {
 	if got := sentryAlerts(sentryTick(t, h, wf)); len(got) != 0 {
 		t.Fatalf("the resolved note posted twice: %v", got)
 	}
-	if after := h.sentry.callsTo("tracked"); len(after) != before {
-		t.Fatalf("a resolved, noted issue is still tracked by id: %v", after[len(after)-1].Q)
+	if after := h.sentry.callsTo("tracked"); len(after) != before+1 || !strings.Contains(fmt.Sprint(after[len(after)-1].Q["group"]), "701") {
+		t.Fatalf("a resolved, noted issue is no longer read by id: %d call(s) since", len(after)-before)
 	}
 }
 

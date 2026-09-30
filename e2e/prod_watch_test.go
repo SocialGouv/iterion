@@ -187,6 +187,7 @@ type pwHarness struct {
 	sentryTokenFile                      string
 	alertCap                             atomic.Int64 // tick()'s max_alerts when set (0: the bot's default 20)
 	laneCap                              atomic.Int64 // tick()'s max_alerts_per_lane + 1 when set (0: the bot's default 5)
+	msgChars                             atomic.Int64 // tick()'s max_message_chars when set (0: 14000)
 }
 
 const pwToken = "glsa_test_token_0123456789"
@@ -460,13 +461,13 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"sentry": plan["sentry"], "sentry_ok": sentry["ok"], "sentry_truncated": sentry["truncated"], "sentry_errors": sentry["errors"],
 		"sentry_walk": sentry["walk"], "sentry_issues": sentry["issues"],
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(), "max_alerts_per_lane": h.maxPerLane(), "max_message_chars": 14000,
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(), "max_alerts_per_lane": h.maxPerLane(), "max_message_chars": h.maxMsgChars(),
 	})
 	notify := run("notify", map[string]any{
 		"alerts": decide["alerts"], "overflow_count": decide["overflow_count"], "stale_sources": decide["stale_sources"],
 		"sinks": plan["sinks"], "labels": plan["labels"], "app": plan["app"], "sentry": plan["sentry"],
 		"release": rel["release"], "release_known": rel["release_known"],
-		"dry_run": dryRun, "max_message_chars": 14000, "deliver_by": pwDeliverBy(),
+		"dry_run": dryRun, "max_message_chars": h.maxMsgChars(), "deliver_by": pwDeliverBy(),
 	})
 	if notify["consume"] == true {
 		run("commit_state", map[string]any{"state_next_file": decide["state_next_file"], "alertlog_file": decide["alertlog_file"],

@@ -26,7 +26,7 @@ func sentryFolds(o map[string]map[string]any) []string {
 	var got []string
 	for _, a := range o["decide"]["alerts"].([]any) {
 		m := a.(map[string]any)
-		if m["kind"] == "sentry" && m["detail_key"] == "folded_detail" {
+		if m["kind"] == "sentry" && m["members"] != nil {
 			got = append(got, fmt.Sprint(m["state"], ":", len(m["members"].([]any))))
 		}
 	}
@@ -53,28 +53,36 @@ func sentryJunk(h *pwHarness, from, n int) {
 	}
 }
 
-// pwAlertLogFps is every fingerprint the committed alert log holds.
-func pwAlertLogFps(t *testing.T, h *pwHarness) map[string]bool {
+// pwAlertLog is the committed alert log, a line each.
+func pwAlertLog(t *testing.T, h *pwHarness) []map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(h.ws, ".prod-watch", "alertlog.jsonl"))
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		t.Fatalf("alert log: %v", err)
 	}
-	fps := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		var m map[string]any
-		if json.Unmarshal([]byte(line), &m) == nil {
-			fps[fmt.Sprint(m["fp"])] = true
+	var lines []map[string]any
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("alert log line %q: %v", line, err)
+		}
+		lines = append(lines, m)
 	}
-	return fps
+	return lines
 }
 
 // TestProdWatch_SentryAFloodIsFoldedNotQueued: anyone holding the public DSN
 // can create issues by the hundred at fatal: the lane posts max_alerts_per_lane
 // of them one by one and names the others in a note, which says them — each
-// recorded as said, in the alert log one by one, nothing queued — and a real
-// issue arriving mid-flood is said the tick it arrives.
+// recorded as said, the alert log a line a message (the note's names its
+// members), nothing queued — and a real issue arriving mid-flood is said the
+// tick it arrives.
 func TestProdWatch_SentryAFloodIsFoldedNotQueued(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -83,12 +91,25 @@ func TestProdWatch_SentryAFloodIsFoldedNotQueued(t *testing.T) {
 	sentryTick(t, h, wf)
 	sentryJunk(h, 5001, 12)
 	n := len(h.bodies())
+	logged := len(pwAlertLog(t, h))
 	o := sentryTick(t, h, wf)
 	if single, folds := sentrySingles(o, "new", "JUNK-"), sentryFolds(o); single != 5 || strings.Join(folds, " ") != "new:7" {
 		t.Fatalf("12 new issues, max_alerts_per_lane 5: want 5 alerts one by one and 1 note of 7, got %v and %v", sentryAlerts(o), folds)
 	}
 	body := strings.Join(h.bodies()[n:], "\n")
-	logged := pwAlertLogFps(t, h)
+	log := pwAlertLog(t, h)[logged:]
+	if len(log) != 6 {
+		t.Fatalf("5 alerts and a note: want 6 alert-log lines, got %d: %v", len(log), log)
+	}
+	var noteLine map[string]any
+	for _, l := range log {
+		if l["folded"] != nil {
+			noteLine = l
+		}
+	}
+	if noteLine == nil || fmt.Sprint(noteLine["folded"]) != "7" {
+		t.Fatalf("the note's alert-log line does not count its 7 members: %v", log)
+	}
 	for k := 0; k < 12; k++ {
 		id := fmt.Sprint(5001 + k)
 		if !strings.Contains(body, "JUNK-"+id) {
@@ -97,8 +118,12 @@ func TestProdWatch_SentryAFloodIsFoldedNotQueued(t *testing.T) {
 		if rec := sentryIncident(t, h, id); rec["alerted"] != true || rec["pending"] != nil {
 			t.Fatalf("JUNK-%s, said, is not recorded as said: %v", id, rec)
 		}
-		if !logged["sentry:"+id] {
-			t.Fatalf("JUNK-%s, said, is not in the alert log", id)
+		inLog := false
+		for _, l := range log {
+			inLog = inLog || l["fp"] == "sentry:"+id || (l["folded"] != nil && strings.Contains(fmt.Sprint(l["title"]), "JUNK-"+id))
+		}
+		if !inLog {
+			t.Fatalf("JUNK-%s, said, is not in the alert log: %v", id, log)
 		}
 	}
 	sentryJunk(h, 6001, 12)
@@ -115,8 +140,10 @@ func TestProdWatch_SentryAFloodIsFoldedNotQueued(t *testing.T) {
 	}
 }
 
-// TestProdWatch_SentryAFoldGroupsBySeverity: a real issue at a severity the
-// flood does not use is posted one by one, whatever the flood.
+// TestProdWatch_SentryAFoldGroupsBySeverity: the lane posts its most severe
+// alerts one by one; a real issue at a severity the flood does not use is
+// named the tick it arrives, in a note of its own severity — a sink's
+// min_severity still routes it.
 func TestProdWatch_SentryAFoldGroupsBySeverity(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -128,11 +155,17 @@ func TestProdWatch_SentryAFoldGroupsBySeverity(t *testing.T) {
 	now := time.Now()
 	h.sentry.put(&pwSentryIssue{ID: "8999", ShortID: strp("REAL-8999"), Title: "real", Level: "error", FirstProcessed: now, LastSeen: now, Count: 1})
 	o := sentryTick(t, h, wf)
-	if !anyPrefix(sentryAlerts(o), "new:REAL-8999:medium") {
-		t.Fatalf("an error-level issue among ten fatal junk issues was not posted one by one: %v %v", sentryAlerts(o), sentryFolds(o))
-	}
 	if single := sentrySingles(o, "new", "JUNK-"); single != 3 {
 		t.Fatalf("max_alerts_per_lane 3: want 3 junk alerts one by one, got %d", single)
+	}
+	var medium []any
+	for _, a := range o["decide"]["alerts"].([]any) {
+		if m := a.(map[string]any); m["members"] != nil && m["severity"] == "medium" {
+			medium = m["members"].([]any)
+		}
+	}
+	if len(medium) != 1 || medium[0].(map[string]any)["fp"] != "sentry:8999" || strings.Join(sentryFolds(o), " ") != "new:7 new:1" {
+		t.Fatalf("an error-level issue among ten fatal junk issues: want it named alone in a medium note, got %v %v", sentryAlerts(o), sentryFolds(o))
 	}
 }
 
@@ -189,8 +222,8 @@ func TestProdWatch_AFoldNoteIsNeverCutByTheCap(t *testing.T) {
 }
 
 // TestProdWatch_SentryAFoldNamesEveryMember: a note names every member it
-// stands for — however many, within the message budget, as many notes as
-// needed —, and a real issue at another level is posted one by one.
+// stands for — the new list's whole page fits one note's names —, a real
+// issue at another level included.
 func TestProdWatch_SentryAFoldNamesEveryMember(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -214,11 +247,11 @@ func TestProdWatch_SentryAFoldNamesEveryMember(t *testing.T) {
 					missing = append(missing, id)
 				}
 			}
+			if !strings.Contains(body, "REAL-4242") {
+				missing = append(missing, "REAL-4242")
+			}
 			if len(missing) > 0 {
 				t.Fatalf("%d members said nowhere in the channel (%v…), notes %v", len(missing), missing[:min(len(missing), 5)], sentryFolds(o))
-			}
-			if !anyPrefix(sentryAlerts(o), "new:REAL-4242:medium") {
-				t.Fatalf("the error-level issue among fatal junk was not posted one by one: %v", sentryAlerts(o))
 			}
 			if p := sentryPendingCount(t, h); p != 0 {
 				t.Fatalf("%d members pending after their notes posted", p)
@@ -516,9 +549,10 @@ func TestProdWatch_AFoldOfEscalationsIsSaidWhole(t *testing.T) {
 }
 
 // TestProdWatch_ALogTemplateFoldFitsTheMessageBudget: a note's names never
-// outgrow a message — with a small max_message_chars the fold splits into as
-// many notes as needed, and every template is named in a message delivered
-// whole (a longer one would be cut on a line boundary, its names dropped).
+// outgrow a message — with a small max_message_chars the note names what the
+// budget holds, each in the message delivered whole (a longer one would be
+// cut on a line boundary, its names dropped); the templates it has no room
+// for wait, pending and not marked said, counted in the note.
 func TestProdWatch_ALogTemplateFoldFitsTheMessageBudget(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -531,17 +565,50 @@ func TestProdWatch_ALogTemplateFoldFitsTheMessageBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decide: %v %s", err, stderr)
 	}
+	var note map[string]any
+	for _, a := range out["alerts"].([]any) {
+		if m := a.(map[string]any); m["members"] != nil {
+			if note != nil {
+				t.Fatalf("two notes of one kind in a tick: %v", out["alerts"])
+			}
+			note = m
+		}
+	}
+	if note == nil || note["detail_key"] != "folded_detail_more" {
+		t.Fatalf("35 templates past the five posted one by one, a 1000-character names budget: want one note naming some, holding the rest, got %v", note)
+	}
+	named := map[string]bool{}
+	for _, m := range note["members"].([]any) {
+		named[m.(map[string]any)["fp"].(string)] = true
+	}
+	if more := note["fields"].(map[string]any)["more"]; fmt.Sprint(more) != fmt.Sprint(35-len(named)) || len(named) < 2 {
+		t.Fatalf("the note names %d and counts %v held: want the other %d held", len(named), more, 35-len(named))
+	}
 	nout, nerr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": out["alerts"], "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
-		"labels": map[string]any{"folded_detail": "{n} more of this kind this tick, not posted one by one: {names}"}, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false,
+		"labels": map[string]any{"folded_detail_more": "{n} more of this kind this tick, not posted one by one: {names} — {more} more held for the next ticks"},
+		"app":    map[string]any{"name": "demo"}, "release": "", "release_known": false,
 		"dry_run": true, "max_message_chars": 2000, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, nerr)
 	}
 	text := fmt.Sprint(nout["messages"])
-	for k := 0; k < 40; k++ {
-		if !strings.Contains(text, fmt.Sprintf("merchant %02d with", k)) {
-			t.Fatalf("template %02d, marked said, is named in no message delivered whole", k)
+	held := 0
+	for fp, r := range pwStateNext(t, out)["incidents"].(map[string]any) {
+		rec := r.(map[string]any)
+		switch {
+		case named[fp]:
+			if !strings.Contains(text, fmt.Sprint(rec["title_arg"])) || rec["alerted"] != true {
+				t.Fatalf("%s, named in the note, is not in the message delivered whole, or not marked said: %v", fp, rec)
+			}
+		case rec["alerted"] != true:
+			if rec["pending"] != "new" {
+				t.Fatalf("%s, held for the next note, is not pending: %v", fp, rec)
+			}
+			held++
 		}
+	}
+	if held != 35-len(named) || !strings.Contains(text, fmt.Sprint("`", 35-len(named), "` more held")) {
+		t.Fatalf("%d templates held, want %d, counted in the note:\n%s", held, 35-len(named), text)
 	}
 }

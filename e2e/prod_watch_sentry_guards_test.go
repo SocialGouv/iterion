@@ -423,6 +423,8 @@ func TestProdWatch_SentryForeignIncidentFieldIsRefusedByName(t *testing.T) {
 	}{
 		{"backlog", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "backlog": "yes"}}}},
 		{"closed_said", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "closed_said": "yes"}}}},
+		{"folded", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "folded": "yes"}}}},
+		{"gone", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "gone": 1}}}},
 		{"tracked_read_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "tracked_read_at": 5}}}},
 		{"pending_since", map[string]any{"incidents": map[string]any{"leak:email": map[string]any{"kind": "leak", "pending_since": "soon"}}}},
 		{"transition_seen_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "transition_seen_at": 5}}}},
@@ -704,12 +706,12 @@ func TestProdWatch_SentryAnEmptyValueOpensNoSpan(t *testing.T) {
 	}
 }
 
-// TestProdWatch_ALabelsEmojiAndVersionStayAsWritten: an emoji code in a label
-// stays as written — before a comma, at the end, with an underscore — and so
-// do a version's dots: the channel and a push notification show the label's
-// own text. An emoji glued to a value is escaped (its name could be a custom
-// URL scheme).
-func TestProdWatch_ALabelsEmojiAndVersionStayAsWritten(t *testing.T) {
+// TestProdWatch_ALabelsEmojiCodeIsJustText: an emoji code in a label is text
+// like the rest of it — a colon after a letter or digit gets its zero-width
+// space unless a space follows (one before a space still renders), a dot after
+// a letter or digit its backslash — and an emoji glued to a value opens no
+// scheme (its name could be one).
+func TestProdWatch_ALabelsEmojiCodeIsJustText(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
@@ -724,9 +726,9 @@ func TestProdWatch_ALabelsEmojiAndVersionStayAsWritten(t *testing.T) {
 	n := len(h.bodies())
 	sentryTick(t, h, wf)
 	body := strings.Join(h.bodies()[n:], "\n")
-	for _, want := range []string{":rotating_light: issue", ":fire:, `error`", " since v1.2.3 · `app.views` :bell:"} {
+	for _, want := range []string{":rotating\\_light: issue", ":fire\u200b:, `error`", " since v1\\.2\\.3 · `app.views` :bell\u200b:"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("the label's own text %q is not shown as written:\n%q", want, body)
+			t.Fatalf("the label's text %q is not rendered as plain text:\n%q", want, body)
 		}
 	}
 	// Read by id hours later, the detail is the whole-life one, the emoji glued to the value.
@@ -742,6 +744,53 @@ func TestProdWatch_ALabelsEmojiAndVersionStayAsWritten(t *testing.T) {
 	body = strings.Join(h.bodies()[n:], "\n")
 	if !strings.Contains(body, ":bell\u200b:`app.views`") {
 		t.Fatalf("an emoji code glued to a value was not escaped:\n%q", body)
+	}
+}
+
+// TestProdWatch_ALabelsEmojiNamedLikeASchemeOpensNothing: an emoji code's name
+// can be a URL scheme (`:tel:`, `:https:`, the server's custom ones); in a
+// label, before a value or not, its colons are plain text like any other — no
+// scheme opens around the value's code span, and label words split by an
+// emoji never form a host.
+func TestProdWatch_ALabelsEmojiNamedLikeASchemeOpensNothing(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	for name, label := range map[string]string{
+		"a tel-named emoji then a slash":  "{level} · :tel:/{culprit}",
+		"an https-named emoji and a path": "{level} · :https:/{culprit}",
+		"a mattermost-named emoji":        "{level} · :mattermost://x{culprit}",
+		"an ftp-named emoji then a slash": "{level} · :ftp:/{culprit}",
+		"a URL inside an emoji shape":     "{level} · :https://runbook:{culprit}",
+		"www split by an emoji":           "{level} · www.:fire:evil-sso.com/login {culprit}",
+	} {
+		name, label := name, label
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, func(cfg map[string]any) {
+				sentryOnly(h, nil)(cfg)
+				cfg["labels"] = map[string]any{"sentry_detail": label}
+			})
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "4501", ShortID: strp("P-4501"), Title: "x", Culprit: "@channel see www.evil-sso.com/login",
+				FirstProcessed: now, LastSeen: now, Count: 1})
+			n := len(h.bodies())
+			sentryTick(t, h, wf)
+			body := strings.Join(h.bodies()[n:], "\n")
+			found := false
+			for _, line := range strings.Split(body, "\n") {
+				if strings.Contains(line, "`@channel see www.evil-sso.com/login`") {
+					found = true
+					if bad := pwUnescapedActives(line); len(bad) > 0 {
+						t.Fatalf("%s: the label's own markdown stays live around the value (%q):\n%s", name, bad, line)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("%s: setup: the detail line with the value was not posted:\n%s", name, body)
+			}
+		})
 	}
 }
 

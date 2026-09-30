@@ -60,7 +60,7 @@ func TestProdWatch_SentryAnArchiveReadOpenBeforeItsNextEventSaysReopened(t *test
 func TestProdWatch_SentryAResolvedIssueReopenedByHandSaysReopened(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
-	for name, substatus := range map[string]string{"through the API": "regressed"} {
+	for name, substatus := range map[string]string{"through the API": "regressed", "from the issue page or in bulk": "ongoing"} {
 		name, substatus := name, substatus
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

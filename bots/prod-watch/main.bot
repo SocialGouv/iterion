@@ -158,18 +158,23 @@ vars:
   ## 0 disables.
   source_stale_hours: int = 6
 
-  ## Per-run cap on posted alerts. Overflow incidents stay OPEN and
-  ## re-fire next tick; the overflow is announced explicitly.
+  ## Per-run cap on the alerts posted one by one. Overflow incidents stay
+  ## OPEN and re-fire next tick; the overflow is announced explicitly. A
+  ## note of folded alerts (below) is never cut by it.
   max_alerts_per_run: int = 20
 
-  ## Alerts of one kind (new, escalated, still open, not observed any
-  ## more) a lane whose data mints incidents (Sentry issues — anyone
+  ## Alerts a lane whose data mints incidents (Sentry issues — anyone
   ## holding the public DSN creates them —, log templates) posts one by one
-  ## per tick; the rest are named in one note. 0 folds them all.
+  ## per tick, the most severe first; the rest are named in one note per
+  ## kind (a state — new, escalated, regressed, reopened, still open,
+  ## closed, not observed any more — at one severity) and tick, as many as
+  ## the message budget holds, the others held for the next ticks. 0 folds
+  ## them all.
   max_alerts_per_lane: int = 5
 
   ## Per-MESSAGE character budget at delivery (under Mattermost's
-  ## 16383-char post limit).
+  ## 16383-char post limit; 1500 at least — a note names its members
+  ## inside one message).
   max_message_chars: int = 14000
 
 ## ─── Schemas ────────────────────────────────────────────────────
@@ -651,6 +656,9 @@ tool plan:
     ## delivery must fit in it at its worst — the release endpoint, each
     ## health probe in turn, each lane's deadline. The rest is the leak
     ## scan's, the delivery's, the state commit's and the engine's own.
+    ## The delivery's deadline counts from here, the entry node: the
+    ## engine's start before it (seconds) and the state commit's window
+    ## (90 s) come out of AFTER_DELIVERY_SECS.
     RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = 720, 240, 150
     deliver_by = int(time.time()) + RUN_BUDGET_SECS - AFTER_DELIVERY_SECS
     ## A name lookup is bounded like the answer after it (one per host and
@@ -709,6 +717,7 @@ tool plan:
         'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
         'overflow': '{n} more alert(s) exceeded the per-run cap; they stay open and will fire on the next tick',
         'folded_detail': '{n} more of this kind this tick, not posted one by one: {names}',
+        'folded_detail_more': '{n} more of this kind this tick, not posted one by one: {names} — {more} more held for the next ticks',
         'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
         'halted': 'watchdog halted since {since}: {reason}',
         'severity': 'severity',
@@ -783,7 +792,7 @@ tool plan:
         for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since', 'transition_seen_at'):
             if rec.get(f) is not None and not is_iso(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
-        for f in ('backlog', 'closed_said'):
+        for f in ('backlog', 'closed_said', 'folded', 'gone'):
             if rec.get(f) is not None and not isinstance(rec[f], bool):
                 refuse_state(where + '.' + f, rec[f], 'a boolean')
     for src, hrec in (state.get('health') or {}).items():
@@ -962,16 +971,23 @@ tool plan:
                 known[sid] = {'transition_at': rec.get('transition_at'), 'last_seen': rec.get('sentry_last_seen'),
                               'checked_at': rec.get('transition_checked_at')}
                 ## Tracked by id: what is pending, and what was alerted and can
-                ## still come back by itself — open, or archived (Sentry reopens
-                ## an archived issue as ongoing). A resolved one regresses
-                ## through the transition list; a deleted or merged one is gone.
-                if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved') in ('unresolved', 'reprocessing', 'ignored')):
-                    tracked.append((rec.get('tracked_read_at') or '', sid))
-        ## Least recently read first: over max_tracked, the incidents take
-        ## turns instead of the oldest never being read again.
+                ## still change by itself — open; archived (Sentry reopens it as
+                ## ongoing); resolved (unresolved by hand — the issue page's
+                ## button, a bulk action — it is ongoing, in neither list).
+                if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved')
+                                          in ('unresolved', 'reprocessing', 'ignored', 'resolved')):
+                    tier = 2 if rec.get('gone') else 1 if (rec.get('folded') or not rec.get('alerted')) else 0
+                    tracked.append((tier, rec.get('tracked_read_at') or '', sid))
+        ## The issues the channel heard of one by one first, then those only
+        ## named in a note (a flood's) or not said yet, the least recently
+        ## read first in each: over max_tracked they take turns, and the walk
+        ## says it is partial. What was asked and absent (deleted, merged)
+        ## comes last, read with reads to spare, and counts for no cut.
         tracked.sort()
-        sentry['tracked_ids'] = [sid for _, sid in tracked[:sentry['max_tracked']]]
-        sentry['tracked_cut'] = len(tracked) > sentry['max_tracked']
+        sentry['tracked_ids'] = [sid for _, _, sid in tracked[:sentry['max_tracked']]]
+        live = [x for x in tracked if x[0] < 2]
+        sentry['tracked_cut'] = len(live) > sentry['max_tracked']
+        sentry['tracked_total'] = len(live)
         sentry['known'] = known
 
     lanes = {'loki': bool(queries), 'prometheus': bool(norm_probes), 'probes': bool(http_probes), 'sentry': sentry['enabled']}
@@ -2291,9 +2307,11 @@ tool poll_sentry:
         ('the deadline passed', deadline_hit),
         ('the cursor was older than max_catchup_hours: issues first processed between ' + str(cfg.get('gap_since') or '?') +
          ' and ' + str(cfg.get('new_since') or '?') + ' were never read as new', bool(cfg.get('gap_since'))),
-        (str(stats['malformed']) + ' malformed issue(s) skipped', stats['malformed'] > 0)) if on and not ('setup' in ' '.join(failed))]
+        (str(stats['malformed']) + ' malformed issue(s) skipped', stats['malformed'] > 0),
+        (str(cfg.get('tracked_total') or '?') + ' tracked issues for max_tracked ' + str(cfg.get('max_tracked')) +
+         ' reads a tick: they are read in turns', bool(cfg.get('tracked_cut')))) if on and not ('setup' in ' '.join(failed))]
     truncated = (not all(complete.values()) or checks_cut or deadline_hit or stats['malformed'] > 0
-                 or bool(cfg.get('gap_since')))
+                 or bool(cfg.get('gap_since')) or bool(cfg.get('tracked_cut')))
     walk_info = {'bootstrap': bootstrap, 'as_of': as_of, 'clock': clock, 'new_complete': complete['new'],
                  'transition_complete': complete['transition'] and not checks_cut, 'tracked_complete': complete['tracked'] and not cfg.get('tracked_cut'),
                  'pages': stats['pages'], 'activity_checks': stats['activity_checks'], 'checks_cut': checks_cut,
@@ -3007,6 +3025,12 @@ tool decide:
     if max_per_lane < 0:
         raise SystemExit('prod-watch: max_alerts_per_lane must be 0 or more, got ' + str(max_per_lane))
     msg_chars = int({{input.max_message_chars}})
+    if msg_chars < 1500:
+        ## A note names its members inside one message, the header and the
+        ## meta line around them: below this, clipping would drop the names
+        ## of members stamped as said.
+        raise SystemExit('prod-watch: max_message_chars must be 1500 or more (a note of folded alerts names its members '
+                         'inside one message), got ' + str(msg_chars))
     os.chdir(ws)
     os.makedirs(scratch, exist_ok=True)
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -3188,6 +3212,7 @@ tool decide:
                     'fields': {'level': it.get('level') or '?', 'short_id': short}, 'short_id': short,
                     'level': it.get('level') or 'unknown', 'link': (sentry_cfg.get('link_prefix') or '') + it['id'] + '/'})
         rec['substatus'] = it.get('substatus')
+        rec.pop('gone', None)
         if it.get('status'):
             rec['status'] = it['status']
         return rec
@@ -3369,13 +3394,17 @@ tool decide:
         for sid in s_requested - set(s_issues):
             rec = incidents.get('sentry:' + sid)
             if rec is not None:
-                rec['tracked_read_at'] = now_iso   # asked and absent: gone (deleted, merged)
+                ## Asked by id and absent: gone — deleted or merged (the lookup
+                ## filters on nothing else) — read last from now on, until an
+                ## answer carries it again.
+                rec['tracked_read_at'] = now_iso
+                rec['gone'] = True
         for fp, rec in sorted(incidents.items(), key=lambda kv: (str(kv[1].get('pending_since') or ''), kv[0])):
             if rec.get('kind') != 'sentry' or fp in s_emitted:
                 continue
             sid = fp.split(':', 1)[1]
             it = s_issues.get(sid)
-            read_now = (it is not None and it.get('in_tracked')) or sid in s_requested
+            read_now = (it is not None and it.get('in_tracked')) or sid in s_requested or bool(rec.get('gone'))
             if (rec.get('pending') == 'escalated' and rec.get('announced_severity')
                     and RANK.get(rec.get('severity') or 'low', 0) <= RANK.get(rec['announced_severity'], 0)):
                 ## A pending escalation a lowered max_severity brought back to
@@ -3681,55 +3710,61 @@ tool decide:
             return (0, str(rec.get('pending_since') or ''))
         return (1, '')
     alerts.sort(key=pending_first)
+    order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reopened': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
+    def rank_key(a):
+        return (RANK.get(a['severity'], 0), order.get(a['state'], 0))
     ## A lane whose data MINTS incidents — Sentry issues (anyone holding the
     ## public DSN creates them), log templates (log lines carry user input)
-    ## — posts at most max_alerts_per_lane alerts of one kind (its state,
-    ## its severity, a closing note's status) one by one per tick, pending
-    ## ones first; the others are NAMED in notes of that kind — as many as
-    ## their names need, each within the message budget — which the per-run
-    ## cap never cuts: posted, a note said each of its members, stamped as
-    ## such. A flood neither drowns the channel, nor queues behind the cap,
-    ## nor hides a real incident: one at a severity the flood does not use
-    ## posts one by one, any other is named.
+    ## — posts at most max_alerts_per_lane of its alerts one by one per
+    ## tick, the most severe first (pending ones first inside a rank); the
+    ## others are NAMED in ONE note of their kind (its state, its severity,
+    ## a closing note's status) per tick, as many as the message budget
+    ## holds — the per-run cap never cuts it: posted, it said each member it
+    ## named. The members it has no room for wait like an alert the cap cut
+    ## (pending, or derived again next tick), counted in the note. A flood
+    ## neither drowns the channel nor holds the per-run cap — against
+    ## another lane or against its own lane's other alerts, which are named.
     def fold_name(a):
         if a['kind'] == 'loki':
             ## Two templates can share their first words: the id tells them apart.
             return a['fingerprint'].split(':', 1)[-1][:8] + ' ' + str(a.get('title_arg') or '')[:120]
         return str(a.get('log_title') or a.get('title_arg') or a['fingerprint'])[:64]
-    names_budget = max(200, min(3000, msg_chars - 1000))
-    minted = {}
-    for a in alerts:
-        if a.get('kind') in ('sentry', 'loki'):
-            status = str((a.get('evidence') or {}).get('status') or '') if a['state'] == 'resolved' else ''
-            minted.setdefault((a['kind'], a['state'], a['severity'], status), []).append(a)
-    for (kind, word, sev, status), group in sorted(minted.items()):
-        if len(group) <= max_per_lane:
-            continue
-        rest = group[max_per_lane:]
-        drop = set(id(a) for a in rest)
-        alerts = [a for a in alerts if id(a) not in drop]
-        chunks, size = [[]], 0
-        for a in rest:
+    def fold_key(a):
+        status = str((a.get('evidence') or {}).get('status') or '') if a['state'] == 'resolved' else ''
+        return (a['kind'], a['state'], a['severity'], status)
+    names_budget = min(3000, msg_chars - 1000)
+    minted, taken = {}, {}
+    for a in sorted((a for a in alerts if a.get('kind') in ('sentry', 'loki')), key=rank_key, reverse=True):
+        taken[a['kind']] = taken.get(a['kind'], 0) + 1
+        if taken[a['kind']] > max_per_lane:
+            minted.setdefault(fold_key(a), []).append(a)
+    to_note = set(id(a) for g in minted.values() for a in g)
+    alerts = [a for a in alerts if id(a) not in to_note]
+    notes, held = [], []
+    for k, queue in sorted(minted.items()):
+        kind, word, sev, status = k
+        named, size = [], 0
+        for a in queue:
             n = len(fold_name(a)) + 2
-            if chunks[-1] and size + n > names_budget:
-                chunks.append([])
-                size = 0
-            chunks[-1].append(a)
+            if named and size + n > names_budget:
+                break
+            named.append(a)
             size += n
-        for k, chunk in enumerate(chunks):
-            names = ', '.join(fold_name(a) for a in chunk)
-            alerts.append({'fingerprint': 'folded:' + ':'.join((kind, word, sev, status, str(k))), 'kind': kind, 'state': word,
-                           'severity': sev, 'title_key': chunk[0].get('title_key'), 'title_arg': '', 'detail_key': 'folded_detail',
-                           'fields': {'n': len(chunk), 'names': names}, 'evidence': {'status': status} if status else {},
-                           'count': sum(int(a.get('count') or 0) for a in chunk),
-                           'first_seen': min(str(a.get('first_seen') or now_iso) for a in chunk), 'prev_severity': '',
-                           'members': [{'fp': a['fingerprint'], 'severity': a['severity'], 'prev_severity': a.get('prev_severity') or '',
-                                        'transition_at': a.get('transition_at'), 'name': fold_name(a), 'count': a.get('count')}
-                                       for a in chunk]})
+        later = queue[len(named):]
+        held.extend(later)
+        notes.append({'fingerprint': 'folded:' + ':'.join(k), 'kind': kind, 'state': word, 'severity': sev,
+                      'title_key': named[0].get('title_key'), 'title_arg': '',
+                      'detail_key': 'folded_detail_more' if later else 'folded_detail',
+                      'fields': {'n': len(named), 'names': ', '.join(fold_name(a) for a in named), 'more': len(later)},
+                      'evidence': {'status': status} if status else {},
+                      'count': sum(int(a.get('count') or 0) for a in named),
+                      'first_seen': min(str(a.get('first_seen') or now_iso) for a in named), 'prev_severity': '',
+                      'members': [{'fp': a['fingerprint'], 'severity': a['severity'], 'prev_severity': a.get('prev_severity') or '',
+                                   'transition_at': a.get('transition_at'), 'name': fold_name(a), 'count': a.get('count')}
+                                  for a in named]})
 
     ## ── priority, cap, staging ────────────────────────────────────
-    order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reopened': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
-    alerts.sort(key=lambda a: (RANK.get(a['severity'], 0), order.get(a['state'], 0)), reverse=True)
+    alerts.sort(key=rank_key, reverse=True)
     ## Inside one rank the lanes take turns, so a flood on one lane (a public
     ## DSN creating issues) cannot hold the cap against another's alerts
     ## of the same rank; each lane keeps its own order.
@@ -3738,8 +3773,7 @@ tool decide:
     fair, i = [], 0
     while i < len(alerts):
         j = i
-        key = (RANK.get(alerts[i]['severity'], 0), order.get(alerts[i]['state'], 0))
-        while j < len(alerts) and (RANK.get(alerts[j]['severity'], 0), order.get(alerts[j]['state'], 0)) == key:
+        while j < len(alerts) and rank_key(alerts[j]) == rank_key(alerts[i]):
             j += 1
         queues = {}
         for a in alerts[i:j]:
@@ -3750,27 +3784,26 @@ tool decide:
                 if queues[q]:
                     fair.append(queues[q].pop(0))
         i = j
-    alerts = fair
-    ## A note of folded alerts is never cut by the per-run cap: it holds
-    ## what a flood would otherwise queue, said at once.
-    singles = [a for a in alerts if not a.get('members')]
-    overflow = max(0, len(singles) - max_alerts)
-    cut = set(id(a) for a in singles[max_alerts:])
-    posted = [a for a in alerts if id(a) not in cut]
-    deferred = [a for a in alerts if id(a) in cut]
+    ## The per-run cap bounds the alerts posted one by one; a note ranks with
+    ## its kind, after the alerts of its rank.
+    posted, deferred = fair[:max_alerts], fair[max_alerts:]
+    overflow = len(deferred)
+    deferred += held
+    posted = sorted(posted + notes, key=rank_key, reverse=True)
     ## Stamps happen HERE, on what was actually selected: a deferred alert
     ## keeps its previous notification stamp, its previous severity and an
     ## un-noted quiet flag, so the same rule re-selects it next tick. A
     ## Sentry fact that will not recur by itself (a new issue, a dated
     ## transition) is kept PENDING and re-emitted until posted.
     def with_members(sel):
-        ## A note stands for its members: posted, it said each of them.
+        ## A note stands for the members it named: posted, it said each of them.
         for a in sel:
-            yield a
+            if not a.get('members'):
+                yield a, False
             for m in a.get('members') or []:
                 yield {'fingerprint': m['fp'], 'kind': a['kind'], 'state': a['state'], 'severity': m['severity'],
-                       'prev_severity': m.get('prev_severity') or '', 'transition_at': m.get('transition_at')}
-    for a in with_members(posted):
+                       'prev_severity': m.get('prev_severity') or '', 'transition_at': m.get('transition_at')}, True
+    for a, member in with_members(posted):
         rec = incidents.get(a['fingerprint'])
         if rec is None:
             continue
@@ -3798,6 +3831,9 @@ tool decide:
                 rec['backlog'] = False
                 rec['announced_severity'] = a['severity']
                 rec['closed_said'] = False
+                ## How the channel heard of it: one by one, or named in a note
+                ## (plan reads the latter after the others).
+                rec['folded'] = member
     for a in deferred:
         rec = incidents.get(a['fingerprint'])
         if rec is not None and a['state'] == 'escalated' and a.get('prev_severity') and a['kind'] != 'sentry':
@@ -3879,14 +3915,15 @@ tool decide:
     alertlog = os.path.join(scratch, 'alertlog_delta-' + str({{run.id}})[-12:] + '.jsonl')
     with open(alertlog, 'w', encoding='utf-8') as fh:
         for a in posted:
-            ## A Sentry alert logs its short id, never the issue's text: the
-            ## log is committed with the state. A note logs each member it
-            ## named, one line each.
-            for m in (a.get('members') or [None]):
-                line = ({'fp': a['fingerprint'], 'title': a.get('log_title') or a['title_arg'], 'count': a['count']} if m is None else
-                        {'fp': m['fp'], 'title': m['name'], 'count': m.get('count'), 'folded': True})
-                fh.write(json.dumps(dict(line, at=now_iso, kind=a['kind'], severity=m['severity'] if m else a['severity'],
-                                         state=a['state'], release=release), ensure_ascii=False) + chr(10))
+            ## One line per message. A Sentry alert logs its short id, never
+            ## the issue's text: the log is committed with the state. A note
+            ## logs the names it said (within the message budget) and their
+            ## number.
+            line = {'fp': a['fingerprint'], 'title': a.get('log_title') or a['title_arg'], 'count': a['count']}
+            if a.get('members'):
+                line.update(title=(a.get('fields') or {}).get('names') or '', folded=len(a['members']))
+            fh.write(json.dumps(dict(line, at=now_iso, kind=a['kind'], severity=a['severity'], state=a['state'], release=release),
+                                ensure_ascii=False) + chr(10))
     tick = os.path.join(scratch, 'tick-' + str({{run.id}})[-12:] + '.json')
     with open(tick, 'w', encoding='utf-8') as fh:
         json.dump({'at': now_iso, 'generation': state['generation'], 'lines': signals.get('lines_scanned', 0),
@@ -3991,37 +4028,26 @@ tool notify:
         if not t:
             return ''
         return '`' + re.sub(r'(?i)(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
-    def lab_text(t, before_value):
-        t = re.sub(r'([\\`*_~\[\]])', lambda m: '\\' + m.group(1), t)
-        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', chr(0xFF04))
-        t = re.sub(r'(?<=[A-Za-z0-9])\.(?=[A-Za-z])', r'\\.', t)
-        if before_value:
-            t = re.sub(r'(?<=[A-Za-z0-9])\.$', r'\\.', t)
-        return re.sub(r'(?<=[A-Za-z0-9+.-]):(?!\s)', chr(8203) + ':', t)
-    def lab(t, cap=None, before_value=False):
+    def lab(t, cap=None):
         ## An operator's label renders as written, and none of its markdown
         ## can wrap, open or link around a value's code span: emphasis, code,
-        ## link characters are escaped, and a dot where a host could form —
-        ## before a letter, or ending the words right before a value (the
-        ## autolinker reads `www.` and `host.tld/` through a zero-width
+        ## link characters are escaped, and a dot after a letter or digit
+        ## (the autolinker reads `www.` and `host.tld/` through a zero-width
         ## space); `&` and `<` are entities (the server rewrites `<url|text>`
         ## before any markdown); `$` is its full-width form (inline LaTeX
         ## ignores a backslash before it); a zero-width space precedes a colon
         ## after a letter or digit unless a space follows — every scheme, the
-        ## server's custom ones included. An emoji code stays as written
-        ## (its underscores are inside a word) unless it touches a value: its
-        ## name could be a custom scheme. Parentheses, plain colons and a
-        ## version's dots stay too: a push notification shows the label's own
-        ## text. A control character is dropped (a NUL gets the post
-        ## refused); a capped label is one line.
+        ## server's custom ones included, and an emoji code's name: a label
+        ## shows the code as text, never the emoji. Parentheses and plain
+        ## colons stay as written. A control character is dropped (a NUL gets
+        ## the post refused); a capped label is one line.
         t = re.sub(r'[\x00-\x08\x0e-\x1f\x7f-\x9f]', '', str(t if t is not None else ''))
         if cap is not None:
             t = re.sub(r'[\s\u2424]+', ' ', t).strip()[:cap]
-        parts = re.split(r'((?<![A-Za-z0-9]):[A-Za-z0-9_+-]{1,40}:(?![A-Za-z0-9]))', t)
-        glued = before_value and len(parts) > 1 and parts[-1] == ''
-        return ''.join(p if i % 2 and not (glued and i == len(parts) - 2)
-                       else lab_text(p, before_value and i >= len(parts) - 2)
-                       for i, p in enumerate(parts))
+        t = re.sub(r'([\\`*_~\[\]])', lambda m: '\\' + m.group(1), t)
+        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', chr(0xFF04))
+        t = re.sub(r'(?<=[A-Za-z0-9])\.', r'\\.', t)
+        return re.sub(r'(?<=[A-Za-z0-9+.-]):(?!\s)', chr(8203) + ':', t)
     def fmt_capped(label, caps, /, **kw):
         ## Every value filled into a label is inline code: a Sentry culprit, a
         ## container, a URL — anything an attacker can write — can neither
@@ -4033,9 +4059,7 @@ tool notify:
         parts = re.split(r'(\{\w+\})', labels.get(label) or label)
         def is_value(x):
             return x[:1] == '{' and x[-1:] == '}' and x[1:-1] in kw
-        return ''.join(code(kw[x[1:-1]], caps.get(x[1:-1], 200)) if is_value(x)
-                       else lab(x, before_value=i + 1 < len(parts) and is_value(parts[i + 1]))
-                       for i, x in enumerate(parts))
+        return ''.join(code(kw[x[1:-1]], caps.get(x[1:-1], 200)) if is_value(x) else lab(x) for x in parts)
     def fmt(label, /, **kw):
         return fmt_capped(label, {}, **kw)
 

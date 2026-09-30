@@ -235,8 +235,9 @@ func TestProdWatch_TheDeliveryStopsAtTheBudgetsDeadline(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
 	var got atomic.Int64
-	// 13 s a post: the fifth starts with 8 s of the minute left, the window
-	// cuts it, the sixth never starts — four delivered, whatever the jitter.
+	// 13 s a post against deliver_by 75 s away (above the minute's floor):
+	// the sixth starts with ~10 s left, the window cuts it, the others never
+	// start — five delivered, whatever the jitter (the floor alone: four).
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(13 * time.Second)
 		got.Add(1)
@@ -246,18 +247,18 @@ func TestProdWatch_TheDeliveryStopsAtTheBudgetsDeadline(t *testing.T) {
 	hooks := pwHooksFile(t, map[string]string{"w1": slow.URL + "/hooks/x"})
 	start := time.Now()
 	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
-		"alerts": pwProbeAlerts(6), "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
+		"alerts": pwProbeAlerts(8), "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false,
-		"dry_run": false, "max_message_chars": 14000, "deliver_by": time.Now().Add(30 * time.Second).Unix()}, nil, map[string]string{"webhooks": hooks}))
+		"dry_run": false, "max_message_chars": 14000, "deliver_by": time.Now().Add(75 * time.Second).Unix()}, nil, map[string]string{"webhooks": hooks}))
 	took := time.Since(start)
 	if err == nil || !strings.Contains(stderr, "delivery window closed") {
-		t.Fatalf("six posts of 13 s against a window of a minute: want the last ones failed by the window, got %v %s", err, stderr)
+		t.Fatalf("eight posts of 13 s against a window of 75 s: want the last ones failed by the window, got %v %s", err, stderr)
 	}
 	if strings.Contains(stderr, "skipped: the sink timed out") {
 		t.Fatalf("the window cut a post, and the sink was taken for timed out: %s", stderr)
 	}
-	if n := got.Load(); n != 4 {
-		t.Fatalf("a minute of 13-second posts: want 4 delivered, got %d (took %v)", n, took)
+	if n := got.Load(); n != 5 {
+		t.Fatalf("75 s of 13-second posts: want 5 delivered, got %d (took %v)", n, took)
 	}
 }
 
