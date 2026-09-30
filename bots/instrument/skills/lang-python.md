@@ -42,7 +42,10 @@ def init_errtrack() -> bool:
   inside the existing handler.
 - **Flush/atexit**: the SDK flushes on interpreter exit via its atexit
   integration; for daemons with custom shutdown, call
-  `sentry_sdk.flush(timeout=2)` explicitly.
+  `sentry_sdk.flush(timeout=2)` explicitly. uvicorn re-raises SIGTERM
+  after its graceful shutdown, so atexit never runs there: call
+  `sentry_sdk.flush(timeout=2)` in the lifespan shutdown (a no-op under
+  `--lifespan off`), or queued events are lost at every rollout.
 - Dependency: add `sentry-sdk` via the repo's own dependency manager
   (pyproject/poetry/uv/requirements) with the house pinning style.
 
@@ -71,6 +74,167 @@ older SDK lines — match the pinned version).
 - **Prod default**: JSON on server/daemon/worker entry points,
   human/console on interactive CLI; both switchable by the repo's
   log-format env convention.
+- **🪤 uvicorn's own log config, and WHEN it runs.** uvicorn applies its
+  dictConfig when `Config()` is constructed: `uvicorn` and
+  `uvicorn.access` get their own plain-text handlers with
+  `propagate=False` (`uvicorn.error` reaches `uvicorn`'s; root routing is
+  untouched). What decides is whether the seam runs AFTER `Config()`. It
+  does under the uvicorn CLI, `uvicorn.run("mod:app")` from a launcher
+  that is not `mod` itself, and `fastapi run --entrypoint mod:app` —
+  there, clearing those loggers' handlers and setting `propagate = True`
+  in the seam (called at import) works. It does not under
+  `uvicorn.run(app)` (pass `log_config=None`, or a dict routing through
+  the seam's handlers), `fastapi run <path>` (discovery imports the
+  module first), or `python mod.py` whose `__main__` calls
+  `uvicorn.run("mod:app")` with a run-once seam. Re-applying the routing
+  in the lifespan startup still leaves `Started server process` and
+  `Waiting for application startup.` in uvicorn's format and does nothing
+  under `--lifespan off`; `fastapi run` also prints a banner to stdout
+  outside `logging` — for an all-JSON stdout, launch production through
+  `uvicorn`. Assert over the WHOLE captured stdout+stderr of a booted
+  process — every line JSON **and** no planted value in any line, searched
+  raw AND decoded (feed the lines to the `leaks()` helper below, as bytes) —
+  not record-by-record. Strip the query string in an access-log filter:
+  `uvicorn.access` prints the request line as received
+  (`GET /callback?code=…`, percent-encoded) straight into the log store.
+  (Paid: on a campaign's own diff, the uvicorn lines of the production
+  entry point stayed plain text while every record-level test was green.)
+
+## Capture-endpoint E2E (the net, not just the code path)
+
+Mock transports prove the code path. The net is proven by booting the
+instrumented process with the sink pointed at a LOCAL collector:
+
+```python
+import base64, gzip, http.server, json, re, threading, urllib.parse
+captured, arrived = [], threading.Event()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        enc = self.headers.get("Content-Encoding")
+        if enc == "gzip":
+            body = gzip.decompress(body)
+        elif enc == "br":                  # sentry-sdk's DEFAULT when `brotli` is importable
+            import brotli
+            body = brotli.decompress(body)
+        elif enc:                          # never assert over bytes you did not decode
+            raise ValueError(f"undecoded Content-Encoding {enc!r}")
+        captured.extend(l for l in body.splitlines() if l.strip())  # envelope = header + items
+        arrived.set()
+        self.send_response(200); self.send_header("Content-Length", "2")
+        self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self, *a): pass
+
+def items(captured):
+    """(type, payload) of every event, transaction and log item. Assert arrival on THESE: a
+    message also rides later events' breadcrumbs, so a substring match can report a dropped event."""
+    out, i = [], 0
+    while i < len(captured) - 1:
+        try:
+            head = json.loads(captured[i])
+        except ValueError:
+            head = None
+        if isinstance(head, dict) and head.get("type") in ("event", "transaction", "log"):
+            try:
+                out.append((head["type"], json.loads(captured[i + 1])))
+                i += 2
+                continue
+            except ValueError:
+                pass
+        i += 1
+    return out
+
+def _strings(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield str(k)
+            yield from _strings(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _strings(v)
+    elif isinstance(o, str):
+        yield o
+
+def _variants(s):
+    out, prev = {s}, None
+    while s != prev:                       # %2540 -> %40 -> @
+        prev, s = s, urllib.parse.unquote_plus(s)
+        out.add(s)
+    for v in list(out):                    # JWT-shaped values: base64url-decode each segment
+        for seg in v.split("."):
+            if len(seg) >= 16:
+                try:
+                    out.add(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)).decode("utf-8", "replace"))
+                except ValueError:
+                    pass
+    for v in list(out):                    # escapes at any depth: "H\\u00e9", its repr() "H\\\\u00e9", b'H\\xc3\\xa9', "4\\/0A"
+        u = re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m[1], 16)), v).encode("utf-8", "surrogatepass")
+        b = re.sub(rb"\\+x([0-9a-fA-F]{2})", lambda m: bytes([int(m[1], 16)]), u)
+        for d in (b.decode("utf-8", "replace"), b.decode("latin-1")):   # latin-1: legacy bytes, ascii()
+            out.update((d, d.replace("\\", "")))
+    return out
+
+def leaks(captured, planted):
+    """Planted values found anywhere in the capture, raw AND decoded: every line as raw
+    text (numbers and non-JSON items included), every JSON key and string value unescaped,
+    each percent-decoded until stable, JWT segments base64url-decoded, backslash escapes
+    peeled at any depth (u- and x-escapes behind any run of backslashes, as repr() doubles
+    them; Latin-1 bytes; JSON's escaped slash), matched case-insensitively on ANY 8-character
+    run of letters and digits of a planted value (the whole value when it has none): a
+    truncated copy (`sub[:8]`) or a dash-stripped one (`uuid.hex`) counts. A run across a
+    separator is too weak to count: across a uuid4's fixed `-4xxx-8xxx-` it carries ~18
+    bits and matches unrelated uuid4s."""
+    texts = []
+    for line in captured:
+        texts.append(line.decode("utf-8", "replace"))
+        try:
+            texts.extend(_strings(json.loads(line)))
+        except ValueError:
+            pass
+    runs = {p: {w.casefold() for i in range(len(p) - 7) for w in (p[i:i + 8],) if w.isalnum()}
+            or {p.casefold()} for p in planted}
+    return sorted({p for t in texts for v in _variants(t) for c in (v.casefold(),) for p in planted
+                   if any(r in c for r in runs[p])})
+```
+
+The SDK sends from a background thread: after triggering the paths, call
+`sentry_sdk.flush()` in-process; for a booted process, poll with a
+deadline until every event you triggered is among `items(captured)` —
+match its own `event_id`, `logentry.message` or exception value;
+`arrived` only says the first envelope landed. Batched items do not ride
+the event: with `enable_logs`, log records ship as `log` items every ~5 s
+and `before_send` never sees them (scrub them in `before_send_log`) —
+poll until the record you triggered is inside a `("log", p)` item —
+match its `r["attributes"]["sentry.message.template"]["value"]` among
+`p["items"]` (the template survives a scrubbed body) — or flush in process,
+before asserting absence: an earlier batch of startup or access lines
+satisfies a mere "a log item arrived". Then assert
+`leaks(captured, planted) == []`. The helper reports ANY 8-character run of
+letters and digits of a planted value, so every such run must be
+distinctive: generate the values
+(`secrets.token_hex`, `uuid.uuid4()`) into a data file — of a token (a JWT)
+plant only its distinctive part (a claim, the signature), never its header
+(two tokens of one `alg` share it); no word or field
+name inside a value (a planted `Password123!` matches the `password` key a
+working scrubber kept), no domain or IP prefix the app talks to (an email
+at `@solidarites-sante.gouv.fr` matches that domain in any of the app's
+URLs), no
+time-ordered id minted at test time (ObjectIds or UUIDv7 of the same second
+share their first runs) — and trigger the same paths once more with a
+SECOND planted set: `leaks()` of that capture against the first set must
+be `[]`, or a hit proves nothing. A value with no run of 8 letters and
+digits (shorter, or cut by separators) is matched whole (make it rare, or
+longer); a copy is seen only when 8 contiguous letters and digits survive
+unchanged — a separator every few characters, a
+re-encoding, accent folding or NFD defeat it. Load the values from that
+file — a literal in a source file on the captured stack comes back
+through the SDK's source context and fakes a hit — and plant each
+identity field on its own (given name and family name separately). Over an
+empty, partial or undecoded capture, "nothing leaked" is vacuously true,
+which is why arrival comes first. The leak paths to trigger: emails, `sub`
+uuids, OAuth codes, request query strings, cookies, stack-trace
+frame-locals, process argv (`sys.argv` rides every event's `extra`),
+personal names — the fields and frame vars unit tests never build.
 
 ## Stray sweep targets (Python)
 

@@ -61,7 +61,8 @@ Detect the stack from its markers; honour any pinned toolchain
   interfaces + fakes for boundaries.
 - **Run:** `go test ./path/...` ; per-package; whole module `go test ./...`.
 - **Coverage:** `go test -cover ./...` ; profile
-  `go test -coverprofile=cover.out ./... && go tool cover -func=cover.out`.
+  `go test -coverprofile=cover.out ./...`, then `go tool cover -func=cover.out`
+  (two commands: in a gate, a chain hides its first failure).
 - **Property:** `testing/quick`, or native fuzz `func FuzzX(f *testing.F)`.
 - **Bench:** `func BenchmarkX(b *testing.B)`.
 
@@ -87,7 +88,8 @@ Detect the stack from its markers; honour any pinned toolchain
 - **Unit:** plain `def test_x():` + `assert`; `@pytest.mark.parametrize`
   for cases; `pytest.raises(Err)` for errors; `monkeypatch` /
   `unittest.mock` at boundaries; `tmp_path` fixture for files.
-- **Run:** `pytest path/` / `python -m pytest`.
+- **Run:** through the repo's environment manager — `uv run pytest path/`,
+  `poetry run pytest path/` (a bare `pytest` needs that environment active).
 - **Coverage:** `pytest --cov=<pkg>` (pytest-cov) or `coverage run -m pytest`.
 - **Property:** Hypothesis (`@given(...)`).
 

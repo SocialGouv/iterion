@@ -1191,6 +1191,13 @@ if rc == 0:
             if fresh:
                 rc = 4
                 out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+if rc == 0:
+    # A NOT COVERED line is printed FIRST in verify.sh, off the exit path: a
+    # green run carries it into the log tail, wherever the bot reports it.
+    nc_lines = [l for l in out.splitlines() if l.startswith('NOT COVERED:')]
+    nc_lines = [l for l in dict.fromkeys(nc_lines) if l not in out[-4000:]]
+    if nc_lines:
+        out = out + chr(10) + chr(10).join(nc_lines)
 try:
     with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)
