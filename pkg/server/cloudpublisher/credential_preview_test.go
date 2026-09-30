@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -112,7 +114,7 @@ func bundleDescriptions(b secrets.RunBundle) []string {
 }
 
 func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
-	for _, scenario := range []string{"pool", "pool_suppressed_by_other_wire", "platform_same_wire", "org", "org_denied", "all_closed_restore", "pinned_blocked_key", "ranked_accounts", "bot_filtered", "bot_filtered_only_key"} {
+	for _, scenario := range []string{"pool", "pool_suppressed_by_other_wire", "platform_same_wire", "org", "org_denied", "all_closed_restore", "pinned_blocked_key", "ranked_accounts", "bot_filtered", "bot_filtered_only_key", "platform_key_and_forfait_same_wire", "org_key_and_forfait_same_wire", "platform_key_and_closed_forfait", "platform_keys_first", "org_and_platform_closed_restore", "platform_refused_key_and_closed_forfait", "platform_refused_key_and_closed_forfait_keys_first"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 12, MaxConcurrentRuns: 3})
 			p := f.pub
@@ -138,6 +140,44 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 				p.credPool = nil
 				seedKey(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai")
 				seedKey(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-anthropic")
+			// A shared tier holding a key AND a forfait on one wire: the order
+			// the live tier fills in (sharedTierPolicy.inOrder) is the one thing
+			// the preview has to reproduce, in every posture of the setting.
+			case "platform_key_and_forfait_same_wire", "platform_key_and_closed_forfait", "platform_keys_first":
+				p.credPool = nil
+				seedKey(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform")
+				seedOAuth(t, p.oauthForfait, p.sealer, secrets.PlatformOwnerKey, "sk-platform-forfait")
+				if scenario == "platform_key_and_closed_forfait" {
+					closeFP(usagecap.ScopePlatform, seededFP(secrets.PlatformOwnerKey))
+				}
+				if scenario == "platform_keys_first" {
+					keysFirst := true
+					p.platformAudience = audienceResolver(&platformcfg.PlatformCredentials{KeysFirst: &keysFirst}, nil)
+				}
+			// Every tier closed: the restore hands back the org's forfait before
+			// the platform's key on the same wire, and within a tier the
+			// credential its fill order puts first — the preview has to name
+			// the same one.
+			case "org_and_platform_closed_restore":
+				p.credPool = nil
+				seedOAuth(t, p.oauthForfait, p.sealer, secrets.OrgTierOwnerKey(poolOrg), "sk-org-forfait")
+				closeFP(usagecap.OrgScope(poolOrg), seededFP(secrets.OrgTierOwnerKey(poolOrg)))
+				seedKeyFP(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-ant-platform", "fp-ant-platform")
+				recordRefusal(t, p.usageCaps, usagecap.ScopePlatform, "fp-ant-platform")
+			case "platform_refused_key_and_closed_forfait", "platform_refused_key_and_closed_forfait_keys_first":
+				p.credPool = nil
+				seedKeyFP(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-ant-platform", "fp-ant-platform")
+				recordRefusal(t, p.usageCaps, usagecap.ScopePlatform, "fp-ant-platform")
+				seedOAuth(t, p.oauthForfait, p.sealer, secrets.PlatformOwnerKey, "sk-platform-forfait")
+				closeFP(usagecap.ScopePlatform, seededFP(secrets.PlatformOwnerKey))
+				if scenario == "platform_refused_key_and_closed_forfait_keys_first" {
+					keysFirst := true
+					p.platformAudience = audienceResolver(&platformcfg.PlatformCredentials{KeysFirst: &keysFirst}, nil)
+				}
+			case "org_key_and_forfait_same_wire":
+				p.credPool = nil
+				seedKey(t, p.apiKeys, p.sealer, secrets.OrgTierTenantID(poolOrg), secrets.ProviderZAI, "sk-zai-org")
+				seedOAuth(t, p.oauthForfait, p.sealer, secrets.OrgTierOwnerKey(poolOrg), "sk-org-forfait")
 			case "org", "org_denied":
 				seedKey(t, p.apiKeys, p.sealer, secrets.OrgTierTenantID(poolOrg), secrets.ProviderAnthropic, "sk-org-private")
 				if scenario == "org_denied" {
@@ -394,4 +434,299 @@ func fmtBool(v bool) string {
 		return "count_unknown_window_blocked"
 	}
 	return "at_capacity"
+}
+
+// A route pinning the forfait's own provider: the launch seals the pinned key
+// beside the forfait (claw and pi cannot spend a Claude forfait on its plan),
+// and the preview must list exactly that — no more, no less.
+func TestCredentialPreviewMatchesSealedBundleOnAPinBesideAForfait(t *testing.T) {
+	for _, pin := range []string{"anthropic", "zai"} {
+		t.Run(pin, func(t *testing.T) {
+			f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 12, MaxConcurrentRuns: 3})
+			p := f.pub
+			p.credPool = nil
+			p.identity = &fakeTeamResolver{orgs: map[string]string{poolTeam: poolOrg}, orgDocs: map[string]identity.Org{poolOrg: {ID: poolOrg}}}
+			p.apiKeys = secrets.NewMemoryApiKeyStore()
+			p.oauthForfait = secrets.NewMemoryOAuthStore()
+			p.usageCaps = usagecap.NewMemStore()
+			seedKey(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-anthropic-platform")
+			seedKey(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform")
+			seedOAuth(t, p.oauthForfait, p.sealer, secrets.PlatformOwnerKey, "sk-platform-forfait")
+			spec := previewSpec(poolTeam, "webhook:private")
+			wf := wfPinning(pin)
+
+			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, wf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+			ctx := store.WithTenant(t.Context(), poolTeam)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := f.rs.Get(ctx, res.secretsRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := secrets.OpenRunBundle(f.sealer, "oracle-run", record.SealedBundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pin == "anthropic" && bundle.PinnedAPIKeys[secrets.ProviderAnthropic] == "" {
+				t.Fatalf("inert bench: the anthropic pin sealed no key beside the forfait")
+			}
+			live := bundleDescriptions(bundle)
+			for provider := range bundle.PinnedAPIKeys {
+				live = append(live, "platform:pinned_key:"+string(provider))
+			}
+			sort.Strings(live)
+			var shown []string
+			for _, c := range preview.Candidates {
+				if c.Selected {
+					d := c.Tier + ":" + c.Source + ":" + c.Provider
+					if c.Source == "api_key" && c.Provider != "" && bundle.APIKeys[secrets.Provider(c.Provider)] == "" {
+						d = c.Tier + ":pinned_key:" + c.Provider
+					}
+					shown = append(shown, d)
+				}
+			}
+			sort.Strings(shown)
+			if !reflect.DeepEqual(shown, live) {
+				t.Fatalf("preview=%v live=%v", shown, live)
+			}
+		})
+	}
+}
+
+// The preview predicts, under every facade policy and fill order, exactly
+// what the launch seals — its route-only keys included, on their own
+// channel: a preview promising the z.ai key as the wire's default where the
+// launch keeps it route-only would misdescribe what every unpinned node runs.
+func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		keysFirst bool
+		facade    platformcfg.FacadePolicy
+		forfait   string
+		pin       string
+		refuseZAI bool
+		// teamZAIRefused seeds the team's own z.ai key, refused.
+		teamZAIRefused bool
+	}{
+		{"auto open", false, platformcfg.FacadeAuto, "open", "", false, false},
+		{"auto open zai-pinned", false, platformcfg.FacadeAuto, "open", "zai", false, false},
+		{"auto closed", false, platformcfg.FacadeAuto, "closed", "", false, false},
+		{"always closed", false, platformcfg.FacadeAlways, "closed", "", false, false},
+		{"never closed", false, platformcfg.FacadeNever, "closed", "", false, false},
+		{"keys_first auto", true, platformcfg.FacadeAuto, "open", "", false, false},
+		{"keys_first always", true, platformcfg.FacadeAlways, "open", "", false, false},
+		{"auto no forfait", false, platformcfg.FacadeAuto, "none", "", false, false},
+		{"never no forfait zai-pinned", false, platformcfg.FacadeNever, "none", "zai", false, false},
+		// The restore visits a refused, pinned z.ai key before the closed
+		// forfait under keys first: the policy keeps it off the default there.
+		{"keys_first auto closed zai-pinned refused", true, platformcfg.FacadeAuto, "closed", "zai", true, false},
+		// Forfaits first, the refused z.ai key comes back after the forfait
+		// took the family — route-only, for the routes that name zai.
+		{"auto closed zai-pinned refused", false, platformcfg.FacadeAuto, "closed", "zai", true, false},
+		// The team's own refused z.ai key waits behind the platform's key sealed
+		// for the routes naming zai: the closed forfait refills the family.
+		{"auto closed zai-pinned, team key refused", false, platformcfg.FacadeAuto, "closed", "zai", false, true},
+		// Nothing refills it and every route names zai: no route reads the
+		// default, so the team's key stays out.
+		{"never no forfait zai-pinned, team key refused", false, platformcfg.FacadeNever, "none", "zai", false, true},
+		// A route reads the default: the team's key is the last park point,
+		// over the platform's route key.
+		{"never no forfait zai-pinned beside a default reader, team key refused", false, platformcfg.FacadeNever, "none", "zai+default", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			if err != nil {
+				t.Fatalf("sealer: %v", err)
+			}
+			keys := secrets.NewMemoryApiKeyStore()
+			seedKeyFP(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-shared", "fp-zai-platform")
+			oauth := secrets.NewMemoryOAuthStore()
+			st := usagecap.NewMemStore()
+			if tc.refuseZAI {
+				recordRefusal(t, st, usagecap.ScopePlatform, "fp-zai-platform")
+			}
+			if tc.teamZAIRefused {
+				seedKeyFP(t, keys, sealer, "team1", secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
+				recordRefusal(t, st, usagecap.TenantScope("team1"), "fp-zai-team")
+			}
+			if tc.forfait != "none" {
+				seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-shared-forfait")
+			}
+			if tc.forfait == "closed" {
+				if err := st.Record(context.Background(), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, seededFP(secrets.PlatformOwnerKey)), usagecap.Reading{
+					Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
+					ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+				}); err != nil {
+					t.Fatalf("record: %v", err)
+				}
+			}
+			kf, fd := tc.keysFirst, string(tc.facade)
+			rs := secrets.NewMemoryRunSecretsStore()
+			p := &Publisher{
+				apiKeys: keys, oauthForfait: oauth, runSecrets: rs, sealer: sealer, logger: testLogger(), usageCaps: st,
+				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{KeysFirst: &kf, FacadeDefault: &fd}, nil),
+			}
+			const team = "team1"
+			wf := wfPinning(tc.pin)
+			if pin, beside := strings.CutSuffix(tc.pin, "+default"); beside {
+				wf = wfPinningBesideDefault(pin)
+			}
+			spec := previewSpec(team, "webhook:private")
+
+			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, wf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+			ctx := store.WithTenant(t.Context(), team)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", "", team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var live []string
+			if res.secretsRef != "" {
+				record, err := rs.Get(ctx, res.secretsRef)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bundle, err := secrets.OpenRunBundle(sealer, "oracle-run", record.SealedBundle)
+				if err != nil {
+					t.Fatal(err)
+				}
+				live = bundleDescriptions(bundle)
+				for provider := range bundle.PinnedAPIKeys {
+					live = append(live, "platform:route_only:"+string(provider))
+				}
+				sort.Strings(live)
+			}
+			var shown []string
+			for _, c := range preview.Candidates {
+				if !c.Selected {
+					continue
+				}
+				if c.RouteOnly {
+					shown = append(shown, c.Tier+":route_only:"+c.Provider)
+					continue
+				}
+				shown = append(shown, c.Tier+":"+c.Source+":"+c.Provider)
+			}
+			sort.Strings(shown)
+			if !reflect.DeepEqual(shown, live) {
+				t.Fatalf("preview=%v live=%v", shown, live)
+			}
+		})
+	}
+}
+
+// A provider an earlier stage already holds is not asked of a later shared
+// tier by the live fill, so the preview must not predict it there either — a
+// route key it names must be the one the launch seals, with the tier the
+// launch marks it with.
+func TestCredentialPreviewAgreesWhenAProviderIsAlreadyHeld(t *testing.T) {
+	const team, org = "team1", "org-1"
+	closeForfait := func(t *testing.T, st usagecap.Store, scope, fp string) {
+		t.Helper()
+		if err := st.Record(context.Background(), usagecap.Key(delegate.BackendClaudeCode, scope, fp), usagecap.Reading{
+			Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
+			ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		facade platformcfg.FacadePolicy
+		seed   func(t *testing.T, p *Publisher)
+	}{
+		{"the team's own key beside a platform key of its provider", platformcfg.FacadeAuto, func(t *testing.T, p *Publisher) {
+			seedKeyFP(t, p.apiKeys, p.sealer, team, secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
+			seedKeyFP(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform", "fp-zai-platform")
+		}},
+		{"an org route key beside the platform's under never", platformcfg.FacadeNever, func(t *testing.T, p *Publisher) {
+			seedKeyFP(t, p.apiKeys, p.sealer, secrets.OrgTierTenantID(org), secrets.ProviderZAI, "sk-zai-org", "fp-zai-org")
+			seedKeyFP(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform", "fp-zai-platform")
+		}},
+		// Every tier closed: the team's refused key comes back as the default
+		// and replaces the platform key sealed for the zai routes.
+		{"the team's refused key restored over a platform route key", platformcfg.FacadeAuto, func(t *testing.T, p *Publisher) {
+			seedKeyFP(t, p.apiKeys, p.sealer, team, secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
+			recordRefusal(t, p.usageCaps, usagecap.TenantScope(team), "fp-zai-team")
+			seedKeyFP(t, p.apiKeys, p.sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform", "fp-zai-platform")
+			seedOAuth(t, p.oauthForfait, p.sealer, secrets.PlatformOwnerKey, "sk-ant-platform-forfait")
+			closeForfait(t, p.usageCaps, usagecap.ScopePlatform, seededFP(secrets.PlatformOwnerKey))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			if err != nil {
+				t.Fatalf("sealer: %v", err)
+			}
+			fd := string(tc.facade)
+			rs := secrets.NewMemoryRunSecretsStore()
+			p := &Publisher{
+				apiKeys: secrets.NewMemoryApiKeyStore(), oauthForfait: secrets.NewMemoryOAuthStore(), runSecrets: rs, sealer: sealer, logger: testLogger(), usageCaps: usagecap.NewMemStore(),
+				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
+				identity: &fakeTeamResolver{
+					orgs:    map[string]string{team: org},
+					orgDocs: map[string]identity.Org{org: {ID: org, CredentialAudience: identity.CredentialAudience{Teams: []string{team}}}},
+				},
+			}
+			tc.seed(t, p)
+			wf := wfPinning("zai")
+			spec := previewSpec(team, "webhook:private")
+			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, wf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+			ctx := store.WithTenant(t.Context(), team)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", org, team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := rs.Get(ctx, res.secretsRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := secrets.OpenRunBundle(sealer, "oracle-run", record.SealedBundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tierOf := func(slot string) string {
+				switch {
+				case bundle.PlatformSourced[slot]:
+					return "platform"
+				case bundle.OrgSourced[slot]:
+					return "org"
+				}
+				return "team"
+			}
+			live := bundleDescriptions(bundle)
+			for provider := range bundle.PinnedAPIKeys {
+				live = append(live, tierOf(string(provider))+":route_only:"+string(provider))
+			}
+			sort.Strings(live)
+			var shown []string
+			for _, c := range preview.Candidates {
+				if !c.Selected {
+					continue
+				}
+				if c.RouteOnly {
+					shown = append(shown, c.Tier+":route_only:"+c.Provider)
+					continue
+				}
+				shown = append(shown, c.Tier+":"+c.Source+":"+c.Provider)
+			}
+			sort.Strings(shown)
+			if !reflect.DeepEqual(shown, live) {
+				t.Fatalf("preview=%v live=%v", shown, live)
+			}
+		})
+	}
 }

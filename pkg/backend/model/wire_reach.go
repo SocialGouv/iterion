@@ -1,6 +1,7 @@
 package model
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -59,26 +60,85 @@ func anthropicWireHints() map[string]bool {
 // the vendor-bound CLIs: it picks its provider from what the process holds,
 // so an unresolved hint may still land on anthropic.
 func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides) bool {
+	return len(AnthropicWireRoutes(wf, overrides)) > 0
+}
+
+// WireRoute is one PRIMARY route of a run that can execute against the
+// Anthropic wire: the node's backend under the launch's overrides and the
+// FIRST element of its provider chain — what the executor spends before any
+// rescue step.
+type WireRoute struct {
+	// NodeID is the node the route belongs to; "" for the single route of a
+	// nil workflow.
+	NodeID string
+	// Backend is the resolved backend, lower-cased; "" when it resolves at
+	// dispatch (unset, auto, a `{{vars.…}}` reference).
+	Backend string
+	// Hint is the first chain element's provider hint; "" for none or auto.
+	Hint string
+	// Model is the first element's own model, else the node's effective one.
+	Model string
+	// Readable is false when the walk cannot say which credential the route
+	// spends: a backend or hint resolved at dispatch, a model it cannot read,
+	// a model-calling node that exposes no LLM fields. As far as a caller can
+	// tell, such a route draws on the run's DEFAULT credential.
+	Readable bool
+}
+
+// AnthropicWireRoutes lists the routes that make AnthropicWireReachable answer
+// true — one per node, in node-id order, with what the walk can read of each.
+// A nil workflow yields one unreadable route: the conservative reading.
+func AnthropicWireRoutes(wf *ir.Workflow, overrides ModelOverrides) []WireRoute {
 	if wf == nil {
-		return true
+		return []WireRoute{{}}
 	}
-	wfBackend := strings.TrimSpace(ir.ExpandEnvWithDefault(wf.DefaultBackend))
+	var out []WireRoute
 	for _, n := range wf.Nodes {
 		fields, ok := llmFieldsOf(n)
 		if !ok {
 			if ir.NodeUsesLLM(n) {
-				return true
+				out = append(out, WireRoute{NodeID: n.NodeID()})
 			}
 			continue
 		}
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
-		backend := firstNonEmpty(strings.TrimSpace(ov.Backend), strings.TrimSpace(ir.ExpandEnvWithDefault(fields.Backend)), wfBackend)
+		backend := routeBackend(ov.Backend, fields.Backend, wf.DefaultBackend)
 		mdl := firstNonEmpty(ov.Model, fields.Model)
 		if routeOnAnthropicWire(backend, ov.Provider, fields.Provider, mdl) {
-			return true
+			out = append(out, primaryWireRoute(n.NodeID(), backend, ov.Provider, fields.Provider, mdl))
 		}
 	}
-	return false
+	slices.SortFunc(out, func(a, b WireRoute) int { return strings.Compare(a.NodeID, b.NodeID) })
+	return out
+}
+
+// primaryWireRoute reads a route's first chain element the way the executor
+// builds it (ClawExecutor.resolveProviderChain): a launch-time provider
+// override is the whole chain; else the DSL chain, env-expanded and split on
+// commas, whose first `provider[:model]` token leads; "auto" is no hint.
+func primaryWireRoute(id, backend, overrideProvider, chain, mdl string) WireRoute {
+	r := WireRoute{NodeID: id, Backend: backend, Model: strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))}
+	if strings.TrimSpace(overrideProvider) != "" {
+		r.Hint = strings.TrimSpace(overrideProvider)
+	} else {
+		for _, part := range strings.Split(ir.ExpandEnvWithDefault(chain), ",") {
+			token := strings.TrimSpace(part)
+			if token == "" {
+				continue
+			}
+			hint, model, _ := ir.SplitProviderStep(token)
+			r.Hint = strings.TrimSpace(hint)
+			if m := strings.TrimSpace(model); m != "" {
+				r.Model = m
+			}
+			break
+		}
+	}
+	if strings.EqualFold(r.Hint, "auto") {
+		r.Hint = ""
+	}
+	r.Readable = backend != "" && !strings.Contains(r.Hint, "{{") && !strings.Contains(r.Model, "{{")
+	return r
 }
 
 // routeOnAnthropicWire decides for one route, in the executor's

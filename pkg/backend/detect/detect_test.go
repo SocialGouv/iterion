@@ -823,3 +823,17 @@ func TestDetectPiMatchesWhatTheRunWillRead(t *testing.T) {
 		}
 	})
 }
+
+// Providers is Detect's provider list, without the backend probes: a caller
+// that reads only the providers (the supervisor's model resolution) spawns no
+// CLI and still sees exactly what Detect reports.
+func TestProvidersIsDetectsProviderList(t *testing.T) {
+	stubClaudeAuthStatus(t, true)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-detect-test")
+	t.Setenv("ZAI_API_KEY", "")
+	if got, want := Providers(), Detect(context.Background()).Providers; !slices.EqualFunc(got, want, func(a, b ProviderStatus) bool {
+		return a.Name == b.Name && a.Available == b.Available && a.SuggestedModel == b.SuggestedModel && a.Source == b.Source && slices.Equal(a.OverriddenSources, b.OverriddenSources)
+	}) {
+		t.Errorf("Providers() = %+v, want Detect's %+v", got, want)
+	}
+}

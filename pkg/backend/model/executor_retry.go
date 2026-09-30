@@ -829,6 +829,8 @@ func (e *ClawExecutor) newElementBuilder(
 		} else {
 			task.Model = baseModels[bn]
 		}
+		// A GLM id on the anthropic wire is a z.ai model: see RouteProviderHint.
+		task.ProviderHint = RouteProviderHint(ctx, bn, task.ProviderHint, task.Model)
 		// Claw's named persistent slot stores provider-neutral history and
 		// its pause data was validated/sanitized by buildTask. Keep both on
 		// same-Claw fallback, including when the primary is on cooldown.

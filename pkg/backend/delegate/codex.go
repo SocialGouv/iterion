@@ -586,6 +586,12 @@ func (c *codexStderrCapture) String() string {
 	return c.buf.String()
 }
 
+// codex spends the run's ChatGPT forfait before any key pinned for an
+// `openai` route: codexCredEnvForCLI below never reads a pinned key.
+func init() {
+	RegisterForfaitFirst(BackendCodex, string(secrets.ProviderOpenAI))
+}
+
 // codexCredEnvForCLI resolves the per-run Codex credential environment. Keep
 // this shared by the work and formatting passes: the latter resumes the first
 // pass in a new CLI process and otherwise loses tenant-scoped auth.

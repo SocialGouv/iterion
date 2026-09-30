@@ -220,6 +220,31 @@ func TestForwardableProviderEnv_GLMNodeKeepsItsZAIKey(t *testing.T) {
 	}
 }
 
+// The forfait crossing concerns a claude model on claw's anthropic provider
+// and nothing else: a node on another provider has no use for the Claude
+// forfait, and an EXPIRED one — which refuses an anthropic node by name —
+// must not fail it.
+func TestForwardableProviderEnv_OtherProviderIgnoresTheForfait(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-stale","expiresAt":1000000000000}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ZAI_API_KEY", "")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
+	})
+	env, err := forwardableProviderEnv(ctx, "openrouter/anthropic/claude-sonnet-5")
+	if err != nil {
+		t.Fatalf("an openrouter node failed on the run's expired Claude forfait: %v", err)
+	}
+	if _, present := env["CLAUDE_CONFIG_DIR"]; present {
+		t.Error("the Claude forfait was pointed at an openrouter node")
+	}
+}
+
 // R71d7c3 [medium]: once the shadows are cleared the forfait is the node's ONLY
 // credential in the container, and the in-container env factory swallows expiry
 // — it would build a client with no credential and 401-loop with nothing naming

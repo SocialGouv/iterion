@@ -29,7 +29,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			Candidates: []runview.CredentialPreviewCandidate{}, Wires: []runview.CredentialPreviewWire{},
 			Pool:     runview.CredentialPreviewPool{Reason: "credentials_present", Wants: []string{}},
 			Warnings: []string{"Observation only: no secret was opened, no provider was probed, and no capacity was reserved. Selected slots assume successful materialization and admission; model routing decides which slot is spent. Alternatives show current metadata, not a guaranteed future grant.", "Runner environment credentials and required workflow secrets are outside this preview."}},
-		api: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider]int{}, skippedOAuth: map[string]int{}, accountGroups: map[string]string{},
+		api: map[secrets.Provider]int{}, pinnedAPI: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider]int{}, skippedOAuth: map[string]int{}, accountGroups: map[string]string{},
 	}
 	x.orgID = p.orgIDForTeam(ctx, spec.Context.TeamID)
 	// The same canonicalisation the live walk applies, or the preview would
@@ -40,6 +40,15 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// happened, so there is no frozen set to replay — it answers for the
 	// program as it reads NOW, which is what the operator is about to run.
 	x.pinned = pinnedProviderSet(derivePinnedProviders(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback)))
+	// The live resolution's own policy snapshot and tier probes (read-only
+	// store reads, like every other stage here).
+	x.policy = p.sharedTierPolicyFor(ctx)
+	x.natives = map[string]*tierNative{
+		"platform": p.newTierNative(ctx, "platform", secrets.PlatformOwnerKey, secrets.PlatformTenantID, previewBotID),
+	}
+	if x.orgID != "" {
+		x.natives["org"] = p.newTierNative(ctx, "org", secrets.OrgTierOwnerKey(x.orgID), secrets.OrgTierTenantID(x.orgID), previewBotID)
+	}
 	wants, routes := wantsFor(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback))
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
@@ -58,16 +67,35 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.oauthStage("team", secrets.OrgOwnerKey(spec.Context.TeamID), usagecap.TenantScope(spec.Context.TeamID), false, true)
 		case credentialTierOrg:
 			if p.orgCredentialAudience(ctx, x.orgID, spec.Context.TeamID) {
-				if err := x.apiStage("org", secrets.OrgTierTenantID(x.orgID), "", usagecap.OrgScope(x.orgID), previewBotID, nil, true, active); err != nil {
-					x.warn("Org API-key metadata unavailable; selection is conditional.")
-				}
-				x.oauthStage("org", secrets.OrgTierOwnerKey(x.orgID), usagecap.OrgScope(x.orgID), true, active)
+				// The live tier's own order (the policy snapshot): a preview
+				// filling in another order names a credential the launch
+				// does not seal.
+				x.policy.inOrder(func() {
+					x.oauthStage("org", secrets.OrgTierOwnerKey(x.orgID), usagecap.OrgScope(x.orgID), true, active)
+				}, func() {
+					if err := x.apiStage("org", secrets.OrgTierTenantID(x.orgID), "", usagecap.OrgScope(x.orgID), previewBotID, nil, true, active); err != nil {
+						x.warn("Org API-key metadata unavailable; selection is conditional.")
+					}
+				})
 			} else {
 				x.warn("Org tier not available to this team under the current audience or its metadata could not be read.")
 			}
 		case credentialTierPool:
+			// The live walk's own filter: a provider a key sealed for its
+			// routes already funds is not asked of the pool.
+			poolWants := withoutFundedProviders(wants, func(prov string) bool {
+				_, funded := x.pinnedAPI[secrets.Provider(prov)]
+				return funded
+			})
+			if active && len(wants) > 0 && len(poolWants) == 0 {
+				x.out.Pool.Reason = "routes_funded"
+				break
+			}
+			if !active {
+				poolWants = wants
+			}
 			x.out.Pool.Considered = active
-			pool, err := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants})
+			pool, err := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
 			if err != nil {
 				x.out.Pool.Reason = "unknown"
 				x.warn("Pool metadata unavailable; selection is conditional.")
@@ -94,31 +122,90 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			}
 		case credentialTierPlatform:
 			if p.platformAudienceAllows(ctx, "", x.orgID, spec.Context.TeamID) {
-				if err := x.apiStage("platform", secrets.PlatformTenantID, "", usagecap.ScopePlatform, previewBotID, nil, true, active); err != nil {
-					x.warn("Platform API-key metadata unavailable; selection is conditional.")
-				}
-				x.oauthStage("platform", secrets.PlatformOwnerKey, usagecap.ScopePlatform, true, active)
+				x.policy.inOrder(func() {
+					x.oauthStage("platform", secrets.PlatformOwnerKey, usagecap.ScopePlatform, true, active)
+				}, func() {
+					if err := x.apiStage("platform", secrets.PlatformTenantID, "", usagecap.ScopePlatform, previewBotID, nil, true, active); err != nil {
+						x.warn("Platform API-key metadata unavailable; selection is conditional.")
+					}
+				})
 			} else {
 				x.warn("Platform tier not available to this team under the current audience or its metadata could not be read.")
 			}
 		case credentialTierRestore:
-			for _, provider := range allKnownProviders {
-				if i, ok := x.skippedAPI[provider]; ok && !x.taken(string(provider)) {
-					x.api[provider] = i
+			// The live restore's own order: tier by tier as the walk visits
+			// them, keys before forfaits within the tenant, the shared tiers'
+			// fill order within each of those — and the facade policy.
+			tierOf := func(i int) restoreTier {
+				tier := x.out.Candidates[i].Tier
+				return restoreTierOf(tier == "org", tier == "platform")
+			}
+			// The live restore's deferral: a team key whose provider's routes
+			// a shared tier already funded waits for the shared tiers.
+			var deferredTenantKeys []secrets.Provider
+			restoreKeys := func(tier restoreTier) {
+				for _, provider := range allKnownProviders {
+					i, ok := x.skippedAPI[provider]
+					if !ok || tierOf(i) != tier {
+						continue
+					}
+					outcome := sealDefault
+					if tier == restoreTierTenant {
+						if x.taken(string(provider)) {
+							continue
+						}
+						if _, held := x.pinnedAPI[provider]; held {
+							deferredTenantKeys = append(deferredTenantKeys, provider)
+							continue
+						}
+					} else if outcome = x.seal(x.out.Candidates[i].Tier, provider, true); outcome == sealNone {
+						continue
+					}
+					if outcome == sealPinnedOnly {
+						x.pinnedAPI[provider] = i
+					} else {
+						x.api[provider] = i
+					}
 					x.out.Candidates[i].State = "restored"
 				}
 			}
-			kinds := make([]string, 0, len(x.skippedOAuth))
-			for kind := range x.skippedOAuth {
-				kinds = append(kinds, kind)
-			}
-			sort.Strings(kinds)
-			for _, kind := range kinds {
-				if !x.taken(kind) {
-					i := x.skippedOAuth[kind]
-					x.oauth[kind] = i
-					x.out.Candidates[i].State = "restored"
+			restoreForfaits := func(tier restoreTier) {
+				kinds := make([]string, 0, len(x.skippedOAuth))
+				for kind := range x.skippedOAuth {
+					kinds = append(kinds, kind)
 				}
+				sort.Strings(kinds)
+				for _, kind := range kinds {
+					if i := x.skippedOAuth[kind]; tierOf(i) == tier && !x.taken(kind) {
+						x.oauth[kind] = i
+						x.out.Candidates[i].State = "restored"
+					}
+				}
+			}
+			restoreKeys(restoreTierTenant)
+			restoreForfaits(restoreTierTenant)
+			for _, tier := range []restoreTier{restoreTierOrg, restoreTierPlatform} {
+				x.policy.inOrder(func() { restoreForfaits(tier) }, func() { restoreKeys(tier) })
+			}
+			// The last park point, as live: only into a family no tier
+			// refilled and some route may read the default of, and then over
+			// the shared route key.
+			for _, provider := range deferredTenantKeys {
+				i := x.skippedAPI[provider]
+				if x.taken(string(provider)) {
+					x.out.Candidates[i].Reason += " Not restored: a shared key serves the routes naming its provider, and another credential holds the wire."
+					continue
+				}
+				if !readsWireDefault(routes, provider) {
+					x.out.Candidates[i].Reason += " Not restored: a shared key serves the routes naming its provider, and no route reads the wire's default."
+					continue
+				}
+				if j, held := x.pinnedAPI[provider]; held {
+					delete(x.pinnedAPI, provider)
+					x.out.Candidates[j].Reason += " Replaced by the team's own key, restored as the default."
+				}
+				x.api[provider] = i
+				x.out.Candidates[i].State = "restored"
 			}
 		}
 		return nil
@@ -136,6 +223,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	for _, provider := range allKnownProviders {
 		if i, ok := x.api[provider]; ok {
 			selectSlot(i)
+		}
+		if i, ok := x.pinnedAPI[provider]; ok {
+			selectSlot(i)
+			x.out.Candidates[i].RouteOnly = true
 		}
 	}
 	kinds := make([]string, 0, len(x.oauth))
@@ -161,11 +252,16 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 }
 
 type credentialPreview struct {
-	p             *Publisher
-	ctx           context.Context
-	orgID         string
-	out           runview.CredentialPreview
-	api           map[secrets.Provider]int
+	p     *Publisher
+	ctx   context.Context
+	orgID string
+	out   runview.CredentialPreview
+	api   map[secrets.Provider]int
+	// pinnedAPI are the keys sealed for the routes naming their provider
+	// only. Apart from api because they do not take their wire family: a
+	// preview counting them there would keep a later forfait off a wire the
+	// launch lets it fill.
+	pinnedAPI     map[secrets.Provider]int
 	oauth         map[string]int
 	skippedAPI    map[secrets.Provider]int
 	skippedOAuth  map[string]int
@@ -176,6 +272,10 @@ type credentialPreview struct {
 	// already fills, so the preview has to apply the same exception or it
 	// would report a credential the launch will grant as "not consulted".
 	pinned map[string]bool
+	// policy and natives mirror the live resolution's shared-tier ordering
+	// and its per-tier "holds an Anthropic-native credential" probe.
+	policy  sharedTierPolicy
+	natives map[string]*tierNative
 }
 
 func (x *credentialPreview) warn(s string) { x.out.Warnings = append(x.out.Warnings, s) }
@@ -188,14 +288,24 @@ func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 	return len(x.out.Candidates) - 1
 }
 
-// familyBlocked is the preview's mirror of the tiers' `fillable`: a wire
-// family already served blocks a SHARED tier's slot, unless a route of the
-// launch pins that provider — the exception fillFromOrg/fillFromPlatform
-// apply. Separate from taken() because the restore stage reads the plain
-// question: the live restore has no pinned exception, and a preview that
-// invented one would predict a hand-out the resolver refuses.
-func (x *credentialPreview) familyBlocked(slot string) bool {
-	return x.taken(slot) && !x.pinned[strings.ToLower(slot)]
+// seal is the preview's twin of the live key fill: the tenant stage seals
+// every winner as the default; a shared stage skips a provider an earlier
+// stage holds, then asks sealDecision with the preview's own view of the
+// wire.
+func (x *credentialPreview) seal(tier string, provider secrets.Provider, byWire bool) sealOutcome {
+	if !byWire {
+		return sealDefault
+	}
+	// A slot an earlier stage funded is not rewritten: the live fill never
+	// even asks a shared tier for it.
+	if _, held := x.api[provider]; held {
+		return sealNone
+	}
+	if _, held := x.pinnedAPI[provider]; held {
+		return sealNone
+	}
+	return sealDecision(provider, x.taken(string(provider)), x.pinned[strings.ToLower(string(provider))],
+		func() bool { return x.policy.facadeMayDefault(x.natives[tier]) })
 }
 func (x *credentialPreview) taken(slot string) bool {
 	wire := secrets.WireFamily(slot)
@@ -288,9 +398,18 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 			c.State = string(credpool.StatusBotFiltered)
 			c.Reason += " This key's workload audience does not name bot " + botID + "."
 		}
-		if !active || byWire && x.familyBlocked(string(k.Provider)) {
+		if !active || x.seal(tier, k.Provider, byWire) == sealNone {
 			c.Selection = "not_consulted"
 			c.Reason += " This tier is bypassed for this wire in the current launch."
+			_, heldDefault := x.api[k.Provider]
+			_, heldRoute := x.pinnedAPI[k.Provider]
+			switch {
+			case !active:
+			case byWire && (heldDefault || heldRoute):
+				c.Reason += " An earlier credential already funds " + string(k.Provider) + "."
+			case isFacadeProvider(k.Provider) && !x.taken(string(k.Provider)):
+				c.Reason += " A " + string(k.Provider) + " key is kept off the anthropic wire's default here (facade_default=" + string(x.policy.facade) + ")."
+			}
 		}
 		i := x.add(c)
 		// `first` feeds the restore stage, which hands a skipped candidate the
@@ -310,11 +429,17 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 	// Resolve chooses independently per provider. Shared tiers then fill in the
 	// same fixed provider order as fillFromOrg/fillFromPlatform, not map order.
 	for _, provider := range providers {
+		outcome := x.seal(tier, provider, byWire)
 		if i, ok := winners[provider]; ok {
-			if !byWire || !x.familyBlocked(string(provider)) {
+			switch outcome {
+			case sealDefault:
 				x.api[provider] = i
+			case sealPinnedOnly:
+				x.pinnedAPI[provider] = i
 			}
-		} else if i, ok := first[provider]; ok {
+		} else if i, ok := first[provider]; ok && outcome != sealNone {
+			// Remembered for the restore only when the live fill would have
+			// tried it: a key the policy withholds is not a refused one.
 			if _, seen := x.skippedAPI[provider]; !seen {
 				x.skippedAPI[provider] = i
 			}
