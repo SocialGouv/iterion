@@ -22,7 +22,8 @@ import (
 //	ErrUnauthorized                   422  the credential was rejected — reconnect, don't retry
 //	*forge.NotFoundError / ErrNotFound 404 the forge has no such thing under this credential
 //	ErrForbidden                      403  refused, with no permission named
-//	*forge.StatusError, 429           429  + Retry-After when the forge sent one
+//	*forge.StatusError, rate limited  429  + Retry-After when the forge named a wait — a 429,
+//	                                       a 403 the forge marked, a GraphQL RATE_LIMITED
 //	*forge.StatusError, 5xx           502  the forge's own fault
 //	*forge.StatusError, other 4xx     4xx  mirrored: it answers the request we sent
 //	a transport failure (*url.Error)  502  no answer at all, still not ours
@@ -101,7 +102,8 @@ func forgeUpstreamStatus(err error) (int, string) {
 	if errors.As(err, &se) {
 		switch {
 		case se.RateLimited():
-			return http.StatusTooManyRequests, retryAfterHeader(se.RetryAfter)
+			// A zero ResetAt is far in the past: the helper answers "".
+			return http.StatusTooManyRequests, retryAfterHeader(time.Until(se.ResetAt))
 		case se.Upstream5xx():
 			return http.StatusBadGateway, ""
 		case se.Code >= 400:

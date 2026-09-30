@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 )
@@ -42,6 +43,11 @@ func DoJSONErrBody(ctx context.Context, client *http.Client, method, url, errPre
 // headers. They are where a rate limiter says how long to wait, and the
 // response is the only place that can be read — a caller holding just the
 // status can do nothing but guess.
+//
+// A rate-limited answer comes back as an ERROR (*StatusError, RateLimited),
+// never as a status for the caller to map: GitHub answers its limits 403,
+// and every caller's status mapping reads a 403 as a missing grant. It is
+// named by its method and path as sent.
 func DoJSONFull(ctx context.Context, client *http.Client, method, url, errPrefix string, setHeaders func(*http.Request), body, out any) (int, []byte, http.Header, error) {
 	var reqBody io.Reader
 	if body != nil {
@@ -71,7 +77,7 @@ func DoJSONFull(ctx context.Context, client *http.Client, method, url, errPrefix
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return resp.StatusCode, errBody, resp.Header, nil
+		return resp.StatusCode, errBody, resp.Header, RateLimitErr(errPrefix, method+" "+urlPath(url), resp.StatusCode, resp.Header, errBody)
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -81,6 +87,17 @@ func DoJSONFull(ctx context.Context, client *http.Client, method, url, errPrefix
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 	}
 	return resp.StatusCode, nil, resp.Header, nil
+}
+
+// urlPath is the path of a request URL as it was sent (escaped: GitLab's
+// "group%2Frepo" stays one segment), for an error that must name the call
+// without its query (which may carry cursors or filters nobody needs in a log).
+func urlPath(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Path == "" {
+		return "(request)"
+	}
+	return u.EscapedPath()
 }
 
 // StatusErr maps a non-2xx status to the appropriate forge sentinel,
@@ -160,7 +177,7 @@ func DoMultipartFile(ctx context.Context, client *http.Client, method, url, errP
 		// A refusal names its reason in the body; the cap keeps a proxy's
 		// error page from becoming the message.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return resp.StatusCode, body, nil
+		return resp.StatusCode, body, RateLimitErr(errPrefix, method+" "+urlPath(url), resp.StatusCode, resp.Header, body)
 	}
 	// A success is decoded whole: capping it would turn an upload that landed
 	// into a decode error on an instance whose answer outgrows the cap.
