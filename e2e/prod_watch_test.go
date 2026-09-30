@@ -1600,8 +1600,8 @@ func pwUnescapedActives(line string) []string {
 			found = append(found, string(c))
 		case c == ':' && i > 0 && scheme(rs[i-1]) && (i+1 == len(rs) || !unicode.IsSpace(rs[i+1])):
 			found = append(found, string(rs[i-1])+":")
-		case c == '.' && i > 0 && rs[i-1] < 128 && (unicode.IsLetter(rs[i-1]) || unicode.IsDigit(rs[i-1])) &&
-			i+1 < len(rs) && (rs[i+1] == '`' || (rs[i+1] < 128 && unicode.IsLetter(rs[i+1]))):
+		case c == '.' && i > 0 && (unicode.IsLetter(rs[i-1]) || unicode.IsDigit(rs[i-1]) || rs[i-1] == '-' || rs[i-1] == '.') &&
+			i+1 < len(rs) && (rs[i+1] == '`' || unicode.IsLetter(rs[i+1])):
 			found = append(found, string(rs[i-1])+".")
 		}
 	}

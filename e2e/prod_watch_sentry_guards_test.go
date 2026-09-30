@@ -423,8 +423,6 @@ func TestProdWatch_SentryForeignIncidentFieldIsRefusedByName(t *testing.T) {
 	}{
 		{"backlog", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "backlog": "yes"}}}},
 		{"closed_said", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "closed_said": "yes"}}}},
-		{"folded", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "folded": "yes"}}}},
-		{"gone", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "gone": 1}}}},
 		{"tracked_read_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "tracked_read_at": 5}}}},
 		{"pending_since", map[string]any{"incidents": map[string]any{"leak:email": map[string]any{"kind": "leak", "pending_since": "soon"}}}},
 		{"transition_seen_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "transition_seen_at": 5}}}},

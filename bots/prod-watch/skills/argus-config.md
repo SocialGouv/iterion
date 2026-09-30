@@ -112,8 +112,10 @@ overrides).
   lane already knows too), `overlap_minutes` (60),
   `max_issues` (per list, pages of 100; default 200),
   `max_transition_checks` (activity lookups per tick; 20),
-  `max_tracked` (issues re-read by id each tick; 200 — over it they
-  take turns, the issues said one by one first, and the walk is partial), `deadline_secs` (120, a wall clock: the walk stops there, partial,
+  `max_tracked` (issues re-read by id each tick; 200 — they take turns,
+  the least recently read first, an issue read in a list counting as
+  read, and a coverage note says the cut once the open ones pass it; 0
+  turns the by-id reads off), `deadline_secs` (120, a wall clock: the walk stops there, partial,
   never the tick's death), `max_catchup_hours` (24, above
   `overlap_minutes`: a cursor older than that — the lane turned off, a
   long outage — opens at the floor and declares the gap instead of
@@ -136,13 +138,16 @@ overrides).
   are substituted with each value as inline code (neither a mention nor
   a link can come out of it), truncated to 200 characters; the label's
   own words render as written — its markdown, links and LaTeX are shown,
-  never live (a label cannot format, link or tag), while parentheses and
-  plain colons stay as they are; an emoji code is text unless a space
-  follows it (its colons could open a scheme). `sentry_reopened` says a
+  never live (a label cannot format, link or tag): it is one line, every
+  dot is escaped, an emoji code is text unless a space follows it (its
+  colons could open a scheme), parentheses and plain colons stay as they
+  are. `sentry_reopened` says a
   closed issue is open again; `folded_detail` words the note naming, per
   kind, the alerts a minting lane has past `--var max_alerts_per_lane` (5) —
   `folded_detail_more` the same note when it holds some back for the
-  next ticks (`{more}`) — their header is the kind's own.
+  next ticks (`{more}`) — their header is the kind's own; both must keep
+  `{names}` (plan refuses an override without it: a note says its
+  members by name).
 
 ## The secrets
 
@@ -294,13 +299,13 @@ managed secret under the name `forge_token` (see vuln-watch's
 - **`sentry: partial walk (…)`** in a coverage note — a list stopped at
   `max_issues`, the activity lookups at `max_transition_checks`, the
   deadline passed, or an issue was malformed; the causes are named
-  (followed issues over `max_tracked` are one: they take turns, those said one by one first — deleting a
-  flood's issues in Sentry frees their reads). Nothing is concluded from absence that
+  (open issues over `max_tracked` have their own note, **`sentry: N tracked issues for max_tracked M
+  reads a tick`**: they take turns — raise it; a deleted issue keeps its turn until retention forgets
+  it). Nothing is concluded from absence that
   tick (no "not observed any more"); a flood of distinct issues from a
   public DSN is one way there — raise the caps or tighten `min_level`
-  (past `max_alerts_per_lane`, the flood's issues are named in one note
-  of a kind a tick — what the message budget holds, the rest held for
-  the next notes —, and their follow-ups fold too — set a
+  (past `max_alerts_per_lane`, the flood's issues are named in notes of
+  their kind the tick they come, and their follow-ups fold too — set a
   rate limit on the DSN key in Sentry to stop it at the source). **`sentry: … carried no
   Link header`** — a proxy between the runner and Sentry strips it: no
   list can be read whole, so the lane never arms (or its cursor stays)

@@ -549,10 +549,10 @@ func TestProdWatch_AFoldOfEscalationsIsSaidWhole(t *testing.T) {
 }
 
 // TestProdWatch_ALogTemplateFoldFitsTheMessageBudget: a note's names never
-// outgrow a message — with a small max_message_chars the note names what the
-// budget holds, each in the message delivered whole (a longer one would be
-// cut on a line boundary, its names dropped); the templates it has no room
-// for wait, pending and not marked said, counted in the note.
+// outgrow a message — with a small max_message_chars new templates (facts)
+// are named in as many notes as the budget needs, each delivered whole (a
+// longer one would be cut on a line boundary, its names dropped): every
+// template marked said is shown, none held.
 func TestProdWatch_ALogTemplateFoldFitsTheMessageBudget(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -565,50 +565,34 @@ func TestProdWatch_ALogTemplateFoldFitsTheMessageBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decide: %v %s", err, stderr)
 	}
-	var note map[string]any
+	named, notes := map[string]bool{}, 0
 	for _, a := range out["alerts"].([]any) {
 		if m := a.(map[string]any); m["members"] != nil {
-			if note != nil {
-				t.Fatalf("two notes of one kind in a tick: %v", out["alerts"])
+			notes++
+			if m["detail_key"] != "folded_detail" {
+				t.Fatalf("a note of new templates held some back: %v", m["fields"])
 			}
-			note = m
+			for _, x := range m["members"].([]any) {
+				named[x.(map[string]any)["fp"].(string)] = true
+			}
 		}
 	}
-	if note == nil || note["detail_key"] != "folded_detail_more" {
-		t.Fatalf("35 templates past the five posted one by one, a 1000-character names budget: want one note naming some, holding the rest, got %v", note)
-	}
-	named := map[string]bool{}
-	for _, m := range note["members"].([]any) {
-		named[m.(map[string]any)["fp"].(string)] = true
-	}
-	if more := note["fields"].(map[string]any)["more"]; fmt.Sprint(more) != fmt.Sprint(35-len(named)) || len(named) < 2 {
-		t.Fatalf("the note names %d and counts %v held: want the other %d held", len(named), more, 35-len(named))
+	if len(named) != 35 || notes < 2 {
+		t.Fatalf("35 templates past the five, a 1000-character names budget: want all named over several notes, got %d in %d", len(named), notes)
 	}
 	nout, nerr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": out["alerts"], "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
-		"labels": map[string]any{"folded_detail_more": "{n} more of this kind this tick, not posted one by one: {names} — {more} more held for the next ticks"},
+		"labels": map[string]any{"folded_detail": "{n} more of this kind this tick, not posted one by one: {names}"},
 		"app":    map[string]any{"name": "demo"}, "release": "", "release_known": false,
 		"dry_run": true, "max_message_chars": 2000, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, nerr)
 	}
 	text := fmt.Sprint(nout["messages"])
-	held := 0
 	for fp, r := range pwStateNext(t, out)["incidents"].(map[string]any) {
 		rec := r.(map[string]any)
-		switch {
-		case named[fp]:
-			if !strings.Contains(text, fmt.Sprint(rec["title_arg"])) || rec["alerted"] != true {
-				t.Fatalf("%s, named in the note, is not in the message delivered whole, or not marked said: %v", fp, rec)
-			}
-		case rec["alerted"] != true:
-			if rec["pending"] != "new" {
-				t.Fatalf("%s, held for the next note, is not pending: %v", fp, rec)
-			}
-			held++
+		if !strings.Contains(text, fmt.Sprint(rec["title_arg"])) || rec["alerted"] != true || rec["pending"] != nil {
+			t.Fatalf("%s is not said in a message delivered whole, or not marked said: %v", fp, rec)
 		}
-	}
-	if held != 35-len(named) || !strings.Contains(text, fmt.Sprint("`", 35-len(named), "` more held")) {
-		t.Fatalf("%d templates held, want %d, counted in the note:\n%s", held, 35-len(named), text)
 	}
 }

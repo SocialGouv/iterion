@@ -204,7 +204,11 @@ on every cluster — validate them on yours.
 Off unless `config.sentry` is set (see `skills/argus-config.md`). Each tick
 reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
 `project=<id>`, the configured `environment`, `statsPeriod=14d`,
-`collapse=stats`, 100 per page):
+`collapse=lifetime`, `collapse=filtered` and an empty `groupStatsPeriod`,
+100 per page — never `collapse=stats`: Sentry then drops an issue's seen
+stats (`count`, `userCount`, `firstSeen`, `lastSeen`), the only way the
+lane sees an event; an answer carrying none of them at all is a lane
+error, never read as "no event"):
 
 - **new** — `is:unresolved firstSeen:>=<cursor − overlap>`, sorted new.
   With an environment, Sentry filters on the processing time of the
@@ -246,13 +250,13 @@ reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
   reprocessed, archived (Sentry reopens an archived issue as ongoing) or
   resolved (unresolved by hand — the issue page's button, a bulk action —
   an issue is ongoing, in neither list) — their current status and last
-  event. The issues the channel heard of one by one are read first, then
-  those only named in a note (a flood's) or not said yet, the least
-  recently read first in each; over `max_tracked` they take turns and the
-  walk is partial (the coverage note says so). An issue asked and absent
-  from the answer is gone for good (deleted, merged — the lookup by id
-  filters on nothing else): read, never asked again, its idle note still
-  owed.
+  event. The least recently read go first — an issue read in a list this
+  tick counts as read, so a fresh one joins the back: over `max_tracked`
+  they take turns, none left out for ever, and a coverage note of its own
+  says the cut once the OPEN ones pass it (a resolved one is read in its
+  turn, best effort; `max_tracked` 0 turns the reads off). An issue asked
+  and absent from the answer (deleted, merged) was read too, nothing
+  more: it keeps its turn until retention forgets it.
 
 An explicit `query` always: without one Sentry applies its default
 (`is:unresolved issue.priority:[high, medium]`) and low-priority issues
@@ -322,19 +326,20 @@ lane and the log templates — data anyone can mint incidents in (a
 public DSN, log lines carrying user input) — post at most
 `--var max_alerts_per_lane` (5) of their alerts one by one per tick, the
 most severe first (pending ones first inside a rank); the others are
-NAMED in ONE note per kind (a state — new, a transition, a reopening, an
-escalation, a reminder, a note — at one severity) and tick — as many as
-the message budget holds (`max_message_chars` less 1000, 3000 at most;
-`decide` refuses a budget under 1500) — which the per-run cap never
-cuts; the members it has no room for wait like an alert the cap cut
-(pending, or derived again), counted in the note, and the next note names
-them first. The alert log takes one line a message (a note's, the names
-it said). Each member is then followed like any issue — read by id after
-the issues said one by one —, its follow-ups folding the same way. A
-flood neither drowns the channel (a lane posts at most
-`max_alerts_per_lane` alerts and one note per kind a tick) nor holds the
-per-run cap — against another lane, or against its own lane's other
-alerts, named the tick they come. Anything
+NAMED in notes of their kind (a state at one severity), which the
+per-run cap never cuts, each within the message budget
+(`max_message_chars` less 1000, 3000 at most; `decide` refuses a budget
+under 1500). A fact — a new issue or template, a transition, a
+reopening, an escalation: what the tick read, bounded by its caps, and
+that will not recur by itself — is named in full, in as many notes as its
+names need; what is derived again from the state every tick — a
+reminder, an idle note, a closing note — takes one note of its kind a
+tick, the members it has no room for counted and named by the next
+ticks' notes. The alert log takes one line a message (a note's, the
+names it said). Each member is then followed like any issue, its
+follow-ups folding the same way. A flood neither drowns the channel nor
+holds the per-run cap — against another lane, or against its own lane's
+other alerts, named the tick they come. Anything
 else read is tracked silently: a backlog issue
 never posts on mere recurrence, and an issue merely re-read for
 `forget_after_days` leaves the tracked set — not while it is still in
@@ -385,13 +390,16 @@ precedes it. The label's own words render as written, and none of their
 markdown can wrap a value: emphasis, code, link and LaTeX characters are
 escaped, `&` and `<` are entities (the server rewrites `<url|text>`
 first), `$` becomes its full-width form (inline LaTeX ignores a
-backslash), a dot after a letter or digit is escaped (the autolinker
-reads `www.` through a zero-width space; a push notification shows the
-backslash) and a zero-width space goes before a colon after a letter or
-digit unless a space follows — every scheme's colon, a server's custom
-URL schemes included, and an emoji code's own (its name could be a
-scheme: a code before a space still renders, one glued to what follows
-is text). Parentheses and plain colons stay as written. A value is never scanned for placeholders,
+backslash), every dot is escaped (the autolinker reads a host after any
+letter, a `-` or a `.`, and `www.` through a zero-width space; a push
+notification shows the backslash) and a zero-width space goes before a
+colon after a letter or digit unless a space follows — every scheme's
+colon, a server's custom URL schemes included, and an emoji code's own
+(its name could be a scheme: a code before a space still renders, one
+glued to what follows is text). A label is one line (a blank line would
+open a block: a table splits a value's span at `|`), and a value that
+renders as nothing joins the words around it. Parentheses and plain
+colons stay as written. A value is never scanned for placeholders,
 and a message over `max_message_chars` is cut on a line boundary.
 
 ## Health probes

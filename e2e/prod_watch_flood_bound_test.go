@@ -7,12 +7,11 @@ import (
 	"time"
 )
 
-// TestProdWatch_SentryAFloodNamesWhatFitsAndHoldsTheRest: one note of a kind a
-// tick, whatever the flood — it names what the message budget holds, the
-// others wait (pending, counted in the note) and the next tick names them
-// first: every issue is said once, and no tick posts more than
-// max_alerts_per_lane alerts and the note.
-func TestProdWatch_SentryAFloodNamesWhatFitsAndHoldsTheRest(t *testing.T) {
+// TestProdWatch_SentryAFloodsFactsAreAllNamedTheTickTheyCome: new issues are
+// facts — what the tick read, bounded by its caps, and that will not recur by
+// itself: past the lane's alerts one by one, every one is named the same tick,
+// in as many notes as the message budget needs, none held, none pending.
+func TestProdWatch_SentryAFloodsFactsAreAllNamedTheTickTheyCome(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
@@ -21,36 +20,34 @@ func TestProdWatch_SentryAFloodNamesWhatFitsAndHoldsTheRest(t *testing.T) {
 	sentryTick(t, h, wf)
 	sentryJunk(h, 5001, 90)
 	said := map[string]int{}
-	for k := 0; k < 2; k++ {
-		n := len(h.bodies())
-		o := sentryTick(t, h, wf)
-		notes, more := 0, ""
-		for _, a := range o["decide"]["alerts"].([]any) {
-			m := a.(map[string]any)
-			if ms, ok := m["members"].([]any); ok {
-				notes++
-				more = fmt.Sprint(m["fields"].(map[string]any)["more"])
-				for _, x := range ms {
-					said[x.(map[string]any)["fp"].(string)]++
-				}
-			} else {
-				said[m["fingerprint"].(string)]++
+	n := len(h.bodies())
+	o := sentryTick(t, h, wf)
+	notes := 0
+	for _, a := range o["decide"]["alerts"].([]any) {
+		m := a.(map[string]any)
+		if ms, ok := m["members"].([]any); ok {
+			notes++
+			if fmt.Sprint(m["fields"].(map[string]any)["more"]) != "0" {
+				t.Fatalf("a note of new issues held some back: %v", m["fields"])
 			}
-		}
-		if posted := len(h.bodies()) - n; notes != 1 || posted != 6 {
-			t.Fatalf("tick %d: want 5 alerts and ONE note posted, got %d note(s) and %d message(s)", k, notes, posted)
-		}
-		if p := fmt.Sprint(sentryPendingCount(t, h)); k == 0 && (more == "0" || more != p) {
-			t.Fatalf("85 issues past a 500-character names budget: want some held — pending, counted in the note: %s counted, %s pending", more, p)
+			for _, x := range ms {
+				said[x.(map[string]any)["fp"].(string)]++
+			}
+		} else {
+			said[m["fingerprint"].(string)]++
 		}
 	}
+	if posted := len(h.bodies()) - n; notes != 2 || posted != 7 {
+		t.Fatalf("85 issues past the five, a 500-character names budget: want 5 alerts and 2 notes, got %d note(s) and %d message(s)", notes, posted)
+	}
+	body := strings.Join(h.bodies()[n:], "\n")
 	for k := 0; k < 90; k++ {
-		if fp := fmt.Sprint("sentry:", 5001+k); said[fp] != 1 {
-			t.Fatalf("%s said %d time(s) over two ticks", fp, said[fp])
+		if fp := fmt.Sprint("sentry:", 5001+k); said[fp] != 1 || !strings.Contains(body, fmt.Sprint("JUNK-", 5001+k)) {
+			t.Fatalf("%s said %d time(s) this tick, or not in a message delivered", fp, said[fp])
 		}
 	}
 	if p := sentryPendingCount(t, h); p != 0 {
-		t.Fatalf("%d issues still pending after the second note", p)
+		t.Fatalf("%d issues pending: a fact was held", p)
 	}
 }
 
@@ -191,6 +188,34 @@ func TestProdWatch_SentryAFloodsMessagesAreBounded(t *testing.T) {
 		if id := fmt.Sprint("JUNK-", 30001+k); !strings.Contains(body, id) {
 			t.Fatalf("%s is named nowhere", id)
 		}
+	}
+}
+
+// TestProdWatch_ANotesNamesStayWithin3000Characters: a note's names stay within
+// 3000 characters whatever the message budget — a flood of long template names
+// is split into readable notes, never one wall of names.
+func TestProdWatch_ANotesNamesStayWithin3000Characters(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	tpls := pwMintedTemplates(60, func(k int) string {
+		return fmt.Sprintf("ERROR the payment gateway refused the request of merchant %02d with an unknown code and no retry at all", k)
+	})
+	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": tpls, "leak": []any{}}, pwLokiState(map[string]any{}), nil)
+	if err != nil {
+		t.Fatalf("decide: %v %s", err, lastN(stderr, 400))
+	}
+	notes := 0
+	for _, a := range out["alerts"].([]any) {
+		if m := a.(map[string]any); m["members"] != nil {
+			if names := m["fields"].(map[string]any)["names"].(string); len(names) > 3000 {
+				t.Fatalf("a note names %d characters at the default message budget: want 3000 at most", len(names))
+			}
+			notes++
+		}
+	}
+	if notes < 2 {
+		t.Fatalf("setup: 55 names of about 110 characters in %d note(s)", notes)
 	}
 }
 

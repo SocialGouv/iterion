@@ -80,6 +80,7 @@ type pwSentry struct {
 	dateOffset     time.Duration // the Date header is the server's clock shifted by this
 	rawDate        string        // the Date header, verbatim (a broken server or proxy)
 	noLink         bool          // list pages carry no Link header (a proxy that strips it)
+	stripSeen      bool          // issues come without their seen stats, as under collapse=stats
 }
 
 func strp(s string) *string { return &s }
@@ -149,7 +150,7 @@ func pwSentryTime(t time.Time, micro bool) any {
 	return t.UTC().Format("2006-01-02T15:04:05Z")
 }
 
-func (s *pwSentry) payload(i *pwSentryIssue, env string) map[string]any {
+func (s *pwSentry) payload(i *pwSentryIssue, env string, strip bool) map[string]any {
 	last := i.LastSeen
 	if env != "" && i.Env != env {
 		last = time.Time{} // the by-id answer of an issue without events in that environment
@@ -176,6 +177,11 @@ func (s *pwSentry) payload(i *pwSentryIssue, env string) map[string]any {
 	}
 	for k, v := range i.Raw {
 		p[k] = json.RawMessage(v)
+	}
+	if strip || s.stripSeen {
+		for _, k := range []string{"count", "userCount", "firstSeen", "lastSeen"} {
+			delete(p, k)
+		}
 	}
 	return p
 }
@@ -262,12 +268,17 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 		if delay > 0 {
 			time.Sleep(delay)
 		}
-		if q.Get("project") != "63" || q.Get("statsPeriod") != "14d" || q.Get("collapse") != "stats" || q.Get("limit") != "100" {
+		if q.Get("project") != "63" || q.Get("statsPeriod") != "14d" || q.Get("limit") != "100" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"detail": "fake: unexpected parameters " + q.Encode()})
 			return
 		}
 		env := q.Get("environment")
+		// Like Sentry 24.11.1 (its test_collapse_stats): collapse=stats strips an issue's seen stats.
+		strip := false
+		for _, c := range q["collapse"] {
+			strip = strip || c == "stats"
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if env != "" && !s.envs[env] {
@@ -283,7 +294,7 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 			}
 			out := []map[string]any{}
 			for _, i := range sel {
-				out = append(out, s.payload(i, env))
+				out = append(out, s.payload(i, env, strip))
 			}
 			_ = json.NewEncoder(w).Encode(out)
 			return
@@ -368,7 +379,7 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 		}
 		out := []map[string]any{}
 		for _, i := range page {
-			out = append(out, s.payload(i, env))
+			out = append(out, s.payload(i, env, strip))
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	}
