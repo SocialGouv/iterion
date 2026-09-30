@@ -115,6 +115,7 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 45
     env:
       CGO_ENABLED: "0"
     steps:
@@ -125,6 +126,11 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # No Go cache on the organisation's runners (ADR-105): the archive
+          # setup-go restores holds modules and no build, and restoring it
+          # costs minutes there. GitHub-hosted runs (forks, dependency bots)
+          # keep it.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       - name: Generated artefacts are fresh (fail fast)
         # Two pull requests that each regenerate the same committed artefact
@@ -265,7 +271,7 @@ jobs:
         # AND ran the suite under Go's implicit per-package 10m first — the
         # timeout that actually ejected PRs from the merge queue. Unit tests
         # are everything but e2e; the e2e step is the only e2e run.
-        run: go test -mod=vendor $(go list -mod=vendor ./... | grep -v '/e2e$')
+        run: go test -mod=vendor -count=1 $(go list -mod=vendor ./... | grep -v '/e2e$')
 
       - name: E2E tests
         # The ONLY run of the e2e package in this job (the unit step excludes
@@ -284,7 +290,7 @@ jobs:
         # observed across six measurements: 259 s, on a box shared with other
         # builds. 900 s is past 2x that, so it stays as the hang bound rather
         # than being re-tightened onto the new figure.
-        run: go test -mod=vendor -v -timeout 900s ./e2e/...
+        run: go test -mod=vendor -count=1 -v -timeout 900s ./e2e/...
 
       - name: Live e2e compile check
         # Builds every -tags=live test in the repo and runs NONE of them
@@ -367,7 +373,7 @@ jobs:
         # 153.8 s under -race (2026-09-07, 32-core box, race detector clean),
         # so the budget now carries an order of magnitude of headroom and
         # stays as the hang bound. The 45-minute job budget caps the run.
-        run: go test -race -mod=vendor -timeout 1800s ./...
+        run: go test -race -mod=vendor -count=1 -timeout 1800s ./...
 
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo
@@ -453,7 +459,7 @@ jobs:
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/... \
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo/... \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... \
@@ -535,7 +541,7 @@ jobs:
         env:
           ITERION_TEST_NATS_URI: nats://localhost:4222
         run: |
-          go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/...
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/runner/... ./pkg/queue/...
 
   cloud-e2e:
     # Advisory: not a required check, so it cannot block a merge — see the
@@ -745,11 +751,14 @@ jobs:
     # drift that caused Sprint-8 to find 14h-old modules.txt against a
     # fresher go.mod. Fail the PR before the drift lands.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # ADR-105 — see the test job.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: go mod verify
         run: go mod verify
       - name: Vendor + go.mod / go.sum freshness
@@ -818,6 +827,7 @@ jobs:
     # positives). Runs in parallel with `test`; ~1-2 min. Add to the
     # branch-protection required checks to gate merges on a clean lint.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 20
     env:
       CGO_ENABLED: "0"
     steps:
@@ -825,6 +835,8 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # ADR-105 — see the test job.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
       - name: Run golangci-lint
@@ -905,6 +917,7 @@ jobs:
     # would trade two runner slots for a blind spot in a fork guard.
     if: github.event_name != 'merge_group'
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -918,6 +931,8 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # ADR-105 — see the test job.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Vet the desktop package
         # No webkit2_41: that tag selects the Linux bindings. These GOOS legs
         # type-check with cgo off, measured, so they need no system libraries.
@@ -934,6 +949,7 @@ jobs:
     # mid-release shouldn't gate a hotfix; results surface in the GitHub
     # Security tab via SARIF so an operator can still triage.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 15
     permissions:
       security-events: write
       contents: read
@@ -942,6 +958,8 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+          # ADR-105 — see the test job.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run govulncheck (SARIF)
