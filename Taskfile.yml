@@ -1144,7 +1144,9 @@ tasks:
   cloud:down:
     desc: Tear down the cloud-mode stack including volumes
     cmds:
-      - docker compose -f docker-compose.cloud.yml down -v
+      # --remove-orphans: also the containers of services the file no
+      # longer declares (the MinIO of a stack started before SeaweedFS).
+      - docker compose -f docker-compose.cloud.yml down -v --remove-orphans
 
   cloud:logs:
     desc: Tail logs from every cloud-mode service
@@ -1157,14 +1159,12 @@ tasks:
       - docker compose -f docker-compose.cloud.yml up -d mongo nats seaweedfs s3-init
 
   cloud:test:s3:
-    desc: Run the S3 gateway compatibility bench against the local stack's SeaweedFS (after task cloud:up:deps)
-    env:
-      ITERION_TEST_S3_ENDPOINT: http://127.0.0.1:8333
-      ITERION_TEST_S3_ACCESS_KEY_ID: iterion-dev
-      ITERION_TEST_S3_SECRET_ACCESS_KEY: iterion-dev-secret
-      ITERION_TEST_S3_BUCKET: iterion-artifacts
+    desc: Run the S3 gateway compatibility bench against the local stack's SeaweedFS, in its own bucket (after task cloud:up:deps)
     cmds:
-      - go test -count=1 -run TestGatewayCompat -v ./pkg/store/blob/
+      # Inline rather than under env: — an ITERION_TEST_S3_* exported in the
+      # shell wins over a task's env: and would aim the bench, which writes
+      # and deletes objects, at another gateway.
+      - ITERION_TEST_S3_ENDPOINT=http://127.0.0.1:8333 ITERION_TEST_S3_ENDPOINT_B= ITERION_TEST_S3_ACCESS_KEY_ID=iterion-dev ITERION_TEST_S3_SECRET_ACCESS_KEY=iterion-dev-secret ITERION_TEST_S3_BUCKET=iterion-compat-bench ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS= go test -count=1 -run TestGatewayCompat -v ./pkg/store/blob/
 
   cloud:dev:
     desc: Hot-reload iterion in the cloud stack via watchexec rebuild + container restart

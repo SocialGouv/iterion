@@ -11,7 +11,7 @@ MinIO no longer distributes its community edition. On 2026-09-29, `quay.io/minio
 - the bucket Jobs could no longer pull their image, which left every Argo CD sync operation Running (#1852);
 - the cluster pulls images on every container start (`AlwaysPullImages`), so a MinIO pod that restarts does not come back.
 
-iterion's whole S3 contract lives in `pkg/store/blob/s3.go` (aws-sdk-go-v2, path style, CRC32 flexible checksums on PutObject and DeleteObjects). It uses HeadBucket, Put, Get (with Range), Head, Delete, DeleteObjects, paginated ListObjectsV2 and PresignGetObject. It needs no conditional writes, ETags, versioning or object metadata.
+iterion's whole S3 contract lives in `pkg/store/blob/s3.go` (aws-sdk-go-v2, path style, CRC32 flexible checksums on PutObject and DeleteObjects). It uses HeadBucket, Put, Get (with Range), Head, Delete, DeleteObjects, paginated ListObjectsV2 and PresignGetObject. It needs no conditional writes, ETags, versioning or user-defined (`x-amz-meta-*`) metadata.
 
 One property matters more than the call list: **what one pod writes, another pod reads next**. That covers artifacts (runner → server), run files, attachments (server → runner), backend sessions resumed by another runner, and the offloaded IR. Whatever replaces MinIO must give read-after-write across every gateway replica.
 
@@ -64,7 +64,7 @@ One property matters more than the call list: **what one pod writes, another pod
 - **More moving parts than MinIO:** 11 SeaweedFS pods and 3 Valkey pods, against 4.
 - **Not provided here:** an off-cluster backup of the bucket, mTLS on gRPC (the NetworkPolicies stand in), and metrics scraping. Each is a follow-up, not an implied promise.
 - **Upgrading SeaweedFS** means first running `pkg/store/blob/s3_gateway_compat_test.go` against the new version, in the production topology.
-- **The development stack** (`docker-compose.cloud.yml`) runs the same SeaweedFS release and digest. `task cloud:test:s3` runs the compatibility suite against it. The Helm chart shipped in this repository (`charts/iterion`) still bundles Bitnami MinIO for its dev values; replacing it is a follow-up.
+- **The development stack** (`docker-compose.cloud.yml`) runs the same SeaweedFS release and digest. `task cloud:test:s3` runs the compatibility suite against it, in a bucket of its own (the suite writes and deletes objects, and refuses a bucket holding anything it did not write). The Helm chart shipped in this repository (`charts/iterion`) still bundles Bitnami MinIO for its dev values; replacing it is a follow-up.
 
 ## Measured, not assumed
 
