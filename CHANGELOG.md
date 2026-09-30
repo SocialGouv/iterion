@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.4](https://github.com/SocialGouv/iterion/compare/v3.218.3...v3.218.4) (2026-09-30)
+
+### Bug Fixes
+
+* **forge:** a rate-limited answer is a wait, not a missing grant ([#1994](https://github.com/SocialGouv/iterion/issues/1994)) ([#2021](https://github.com/SocialGouv/iterion/issues/2021)) ([1fd6315](https://github.com/SocialGouv/iterion/commit/1fd6315d8185828465c44982ebe6f04892e18101))
+
+    <details><summary>why</summary>
+
+    GitHub answers its API rate limits 403 (primary: X-RateLimit-Remaining 0; secondary: Retry-After), and the transport mapped every 403 to ErrForbidden: the merge gate reported "forge: insufficient scope" on a rate limit, and an App status write noted the statuses grant as withheld for the rest of the token's life.
+
+    </details>
+
 ## [3.218.3](https://github.com/SocialGouv/iterion/compare/v3.218.2...v3.218.3) (2026-09-30)
 
 ### Bug Fixes
