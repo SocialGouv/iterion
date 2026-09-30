@@ -554,3 +554,121 @@ func TestNoDegradeEventWhenTheBuildFailsAnyway(t *testing.T) {
 		t.Errorf("the node never ran, so nothing may claim it ran degraded: %+v", degraded)
 	}
 }
+
+// "Resolution succeeded" is not "the node will run". A CARRIED refusal
+// refuses the whole claw route by type at Execute, so the node is served by a
+// `fallbacks:` route that starts those servers INSIDE the container — with
+// the very tools a degrade event would claim it ran without. One ambient
+// server dropped, one named server refused: the record must carry the
+// refusal and nothing else.
+func TestNoDegradeEventWhenTheWholeClawRouteIsRefused(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, name := range []string{"bash", "todo_write"} {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"repo":  {Name: "repo", Origin: mcp.OriginProject, Transport: mcp.TransportStdio, Command: "/bin/echo"},
+			"other": {Name: "other", Origin: mcp.OriginProject, Transport: mcp.TransportStdio, Command: "/bin/echo"},
+		}, mcp.WithStartPolicy(mcp.StartOperatorServersOnly)),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo", "other"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools:            []string{"bash", "mcp.repo.search"},
+		activeMCPServers: []string{"repo", "other"},
+	}
+
+	task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err != nil {
+		t.Fatalf("a refusal must not fail the build: %v", err)
+	}
+	if _, ok := task.MCPServersRefusedOnLauncher["repo"]; !ok {
+		t.Fatalf("premise broken: the named server's refusal must be carried: %v", task.MCPServersRefusedOnLauncher)
+	}
+	// And the premise's other half: that map really does refuse the route.
+	_, execErr := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).Execute(context.Background(), task)
+	var unsupported *delegate.ErrCapabilityUnsupported
+	if !errors.As(execErr, &unsupported) {
+		t.Fatalf("premise broken: the carried refusal must refuse the whole route, got %v", execErr)
+	}
+
+	if len(degraded) != 0 {
+		t.Errorf("the claw route never runs, and the fallback that does starts these servers in the "+
+			"container — so nothing may record the node as having run without them: %+v", degraded)
+	}
+}
+
+// And the build can still fail AFTER resolution: a claw `session: persist`
+// node whose resume conversation did not survive its JSON round-trip is
+// refused several statements later. A node that never ran did not run
+// degraded.
+func TestNoDegradeEventWhenTheBuildFailsAfterResolution(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+		session: ir.SessionPersist,
+	}
+	// A conversation that round-tripped through JSON arrives as a string,
+	// which applyResumeContinuity drops — and the guard below then fails.
+	input := map[string]any{delegate.ResumeConversationKey: `[{"role":"user"}]`}
+
+	if _, err := e.buildTask(context.Background(), node, f, input, delegate.BackendClaw, nil); err == nil {
+		t.Fatal("premise broken: this build must fail after resolution")
+	}
+	if len(degraded) != 0 {
+		t.Errorf("the node never ran: %+v", degraded)
+	}
+}
+
+// One report, one clock. The `cause` comes from the error the gate produced
+// reading the config the server's own state holds; the `origin` used to come
+// from the catalog, which can already hold a newer config for a server that
+// started before the sandbox settled. A refusal carries its own origin —
+// take it from there, so the two fields describe the same moment.
+func TestTheDegradeEventTakesItsOriginFromTheRefusal(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+	}
+	if _, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil); err != nil {
+		t.Fatalf("a refusal must not fail the node: %v", err)
+	}
+	if len(degraded) != 1 {
+		t.Fatalf("expected one drop: %+v", degraded)
+	}
+	// The refusal's own origin, not a second lookup that may have moved on.
+	var notStartable *mcp.ServerNotStartableError
+	if !errors.As(degraded[0].Err, &notStartable) {
+		t.Fatalf("premise broken: this drop must be a typed refusal: %v", degraded[0].Err)
+	}
+	if degraded[0].Origin != notStartable.Origin.String() {
+		t.Errorf("origin = %q but the refusal that produced the event says %q — one report, two clocks",
+			degraded[0].Origin, notStartable.Origin)
+	}
+}

@@ -1237,6 +1237,10 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// Resolve full tool definitions for backends that manage tool loops
 	// internally (claw). CLI-based backends (claude_code, codex) handle tools
 	// natively via AllowedTools and do not need ToolDefs.
+	// Held across the whole build: the drops a node runs without are only
+	// facts once the node is going to run on THIS route, and the last thing
+	// that can take that away is several statements below.
+	var degraded []mcpDegradeReport
 	if len(effectiveTools) > 0 && backendName == delegate.BackendClaw {
 		clawTools := effectiveTools
 		// Ambient plugin-MCP parity with claude_code (the claude_code branch
@@ -1265,7 +1269,6 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// mcp.PrepareWorkflow. Anything reported from inside this loop
 		// therefore has to read which of the two a server was, rather than
 		// assume.
-		var degraded []mcpDegradeReport
 		if e.mcpManager != nil && e.toolRegistry != nil {
 			// The servers the node named a tool on. Those do NOT degrade:
 			// resolveToolsForNode either carries a typed refusal to Execute,
@@ -1298,6 +1301,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 					if errors.As(err, &notStartable) {
 						cause = notStartable.Cause
 					}
+					// The origin comes from the REFUSAL when there is one,
+					// and from the catalog otherwise. One report must not
+					// mix two clocks: the cause above was produced by the
+					// gate reading the config the server's own state holds,
+					// while the catalog can already hold a newer one for a
+					// server that started before the sandbox settled.
+					//
 					// Origin.String(), not string(Origin): the cast defeats
 					// the Stringer and renders the ZERO value — an
 					// unclassified entry, or a plugin stripped of its
@@ -1305,8 +1315,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 					// case this whole boundary is about, and it was the one
 					// the log and the event named as nothing at all.
 					origin := ""
-					if cfg, ok := e.mcpManager.ServerConfig(srv); ok && cfg != nil {
-						origin = cfg.Origin.String()
+					switch {
+					case notStartable != nil:
+						origin = notStartable.Origin.String()
+					default:
+						if cfg, ok := e.mcpManager.ServerConfig(srv); ok && cfg != nil {
+							origin = cfg.Origin.String()
+						}
 					}
 					// Ambient or asked for: the node's active set holds both,
 					// merged, so the answer comes from the DECLARATION rather
@@ -1341,8 +1356,6 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		if toolErr != nil {
 			return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
-		// The node WILL run: the drops it runs without are now facts.
-		e.reportMCPDegrades(f.id, degraded)
 		task.ToolDefs = toolDefs
 		// Carried, not raised. A build error aborts the node before its
 		// fallback chain is walked; this refusal must reach Execute, where a
@@ -1406,6 +1419,20 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		}
 	}
 
+	// Here, and nowhere earlier. Two things sit between resolution and this
+	// line that still take the node away from this route:
+	//
+	//   - the build can fail after resolution (the persisted-resume guards
+	//     just above), and a node that never ran did not run degraded;
+	//   - a CARRIED refusal refuses the whole claw route by type at Execute,
+	//     so the node is served by a `fallbacks:` route that starts those
+	//     servers INSIDE the container — with the very tools the event would
+	//     claim it ran without.
+	//
+	// The refusal is read off the task, which is the value that travels.
+	if len(task.MCPServersRefusedOnLauncher) == 0 {
+		e.reportMCPDegrades(f.id, degraded)
+	}
 	return task, nil
 }
 

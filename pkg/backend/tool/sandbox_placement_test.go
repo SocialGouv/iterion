@@ -297,18 +297,14 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 		if _, ok := allowedUnset[name]; ok {
 			continue
 		}
-		switch f.Kind() {
-		case reflect.Bool:
-			if !f.Bool() {
-				t.Fatalf("ClawDefaults.%s is false, so its family is not registered and "+
-					"TestSandboxPlacementCoversEveryRegisteredClawTool never sees its tools — set it here, or "+
-					"add it to allowedUnset with a reason", name)
-			}
-		case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice:
-			if f.IsNil() {
-				t.Fatalf("ClawDefaults.%s is nil, so its family may not register — wire it here, or add it to "+
-					"allowedUnset with a reason", name)
-			}
+		// IsZero, not a list of kinds: the caller's claim is that a new
+		// switch nobody adds here takes its family out of the guard, and a
+		// `string` or `func` field defeats an enumerated list while
+		// satisfying that claim exactly.
+		if f.IsZero() {
+			t.Fatalf("ClawDefaults.%s is its zero value, so its family may not be registered and "+
+				"TestSandboxPlacementCoversEveryRegisteredClawTool would never see its tools — set it here, "+
+				"or add it to allowedUnset with a reason", name)
 		}
 	}
 }

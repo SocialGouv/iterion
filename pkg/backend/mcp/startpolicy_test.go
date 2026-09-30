@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -574,4 +575,78 @@ func TestAFarSideRefusalIsNotCachedAsAPermanentFailure(t *testing.T) {
 	if _, err := client.ListTools(context.Background()); err != nil {
 		t.Fatalf("after the policy relaxed this client must work again, got %v", err)
 	}
+}
+
+// rebuildCatalogFor writes state.cfg, which the refusal loop in the same
+// function used to read with no lock held. Harmless before — nothing wrote
+// that pointer — and a race the moment a writer existed. Two concurrent
+// SetStartPolicy is not a shape the engine produces today; the guard is here
+// because nothing in WithConfigRefresher's contract says it may not, and the
+// CI `race` job is a required check.
+func TestConcurrentPolicyChangesDoNotRaceOnTheConfig(t *testing.T) {
+	// A server that really STARTS: the refusal loop only reads the config
+	// it used to read unlocked once a live client exists, so a catalog of
+	// unstartable entries exercises none of it.
+	if slowHelperMode() {
+		runSlowStdioHelper()
+		return
+	}
+	catalog := map[string]*ServerConfig{}
+	for _, name := range []string{"a", "b", "c"} {
+		catalog[name] = &ServerConfig{
+			Name: name, Origin: OriginProject, Transport: TransportStdio,
+			Command: os.Args[0],
+			Args: []string{"-test.run=TestConcurrentPolicyChangesDoNotRaceOnTheConfig",
+				"--", "mcp-slow-helper"},
+		}
+	}
+	m := NewManager(catalog,
+		WithStartPolicy(StartAllServers),
+		WithConfigRefresher(func(p StartPolicy) map[string]*ServerConfig {
+			out := make(map[string]*ServerConfig, len(catalog))
+			for name := range catalog {
+				out[name] = &ServerConfig{
+					Name: name, Origin: OriginProject, Transport: TransportStdio,
+					Command: "/bin/echo-" + p.String(),
+				}
+			}
+			return out
+		}))
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Bring the clients up while the policy still allows it.
+	reg := tool.NewRegistry()
+	for _, name := range []string{"a", "b", "c"} {
+		if err := m.EnsureServers(context.Background(), reg, []string{name}); err != nil {
+			t.Skipf("the helper server did not come up, so this race has nothing to race on: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		policy := StartAllServers
+		if i%2 == 0 {
+			policy = StartOperatorServersOnly
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < 25; n++ {
+				m.SetStartPolicy(policy)
+			}
+		}()
+	}
+	// …and readers, which must also see a coherent config throughout.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < 25; n++ {
+				if cfg, ok := m.ServerConfig("a"); ok && cfg.Name != "a" {
+					t.Errorf("a torn config: %+v", cfg)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

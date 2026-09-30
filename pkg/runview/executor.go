@@ -798,6 +798,20 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 	return catalog
 }
 
+// prepareMCPCatalogAuth installs each server's AuthFunc and returns the
+// per-server failures, or nothing when there is no broker.
+//
+// Both the initial build and the refresher go through here. A catalog is not
+// finished when its `${VAR}` are expanded — the auth closures are part of it,
+// and a rebuild that skips them hands every OAuth server an anonymous
+// transport.
+func prepareMCPCatalogAuth(catalog map[string]*mcp.ServerConfig, broker *mcp.OAuthBroker) map[string]error {
+	if broker == nil {
+		return nil
+	}
+	return mcp.PrepareAuthPerServer(catalog, broker)
+}
+
 // unusableAfterDroppedRefs reports why a config cannot be used now that some
 // of its references went unexpanded, naming the variables by NAME — never by
 // value, which is the whole point of not expanding them.
@@ -888,7 +902,16 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 	if len(wf.ResolvedMCPServers) == 0 {
 		return nil, nil, nil
 	}
-	catalog := expandMCPCatalog(wf, policy, logger)
+	// Built SILENTLY. The policy here is a prediction, and on the ordinary
+	// `sandbox: auto` run that degrades to unsandboxed it predicts a
+	// suppression that does not happen — so a warning emitted now would tell
+	// the operator their `${VAR}` was dropped when the settled pass is about
+	// to expand it. The refresher below carries the real logger; the engine
+	// settles the sandbox on every run (runtime.resolveAndStartSandbox calls
+	// SetSandbox in BOTH branches), so the warning is not lost, only
+	// deferred to the pass whose verdict holds. What an operator needs
+	// before then travels on StartErr, which names the variable.
+	catalog := expandMCPCatalog(wf, policy, iterlog.Nop())
 	operatorAuth := false
 	for _, server := range wf.ResolvedMCPServers {
 		if server.Auth != nil && mcp.Origin(server.Origin).OperatorControlled() {
@@ -909,14 +932,13 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 			return nil, nil, fmt.Errorf("mcp: oauth broker init (required by catalog Auth): %w", brokerErr)
 		}
 		logger.Warn("mcp: oauth broker init: %v", brokerErr)
-	} else {
-		for name, err := range mcp.PrepareAuthPerServer(catalog, broker) {
-			if catalog[name].Origin.OperatorControlled() {
-				return nil, nil, fmt.Errorf("mcp: prepare oauth auth for %q: %w", name, err)
-			}
-			logger.Warn("mcp: server %q (origin: %s) will not start — %v", name, catalog[name].Origin, err)
-			catalog[name].StartErr = err
+	}
+	for name, err := range prepareMCPCatalogAuth(catalog, broker) {
+		if catalog[name].Origin.OperatorControlled() {
+			return nil, nil, fmt.Errorf("mcp: prepare oauth auth for %q: %w", name, err)
 		}
+		logger.Warn("mcp: server %q (origin: %s) will not start — %v", name, catalog[name].Origin, err)
+		catalog[name].StartErr = err
 	}
 
 	// The start policy goes in FIRST, so a reader of this slice sees the
@@ -930,11 +952,26 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 	// …and the way BACK from that prediction, in the same breath: the
 	// policy above decides whether an untrusted server's `${VAR}` was
 	// expanded, and a prediction that turns out permissive must return the
-	// author their variables. The refresher re-runs the same pure function.
+	// author their variables.
+	//
+	// The refresher rebuilds the catalog THE SAME WAY this function did —
+	// expansion AND auth. Re-running the expansion alone dropped every
+	// `AuthFunc` the lines above installed, so an OAuth server was dialled
+	// with no Authorization header once the sandbox settled, and a server
+	// the build had REFUSED for a malformed `auth:` block became startable.
+	// Two construction paths for one catalog is one path too many; this one
+	// exists so they cannot drift.
 	mcpOpts := []mcp.ManagerOption{
 		mcp.WithStartPolicy(policy),
 		mcp.WithConfigRefresher(func(settled mcp.StartPolicy) map[string]*mcp.ServerConfig {
-			return expandMCPCatalog(wf, settled, logger)
+			// This is the pass that speaks: the prediction above was
+			// built silently precisely so the log carries one verdict, the
+			// settled one.
+			fresh := expandMCPCatalog(wf, settled, logger)
+			for name, err := range prepareMCPCatalogAuth(fresh, broker) {
+				fresh[name].StartErr = err
+			}
+			return fresh
 		}),
 		mcp.WithLogger(logger),
 	}

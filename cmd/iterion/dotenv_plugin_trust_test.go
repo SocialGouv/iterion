@@ -160,3 +160,39 @@ func restoreEnv(t *testing.T, name string) {
 		}
 	})
 }
+
+// applyDotEnv refuses a key carrying the planted-names separator: such a key
+// would reach a child as TWO names, and the extra one denies the OPERATOR's
+// own environment its authority downstream. No shell can export the name
+// either, so the line is malformed and skipped whole.
+//
+// The `envtrust` backstop covers the damage; this covers the source, because
+// a guard nobody mutated is not a guard.
+func TestADotenvKeyCarryingTheSeparatorIsRefused(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, ".env"),
+		[]byte("ITERION_HOME,HARMLESS=1\nITERION_TEST_PLAIN=kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	restoreEnv(t, "ITERION_TEST_PLAIN")
+	restoreEnv(t, "ITERION_HOME,HARMLESS")
+
+	t.Chdir(repo)
+	loadDotEnvFromCwd()
+
+	if v, ok := os.LookupEnv("ITERION_HOME,HARMLESS"); ok {
+		t.Errorf("the malformed key was set to %q; it must be skipped whole", v)
+	}
+	if envtrust.Planted("ITERION_HOME") {
+		t.Error("the operator's own home must not read as planted: the marker would carry the extra name " +
+			"into every child process")
+	}
+	// …and the well-formed line on the next row still applies.
+	if os.Getenv("ITERION_TEST_PLAIN") != "kept" {
+		t.Error("one malformed key must not cost the rest of the file")
+	}
+}

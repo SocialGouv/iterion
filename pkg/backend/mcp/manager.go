@@ -116,28 +116,38 @@ func (m *Manager) SetStartPolicy(p StartPolicy) {
 
 	m.rebuildCatalogFor(p)
 
-	var refused []*serverState
+	// The identity is captured HERE, under the lock, not read back from
+	// state.cfg below: rebuildCatalogFor now WRITES that pointer, so a
+	// second caller reaching this loop reads a field another is replacing.
+	// The parent commit had no writer, which is why the unlocked reads were
+	// harmless then and are a race now.
+	type refusal struct {
+		state  *serverState
+		name   string
+		origin Origin
+	}
+	var refused []refusal
 	m.mu.Lock()
 	for _, state := range m.states {
 		if !p.Allows(state.cfg.Origin) {
-			refused = append(refused, state)
+			refused = append(refused, refusal{state: state, name: state.cfg.Name, origin: state.cfg.Origin})
 		}
 	}
 	m.mu.Unlock()
 
-	for _, state := range refused {
-		state.mu.Lock()
-		client := state.client
-		state.client = nil
-		state.discovered = false
-		state.mu.Unlock()
+	for _, r := range refused {
+		r.state.mu.Lock()
+		client := r.state.client
+		r.state.client = nil
+		r.state.discovered = false
+		r.state.mu.Unlock()
 		if client == nil {
 			continue
 		}
 		if err := client.Close(); err != nil {
-			m.logger.Warn("mcp: closing %q after the start policy tightened: %v", state.cfg.Name, err)
+			m.logger.Warn("mcp: closing %q after the start policy tightened: %v", r.name, err)
 		} else {
-			m.logger.Info("mcp: closed %q (origin: %s) — %s", state.cfg.Name, state.cfg.Origin, p)
+			m.logger.Info("mcp: closed %q (origin: %s) — %s", r.name, r.origin, p)
 		}
 	}
 }

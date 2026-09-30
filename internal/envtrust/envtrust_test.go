@@ -165,3 +165,31 @@ func TestAMarkedNameCarryingTheSeparatorNeverReachesAChild(t *testing.T) {
 		t.Error("the local record is unchanged; only the marker cannot carry it")
 	}
 }
+
+// The comma was the first character found to cross badly, not the class: the
+// reader TrimSpaces each name while the writer does not, so " ITERION_HOME"
+// leaves as one name and arrives as another — the same injectable denial of
+// the operator's own authority, through a different character.
+func TestOnlyNamesAShellCouldExportCrossToAChild(t *testing.T) {
+	for _, odd := range []string{"ITERION_HOME ", " ITERION_HOME", "ITERION_HOME\tX", "ITERION,HOME", "9LEADING"} {
+		t.Run(odd, func(t *testing.T) {
+			ResetForTest()
+			t.Cleanup(ResetForTest)
+			t.Setenv(EnvPlantedNames, "")
+
+			MarkPlanted(odd, "LEGITIMATE")
+			marker := os.Getenv(EnvPlantedNames)
+
+			// The child seeds its set from the marker alone.
+			ResetForTest()
+			t.Setenv(EnvPlantedNames, marker)
+			if Planted("ITERION_HOME") {
+				t.Errorf("marker %q makes a child read ITERION_HOME as planted, so the operator's own home "+
+					"loses its authority there", marker)
+			}
+			if !Planted("LEGITIMATE") {
+				t.Errorf("a well-formed name must still travel: %q", marker)
+			}
+		})
+	}
+}

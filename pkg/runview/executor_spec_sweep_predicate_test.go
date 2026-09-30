@@ -105,6 +105,10 @@ func f() {
 			// A factory that fills the spec and RETURNS it: the caller is
 			// the one that builds. Covered today only because the real site
 			// happens to use a composite literal.
+			// A factory that FILLS a spec and returns it is not the site
+			// that decides — its caller is. Accusing it failed a
+			// legitimate shared-base helper; reporting it as unjudged
+			// points at the right place.
 			name: "a factory that fills a spec and returns it",
 			src: `package p
 import "github.com/SocialGouv/iterion/pkg/runview"
@@ -113,7 +117,23 @@ func mk() runview.ExecutorSpec {
 	s.RunID = "r"
 	return s
 }`,
-			missing: true,
+			unread: true,
+		},
+		{
+			// The shape that must NOT be accused: both fields set in plain
+			// sight, and the address also handed to a helper for something
+			// else. The give-up arm used to win over the assignment.
+			name: "both fields set, and the address handed to a helper",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func tune(s *runview.ExecutorSpec) { s.RunID = "r" }
+func f() {
+	var s runview.ExecutorSpec
+	s.BotID = "b"
+	s.SandboxTiersKnown = true
+	tune(&s)
+	_, _ = runview.BuildExecutor(s)
+}`,
 		},
 		{
 			// …and the same shape with the field set is clean.

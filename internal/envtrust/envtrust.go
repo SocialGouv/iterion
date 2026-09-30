@@ -64,6 +64,31 @@ func MarkPlanted(names ...string) {
 	_ = os.Setenv(EnvPlantedNames, marker)
 }
 
+// exportableName reports whether a name is one a shell could export, which
+// is the only kind the marker can carry.
+//
+// The comma was the first character found to cross badly — the marker joins
+// on it and the reader splits on it — but it is not the class. The reader
+// also TrimSpaces each name while the writer does not, so " ITERION_HOME"
+// arrives in a child as a different name than it left as, denying the
+// operator's own home its authority there. One predicate, stated the way the
+// comma guard justified itself: nothing iterion asks about provenance is
+// spelled any other way.
+func exportableName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Planted reports whether this variable's value came from a project `.env`
 // (in this process or in an ancestor).
 func Planted(name string) bool {
@@ -120,7 +145,7 @@ func ensurePlantedLocked() {
 func markerLocked() string {
 	names := make([]string, 0, len(planted))
 	for name := range planted {
-		if strings.Contains(name, ",") {
+		if !exportableName(name) {
 			continue
 		}
 		names = append(names, name)

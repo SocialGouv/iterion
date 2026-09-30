@@ -26,10 +26,7 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		// A thin wrapper over RegisterClawBuiltinsWithEnv, which
 		// RegisterClawAll calls: the same tools, no extra names.
 		"RegisterClawBuiltins": "wrapper over RegisterClawBuiltinsWithEnv",
-		// Registers whatever ToolDef the caller hands it; no fixed name for
-		// a placement table to classify.
-		"RegisterBuiltin": "registers a single caller-supplied tool",
-		"RegisterMCP":     "registers a discovered MCP tool; the shape rule classifies those",
+
 		// Registers ONE tool the caller supplies. There is no fixed name for
 		// a placement table to classify, and the classification of whatever
 		// is passed is the caller's to make.
@@ -61,7 +58,7 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 				bodies[fn.Name.Name] = fn
 				continue
 			}
-			if isToolRegistrar(fn) {
+			if isToolRegistrar(fn) || strings.HasPrefix(fn.Name.Name, "RegisterClaw") {
 				exported[fn.Name.Name] = true
 				bodies[fn.Name.Name] = fn
 			}
@@ -89,6 +86,15 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		}
 		missing = append(missing, name)
 	}
+	// An allowlist entry nobody consults is a decision about nothing, and it
+	// reads as coverage. Two shipped in the previous round already were:
+	// RegisterBuiltin and RegisterMCP are METHODS, which the loop above
+	// skips before the predicate is ever reached.
+	for name, reason := range exempt {
+		if !exported[name] {
+			t.Errorf("exempt[%q] (%s) names nothing this guard sees — drop the entry", name, reason)
+		}
+	}
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Errorf("RegisterClawAll does not call %v, so a host wires them itself — and buildFullClawRegistry does "+
@@ -98,35 +104,40 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 }
 
 // isToolRegistrar reports whether fn is one of this package's tool-family
-// registrars, by SIGNATURE: exported, first parameter `*Registry`, single
-// `error` result.
+// registrars, by SIGNATURE: exported, a `*Registry` parameter ANYWHERE, and
+// `error` as its LAST result.
 //
-// Not by name prefix. "RegisterClaw*" is a convention this package already
-// breaks twice — RegisterAskUser and RegisterAsyncAsk — so a guard keyed on
-// it goes blind to the next registrar that does not adopt it, which is
-// exactly how a new execution-capable tool reaches a sandboxed node with no
-// placement and gets silently refused.
+// Used in UNION with the "RegisterClaw" name prefix, never instead of it.
+// The prefix alone went blind to `RegisterAskUser` and `RegisterAsyncAsk`,
+// two registrars this package already spells differently; the signature
+// alone goes blind to the far likelier drift — a registrar that keeps the
+// name and changes the shape, `ctx` first, or a registry INTERFACE rather
+// than `*Registry` (which `privacy.RegisterFilter` already does). Either
+// predicate alone is a hole; a name OR a shape is the honest test.
 func isToolRegistrar(fn *ast.FuncDecl) bool {
 	if fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Params == nil {
 		return false
 	}
-	if len(fn.Type.Params.List) == 0 {
-		return false
+	takesRegistry := false
+	for _, param := range fn.Type.Params.List {
+		star, ok := param.Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		if id, ok := star.X.(*ast.Ident); ok && id.Name == "Registry" {
+			takesRegistry = true
+			break
+		}
 	}
-	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	id, ok := star.X.(*ast.Ident)
-	if !ok || id.Name != "Registry" {
+	if !takesRegistry {
 		return false
 	}
 	res := fn.Type.Results
-	if res == nil || len(res.List) != 1 {
+	if res == nil || len(res.List) == 0 {
 		return false
 	}
-	errID, ok := res.List[0].Type.(*ast.Ident)
-	return ok && errID.Name == "error"
+	last, ok := res.List[len(res.List)-1].Type.(*ast.Ident)
+	return ok && last.Name == "error"
 }
 
 // registrarCallsIn returns every function the body calls whose name this

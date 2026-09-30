@@ -45,8 +45,13 @@ func PluginServersUnavailable() error {
 		return fmt.Errorf("mcp: plugin registry failed to load — NO plugin MCP server is available: %w", err)
 	}
 	if skips := reg.LoadSkips(); len(skips) > 0 {
-		return fmt.Errorf("mcp: %d installed plugin(s) were skipped while loading, so their MCP servers are "+
-			"absent: %s", len(skips), strings.Join(skips, "; "))
+		// What is KNOWN: the manifest never parsed, so whether it
+		// contributed an MCP server at all is exactly what nobody can say.
+		// Claiming their servers are absent turns a stale skills-only
+		// plugin directory into a warning about servers that never existed
+		// — on the surface every operator reads.
+		return fmt.Errorf("mcp: %d installed plugin(s) were skipped while loading; any MCP server they "+
+			"contribute is absent from this run: %s", len(skips), strings.Join(skips, "; "))
 	}
 	return nil
 }
@@ -65,8 +70,8 @@ func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*Ser
 	// same silence: that plugin's servers are gone from every node of the
 	// run, and the load returned no error to say so.
 	if skips := reg.LoadSkips(); len(skips) > 0 {
-		logger.Warn("mcp: %d installed plugin(s) skipped while loading — their MCP servers are NOT available "+
-			"to this run: %s", len(skips), strings.Join(skips, "; "))
+		logger.Warn("mcp: %d installed plugin(s) skipped while loading — any MCP server they contribute is "+
+			"NOT available to this run: %s", len(skips), strings.Join(skips, "; "))
 	}
 	out := map[string]*ServerConfig{}
 	for _, p := range reg.Enabled() {

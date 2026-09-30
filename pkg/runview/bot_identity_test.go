@@ -155,6 +155,58 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 	// `map[string]ExecutorSpec{"a": {…}}` the inner literal carries no type of
 	// its own, so matching on lit.Type alone misses every batch/broadcast
 	// factory — the shape such code reaches for first.
+	// Every place the file NAMES this type, and every place the two shapes
+	// below account for. Anything left over is a shape this walk does not
+	// understand — a struct field, a `make([]ExecutorSpec, n)`, a nested
+	// container — and it is reported rather than passed over in silence.
+	// Teaching the walk one more shape per round is a game already lost
+	// three times; making the residual loud is not.
+	mentions := map[ast.Expr]bool{}
+	accounted := map[ast.Expr]bool{}
+	note := func(expr ast.Expr) {
+		if expr != nil && isExecutorSpecType(expr, pkgNames, bare) {
+			mentions[expr] = true
+		}
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		// Only positions that BUILD or HOLD a spec. A signature mentions
+		// the type without constructing one — collecting those made the
+		// residual flag every file that merely passes a spec around.
+		switch t := n.(type) {
+		case *ast.CompositeLit:
+			note(t.Type)
+			switch c := t.Type.(type) {
+			case *ast.ArrayType:
+				note(c.Elt)
+			case *ast.MapType:
+				note(c.Value)
+			}
+		case *ast.ValueSpec:
+			note(t.Type)
+		case *ast.CallExpr:
+			// new(ExecutorSpec) / make([]ExecutorSpec, n)
+			if id, ok := t.Fun.(*ast.Ident); ok && (id.Name == "new" || id.Name == "make") && len(t.Args) > 0 {
+				note(t.Args[0])
+				switch c := t.Args[0].(type) {
+				case *ast.ArrayType:
+					note(c.Elt)
+				case *ast.MapType:
+					note(c.Value)
+				}
+			}
+		case *ast.StructType:
+			// A struct field holding a spec: whoever fills it is the site,
+			// and this walk cannot follow the selector.
+			if t.Fields == nil {
+				return true
+			}
+			for _, fld := range t.Fields.List {
+				note(fld.Type)
+			}
+		}
+		return true
+	})
+
 	elided := map[ast.Node]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.CompositeLit)
@@ -168,16 +220,17 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 		case *ast.ArrayType:
 			elem = t.Elt
 		}
+		// One level of nesting deeper, so `[][]ExecutorSpec{{{…}}}` is
+		// judged rather than merely reported.
+		switch inner := elem.(type) {
+		case *ast.ArrayType:
+			elem = inner.Elt
+		case *ast.MapType:
+			elem = inner.Value
+		}
 		if elem != nil && isExecutorSpecType(elem, pkgNames, bare) {
-			for _, el := range lit.Elts {
-				inner := el
-				if kv, ok := el.(*ast.KeyValueExpr); ok {
-					inner = kv.Value
-				}
-				if c, ok := inner.(*ast.CompositeLit); ok && c.Type == nil {
-					elided[c] = true
-				}
-			}
+			accounted[elem] = true
+			markElidedElements(lit, elided)
 		}
 		return true
 	})
@@ -185,6 +238,9 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 		lit, ok := n.(*ast.CompositeLit)
 		if !ok || (!isExecutorSpecType(lit.Type, pkgNames, bare) && !elided[lit]) {
 			return true
+		}
+		if lit.Type != nil {
+			accounted[lit.Type] = true
 		}
 		for _, el := range lit.Elts {
 			if kv, ok := el.(*ast.KeyValueExpr); ok {
@@ -213,6 +269,7 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 			switch v := m.(type) {
 			case *ast.ValueSpec:
 				if isExecutorSpecType(v.Type, pkgNames, bare) {
+					accounted[v.Type] = true
 					for _, name := range v.Names {
 						declared[name.Name] = true
 					}
@@ -227,6 +284,7 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 						continue
 					}
 					if isExecutorSpecType(call.Args[0], pkgNames, bare) && i < len(v.Lhs) {
+						accounted[call.Args[0]] = true
 						if id, ok := v.Lhs[i].(*ast.Ident); ok {
 							declared[id.Name] = true
 						}
@@ -334,26 +392,65 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 		})
 		for name := range declared {
 			switch {
+			case assigned[name]:
+				// Decided HERE, in plain sight. This arm comes first on
+				// purpose: with `escaped` ahead of it, a site that set both
+				// guarded fields three lines apart and also passed `&s` to a
+				// helper for an unrelated field was declared unjudgeable —
+				// the gate failed, demanding an allowlist entry, with a
+				// message that was factually false about the file.
 			case returned[name] && !anyField[name]:
 				// A zero-value sentinel returned beside an error. It builds
 				// nothing, so it owes nothing — and reporting it as
 				// unjudgeable would be noise about a variable nobody uses.
-			case !handed[name]:
-				// Declared, never handed anywhere this walk can see: the
-				// field may be set by a callee, or the spec may go somewhere
-				// else entirely. Not judged — and said so, because a site
-				// drifting into this shape otherwise leaves the guard
-				// covering nothing and reporting nothing.
+			case returned[name]:
+				// A factory that FILLS a spec and returns it: the caller is
+				// the judgeable site, not this one. Reporting it as missing
+				// accused a legitimate shared-base helper whose caller
+				// decides the fields.
 				unread = true
-			case escaped[name]:
+			case !handed[name], escaped[name]:
+				// Declared and then out of sight: handed nowhere this walk
+				// can see, or its address passed to a callee that may be
+				// exactly where the field is set. Not judged — and said so,
+				// because a site drifting into this shape otherwise leaves
+				// the guard covering nothing and reporting nothing.
 				unread = true
-			case !assigned[name]:
+			default:
 				missing = true
 			}
 		}
 		return true
 	})
+
+	// The residual: a mention neither shape consumed.
+	for expr := range mentions {
+		if !accounted[expr] {
+			unread = true
+		}
+	}
 	return missing, unread
+}
+
+// markElidedElements records the type-less inner literals of a container
+// whose element type is an ExecutorSpec, so `map[string]ExecutorSpec{"a":
+// {…}}` is judged like a spelled-out one.
+func markElidedElements(lit *ast.CompositeLit, elided map[ast.Node]bool) {
+	for _, el := range lit.Elts {
+		inner := el
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			inner = kv.Value
+		}
+		c, ok := inner.(*ast.CompositeLit)
+		if !ok {
+			continue
+		}
+		if c.Type == nil {
+			elided[c] = true
+		}
+		// A nested container's own elements are elided one level further.
+		markElidedElements(c, elided)
+	}
 }
 
 // isBuildExecutorCall matches `BuildExecutor(…)` / `runview.BuildExecutor(…)`.

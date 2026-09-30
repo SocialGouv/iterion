@@ -445,3 +445,108 @@ func TestABlankedArgumentIsRestoredWhenTheRunSettlesUnsandboxed(t *testing.T) {
 			"with an empty credential, and nothing carries a StartErr for this shape", got)
 	}
 }
+
+// A catalog is not finished when its `${VAR}` are expanded: buildMCPManager
+// then installs each server's OAuth AuthFunc and records a malformed
+// `auth:` block as that server's StartErr. A refresher that re-ran the
+// EXPANSION alone dropped both — so once the sandbox settled, every OAuth
+// server was dialled with no Authorization header (rpc.go installs no
+// round-tripper for a nil AuthFunc and no static headers), and a server the
+// build had REFUSED became startable, unauthenticated, against an endpoint
+// the repository under review declared.
+func TestTheSettledPolicyKeepsTheCatalogsAuthWork(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "w",
+		ResolvedMCPServers: map[string]*ir.MCPServer{
+			"installed": {
+				Name: "installed", Origin: string(mcp.OriginPlugin), Transport: ir.MCPTransportHTTP,
+				URL: "https://example.invalid/mcp",
+				Auth: &ir.MCPAuth{Type: "oauth2", AuthURL: "https://example.invalid/a",
+					TokenURL: "https://example.invalid/t", ClientID: "cid"},
+			},
+			"repo": {
+				// A malformed block on an untrusted server fails THAT
+				// server, and must keep failing it.
+				Name: "repo", Origin: string(mcp.OriginWorkflow), Transport: ir.MCPTransportHTTP,
+				URL: "https://example.invalid/mcp", Auth: &ir.MCPAuth{Type: "oauth2"},
+			},
+		},
+	}
+	m, _, err := buildMCPManager(wf, t.TempDir(), iterlog.Nop(), mcp.StartOperatorServersOnly)
+	if err != nil || m == nil {
+		t.Fatalf("build: %v", err)
+	}
+	authed, _ := m.ServerConfig("installed")
+	broken, _ := m.ServerConfig("repo")
+	if authed.AuthFunc == nil || broken.StartErr == nil {
+		t.Fatalf("premise broken: the build must install the AuthFunc and record the bad block: "+
+			"AuthFunc!=nil=%v StartErr=%v", authed.AuthFunc != nil, broken.StartErr)
+	}
+
+	for _, settled := range []mcp.StartPolicy{mcp.StartAllServers, mcp.StartOperatorServersOnly} {
+		m.SetStartPolicy(settled)
+
+		authed, _ = m.ServerConfig("installed")
+		if authed.AuthFunc == nil {
+			t.Errorf("under %v the OAuth server lost its AuthFunc: it would be dialled anonymously", settled)
+		}
+		broken, _ = m.ServerConfig("repo")
+		if broken.StartErr == nil {
+			t.Errorf("under %v the server the build refused for a malformed `auth:` block became startable",
+				settled)
+		}
+	}
+}
+
+// The log must carry ONE verdict about a dropped `${VAR}`, and it must be the
+// settled one. Two passes over the same catalog used to warn twice — and on
+// the ordinary `sandbox: auto` run that degrades to unsandboxed, the first
+// warning said the variable was dropped when the second was about to expand
+// it. Exactly the class fixed one file over for the degrade event: a sentence
+// the next step makes false.
+func TestTheDroppedVariableIsWarnedAboutOnce_BySettledVerdict(t *testing.T) {
+	t.Setenv("ITERION_TEST_MCP_ONCE", "/usr/bin/true")
+	newWorkflow := func() *ir.Workflow {
+		return &ir.Workflow{
+			Name: "w",
+			ResolvedMCPServers: map[string]*ir.MCPServer{
+				"repo": {
+					Name: "repo", Origin: string(mcp.OriginProject),
+					Transport: ir.MCPTransportStdio, Command: "${ITERION_TEST_MCP_ONCE}",
+				},
+			},
+		}
+	}
+	count := func(buf *strings.Builder) int {
+		return strings.Count(buf.String(), "ITERION_TEST_MCP_ONCE")
+	}
+
+	t.Run("settles unsandboxed: nothing was dropped, so nothing is said", func(t *testing.T) {
+		var buf strings.Builder
+		m, _, err := buildMCPManager(newWorkflow(), t.TempDir(),
+			iterlog.New(iterlog.LevelDebug, &buf), mcp.StartOperatorServersOnly)
+		if err != nil || m == nil {
+			t.Fatalf("build: %v", err)
+		}
+		if n := count(&buf); n != 0 {
+			t.Errorf("the prediction warned %d time(s) about a variable the settled pass restores", n)
+		}
+		m.SetStartPolicy(mcp.StartAllServers)
+		if n := count(&buf); n != 0 {
+			t.Errorf("the run expands this variable; the log must not claim it was dropped (%d line(s))", n)
+		}
+	})
+
+	t.Run("settles sandboxed: said exactly once", func(t *testing.T) {
+		var buf strings.Builder
+		m, _, err := buildMCPManager(newWorkflow(), t.TempDir(),
+			iterlog.New(iterlog.LevelDebug, &buf), mcp.StartOperatorServersOnly)
+		if err != nil || m == nil {
+			t.Fatalf("build: %v", err)
+		}
+		m.SetStartPolicy(mcp.StartOperatorServersOnly)
+		if n := count(&buf); n != 1 {
+			t.Errorf("the variable must be named exactly once, got %d line(s):\n%s", n, buf.String())
+		}
+	})
+}

@@ -33,7 +33,15 @@ import (
 //
 // An entry in the allowlist is a decision on the record, not an exemption.
 func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
-	exempt := map[string]string{
+	// An exemption names a file AND how many mcp.NewManager calls its reason
+	// covers. A file is not a licence: an unarmed call added beside an
+	// exempted one would otherwise be judged by nothing, and the exemption
+	// would quietly grow to cover it.
+	type exemption struct {
+		calls  int
+		reason string
+	}
+	exempt := map[string]exemption{
 		// The one production constructor. Its options are assembled into a
 		// slice and spread, which this guard cannot read — and Go forbids
 		// mixing a positional option with a spread, so the shape cannot be
@@ -43,10 +51,11 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 		// not replace that with a claim about this file's source — the
 		// defect it caught was exactly a correct-looking shape whose value
 		// went nowhere.
-		"pkg/runview/executor.go": "options are spread; covered by runview's behavioural arming test instead",
+		"pkg/runview/executor.go": {1, "options are spread; covered by runview's behavioural arming test instead"},
 		// Exercises the zero value on purpose: that an UNARMED manager is
-		// what SetSandbox(nil) has to open is the property under test.
-		"pkg/backend/model/executor_mcp_start_policy_test.go": "asserts the zero value, then that the engine opens it",
+		// what SetSandbox(nil) has to open is the property under test. Two
+		// calls: the unarmed one and the one the engine then opens.
+		"pkg/backend/model/executor_mcp_start_policy_test.go": {2, "asserts the zero value, then that the engine opens it"},
 	}
 
 	// Files whose option list this walk cannot read. Not exempt — invisible,
@@ -96,7 +105,12 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 		if strings.HasPrefix(rel, "pkg/backend/mcp/") {
 			return nil
 		}
-		if _, ok := exempt[rel]; ok {
+		if ex, ok := exempt[rel]; ok {
+			if n := countMCPNewManagerCalls(path); n != ex.calls {
+				t.Errorf("%s is exempt for %d mcp.NewManager call(s) (%s) and now holds %d — the exemption "+
+					"covers those calls, not the file; arm the new one inline, or raise the count with the "+
+					"reason it deserves", rel, ex.calls, ex.reason, n)
+			}
 			return nil
 		}
 		file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
@@ -155,51 +169,66 @@ func managerBuiltWithoutAStartPolicy(file *ast.File, mcpPkg string) (missing, ga
 	// SetStartPolicy is documented as the engine's own arming call and is
 	// how the executor does it. Demanding the option instead accused
 	// correct code that uses the public API.
-	armedLater := false
+	//
+	// Scoped per FUNCTION, because that is where a variable lives. Keyed on
+	// the file, one armed manager exempted every other NewManager beside it
+	// — and worse, two functions that both call their manager `m` shared
+	// the arming, which is the shape every real file has. Keyed on nothing
+	// but the name, a `SetStartPolicy` method on an unrelated receiver
+	// armed it too.
 	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if ok && calleeName(call.Fun) == "SetStartPolicy" {
-			armedLater = true
-		}
-		return true
-	})
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok || !isMCPNewManagerCall(call.Fun, mcpPkg) {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
 			return true
 		}
-		if len(call.Args) == 0 {
-			return true // not this constructor after all
-		}
-		// Args[0] is the catalog; the options are the variadic tail. Judging
-		// Args[0] was the first version's bug: it is an identifier at every
-		// real call site, and the "an identifier could be a pre-built option,
-		// give up" rule below then fired on EVERY call — a guard that matched
-		// nothing and read exactly like one that worked.
-		for _, arg := range call.Args[1:] {
-			switch a := arg.(type) {
-			case *ast.CallExpr:
-				// The option may come from a helper, so any callee named
-				// WithStartPolicy counts, qualified or not.
-				if calleeName(a.Fun) == "WithStartPolicy" {
-					return true
-				}
-			case *ast.Ident, *ast.SelectorExpr:
-				// A pre-built option value or a spread (`opts...`): the file
-				// assembled its options elsewhere and this walk cannot follow
-				// it. Give it up rather than guess — in a gate a false
-				// accusation costs as much as a miss. But SAY SO: a site
-				// that drifts into this shape is otherwise invisible, no
-				// count and no list, and the header's promise that "every
-				// site this guard exempts owes a behavioural test" applies
-				// to nobody.
-				gaveUp = true
+		armed := map[string]bool{}
+		ast.Inspect(fn.Body, func(m ast.Node) bool {
+			call, ok := m.(*ast.CallExpr)
+			if !ok {
 				return true
 			}
-		}
-		if !armedLater {
-			missing = true
-		}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "SetStartPolicy" {
+				return true
+			}
+			// Only on an identifier this function assigned a manager to —
+			// checked below; here we just record what was armed.
+			if id, ok := sel.X.(*ast.Ident); ok {
+				armed[id.Name] = true
+			}
+			return true
+		})
+		ast.Inspect(fn.Body, func(m ast.Node) bool {
+			call, ok := m.(*ast.CallExpr)
+			if !ok || !isMCPNewManagerCall(call.Fun, mcpPkg) || len(call.Args) == 0 {
+				return true
+			}
+			for _, arg := range call.Args[1:] {
+				switch a := arg.(type) {
+				case *ast.CallExpr:
+					// The option may come from a helper, so any callee named
+					// WithStartPolicy counts, qualified or not.
+					if calleeName(a.Fun) == "WithStartPolicy" {
+						return true
+					}
+				case *ast.Ident, *ast.SelectorExpr:
+					// A pre-built option value or a spread (`opts...`): the
+					// file assembled its options elsewhere and this walk
+					// cannot follow it. Give it up rather than guess — in a
+					// gate a false accusation costs as much as a miss. But
+					// SAY SO: a site that drifts into this shape is
+					// otherwise invisible, no count and no list, and the
+					// header's promise that "every site this guard exempts
+					// owes a behavioural test" applies to nobody.
+					gaveUp = true
+					return true
+				}
+			}
+			if !armed[managerIdentOf(fn, call)] {
+				missing = true
+			}
+			return true
+		})
 		return true
 	})
 	return missing, gaveUp
@@ -245,4 +274,46 @@ func calleeName(fun ast.Expr) string {
 		return f.Sel.Name
 	}
 	return ""
+}
+
+// countMCPNewManagerCalls counts `<mcp>.NewManager(…)` calls in one file, so
+// an exemption written for a single call cannot silently cover a second.
+func countMCPNewManagerCalls(path string) int {
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		return -1
+	}
+	n := 0
+	pkg := mcpImportName(file)
+	ast.Inspect(file, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok && isMCPNewManagerCall(call.Fun, pkg) {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// managerIdentOf returns the identifier this function assigns the given
+// NewManager result to, or "" when the result is returned, discarded or
+// passed straight on — in which case nothing in this function can have
+// armed it.
+func managerIdentOf(fn *ast.FuncDecl, target *ast.CallExpr) string {
+	name := ""
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, rhs := range as.Rhs {
+			if rhs != ast.Expr(target) || i >= len(as.Lhs) {
+				continue
+			}
+			if id, ok := as.Lhs[i].(*ast.Ident); ok {
+				name = id.Name
+			}
+		}
+		return true
+	})
+	return name
 }
