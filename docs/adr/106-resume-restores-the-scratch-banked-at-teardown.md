@@ -50,18 +50,27 @@ pods the same way.
   `sandbox_scratch_banked {banked, empty, unknown, bytes, reason}`. Both are
   written under the run's identity and past its cancellation (a drain, a lost
   lease or an operator's cancel reaches the teardown first). A failure
-  another try may cure — a blip on the exec, a failed tar, an upload that
-  failed — is tried again, and so is the record; a later try never replaces
-  what an earlier one saw with less (files, then empty, then nothing). tar
-  runs untranslated (`LC_ALL=C`). A member it catches changing or vanishing
-  while it reads it (its warnings, with the line `kubectl exec` adds) leaves
-  an archive that may hold no state the scratch was ever in — a file torn
-  between two writes, a file renamed into place missing — so tar runs again
-  while it races. The last complete archive — a clean one, or else the last
-  that raced — is banked even when a later try fails or runs out of time,
-  with the raced members named (`raced`), and its restore says so. Its
-  notice for a socket, which no
-  archive holds, is neutral. A scratch the teardown cannot even list — the
+  another try may cure — a blip on the exec, a failed tar — is tried again,
+  and so is the record; a later try never replaces what an earlier one saw
+  with less (files, then empty, then nothing); an upload is tried again on
+  the same archive. Before tar reads the scratch, every other process of
+  the sandbox is stopped (`kill -STOP -1`: the export ran, the sandbox dies
+  next), so nothing writes what it reads — a write tar reports nothing of,
+  a file moved between two directories, a page written through a shared
+  mapping, would tear the archive in silence. Only a sandbox whose commands
+  run in a process namespace of their own is stopped (docker, kubernetes:
+  `sandbox.ProcessIsolated`); a quiesce that fails is recorded
+  (`unquiesced`). tar runs untranslated (`LC_ALL=C`). A member it catches
+  changing or vanishing while it reads it (its warnings, with the line
+  `kubectl exec` adds) leaves an archive that may hold no state the scratch
+  was ever in — a file torn between two writes, a file renamed into place
+  missing — so tar runs again while it races, and while the budget allows
+  another archive and its upload. The last complete archive — a clean one,
+  or else the last that raced — is banked even when a later try fails or
+  runs out of time, with the raced members named (`raced`), and its restore
+  says so. Its notice for a socket, which no archive holds, is neutral. A
+  scratch that is a link to a directory is listed through the link. A
+  scratch the teardown cannot even list — the
   sandbox is already gone — is `unknown`: nobody knows whether it held
   anything. It does not replace a bank recorded before it: the lost sandbox
   started from that bank, which is still stored.
@@ -137,11 +146,8 @@ pods the same way.
   bank looking fresh. Stamping the record with the checkpoint's progress,
   and comparing it with the checkpoint a resume runs from, would read
   staleness from the fact itself — the next step if that case is met.
-- **Not covered: races tar does not report.** busybox tar exits 0 without a
-  warning for a member rewritten, renamed or removed while it reads it; GNU
-  tar says nothing of a file moved between two directories while it reads
-  them, and the archive misses it. No check on tar's output sees these;
-  comparing the archive's names with the scratch's after tar would — the
-  next step if that case is met.
+- **Not covered: a write while tar reads, in a sandbox that is not process
+  isolated or whose quiesce failed** (`unquiesced` on the record). Neither
+  GNU tar nor busybox tar reports every such write.
 - **Not covered: sparse files.** A sparse file is banked compressed and
   restored dense (tar runs without `--sparse`, which busybox tar lacks).

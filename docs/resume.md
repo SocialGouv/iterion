@@ -308,7 +308,10 @@ already gone) records it as `unknown`: after a bank, that bank — still stored
 resume goes on without it, as it always did, and says so. The teardown writes
 the bank and its record under the run's identity, after the run's
 cancellation. It tries again what another try may cure — a blip on the exec,
-a failed tar, a failed upload — and retries the record. tar runs untranslated
+a failed tar, a failed upload (on the same archive) — and retries the record.
+Before tar reads the scratch, the sandbox's other processes are stopped (a
+docker or kubernetes sandbox only), so no write tears the archive unseen;
+a quiesce that fails is recorded (`unquiesced`). tar runs untranslated
 (`LC_ALL=C`); a member it catches changing while it reads it may be archived
 torn or missing, so tar runs again while it races, and the last complete
 archive is banked — even when a later try fails — with the raced members

@@ -40,6 +40,10 @@ const (
 	scratchBankAttempts          = 3
 	scratchBankRetryPauseDefault = time.Second
 	scratchTarAttempts           = 3
+	// scratchUploadAttempts bounds the uploads of one archive; the pause
+	// before each next one is scratchUploadPause times the tries so far.
+	scratchUploadAttempts = 3
+	scratchUploadPause    = 250 * time.Millisecond
 )
 
 // scratchRacedNamed bounds the raced members a record names.
@@ -63,6 +67,9 @@ type scratchBanked struct {
 	// raced: the members tar caught changing on its every archive of the
 	// banked scratch (sandbox.TarRace).
 	raced []string
+	// unquiesced: why the sandbox's processes were not stopped before tar
+	// read the scratch — a write tar reports nothing of may have torn it.
+	unquiesced string
 }
 
 // knows ranks what a try saw of the scratch: nothing (unknown), an empty
@@ -91,6 +98,9 @@ func (b scratchBanked) event() map[string]any {
 	if len(b.raced) > 0 {
 		data["raced"] = b.raced[:min(len(b.raced), scratchRacedNamed)]
 		data["raced_count"] = len(b.raced)
+	}
+	if b.unquiesced != "" {
+		data["unquiesced"] = b.unquiesced
 	}
 	return data
 }
@@ -188,7 +198,9 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 // bs keeps no bank: a scratch that holds something is recorded as not
 // banked, so the resume refuses rather than lose it.
 func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.ScratchBankStore, runID string, limit int64) scratchBanked {
-	res, err := run.Exec(ctx, []string{"sh", "-c", `if [ -d "$1" ]; then find "$1" -mindepth 1 -print -quit; fi`, "sh", dir}, sandbox.ExecOpts{})
+	// "$1/": a scratch that is a symlink to a directory is listed as tar
+	// archives it, through the link.
+	res, err := run.Exec(ctx, []string{"sh", "-c", `if [ -d "$1" ]; then find "$1/" -mindepth 1 -print -quit; fi`, "sh", dir}, sandbox.ExecOpts{})
 	if err != nil {
 		return scratchBanked{unknown: true, retry: true, reason: "the scratch could not be listed: " + err.Error()}
 	}
@@ -206,6 +218,21 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 	}
 	if bs == nil {
 		return scratchBanked{reason: "this store keeps no scratch bank"}
+	}
+	// Nothing else writes the scratch while tar reads it: this sandbox dies
+	// after its bank, and its export already ran, so every process in it
+	// but its first and this shell is stopped. A write tar reports nothing
+	// of — a file moved between two directories, a page written through a
+	// shared mapping — would otherwise leave an archive torn in silence.
+	// Only in a sandbox whose commands run in a process namespace of their
+	// own: the same signal from a host shell would stop the host's.
+	var unquiesced string
+	if pi, ok := run.(sandbox.ProcessIsolated); ok && pi.ProcessIsolated() {
+		if q, err := run.Exec(ctx, []string{"sh", "-c", "kill -STOP -1 2>/dev/null; exit 0"}, sandbox.ExecOpts{}); err != nil {
+			unquiesced = "the sandbox's processes could not be stopped: " + err.Error()
+		} else if q.ExitCode != 0 {
+			unquiesced = fmt.Sprintf("stopping the sandbox's processes exited %d", q.ExitCode)
+		}
 	}
 	// GNU tar exits 1 when a member changed or vanished while it read it
 	// (sandbox.TarRace): the archive then holds what it caught, which may be
@@ -247,6 +274,7 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 		}
 		capped = &cappedWriter{w: cur, left: limit}
 		stderr.Reset()
+		started := time.Now()
 		res, err = run.Exec(ctx, []string{"tar", "-C", dir, "-czf", "-", "."}, sandbox.ExecOpts{Stdout: capped, Stderr: &stderr, Env: map[string]string{"LC_ALL": sandbox.TarLocale}})
 		if err != nil || capped.over || res.ExitCode != 1 {
 			break
@@ -257,6 +285,11 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 		}
 		kept, keptBytes, keptRaced = cur, capped.n, members
 		cur, spare = spare, cur
+		// Another archive, and its upload, must fit what is left of the
+		// budget: the raced one is banked rather than lost to it.
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 3*time.Since(started) {
+			break
+		}
 	}
 	archive, size, raced := cur, capped.n, []string(nil)
 	switch {
@@ -270,13 +303,25 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 	default:
 		return scratchBanked{retry: true, reason: fmt.Sprintf("tar exited %d archiving the scratch: %s", res.ExitCode, strings.TrimSpace(stderr.String()))}
 	}
-	if _, err := archive.Seek(0, io.SeekStart); err != nil {
-		return scratchBanked{reason: "the archived scratch could not be re-read: " + err.Error()}
+	// The upload is tried again on the same archive: the store's blip is
+	// not a reason to archive the scratch again.
+	var perr error
+	for try := 1; try <= scratchUploadAttempts; try++ {
+		if _, err := archive.Seek(0, io.SeekStart); err != nil {
+			return scratchBanked{reason: "the archived scratch could not be re-read: " + err.Error()}
+		}
+		if perr = bs.PutScratchBank(ctx, runID, archive, size); perr == nil || ctx.Err() != nil || try == scratchUploadAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Duration(try) * scratchUploadPause):
+		}
 	}
-	if err := bs.PutScratchBank(ctx, runID, archive, size); err != nil {
-		return scratchBanked{retry: true, reason: "the scratch bank could not be stored: " + err.Error()}
+	if perr != nil {
+		return scratchBanked{retry: true, reason: "the scratch bank could not be stored: " + perr.Error(), unquiesced: unquiesced}
 	}
-	return scratchBanked{banked: true, bytes: size, raced: raced}
+	return scratchBanked{banked: true, bytes: size, raced: raced, unquiesced: unquiesced}
 }
 
 // cappedWriter refuses the byte past its budget, which ends the stream it

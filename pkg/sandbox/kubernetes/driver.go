@@ -1075,6 +1075,9 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 // fired (runner killed mid-run) is bounded by spec.activeDeadlineSeconds,
 // cascade-GC'd when the runner pod is deleted (ownerReference), and swept
 // by the label reaper (ReapOrphanResources) — see ADR-070.
+// ProcessIsolated: the pod never shares the node's process namespace.
+func (r *Run) ProcessIsolated() bool { return true }
+
 func (r *Run) Cleanup(_ context.Context) error {
 	r.mu.Lock()
 	if r.cleaned {

@@ -1,15 +1,20 @@
 package runtime
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -1074,5 +1079,234 @@ func TestStartSandbox_aChildLearnsWhetherTheScratchDiesWithTheSandbox(t *testing
 				t.Fatalf("the share handed to children: %+v, want ScratchContainerLocal=%v", e.activeShare, tc.containerLocal)
 			}
 		})
+	}
+}
+
+// isolatedRecorder is a sandbox whose commands run in a process namespace of
+// their own: it records them, answers the quiesce itself — never running a
+// signal on the host — and runs the rest like podRun.
+type isolatedRecorder struct {
+	*podRun
+	cmds       []string
+	quiesceErr error
+}
+
+func (r *isolatedRecorder) ProcessIsolated() bool { return true }
+
+func (r *isolatedRecorder) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	cmd := strings.Join(argv, " ")
+	r.cmds = append(r.cmds, cmd)
+	if strings.Contains(cmd, "kill ") {
+		return sandbox.ExecResult{}, r.quiesceErr
+	}
+	return r.podRun.Exec(ctx, argv, opts)
+}
+
+// hostRecorder is isolatedRecorder on the host: no process namespace of its
+// own.
+type hostRecorder struct {
+	*podRun
+	cmds []string
+}
+
+func (r *hostRecorder) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	r.cmds = append(r.cmds, strings.Join(argv, " "))
+	return r.podRun.Exec(ctx, argv, opts)
+}
+
+// TestBankScratch_quiescesTheSandboxBeforeTarReadsIt: in a sandbox of its
+// own, every other process is stopped between the listing and the archive —
+// a write tar reports nothing of cannot tear it; a quiesce that fails is
+// recorded; a sandbox that may run on the host is never signalled.
+func TestBankScratch_quiescesTheSandboxBeforeTarReadsIt(t *testing.T) {
+	scratch := func(t *testing.T) string {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "state.db"), []byte("pages"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	bank := func(t *testing.T, run sandbox.Run) scratchBanked {
+		s := tmpStore(t)
+		ctx := context.Background()
+		if _, err := s.CreateRun(ctx, "run-scratch-quiesce", "wf", nil); err != nil {
+			t.Fatal(err)
+		}
+		return bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), "run-scratch-quiesce", scratchBankMaxBytes)
+	}
+	order := func(cmds []string) (quiesce, tar int) {
+		quiesce, tar = -1, -1
+		for i, c := range cmds {
+			switch {
+			case strings.Contains(c, "kill -STOP -1") && quiesce < 0:
+				quiesce = i
+			case strings.Contains(c, "-czf") && tar < 0:
+				tar = i
+			}
+		}
+		return quiesce, tar
+	}
+	t.Run("a sandbox of its own", func(t *testing.T) {
+		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}}
+		got := bank(t, run)
+		q, tar := order(run.cmds)
+		if !got.banked || got.unquiesced != "" || q < 1 || tar < q {
+			t.Fatalf("banked=%v unquiesced=%q, commands %q: want the listing, then the quiesce, then tar", got.banked, got.unquiesced, run.cmds)
+		}
+	})
+	t.Run("a quiesce that fails", func(t *testing.T) {
+		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, quiesceErr: errors.New("error dialing backend")}
+		if got := bank(t, run); !got.banked || !strings.Contains(got.unquiesced, "error dialing backend") || got.event()["unquiesced"] == nil {
+			t.Fatalf("want the bank recorded, and why its sandbox was not stopped: %+v", got)
+		}
+	})
+	t.Run("a sandbox that may run on the host", func(t *testing.T) {
+		run := &hostRecorder{podRun: &podRun{scratch: scratch(t)}}
+		got := bank(t, run)
+		if q, _ := order(run.cmds); !got.banked || q >= 0 {
+			t.Fatalf("banked=%v, commands %q: a sandbox not isolated must never be signalled", got.banked, run.cmds)
+		}
+	})
+}
+
+// putFailsOnce refuses the first bank upload.
+type putFailsOnce struct {
+	store.RunStore
+	failed bool
+}
+
+func (s *putFailsOnce) PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error {
+	if !s.failed {
+		s.failed = true
+		return errors.New("blob: PUT sessions/run/scratch.tgz: 503 Slow Down")
+	}
+	return store.AsScratchBankStore(s.RunStore).PutScratchBank(ctx, runID, body, size)
+}
+
+func (s *putFailsOnce) OpenScratchBank(ctx context.Context, runID string) (io.ReadCloser, error) {
+	return store.AsScratchBankStore(s.RunStore).OpenScratchBank(ctx, runID)
+}
+
+func (s *putFailsOnce) DeleteScratchBank(ctx context.Context, runID string) error {
+	return store.AsScratchBankStore(s.RunStore).DeleteScratchBank(ctx, runID)
+}
+
+// TestBankScratch_anUploadIsTriedAgainOnTheSameArchive: the store's blip is
+// not a reason to archive the scratch again.
+func TestBankScratch_anUploadIsTriedAgainOnTheSameArchive(t *testing.T) {
+	s := &putFailsOnce{RunStore: tmpStore(t)}
+	ctx := context.Background()
+	const runID = "run-scratch-upload-again"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "floor.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := &scriptedRun{podRun: &podRun{scratch: dir}, tar: []func(sandbox.ExecOpts) (sandbox.ExecResult, error){nil}}
+	got := bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), runID, scratchBankMaxBytes)
+	if !s.failed || !got.banked || run.tars != 1 {
+		t.Fatalf("banked=%v after %d archive(s): want the one archive stored on the second upload (%+v)", got.banked, run.tars, got)
+	}
+}
+
+// slowRacingArchive is a sandbox whose scratch holds one file that changes
+// while tar reads it: each archive takes took, and races. Built in Go, the
+// archive runs nothing on the host.
+type slowRacingArchive struct {
+	took time.Duration
+	tars int
+}
+
+func (r *slowRacingArchive) Driver() string                { return "docker" }
+func (r *slowRacingArchive) Cleanup(context.Context) error { return nil }
+func (r *slowRacingArchive) ProcessIsolated() bool         { return true }
+func (r *slowRacingArchive) Command(ctx context.Context, argv []string, _ sandbox.ExecOpts) *exec.Cmd {
+	return exec.CommandContext(ctx, "false")
+}
+
+func (r *slowRacingArchive) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	cmd := strings.Join(argv, " ")
+	switch {
+	case strings.Contains(cmd, "find "):
+		return sandbox.ExecResult{Stdout: []byte("./server.log\n")}, nil
+	case strings.Contains(cmd, "-czf"):
+		r.tars++
+		select {
+		case <-ctx.Done():
+			return sandbox.ExecResult{ExitCode: -1}, ctx.Err()
+		case <-time.After(r.took):
+		}
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gz)
+		body := []byte("listening\n")
+		if err := tw.WriteHeader(&tar.Header{Name: "./server.log", Mode: 0o644, Size: int64(len(body))}); err != nil {
+			return sandbox.ExecResult{}, err
+		}
+		_, _ = tw.Write(body)
+		_ = tw.Close()
+		_ = gz.Close()
+		if _, err := opts.Stdout.Write(buf.Bytes()); err != nil {
+			return sandbox.ExecResult{}, err
+		}
+		fmt.Fprintf(opts.Stderr, "tar: ./server.log: file changed as we read it\n")
+		return sandbox.ExecResult{ExitCode: 1}, nil
+	}
+	return sandbox.ExecResult{}, nil
+}
+
+// TestBankScratch_archivesAgainOnlyWhatTheBudgetAllows: another archive of a
+// racing scratch must fit, with its upload, what is left of the budget; when
+// it cannot, the raced archive is banked at once.
+func TestBankScratch_archivesAgainOnlyWhatTheBudgetAllows(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		budget time.Duration
+		tars   int
+	}{
+		{"a budget for every try", time.Hour, scratchTarAttempts},
+		{"a budget for one", 100 * time.Second, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := tmpStore(t)
+				const runID = "run-scratch-budget"
+				if _, err := s.CreateRun(context.Background(), runID, "wf", nil); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), tc.budget)
+				defer cancel()
+				run := &slowRacingArchive{took: 40 * time.Second}
+				got := bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), runID, scratchBankMaxBytes)
+				if !got.banked || len(got.raced) == 0 || run.tars != tc.tars {
+					t.Fatalf("banked=%v raced=%v after %d archive(s), want banked raced after %d", got.banked, got.raced, run.tars, tc.tars)
+				}
+			})
+		})
+	}
+}
+
+// TestBankScratch_aSymlinkedScratchIsListedThroughTheLink: a scratch that is
+// a link to a directory is listed as tar archives it — through the link —
+// not read as empty, which would drop the previous bank.
+func TestBankScratch_aSymlinkedScratchIsListedThroughTheLink(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-symlink"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "floor.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "scratch")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := bankScratch(ctx, localRun(link), sandboxScratchContainerPath, store.AsScratchBankStore(s), runID, scratchBankMaxBytes); !got.banked {
+		t.Fatalf("a scratch linked to a directory holding a file: %+v, want it banked", got)
 	}
 }

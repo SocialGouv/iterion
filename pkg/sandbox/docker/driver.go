@@ -708,6 +708,10 @@ func (r *Run) stop(ctx context.Context) error {
 // `--rm` so a graceful Stop already removes them; Cleanup is the
 // fallback for the failure-mode where the container is alive but
 // orphaned (engine crash mid-run, etc.).
+// ProcessIsolated: the driver never shares the host's process namespace
+// with a container.
+func (r *Run) ProcessIsolated() bool { return true }
+
 func (r *Run) Cleanup(ctx context.Context) error {
 	r.mu.Lock()
 	if r.cleaned {

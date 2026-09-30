@@ -33,6 +33,11 @@ type podRun struct {
 func (r *podRun) Driver() string { return "docker" }
 
 func (r *podRun) Command(ctx context.Context, argv []string, _ sandbox.ExecOpts) *exec.Cmd {
+	// These commands run on the host: a signal meant for a sandbox's
+	// processes would reach the host's. Never run one.
+	if strings.Contains(strings.Join(argv, " "), "kill ") {
+		return exec.CommandContext(ctx, "false")
+	}
 	mapped := make([]string, len(argv))
 	for i, a := range argv {
 		mapped[i] = strings.ReplaceAll(a, sandboxScratchContainerPath, r.scratch)
