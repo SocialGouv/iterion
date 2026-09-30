@@ -225,9 +225,19 @@ func TestProdWatch_SentryAnEscalationFloodIsNamedWhole(t *testing.T) {
 // still delivers every name it stamps as said.
 func TestProdWatch_ANotesNamesFitDespiteSchemeLookingNames(t *testing.T) {
 	t.Parallel()
+	for scheme, reps := range map[string]int{"ftp:": 29, "HTTP:": 23} {
+		scheme, reps := scheme, reps
+		t.Run(scheme, func(t *testing.T) {
+			t.Parallel()
+			pwNamesFitCase(t, scheme, reps)
+		})
+	}
+}
+
+func pwNamesFitCase(t *testing.T, scheme string, reps int) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
-	tpls := pwMintedTemplates(60, func(k int) string { return fmt.Sprintf("E%02d %s", k, strings.Repeat("ftp:", 29)) })
+	tpls := pwMintedTemplates(60, func(k int) string { return fmt.Sprintf("E%02d %s", k, strings.Repeat(scheme, reps)) })
 	out, stderr, err := pwDecide(t, wf, h, map[string]any{"templates": tpls, "leak": []any{}}, pwLokiState(map[string]any{}),
 		map[string]any{"max_message_chars": 4000})
 	if err != nil {
@@ -247,8 +257,8 @@ func TestProdWatch_ANotesNamesFitDespiteSchemeLookingNames(t *testing.T) {
 	}
 	text := fmt.Sprint(nout["messages"])
 	for k := 0; k < 60; k++ {
-		if !strings.Contains(text, fmt.Sprintf("E%02d ftp", k)) {
-			t.Fatalf("template E%02d, marked said, is named in no message delivered whole", k)
+		if !strings.Contains(text, fmt.Sprintf("E%02d %s", k, scheme[:2])) {
+			t.Fatalf("%s: template E%02d, marked said, is named in no message delivered whole", scheme, k)
 		}
 	}
 }
@@ -306,19 +316,27 @@ func TestProdWatch_SentryANotFoundListIsNamed(t *testing.T) {
 	}
 }
 
-// TestProdWatch_SentryEnvironmentNoneIsRefused: Sentry reads `none` in a path as
-// the empty environment name and literally in a list's query — plan refuses it,
-// by name, rather than check one environment and list another.
+// TestProdWatch_SentryEnvironmentNoneIsRefused: Sentry reads `none` — that exact
+// word — in a path as the empty environment name, and literally in a list's
+// query: plan refuses it by name rather than check one environment and list
+// another. "None" names one environment on both paths: accepted.
 func TestProdWatch_SentryEnvironmentNoneIsRefused(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
-	h := newPWHarness(t)
-	h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["environment"] = "None" }))
-	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
-	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars,
-		map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}))
-	if err == nil || !strings.Contains(stderr, "config.sentry.environment 'none' names two different environments") || strings.Contains(stderr, "Traceback") {
-		t.Fatalf("environment 'None' was not refused by name: %v %s", err, lastN(stderr, 300))
+	for env, refused := range map[string]bool{"none": true, "None": false} {
+		env, refused := env, refused
+		t.Run(env, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["environment"] = env }))
+			vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+				"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
+			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars,
+				map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}))
+			said := err != nil && strings.Contains(stderr, "config.sentry.environment 'none' names two different environments")
+			if said != refused || strings.Contains(stderr, "Traceback") {
+				t.Fatalf("environment %q: refused=%v, want %v: %v %s", env, said, refused, err, lastN(stderr, 300))
+			}
+		})
 	}
 }

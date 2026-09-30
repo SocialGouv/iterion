@@ -86,6 +86,10 @@ func TestProdWatch_ALabelsMentionNobody(t *testing.T) {
 		"its own @channel": {"{level} · @channel look", "app.views", "@\u200bchannel"},
 		"its own @here":    {"{level} · @here look {culprit}", "app.views", "@\u200bhere"},
 		"a blank value":    {"{level} · @{culprit}here", "   ", "@\u200bhere"},
+		"upper case @ALL":  {"{level} · @ALL look", "app.views", "@\u200bALL"},
+		"@Channel":         {"{level} · @Channel look", "app.views", "@\u200bChannel"},
+		"blank then HERE":  {"{level} · @{culprit}HERE", "   ", "@\u200bHERE"},
+		"a Kelvin sign":    {"{level} · @\u212aevin look", "app.views", "@\u200b\u212aevin"},
 	} {
 		name, c := name, c
 		t.Run(name, func(t *testing.T) {

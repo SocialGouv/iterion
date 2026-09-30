@@ -232,7 +232,10 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "63", "slug": "proj", "name": "proj"})
 			return
 		case "env":
+			// Like Sentry 24.11.1 (models/environment.py): the server decodes the path, then Sentry unquotes the
+			// segment once more.
 			name, _ := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(r.URL.EscapedPath(), "/api/0/projects/org/proj/environments/"), "/"))
+			name, _ = url.PathUnescape(name)
 			s.mu.Lock()
 			ok := s.envs[name]
 			s.mu.Unlock()

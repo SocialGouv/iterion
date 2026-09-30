@@ -102,8 +102,8 @@ overrides).
   recommended: with it, NEW means "first event processed in this
   environment", a server-side processing time; without it Sentry filters
   on the issue's first event time, which a late event or a client clock
-  can move; `none` is refused — Sentry reads it as two different
-  environments), `min_level` (`fatal|error|warning|info|debug`, default
+  can move; `none` — that exact word — is refused: Sentry reads it as two
+  different environments; "None" is a name like any other), `min_level` (`fatal|error|warning|info|debug`, default
   `error`: below it the lane never STARTS tracking an issue — an issue
   already alerted stays observed whatever its latest event's level),
   `severity` (level → `critical|high|medium|low`, defaults fatal→high,
@@ -149,7 +149,8 @@ overrides).
   next ticks (`{more}`) — their header is the kind's own; both hold
   `{names}` exactly once, in 400 characters at most (plan refuses an
   override otherwise: a note says its members by name, within the
-  message).
+  message), and notify refuses — by name, the tick not consumed — a note
+  its clip would cut (a label renders escaped: `&` becomes `&amp;`).
 
 ## The secrets
 

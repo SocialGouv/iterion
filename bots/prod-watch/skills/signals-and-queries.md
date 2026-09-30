@@ -205,9 +205,9 @@ Off unless `config.sentry` is set (see `skills/argus-config.md`). Each tick
 reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
 `project=<id>`, the configured `environment`, `statsPeriod=90d` for the
 two lists (a list returns only issues with an event inside its window:
-90 days, which Sentry clamps to the retention, is as far back as Relay
-accepts an event's own time — an SDK's offline cache delivering a first
-event late still makes a new issue) and `14d` for the by-id read (its
+90 days, which Sentry clamps to its retention, reaches as far back as it
+keeps events — an SDK's offline cache delivering a first event late still
+makes a new issue) and `14d` for the by-id read (its
 count is the issue's whole life anyway), `collapse=lifetime`,
 `collapse=filtered` and an empty `groupStatsPeriod`,
 100 per page — never `collapse=stats`: Sentry then drops an issue's seen
@@ -355,9 +355,10 @@ the regressed/escalating list (forgotten, its transition would be
 re-dated and posted again).
 
 **What a message shows.** The scrubbed title, the level, the events
-(the lists count the last 14 days; an issue read only by id shows its
-count over its whole life — the detail says which), the users, the
-culprit, and ONE clickable link built
+(the lists count the last 90 days, or the retention if shorter; an issue
+read only by id shows its count over its whole life, in every environment —
+the detail says which), the users (not next to a whole-life count: their
+scope differs), the culprit, and ONE clickable link built
 from the configured base URL, org and the digit id — never the API's
 `permalink`, rendered only when it is exactly that shape. Severity comes
 from the level (`severity` map), capped by `max_severity` — a lowered cap
