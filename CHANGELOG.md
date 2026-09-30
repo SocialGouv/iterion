@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.217.4](https://github.com/SocialGouv/iterion/compare/v3.217.3...v3.217.4) (2026-09-30)
+
+### Bug Fixes
+
+* **runtime:** a review gate resumes from the cloud's queued pre-flip ([#1984](https://github.com/SocialGouv/iterion/issues/1984)) ([68dd3d3](https://github.com/SocialGouv/iterion/commit/68dd3d3efcca03b97261fcd51a683a8082be3d21))
+
+    <details><summary>why</summary>
+
+    The cloud publisher flips a paused run to `queued` before its resume reaches a runner, and Resume's queued case routes a pending interaction to the pause path. Three of the pause path's claims accepted `queued`; the review gate's claimed from `paused_waiting_human` alone. Every cloud resume of a review gate (approve_merge, request_changes, a reply) was therefore refused as a "duplicate resume" — a plain error the runner naks, redelivered until the DLQ parked the run.
+
+    </details>
+* **runtime:** a wait_all failure quotes the branch that failed, not the sibling it cancelled ([#1990](https://github.com/SocialGouv/iterion/issues/1990)) ([106678a](https://github.com/SocialGouv/iterion/commit/106678a985658145b7b605b483ee74b5985f8954))
+
+    <details><summary>why</summary>
+
+    A branch whose failure cancels its siblings is the cause of a wait_all failure; the cancelled siblings carry no verdict of their own. The code and the cause of the aggregate already skipped them (stoppedBranch), but the message quoted the first failed branch by id: when the failing branch sorted after a sibling it cancelled, the run's failure read "run cancelled: context canceled". The spent-budget refusal it quotes and the undecided effect it carries were picked in completion order.
+
+    </details>
+
 ## [3.217.3](https://github.com/SocialGouv/iterion/compare/v3.217.2...v3.217.3) (2026-09-30)
 
 ### Bug Fixes
