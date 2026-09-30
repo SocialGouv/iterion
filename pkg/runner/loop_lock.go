@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -63,18 +64,46 @@ func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, d
 	return lock, true, ""
 }
 
+// leaseRefresher is a run lock whose lease expires unless refreshed: the
+// NATS KV lock.
+type leaseRefresher interface {
+	Refresh(ctx context.Context) error
+}
+
+// progressReporter is a delivery whose ack deadline a heartbeat holds open.
+type progressReporter interface {
+	InProgress() error
+}
+
+// startLeaseHeartbeat refreshes the run's lease for as long as its engine
+// runs — its teardown included — and returns what stops it. A cancelled run
+// (a drain, an operator's cancel) still unwinds after runCtx is done: it
+// exports the workspace and banks its scratch, bounded by their own
+// timeouts. Held through that, the lease keeps a sibling that received the
+// redelivery on the lock until the teardown has written what a resume reads.
+// A refresh that fails still cancels runCtx (heartbeat).
+func (r *Runner) startLeaseHeartbeat(runCtx context.Context, runCancel context.CancelCauseFunc, lock store.RunLock, delivery progressReporter) (stop func()) {
+	hbCtx, hbCancel := context.WithCancel(context.WithoutCancel(runCtx))
+	done := make(chan struct{})
+	errtrack.Go("runner.heartbeat", func() { r.heartbeat(hbCtx, runCancel, lock, delivery, done) })
+	return func() {
+		hbCancel()
+		<-done
+	}
+}
+
 // heartbeat refreshes the NATS KV lease so a long-running run keeps
 // holding the lock past the 60s default TTL. Returns when ctx is
-// cancelled (run finished). On refresh failure it cancels the run with
+// cancelled (the engine returned). On refresh failure it cancels the run with
 // runtime.ErrRunInterrupted so the engine unwinds to failed_resumable
 // proactively before the lease expires — without that the lease would
 // silently lapse and JetStream would redeliver to a sibling pod, two
 // writers ending up on the same run state. The interrupted cause makes
 // the engine write failed_resumable so the redelivery auto-resumes
 // instead of requiring a manual user resume.
-func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelCauseFunc, lock store.RunLock, delivery *natsq.Delivery, done chan<- struct{}) {
+func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelCauseFunc, lock store.RunLock, delivery progressReporter, done chan<- struct{}) {
 	defer close(done)
-	natsLock, ok := lock.(*natsq.Lock)
+	natsLock, ok := lock.(leaseRefresher)
 	if !ok {
 		return // no-op lock or non-NATS provider — nothing to refresh
 	}

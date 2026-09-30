@@ -1753,22 +1753,19 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}
 
-	// Heartbeat goroutine: refresh the NATS lease while we own it. On
-	// refresh failure it cancels runCtx WITH the interrupted cause so the
-	// engine unwinds to failed_resumable — better to lose progress than to
-	// let the lease expire while the engine is still writing to Mongo (which
-	// would invite split-brain when JetStream redelivers to a sibling pod).
-	// The cause makes the redelivery auto-resume without manual intervention.
-	hbDone := make(chan struct{})
-	errtrack.Go("runner.heartbeat", func() { r.heartbeat(runCtx, runCancel, lock, delivery, hbDone) })
-	// Cancel runCtx *before* waiting on hbDone, otherwise we deadlock:
-	// heartbeat only exits on ctx.Done(), and the outer `defer runCancel`
-	// at function entry is LIFO-last so it would run after this defer.
+	// Heartbeat goroutine: refresh the NATS lease until the engine returns,
+	// its teardown included (startLeaseHeartbeat). On refresh failure it
+	// cancels runCtx WITH the interrupted cause so the engine unwinds to
+	// failed_resumable — better to lose progress than to let the lease
+	// expire while the engine is still writing to Mongo (which would invite
+	// split-brain when JetStream redelivers to a sibling pod). The cause
+	// makes the redelivery auto-resume without manual intervention.
+	stopHeartbeat := r.startLeaseHeartbeat(runCtx, runCancel, lock, delivery)
 	// nil cause: the run has already returned terminally here, so this is
 	// teardown — the engine never reads the cause. Idempotent panic net.
 	defer func() {
 		runCancel(nil)
-		<-hbDone
+		stopHeartbeat()
 	}()
 
 	// Stamped under the lock, before any work: the pair (launcher build,
@@ -1783,10 +1780,10 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// heartbeat issues periodic InProgress() on this same delivery to
 	// hold the JetStream ack deadline open; draining it here guarantees
 	// no InProgress() lands after the terminal Ack/Nak below (which would
-	// otherwise log a spurious already-acked error). A second drain in
-	// the defer above is a no-op on the closed channel.
+	// otherwise log a spurious already-acked error). A second stop in the
+	// defer above is a no-op.
 	runCancel(nil)
-	<-hbDone
+	stopHeartbeat()
 
 	// Run-outcome side effects (completion webhook + run.<outcome> event →
 	// push notifications, chained triggers) fire ONLY when this delivery
