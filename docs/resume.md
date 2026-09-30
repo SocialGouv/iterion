@@ -291,9 +291,9 @@ A run whose last teardown left a scratch it could **not** bank (past the cap, a
 listing, tar or upload failure, a store that keeps no bank) is refused
 `SCRATCH_NOT_PORTABLE` before the resume claims it: its next nodes would
 otherwise find the scratch empty and fail far from the cause. So is a run that
-moved past its bank — a node finished after the last teardown banked, in a
-sandbox lost without a teardown (an OOM kill, a lost node): restored, the bank
-would revert what that node wrote. Relaunch it fresh, or resume with `--force`
+moved past its bank — a node finished, in a sandbox started after the last
+teardown banked, and that sandbox was lost without a teardown (an OOM kill, a
+lost node): restored, the bank would revert what that node wrote. Relaunch it fresh, or resume with `--force`
 to continue as it stands — without the scratch, or with the older bank, marked
 `stale`. The teardown writes the bank and its record under the run's identity,
 after the run's cancellation (a drain, a lost lease, an operator's cancel).

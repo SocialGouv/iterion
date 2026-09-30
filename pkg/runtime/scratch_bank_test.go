@@ -109,6 +109,15 @@ func scratchEngine(s store.RunStore, exec *stubExecutor, d *podDriver) *Engine {
 	)
 }
 
+func mustLoadRun(t *testing.T, s store.RunStore, runID string) *store.Run {
+	t.Helper()
+	r, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 // dataOf is what a list of events carries, for a failure message.
 func dataOf(evs []*store.Event) []map[string]any {
 	out := make([]map[string]any, len(evs))
@@ -179,8 +188,8 @@ func TestResume_restoresTheScratchItsParkBanked(t *testing.T) {
 	if read != `{"files": 31}` {
 		t.Fatalf("the resumed node read %q from the new sandbox's scratch", read)
 	}
-	if got := eventsOf(t, s, runID, store.EventSandboxScratchRestored); len(got) != 1 {
-		t.Fatalf("restorations recorded = %d, want 1", len(got))
+	if got := eventsOf(t, s, runID, store.EventSandboxScratchRestored); len(got) != 1 || got[0].Data["stale"] == true {
+		t.Fatalf("restorations recorded: %v, want one, not stale — the answered human node finishes before the sandbox starts", dataOf(got))
 	}
 	if _, err := store.AsScratchBankStore(s).OpenScratchBank(ctx, runID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a finished run kept its scratch bank: %v", err)
@@ -799,7 +808,10 @@ func TestResume_aBankReadThatFailsOnTheWayIsRetried(t *testing.T) {
 	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
-	for _, force := range []bool{false, true} {
+	// Twice without --force: the first attempt's answered human node
+	// finishes before its sandbox starts, and must not read as a run that
+	// moved past its bank.
+	for _, force := range []bool{false, false, true} {
 		before := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked))
 		e := scratchEngine(flakyBankStore{s}, x, d)
 		e.forceResume = force
@@ -834,11 +846,13 @@ func resumable(t *testing.T, s store.RunStore, runID string) *store.Run {
 	return r
 }
 
-// TestResume_refusesABankTheRunHasMovedPast: a node finished after the last
-// teardown banked the scratch, and no teardown banked again — the attempt
-// that ran it lost its sandbox without one. Restored, the bank would revert
-// what the node wrote: the resume refuses by name before claiming the run,
-// and --force restores it anyway, marked stale.
+// TestResume_refusesABankTheRunHasMovedPast: a node finished, in a sandbox
+// started after the last teardown banked the scratch, and no teardown banked
+// again — the attempt that ran it lost its sandbox without one. Restored,
+// the bank would revert what the node wrote: the resume refuses by name
+// before claiming the run, and --force restores it anyway, marked stale. A
+// node finished before any sandbox started (a resume's answered human node)
+// is no such attempt.
 func TestResume_refusesABankTheRunHasMovedPast(t *testing.T) {
 	t.Setenv("ITERION_MODE", "local")
 	s := tmpStore(t)
@@ -856,7 +870,18 @@ func TestResume_refusesABankTheRunHasMovedPast(t *testing.T) {
 	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
-	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeFinished, NodeID: "measure"}); err != nil {
+	for _, ev := range []store.Event{
+		{Type: store.EventNodeFinished, NodeID: "gate"},
+		{Type: store.EventSandboxStarted, Data: map[string]any{"driver": "kubernetes"}},
+	} {
+		if _, err := s.AppendEvent(ctx, runID, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := scratchEngine(s, x, d).refuseResumeLosingScratch(ctx, mustLoadRun(t, s, runID)); err != nil {
+		t.Fatalf("a node finished before any sandbox started was read as a run past its bank: %v", err)
+	}
+	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeFinished, NodeID: "report"}); err != nil {
 		t.Fatal(err)
 	}
 

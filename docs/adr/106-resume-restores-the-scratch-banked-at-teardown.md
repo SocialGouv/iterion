@@ -56,9 +56,10 @@ pods the same way.
 - **Resume, before the claim.** A run whose last teardown recorded a
   non-empty scratch it could not bank is refused `SCRATCH_NOT_PORTABLE` (a
   deterministic failure code). So is a run that moved past its bank: a node
-  finished after the last `sandbox_scratch_banked`, which only a sandbox lost
-  without a teardown leaves behind — restored, the bank would revert what
-  that node wrote. `--force` resumes either as it stands, and says so. A
+  finished in a sandbox started after the last `sandbox_scratch_banked`,
+  which only a sandbox lost without a teardown leaves behind — restored, the
+  bank would revert what that node wrote. A node a resume finishes before
+  its sandbox starts (the answered human node) does not count. `--force` resumes either as it stands, and says so. A
   timeline that cannot be read refuses the resume too: it never reads as
   "nothing recorded".
 - **Resume, after the new sandbox starts** (the pause family and the failure

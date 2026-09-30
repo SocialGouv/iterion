@@ -191,9 +191,11 @@ type scratchPark struct {
 	banked   bool
 	empty    bool
 	reason   string
-	// advanced: a node finished after that record, and no teardown banked
-	// again — the attempt that ran it lost its sandbox without one (an
-	// OOM kill, a lost node). A bank is then older than the run's state.
+	// advanced: a node finished in a sandbox started after that record,
+	// and no teardown banked again — the attempt that ran it lost its
+	// sandbox without one (an OOM kill, a lost node). A bank is then older
+	// than the run's scratch. A node a resume finishes before its sandbox
+	// starts (the answered human node) cannot have written there.
 	advanced bool
 }
 
@@ -207,23 +209,30 @@ func (e *Engine) lastScratchPark(ctx context.Context, runID string) (scratchPark
 	if err != nil {
 		return scratchPark{}, err
 	}
-	advanced := false
+	last := -1
 	for i := len(evs) - 1; i >= 0; i-- {
-		switch evs[i].Type {
-		case store.EventNodeFinished:
-			advanced = true
-			continue
-		case store.EventSandboxScratchBanked:
-		default:
-			continue
+		if evs[i].Type == store.EventSandboxScratchBanked {
+			last = i
+			break
 		}
-		p := scratchPark{recorded: true, advanced: advanced}
-		p.banked, _ = evs[i].Data["banked"].(bool)
-		p.empty, _ = evs[i].Data["empty"].(bool)
-		p.reason, _ = evs[i].Data["reason"].(string)
-		return p, nil
 	}
-	return scratchPark{}, nil
+	if last < 0 {
+		return scratchPark{}, nil
+	}
+	p := scratchPark{recorded: true}
+	p.banked, _ = evs[last].Data["banked"].(bool)
+	p.empty, _ = evs[last].Data["empty"].(bool)
+	p.reason, _ = evs[last].Data["reason"].(string)
+	started := false
+	for _, ev := range evs[last+1:] {
+		switch ev.Type {
+		case store.EventSandboxStarted:
+			started = true
+		case store.EventNodeFinished:
+			p.advanced = p.advanced || started
+		}
+	}
+	return p, nil
 }
 
 // refuseResumeLosingScratch refuses, before the resume claims the run, a run
