@@ -72,6 +72,14 @@ func NewS3(ctx context.Context, cfg Config) (*S3Client, error) {
 			o.UsePathStyle = true
 		})
 	}
+	// An object stored without a checksum — copied by a store migration
+	// (rclone sends none), or written before the SDK sent CRC32 by default —
+	// comes back without one, and the SDK then logs a WARN on stderr for
+	// every such GET. Only that log line goes: a GET whose response carries
+	// a checksum is still validated.
+	clientOpts = append(clientOpts, func(o *s3.Options) {
+		o.DisableLogOutputChecksumValidationSkipped = true
+	})
 
 	return &S3Client{
 		client: s3.NewFromConfig(awsCfg, clientOpts...),

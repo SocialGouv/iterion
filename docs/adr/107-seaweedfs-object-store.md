@@ -60,6 +60,7 @@ One property matters more than the call list: **what one pod writes, another pod
 
 - **The Valkey store is as critical as the volumes.** Losing it leaves every object on disk but unreachable by key. Hence Retain volumes, AOF, a password and a NetworkPolicy. One residual risk is accepted: a Sentinel failover can drop the last second of metadata writes, because replication is asynchronous.
 - **The migration keeps one race open:** an app write that lands on the destination between a key's lookup and its PUT can still be overwritten, because rclone has no conditional PUT. The window is one object's lookup-to-PUT. The cutover happens in a quiet window for that reason.
+- **Migrated objects carry no checksum.** rclone sends none, so a read of an object the migration copied is not validated; a new write still is, since SeaweedFS stores and returns the CRC32 iterion sends (measured on 4.48). The SDK logs a WARN for every read it cannot validate, and `NewS3` turns off that one log line.
 - **More moving parts than MinIO:** 11 SeaweedFS pods and 3 Valkey pods, against 4.
 - **Not provided here:** an off-cluster backup of the bucket, mTLS on gRPC (the NetworkPolicies stand in), and metrics scraping. Each is a follow-up, not an implied promise.
 - **Upgrading SeaweedFS** means first running `pkg/store/blob/s3_gateway_compat_test.go` against the new version, in the production topology.
