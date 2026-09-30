@@ -211,8 +211,10 @@ const backgroundTasksOffEnv = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
 // to background work. It lifts the foreground pin (backgroundTasksOffEnv) —
 // subagents and shells may then run while the main agent works — and leaves
 // holding the session open to the background lifecycle
-// (claude_code_background.go), which waits for the work to come back and
-// asks for the report once it has.
+// (claude_code_background.go), which waits for a background subagent or
+// workflow to come back and asks for the report once it has. A background
+// shell or monitor is not waited for (holdsSession); the system prompt says
+// so (headlessBackgroundRule).
 func backgroundTasksOnFromEnv() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS"))) {
 	case "1", "true", "on", "yes":

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -331,11 +333,11 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 		// writes, at the moment a turn takes it.
 		// The CLI's own idle exit is off: the session ends when iterion
 		// decides, not a host setting's delay after an idle.
-		opts = append(opts,
-			claudesdk.WithEnv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1"),
-			claudesdk.WithEnv("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "1"),
-			claudesdk.WithEnv("CLAUDE_CODE_EXIT_AFTER_STOP_DELAY", ""),
-			claudesdk.WithReplayUserMessages())
+		// (bgLifecycleEnv, pinned in both layers by claudeEnvPins.)
+		for _, k := range slices.Sorted(maps.Keys(bgLifecycleEnv)) {
+			opts = append(opts, claudesdk.WithEnv(k, bgLifecycleEnv[k]))
+		}
+		opts = append(opts, claudesdk.WithReplayUserMessages())
 		// Where each SendMessage ran (backgroundTracker.noteSendExecuted): the
 		// hook runs on the reader goroutine, in the stream's order.
 		sendMatcher := "^SendMessage$"

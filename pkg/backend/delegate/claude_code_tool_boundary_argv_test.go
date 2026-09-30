@@ -41,7 +41,7 @@ import (
 // reads it — or a "<no settings file: …>" marker.
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
-if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s] rtkdb=[%s] rtkrecall=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" "${RTK_DB_PATH-<unset>}" "${RTK_RECALL-<unset>}" >> "$ENV_LOG"; fi
+if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s] rtkdb=[%s] rtkrecall=[%s] sse=[%s] rr=[%s] exitdelay=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" "${RTK_DB_PATH-<unset>}" "${RTK_RECALL-<unset>}" "${CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS-<unset>}" "${CLAUDE_CODE_BG_TASKS_REPORT_RUNNING-<unset>}" "${CLAUDE_CODE_EXIT_AFTER_STOP_DELAY-<unset>}" >> "$ENV_LOG"; fi
 if [ -n "$SETTINGS_LOG" ]; then
 	settings=; prev=
 	for a in "$@"; do if [ "$prev" = --settings ]; then settings=$a; fi; prev=$a; done

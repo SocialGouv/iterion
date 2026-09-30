@@ -241,19 +241,52 @@ const headlessSubagentRule = "\n\n## Subagents in this session\n\n" +
 	"A Bash command that outlives its timeout is killed: give it a timeout that " +
 	"fits, and start anything longer with `nohup … &` and poll it."
 
+// headlessBackgroundRule replaces headlessSubagentRule when background work
+// is on (backgroundTasksOnFromEnv). The CLI's own guidance then says every
+// background task notifies the agent when it completes; in this session the
+// lifecycle waits for a background subagent or workflow only (holdsSession),
+// and a shell or a monitor dies with the session.
+const headlessBackgroundRule = "\n\n## Background work in this session\n\n" +
+	"This session is not interactive: it ends with your final output. A background " +
+	"subagent is waited for: its report reaches you before the session ends. A " +
+	"background command (`run_in_background`) or a monitor is not: anything still " +
+	"running when you give your final output is killed, its completion " +
+	"notification with it. So, unlike what the Bash tool says, do not end your turn " +
+	"to wait for a background command whose result you need: poll its output until " +
+	"it has finished, or run it in the foreground with a timeout that fits."
+
+// headlessBackgroundUnheldRule is headlessBackgroundRule with the background
+// lifecycle off (ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE=off): nothing that
+// runs in the background is waited for.
+const headlessBackgroundUnheldRule = "\n\n## Background work in this session\n\n" +
+	"This session is not interactive: it ends with your final output, and nothing " +
+	"that runs in the background is waited for. A background subagent, command " +
+	"(`run_in_background`) or monitor still running when you give your final output " +
+	"is killed, its completion notification with it. Never end your turn to wait " +
+	"for one: wait for every background task whose result you need before your " +
+	"final output."
+
 // claudeCodeSystemPrompt is the text Execute's spawn appends to the CLI's
-// native system prompt: the task's own sections, then the subagent rule when
-// the spawn keeps a subagent tool.
+// native system prompt: the task's own sections, then what the session does
+// with the work the agent hands off — the subagent rule when the spawn keeps
+// a subagent tool, or, with background work on, the background rule on every
+// spawn (a background shell needs no subagent tool).
 func claudeCodeSystemPrompt(task Task) string {
 	prompt := task.BuildSystemPrompt()
-	if !claudeKeepsSubagents(task) || backgroundTasksOnFromEnv() {
-		// With background work on, the CLI's own guidance describes it.
+	rule := headlessSubagentRule
+	switch {
+	case backgroundTasksOnFromEnv():
+		rule = headlessBackgroundRule
+		if !resolveBackgroundLifecycleConfig().enabled {
+			rule = headlessBackgroundUnheldRule
+		}
+	case !claudeKeepsSubagents(task):
 		return prompt
 	}
 	if prompt == "" {
-		return strings.TrimLeft(headlessSubagentRule, "\n")
+		return strings.TrimLeft(rule, "\n")
 	}
-	return prompt + headlessSubagentRule
+	return prompt + rule
 }
 
 // claudeToolOptions turns a node's `tools:` declaration into the two CLI
@@ -1602,8 +1635,11 @@ func claudeCodeEffort(effort string) string {
 //     no-op: it force-ENABLES over a settings file that turned auto-memory
 //     off;
 //   - BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (claudeBashTimeouts);
+//   - the background lifecycle's signals (bgLifecycleEnv), while the
+//     lifecycle is on: a settings `env` that turned them off would leave it
+//     waiting for an idle the CLI never reports;
 //   - the rewriter chain's run env (rtk's stores off), when a rewriter is
-//     available.
+//     available — under the pins above: it moves none of them.
 //
 // Every one of them rides the process environment AND the flag settings
 // layer (claudeSpawnPins). The CLI does not resolve these variables before
@@ -1620,23 +1656,27 @@ func claudeEnvPins(task Task) map[string]string {
 	defaultMs, maxMs := claudeBashTimeouts()
 	background := "1"
 	if backgroundTasksOnFromEnv() {
-		// Empty, not "0": the CLI tests the variable for truth, and any
-		// non-empty string is one.
+		// Empty: the CLI reads the switch as set only for 1, true, yes or on.
 		background = ""
 	}
-	pins := map[string]string{
-		backgroundTasksOffEnv: background,
-		autoMemoryDisableEnv:  disable,
-		bashDefaultTimeoutEnv: strconv.FormatInt(defaultMs, 10),
-		bashMaxTimeoutEnv:     strconv.FormatInt(maxMs, 10),
-	}
+	pins := map[string]string{}
 	// The rewriter chain's run env, whatever the compression mode: the agent
 	// may run a rewriter itself, or an operator's own hook may. A settings
 	// `env` would otherwise replace it (rtk's history back on, a secret in
-	// it).
+	// it). It goes in first: a run_env naming a variable pinned below does
+	// not move that pin.
 	for _, kv := range rewrite.NewChain(task.Rewriters).RunEnv() {
 		k, v, _ := strings.Cut(kv, "=")
 		pins[k] = v
+	}
+	pins[backgroundTasksOffEnv] = background
+	pins[autoMemoryDisableEnv] = disable
+	pins[bashDefaultTimeoutEnv] = strconv.FormatInt(defaultMs, 10)
+	pins[bashMaxTimeoutEnv] = strconv.FormatInt(maxMs, 10)
+	if resolveBackgroundLifecycleConfig().enabled {
+		for k, v := range bgLifecycleEnv {
+			pins[k] = v
+		}
 	}
 	return pins
 }

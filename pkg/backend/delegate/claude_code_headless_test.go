@@ -42,12 +42,15 @@ const (
 	wantBashMaxMs     = "810000"
 )
 
-// pinWatchdogs fixes the session watchdogs the Bash timeouts derive from, so
+// pinWatchdogs fixes the session watchdogs the Bash timeouts derive from, and
+// the background switches (the default mode: foreground, lifecycle on), so
 // the expected values do not depend on the environment the tests run in.
 func pinWatchdogs(t *testing.T) {
 	t.Helper()
 	t.Setenv("ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT", "15m")
 	t.Setenv("ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT", "25m")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "")
 }
 
 // Every spawn a claude_code task makes runs with the pinned environment in
@@ -325,6 +328,7 @@ func TestExtraEnvThatTriesAPinnedKeyIsReported(t *testing.T) {
 // Read off the argv the real Execute builds, next to the --disallowedTools
 // that decides it.
 func TestTheSubagentRuleReachesEverySpawnThatKeepsTheSubagentTool(t *testing.T) {
+	pinWatchdogs(t)
 	rows := []struct {
 		name  string
 		knob  string
@@ -388,6 +392,7 @@ func TestTheSubagentRuleSaysWhatTheSpawnDoes(t *testing.T) {
 		"returns that agent's report as its tool result",
 		"several Agent calls in ONE message",
 		"run concurrently",
+		"before your next step",
 		"Never end your turn to wait",
 		"outlives its timeout is killed",
 		"nohup",
@@ -405,10 +410,9 @@ func TestTheSubagentRuleSaysWhatTheSpawnDoes(t *testing.T) {
 
 // An operator who wants background work opts in:
 // ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on pins the CLI's switch EMPTY in both
-// layers — "0" would still read as true to the CLI, and a repository's
-// settings "1" would win without the flag layer — and the system prompt no
-// longer says subagents run in the foreground: the background lifecycle keeps
-// the session open until their work comes back.
+// layers — a repository's settings "1" would win without the flag layer — and
+// the system prompt no longer says subagents run in the foreground: the
+// background lifecycle keeps the session open until their work comes back.
 func TestBackgroundTasksOnLiftsTheForegroundPin(t *testing.T) {
 	pinWatchdogs(t)
 	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
@@ -465,6 +469,164 @@ func TestTheRewritersRunEnvIsPinnedInBothLayers(t *testing.T) {
 		if layer["RTK_DB_PATH"] != "/dev/null/iterion-rtk-history.db" || layer["RTK_RECALL"] != "0" {
 			t.Errorf("spawn #%d's flag settings layer lacks the run env (env=%v): a settings env would put rtk's history back on", i+1, layer)
 		}
+	}
+}
+
+// With background work on, the system prompt says what this session waits
+// for — a background subagent, never a background command or a monitor —
+// where the CLI's own guidance says every background task notifies the agent
+// when it completes. With the lifecycle off, nothing is waited for, and the
+// section says that. A spawn without the subagent tool carries it too: a
+// background shell needs none.
+func TestBackgroundWorkOnSaysWhatTheSessionWaitsFor(t *testing.T) {
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "on")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "")
+	const heading = "## Background work in this session"
+	task := Task{NodeID: "n", SystemPrompt: "author"}
+	for _, withheld := range []string{"", "1"} {
+		t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", withheld)
+		if claudeKeepsSubagents(task) == (withheld == "1") {
+			t.Fatalf("scenario broken: DISALLOW_ORCHESTRATION_TOOLS=%q, subagents kept %v", withheld, claudeKeepsSubagents(task))
+		}
+		prompt := claudeCodeSystemPrompt(task)
+		for _, want := range []string{heading, "A background subagent is waited for", "`run_in_background`", "is killed", "do not end your turn to wait for a background command"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("subagents kept %v: the prompt does not say %q:\n%s", withheld == "", want, prompt)
+			}
+		}
+		if strings.Contains(prompt, subagentRuleHeading) {
+			t.Errorf("subagents kept %v: the prompt says subagents run in the foreground while background work is on", withheld == "")
+		}
+	}
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "off")
+	prompt := claudeCodeSystemPrompt(task)
+	if !strings.Contains(prompt, heading) || !strings.Contains(prompt, "nothing that runs in the background is waited for") {
+		t.Errorf("lifecycle off: the prompt does not say nothing is waited for:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "A background subagent is waited for") {
+		t.Errorf("lifecycle off: the prompt promises a background subagent is waited for:\n%s", prompt)
+	}
+}
+
+// The background lifecycle reads the CLI's own signals — its session state,
+// the tasks still running, no idle exit of its own. A user's or a
+// repository's settings env could switch them off and leave the lifecycle
+// waiting for an idle the CLI never reports, so every spawn pins them in both
+// layers while the lifecycle is on, over the test process's own values.
+func TestTheLifecycleSignalsArePinnedInBothLayers(t *testing.T) {
+	pinWatchdogs(t)
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	t.Setenv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "0")
+	t.Setenv("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "0")
+	t.Setenv("CLAUDE_CODE_EXIT_AFTER_STOP_DELAY", "1")
+	task := Task{NodeID: "n", OutputSchema: []byte(schemaOK)}
+	argv, env := spawnArgvEnv(t, task)
+	if len(argv) < 2 {
+		t.Fatalf("expected the Session spawn and at least one formatting pass, got %d spawn(s)", len(argv))
+	}
+	want := map[string]string{"sse": "1", "rr": "1", "exitdelay": ""}
+	for i := range argv {
+		for k, v := range want {
+			if got, ok := env[i][k]; !ok || got != v {
+				t.Errorf("spawn #%d ran with %s=%q (present %v), want %q", i+1, k, got, ok, v)
+			}
+		}
+		var layer map[string]string
+		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		for k, v := range bgLifecycleEnv {
+			if got, ok := layer[k]; !ok || got != v {
+				t.Errorf("spawn #%d's flag settings layer has %s=%q (present %v), want %q: a settings env would blind the lifecycle", i+1, k, got, ok, v)
+			}
+		}
+	}
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "off")
+	pins, _ := claudeSpawnPins(task)
+	for k := range bgLifecycleEnv {
+		if _, ok := pins[k]; ok {
+			t.Errorf("the lifecycle is off, yet %s is pinned", k)
+		}
+	}
+}
+
+// A rewriter's run_env goes under the pins: one naming a pinned variable moves
+// none of them, in either layer.
+func TestARewritersRunEnvMovesNoPin(t *testing.T) {
+	pinWatchdogs(t)
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	rw := filepath.Join(t.TempDir(), "fakerw")
+	if err := os.WriteFile(rw, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", OutputSchema: []byte(schemaOK),
+		Rewriters: []plugin.RewriterSpec{{ID: "rw", Locate: plugin.LocateSpec{Paths: []string{rw}},
+			Invoke: plugin.InvokeSpec{Argv: []string{"rewrite", "{{command}}"}},
+			RunEnv: map[string]string{backgroundTasksOffEnv: "", bashMaxTimeoutEnv: "1", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS": "0", "RW_OWN": "kept"}}}}
+	env, settings := claudeSpawnPins(task)
+	var layer struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(settings, &layer); err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]map[string]string{"process": env, "flag layer": layer.Env} {
+		if got[backgroundTasksOffEnv] != "1" || got[bashMaxTimeoutEnv] != wantBashMaxMs || got["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] != "1" {
+			t.Errorf("%s: a run_env moved a pin: %s=%q %s=%q EMIT_SESSION_STATE_EVENTS=%q", name, backgroundTasksOffEnv, got[backgroundTasksOffEnv], bashMaxTimeoutEnv, got[bashMaxTimeoutEnv], got["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"])
+		}
+		if got["RW_OWN"] != "kept" {
+			t.Errorf("%s: the run_env's own variable is missing: RW_OWN=%q", name, got["RW_OWN"])
+		}
+	}
+}
+
+// The flag settings layer carries the pinned environment, a rewriter's
+// run_env among it — resolved from its plugin's config, a `secret` field
+// included. The spawn's log line names its keys and never prints a value.
+func TestTheSpawnLogNamesTheSettingsAndPrintsNoValue(t *testing.T) {
+	pinWatchdogs(t)
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	const secret = "rva19-sentinel-7f3a9c"
+	rw := filepath.Join(t.TempDir(), "fakerw")
+	if err := os.WriteFile(rw, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-claude")
+	if err := os.WriteFile(fake, []byte(fakeClaudeArgv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ARGV_LOG", filepath.Join(dir, "argv.log"))
+	// The log's own output, every level: the logger's hook sees warnings only.
+	var mu sync.Mutex
+	var out strings.Builder
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return out.Write(p)
+	}))}
+	task := Task{NodeID: "n", Command: fake, WorkDir: dir, UserPrompt: "x", OutputSchema: []byte(schemaOK),
+		Rewriters: []plugin.RewriterSpec{{ID: "rw", Locate: plugin.LocateSpec{Paths: []string{rw}},
+			Invoke: plugin.InvokeSpec{Argv: []string{"rewrite", "{{command}}"}},
+			RunEnv: map[string]string{"RW_TOKEN": secret}}}}
+	_, _ = b.Execute(context.Background(), task)
+	argv := readSpawnLog(t, filepath.Join(dir, "argv.log"))
+	if len(argv) == 0 || !strings.Contains(argv[0], secret) {
+		t.Fatalf("scenario broken: the spawn's --settings does not carry the run_env value: %v", argv)
+	}
+	mu.Lock()
+	lines := strings.Split(out.String(), "\n")
+	mu.Unlock()
+	named := false
+	for _, l := range lines {
+		if strings.Contains(l, secret) {
+			t.Errorf("a log line prints a run_env value: %s", l)
+		}
+		if strings.Contains(l, "<redacted settings: ") && strings.Contains(l, "RW_TOKEN") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("no spawn log line names the settings' env keys:\n%s", strings.Join(lines, "\n"))
 	}
 }
 

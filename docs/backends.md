@@ -1227,10 +1227,15 @@ dev server, is started from the shell itself (`nohup … &`).
 
 An operator who wants background work — subagents and shells that run while
 the main agent keeps working — asks for it: `ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`
-pins the switch empty in both layers instead (a `0` would still read as true
-to the CLI), and the `## Subagents in this session` section is left out, the
-CLI's own guidance describing background work. The session then stays open
-until that work comes back — the background lifecycle below.
+pins the switch empty in both layers instead (the CLI reads it as set only
+for `1`, `true`, `yes` or `on`). The session then stays open until a
+background subagent or workflow comes back — the background lifecycle below;
+a background shell or monitor is not waited for, and dies with the session
+if it still runs at the final output. The `## Subagents in this session`
+section gives way to a `## Background work in this session` section that
+says so, where the CLI's own guidance says every background task notifies
+the agent when it completes; with the lifecycle off, the section says
+nothing is waited for.
 
 A Bash command that outlives its timeout is now killed rather than moved to
 the background. So every spawn also pins `BASH_DEFAULT_TIMEOUT_MS` and

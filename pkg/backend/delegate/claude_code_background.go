@@ -96,6 +96,16 @@ func resolveBackgroundLifecycleConfig() backgroundLifecycleConfig {
 	return cfg
 }
 
+// bgLifecycleEnv is the environment the background lifecycle reads the CLI's
+// own signals through: its session state (idle is otherwise reported while
+// agents still run), the tasks still running, and no idle exit of the CLI's
+// own — the session ends when iterion decides.
+var bgLifecycleEnv = map[string]string{
+	"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS": "1",
+	"CLAUDE_CODE_BG_TASKS_REPORT_RUNNING":   "1",
+	"CLAUDE_CODE_EXIT_AFTER_STOP_DELAY":     "",
+}
+
 // holdsSession reports whether a background task of this type keeps the
 // session open until it comes back: a subagent or a workflow — work the CLI's
 // own print-mode wind-down waits for too, up to its own ceiling

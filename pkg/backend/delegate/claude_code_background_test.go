@@ -215,6 +215,11 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "3s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "50ms",
 		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":    "0",
+		// The documented defaults, whatever the environment the tests run in.
+		"ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE":        "",
+		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":             "",
+		"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT": "",
+		"ITERION_CLAUDE_CODE_BACKGROUND_TASKS":            "",
 	}
 	for k, v := range env {
 		defaults[k] = v
@@ -5040,6 +5045,9 @@ func TestBackground_NoWaitBudgetIsNoCeilingOnAMonitorsTurns(t *testing.T) {
 // answer.
 func postToolUseCallback(t *testing.T, task Task, input map[string]any) (hooks, cbResp map[string]any) {
 	t.Helper()
+	// The lifecycle on, whatever the environment the tests run in: it
+	// registers a PostToolUse hook of its own the counts below include.
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "")
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-claude")
 	if err := os.WriteFile(fake, []byte(fakeClaudeScripted), 0o755); err != nil {

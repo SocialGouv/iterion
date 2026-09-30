@@ -82,7 +82,7 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"spawning a subagent.\n\n" +
 	"Orchestration mechanics:\n" +
 	"- Batch by stage: subagents launched together in ONE message run " +
-	"concurrently, and your next message waits for all of them. Put every " +
+	"concurrently. Put every " +
 	"independent subagent of a stage in the same message, and move on to a new " +
 	"message only when the next stage genuinely needs the previous results " +
 	"(dedup/merge across the set, early-exit on zero findings, cross-item " +

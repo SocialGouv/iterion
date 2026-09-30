@@ -133,7 +133,11 @@ form in every hook/log:
   carrying a secret some other way (its raw value, an environment variable),
   or an output quoting one, leaves nothing there either. On claude_code the
   run env is pinned in the CLI's `--settings` flag layer too, which a user's
-  or a repository's settings `env` cannot outrank; a command iterion did not
+  or a repository's settings `env` cannot outrank. That layer rides the
+  CLI's command line, as its MCP configuration does: iterion's log names
+  its keys and never prints a value, but a process listing on the host
+  shows it — a `secret` field of a rewriter plugin's config placed in its
+  `run_env` included. A command iterion did not
   compress — rtk typed by the agent, or run by an operator's own rtk hook —
   still gets it from its environment only, which the operator's shell rc or
   `BASH_ENV` can replace.
