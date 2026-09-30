@@ -33,12 +33,15 @@
 ##                  table + allowed statuses + justified exceptions +
 ##                  every covered-* row citing at least one test that
 ##                  RESOLVES in the tree (grep — an orphan claim is a
-##                  red gate). No LLM judgment anywhere in the gate.
+##                  red gate) AND that the suite's own output does not
+##                  report as NOT RUN this pass (an unexecuted claim is
+##                  a red gate too). No LLM judgment anywhere in the gate.
 ##   gate         — deterministic compute:
-##                  converged = suite green AND matrix_ok AND the
-##                  campaign reports coverage complete AND (scoped run
-##                  OR zero uncovered rows). Else loop back with the
-##                  failure log.
+##                  converged = suite green AND the suite actually RAN
+##                  (skipped is a refusal, never a pass) AND matrix_ok
+##                  AND the campaign reports coverage complete AND
+##                  (scoped run OR zero uncovered rows). Else loop back
+##                  with the failure log.
 ##
 ## WHY new_test_code IS NOT IN THE CONVERGENCE CONJUNCTION (a
 ## deliberate divergence from Testy): this bot's anti-façade floor is
@@ -691,7 +694,9 @@ schema verify_plan:
 ## an LLM judgment. `matrix_ok` is the matrix-contract verdict: file
 ## present + marker + parseable table + allowed statuses + justified
 ## exceptions + every covered-* row citing at least one test that
-## resolves in the tree (an ORPHAN CLAIM is matrix_ok=false).
+## resolves in the tree (an ORPHAN CLAIM is matrix_ok=false) AND that
+## the suite's own output does not report as skipped this pass (an
+## UNEXECUTED CLAIM is matrix_ok=false too — #1598).
 ## `uncovered_rows` counts the `uncovered` rows left in the WHOLE
 ## matrix. `scoped` is the run's scope predicate computed on the
 ## TRIMMED target (a whitespace-only target is NOT a scope — the
@@ -1212,7 +1217,11 @@ name_rx = re.compile('(test|spec|scenario|should|it_)', re.I)
 # 2) Matrix contract (the bot-specific anti-facade floor): file present +
 # marker + parseable table + allowed statuses + justified exceptions + every
 # covered-* row citing at least one test that RESOLVES in the tree. An
-# orphan claim (cited test not found) is a red matrix.
+# orphan claim (cited test not found) is a red matrix — and so is an
+# UNEXECUTED one: resolution is existence, the claim is EXECUTION, so when
+# the suite ran this pass its own output is the witness, and a cited test
+# it reported skipped/ignored carries a covered-* row no more than a
+# missing file does (#1598).
 #
 # EVERY unparseable/ambiguous shape is an ERROR, never a silent skip: a row
 # the parser cannot read is a feature the operator believes is accounted for.
@@ -1330,6 +1339,30 @@ if mtext:
                 if usable_file(h.strip()):
                     return True
             return False
+        def ref_display_name(ref):
+            # The NAME half of a citation: the parenthesised form carries it
+            # before the path; a bare citation IS the name (or the file).
+            ref = ref.strip().strip(chr(96)).strip()
+            if ref.endswith(')') and '(' in ref:
+                k = ref.rindex('(')
+                return ref[:k].strip().strip(chr(96)).strip()
+            return ref
+        def reported_not_run(ref):
+            # Execution evidence AGAINST the claim, read from the suite's own
+            # output: runners report a skipped test explicitly and by name
+            # (go --- SKIP:, pytest SKIPPED, rust ... ignored, jest/vitest
+            # (skipped)/'skipped', tap '# SKIP'). NEGATIVE evidence only --
+            # a runner that prints nothing per-test accuses nobody, and a
+            # PASS line never carries these markers, so this cannot redden a
+            # suite that ran its tests quietly.
+            name = ref_display_name(ref)
+            if len(name) < 4:
+                return False
+            markers = ('--- SKIP:', 'SKIPPED', '# SKIP', '... ignored', '(skipped)', ' skipped ')
+            for line in out.splitlines():
+                if name in line and any(m in line for m in markers):
+                    return True
+            return False
         def split_refs(cellval):
             # Citations are comma-separated, but a parametric test name
             # carries its own commas -- test_charge[amount=100, currency=usd],
@@ -1422,6 +1455,17 @@ if mtext:
                     if dead:
                         matrix_ok = False
                         problems.append(rid + ': ORPHAN CLAIM -- cited test(s) do not resolve to a real test file in the tree: ' + ', '.join(dead)[:150])
+                    elif not skipped:
+                        # Resolution is existence; the claim is EXECUTION
+                        # (#1598). The suite ran this pass, so its own output
+                        # is the witness: a cited test it reported NOT run
+                        # (skipped, ignored) satisfies existence while the
+                        # feature stays unexercised -- exactly what a covered-*
+                        # row may not rest on.
+                        unexec = [r.strip() for r in refs if reported_not_run(r)]
+                        if unexec:
+                            matrix_ok = False
+                            problems.append(rid + ': UNEXECUTED CLAIM -- the suite reported the cited test(s) as not run in this pass: ' + ', '.join(unexec)[:150] + ' -- a covered-* row must rest on a test that EXECUTED; un-skip it or reclassify the row')
         if matrix_rows == 0:
             matrix_ok = False
             problems.append('matrix table has no feature rows')
@@ -1516,15 +1560,17 @@ compute plan_gate:
 ## gate — the deterministic continuation decision. Reads the real gate
 ## result (suite green + matrix contract) AND the campaign's
 ## termination output, both fresh in the loop BODY. converged = green
-## AND matrix_ok AND coverage reported complete AND (scoped run OR
-## zero uncovered rows anywhere). On a RED pass fail_log carries the
-## tool-composed failure log to the campaign; empty when green
-## (uncovered rows are remaining WORK, not a failure — the campaign
-## re-reads the matrix). No LLM, no shell.
+## AND the suite actually RAN (skipped is a refusal, never a pass —
+## tested explicitly, not only implied by passed) AND matrix_ok AND
+## coverage reported complete AND (scoped run OR zero uncovered rows
+## anywhere). On a RED pass fail_log carries the tool-composed failure
+## log to the campaign; empty when green (uncovered rows are remaining
+## WORK, not a failure — the campaign re-reads the matrix). No LLM, no
+## shell.
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.verify_run.matrix_ok && outputs.campaign.coverage_complete && (outputs.verify_run.scoped || outputs.verify_run.uncovered_rows == 0)"
+    converged: "outputs.verify_run.passed && !outputs.verify_run.skipped && outputs.verify_run.matrix_ok && outputs.campaign.coverage_complete && (outputs.verify_run.scoped || outputs.verify_run.uncovered_rows == 0)"
     fail_log: "if(outputs.verify_run.passed && outputs.verify_run.matrix_ok, '', outputs.verify_run.log_tail)"
 
 ## workspace_not_a_repo — the entry precondition refused. NOT resumable:
@@ -1648,9 +1694,10 @@ workflow e2e_coverage:
 
   verify_run -> gate
 
-  ## Converged (suite green AND matrix contract satisfied AND scope
-  ## reported complete AND — for a whole-app run — zero uncovered
-  ## rows) → done.
+  ## Converged (suite green AND actually executed AND matrix contract
+  ## satisfied AND scope reported complete AND — for a whole-app run —
+  ## zero uncovered rows) → done. This edge is the run's green: nothing
+  ## reaches done on a gate that never ran.
   gate -> done when converged
 
   ## Not converged → another campaign pass. RED carries the failure
