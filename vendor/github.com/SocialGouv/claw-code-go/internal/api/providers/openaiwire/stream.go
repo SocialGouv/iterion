@@ -81,10 +81,18 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		sawDone      bool
 	)
 
+	// eventName is the current SSE event's `event:` field; a blank line ends
+	// the event and resets it.
+	var eventName string
 	for scanner.Scan() {
 		wd.Touch() // any received line (incl. comments/keepalives) = stream alive
 		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, "event:") {
+		if line == "" {
+			eventName = ""
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 			continue
 		}
 		// SSE spec (W3C, WHATWG) makes the space after `data:`
@@ -95,14 +103,43 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
+		// Prefix match, like the openai-python stream decoder.
+		if strings.HasPrefix(data, "[DONE]") {
 			sawDone = true
 			break
 		}
 
+		if data == "" {
+			continue // keepalive
+		}
+
+		// A failure reported inside the stream ends it: what came before is
+		// partial, and a [DONE] after it must not read as a clean finish.
+		// An event named "error" is one whatever its payload's shape; a data
+		// field that is no chunk is one too, unless its event is named
+		// otherwise (a server ping whose data is a timestamp).
 		var chunk Chunk
+		var failure string
+		failed := false
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			switch eventName {
+			case "error":
+				failure, failed = ErrorEventMessage(data), true
+			case "":
+				failure, failed = UnparsedFrameError(data)
+			}
+			if !failed {
+				continue
+			}
+		} else if failure, failed = chunk.ErrorMessage(); !failed && eventName == "error" {
+			failure, failed = ErrorEventMessage(data), true
+		}
+		if failed {
+			send(api.StreamEvent{
+				Type:         api.EventError,
+				ErrorMessage: "openai stream error: " + failure,
+			})
+			return
 		}
 
 		// Capture usage from the final usage chunk (choices will be empty

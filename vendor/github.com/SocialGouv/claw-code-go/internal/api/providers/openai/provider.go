@@ -72,12 +72,32 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if authMode == AuthModeAPIKey && cfg.APIKey == "" {
 		return nil, fmt.Errorf("OpenAI provider: provide either OPENAI_API_KEY or a (OAuthToken + OpenAIChatGPTAccountID) pair sourced from Codex CLI auth.json")
 	}
+	switch cfg.OpenAIWireAPI {
+	case "", api.OpenAIWireResponses:
+	case api.OpenAIWireChat:
+		if authMode == AuthModeChatGPTOAuth {
+			return nil, fmt.Errorf("OpenAI provider: OpenAIWireAPI %q is not available with the ChatGPT forfait, whose backend serves only the Responses API", cfg.OpenAIWireAPI)
+		}
+	default:
+		return nil, fmt.Errorf("OpenAI provider: unknown OpenAIWireAPI %q (want %q, %q or empty)", cfg.OpenAIWireAPI, api.OpenAIWireChat, api.OpenAIWireResponses)
+	}
+	if cfg.OpenAIModelVerbatim && cfg.Model == "" {
+		return nil, fmt.Errorf("OpenAI provider: OpenAIModelVerbatim needs a model: the default OpenAI model is not a gateway's model id")
+	}
 	model := cfg.Model
-	// If the configured model is an Anthropic model name, use the default OpenAI model.
-	if model == "" || strings.HasPrefix(model, "claude") {
+	// If the configured model is an Anthropic model name, use the default
+	// OpenAI model — unless the caller asked for its model id verbatim.
+	if model == "" || (!cfg.OpenAIModelVerbatim && strings.HasPrefix(model, "claude")) {
 		model = DefaultOpenAIModel
 	}
-	baseURL := cfg.BaseURL
+	// Endpoints are appended as "/v1/…": a trailing slash would double it.
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if cfg.BaseURL != "" && baseURL == "" {
+		return nil, fmt.Errorf("OpenAI provider: BaseURL %q names no host", cfg.BaseURL)
+	}
+	if authMode == AuthModeChatGPTOAuth && cfg.NoAmbientHeaders && baseURL != "" {
+		return nil, fmt.Errorf("OpenAI provider: the ChatGPT forfait credentials are not sent to a caller-chosen BaseURL under NoAmbientHeaders")
+	}
 	if baseURL == "" {
 		if authMode == AuthModeChatGPTOAuth {
 			baseURL = chatgptCodexBaseURL
@@ -96,9 +116,19 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if authMode == AuthModeChatGPTOAuth {
 		defaultUA = chatgptOriginator + "/" + clientVersion
 	}
-	identity, err := api.ResolveIdentity(cfg.UserAgent, defaultUA, cfg.ExtraHeaders)
-	if err != nil {
-		return nil, err
+	var identity api.Identity
+	if cfg.NoAmbientHeaders {
+		identity = api.ResolveExplicitIdentity(cfg.UserAgent, defaultUA, cfg.ExtraHeaders)
+	} else {
+		resolved, err := api.ResolveIdentity(cfg.UserAgent, defaultUA, cfg.ExtraHeaders)
+		if err != nil {
+			return nil, err
+		}
+		identity = resolved
+	}
+	httpClient, imageHTTPClient := api.NewStreamingHTTPClient(), newImageHTTPClient()
+	if cfg.HTTPClient != nil {
+		httpClient, imageHTTPClient = cfg.HTTPClient, cfg.HTTPClient
 	}
 	return &Client{
 		APIKey:           cfg.APIKey,
@@ -111,8 +141,11 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		CodexAuthFile:    cfg.CodexAuthFile,
 		ClientVersion:    clientVersion,
 		Identity:         identity,
-		HTTPClient:       api.NewStreamingHTTPClient(),
-		ImageHTTPClient:  newImageHTTPClient(),
+		HTTPClient:       httpClient,
+		ImageHTTPClient:  imageHTTPClient,
+		WireAPI:          cfg.OpenAIWireAPI,
+		StreamUsage:      cfg.OpenAIStreamUsage,
+		ModelVerbatim:    cfg.OpenAIModelVerbatim,
 	}, nil
 }
 
@@ -132,6 +165,12 @@ type Client struct {
 	Identity         api.Identity // resolved at NewClient (override → env → mode default)
 	HTTPClient       *http.Client
 	ImageHTTPClient  *http.Client // separate header timeout for non-streamed image generation
+	// WireAPI is ProviderConfig.OpenAIWireAPI: empty dispatches per request.
+	WireAPI string
+	// StreamUsage requests stream usage from any host, not only api.openai.com.
+	StreamUsage bool
+	// ModelVerbatim sends the model id as given (no prefix strip, no claude swap).
+	ModelVerbatim bool
 }
 
 // ----- Request types ---------------------------------------------------------
@@ -145,6 +184,7 @@ type oaiRequest struct {
 	Model            string                 `json:"model"`
 	Messages         []openaiwire.Message   `json:"messages"`
 	Tools            []openaiwire.Tool      `json:"tools,omitempty"`
+	ToolChoice       any                    `json:"tool_choice,omitempty"`
 	Stream           bool                   `json:"stream"`
 	StreamOptions    *openaiwire.StreamOpts `json:"stream_options,omitempty"`
 	MaxTokens        int                    `json:"-"` // written conditionally in MarshalJSON
@@ -217,10 +257,8 @@ func (r oaiRequest) MarshalJSON() ([]byte, error) {
 func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	// Dispatch on the same effective model as request conversion, including
 	// clients whose callers leave the request model unset.
-	if req.Model == "" || strings.HasPrefix(req.Model, "claude") {
-		req.Model = c.Model
-	}
-	if c.AuthMode == AuthModeChatGPTOAuth || shouldUseResponsesAPI(req) {
+	req.Model = c.requestModel(req)
+	if c.useResponsesAPI(req) {
 		return c.streamResponses(ctx, req)
 	}
 
@@ -252,7 +290,7 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody := readErrorBody(resp.Body)
 		bodyStr := string(errBody)
 		return nil, &api.APIError{
 			Provider:   "openai",
@@ -271,13 +309,14 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 // ----- Request conversion ----------------------------------------------------
 
 func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error) {
-	// Honour the model from the request only when it's an OpenAI model name.
-	model := c.Model
-	if req.Model != "" && !strings.HasPrefix(req.Model, "claude") {
-		model = req.Model
+	model := c.requestModel(req)
+	// Capability checks read the bare model name; the wire carries it
+	// verbatim when the caller asked for it.
+	bareModel := stripRoutingPrefix(model)
+	wireModel := bareModel
+	if c.ModelVerbatim {
+		wireModel = model
 	}
-
-	wireModel := stripRoutingPrefix(model)
 	reasoning := isReasoningModel(model)
 
 	maxTokens := req.MaxTokens
@@ -303,7 +342,14 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error)
 		Stop:             req.Stop,
 		ReasoningEffort:  req.ReasoningEffort,
 		isReasoningModel: reasoning,
-		useMaxCompTokens: strings.HasPrefix(wireModel, "gpt-5"),
+		useMaxCompTokens: usesMaxCompletionTokens(bareModel),
+	}
+	// tool_choice is meaningless — and rejected — without tools. It reaches
+	// api.openai.com and callers that chose the chat wire; other hosts keep
+	// the field out, as before: some (DashScope's Qwen) reject "required"
+	// and a named choice.
+	if len(tools) > 0 && (c.BaseURL == defaultBaseURL || c.WireAPI == api.OpenAIWireChat) {
+		r.ToolChoice = openaiwire.ConvertToolChoice(req.ToolChoice)
 	}
 
 	// Only request stream usage for providers that support it (matches Rust's
@@ -315,13 +361,63 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error)
 	return r, nil
 }
 
+// usesMaxCompletionTokens reports whether an OpenAI model takes
+// max_completion_tokens instead of max_tokens on chat completions: the
+// gpt-5 and gpt-6 families and the o-series reasoning models.
+func usesMaxCompletionTokens(bareModel string) bool {
+	for _, prefix := range []string{"gpt-5", "gpt-6", "o1", "o3", "o4"} {
+		if strings.HasPrefix(bareModel, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestModel is the model a request resolves to: the request's own model,
+// unless it is empty or — for clients that do not send model ids verbatim —
+// an Anthropic "claude…" id, in which case the client's model.
+func (c *Client) requestModel(req api.CreateMessageRequest) string {
+	if req.Model == "" || (!c.ModelVerbatim && strings.HasPrefix(req.Model, "claude")) {
+		return c.Model
+	}
+	return req.Model
+}
+
+// useResponsesAPI reports whether req goes to the Responses API. The
+// ChatGPT-Codex backend serves nothing else; an explicit WireAPI wins next;
+// otherwise the per-request dispatch applies on every host.
+func (c *Client) useResponsesAPI(req api.CreateMessageRequest) bool {
+	if c.AuthMode == AuthModeChatGPTOAuth {
+		return true
+	}
+	switch c.WireAPI {
+	case api.OpenAIWireChat:
+		return false
+	case api.OpenAIWireResponses:
+		return true
+	}
+	return shouldUseResponsesAPI(req)
+}
+
 // shouldRequestStreamUsage returns true when the client targets the default
-// OpenAI endpoint. XAI, DashScope, and other OpenAI-compatible providers
-// may not support the stream_options parameter, so we only include it for
-// the canonical OpenAI API. This matches Rust's should_request_stream_usage()
-// which gates on provider_name == "OpenAI".
+// OpenAI endpoint, or when the caller opted in (StreamUsage). XAI,
+// DashScope, and other OpenAI-compatible providers may not support the
+// stream_options parameter, so it is only sent to them on request. This
+// matches Rust's should_request_stream_usage(), which gates on
+// provider_name == "OpenAI".
 func (c *Client) shouldRequestStreamUsage() bool {
-	return c.BaseURL == defaultBaseURL
+	return c.StreamUsage || c.BaseURL == defaultBaseURL
+}
+
+// maxErrorBodyBytes bounds what an error response may make the client read:
+// the body only feeds a message and a truncated log line, and the endpoint
+// may not be the operator's.
+const maxErrorBodyBytes = 64 << 10
+
+// readErrorBody reads at most maxErrorBodyBytes of a failed response's body.
+func readErrorBody(body io.Reader) []byte {
+	b, _ := io.ReadAll(io.LimitReader(body, maxErrorBodyBytes))
+	return b
 }
 
 // setAuthHeaders writes the Authorization header (and, in ChatGPT-OAuth mode,

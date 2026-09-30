@@ -38,6 +38,9 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodAPIKey }
 // the caller, mirroring the anthropic provider's seam: the provider wires,
 // the resolver decides where the key comes from.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
+	if err := api.RefuseOpenAIOnlyOptions("zai", cfg); err != nil {
+		return nil, err
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL

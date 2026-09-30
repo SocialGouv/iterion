@@ -14,7 +14,13 @@
 // {messages, tools, sse-stream} translators live here.
 package openaiwire
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+
+	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
+)
 
 // StreamOpts is the OpenAI `stream_options` object. Currently only
 // IncludeUsage is wired up because that's all both providers care about.
@@ -70,6 +76,126 @@ type FunctionCall struct {
 type Chunk struct {
 	Choices []Choice `json:"choices"`
 	Usage   *Usage   `json:"usage"`
+	// Error is a mid-stream failure frame (`data: {"error":…}`), which an
+	// endpoint may send after the 200 status line — as an OpenAI error
+	// object or, on some gateways, as a bare string.
+	Error json.RawMessage `json:"error,omitempty"`
+}
+
+// ErrorMessage returns the failure a chunk carries, if any. An empty value —
+// null, false, "", 0, {}, [] or an object whose fields are all empty —
+// carries none. Otherwise the message is the error object's message (with
+// its type and code when present), the bare string, or the raw value,
+// capped at httputil.BodyTruncateForLog: the endpoint may not be the
+// operator's, and the text travels on into errors and logs.
+func (c Chunk) ErrorMessage() (string, bool) {
+	return errorFrameMessage(c.Error)
+}
+
+func errorFrameMessage(raw json.RawMessage) (string, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "", false
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err == nil && isEmptyJSONValue(value) {
+		return "", false
+	}
+	return httputil.TruncateBody(describeErrorFrame(raw), httputil.BodyTruncateForLog), true
+}
+
+// isEmptyJSONValue reports whether a decoded JSON value carries nothing.
+func isEmptyJSONValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !t
+	case string:
+		return strings.TrimSpace(t) == ""
+	case float64:
+		return t == 0
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		for _, field := range t {
+			if !isEmptyJSONValue(field) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func describeErrorFrame(raw []byte) string {
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var obj struct {
+		Message string          `json:"message"`
+		Type    string          `json:"type"`
+		Code    json.RawMessage `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil || (obj.Message == "" && obj.Type == "") {
+		return string(raw)
+	}
+	msg := obj.Message
+	if msg == "" {
+		msg = "error frame with no message"
+	}
+	var detail []string
+	if obj.Type != "" {
+		detail = append(detail, "type="+obj.Type)
+	}
+	if code := strings.Trim(string(bytes.TrimSpace(obj.Code)), `"`); code != "" && code != "null" {
+		detail = append(detail, "code="+code)
+	}
+	if len(detail) > 0 {
+		msg += " (" + strings.Join(detail, ", ") + ")"
+	}
+	return msg
+}
+
+// ErrorEventMessage describes the data of an SSE event named "error", which
+// is a failure whatever its shape: its error field, else its detail or
+// message, else the data itself — bounded like ErrorMessage.
+func ErrorEventMessage(data string) string {
+	var frame struct {
+		Error   json.RawMessage `json:"error"`
+		Detail  json.RawMessage `json:"detail"`
+		Message json.RawMessage `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(data), &frame); err == nil {
+		for _, raw := range []json.RawMessage{frame.Error, frame.Detail, frame.Message} {
+			if msg, ok := errorFrameMessage(raw); ok {
+				return msg
+			}
+		}
+	}
+	if strings.TrimSpace(data) == "" {
+		return "error event with no data"
+	}
+	return httputil.TruncateBody(data, httputil.BodyTruncateForLog)
+}
+
+// UnparsedFrameError reports the failure carried by a data frame that did
+// not decode as a Chunk: its error field when the frame is JSON (an error
+// next to a field of an unexpected type), or the frame itself when it is not
+// JSON at all — text an endpoint wrote into the stream, which a gateway does
+// when it fails to serialise a chunk mid-stream.
+func UnparsedFrameError(data string) (string, bool) {
+	if !json.Valid([]byte(data)) {
+		return httputil.TruncateBody("unparseable data frame: "+data, httputil.BodyTruncateForLog), true
+	}
+	var frame struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(data), &frame); err != nil {
+		return "", false
+	}
+	return errorFrameMessage(frame.Error)
 }
 
 // Choice is a single completion choice slot inside a Chunk. We only ever
