@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -58,7 +59,7 @@ func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, d
 				delay = r.cfg.NATS.LockTTL()
 			}
 			if held {
-				delay = natsq.HeldLockRetryDelay(delay, runtime.LeaseUnwindCeiling, r.maxDeliver())
+				delay = natsq.HeldLockRetryDelay(delay, LeaseUnwindCeiling, r.maxDeliver(), delivery.NumDelivered())
 			}
 			logDeliveryErr(logger, "nak-lock-deferred", msg.RunID, delivery.NakWithDelay(delay))
 		}
@@ -78,38 +79,145 @@ type progressReporter interface {
 	InProgress() error
 }
 
-// startLeaseHeartbeat refreshes the run's lease for as long as its engine
-// runs — its teardown included, up to runtime.LeaseUnwindCeiling past the run's
-// cancellation — and returns what stops it. A cancelled run (a drain, an
-// operator's cancel) still unwinds after runCtx is done: it exports the
-// workspace and banks its scratch. Held through that, the lease keeps a
-// sibling that received the redelivery on the lock until the teardown has
-// written what a resume reads. A refresh that fails still cancels runCtx
+// executeHoldingLease executes a delivery's run with its lease held by the
+// heartbeat, and ends that hold before returning — before the caller Acks or
+// Naks the delivery, so no InProgress() from the heartbeat lands after it.
+//
+// On refresh failure the heartbeat cancels runCtx WITH the interrupted cause
+// so the engine unwinds to failed_resumable — better to lose progress than to
+// let the lease expire while the engine is still writing to the store (which
+// would invite split-brain when JetStream redelivers to a sibling pod). The
+// cause makes the redelivery auto-resume without manual intervention.
+func (r *Runner) executeHoldingLease(runCtx context.Context, runCancel context.CancelCauseFunc, msg *queue.RunMessage, preRun *store.Run, lock store.RunLock, delivery progressReporter, usageOut **metricsEmitter) error {
+	hold := r.startLeaseHeartbeat(runCtx, runCancel, msg.RunID, lock, delivery)
+	// nil cause: the run has already returned here, so this is teardown — the
+	// engine never reads the cause. Also the panic net.
+	defer func() {
+		runCancel(nil)
+		hold.stop()
+	}()
+	// Stamped under the lock, before any work: the pair (launcher build,
+	// runner build) is what makes a version skew readable from the run
+	// itself, and an IR that will not load must not be the first place an
+	// operator learns of one.
+	r.recordRunnerBuild(runCtx, msg, preRun)
+	return r.executeRun(runCtx, msg, usageOut, hold.engineReturned)
+}
+
+// leaseHold is a run's lease held by its heartbeat.
+type leaseHold struct {
+	// engineReturned hands the hold over from the engine to the runner's own
+	// post-engine steps: from then on it lasts at most postEngineCeiling,
+	// cancelled run or not. Idempotent.
+	engineReturned func()
+	// stop ends the hold and waits for the heartbeat to exit. Idempotent.
+	stop func()
+}
+
+// startLeaseHeartbeat refreshes the run's lease for as long as the run needs
+// it — its engine's teardown and the runner's post-engine steps included —
+// and no longer than LeaseUnwindCeiling once the run can be resumed. A run
+// that is cancelled (a drain, an operator's cancel) or parks (a human gate, a
+// failed_resumable death) still unwinds: the engine exports the workspace and
+// banks its scratch, then the runner records the git snapshot, banks the
+// work and uploads the artifacts. Held through that, the lease keeps a resume
+// or a redelivery on the lock until what it reads is written.
+//
+// Two ceilings bound the hold, one per phase: engineUnwindCeiling from the
+// run's cancellation to the engine's return, postEngineCeiling from the
+// engine's return — which a park reaches without any cancellation. At either
+// ceiling the lease is let go as when a refresh fails: no longer refreshed,
+// and runCtx cancelled as interrupted, so what still works under it stops
+// rather than writing past it. A refresh that fails still cancels runCtx
 // (heartbeat).
-func (r *Runner) startLeaseHeartbeat(runCtx context.Context, runCancel context.CancelCauseFunc, runID string, lock store.RunLock, delivery progressReporter) (stop func()) {
+func (r *Runner) startLeaseHeartbeat(runCtx context.Context, runCancel context.CancelCauseFunc, runID string, lock store.RunLock, delivery progressReporter) leaseHold {
 	hbCtx, hbCancel := context.WithCancel(context.WithoutCancel(runCtx))
-	stopCeiling := context.AfterFunc(runCtx, func() {
-		t := time.NewTimer(runtime.LeaseUnwindCeiling)
-		defer t.Stop()
-		select {
-		case <-hbCtx.Done():
-		case <-t.C:
-			r.cfg.Logger.Warn("runner: run %s still unwinds %s after its cancellation — its lease is no longer held", runID, runtime.LeaseUnwindCeiling)
-			hbCancel()
-		}
+	release := func(why string) {
+		r.cfg.Logger.Warn("runner: run %s %s — its lease is no longer held", runID, why)
+		hbCancel()
+		runCancel(runtime.ErrRunInterrupted)
+	}
+	returned := make(chan struct{})
+	stopUnwindCeiling := context.AfterFunc(runCtx, func() {
+		awaitCeiling(hbCtx, returned, engineUnwindCeiling, func() {
+			release(fmt.Sprintf("still unwinds %s after its cancellation", engineUnwindCeiling))
+		})
 	})
+	var once sync.Once
+	engineReturned := func() {
+		once.Do(func() {
+			close(returned)
+			errtrack.Go("runner.postEngineCeiling", func() {
+				awaitCeiling(hbCtx, nil, postEngineCeiling, func() {
+					release(fmt.Sprintf("still works %s after its engine returned", postEngineCeiling))
+				})
+			})
+		})
+	}
 	done := make(chan struct{})
 	errtrack.Go("runner.heartbeat", func() { r.heartbeat(hbCtx, runCancel, lock, delivery, done) })
-	return func() {
-		stopCeiling()
-		hbCancel()
-		<-done
+	return leaseHold{
+		engineReturned: engineReturned,
+		stop: func() {
+			stopUnwindCeiling()
+			hbCancel()
+			<-done
+		},
 	}
 }
 
+// awaitCeiling calls expire once ceiling has passed — unless the hold ended
+// first (ctx), or the phase the ceiling bounds did (over).
+func awaitCeiling(ctx context.Context, over <-chan struct{}, ceiling time.Duration, expire func()) {
+	t := time.NewTimer(ceiling)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-over:
+	case <-t.C:
+		expire()
+	}
+}
+
+// LeaseUnwindCeiling bounds how long a run's lease is still held once the run
+// can be resumed — from its cancellation, or from the park its engine wrote:
+// the engine's unwind, then the runner's post-engine steps, each phase within
+// its own ceiling. A resume that meets the held lease spreads its retries over
+// it (natsq.HeldLockRetryDelay) and the orphan sweeper's cutoff counts them
+// (natsq.Conn.RedeliveryWindow): the server and the runner both hand it to
+// their queue connection.
+const LeaseUnwindCeiling = engineUnwindCeiling + postEngineCeiling
+
+// engineUnwindCeiling bounds the engine from the run's cancellation to its
+// return: the sandbox's teardown, each of its steps on a budget of its own
+// (runtime.SandboxTeardownBudget) — the same steps, on the same budgets, a
+// parked engine runs before it returns — and a margin for the rest of its
+// unwind.
+const engineUnwindCeiling = runtime.SandboxTeardownBudget + unwindMargin
+
+// postEngineCeiling bounds what the runner still does under the lease once
+// the engine returned: every post-engine step on its own budget
+// (postEngineBudget), and a margin for what those budgets do not count — the
+// timeline records the bank writes on bounds of their own, the local
+// clean-up.
+const postEngineCeiling = postEngineBudget + unwindMargin
+
+// unwindMargin is each phase's allowance for the work its budgets do not
+// name.
+const unwindMargin = 2 * time.Minute
+
+// postEngineBudget is the sum of the budgets of the steps executeRun takes
+// once its engine returned, in their order: the retry circuit's reset, the
+// git snapshot, the bank, the artifact upload, the sealed credentials'
+// deletion, then its deferred spend records and run log's close. A step added
+// there without a budget, or without its budget here, holds the lease past
+// the ceiling a resume's retries are spread over.
+const postEngineBudget = retryCircuitResetTimeout + gitMetaBudget + bankStepBudget +
+	uploadRunFilesBudget + runSecretsDeleteTimeout + orgSpendBudget + runLogCloseBudget
+
 // heartbeat refreshes the NATS KV lease so a long-running run keeps
 // holding the lock past the 60s default TTL. Returns when ctx is
-// cancelled (the engine returned). On refresh failure it cancels the run with
+// cancelled (the hold ended). On refresh failure it cancels the run with
 // runtime.ErrRunInterrupted so the engine unwinds to failed_resumable
 // proactively before the lease expires — without that the lease would
 // silently lapse and JetStream would redeliver to a sibling pod, two

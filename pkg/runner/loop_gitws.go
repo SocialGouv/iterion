@@ -32,6 +32,8 @@ import (
 // Best-effort throughout: a non-git workDir, an empty range (no commits),
 // or a store without the RunGitMetaStore seam all no-op cleanly. Never
 // returns an error — the caller has already decided the run's outcome.
+// Bounded (gitMetaBudget): it runs after the engine returned, with the run's
+// lease still held.
 func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity) {
 	gs := store.AsRunGitMetaStore(r.cfg.Store)
 	if gs == nil {
@@ -73,9 +75,17 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	// and its range is empty until it commits something of its own — and the
 	// save is a full replace. Writing it would erase the earlier attempt's
 	// real commits, which is how run 019f8e08 lost 40 of them. An empty
-	// snapshot may only ever CREATE the first record, never replace one.
+	// snapshot may only ever CREATE the first record, never replace one — so
+	// one whose predecessor cannot be read is not written at all.
 	if len(meta.Commits) == 0 {
-		if prev, perr := gs.LoadRunGitMeta(idCtx, msg.RunID); perr == nil && prev != nil && len(prev.Commits) > 0 {
+		lctx, lcancel := context.WithTimeout(idCtx, gitMetaOpTimeout)
+		prev, perr := gs.LoadRunGitMeta(lctx, msg.RunID)
+		lcancel()
+		if perr != nil {
+			r.cfg.Logger.Warn("runner: run %s: NOT recording an empty git snapshot — the recorded one could not be read, and an empty snapshot may only create the first: %v", msg.RunID, perr)
+			return
+		}
+		if prev != nil && len(prev.Commits) > 0 {
 			r.cfg.Logger.Info("runner: run %s: keeping the recorded git snapshot (%d commit(s)) — this attempt produced none",
 				msg.RunID, len(prev.Commits))
 			return
@@ -85,13 +95,31 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	// clone still exists, so the server pod can serve /files/diff and
 	// /commits/{sha}/diff for this run once the worktree is gone. Bounded:
 	// small diffs inline, large ones offloaded to the blob backend, anything
-	// past the budget dropped (Truncated). Best-effort — the metadata is the
-	// contract; diff content is an enrichment.
-	store.PopulateRunDiffs(idCtx, msg.RunID, workDir, meta, store.AsRunDiffBlobStore(r.cfg.Store))
-	if err := gs.SaveRunGitMeta(idCtx, msg.RunID, meta); err != nil {
+	// past the byte budget or gitMetaDiffBudget dropped (Truncated).
+	// Best-effort — the metadata is the contract; diff content is an
+	// enrichment.
+	dctx, dcancel := context.WithTimeout(idCtx, gitMetaDiffBudget)
+	store.PopulateRunDiffs(dctx, msg.RunID, workDir, meta, store.AsRunDiffBlobStore(r.cfg.Store))
+	dcancel()
+	sctx, scancel := context.WithTimeout(idCtx, gitMetaOpTimeout)
+	defer scancel()
+	if err := gs.SaveRunGitMeta(sctx, msg.RunID, meta); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: persist git meta: %v", msg.RunID, err)
 	}
 }
+
+// gitMetaOpTimeout bounds each store op of the git snapshot on its own — the
+// read of the recorded one, the save — so the diff capture before the save
+// cannot starve it.
+const gitMetaOpTimeout = 30 * time.Second
+
+// gitMetaDiffBudget bounds the capture of the snapshot's diff content, whose
+// larger diffs are offloaded to the blob backend. Past it the remaining diffs
+// are marked truncated and the metadata is saved all the same.
+const gitMetaDiffBudget = 2 * time.Minute
+
+// gitMetaBudget bounds recordRunGitMeta's store work end to end.
+const gitMetaBudget = gitMetaOpTimeout + gitMetaDiffBudget + gitMetaOpTimeout
 
 // reExecutionReason names why this claim is a re-execution — so the clone
 // about to replace the workspace is discarding an earlier node's uncommitted
@@ -555,13 +583,17 @@ func extractRepoHost(repoURL string) (string, error) {
 // ITERION_RUNNER_GIT_TIMEOUT (a Go duration; <= 0 disables).
 var gitOpTimeout = defaultGitOpTimeout()
 
+// gitOpTimeoutDefault is gitOpTimeout when ITERION_RUNNER_GIT_TIMEOUT does
+// not override it.
+const gitOpTimeoutDefault = 15 * time.Minute
+
 func defaultGitOpTimeout() time.Duration {
 	if v := os.Getenv("ITERION_RUNNER_GIT_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d // <= 0 disables the bound
 		}
 	}
-	return 15 * time.Minute
+	return gitOpTimeoutDefault
 }
 
 // runGit runs a git subprocess, redacting tok from any error output so an
@@ -912,7 +944,11 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 // the Nak that triggers redelivery, so every second spent here is
 // added recovery latency for a run another pod should already be
 // picking up. A var so tests can exercise the spent-budget divergence.
-var attemptBankBudget = 2 * time.Minute
+var attemptBankBudget = attemptBankBudgetDefault
+
+// attemptBankBudgetDefault is attemptBankBudget outside the tests that
+// spend it.
+const attemptBankBudgetDefault = 2 * time.Minute
 
 // parkStoreOpTimeout bounds the park's timeline event write (the doc
 // courtesy read rides parkDocReadTimeout) — the store is the same

@@ -14,6 +14,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// spendWriteTimeout bounds each accounting write the runner makes for an
+// attempt, detached from the run ctx.
+const spendWriteTimeout = 5 * time.Second
+
+// orgSpendBudget bounds recordOrgSpend: its three writes — the keys'
+// last use, the per-credential ledger, the org's bucket — one after the
+// other, each on its own bound.
+const orgSpendBudget = 3 * spendWriteTimeout
+
 // recordOrgSpend charges the run's accumulated LLM consumption to the
 // org's monthly usage bucket AND bumps `last_used_at` on every API key
 // the attempt held. Called at the end of every execution attempt —
@@ -60,7 +69,7 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 		if key == "" {
 			key = msg.TenantID
 		}
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 		if err := r.cfg.OrgUsage.AddSpend(bg, orgusage.OrgSubject(key), now, costUSD, in, out, aggregate); err != nil {
 			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
 		}
@@ -110,7 +119,7 @@ func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMes
 	if len(fps) == 0 {
 		return
 	}
-	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
 	for _, fp := range fps {
 		bctx := bg
@@ -150,7 +159,7 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if condition == credpool.ConditionOK && usage.SawAuthFailure() {
 		condition = credpool.ConditionAuthFailed
 	}
-	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
 	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{
 		CostUSD:         costUSD,

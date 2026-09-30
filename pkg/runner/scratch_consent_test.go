@@ -93,7 +93,7 @@ func TestExecuteRun_givesTheEngineTheScratchsConsent(t *testing.T) {
 			r := &Runner{cfg: Config{Store: st, WorkDir: t.TempDir(), Logger: iterlog.Nop()}}
 			msg := &queue.RunMessage{RunID: runID, TenantID: "team-1", OwnerID: "u1", WorkflowName: "main", IRCompiled: body,
 				Resume: &queue.ResumeSpec{Force: true, AcceptScratchLoss: accept}}
-			execErr := r.executeRun(ctx, msg, nil)
+			execErr := r.executeRun(ctx, msg, nil, nil)
 			var rt *runtime.RuntimeError
 			refused := errors.As(execErr, &rt) && rt.Code == runtime.ErrCodeScratchNotPortable
 			if refused == accept {
@@ -155,7 +155,7 @@ func TestExecuteRun_aDeliveryClaimsItsOwnAttemptOnly(t *testing.T) {
 				t.Fatal("precondition: the delivery's consent was dropped while the run was queued for it")
 			}
 			if !requeued {
-				if err := r.executeRun(ctx, m1, nil); err != nil {
+				if err := r.executeRun(ctx, m1, nil, nil); err != nil {
 					t.Fatalf("the delivery of the queued attempt, with its consent: %v, want the run resumed", err)
 				}
 				return
@@ -165,7 +165,7 @@ func TestExecuteRun_aDeliveryClaimsItsOwnAttemptOnly(t *testing.T) {
 				t.Fatalf("cancel: %v %v", ok, err)
 			}
 			m2 := publish(store.RunStatusCancelled, false)
-			if err := r.executeRun(ctx, m1, nil); err == nil {
+			if err := r.executeRun(ctx, m1, nil, nil); err == nil {
 				t.Fatal("the first delivery claimed the attempt queued after it, and lent it its consent")
 			}
 			doc, err := st.LoadRun(ctx, runID)
@@ -175,7 +175,7 @@ func TestExecuteRun_aDeliveryClaimsItsOwnAttemptOnly(t *testing.T) {
 			for _, ev := range eventsOfType(t, st, runID, store.EventRunResumed) {
 				t.Fatalf("the first delivery resumed the run: %v", ev)
 			}
-			execErr := r.executeRun(ctx, m2, nil)
+			execErr := r.executeRun(ctx, m2, nil, nil)
 			var rt *runtime.RuntimeError
 			if !errors.As(execErr, &rt) || rt.Code != runtime.ErrCodeScratchNotPortable {
 				t.Fatalf("the newer resume's own delivery, published without the consent: %v, want SCRATCH_NOT_PORTABLE", execErr)
@@ -229,7 +229,7 @@ func TestExecuteRun_aDeliveryResumesARunNoLongerQueued(t *testing.T) {
 	msg := &queue.RunMessage{RunID: runID, TenantID: "team-1", OwnerID: "u1", WorkflowName: "main", IRCompiled: body,
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		Resume:         &queue.ResumeSpec{PriorStatus: store.RunStatusFailedResumable}}
-	if err := r.executeRun(ctx, msg, nil); err != nil {
+	if err := r.executeRun(ctx, msg, nil, nil); err != nil {
 		t.Fatalf("a delivery of a run parked again before it came back: %v, want it resumed", err)
 	}
 	if doc, err := st.LoadRun(ctx, runID); err != nil || doc.Status != store.RunStatusFinished {

@@ -47,12 +47,14 @@ const (
 	sweepInterval = 60 * time.Second
 	// sweepQueuedFallback is the queued-staleness floor when the lease
 	// checker can't report the queue's actual redelivery window (tests,
-	// exotic wiring). Must exceed the shipped defaults' MaxDeliver ×
-	// AckWait (8 × 10m) plus margin — a message still legitimately
-	// bouncing through redeliveries (a deep backlog with every runner
-	// busy) never holds a lease, so a too-short cutoff flips it to
-	// failed_resumable mid-flight.
-	sweepQueuedFallback = 90 * time.Minute
+	// exotic wiring). Must exceed the shipped defaults' redelivery window
+	// (about 2h30: eight deliveries, the last ones waiting out a held run
+	// lease) plus margin — a message still legitimately bouncing through
+	// redeliveries (a deep backlog with every runner busy, a resume
+	// waiting for the previous execution's lease to lapse) holds no lease
+	// of its own, so a too-short cutoff flips it to failed_resumable
+	// mid-flight.
+	sweepQueuedFallback = 2*time.Hour + 45*time.Minute
 	// sweepQueuedMargin pads the reported redelivery window so the
 	// sweeper never races the final delivery attempt.
 	sweepQueuedMargin = 10 * time.Minute

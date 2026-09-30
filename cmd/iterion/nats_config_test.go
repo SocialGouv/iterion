@@ -5,7 +5,7 @@ import (
 	"time"
 
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
-	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runner"
 )
 
 // TestNATSConfig_carriesTheLeaseUnwindCeiling: the connection the server and
@@ -16,7 +16,7 @@ func TestNATSConfig_carriesTheLeaseUnwindCeiling(t *testing.T) {
 	var cfg iterconfig.Config
 	cfg.Runner.LockTTL = 90 * time.Second
 	c := natsConfig(cfg, nil)
-	if c.LeaseUnwindCeiling != runtime.LeaseUnwindCeiling || c.LockTTL != 90*time.Second {
-		t.Fatalf("natsConfig: lease unwind ceiling %v, lock TTL %v; want %v, 1m30s", c.LeaseUnwindCeiling, c.LockTTL, runtime.LeaseUnwindCeiling)
+	if c.LeaseUnwindCeiling != runner.LeaseUnwindCeiling || c.LockTTL != 90*time.Second {
+		t.Fatalf("natsConfig: lease unwind ceiling %v, lock TTL %v; want %v, 1m30s", c.LeaseUnwindCeiling, c.LockTTL, runner.LeaseUnwindCeiling)
 	}
 }

@@ -218,7 +218,8 @@ status"). The orphan sweeper closes that gap
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)):
 
 - Scans every 60s for `queued` past the redelivery window + margin
-  (~90 min with the defaults) or `running > 10 min` AND no current
+  (~2 h 40 with the defaults: a resume that meets a held run lease may
+  wait out the runner's lease ceiling) or `running > 10 min` AND no current
   NATS-KV lease.
 - CAS-flips matched rows to `failed_resumable` so `iterion resume` (or
   the studio Retry button) lights up.

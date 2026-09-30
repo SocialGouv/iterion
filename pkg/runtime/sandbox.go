@@ -1887,21 +1887,14 @@ const sandboxHeadCaptureTimeout = 30 * time.Second
 const sandboxShutdownTimeout = 30 * time.Second
 
 // SandboxTeardownBudget bounds what the engine still does in a sandbox once
-// its run was cancelled, before it returns: the workspace HEAD capture, the
-// export, the scratch's bank (its archive and upload, its record, the resume
-// of the processes its quiesce stopped — each on a budget of its own), the
-// shutdown. The runner holds the run's lease that long past the
-// cancellation, no longer.
+// its run was cancelled or parked, before it returns: the workspace HEAD
+// capture, the export, the scratch's bank (its archive and upload, its
+// record, the resume of the processes its quiesce stopped — each on a budget
+// of its own), the shutdown. The runner's lease covers that teardown, then
+// its own post-engine steps (runner.LeaseUnwindCeiling).
 const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout +
 	scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget +
 	sandboxShutdownTimeout
-
-// LeaseUnwindCeiling bounds how long a run's lease is held after its
-// cancellation: the engine's sandbox teardown, and a margin for the rest of
-// its unwind. An engine that has not returned by then no longer holds the
-// run: the lease lapses, and the queue redelivers once the delivery's ack
-// deadline passes.
-const LeaseUnwindCeiling = SandboxTeardownBudget + 2*time.Minute
 
 // WorkspaceIntegrity is the sandbox-side git truth captured at teardown
 // for export-based drivers (kubernetes), BEFORE ExportWorkspace streams

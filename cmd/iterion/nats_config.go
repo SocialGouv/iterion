@@ -4,7 +4,7 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
-	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runner"
 )
 
 // natsConfig is the queue connection the server and the runner both open.
@@ -30,7 +30,7 @@ func natsConfig(cfg iterconfig.Config, logger *iterlog.Logger) natsq.Config {
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
 		MaxPayload:          cfg.NATS.MaxPayload,
 		LockTTL:             cfg.Runner.LockTTL,
-		LeaseUnwindCeiling:  runtime.LeaseUnwindCeiling,
+		LeaseUnwindCeiling:  runner.LeaseUnwindCeiling,
 		Logger:              logger,
 	}
 }

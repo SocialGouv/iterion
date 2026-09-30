@@ -14,7 +14,6 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -374,10 +373,13 @@ func TestHeldLockFinalDeliveryArchivesOnNATS(t *testing.T) {
 }
 
 // TestAcquireRunLock_aHeldLockOutlastsTheLongestTeardown: a resume that finds
-// the lease held — the previous execution still tearing down, which may hold
-// it up to runtime.LeaseUnwindCeiling past its cancellation, then the lease's lapse —
-// is not archived before that hold can be over: its deliveries are spread
-// over it, none sooner than the lease's TTL.
+// the lease held — the previous execution still unwinding, which may hold it
+// up to LeaseUnwindCeiling once the run could be resumed, then the lease's
+// lapse —
+// is not archived before that hold can be over, whichever delivery first met
+// the lock (earlier ones may have been spent elsewhere — an epoch Nak during
+// a rollout): the deliveries left are spread over it, none sooner than the
+// lease's TTL.
 func TestAcquireRunLock_aHeldLockOutlastsTheLongestTeardown(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -388,18 +390,20 @@ func TestAcquireRunLock_aHeldLockOutlastsTheLongestTeardown(t *testing.T) {
 	deliveries := natsq.DefaultStreamMaxRetry
 	r := &Runner{cfg: Config{Store: lockHeldStore{st}, Logger: iterlog.Nop()}, maxDeliverOverride: deliveries}
 	r.lockFailureDLQ = func(context.Context, jsDelivery, string) error { return nil }
-	var before time.Duration
-	for n := 1; n < deliveries; n++ {
-		d := &fakeDelivery{delivered: n}
-		if _, ok, _ := r.acquireRunLock(context.Background(), &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1", Resume: &queue.ResumeSpec{}}, d, iterlog.Nop()); ok {
-			t.Fatalf("delivery %d took a held lock", n)
+	for first := 1; first < deliveries; first++ {
+		var before time.Duration
+		for n := first; n < deliveries; n++ {
+			d := &fakeDelivery{delivered: n}
+			if _, ok, _ := r.acquireRunLock(context.Background(), &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1", Resume: &queue.ResumeSpec{}}, d, iterlog.Nop()); ok {
+				t.Fatalf("delivery %d took a held lock", n)
+			}
+			if len(d.nakDelays) != 1 || d.nakDelays[0] < natsq.DefaultLockTTL || d.terms != 0 {
+				t.Fatalf("delivery %d: %+v, want one delayed Nak no sooner than the lease's TTL", n, d)
+			}
+			before += d.nakDelays[0]
 		}
-		if len(d.nakDelays) != 1 || d.nakDelays[0] < natsq.DefaultLockTTL || d.terms != 0 {
-			t.Fatalf("delivery %d: %+v, want one delayed Nak no sooner than the lease's TTL", n, d)
+		if hold := LeaseUnwindCeiling + natsq.DefaultLockTTL; before < hold {
+			t.Errorf("lock first met at delivery %d: the last delivery comes %s after it, before a lease held %s can have lapsed", first, before, hold)
 		}
-		before += d.nakDelays[0]
-	}
-	if hold := runtime.LeaseUnwindCeiling + natsq.DefaultLockTTL; before < hold {
-		t.Fatalf("the last delivery comes %s after the first, before a lease held %s can have lapsed", before, hold)
 	}
 }

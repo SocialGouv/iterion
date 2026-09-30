@@ -204,13 +204,29 @@ pods the same way.
   existed. Refusing would stop every hard-killed run, most of which never
   write the scratch.
 - **The engine's check holds under the run's lock** only if the lock is held
-  through a cancelled run's teardown: the runner keeps refreshing the lease
-  until the engine returns (#1991), at most the sandbox's teardown budget —
-  the bank's archive, record and resume included — plus a margin. A resume
-  delivered meanwhile finds the lease held: its retries are spread over
-  that ceiling and the lease's lapse, so it outlives the teardown instead of
-  landing on the DLQ, and the orphan sweeper's cutoff counts them. A pod whose lease lapsed while it was
-  alive still unwinds, and banks, as a split-brain writer.
+  until what a resume reads is written: the runner keeps refreshing the
+  lease through the engine's teardown, cancelled or parked, and through its
+  own post-engine steps — the git snapshot, the bank, the artifact upload,
+  the spend and log records — each on a budget of its own (#1991). Two
+  ceilings bound that hold: the sandbox's teardown budget (the bank's
+  archive, record and resume included) plus a margin, from a cancellation
+  to the engine's return; the post-engine steps' budgets plus a margin, from
+  that return, which a park reaches without any cancellation. Together they
+  make the runner's `LeaseUnwindCeiling`, 56 minutes — the storage bank's
+  default budget, 31 minutes, is most of it. A resume delivered meanwhile
+  finds the lease held: its retries back off by halves, from one lease
+  interval to a last one that waits the whole ceiling and the lease's
+  lapse, so it outlives the hold instead of landing on the DLQ whichever
+  delivery first met the lock; the orphan sweeper's cutoff counts every
+  delivery at the longest delay its rank can take (2 h 30 with the
+  defaults). Not covered: a resume whose last delivery is the first to meet
+  the lease, or whose second-to-last is spent on another Nak (an epoch Nak
+  during a rollout) — no retry is left to wait the hold. A pod past a
+  ceiling lets its lease go as when a refresh fails, its run ctx cancelled
+  so a bank in flight stops; what does not ride that ctx — the snapshot,
+  the records, the bank of a run past its own deadline, each on its own
+  bound — still lands, as a split-brain writer. A raised
+  `ITERION_RUNNER_GIT_TIMEOUT` stretches a bank up to the ceiling only.
 - **Staleness is read from the timeline's `node_finished` events.** A branch
   writes its node's finish best-effort: one lost to a store outage leaves a
   bank looking fresh. Stamping the record with the checkpoint's progress,

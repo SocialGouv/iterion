@@ -1052,6 +1052,23 @@ func liveBankBudget() time.Duration {
 	return bankBudget
 }
 
+// liveBankBudgetDefault is liveBankBudget at the default git op bound — what
+// the lease's post-engine ceiling counts. A raised ITERION_RUNNER_GIT_TIMEOUT
+// extends a live bank up to that ceiling only: past it the lease is let go,
+// and the run ctx the bank rides with it.
+const liveBankBudgetDefault = max(2*gitOpTimeoutDefault, bankBudget)
+
+// bankStepBudget bounds bankIfBankable on its longest road, each road's git
+// work on its aggregate bound and its store work on its own: the storage bank
+// of a live run (liveBankBudgetDefault) or of a deadlined one (bankBudget),
+// then the run doc's read and its write; or the attempt ref, then its
+// timeline record.
+const bankStepBudget = max(
+	liveBankBudgetDefault+2*bankDocOpTimeout,
+	bankBudget+2*bankDocOpTimeout,
+	attemptBankBudgetDefault+parkStoreOpTimeout,
+)
+
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
@@ -1791,37 +1808,13 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 
 	r.spendScratchConsent(runCtx, msg, logger)
 
-	// Heartbeat goroutine: refresh the NATS lease until the engine returns,
-	// its teardown included (startLeaseHeartbeat). On refresh failure it
-	// cancels runCtx WITH the interrupted cause so the engine unwinds to
-	// failed_resumable — better to lose progress than to let the lease
-	// expire while the engine is still writing to Mongo (which would invite
-	// split-brain when JetStream redelivers to a sibling pod). The cause
-	// makes the redelivery auto-resume without manual intervention.
-	stopHeartbeat := r.startLeaseHeartbeat(runCtx, runCancel, msg.RunID, lock, delivery)
-	// nil cause: the run has already returned terminally here, so this is
-	// teardown — the engine never reads the cause. Idempotent panic net.
-	defer func() {
-		runCancel(nil)
-		stopHeartbeat()
-	}()
-
-	// Stamped under the lock, before any work: the pair (launcher build,
-	// runner build) is what makes a version skew readable from the run
-	// itself, and an IR that will not load must not be the first place an
-	// operator learns of one.
-	r.recordRunnerBuild(runCtx, msg, pre.preRun)
-
+	// The lease is held by the heartbeat through the engine's teardown and
+	// the runner's post-engine steps, within LeaseUnwindCeiling once the run
+	// can be resumed, and let go before the terminal Ack/Nak below: the
+	// heartbeat issues periodic InProgress() on this same delivery, and one
+	// landing after the Ack/Nak would log a spurious already-acked error.
 	var usage *metricsEmitter
-	err := r.executeRun(runCtx, msg, &usage)
-	// Stop the heartbeat before finalizing (Ack/Nak) the delivery. The
-	// heartbeat issues periodic InProgress() on this same delivery to
-	// hold the JetStream ack deadline open; draining it here guarantees
-	// no InProgress() lands after the terminal Ack/Nak below (which would
-	// otherwise log a spurious already-acked error). A second stop in the
-	// defer above is a no-op.
-	runCancel(nil)
-	stopHeartbeat()
+	err := r.executeHoldingLease(runCtx, runCancel, msg, pre.preRun, lock, delivery, &usage)
 
 	// Run-outcome side effects (completion webhook + run.<outcome> event →
 	// push notifications, chained triggers) fire ONLY when this delivery
@@ -2217,7 +2210,12 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // real disposition. The pool report cannot live in this function's defer:
 // whether an attempt is the last one — parked on the DLQ rather than
 // redelivered — is decided above, after this returns.
-func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter) (execErr error) {
+//
+// engineReturned, when non-nil, is called the moment the engine returns: what
+// follows — the git snapshot, the bank, the upload, the deferred records — is
+// the runner's post-engine work, which the lease covers within
+// postEngineCeiling (leaseHold).
+func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter, engineReturned func()) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -2725,6 +2723,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 		}
 	}
+	if engineReturned != nil {
+		engineReturned()
+	}
 	if runErr == nil {
 		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)
 	}
@@ -2788,12 +2789,16 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	return runErr
 }
 
+// retryCircuitResetTimeout bounds the retry circuit's reset — the run's read,
+// then the breaker's write, on one deadline.
+const retryCircuitResetTimeout = 5 * time.Second
+
 // resetRetryCircuitAfterSuccessfulExecution closes the shared workflow
 // breaker only when durable run state proves execution reached its terminal
 // success. Some successful Engine.Resume calls deliberately re-pause a review
 // dialogue and return nil; those are not provider-recovery evidence.
 func (r *Runner) resetRetryCircuitAfterSuccessfulExecution(ctx context.Context, runID string) {
-	resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), retryCircuitResetTimeout)
 	defer resetCancel()
 	runMeta, loadErr := r.cfg.Store.LoadRun(resetCtx, runID)
 	if loadErr != nil {
