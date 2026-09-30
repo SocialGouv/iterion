@@ -165,6 +165,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - "4891:4891"
+    # It exits when NATS is not reachable at startup; come back rather than
+    # stay down.
+    restart: on-failure
     healthcheck:
       # /readyz pings Mongo+NATS+S3 with a 1s deadline per dep. Only Mongo
       # is critical: with it down /readyz answers 503, and after 30 failed
@@ -204,8 +207,12 @@ services:
       ITERION_S3_SECRET_ACCESS_KEY: iterion-dev-secret
       ITERION_S3_USE_PATH_STYLE: "true"
       # The volume is mounted on a directory the image gives to the iterion
-      # user, so a fresh volume starts owned by the runner.
-      ITERION_RUNNER_WORKDIR: /var/lib/iterion
+      # user, so a fresh volume starts owned by the runner, which creates
+      # work/ in it. The workdir must be a path the server container does
+      # not have: the server stats a run's workdir to decide whether it can
+      # serve the run's files itself, and an empty /var/lib/iterion exists
+      # in its image too.
+      ITERION_RUNNER_WORKDIR: /var/lib/iterion/work
       ITERION_LOG_FORMAT: json
       ITERION_LOG_LEVEL: info
       # Cloud mode refuses to start without a JWT secret: the same value
