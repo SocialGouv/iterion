@@ -75,6 +75,22 @@ interrupted after such a write relaunches as a green no-op. Measured: four
 `finished` runs in 24 h that crossed no gate, every one a relaunch from a
 banked branch carrying a completion nobody had proven.
 
+The contract is more than the plan, and all of it is read-only inside a lot.
+`lot_verify` compares the plan and the files its owner keeps beside it —
+`outcomes.json`, `brief.yaml`, `ARBITRAGE.md`, `defects-ledger.json` — with the
+run's base, deny by default, before any gate command runs:
+
+| a lot may write | nothing else |
+|---|---|
+| its own `status` (`blocked`) | every field of every existing lot, the plan's top-level keys |
+| a NEW lot, as a proposal | the outcomes, the brief, the arbitration doctrine |
+| a NEW register entry, for a defect it found | every other register entry, a removal, the register's header |
+| the register entries its lot declares in `remediates:` (read at the base) | |
+
+Anything else is refused with one named cause per file —
+`.modernize/outcomes.json: outcomes[engine-target].check changed` — and goes
+back to the worker like a self-written `done`.
+
 ## Running
 
 ```sh
