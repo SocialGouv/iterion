@@ -88,20 +88,28 @@ func benchOwned(key string) bool {
 }
 
 // refuseForeignObjects stops the bench before it writes to a bucket holding
-// objects it did not write: the first listed page is enough to tell a
-// dedicated bucket from the application's.
+// objects it did not write, reading the whole listing: leftovers of earlier
+// bench runs may fill the first pages.
 func refuseForeignObjects(t *testing.T, c *S3Client) {
 	t.Helper()
 	if os.Getenv("ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS") == "1" {
 		return
 	}
-	out, err := c.client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String(c.bucket)})
-	if err != nil {
-		t.Fatalf("listing bucket %s before the bench: %v", c.bucket, err)
-	}
-	for _, obj := range out.Contents {
-		if k := aws.ToString(obj.Key); !benchOwned(k) {
-			t.Fatalf("bucket %s holds %q, which the bench did not write: point ITERION_TEST_S3_BUCKET at a bucket of its own (or set ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS=1)", c.bucket, k)
+	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{Bucket: aws.String(c.bucket)})
+	prevToken := ""
+	for pager.HasMorePages() {
+		page, err := pager.NextPage(context.Background())
+		if err != nil {
+			t.Fatalf("listing bucket %s before the bench: %v", c.bucket, err)
+		}
+		if err := listingStuck("", page, prevToken); err != nil {
+			t.Fatalf("listing bucket %s before the bench: %v", c.bucket, err)
+		}
+		prevToken = aws.ToString(page.NextContinuationToken)
+		for _, obj := range page.Contents {
+			if k := aws.ToString(obj.Key); !benchOwned(k) {
+				t.Fatalf("bucket %s holds %q, which the bench did not write: point ITERION_TEST_S3_BUCKET at a bucket of its own (or, running go test directly, set ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS=1)", c.bucket, k)
+			}
 		}
 	}
 }
@@ -125,7 +133,8 @@ func benchRun(t *testing.T, c *S3Client) string {
 func sweepOnCleanup(t *testing.T, c *S3Client, runs ...string) {
 	t.Helper()
 	t.Cleanup(func() {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
 		for _, run := range runs {
 			for _, sweep := range []func(context.Context, string) error{
 				c.DeleteRun, c.DeleteRunAttachments, c.DeleteRunToolBlobs,

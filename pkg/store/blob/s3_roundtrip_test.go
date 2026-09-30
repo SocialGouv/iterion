@@ -42,6 +42,16 @@ type fakeS3 struct {
 	// refuseDeletes answers DeleteObjects with 200 and one AccessDenied
 	// error per key, deleting nothing (legal hold, a lagging replica…).
 	refuseDeletes bool
+	// pageSize bounds a ListObjectsV2 page (1000 when 0); the continuation
+	// token is the last key served.
+	pageSize int
+	// refuseLists answers every ListObjectsV2 with 403 AccessDenied.
+	refuseLists bool
+	// stuckToken ignores the continuation token: every page starts over
+	// and carries the same token.
+	stuckToken bool
+	// lists counts the ListObjectsV2 requests served.
+	lists int
 }
 
 // set flips one of the misbehaviour knobs under the lock the handlers read
@@ -123,25 +133,49 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeS3) handleList(w http.ResponseWriter, r *http.Request) {
 	prefix := r.URL.Query().Get("prefix")
+	after := r.URL.Query().Get("continuation-token")
 	type object struct {
 		Key  string `xml:"Key"`
 		Size int64  `xml:"Size"`
 	}
 	type result struct {
-		XMLName     xml.Name `xml:"ListBucketResult"`
-		Name        string   `xml:"Name"`
-		Prefix      string   `xml:"Prefix"`
-		KeyCount    int      `xml:"KeyCount"`
-		IsTruncated bool     `xml:"IsTruncated"`
-		Contents    []object `xml:"Contents"`
+		XMLName               xml.Name `xml:"ListBucketResult"`
+		Name                  string   `xml:"Name"`
+		Prefix                string   `xml:"Prefix"`
+		KeyCount              int      `xml:"KeyCount"`
+		IsTruncated           bool     `xml:"IsTruncated"`
+		NextContinuationToken string   `xml:"NextContinuationToken,omitempty"`
+		Contents              []object `xml:"Contents"`
 	}
 	res := result{Name: f.bucket, Prefix: prefix}
 	f.mu.Lock()
-	ignorePrefix := f.ignorePrefix
+	f.lists++
+	ignorePrefix, refuse, stuck, pageSize := f.ignorePrefix, f.refuseLists, f.stuckToken, f.pageSize
 	f.mu.Unlock()
+	if refuse {
+		writeS3Error(w, http.StatusForbidden, "AccessDenied")
+		return
+	}
+	if pageSize <= 0 {
+		pageSize = 1000
+	}
+	if stuck {
+		after = ""
+	}
 	for _, k := range f.keys() {
 		if !ignorePrefix && !strings.HasPrefix(k, prefix) {
 			continue
+		}
+		if after != "" && k <= after {
+			continue
+		}
+		if len(res.Contents) == pageSize {
+			res.IsTruncated = true
+			res.NextContinuationToken = res.Contents[len(res.Contents)-1].Key
+			if stuck {
+				res.NextContinuationToken = "stuck"
+			}
+			break
 		}
 		f.mu.Lock()
 		size := int64(len(f.objects[k]))
