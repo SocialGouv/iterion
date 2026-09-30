@@ -320,7 +320,9 @@ named (`raced`, repeated on the restore).
 Only a node that ran in the sandbox and succeeded ages the bank — an agent, a
 judge, a tool, a subbot or an LLM router; one that failed re-runs from the
 checkpoint, and a rewind takes back the nodes it dropped — those on no loop or
-foreach cycle, whose earlier passes it does not replay. A `--force` resume
+foreach cycle, whose earlier passes it does not replay (a rewind across a loop
+or a fan-out is refused; `--force` resumes it on the bank). The scratch itself
+is not rewound. A `--force` resume
 that went on without the bank forsakes it; one that restored a stale bank
 makes it the run's scratch again.
 

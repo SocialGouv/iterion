@@ -710,10 +710,6 @@ func (r *Run) stop(ctx context.Context) error {
 	return nil
 }
 
-// Cleanup ensures the container is gone. Containers were created with
-// `--rm` so a graceful Stop already removes them; Cleanup is the
-// fallback for the failure-mode where the container is alive but
-// orphaned (engine crash mid-run, etc.).
 // ProcessIsolated reports the process namespace read when the container
 // started (containerPIDIsolated).
 func (r *Run) ProcessIsolated() bool { return r.pidIsolated }
@@ -737,6 +733,10 @@ func containerPIDIsolated(ctx context.Context, rt Runtime, id string, logger *it
 	}
 }
 
+// Cleanup ensures the container is gone. Containers were created with
+// `--rm` so a graceful Stop already removes them; Cleanup is the
+// fallback for the failure-mode where the container is alive but
+// orphaned (engine crash mid-run, etc.).
 func (r *Run) Cleanup(ctx context.Context) error {
 	r.mu.Lock()
 	if r.cleaned {

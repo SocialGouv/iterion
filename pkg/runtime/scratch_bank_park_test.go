@@ -1087,8 +1087,10 @@ func TestStartSandbox_aChildLearnsWhetherTheScratchDiesWithTheSandbox(t *testing
 // signal on the host — and runs the rest like podRun.
 type isolatedRecorder struct {
 	*podRun
-	cmds       []string
-	quiesceErr error
+	cmds          []string
+	quiesceErr    error
+	quiesceExit   int
+	quiesceStderr string
 }
 
 func (r *isolatedRecorder) ProcessIsolated() bool { return true }
@@ -1097,7 +1099,10 @@ func (r *isolatedRecorder) Exec(ctx context.Context, argv []string, opts sandbox
 	cmd := strings.Join(argv, " ")
 	r.cmds = append(r.cmds, cmd)
 	if strings.Contains(cmd, "kill ") {
-		return sandbox.ExecResult{}, r.quiesceErr
+		if strings.Contains(cmd, "kill -STOP -1") {
+			return sandbox.ExecResult{ExitCode: r.quiesceExit, Stderr: []byte(r.quiesceStderr)}, r.quiesceErr
+		}
+		return sandbox.ExecResult{}, nil
 	}
 	return r.podRun.Exec(ctx, argv, opts)
 }
@@ -1160,6 +1165,20 @@ func TestBankScratch_quiescesTheSandboxBeforeTarReadsIt(t *testing.T) {
 		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, quiesceErr: errors.New("error dialing backend")}
 		if got := bank(t, run); !got.banked || !strings.Contains(got.unquiesced, "error dialing backend") || got.event()["unquiesced"] == nil {
 			t.Fatalf("want the bank recorded, and why its sandbox was not stopped: %+v", got)
+		}
+	})
+	t.Run("a quiesce that leaves processes running", func(t *testing.T) {
+		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, quiesceExit: scratchQuiescePartial, quiesceStderr: "not stopped: 2068(sh)"}
+		got := bank(t, run)
+		if _, _, resume := order(run.cmds); !got.banked || !strings.Contains(got.unquiesced, "2068(sh)") || resume < 0 {
+			t.Fatalf("banked=%v unquiesced=%q: want the processes left running named, and the stopped ones resumed (%q)", got.banked, got.unquiesced, run.cmds)
+		}
+	})
+	t.Run("a sandbox in the host's initial process namespace", func(t *testing.T) {
+		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, quiesceExit: 3, quiesceStderr: "the sandbox runs in the host's initial process namespace"}
+		got := bank(t, run)
+		if _, _, resume := order(run.cmds); !got.banked || !strings.Contains(got.unquiesced, "initial process namespace") || resume >= 0 {
+			t.Fatalf("banked=%v unquiesced=%q: want the refusal recorded and nothing resumed (%q)", got.banked, got.unquiesced, run.cmds)
 		}
 	})
 	t.Run("a sandbox that may run on the host", func(t *testing.T) {
@@ -1310,5 +1329,76 @@ func TestBankScratch_aSymlinkedScratchIsListedThroughTheLink(t *testing.T) {
 	}
 	if got := bankScratch(ctx, localRun(link), sandboxScratchContainerPath, store.AsScratchBankStore(s), runID, scratchBankMaxBytes); !got.banked {
 		t.Fatalf("a scratch linked to a directory holding a file: %+v, want it banked", got)
+	}
+}
+
+// partlyQuiescedPods starts pods like podDriver whose quiesce leaves a
+// process running — another user's.
+type partlyQuiescedPods struct{ *podDriver }
+
+func (d partlyQuiescedPods) Start(ctx context.Context, p sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {
+	run, err := d.podDriver.Start(ctx, p, info)
+	if err != nil {
+		return nil, err
+	}
+	return &isolatedRecorder{podRun: run.(*podRun), quiesceExit: scratchQuiescePartial, quiesceStderr: "not stopped: 9(sh)"}, nil
+}
+
+// TestResume_aBankArchivedUnquiescedIsRestoredAndSaysSo: a bank archived
+// while some of the sandbox's processes still ran is restored, and the
+// restore says something may have written the scratch meanwhile.
+func TestResume_aBankArchivedUnquiescedIsRestoredAndSaysSo(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-unquiesced"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "state.db"), []byte("pages"), 0o644)
+	})
+	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	eng := func(drv sandbox.Driver) *Engine {
+		return New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+			"docker": func() (sandbox.Driver, error) { return drv, nil },
+		}))
+	}
+	if err := eng(partlyQuiescedPods{d}).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	if banked := eventsOf(t, s, runID, store.EventSandboxScratchBanked); len(banked) != 1 || banked[0].Data["banked"] != true || !strings.Contains(fmt.Sprint(banked[0].Data["unquiesced"]), "9(sh)") {
+		t.Fatalf("want the bank recorded with the process left running, got %v", dataOf(banked))
+	}
+	if err := eng(d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
+	if len(restored) != 1 || restored[0].Data["restored"] != true || restored[0].Data["unquiesced"] != true {
+		t.Fatalf("want the restore to say the bank was archived unquiesced, got %v", dataOf(restored))
+	}
+}
+
+// TestScratchQuiesceScripts_refuseTheHostsInitialNamespace: the scripts
+// that signal every process refuse to in the host's initial process
+// namespace, whatever the Run declared. Run on the host with every signal
+// replaced by an echo — never a kill.
+func TestScratchQuiesceScripts_refuseTheHostsInitialNamespace(t *testing.T) {
+	ns, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil || ns != "pid:[4026531836]" {
+		t.Skipf("the test does not run in the host's initial process namespace (%q, %v)", ns, err)
+	}
+	for name, script := range map[string]string{"quiesce": scratchQuiesceScript, "resume": scratchResumeScript} {
+		dry := strings.NewReplacer("kill -STOP -1", "echo WOULD_STOP", "kill -CONT -1", "echo WOULD_CONT").Replace(script)
+		if strings.Contains(dry, "kill") {
+			t.Fatalf("%s: the dry copy still signals — not run", name)
+		}
+		out, err := exec.Command("sh", "-c", dry).CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 3 || strings.Contains(string(out), "WOULD_") {
+			t.Fatalf("%s: in the host's initial namespace: err=%v out=%q, want exit 3 before any signal", name, err, out)
+		}
 	}
 }

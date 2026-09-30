@@ -673,3 +673,33 @@ func TestStartSandboxShared_recordsAContainerLocalScratch(t *testing.T) {
 		}
 	}
 }
+
+// TestStartSandboxShared_aPermissionGateInAskModeIsAPause: a node whose
+// permission gate asks parks whatever its interaction mode — a child that
+// declares one is refused adoption where a parked child cannot resume with
+// its parent's sandbox.
+func TestStartSandboxShared_aPermissionGateInAskModeIsAPause(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		wf   *ir.Workflow
+	}{
+		{"on the node", &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{"act": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "act"}, Permission: "ask"}}}},
+		{"on the workflow", &ir.Workflow{Name: "child", Permission: "ask", Nodes: map[string]ir.Node{"act": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "act"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !workflowHasPausingNode(tc.wf) {
+				t.Fatal("a permission gate in ask mode is not read as a pause")
+			}
+			e, _, st := sharedTestEngine(t, tc.wf, t.TempDir(), &SharedSandbox{Run: bindOnly{&sharedFakeRun{}}, WorkspaceFolder: "/workspace", ScratchContainerLocal: true})
+			_, _ = st.CreateRun(ctx, "run-permission-ask", "child", nil)
+			if _, err := e.startSandbox(ctx, "run-permission-ask", e.workDir, "", nil); err == nil || !strings.Contains(err.Error(), "PROJECT_SCRATCH_DIR") {
+				t.Fatalf("err = %v, want the adoption refused over the container-local scratch", err)
+			}
+		})
+	}
+	off := &ir.Workflow{Name: "child", Permission: "ask", Nodes: map[string]ir.Node{"act": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "act"}, Permission: "off"}}}
+	if workflowHasPausingNode(off) {
+		t.Fatal("a node that turns the workflow's gate off is read as a pause")
+	}
+}

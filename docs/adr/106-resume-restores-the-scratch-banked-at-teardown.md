@@ -80,7 +80,7 @@ pods the same way.
 - **Cap.** 256 MiB compressed. Past it, or on a tar or upload failure, or in
   a store that keeps no bank, nothing is stored and the event names why.
 - **Subbot children.** A child that can park (a human gate, an interactive
-  node) is refused adoption into its parent's sandbox when that sandbox's
+  node, a permission gate that asks) is refused adoption into its parent's sandbox when that sandbox's
   scratch lives in the container, as under a copy-based parent: parked, the
   child is resumed on its own, in a sandbox without that scratch. A child
   adopted there that parks anyway — a recovery pause, an operator's pause,
@@ -156,5 +156,13 @@ pods the same way.
 - **Not covered: a write while tar reads, in a sandbox that is not process
   isolated or whose quiesce failed** (`unquiesced` on the record). Neither
   GNU tar nor busybox tar reports every such write.
+- **A rewind across a loop or a fan-out is refused.** A rewind takes back
+  the nodes it dropped that lie on no cycle; a node in a loop or a foreach
+  may have run passes it does not replay, and a fan-out's in-flight
+  branches are not among the nodes it names. Such a resume is refused
+  though the bank may be exact, and `--force` resumes it on that bank.
+  Reading the rewind's replay from the timeline is the next step.
+- **The scratch is not rewound.** A rewind to a node that ran before the
+  bank replays it on what it wrote there, unlike the workspace's files.
 - **Not covered: sparse files.** A sparse file is banked compressed and
   restored dense (tar runs without `--sparse`, which busybox tar lacks).

@@ -1069,15 +1069,15 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 	return sandbox.ExecCmd(r.Command(ctx, cmd, opts), opts)
 }
 
+// ProcessIsolated: the pod never shares the node's process namespace.
+func (r *Run) ProcessIsolated() bool { return true }
+
 // Cleanup deletes the sandbox pod. Idempotent — kubectl's
 // --ignore-not-found handles the second call cleanly. Errors here
 // are non-fatal for the engine: a pod leaked because Cleanup never
 // fired (runner killed mid-run) is bounded by spec.activeDeadlineSeconds,
 // cascade-GC'd when the runner pod is deleted (ownerReference), and swept
 // by the label reaper (ReapOrphanResources) — see ADR-070.
-// ProcessIsolated: the pod never shares the node's process namespace.
-func (r *Run) ProcessIsolated() bool { return true }
-
 func (r *Run) Cleanup(_ context.Context) error {
 	r.mu.Lock()
 	if r.cleaned {

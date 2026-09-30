@@ -1989,15 +1989,22 @@ func sharedSandboxIsCopyBased(run sandbox.Run) bool {
 }
 
 // workflowHasPausingNode reports whether the workflow can park the run
-// for an operator: a human node, or an LLM node with a non-none
-// interaction mode. A parked child is resumed OUTSIDE its parent, in an
-// engine with no parent handle to adopt.
+// for an operator: a human node, an LLM node with a non-none interaction
+// mode, or a node whose permission gate asks. A parked child is resumed
+// OUTSIDE its parent, in an engine with no parent handle to adopt.
 func workflowHasPausingNode(wf *ir.Workflow) bool {
 	if wf == nil {
 		return false
 	}
 	for _, n := range wf.Nodes {
 		if _, ok := n.(*ir.HumanNode); ok {
+			return true
+		}
+		// A permission gate in ask mode parks its node whatever its
+		// interaction mode. A launch may impose one the IR does not
+		// declare: the child's own resume refuses that case
+		// (refuseResumeOfSharedChild).
+		if pn, ok := n.(interface{ GetPermission() string }); ok && ir.EffectivePermission(pn.GetPermission(), wf.Permission) == "ask" {
 			return true
 		}
 	}

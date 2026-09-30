@@ -49,6 +49,44 @@ const (
 // scratchRacedNamed bounds the raced members a record names.
 const scratchRacedNamed = 20
 
+// scratchQuiesceScript stops every process of the sandbox but its first and
+// the script itself, then checks that nothing else still runs: it exits 0
+// when all stopped, scratchQuiescePartial naming the processes it could not
+// stop (another user's), and 3 without signalling anything in the host's
+// initial process namespace — whose inode is a kernel constant — whatever
+// the Run declared.
+const scratchQuiesceScript = `case "$(readlink /proc/self/ns/pid 2>/dev/null)" in
+"pid:[4026531836]") echo "the sandbox runs in the host's initial process namespace" >&2; exit 3 ;;
+esac
+kill -STOP -1 2>/dev/null
+tries=0
+while :; do
+  left=
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    case "$p" in 1|$$) continue ;; esac
+    set -- $(sed 's/.*) //' "$d/stat" 2>/dev/null)
+    [ "${2:-}" = "$$" ] && continue
+    case "${1:-}" in ""|T|t|Z|X|x) ;; *) left="$left $p($(cat "$d/comm" 2>/dev/null))" ;; esac
+  done
+  [ -z "$left" ] && exit 0
+  tries=$((tries+1))
+  if [ "$tries" -ge 5 ]; then echo "not stopped:$left" >&2; exit 4; fi
+  sleep 0.2 2>/dev/null || sleep 1
+done`
+
+// scratchQuiescePartial is scratchQuiesceScript's exit when some processes
+// still run.
+const scratchQuiescePartial = 4
+
+// scratchResumeScript lets the stopped processes go on — never in the
+// host's initial process namespace.
+const scratchResumeScript = `case "$(readlink /proc/self/ns/pid 2>/dev/null)" in
+"pid:[4026531836]") exit 3 ;;
+esac
+kill -CONT -1 2>/dev/null
+exit 0`
+
 // scratchBanked is what one teardown did with a container-local scratch.
 type scratchBanked struct {
 	banked bool
@@ -229,12 +267,17 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 	var unquiesced string
 	quiesced := false
 	if pi, ok := run.(sandbox.ProcessIsolated); ok && pi.ProcessIsolated() {
-		if q, err := run.Exec(ctx, []string{"sh", "-c", "kill -STOP -1 2>/dev/null; exit 0"}, sandbox.ExecOpts{}); err != nil {
+		q, err := run.Exec(ctx, []string{"sh", "-c", scratchQuiesceScript}, sandbox.ExecOpts{})
+		switch {
+		case err != nil:
 			unquiesced = "the sandbox's processes could not be stopped: " + err.Error()
-		} else if q.ExitCode != 0 {
-			unquiesced = fmt.Sprintf("stopping the sandbox's processes exited %d", q.ExitCode)
-		} else {
+		case q.ExitCode == 0:
 			quiesced = true
+		case q.ExitCode == scratchQuiescePartial:
+			quiesced = true
+			unquiesced = "some of the sandbox's processes could not be stopped: " + strings.TrimSpace(string(q.Stderr))
+		default:
+			unquiesced = fmt.Sprintf("stopping the sandbox's processes exited %d: %s", q.ExitCode, strings.TrimSpace(string(q.Stderr)))
 		}
 	}
 	// GNU tar exits 1 when a member changed or vanished while it read it
@@ -298,7 +341,7 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 		// The archive is taken: the stopped processes go on, so they end
 		// when the sandbox is shut down instead of holding its grace
 		// period (an entrypoint such as tini waits on a stopped child).
-		_, _ = run.Exec(ctx, []string{"sh", "-c", "kill -CONT -1 2>/dev/null; exit 0"}, sandbox.ExecOpts{})
+		_, _ = run.Exec(ctx, []string{"sh", "-c", scratchResumeScript}, sandbox.ExecOpts{})
 	}
 	archive, size, raced := cur, capped.n, []string(nil)
 	switch {
@@ -367,8 +410,11 @@ type scratchPark struct {
 	forsaken bool
 	// raced: tar caught members of the banked scratch changing on its every
 	// archive; the record names them.
-	raced  bool
-	reason string
+	raced bool
+	// unquiesced: the sandbox's processes were not all stopped while tar
+	// read the scratch; the record says why.
+	unquiesced bool
+	reason     string
 	// advanced: a node finished in the sandbox after the bank was recorded,
 	// and no teardown banked again — the attempt that ran it lost its sandbox
 	// without one (an OOM kill, a lost node). A bank is then older than the
@@ -421,6 +467,7 @@ func lastScratchPark(ctx context.Context, st store.RunStore, wf *ir.Workflow, ru
 			p.unknown, _ = ev.Data["unknown"].(bool)
 			p.reason, _ = ev.Data["reason"].(string)
 			_, p.raced = ev.Data["raced"]
+			_, p.unquiesced = ev.Data["unquiesced"]
 		case store.EventSandboxScratchRestored:
 			restored, _ := ev.Data["restored"].(bool)
 			forced, _ := ev.Data["forced"].(bool)
@@ -690,6 +737,11 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 		// The bank holds members as tar caught them changing: its record
 		// names them.
 		data["raced"] = true
+	}
+	if p.unquiesced {
+		// Something may have written the scratch while tar read it: the
+		// record says why the sandbox was not stopped.
+		data["unquiesced"] = true
 	}
 	if p.advanced {
 		// Only --force gets here: the pre-claim refusal stopped the rest.
