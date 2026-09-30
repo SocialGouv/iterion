@@ -240,8 +240,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if blocked, reason := usagePreflightFrom(s.usageCapSource); blocked {
 		// …unless this workflow has a model-free path (the collect half of
 		// a two-mode bot): refusing it loses what only it fetches. The
-		// mid-run guard stops its model path under a HARD cap; a soft cap
-		// lets it finish (docs/usage-caps.md). The compile is paid ONLY on
+		// mid-run guard stops its claude_code calls under a HARD cap; a soft
+		// cap, or a backend that reports no readings, lets it finish
+		// (docs/usage-caps.md). The compile is paid ONLY on
 		// the blocked path, so the common case stays free.
 		if wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); err != nil || wf.AlwaysReachesLLM() {
 			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)

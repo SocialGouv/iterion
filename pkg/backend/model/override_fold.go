@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // OverrideEntry is the neutral shape every model-override folder passes
@@ -85,6 +86,21 @@ type ProviderResolution struct {
 	// backend of its own keeps its provider out, and the zero value claims
 	// nothing. Sorted.
 	ForfaitFirst []string
+	// AnthropicWireDefaultReads lists the anthropic-wire key slots some route
+	// may spend as the run's DEFAULT credential — through the delegates'
+	// default precedence — rather than as a key its hint or spec names. A
+	// claude_code route reads every slot unless each element of its chain is
+	// a hint it honours (anthropic, zai, moonshot) and nothing in it or its
+	// model is read late — from the environment, which the runner expands
+	// with its own, or from the run's vars at dispatch; a hint-less GLM id
+	// is z.ai's only while a z.ai key is reachable, so it reads every slot
+	// but zai. A claw
+	// route on the anthropic wire reads the slots its anthropic provider
+	// spends: the Anthropic key, and — sandboxed — the z.ai key, never a
+	// Moonshot one. A route whose backend resolves at dispatch reads what
+	// either would. A route the walk cannot resolve (NarrowSafe false) may
+	// read any. Sorted.
+	AnthropicWireDefaultReads []string
 }
 
 // EffectiveProviders is the walk every "which providers does this run
@@ -220,10 +236,15 @@ type providerAccumulator struct {
 	forfaitFirst map[string]bool
 	backend      string
 	narrowSafe   bool
+	wireDefault  map[string]bool
 }
 
 func (a *providerAccumulator) result() ProviderResolution {
 	res := ProviderResolution{NarrowSafe: a.narrowSafe}
+	for slot := range a.wireDefault {
+		res.AnthropicWireDefaultReads = append(res.AnthropicWireDefaultReads, slot)
+	}
+	sort.Strings(res.AnthropicWireDefaultReads)
 	for p := range a.providers {
 		res.Providers = append(res.Providers, p)
 	}
@@ -287,16 +308,18 @@ func resolveRouteBackend(override, node, wfDefault string) (backend string, from
 // widens.
 func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, overrides ModelOverrides) {
 	ov := overrides.ForNode(node.NodeID(), node.NodeKind())
-	if strings.TrimSpace(ov.Provider) != "" {
-		a.hint(ov.Provider)
-		return
-	}
-	if a.chainDecides(fields.Provider) {
-		return
-	}
 	mdl := ov.Model
 	if mdl == "" {
 		mdl = fields.Model
+	}
+	if strings.TrimSpace(ov.Provider) != "" {
+		a.noteWireDefault(ov.Provider, mdl)
+		a.hint(ov.Provider)
+		return
+	}
+	a.noteWireDefault(fields.Provider, mdl)
+	if a.chainDecides(fields.Provider) {
+		return
 	}
 	a.prefixOrWiden(mdl)
 }
@@ -306,6 +329,7 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 // prefix; one that pins neither inherits whatever the process holds,
 // which the walk cannot name — widen.
 func (a *providerAccumulator) resolveRoute(provider, mdl string) {
+	a.noteWireDefault(provider, mdl)
 	if a.chainDecides(provider) {
 		return
 	}
@@ -321,6 +345,58 @@ func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) 
 		mdl = nodeModel
 	}
 	a.prefixOrWiden(mdl)
+}
+
+// noteWireDefault records the anthropic-wire slots a route may spend as the
+// run's default credential (ProviderResolution.AnthropicWireDefaultReads). Not
+// called for a direct generation: it reads the process env, or the in-process
+// registry, which spends a key its spec names.
+func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
+	// Read late — from the environment (the runner expands it with its own)
+	// or from the run's vars at dispatch: what it will say is unknown here.
+	late := func(v string) bool { return strings.Contains(v, "${") || strings.Contains(v, "{{") }
+	envRead := late(chain) || late(mdl)
+	m := strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))
+	glm := GLMOnAnthropicWire(m)
+	read := func(slots ...string) {
+		if a.wireDefault == nil {
+			a.wireDefault = map[string]bool{}
+		}
+		for _, slot := range slots {
+			a.wireDefault[slot] = true
+		}
+	}
+	claudeCode := func() {
+		hints, unresolved := chainHints(chain)
+		named := len(hints) > 0 && !unresolved && !envRead
+		for _, h := range hints {
+			named = named && anthropicWireProviders[h]
+		}
+		switch {
+		case named:
+		case glm && len(hints) == 0 && !envRead:
+			read(string(secrets.ProviderMoonshot), string(secrets.ProviderAnthropic))
+		default:
+			read(string(secrets.ProviderZAI), string(secrets.ProviderMoonshot), string(secrets.ProviderAnthropic))
+		}
+	}
+	claw := func() {
+		if glm && !envRead {
+			return
+		}
+		if p := providerFromModelPrefix(m); envRead || p == "" || p == "anthropic" {
+			read(string(secrets.ProviderAnthropic), string(secrets.ProviderZAI))
+		}
+	}
+	switch a.backend {
+	case delegate.BackendClaudeCode:
+		claudeCode()
+	case delegate.BackendClaw:
+		claw()
+	case "":
+		claudeCode()
+		claw()
+	}
 }
 
 // chainDecides records a `provider:` chain's hints and reports whether the

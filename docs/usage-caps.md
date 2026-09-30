@@ -347,8 +347,8 @@ something that can call a model — an agent, a judge, an `llm` router, a
 model-answered human node, an agent recovery rung, a subbot, a supervisor.
 
 If any model-free path exists, the run starts; under a HARD cap the
-**mid-run** guard stops it at the actual call, while a soft cap lets it finish
-(see below). That costs a pod and a clone in the worst case, and it is the
+**mid-run** guard stops it at the actual call on a claude_code route, while a
+soft cap lets it finish (see below). That costs a pod and a clone in the worst case, and it is the
 price of not refusing work that would never have been billed.
 
 The distinction is not cosmetic. A zero-LLM run is often the half of a bot
@@ -381,9 +381,11 @@ Both pre-flights apply it: the cloud runner's (which has the compiled
 workflow in hand) and the local launch path's (which compiles only when the
 cap is blocking, so the common case pays nothing). The mid-run guard stays
 armed in both cases, so a workflow that turns out to spend anyway is still
-stopped at the call — under a HARD cap. A soft cap stops nothing in flight:
-a two-mode run admitted for its model-free path that takes its model path
-spends the soft-capped credential to the end of the run. That is the price of
+stopped at the call — under a HARD cap, on a claude_code route: the guard
+reads usage readings, and only claude_code sessions report them (pi only on
+a provider refusal, claw never). A soft cap stops nothing in flight, nor does
+any cap on another backend: a two-mode run admitted for its model-free path
+that takes its model path spends that credential to the end of the run. That is the price of
 never refusing the collect half, accepted on purpose; the per-route rule
 below (a reachable soft-capped route parks the run) applies only to runs with
 no model-free path.
@@ -424,7 +426,8 @@ chain), and its credential is asked of the delegate itself: a claude_code
 route through `delegate.AnthropicRouteSource` — the composition the session
 will run, under the hint `model.RouteProviderHint` hands it (a GLM id goes to
 z.ai) — so the pre-flight reads the ledger the session will write; claw and
-pi routes as the spend ledger books them. A route the walk cannot read (a
+pi routes as the spend ledger books them; kimi and grok routes not at all
+(their own config pays), an opencode route on the pod's ambient meter. A route the walk cannot read (a
 `{{vars.…}}` backend, hint or model) keeps the run's default credential; a
 route the delegate refuses before spawning (a facade hint with no key) spends
 nothing and is not the cap's to park; a store read that fails is headroom for
@@ -435,13 +438,17 @@ The run then parks on the **paths** it can take
 `AlwaysReachesLLM` runs, over those walls — a fan-out's branches all run, so a
 capped branch is on every execution):
 
-- a **hard**-capped route parks the run only when every execution from the
-  entry to a terminal crosses a capped route; one some path avoids does not —
-  a hard cap stops a call in flight, so the mid-run guard stops the run there
-  if it goes that way;
+- a **hard**-capped claude_code route parks the run only when every
+  execution from the entry to a terminal crosses a capped route; one some
+  path avoids does not — a hard cap stops a call in flight, so the mid-run
+  guard stops the run there if it goes that way;
 - a **soft**-capped route parks the run as soon as the run may reach it at
   all (`ir.Workflow.CanReach`): a soft cap refuses new work and stops nothing
-  in flight, so a run let through to find out would spend it uninterrupted.
+  in flight, so a run let through to find out would spend it uninterrupted;
+- so does a **hard**-capped route on any backend but claude_code — claw, pi,
+  opencode, or one resolved at dispatch: the mid-run guard reads the usage
+  readings only claude_code sessions report, so nothing would stop that call
+  in flight.
 
 The retry is armed for the **earliest reopening after which the run could
 start**: on alternative branches the first hard-capped route to reopen is

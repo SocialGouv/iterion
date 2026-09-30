@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -822,6 +823,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// the one a healthy launch would have used: within the tenant, its
 				// keys before its forfaits (the walk resolves BYOK first); within a
 				// shared tier, the order that tier fills in (sharedTierPolicy.inOrder).
+				// One exception: a tenant key whose provider's routes a shared tier
+				// already funded comes back last, and only into a family no tier
+				// refilled — those routes are served, the refused key is not.
 				// Keys among themselves in allKnownProviders order, so the winner is
 				// deterministic. A shared tier's key comes back in the channel its
 				// fill would have sealed it in (sealDecision): the default of a free
@@ -837,6 +841,24 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						taken[secrets.WireFamily(kind)] = true
 					}
 					natives := map[restoreTier]*tierNative{restoreTierOrg: orgNative, restoreTierPlatform: platformNative}
+					restoreKey := func(prov secrets.Provider, sk skippedAPIKey, outcome sealOutcome) {
+						pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, outcome)
+						apiKeyFPs[prov] = sk.fingerprint
+						if sk.platform {
+							bundle.PlatformSourced[string(prov)] = true
+						}
+						if sk.org {
+							bundle.OrgSourced[string(prov)] = true
+						}
+						p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov, map[bool]string{true: " (pinned route only)", false: ""}[pinnedOnly])
+					}
+					// Tenant keys whose provider's routes a shared tier already
+					// funded: restored as the default, such a key would displace
+					// that healthy key — every route naming the provider reads the
+					// default first (APIKeyForRoute) — and park routes that can
+					// run. They wait for the shared tiers' own restore, which may
+					// refill the family (a closed Claude forfait under `auto`).
+					var deferredTenantKeys []secrets.Provider
 					restoreKeys := func(tier restoreTier) {
 						for _, prov := range allKnownProviders {
 							sk, ok := skippedAPIKeys[prov]
@@ -848,16 +870,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								if taken[secrets.WireFamily(string(prov))] {
 									continue
 								}
-								// The tenant's own key comes back as the default,
-								// which every route naming prov reads first
-								// (APIKeyForRoute): a shared key a tier sealed for
-								// those routes would never be spent. It leaves with
-								// its marks, so the slot names one credential.
 								if bundle.PinnedAPIKeys[prov] != "" {
-									delete(bundle.PinnedAPIKeys, prov)
-									delete(bundle.PlatformSourced, string(prov))
-									delete(bundle.OrgSourced, string(prov))
-									p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key comes back as the default, over the shared key sealed for its routes", runID, prov)
+									deferredTenantKeys = append(deferredTenantKeys, prov)
+									continue
 								}
 							} else {
 								// A slot an earlier tier funded is not
@@ -875,15 +890,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 									continue
 								}
 							}
-							pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, outcome)
-							apiKeyFPs[prov] = sk.fingerprint
-							if sk.platform {
-								bundle.PlatformSourced[string(prov)] = true
-							}
-							if sk.org {
-								bundle.OrgSourced[string(prov)] = true
-							}
-							p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov, map[bool]string{true: " (pinned route only)", false: ""}[pinnedOnly])
+							restoreKey(prov, sk, outcome)
 						}
 					}
 					restoreForfaits := func(tier restoreTier) {
@@ -906,6 +913,31 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					restoreForfaits(restoreTierTenant)
 					for _, tier := range []restoreTier{restoreTierOrg, restoreTierPlatform} {
 						policy.inOrder(func() { restoreForfaits(tier) }, func() { restoreKeys(tier) })
+					}
+					// A deferred tenant key is the family's last park point: it
+					// comes back only when no tier refilled the family and some
+					// route may read the family's default, as that default, over
+					// the shared route key — which leaves with its marks, so the
+					// slot names one credential. The routes naming its provider
+					// then park with the run: a wire left empty fails its
+					// default-reading routes on a no-credential error nothing
+					// retries, or spends the runner pod's ambient env. A run
+					// whose every route names its provider has no such route, and
+					// the key would only park routes the shared key serves.
+					for _, prov := range deferredTenantKeys {
+						if taken[secrets.WireFamily(string(prov))] {
+							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and another credential holds the wire", runID, prov)
+							continue
+						}
+						if !mayReadWireDefault(wf, modelOverrides, runFallbacks, prov) {
+							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and no route reads the wire's default", runID, prov)
+							continue
+						}
+						delete(bundle.PinnedAPIKeys, prov)
+						delete(bundle.PlatformSourced, string(prov))
+						delete(bundle.OrgSourced, string(prov))
+						p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key comes back as the default, over the shared key sealed for its routes: nothing else holds the wire", runID, prov)
+						restoreKey(prov, skippedAPIKeys[prov], sealDefault)
 					}
 				}
 
@@ -2130,6 +2162,24 @@ func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []mo
 		}
 	}
 	return out, res
+}
+
+// mayReadWireDefault reports whether some route of the run may spend prov's
+// slot as the run's DEFAULT credential rather than as a key its hint or spec
+// names — what the restore's last park point is for.
+func mayReadWireDefault(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry, prov secrets.Provider) bool {
+	return readsWireDefault(model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders), prov)
+}
+
+// readsWireDefault is mayReadWireDefault on a resolution already walked (the
+// preview's). "No" is proven only on the anthropic wire, for a walk that
+// resolved every route (model.ProviderResolution.AnthropicWireDefaultReads);
+// every other answer is "yes".
+func readsWireDefault(res model.ProviderResolution, prov secrets.Provider) bool {
+	if secrets.WireFamily(string(prov)) != secrets.WireFamilyAnthropic || !res.NarrowSafe {
+		return true
+	}
+	return slices.Contains(res.AnthropicWireDefaultReads, string(prov))
 }
 
 // withoutFundedProviders drops the wants whose provider a key sealed for its

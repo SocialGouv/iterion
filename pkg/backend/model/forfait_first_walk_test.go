@@ -121,3 +121,69 @@ func TestEffectiveProvidersForfaitFirstIsPositive(t *testing.T) {
 		t.Error("a supervisor with no model of its own left the walk narrow-safe — it spends whatever the runner resolves")
 	}
 }
+
+// AnthropicWireDefaultReads names the anthropic-wire slots some route may
+// spend as the run's DEFAULT credential rather than as a key its hint or spec
+// names — what the publisher's restore keeps its last park point for. It
+// errs toward reading: a hint claude_code does not honour, a chain or model
+// read from the environment, a GLM id no z.ai key may be there to serve.
+func TestEffectiveProvidersAnthropicWireDefaultReads(t *testing.T) {
+	t.Setenv("WALK_PROVIDER", "")
+	known := map[string]bool{"anthropic": true, "openai": true, "zai": true, "moonshot": true, "bedrock": true}
+	agent := func(backend, provider, model string) *ir.AgentNode {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: model}}
+	}
+	one := func(n ir.Node) *ir.Workflow { return &ir.Workflow{Nodes: map[string]ir.Node{"a": n}} }
+	all := []string{"anthropic", "moonshot", "zai"}
+	for _, tc := range []struct {
+		name string
+		wf   *ir.Workflow
+		want []string
+	}{
+		{"claude_code with no hint", one(agent("claude_code", "", "claude-opus-5-5")), all},
+		{"claude_code with no hint on a prefixed model", one(agent("claude_code", "", "anthropic/claude-opus-5-5")), all},
+		{"claude_code on an auto hint", one(agent("claude_code", "auto", "anthropic/claude-opus-5-5")), all},
+		{"claude_code on a hint it does not honour", one(agent("claude_code", "bedrock", "anthropic/claude-opus-5-5")), all},
+		{"claude_code on a chain with an element it does not honour", one(agent("claude_code", "anthropic,zai,openai", "anthropic/claude-opus-5-5")), all},
+		{"claude_code on a hint read from the environment", one(agent("claude_code", "${WALK_PROVIDER:-zai}", "glm-5.3")), all},
+		{"claude_code pinned zai", one(agent("claude_code", "zai", "glm-5.3")), nil},
+		{"claude_code pinned anthropic", one(agent("claude_code", "anthropic", "claude-opus-5-5")), nil},
+		{"claude_code on a GLM id with no hint", one(agent("claude_code", "", "glm-5.3")), []string{"anthropic", "moonshot"}},
+		{"claude_code on a model the run's vars name", one(agent("claude_code", "", "{{vars.glm_model}}")), all},
+		{"claw on a spec the run's vars name", one(agent("claw", "", "anthropic/{{vars.glm}}")), []string{"anthropic", "zai"}},
+		{"claw on anthropic", one(agent("claw", "", "anthropic/claude-opus-5-5")), []string{"anthropic", "zai"}},
+		{"claw on a GLM spec", one(agent("claw", "", "anthropic/glm-5.3")), nil},
+		{"claw on moonshot", one(agent("claw", "", "moonshot/kimi-k2")), nil},
+		{"pi on anthropic", one(agent("pi", "", "anthropic/claude-opus-5-5")), nil},
+		{"a backend resolved at dispatch, hinted, on a Claude spec", one(agent("{{vars.backend}}", "zai", "anthropic/claude-opus-5-5")), []string{"anthropic", "zai"}},
+		{"a backend resolved at dispatch, hinted, on a GLM id", one(agent("{{vars.backend}}", "zai", "glm-5.3")), nil},
+		{"an unhinted rescue route",
+			one(&ir.AgentNode{
+				BaseNode:  ir.BaseNode{ID: "a"},
+				LLMFields: ir.LLMFields{Backend: "claude_code", Provider: "zai", Model: "glm-5.3"},
+				Fallbacks: []ir.Fallback{{Model: "claude-opus-5-5"}},
+			}), all},
+		{"a supervisor on a Claude spec",
+			&ir.Workflow{
+				Nodes:       map[string]ir.Node{"a": agent("claude_code", "zai", "glm-5.3")},
+				Supervisors: []*ir.Supervisor{{Model: "anthropic/claude-opus-5-5"}},
+			}, nil},
+	} {
+		if got := EffectiveProviders(tc.wf, ModelOverrides{}, nil, known).AnthropicWireDefaultReads; !slices.Equal(got, tc.want) {
+			t.Errorf("%s: AnthropicWireDefaultReads = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// A launch override naming a provider pins the route; one naming "auto"
+	// hands it back to the default precedence.
+	wf := one(agent("claude_code", "", "claude-opus-5-5"))
+	for _, tc := range []struct {
+		provider string
+		want     []string
+	}{{"zai", nil}, {"auto", all}} {
+		var ov ModelOverrides
+		ov.SetProvider("a", tc.provider)
+		if got := EffectiveProviders(wf, ov, nil, known).AnthropicWireDefaultReads; !slices.Equal(got, tc.want) {
+			t.Errorf("override provider %q: AnthropicWireDefaultReads = %v, want %v", tc.provider, got, tc.want)
+		}
+	}
+}

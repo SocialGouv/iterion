@@ -260,10 +260,12 @@ func (k runCredKeys) keyForSlot(slot string) string {
 // the run's own key, a key pinned for the route or the pod's ambient env. A
 // route the delegate refuses before spawning (a facade hint with no key)
 // spends nothing and is not metered. pi's hint names the provider it spends,
-// over the model's prefix; other backends route on the spec, as the spend
-// ledger books them (credentialSlotForRoute). A slot off the anthropic wire is
-// not what the cap meters. A route the walk cannot read keeps the run's
-// default credential — what the pre-flight read before it read routes.
+// over the model's prefix; kimi and grok spend their own config and are not
+// metered; other backends route on the spec, as the spend ledger books them
+// (credentialSlotForRoute) — opencode, which books on nobody, on the pod's
+// ambient meter. A slot off the anthropic wire is not what the cap meters. A
+// route the walk cannot read keeps the run's default credential — what the
+// pre-flight read before it read routes.
 func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key string, metered bool) {
 	if !route.Readable {
 		return k.forSource(""), true
@@ -275,6 +277,12 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 			return "", false
 		}
 		return k.forSource(source), true
+	}
+	switch route.Backend {
+	case delegate.BackendKimi, delegate.BackendGrok:
+		// Vendor CLIs paid by their own config: no credential of the run,
+		// and none of the pod's anthropic-wire ones.
+		return "", false
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
 	var slot string
@@ -399,8 +407,9 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	}
 	// Refuse in advance only what could not possibly avoid spending. A
 	// workflow with any model-free path — the collect half of a two-mode
-	// feed bot, say — is let through; the MID-RUN guard stops it at a model
-	// call under a HARD cap, while a soft cap, which stops nothing in flight,
+	// feed bot, say — is let through; under a HARD cap the MID-RUN guard
+	// stops it at a claude_code call, while a soft cap, which stops nothing in
+	// flight, or a backend that reports no readings (claw, pi until a refusal)
 	// lets a run that takes its model path spend to the end. Accepted on
 	// purpose: blocking it here loses what it was there to do — for a
 	// collector, material no later run recovers, since a feed serves a short
@@ -441,7 +450,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	d, blocked := parkDecision(wf, capped)
 	if !blocked {
 		if logger != nil {
-			logger.Info("runner: run %s starts with %d hard-capped route(s) a path to a terminal avoids — the mid-run guard stops a capped call if the run takes one", msg.RunID, len(capped))
+			logger.Info("runner: run %s starts with %d capped route(s) it may avoid — the mid-run guard stops a claude_code call on a hard-capped one if the run takes it", msg.RunID, len(capped))
 		}
 		return nil
 	}
@@ -507,6 +516,15 @@ func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes
 			byKey[key] = d
 		}
 		if d.Blocked {
+			// A hard cap stops a call in flight only through the readings
+			// the mid-run guard observes, and only claude_code sessions
+			// report them — pi only on a refusal, claw never. On any other
+			// backend, or one resolved at dispatch, nothing would stop the
+			// capped call once the run took the route: it parks the run as
+			// soon as it is reachable, like a soft cap.
+			if route.Backend != delegate.BackendClaudeCode {
+				d.Stop = false
+			}
 			capped[route.NodeID] = d
 		}
 	}
@@ -522,7 +540,8 @@ func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes
 // there if it goes that way. A SOFT cap stops nothing in flight — it only
 // refuses NEW work — so a soft-capped route the run may reach at all
 // (ir.Workflow.CanReach) parks it: letting the run through to find out would
-// spend it uninterrupted.
+// spend it uninterrupted. So does a hard cap on a route no in-flight guard
+// can stop (cappedRoutes clears its Stop).
 //
 // The retry is armed for the earliest reopening after which neither holds —
 // coming back later waits for nothing, coming back earlier parks again. A

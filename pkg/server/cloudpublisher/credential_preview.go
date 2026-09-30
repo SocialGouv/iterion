@@ -140,6 +140,9 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				tier := x.out.Candidates[i].Tier
 				return restoreTierOf(tier == "org", tier == "platform")
 			}
+			// The live restore's deferral: a team key whose provider's routes
+			// a shared tier already funded waits for the shared tiers.
+			var deferredTenantKeys []secrets.Provider
 			restoreKeys := func(tier restoreTier) {
 				for _, provider := range allKnownProviders {
 					i, ok := x.skippedAPI[provider]
@@ -151,12 +154,9 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 						if x.taken(string(provider)) {
 							continue
 						}
-						// The live restore's clean replace: the team's own key
-						// restored as the default supersedes a shared key
-						// sealed for the same provider's routes.
-						if j, held := x.pinnedAPI[provider]; held {
-							delete(x.pinnedAPI, provider)
-							x.out.Candidates[j].Reason += " Replaced by the team's own key, restored as the default."
+						if _, held := x.pinnedAPI[provider]; held {
+							deferredTenantKeys = append(deferredTenantKeys, provider)
+							continue
 						}
 					} else if outcome = x.seal(x.out.Candidates[i].Tier, provider, true); outcome == sealNone {
 						continue
@@ -186,6 +186,26 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			restoreForfaits(restoreTierTenant)
 			for _, tier := range []restoreTier{restoreTierOrg, restoreTierPlatform} {
 				x.policy.inOrder(func() { restoreForfaits(tier) }, func() { restoreKeys(tier) })
+			}
+			// The last park point, as live: only into a family no tier
+			// refilled and some route may read the default of, and then over
+			// the shared route key.
+			for _, provider := range deferredTenantKeys {
+				i := x.skippedAPI[provider]
+				if x.taken(string(provider)) {
+					x.out.Candidates[i].Reason += " Not restored: a shared key serves the routes naming its provider, and another credential holds the wire."
+					continue
+				}
+				if !readsWireDefault(routes, provider) {
+					x.out.Candidates[i].Reason += " Not restored: a shared key serves the routes naming its provider, and no route reads the wire's default."
+					continue
+				}
+				if j, held := x.pinnedAPI[provider]; held {
+					delete(x.pinnedAPI, provider)
+					x.out.Candidates[j].Reason += " Replaced by the team's own key, restored as the default."
+				}
+				x.api[provider] = i
+				x.out.Candidates[i].State = "restored"
 			}
 		}
 		return nil

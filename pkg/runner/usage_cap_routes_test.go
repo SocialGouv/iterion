@@ -307,3 +307,91 @@ func TestUsageCapPreflight_FanOutAndSoftCapsPark(t *testing.T) {
 		t.Errorf("a run that cannot reach the soft-capped route parked: %v", err)
 	}
 }
+
+// forfaitBesidePinnedZAI is forfaitBesidePinnedKeys without the Anthropic key:
+// a claw `anthropic/…` route then spends the forfait.
+func forfaitBesidePinnedZAI() context.Context {
+	return secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "zai-pinned"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/forfait"},
+		PlatformSourced: map[string]bool{
+			string(secrets.OAuthKindClaudeCode): true,
+			string(secrets.ProviderZAI):         true,
+		},
+		Fingerprints: map[string]string{
+			string(secrets.OAuthKindClaudeCode): "fp-forfait",
+			string(secrets.ProviderZAI):         "fp-zai",
+		},
+	})
+}
+
+// A hard cap stops a call in flight only through the readings the mid-run
+// guard observes, and only claude_code sessions report them. The capped
+// forfait behind a claude_code route lets a run with a path around it start;
+// behind a claw route, or a backend resolved at dispatch, nothing would stop
+// the call once the run took that path, so the run parks as soon as it may.
+func TestUsageCapPreflight_AHardCapNoGuardObservesParksWhenReachable(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	caps := usagecap.NewMemStore()
+	weekCapped(t, caps, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
+	glm := func() ir.Node { return agentRoute("glm", delegate.BackendClaudeCode, "", "glm-5.3") }
+
+	if err := preflightFor(t, caps, forfaitBesidePinnedZAI(), branchWorkflow(agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5"), glm())); err != nil {
+		t.Errorf("parked a run whose claude_code route on the capped forfait a path avoids: %v", err)
+	}
+	for _, capped := range []*ir.AgentNode{
+		agentRoute("opus", delegate.BackendClaw, "", "anthropic/claude-opus-5-5"),
+		agentRoute("opus", "{{vars.backend}}", "", "claude-opus-5-5"),
+	} {
+		if err := preflightFor(t, caps, forfaitBesidePinnedZAI(), branchWorkflow(capped, glm())); err == nil {
+			t.Errorf("started a run that may reach a hard-capped route on backend %q — nothing stops that call in flight", capped.Backend)
+		}
+	}
+}
+
+// A hint-less pi route on `anthropic/…` spends the Anthropic key pinned for
+// it — pi reads no forfait — so it is judged on that key's ledger, not on the
+// forfait holding the wire.
+func TestUsageCapPreflight_APiRouteIsJudgedOnTheKeyItSpends(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	pi := func() ir.Node { return agentRoute("pi", delegate.BackendPi, "", "anthropic/claude-opus-5-5") }
+
+	forfait := usagecap.NewMemStore()
+	weekCapped(t, forfait, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, forfait, forfaitBesidePinnedKeys(), chainWorkflow(pi())); err != nil {
+		t.Errorf("parked a pi route on the capped forfait it never spends: %v", err)
+	}
+	key := usagecap.NewMemStore()
+	weekCapped(t, key, platformKey("fp-ant"), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, key, forfaitBesidePinnedKeys(), chainWorkflow(pi())); err == nil {
+		t.Error("started a pi route on the capped Anthropic key it spends")
+	}
+}
+
+// kimi and grok spend their own config: no route of theirs is judged on a
+// ledger of the run's. opencode books on nobody too, but it may pick the
+// pod's ambient Anthropic credential, so it is judged on the pod's ambient
+// meter — never on the forfait holding the run's wire.
+func TestUsageCapPreflight_OwnConfigBackendsAreNotJudgedOnTheRunsCredentials(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	kimi := chainWorkflow(agentRoute("kimi", delegate.BackendKimi, "moonshot", "kimi-k2"))
+	opencode := chainWorkflow(agentRoute("oc", delegate.BackendOpenCode, "", "anthropic/claude-opus-5-5"))
+
+	walled := usagecap.NewMemStore()
+	weekCapped(t, walled, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
+	weekCapped(t, walled, platformKey(""), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, walled, forfaitBesidePinnedKeys(), kimi); err != nil {
+		t.Errorf("parked a kimi route on a ledger it never spends: %v", err)
+	}
+
+	forfait := usagecap.NewMemStore()
+	weekCapped(t, forfait, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, forfait, forfaitBesidePinnedKeys(), opencode); err != nil {
+		t.Errorf("parked an opencode route on the run's forfait it never spends: %v", err)
+	}
+	ambient := usagecap.NewMemStore()
+	weekCapped(t, ambient, platformKey(""), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, ambient, forfaitBesidePinnedKeys(), opencode); err == nil {
+		t.Error("started an opencode route on the pod's capped ambient credential")
+	}
+}

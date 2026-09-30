@@ -731,11 +731,12 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 	}
 }
 
-// When the tenant's own refused key comes back as the wire's default, a shared
-// key sealed for the same provider's routes would never be spent — every route
-// naming the provider reads the default first — so it leaves the bundle with
-// its marks: the slot names ONE credential, metered on its owner's ledger.
-func TestRestore_theTenantsOwnKeyReplacesASharedRouteKeyCleanly(t *testing.T) {
+// The tenant's own refused z.ai key does not displace a healthy key a shared
+// tier sealed for the routes naming zai: restored as the default, it would be
+// what every such route reads first, and a run whose routes all pin zai would
+// park on the tenant's refusal beside a key that serves it. The platform's
+// closed forfait comes back as the wire's park point instead.
+func TestRestore_aSharedRouteKeyKeepsItsRoutesOverTheTenantsRefusedKey(t *testing.T) {
 	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
@@ -753,17 +754,149 @@ func TestRestore_theTenantsOwnKeyReplacesASharedRouteKeyCleanly(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	p := &Publisher{apiKeys: keys, oauthForfait: oauth, runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, logger: testLogger(), usageCaps: st}
+	auto := string(platformcfg.FacadeAuto)
+	p := &Publisher{
+		apiKeys: keys, oauthForfait: oauth, runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, logger: testLogger(), usageCaps: st,
+		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &auto}, nil),
+	}
 	rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
 	b := resolveBundlePinned(t, p, rs, sealer, "run-1", "team1", "webhook:cfg-1", []string{"zai"})
 
-	if got := b.APIKeys[secrets.ProviderZAI]; got != "sk-zai-tenant" {
-		t.Errorf("the tenant's own refused key is not the restored default (holds the tenant key: %v)", got == "sk-zai-tenant")
+	if got := b.PinnedAPIKeys[secrets.ProviderZAI]; got != "sk-zai-platform" {
+		t.Errorf("the routes naming zai lost the platform's healthy key (hold it: %v)", got == "sk-zai-platform")
 	}
-	if _, present := b.PinnedAPIKeys[secrets.ProviderZAI]; present {
-		t.Error("the platform's route key stayed beside the tenant's default — two credentials in one slot")
+	if b.APIKeys[secrets.ProviderZAI] != "" {
+		t.Error("the tenant's refused key came back as the default — every route naming zai reads it first")
 	}
-	if b.PlatformSourced[string(secrets.ProviderZAI)] {
-		t.Error("the zai slot still reads as the platform's — the tenant's key would be metered on the platform ledger")
+	if !b.PlatformSourced[string(secrets.ProviderZAI)] {
+		t.Error("the zai route key lost its platform mark — it would be metered on the tenant's ledger")
+	}
+	if len(b.OAuthCredentials["claude_code"]) == 0 {
+		t.Error("the platform's closed forfait was not restored — the wire's unpinned nodes have nothing to park on")
+	}
+}
+
+// wfPinningBesideDefault is wfPinning(provider) plus a claude_code node with
+// no hint: a route that reads the anthropic wire's default precedence. Its
+// model carries a prefix, so the walk still resolves every route (NarrowSafe)
+// and the reader is what decides.
+func wfPinningBesideDefault(provider string) *ir.Workflow {
+	return wfPinningBeside(provider, &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "review"},
+		LLMFields: ir.LLMFields{Backend: "claude_code", Model: "anthropic/claude-opus-5"},
+	})
+}
+
+func wfPinningBeside(provider string, n *ir.AgentNode) *ir.Workflow {
+	wf := wfPinning(provider)
+	wf.Nodes[n.ID] = n
+	return wf
+}
+
+// restoreBench seeds the tenant's own key of a facade provider, refused,
+// beside a healthy platform key of the same provider, under
+// facade_default=never and with no Claude credential anywhere: the platform
+// key is sealed for the routes naming the provider only, and nothing but the
+// tenant's key could refill the anthropic family.
+func restoreBench(t *testing.T, prov secrets.Provider) (*Publisher, *secrets.MemoryRunSecretsStore, secrets.Sealer) {
+	t.Helper()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	keys := secrets.NewMemoryApiKeyStore()
+	seedKeyFP(t, keys, sealer, "team1", prov, "sk-"+string(prov)+"-tenant", "fp-tenant")
+	seedKeyFP(t, keys, sealer, secrets.PlatformTenantID, prov, "sk-"+string(prov)+"-platform", "fp-platform")
+	st := usagecap.NewMemStore()
+	recordRefusal(t, st, usagecap.TenantScope("team1"), "fp-tenant")
+	never := string(platformcfg.FacadeNever)
+	rs := secrets.NewMemoryRunSecretsStore()
+	return &Publisher{
+		apiKeys: keys, oauthForfait: secrets.NewMemoryOAuthStore(), runSecrets: rs, sealer: sealer, logger: testLogger(), usageCaps: st,
+		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &never}, nil),
+	}, rs, sealer
+}
+
+func resolveBundleForWorkflow(t *testing.T, p *Publisher, rs *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, wf *ir.Workflow) secrets.RunBundle {
+	t.Helper()
+	ctx := store.WithTenant(context.Background(), "team1")
+	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "webhook:cfg-1", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, derivePinnedProviders(wf, model.ModelOverrides{}, nil))
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if res.secretsRef == "" {
+		return secrets.RunBundle{}
+	}
+	rec, err := rs.Get(ctx, res.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	b, err := secrets.OpenRunBundle(sealer, "run-1", rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+	return b
+}
+
+// With nothing else to refill the family and a route that reads its default,
+// the tenant's refused key is still the wire's last park point: it comes back
+// as the default, over the shared key sealed for its provider's routes — which
+// leaves with its marks, so the slot names ONE credential, metered on its
+// owner's ledger. A wire left empty would fail that route on a no-credential
+// error nothing retries, or spend the pod's ambient env.
+func TestRestore_theTenantsOwnKeyIsTheLastParkPointOfAnEmptyWire(t *testing.T) {
+	for name, wf := range map[string]*ir.Workflow{
+		"an unhinted claude_code route": wfPinningBesideDefault("zai"),
+		// A route the walk cannot resolve may read any slot.
+		"an unresolved route": wfPinningBeside("zai", &ir.AgentNode{
+			BaseNode:  ir.BaseNode{ID: "review"},
+			LLMFields: ir.LLMFields{Backend: "pi", Model: "claude-opus-5"},
+		}),
+	} {
+		p, rs, sealer := restoreBench(t, secrets.ProviderZAI)
+		b := resolveBundleForWorkflow(t, p, rs, sealer, wf)
+
+		if got := b.APIKeys[secrets.ProviderZAI]; got != "sk-zai-tenant" {
+			t.Errorf("%s: the tenant's own refused key is not the restored default (holds the tenant key: %v)", name, got == "sk-zai-tenant")
+		}
+		if _, present := b.PinnedAPIKeys[secrets.ProviderZAI]; present {
+			t.Errorf("%s: the platform's route key stayed beside the tenant's default — two credentials in one slot", name)
+		}
+		if b.PlatformSourced[string(secrets.ProviderZAI)] {
+			t.Errorf("%s: the zai slot still reads as the platform's — the tenant's key would be metered on the platform ledger", name)
+		}
+	}
+}
+
+// A run whose every route names zai reads no default: the last park point
+// would serve nobody and park routes the platform's key serves. The tenant's
+// refused key stays out.
+func TestRestore_aRunWhoseRoutesAllNameTheProviderKeepsTheSharedKey(t *testing.T) {
+	p, rs, sealer := restoreBench(t, secrets.ProviderZAI)
+	b := resolveBundleForWorkflow(t, p, rs, sealer, wfPinning("zai"))
+
+	if got := b.PinnedAPIKeys[secrets.ProviderZAI]; got != "sk-zai-platform" {
+		t.Errorf("the routes naming zai lost the platform's healthy key (hold it: %v)", got == "sk-zai-platform")
+	}
+	if b.APIKeys[secrets.ProviderZAI] != "" {
+		t.Error("the tenant's refused key came back as the default for a run no route of which reads it")
+	}
+}
+
+// The reader has to read THAT slot: a claw `anthropic/…` route reads the
+// wire's Anthropic and z.ai keys, never a Moonshot one, so the tenant's
+// refused Moonshot key stays out beside it.
+func TestRestore_aReaderOfAnotherSlotDoesNotBringTheTenantsKeyBack(t *testing.T) {
+	p, rs, sealer := restoreBench(t, secrets.ProviderMoonshot)
+	b := resolveBundleForWorkflow(t, p, rs, sealer, wfPinningBeside("moonshot", &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "review"},
+		LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-opus-5"},
+	}))
+
+	if got := b.PinnedAPIKeys[secrets.ProviderMoonshot]; got != "sk-moonshot-platform" {
+		t.Errorf("the routes naming moonshot lost the platform's healthy key (hold it: %v)", got == "sk-moonshot-platform")
+	}
+	if b.APIKeys[secrets.ProviderMoonshot] != "" {
+		t.Error("the tenant's refused Moonshot key came back for a claw route that never reads it")
 	}
 }

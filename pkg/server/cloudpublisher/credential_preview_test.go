@@ -511,22 +511,33 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 		forfait   string
 		pin       string
 		refuseZAI bool
+		// teamZAIRefused seeds the team's own z.ai key, refused.
+		teamZAIRefused bool
 	}{
-		{"auto open", false, platformcfg.FacadeAuto, "open", "", false},
-		{"auto open zai-pinned", false, platformcfg.FacadeAuto, "open", "zai", false},
-		{"auto closed", false, platformcfg.FacadeAuto, "closed", "", false},
-		{"always closed", false, platformcfg.FacadeAlways, "closed", "", false},
-		{"never closed", false, platformcfg.FacadeNever, "closed", "", false},
-		{"keys_first auto", true, platformcfg.FacadeAuto, "open", "", false},
-		{"keys_first always", true, platformcfg.FacadeAlways, "open", "", false},
-		{"auto no forfait", false, platformcfg.FacadeAuto, "none", "", false},
-		{"never no forfait zai-pinned", false, platformcfg.FacadeNever, "none", "zai", false},
+		{"auto open", false, platformcfg.FacadeAuto, "open", "", false, false},
+		{"auto open zai-pinned", false, platformcfg.FacadeAuto, "open", "zai", false, false},
+		{"auto closed", false, platformcfg.FacadeAuto, "closed", "", false, false},
+		{"always closed", false, platformcfg.FacadeAlways, "closed", "", false, false},
+		{"never closed", false, platformcfg.FacadeNever, "closed", "", false, false},
+		{"keys_first auto", true, platformcfg.FacadeAuto, "open", "", false, false},
+		{"keys_first always", true, platformcfg.FacadeAlways, "open", "", false, false},
+		{"auto no forfait", false, platformcfg.FacadeAuto, "none", "", false, false},
+		{"never no forfait zai-pinned", false, platformcfg.FacadeNever, "none", "zai", false, false},
 		// The restore visits a refused, pinned z.ai key before the closed
 		// forfait under keys first: the policy keeps it off the default there.
-		{"keys_first auto closed zai-pinned refused", true, platformcfg.FacadeAuto, "closed", "zai", true},
+		{"keys_first auto closed zai-pinned refused", true, platformcfg.FacadeAuto, "closed", "zai", true, false},
 		// Forfaits first, the refused z.ai key comes back after the forfait
 		// took the family — route-only, for the routes that name zai.
-		{"auto closed zai-pinned refused", false, platformcfg.FacadeAuto, "closed", "zai", true},
+		{"auto closed zai-pinned refused", false, platformcfg.FacadeAuto, "closed", "zai", true, false},
+		// The team's own refused z.ai key waits behind the platform's key sealed
+		// for the routes naming zai: the closed forfait refills the family.
+		{"auto closed zai-pinned, team key refused", false, platformcfg.FacadeAuto, "closed", "zai", false, true},
+		// Nothing refills it and every route names zai: no route reads the
+		// default, so the team's key stays out.
+		{"never no forfait zai-pinned, team key refused", false, platformcfg.FacadeNever, "none", "zai", false, true},
+		// A route reads the default: the team's key is the last park point,
+		// over the platform's route key.
+		{"never no forfait zai-pinned beside a default reader, team key refused", false, platformcfg.FacadeNever, "none", "zai+default", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
@@ -539,6 +550,10 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 			st := usagecap.NewMemStore()
 			if tc.refuseZAI {
 				recordRefusal(t, st, usagecap.ScopePlatform, "fp-zai-platform")
+			}
+			if tc.teamZAIRefused {
+				seedKeyFP(t, keys, sealer, "team1", secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
+				recordRefusal(t, st, usagecap.TenantScope("team1"), "fp-zai-team")
 			}
 			if tc.forfait != "none" {
 				seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-shared-forfait")
@@ -559,6 +574,9 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 			}
 			const team = "team1"
 			wf := wfPinning(tc.pin)
+			if pin, beside := strings.CutSuffix(tc.pin, "+default"); beside {
+				wf = wfPinningBesideDefault(pin)
+			}
 			spec := previewSpec(team, "webhook:private")
 
 			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, wf)

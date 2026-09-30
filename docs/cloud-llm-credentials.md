@@ -942,17 +942,31 @@ Semantics worth knowing:
     credential holding its family, only for the routes that name its
     provider — they park on their own refusal instead of reaching a
     credential that cannot serve them — and never over a key another tier
-    already sealed for those routes. The tenant's own refused key coming
-    back as the wire's default replaces a shared key sealed for its
-    provider's routes, which would never be spent beside it.
+    already sealed for those routes. Nor does the tenant's own refused key
+    displace a key a shared tier sealed for its provider's routes: those
+    routes are served, so it waits until every tier had its turn and comes
+    back only into a family none refilled, for a run some route of which
+    may spend that key's slot as the run's default — a claude_code route
+    whose chain is not only hints it honours (or is read from the
+    environment), a claw route on the anthropic wire for the Anthropic and
+    z.ai keys, a route the walk cannot resolve — as the wire's last park
+    point, over that route key, which would never be spent beside it. The routes naming its provider then park with the run; a wire
+    left empty would fail the default-reading routes on a no-credential
+    error nothing retries, or spend the runner pod's ambient env. A run
+    whose every route names the provider keeps the shared key.
   - **What the run spends is what the ledger books.** The per-credential
     spend ledger books a claude_code route on the credential its session
     named (the `fingerprint` on `delegate_finished`), so a node pinned
     `provider: zai` is charged to the z.ai key, not to the forfait holding
-    the wire, and a claw `openai/…` route to what claw spent under the
-    runner's settings; the usage-cap pre-flight reads each route's credential
-    the same way ([usage-caps.md](usage-caps.md)), and meters the run on its
-    DEFAULT credential's ledger — a pinned key keeps its owner's.
+    the wire, a claw `openai/…` route to what claw spent under the runner's
+    settings, a pi `anthropic/…` or `openai/…` route to that provider's key
+    (the default one, then one pinned for the route — never a forfait nor a
+    facade), and a kimi, grok or opencode route to nobody — they spend their
+    own config. The usage-cap pre-flight reads each route's credential the
+    same way ([usage-caps.md](usage-caps.md)) — kimi and grok it does not
+    meter, opencode, which may pick the pod's ambient Anthropic credential,
+    it judges on the pod's ambient meter — and meters the run on its DEFAULT
+    credential's ledger — a pinned key keeps its owner's.
   - **The escape hatches**, deployment-wide and on both shared tiers:
     `iterion remote admin platform-credentials set --keys-first true` puts
     keys back in front, and `--facade-default always` lets a facade key take
@@ -974,7 +988,11 @@ Semantics worth knowing:
     generations (`interaction_model`, recoveries, the review companion) read
     the process env, not the run's credentials. pi's `openai-codex`
     provider is not an iterion provider id: its routes widen the
-    resolution.
+    resolution, and their spend of the ChatGPT forfait is booked on
+    nobody. A claw `anthropic/…` node run in process spends the Claude
+    forfait where the ledger and the usage-cap pre-flight read the run's
+    z.ai key first — the sandbox's order: a route carries no sandbox
+    verdict.
 - **Rotation reach**: new launches and resumes re-resolve, so a
   `failed_resumable` run picks the fresh value on resume. In-flight runs
   keep the sealed snapshot they launched with.

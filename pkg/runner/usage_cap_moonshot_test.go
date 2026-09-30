@@ -464,3 +464,50 @@ func TestUsageCapCredKeys_APinnedKeyDoesNotScopeTheDefaultCredential(t *testing.
 		t.Errorf("a run holding only an org's pinned key scoped %q, want %q", got, want)
 	}
 }
+
+// Each backend's spend is booked in ITS order, not in claude_code's: pi reads
+// only the key of the provider its spec names — the run's default one, then one
+// a shared tier pinned for the route — never a forfait nor a facade; kimi, grok
+// and opencode read their own config, so iterion supplied nothing they spent;
+// claw's anthropic provider never reads a Moonshot key.
+func TestCredentialSlotForRoute_EachBackendIsBookedInItsOwnOrder(t *testing.T) {
+	forfaits := map[string]string{
+		string(secrets.OAuthKindClaudeCode): "/forfait",
+		string(secrets.OAuthKindCodex):      chatGPTForfaitDir(t),
+	}
+	for _, tc := range []struct {
+		name           string
+		creds          secrets.Credentials
+		backend, model string
+		want           string
+	}{
+		{"pi on anthropic spends the key pinned for it, not the forfait nor the z.ai default",
+			secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "zai-tenant"}, PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "ant-platform"}, OAuthCredentialFiles: forfaits},
+			delegate.BackendPi, "anthropic/claude-opus-5-5", string(secrets.ProviderAnthropic)},
+		{"pi on anthropic with no Anthropic key spends nothing iterion supplied",
+			secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "zai-tenant"}, OAuthCredentialFiles: forfaits},
+			delegate.BackendPi, "anthropic/claude-opus-5-5", ""},
+		{"pi on openai spends the key pinned for it, not the ChatGPT forfait",
+			secrets.Credentials{PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderOpenAI: "openai-platform"}, OAuthCredentialFiles: forfaits},
+			delegate.BackendPi, "openai/gpt-6", string(secrets.ProviderOpenAI)},
+		{"pi on openai with no OpenAI key spends nothing iterion supplied",
+			secrets.Credentials{OAuthCredentialFiles: forfaits},
+			delegate.BackendPi, "openai/gpt-6", ""},
+		{"opencode spends its own config",
+			secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "ant-tenant"}, OAuthCredentialFiles: forfaits},
+			delegate.BackendOpenCode, "anthropic/claude-opus-5-5", ""},
+		{"kimi spends its own config",
+			secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant"}},
+			delegate.BackendKimi, "moonshot/kimi-k2", ""},
+		{"grok spends its own config",
+			secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderXAI: "xai-tenant"}},
+			delegate.BackendGrok, "xai/grok-4", ""},
+		{"claw's anthropic provider never reads a Moonshot key",
+			secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant"}, OAuthCredentialFiles: forfaits},
+			delegate.BackendClaw, "anthropic/claude-opus-5-5", string(secrets.OAuthKindClaudeCode)},
+	} {
+		if got := credentialSlotForRoute(tc.creds, tc.backend, tc.model); got != tc.want {
+			t.Errorf("%s: credentialSlotForRoute(%s, %s) = %q, want %q", tc.name, tc.backend, tc.model, got, tc.want)
+		}
+	}
+}

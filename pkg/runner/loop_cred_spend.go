@@ -181,18 +181,29 @@ func credentialTier(creds secrets.Credentials, slot string) credusage.Tier {
 // the pair: a claw node can be pointed at any provider the registry knows,
 // so the backend alone does not say what was spent. Without a prefix the
 // backend's own wire decides — claude_code and claw default to the anthropic
-// wire, codex to the openai one — and a backend that resolves its
-// credentials from its own config (kimi, grok) names nothing, because
-// iterion did not supply what they spent.
+// wire, codex to the openai one. A backend that resolves its credentials
+// from its own config (kimi, grok, opencode) names nothing whatever its spec
+// says, because iterion did not supply what they spent.
 //
-// Within a wire the slot follows the delegates' own precedence: on the
-// anthropic wire secrets.AnthropicWireSlotOrder, the list
-// anthropicCredEnvForCLI is itself written against; on the openai wire, the
-// API key then the codex forfait — for a claw `openai/…` route, the forfait
-// only while the runner lets it serve, then a key pinned for the route.
-// Reading it differently here would credit a credential the delegate did not
-// use.
+// Within a wire the slot follows the backend's own precedence: claude_code's
+// is secrets.AnthropicWireSlotOrder, the list anthropicCredEnvForCLI is
+// itself written against; claw's anthropic provider spends the Anthropic
+// key, then — sandboxed — the z.ai key, then the forfait, never a Moonshot
+// key (model.clawAnthropicProviderSlots) — in process it skips the z.ai key,
+// which a route that carries no sandbox verdict cannot tell, so the
+// sandbox's order is booked; pi on `anthropic/…` or `openai/…` reads only
+// that provider's key, the run's default one then one pinned for the route
+// (piRouteEnv) — never a forfait nor a facade (its `openai-codex/…` provider,
+// which spends the ChatGPT forfait, is no iterion provider id and books on
+// nobody); on the openai wire, the API key then the codex forfait — for a
+// claw `openai/…` route, the forfait only while the runner lets it serve,
+// then a key pinned for the route. Reading it differently here would credit
+// a credential the backend did not use.
 func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string) string {
+	switch backend {
+	case delegate.BackendKimi, delegate.BackendGrok, delegate.BackendOpenCode:
+		return ""
+	}
 	// A GLM id on the anthropic wire is z.ai's (model.GLMOnAnthropicWire):
 	// each of these backends routes it to the z.ai key — the run's default
 	// one, or the key a shared tier pinned for it beside a forfait holding
@@ -203,13 +214,26 @@ func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string
 	wire := wireForRoute(backend, modelName)
 	switch wire {
 	case anthropicWire:
-		// A claw spec NAMES its provider: `anthropic/…` spends an Anthropic
-		// key the run holds for that route — its default one, or one a shared
-		// tier pinned for it — in process (APIKeyForRoute) and sandboxed
-		// (the pinned key crosses for the node that names it) alike.
-		if backend == delegate.BackendClaw && providerFromModel(modelName) == anthropicWire {
-			if slot := heldForRoute(creds, string(secrets.ProviderAnthropic)); slot != "" {
-				return slot
+		switch backend {
+		case delegate.BackendClaw:
+			// A claw spec NAMES its provider: `anthropic/…` spends an
+			// Anthropic key the run holds for that route — its default one,
+			// or one a shared tier pinned for it — in process
+			// (APIKeyForRoute) and sandboxed (the pinned key crosses for the
+			// node that names it) alike.
+			if providerFromModel(modelName) == anthropicWire {
+				if slot := heldForRoute(creds, string(secrets.ProviderAnthropic)); slot != "" {
+					return slot
+				}
+			}
+			return firstHeldSlot(creds,
+				string(secrets.ProviderAnthropic),
+				string(secrets.ProviderZAI),
+				string(secrets.OAuthKindClaudeCode),
+			)
+		case delegate.BackendPi:
+			if providerFromModel(modelName) == anthropicWire {
+				return heldForRoute(creds, string(secrets.ProviderAnthropic))
 			}
 		}
 		return firstHeldSlot(creds, secrets.AnthropicWireSlotOrder...)
@@ -225,6 +249,9 @@ func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string
 			case model.OpenAIForfaitServes(creds):
 				return string(secrets.OAuthKindCodex)
 			}
+			return heldForRoute(creds, string(secrets.ProviderOpenAI))
+		}
+		if backend == delegate.BackendPi && providerFromModel(modelName) == openaiWire {
 			return heldForRoute(creds, string(secrets.ProviderOpenAI))
 		}
 		// codex never reads a pinned key.
