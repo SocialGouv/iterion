@@ -36,6 +36,20 @@ type fakeS3 struct {
 	objects map[string][]byte
 	// putContentTypes records the Content-Type seen per key.
 	putContentTypes map[string]string
+	// ignorePrefix makes ListObjectsV2 return every key, as a gateway that
+	// ignores the prefix it was asked for would.
+	ignorePrefix bool
+	// refuseDeletes answers DeleteObjects with 200 and one AccessDenied
+	// error per key, deleting nothing (legal hold, a lagging replica…).
+	refuseDeletes bool
+}
+
+// set flips one of the misbehaviour knobs under the lock the handlers read
+// them with.
+func (f *fakeS3) set(knob *bool, v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	*knob = v
 }
 
 func newFakeS3(t *testing.T, bucket string) (*fakeS3, *httptest.Server) {
@@ -122,8 +136,11 @@ func (f *fakeS3) handleList(w http.ResponseWriter, r *http.Request) {
 		Contents    []object `xml:"Contents"`
 	}
 	res := result{Name: f.bucket, Prefix: prefix}
+	f.mu.Lock()
+	ignorePrefix := f.ignorePrefix
+	f.mu.Unlock()
 	for _, k := range f.keys() {
-		if !strings.HasPrefix(k, prefix) {
+		if !ignorePrefix && !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		f.mu.Lock()
@@ -149,12 +166,18 @@ func (f *fakeS3) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mu.Lock()
+	refuse := f.refuseDeletes
+	var refused strings.Builder
 	for _, o := range req.Objects {
+		if refuse {
+			fmt.Fprintf(&refused, "<Error><Key>%s</Key><Code>AccessDenied</Code><Message>refused</Message></Error>", o.Key)
+			continue
+		}
 		delete(f.objects, o.Key)
 	}
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/xml")
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>`))
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` + refused.String() + `</DeleteResult>`))
 }
 
 func writeS3Error(w http.ResponseWriter, status int, code string) {
@@ -287,7 +310,9 @@ func TestS3Client_DeleteRunSweepsOnlyThatRunsPrefix(t *testing.T) {
 		ver       int
 	}{
 		{"run-a", "plan", 0}, {"run-a", "plan", 1}, {"run-a", "implement", 0},
-		{"run-b", "plan", 0},
+		// run-a-b's keys start with "artifacts/run-a": only the trailing
+		// slash of the swept prefix keeps them out of run-a's sweep.
+		{"run-a-b", "plan", 0},
 	} {
 		if err := c.PutArtifact(ctx, a.run, a.node, a.ver, []byte(`{}`)); err != nil {
 			t.Fatalf("seed %s/%s/%d: %v", a.run, a.node, a.ver, err)
@@ -297,7 +322,7 @@ func TestS3Client_DeleteRunSweepsOnlyThatRunsPrefix(t *testing.T) {
 	if err := c.DeleteRun(ctx, "run-a"); err != nil {
 		t.Fatalf("DeleteRun: %v", err)
 	}
-	if got, want := fake.keys(), []string{"artifacts/run-b/plan/0.json"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := fake.keys(), []string{"artifacts/run-a-b/plan/0.json"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("after DeleteRun the bucket holds %v, want %v", got, want)
 	}
 	if _, err := c.GetArtifact(ctx, "run-a", "plan", 1); !errors.Is(err, ErrArtifactNotFound) {

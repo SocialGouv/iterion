@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // Compatibility bench against a REAL S3 gateway.
@@ -29,34 +32,78 @@ import (
 //
 //	ITERION_TEST_S3_ENDPOINT=http://host:8333 \
 //	ITERION_TEST_S3_ACCESS_KEY_ID=... ITERION_TEST_S3_SECRET_ACCESS_KEY=... \
-//	ITERION_TEST_S3_BUCKET=iterion-artifacts \
+//	ITERION_TEST_S3_BUCKET=iterion-compat-bench \
 //	go test -run TestGatewayCompat ./pkg/store/blob/
 //
-// Absent endpoint = skip, so the default suite is unchanged.
+// Absent endpoint = skip, so the default suite is unchanged. The bench WRITES
+// AND DELETES objects: the bucket must be one of its own. Every case keeps to
+// run ids starting with "compat-" and sweeps them when it ends, and the bench
+// refuses a bucket that holds anything else, unless
+// ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS=1 says the operator means it.
 
-func gatewayClient(t *testing.T) (*S3Client, string) {
+// gatewayConfig reads the bench's connection settings: skip without an
+// endpoint, fail on anything half-set rather than fall back on a default
+// bucket or on the SDK's ambient credentials.
+func gatewayConfig(t *testing.T) (endpoint, bucket, accessKey, secretKey string) {
 	t.Helper()
-	endpoint := os.Getenv("ITERION_TEST_S3_ENDPOINT")
+	endpoint = os.Getenv("ITERION_TEST_S3_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("ITERION_TEST_S3_ENDPOINT unset: no live gateway to exercise")
 	}
-	bucket := os.Getenv("ITERION_TEST_S3_BUCKET")
+	bucket = os.Getenv("ITERION_TEST_S3_BUCKET")
 	if bucket == "" {
-		bucket = "iterion-artifacts"
+		t.Fatal("ITERION_TEST_S3_BUCKET unset: name a bucket dedicated to the bench (it writes and deletes objects)")
 	}
+	accessKey, secretKey = os.Getenv("ITERION_TEST_S3_ACCESS_KEY_ID"), os.Getenv("ITERION_TEST_S3_SECRET_ACCESS_KEY")
+	if accessKey == "" || secretKey == "" {
+		t.Fatal("ITERION_TEST_S3_ACCESS_KEY_ID and ITERION_TEST_S3_SECRET_ACCESS_KEY must both be set (otherwise the SDK signs with whatever credentials the environment holds)")
+	}
+	return endpoint, bucket, accessKey, secretKey
+}
+
+func gatewayClient(t *testing.T) (*S3Client, string) {
+	t.Helper()
+	endpoint, bucket, accessKey, secretKey := gatewayConfig(t)
 	c, err := NewS3(context.Background(), Config{
 		Region:          "us-east-1",
 		Bucket:          bucket,
 		Endpoint:        endpoint,
 		UsePathStyle:    true,
-		AccessKeyID:     os.Getenv("ITERION_TEST_S3_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("ITERION_TEST_S3_SECRET_ACCESS_KEY"),
+		AccessKeyID:     accessKey,
+		SecretAccessKey: secretKey,
 	})
 	if err != nil {
 		t.Fatalf("NewS3: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
+	refuseForeignObjects(t, c)
 	return c, endpoint
+}
+
+// benchOwned reports whether key belongs to a bench run: its second segment
+// is a run id the bench mints (artifacts/compat-…/…, ir/compat-….json…).
+func benchOwned(key string) bool {
+	_, rest, ok := strings.Cut(key, "/")
+	return ok && strings.HasPrefix(rest, "compat-")
+}
+
+// refuseForeignObjects stops the bench before it writes to a bucket holding
+// objects it did not write: the first listed page is enough to tell a
+// dedicated bucket from the application's.
+func refuseForeignObjects(t *testing.T, c *S3Client) {
+	t.Helper()
+	if os.Getenv("ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS") == "1" {
+		return
+	}
+	out, err := c.client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String(c.bucket)})
+	if err != nil {
+		t.Fatalf("listing bucket %s before the bench: %v", c.bucket, err)
+	}
+	for _, obj := range out.Contents {
+		if k := aws.ToString(obj.Key); !benchOwned(k) {
+			t.Fatalf("bucket %s holds %q, which the bench did not write: point ITERION_TEST_S3_BUCKET at a bucket of its own (or set ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS=1)", c.bucket, k)
+		}
+	}
 }
 
 // runID keeps each case in its own prefix so a case never observes or sweeps
@@ -64,6 +111,44 @@ func gatewayClient(t *testing.T) (*S3Client, string) {
 func gatewayRunID(t *testing.T) string {
 	t.Helper()
 	return fmt.Sprintf("compat-%s-%d", strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-")), time.Now().UnixNano())
+}
+
+// benchRun mints a run id and sweeps every key family of it when the case
+// ends, so a case that fails midway leaves nothing behind.
+func benchRun(t *testing.T, c *S3Client) string {
+	t.Helper()
+	run := gatewayRunID(t)
+	sweepOnCleanup(t, c, run)
+	return run
+}
+
+func sweepOnCleanup(t *testing.T, c *S3Client, runs ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, run := range runs {
+			for _, sweep := range []func(context.Context, string) error{
+				c.DeleteRun, c.DeleteRunAttachments, c.DeleteRunToolBlobs,
+				c.DeleteRunFiles, c.DeleteRunIR, c.DeleteRunBackendSessions,
+			} {
+				if err := sweep(ctx, run); err != nil {
+					t.Errorf("cleanup of run %s: %v", run, err)
+				}
+			}
+		}
+	})
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // HeadBucket — what /readyz gates on.
@@ -80,7 +165,7 @@ func TestGatewayCompat_PingHeadBucket(t *testing.T) {
 func TestGatewayCompat_ArtifactRoundTripAndLayout(t *testing.T) {
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, c)
 
 	bodies := map[int][]byte{
 		0: []byte(`{"verdict":"first pass"}`),
@@ -107,7 +192,7 @@ func TestGatewayCompat_ArtifactRoundTripAndLayout(t *testing.T) {
 		t.Fatalf("ListArtifactVersions: %v", err)
 	}
 	sort.Ints(versions)
-	if len(versions) != 3 || versions[0] != 0 || versions[2] != 2 {
+	if !equalInts(versions, []int{0, 1, 2}) {
 		t.Fatalf("versions = %v, want [0 1 2]", versions)
 	}
 
@@ -119,8 +204,9 @@ func TestGatewayCompat_ArtifactRoundTripAndLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListArtifactVersions after re-put: %v", err)
 	}
-	if len(versions) != 3 {
-		t.Fatalf("a re-upload changed the object count: %v", versions)
+	sort.Ints(versions)
+	if !equalInts(versions, []int{0, 1, 2}) {
+		t.Fatalf("a re-upload changed the versions: %v, want [0 1 2]", versions)
 	}
 	back, err := c.GetArtifact(ctx, run, "review", 1)
 	if err != nil || string(back) != `{"verdict":"rewritten"}` {
@@ -158,7 +244,11 @@ func TestGatewayCompat_MissingArtifactMapsToNotFound(t *testing.T) {
 func TestGatewayCompat_DeleteRunSweepsOnlyThatPrefix(t *testing.T) {
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	runA, runB := gatewayRunID(t)+"-a", gatewayRunID(t)+"-b"
+	// runB's keys start with "artifacts/<runA>": only the trailing slash of
+	// the swept prefix keeps them out of runA's sweep.
+	runA := benchRun(t, c)
+	runB := runA + "-b"
+	sweepOnCleanup(t, c, runB)
 
 	for _, a := range []struct {
 		run, node string
@@ -204,7 +294,17 @@ func TestGatewayCompat_ListPaginationAndFullDeleteBatch(t *testing.T) {
 	}
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, c)
+	// Canaries whose keys sort right before and right after the run's: a
+	// sweep that strays past its prefix on any page, continuation pages
+	// included, deletes one of them.
+	before, after := run+"-", run+"0"
+	sweepOnCleanup(t, c, before, after)
+	for _, canary := range []string{before, after} {
+		if err := c.PutArtifact(ctx, canary, "canary", 0, []byte(`{"canary":true}`)); err != nil {
+			t.Fatalf("PutArtifact canary %s: %v", canary, err)
+		}
+	}
 
 	const n = 1100 // > one 1000-key page, so paging AND a full delete batch
 	for v := 0; v < n; v++ {
@@ -220,8 +320,10 @@ func TestGatewayCompat_ListPaginationAndFullDeleteBatch(t *testing.T) {
 		t.Fatalf("listing returned %d versions, want %d (continuation-token paging dropped objects)", len(versions), n)
 	}
 	sort.Ints(versions)
-	if versions[0] != 0 || versions[n-1] != n-1 {
-		t.Fatalf("listing bounds = [%d..%d], want [0..%d]", versions[0], versions[n-1], n-1)
+	for i, v := range versions {
+		if v != i {
+			t.Fatalf("listing holds %d at rank %d, want every version 0..%d exactly once", v, i, n-1)
+		}
 	}
 
 	if err := c.DeleteRun(ctx, run); err != nil {
@@ -230,13 +332,18 @@ func TestGatewayCompat_ListPaginationAndFullDeleteBatch(t *testing.T) {
 	if _, err := c.ListArtifactVersions(ctx, run, "bulk"); !errors.Is(err, ErrArtifactNotFound) {
 		t.Fatalf("prefix not empty after DeleteRun: %v", err)
 	}
+	for _, canary := range []string{before, after} {
+		if _, err := c.GetArtifact(ctx, canary, "canary", 0); err != nil {
+			t.Fatalf("DeleteRun(%s) took the neighbouring canary %s: %v", run, canary, err)
+		}
+	}
 }
 
 // HeadObject + bounded Range GET — how the studio tails a tool's output.
 func TestGatewayCompat_ToolBlobHeadAndRange(t *testing.T) {
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, c)
 
 	body := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	if err := c.PutToolBlob(ctx, run, "tu-1", "output", body); err != nil {
@@ -278,6 +385,9 @@ func TestGatewayCompat_ToolBlobHeadAndRange(t *testing.T) {
 	if err := c.DeleteRunToolBlobs(ctx, run); err != nil {
 		t.Fatalf("DeleteRunToolBlobs: %v", err)
 	}
+	if _, _, _, err := c.GetToolBlobRange(ctx, run, "tu-1", "output", 0, 0); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("tool blob readable after DeleteRunToolBlobs: %v", err)
+	}
 }
 
 // Attachments: PutObject with a caller Content-Type, GetObject returning that
@@ -285,7 +395,7 @@ func TestGatewayCompat_ToolBlobHeadAndRange(t *testing.T) {
 func TestGatewayCompat_AttachmentMetadataRoundTrip(t *testing.T) {
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, c)
 
 	payload := []byte("id,label\n1,héllo ✓\n")
 	if err := c.PutAttachment(ctx, run, "input", "data.csv", "text/csv; charset=utf-8", payload); err != nil {
@@ -332,13 +442,17 @@ func TestGatewayCompat_AttachmentMetadataRoundTrip(t *testing.T) {
 func TestGatewayCompat_PresignedURLIsHonouredAndVerified(t *testing.T) {
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, c)
 
 	payload := []byte("presigned-body\n")
 	if err := c.PutAttachment(ctx, run, "out", "report.txt", "text/plain", payload); err != nil {
 		t.Fatalf("PutAttachment: %v", err)
 	}
-	t.Cleanup(func() { _ = c.DeleteRunAttachments(context.Background(), run) })
+	// The object step 3 re-points the URL at: it must exist, or a gateway
+	// that serves any key under a valid signature would still answer 404.
+	if err := c.PutAttachment(ctx, run, "out", "secret.txt", "text/plain", []byte("not for this URL\n")); err != nil {
+		t.Fatalf("PutAttachment secret.txt: %v", err)
+	}
 
 	raw, err := c.PresignAttachment(ctx, run, "out", "report.txt", 10*time.Minute)
 	if err != nil {
@@ -419,7 +533,7 @@ func TestGatewayCompat_PresignedURLIsHonouredAndVerified(t *testing.T) {
 func TestGatewayCompat_RunFileStreamingUploadAndListing(t *testing.T) {
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, c)
 
 	// Non-repeating bytes: a compressible or repetitive payload can hide a
 	// framing bug that a checksum would otherwise catch.
@@ -478,7 +592,7 @@ func TestGatewayCompat_RunFileStreamingUploadAndListing(t *testing.T) {
 func TestGatewayCompat_IRBlobAndBackendSession(t *testing.T) {
 	c, _ := gatewayClient(t)
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, c)
 
 	ir := []byte(`{"nodes":[{"id":"plan"}]}`)
 	if err := c.PutIRBlob(ctx, run, ir); err != nil {
@@ -563,6 +677,11 @@ func fetch(t *testing.T, client *http.Client, raw string) ([]byte, int) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// *url.Error prints the whole URL, signature included.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		t.Fatalf("GET %s: %v", redact(raw), err)
 	}
 	defer resp.Body.Close()
@@ -616,15 +735,14 @@ func TestGatewayCompat_SecondGatewaySeesTheFirstsWrites(t *testing.T) {
 	if endpointB == "" {
 		t.Skip("ITERION_TEST_S3_ENDPOINT_B unset: single-gateway bench")
 	}
-	a, _ := gatewayClient(t)
-	bucket := os.Getenv("ITERION_TEST_S3_BUCKET")
-	if bucket == "" {
-		bucket = "iterion-artifacts"
+	a, endpointA := gatewayClient(t)
+	if endpointB == endpointA {
+		t.Fatal("ITERION_TEST_S3_ENDPOINT_B equals ITERION_TEST_S3_ENDPOINT: point it at a second gateway")
 	}
+	_, bucket, accessKey, secretKey := gatewayConfig(t)
 	b, err := NewS3(context.Background(), Config{
 		Region: "us-east-1", Bucket: bucket, Endpoint: endpointB, UsePathStyle: true,
-		AccessKeyID:     os.Getenv("ITERION_TEST_S3_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("ITERION_TEST_S3_SECRET_ACCESS_KEY"),
+		AccessKeyID: accessKey, SecretAccessKey: secretKey,
 	})
 	if err != nil {
 		t.Fatalf("NewS3(B): %v", err)
@@ -632,7 +750,7 @@ func TestGatewayCompat_SecondGatewaySeesTheFirstsWrites(t *testing.T) {
 	t.Cleanup(func() { _ = b.Close() })
 
 	ctx := context.Background()
-	run := gatewayRunID(t)
+	run := benchRun(t, a)
 	if err := b.Ping(ctx); err != nil {
 		t.Fatalf("Ping on gateway B: %v", err)
 	}
@@ -642,7 +760,6 @@ func TestGatewayCompat_SecondGatewaySeesTheFirstsWrites(t *testing.T) {
 	if err := a.PutArtifact(ctx, run, "review", 0, want); err != nil {
 		t.Fatalf("PutArtifact on A: %v", err)
 	}
-	t.Cleanup(func() { _ = a.DeleteRun(context.Background(), run) })
 
 	// Read on B: bytes AND listing.
 	got, err := b.GetArtifact(ctx, run, "review", 0)
