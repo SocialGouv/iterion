@@ -31,7 +31,7 @@ notify → done                                             when not consume (dr
 | `probe_http` | GET the health URLs, status + latency | the app | — |
 | `leak_scan` | **the only reader of the raw lines and the Sentry issue text**: redaction by class, error templates, masked samples, coverage | scratch | `<scratch>/signals-<run>.json` |
 | `decide` | incident lifecycle (new / escalated / reminder / quiet, and pending past the cap; for Sentry also regressed / escalating / resolved), source staleness, cap + overflow, staged next state | `signals-<run>.json`, `state.json` | scratch: `state_next-<run>.json`, `alertlog_delta-<run>.jsonl`, `tick-<run>.json` |
-| `notify` | Mattermost/Slack incoming webhooks, per-sink `min_severity`, `required` sinks, all-or-nothing consume | `webhooks` secret | the channel |
+| `notify` | Mattermost incoming webhooks (the rendering is Mattermost's), per-sink `min_severity`, `required` sinks, all-or-nothing consume | `webhooks` secret | the channel |
 | `commit_state` | `state.json` (replaced), `alertlog.jsonl` + `ticks.jsonl` (appended, `merge=union`), optional commit + push | scratch | `<state_dir>/` |
 
 ## Run it

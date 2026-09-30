@@ -905,7 +905,7 @@ target workspace (an ops repository, never the application's own):
   reminder / not-observed, source-health staleness, a per-tick cap
   with an explicit overflow, and a dead lane that never counts as an
   absence of observation.
-- Deterministic delivery to Mattermost/Slack incoming webhooks with
+- Deterministic delivery to Mattermost incoming webhooks with
   per-sink severity thresholds and required/optional sinks; the state
   advances only after delivery (at-least-once, never a silent loss).
 

@@ -417,8 +417,18 @@ func (h *pwHarness) writeConfig(t *testing.T, mod func(cfg map[string]any)) {
 // the markdown link `[text](url)` — on the raw text, code spans included.
 var pwMattermostLinkWithText = regexp.MustCompile(`<([^\n<\|>]+)\|([^\|\n>]+)>`)
 
-// pwMattermostStores: the text a Mattermost post holds for this webhook text.
+// pwMattermostUserIDs is Mattermost's Slack-compatible user reference `<@id>`.
+var pwMattermostUserIDs = regexp.MustCompile(`<@([a-zA-Z0-9]+)>`)
+
+// pwMattermostStores: the text a Mattermost post holds for this webhook text —
+// its Slack compatibility first (ProcessSlackText: `<!channel>` and its kin
+// become mentions, `<@id>` a user's name — every id taken for an existing
+// user, the worst case), then the link rewrite.
 func pwMattermostStores(text string) string {
+	for _, a := range []string{"channel", "here", "all"} {
+		text = strings.ReplaceAll(text, "<!"+a+">", "@"+a)
+	}
+	text = pwMattermostUserIDs.ReplaceAllString(text, "@someone")
 	return pwMattermostLinkWithText.ReplaceAllString(text, "[${2}](${1})")
 }
 

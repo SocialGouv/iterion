@@ -653,7 +653,12 @@ tool plan:
     ## node); a probe is tried twice, two seconds apart.
     probe_hosts = {}
     for p in http_probes:
-        h = urlsplit(p['url']).hostname or ''
+        try:
+            h = urlsplit(p['url']).hostname or ''
+        except ValueError:
+            ## A URL that does not parse fails its probe by name, at once: no
+            ## lookup to count.
+            continue
         probe_hosts[h] = max(probe_hosts.get(h, 0), p['timeout_secs'])
     waits = [('release', 2 * fetch_timeout if release['source'] != 'none' else 0),
              ('probes', sum(2 * p['timeout_secs'] + 2 for p in http_probes) + sum(probe_hosts.values())),
@@ -1043,6 +1048,9 @@ tool resolve_release:
     import threading
     _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
     def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ## One host whatever its case: the guard resolves the URL's lower-cased
+        ## host, the connection the host as written.
+        host = host.lower() if isinstance(host, str) else host
         if host not in _gai_hosts:
             box = {}
             def work():
@@ -1209,6 +1217,9 @@ tool poll_loki:
     import threading
     _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
     def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ## One host whatever its case: the guard resolves the URL's lower-cased
+        ## host, the connection the host as written.
+        host = host.lower() if isinstance(host, str) else host
         if host not in _gai_hosts:
             box = {}
             def work():
@@ -1626,6 +1637,9 @@ tool poll_prom:
     import threading
     _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
     def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ## One host whatever its case: the guard resolves the URL's lower-cased
+        ## host, the connection the host as written.
+        host = host.lower() if isinstance(host, str) else host
         if host not in _gai_hosts:
             box = {}
             def work():
@@ -1889,6 +1903,9 @@ tool poll_sentry:
     import threading
     _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
     def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ## One host whatever its case: the guard resolves the URL's lower-cased
+        ## host, the connection the host as written.
+        host = host.lower() if isinstance(host, str) else host
         if host not in _gai_hosts:
             box = {}
             def work():
@@ -2105,7 +2122,14 @@ tool poll_sentry:
         ## every later write would die on it.
         return v[:cap].encode('utf-8', 'replace').decode('utf-8') if isinstance(v, str) else ''
 
-    records, stats = {}, {'malformed': 0, 'filtered': 0, 'pages': 0, 'activity_checks': 0}
+    records, stats = {}, {'malformed': 0, 'filtered': 0, 'pages': 0, 'activity_checks': 0, 'future': 0}
+    ## A stamp the server writes is saved and gates the next one (the cursor,
+    ## the arming, a sighting, a regression): one later than this runner's
+    ## clock plus the overlap — a hostile server, a front whose clock runs
+    ## ahead — is not taken, and the walk says so.
+    SKEW = datetime.timedelta(minutes=max(1, int(cfg.get('overlap_minutes') or 0)))
+    def horizon():
+        return (datetime.datetime.now(datetime.timezone.utc) + SKEW).isoformat(timespec='seconds')
     def take(i, source):
         if not isinstance(i, dict) or not isinstance(i.get('id'), str) or not re.fullmatch(r'[0-9]{1,20}', i['id']):
             stats['malformed'] += 1
@@ -2119,6 +2143,9 @@ tool poll_sentry:
             return
         rec = records.get(i['id'])
         seen = iso(i.get('lastSeen'))
+        if seen and seen > horizon():
+            stats['future'] += 1
+            seen = None
         if rec is None:
             short = i.get('shortId')
             md = i.get('metadata') if isinstance(i.get('metadata'), dict) else {}
@@ -2301,6 +2328,8 @@ tool poll_sentry:
                     raise LaneError('the activities of issue ' + r['id'] + ' are not a list (their text is withheld)')
                 dates = [iso(a.get('dateCreated')) for a in acts if isinstance(a, dict) and a.get('type') == want[r['substatus']]]
                 dates = [d for d in dates if d]
+                stats['future'] += sum(1 for d in dates if d > horizon())
+                dates = [d for d in dates if d <= horizon()]
                 if dates:
                     r['transition_at'] = max(dates)
                 r['transition_checked'] = True
@@ -2353,6 +2382,11 @@ tool poll_sentry:
         ## No Date header came back (or it did not parse): the runner's clock
         ## stands in, and the walk says so.
         as_of, clock = t_start, 'local'
+    elif as_of > (datetime.datetime.fromisoformat(t_start) + SKEW).isoformat(timespec='seconds'):
+        ## A Date ahead of this runner by more than the overlap: the cursor and
+        ## the arming follow the earlier clock, and the walk says so.
+        stats['future'] += 1
+        as_of, clock = t_start, 'local'
     with open(raw_path, 'w', encoding='utf-8') as fh:
         for rid in sorted(records):
             fh.write(json.dumps(records[rid], ensure_ascii=False) + chr(10))
@@ -2364,8 +2398,10 @@ tool poll_sentry:
         ('the deadline passed', deadline_hit),
         ('the cursor was older than max_catchup_hours: issues first processed between ' + str(cfg.get('gap_since') or '?') +
          ' and ' + str(cfg.get('new_since') or '?') + ' were never read as new', bool(cfg.get('gap_since'))),
-        (str(stats['malformed']) + ' malformed issue(s) skipped', stats['malformed'] > 0)) if on and not ('setup' in ' '.join(failed))]
-    truncated = (not all(complete.values()) or checks_cut or deadline_hit or stats['malformed'] > 0
+        (str(stats['malformed']) + ' malformed issue(s) skipped', stats['malformed'] > 0),
+        (str(stats['future']) + " stamp(s) from Sentry ahead of this runner's clock not taken", stats['future'] > 0))
+        if on and not ('setup' in ' '.join(failed))]
+    truncated = (not all(complete.values()) or checks_cut or deadline_hit or stats['malformed'] > 0 or stats['future'] > 0
                  or bool(cfg.get('gap_since')) or bool(cfg.get('tracked_cut')))
     walk_info = {'bootstrap': bootstrap, 'as_of': as_of, 'clock': clock, 'new_complete': complete['new'],
                  'transition_complete': complete['transition'] and not checks_cut, 'tracked_complete': complete['tracked'] and not cfg.get('tracked_cut'),
@@ -2416,6 +2452,9 @@ tool probe_http:
     import threading
     _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [default_timeout]
     def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ## One host whatever its case: the guard resolves the URL's lower-cased
+        ## host, the connection the host as written.
+        host = host.lower() if isinstance(host, str) else host
         if host not in _gai_hosts:
             box = {}
             def work():
@@ -4093,6 +4132,9 @@ tool notify:
     import threading
     _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [20]
     def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ## One host whatever its case: the guard resolves the URL's lower-cased
+        ## host, the connection the host as written.
+        host = host.lower() if isinstance(host, str) else host
         if host not in _gai_hosts:
             box = {}
             def work():

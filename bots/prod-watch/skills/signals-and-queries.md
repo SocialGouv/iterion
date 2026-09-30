@@ -276,8 +276,13 @@ of the `Link` header is followed, never its URL; a short page with
 `results="true"` is not the end, and a page with no `Link` header (a
 proxy stripping it) is an error, never the end: the list is not read
 whole and the cursor stays. The cursor's `since` is Sentry's own
-`Date` (the runner's clock, read before the first request, only when
-the header is missing — the walk says `clock: local`). `deadline_secs`
+`Date` (the runner's clock, read before the first request, when the
+header is missing or runs ahead of it by more than `overlap_minutes` —
+the walk says `clock: local`). Every stamp Sentry writes is bounded so:
+an issue's `lastSeen` or an activity's date later than the runner's
+clock plus `overlap_minutes` is not taken, and the walk counts it among
+its partial reasons — a server or a front whose clock runs ahead never
+mutes a path in silence. `deadline_secs`
 is a wall clock over each exchange: a server or proxy trickling bytes
 into the headers, a chunk-size line or the body cannot outlast it — nor
 can a name lookup (every node resolves a host once, in a worker thread
@@ -402,7 +407,7 @@ backtick). Escaping a value alone is not enough: the autolinker takes a
 host after a hyphen, a word character or a parenthesis, whatever
 precedes it. The label's own words render as written, and none of their
 markdown can wrap a value: emphasis, code, link and LaTeX characters are
-escaped, `&` and `<` are entities (the server rewrites `<url|text>`
+escaped, `&`, `<`, `>` and `|` are entities (the server rewrites `<url|text>`
 first), `$` becomes its full-width form (inline LaTeX ignores a
 backslash), every dot is escaped (the autolinker reads a host after any
 letter, a `-` or a `.`, and `www.` through a zero-width space; a push

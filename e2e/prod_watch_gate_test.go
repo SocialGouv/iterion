@@ -330,3 +330,222 @@ func TestProdWatch_AMaxAlertsPerRunBelowZeroIsRefused(t *testing.T) {
 		t.Fatalf("max_alerts_per_run -1 was not refused by name: %v %s", err, lastN(stderr, 300))
 	}
 }
+
+// pwCaseSplitResolverStub answers the lower-case name with a public address
+// (what the SSRF guard checks) and any other spelling with 127.0.0.1 — the
+// second answer of a DNS rebinding.
+func pwCaseSplitResolverStub(lower, port string) string {
+	return "import os as _o, socket as _s\n" +
+		"_o.environ['no_proxy'] = '*'; _o.environ['NO_PROXY'] = '*'\n" +
+		"_gai0 = _s.getaddrinfo\n" +
+		"def _split(host, *a, **k):\n" +
+		"    if host == '" + lower + "':\n" +
+		"        return [(_s.AF_INET, _s.SOCK_STREAM, 6, '', ('93.184.216.34', " + port + "))]\n" +
+		"    if host.lower() == '" + lower + "':\n" +
+		"        return [(_s.AF_INET, _s.SOCK_STREAM, 6, '', ('127.0.0.1', " + port + "))]\n" +
+		"    return _gai0(host, *a, **k)\n" +
+		"_s.getaddrinfo = _split\n"
+}
+
+// TestProdWatch_AMixedCaseHostConnectsWhereTheGuardChecked: the guard resolves
+// the URL's lower-cased host; a probe URL (or a redirect) spelling it
+// `Guard.test` connects to the addresses the guard checked, never to a second
+// answer nobody checked (here the loopback fake, private sources refused).
+func TestProdWatch_AMixedCaseHostConnectsWhereTheGuardChecked(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	port := h.srv.URL[strings.LastIndex(h.srv.URL, ":")+1:]
+	for _, host := range []string{"guard.test", "Guard.test"} {
+		in := map[string]any{"probes": []map[string]any{{"id": "api", "url": "http://" + host + ":" + port + "/health", "expect_status": 200,
+			"timeout_secs": 3, "severity": "critical"}}, "timeout_secs": 5, "allow_private": false}
+		out, stderr, err := runPyWhole(t, h.ws, pwCaseSplitResolverStub("guard.test", port)+pwSub(t, pwTool(t, wf, "probe_http").Script, in, nil, nil))
+		if err != nil {
+			t.Fatalf("probe_http: %v %s", err, stderr)
+		}
+		if r := out["results"].([]any)[0].(map[string]any); r["ok"] == true {
+			t.Fatalf("%s reached the loopback fake (status %v) with private sources refused: the connection used an address the guard never checked", host, r["status"])
+		}
+	}
+}
+
+// TestProdWatch_AProbeURLThatDoesNotParseLeavesThePlanRunning: a typo in one
+// probe's URL fails that probe, by name, when it runs — never plan, and with
+// it every lane of every tick.
+func TestProdWatch_AProbeURLThatDoesNotParseLeavesThePlanRunning(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		cfg["probes"] = []map[string]any{{"id": "api", "url": "http://[::1/health", "expect_status": 200, "severity": "critical"}}
+	})
+	vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
+		"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
+	secrets := map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}
+	plan, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars, secrets))
+	if err != nil {
+		t.Fatalf("a probe URL typo stopped plan: %v %s", err, lastN(stderr, 400))
+	}
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "probe_http").Script,
+		map[string]any{"probes": plan["probes"], "timeout_secs": 5, "allow_private": true}, nil, nil))
+	if err != nil {
+		t.Fatalf("probe_http: %v %s", err, stderr)
+	}
+	if r := out["results"].([]any)[0].(map[string]any); r["ok"] == true || !strings.Contains(fmt.Sprint(r["error"]), "ValueError") {
+		t.Fatalf("the probe with the typo must fail by name: %v", r)
+	}
+}
+
+// pwSaysAhead: the walk of this tick names Sentry stamps it did not take.
+func pwSaysAhead(o map[string]map[string]any) bool {
+	return strings.Contains(fmt.Sprint(o["poll_sentry"]["walk"].(map[string]any)["partial"]), "ahead of this runner's clock not taken")
+}
+
+// TestProdWatch_SentryAFutureDateAtArmingMutesNothing: the arming time is the
+// bootstrap answer's Date — one a year ahead (a hostile server, a proxy with a
+// broken clock) is not taken: the lane arms on the runner's clock, says so,
+// and a regression dated now is posted once the Date is right again.
+func TestProdWatch_SentryAFutureDateAtArmingMutesNothing(t *testing.T) {
+	t.Parallel()
+	for name, offset := range map[string]time.Duration{"control": 0, "a year ahead at the arming": 365 * 24 * time.Hour} {
+		name, offset := name, offset
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixture(t, "prod-watch/main.bot")
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, nil))
+			h.sentry.mu.Lock()
+			h.sentry.dateOffset = offset
+			h.sentry.mu.Unlock()
+			if o := sentryTick(t, h, wf); pwSaysAhead(o) != (offset > 0) {
+				t.Fatalf("%s: the bootstrap walk says stamps ahead=%v: %v", name, pwSaysAhead(o), o["poll_sentry"]["walk"])
+			}
+			h.sentry.mu.Lock()
+			h.sentry.dateOffset = 0
+			h.sentry.mu.Unlock()
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "4401", ShortID: strp("PROJ-4401"), Title: "r", Substatus: strp("regressed"),
+				FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now, Acts: []pwSentryAct{{Type: "set_regression", At: now}}})
+			var got []string
+			for k := 0; k < 3; k++ {
+				got = append(got, sentryAlerts(sentryTick(t, h, wf))...)
+			}
+			if !strings.Contains(strings.Join(got, " "), "regressed:PROJ-4401") {
+				t.Fatalf("%s: a regression dated now was never posted: %v (armed_at %v)", name, got,
+					h.state(t)["cursors"].(map[string]any)["sentry"].(map[string]any)["armed_at"])
+			}
+		})
+	}
+}
+
+// TestProdWatch_SentryAFutureLastSeenMutesNoEscalation: one answer carrying a
+// lastSeen a year ahead is not taken (the walk says so): the issue's next real
+// events are sighted, and its level rising to fatal escalates.
+func TestProdWatch_SentryAFutureLastSeenMutesNoEscalation(t *testing.T) {
+	t.Parallel()
+	for name, poison := range map[string]bool{"control": false, "one answer a year ahead": true} {
+		name, poison := name, poison
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixture(t, "prod-watch/main.bot")
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, nil))
+			sentryTick(t, h, wf)
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "4601", ShortID: strp("PROJ-4601"), Title: "x", FirstProcessed: now, LastSeen: now, Count: 1})
+			if got := sentryAlerts(sentryTick(t, h, wf)); strings.Join(got, " ") != "new:PROJ-4601:medium" {
+				t.Fatalf("setup: the new issue was not posted: %v", got)
+			}
+			if poison {
+				h.sentry.edit("4601", func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(365 * 24 * time.Hour) })
+				if o := sentryTick(t, h, wf); !pwSaysAhead(o) {
+					t.Fatalf("a lastSeen a year ahead was taken in silence: %v", o["poll_sentry"]["walk"])
+				}
+			}
+			time.Sleep(1100 * time.Millisecond)
+			h.sentry.edit("4601", func(i *pwSentryIssue) { i.LastSeen = time.Now(); i.Level = "fatal"; i.Count = 9 })
+			var got []string
+			for k := 0; k < 2; k++ {
+				got = append(got, sentryAlerts(sentryTick(t, h, wf))...)
+			}
+			if !strings.Contains(strings.Join(got, " "), "escalated:PROJ-4601:high") {
+				t.Fatalf("%s: the level rose to fatal with new events and it never escalated: %v (sentry_last_seen %v)",
+					name, got, sentryIncident(t, h, "4601")["sentry_last_seen"])
+			}
+		})
+	}
+}
+
+// TestProdWatch_SentryADateAheadOfSentrysDataHidesNoNewIssue: a front whose
+// clock runs ahead of the Sentry backend by more than the overlap — its Date is
+// not taken (the cursor follows the runner's clock, the walk says so), and a new
+// issue first processed now is posted.
+func TestProdWatch_SentryADateAheadOfSentrysDataHidesNoNewIssue(t *testing.T) {
+	t.Parallel()
+	for name, offset := range map[string]time.Duration{"control": 0, "the front's clock 2 h ahead": 2 * time.Hour} {
+		name, offset := name, offset
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixture(t, "prod-watch/main.bot")
+			h := newPWHarness(t)
+			h.writeConfig(t, sentryOnly(h, nil))
+			h.sentry.mu.Lock()
+			h.sentry.dateOffset = offset
+			h.sentry.mu.Unlock()
+			sentryTick(t, h, wf)
+			o := sentryTick(t, h, wf)
+			if pwSaysAhead(o) != (offset > 0) {
+				t.Fatalf("%s: the walk says stamps ahead=%v: %v", name, pwSaysAhead(o), o["poll_sentry"]["walk"])
+			}
+			if offset > 0 && sentryTickCoverage(t, o) == "full" {
+				t.Fatalf("%s: a Date not taken left the coverage note full", name)
+			}
+			now := time.Now()
+			h.sentry.put(&pwSentryIssue{ID: "4501", ShortID: strp("PROJ-4501"), Title: "ValueError: new", FirstProcessed: now,
+				LastSeen: now, Count: 1})
+			var got []string
+			for k := 0; k < 3; k++ {
+				got = append(got, sentryAlerts(sentryTick(t, h, wf))...)
+			}
+			if !strings.Contains(strings.Join(got, " "), "new:PROJ-4501") {
+				t.Fatalf("%s: a new issue first processed now was never posted in 3 ticks: %v", name, got)
+			}
+		})
+	}
+}
+
+// TestProdWatch_SentryAFutureActivityDateMutesNoRegression: a regression's
+// activity dated a year ahead is not taken (the walk says so): once the issue
+// regresses for real, now, the regression is posted — a future date never
+// becomes the transition every later one must pass.
+func TestProdWatch_SentryAFutureActivityDateMutesNoRegression(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, sentryOnly(h, nil))
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "4701", ShortID: strp("PROJ-4701"), Title: "r", Substatus: strp("regressed"),
+		FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now,
+		Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(365 * 24 * time.Hour)}}})
+	if o := sentryTick(t, h, wf); !pwSaysAhead(o) {
+		t.Fatalf("an activity dated a year ahead was taken in silence: %v", o["poll_sentry"]["walk"])
+	}
+	if at := sentryIncident(t, h, "4701")["transition_at"]; at != nil && fmt.Sprint(at) > time.Now().Add(time.Hour).UTC().Format(time.RFC3339) {
+		t.Fatalf("the future activity date became the issue's transition: %v", at)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	t1 := time.Now()
+	h.sentry.edit("4701", func(i *pwSentryIssue) {
+		i.Acts = append(i.Acts, pwSentryAct{Type: "set_regression", At: t1})
+		i.LastSeen = t1
+	})
+	var got []string
+	for k := 0; k < 3; k++ {
+		got = append(got, sentryAlerts(sentryTick(t, h, wf))...)
+	}
+	if !strings.Contains(strings.Join(got, " "), "regressed:PROJ-4701") {
+		t.Fatalf("a regression dated now, after an activity dated a year ahead, was never posted: %v", got)
+	}
+}
