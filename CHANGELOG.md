@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.217.1](https://github.com/SocialGouv/iterion/compare/v3.217.0...v3.217.1) (2026-09-30)
+
+### Bug Fixes
+
+* **runner:** one refresher per OAuth forfait record, the runner follows it ([#1958](https://github.com/SocialGouv/iterion/issues/1958)) ([c1cfa10](https://github.com/SocialGouv/iterion/commit/c1cfa108d8675f8f371277a2ec2a40ea5f98a805))
+
+    <details><summary>why</summary>
+
+    A claude_code forfait is a store record the server's OAuthRefreshWorker rotates, and the runner also exchanged the refresh token of its run-local copy (refreshAnthropicLoop). An exchange revokes the access token every other holder of the grant still uses. Measured on a team record: a live delegate refused "OAuth access token has been revoked" 16 s after the worker rotated the record.
+
+    </details>
+* **server:** cut the unit root off every diagnostic a client is answered ([#1934](https://github.com/SocialGouv/iterion/issues/1934)) ([#1971](https://github.com/SocialGouv/iterion/issues/1971)) ([5e4c9c1](https://github.com/SocialGouv/iterion/commit/5e4c9c13c510d8822f0163ecab8026b29a0a2259)), references [#1933](https://github.com/SocialGouv/iterion/issues/1933)
+
+    <details><summary>why</summary>
+
+    #1933 cut the root off the claim probe's diagnostics, the one place a probe-forwarded diagnostic crosses. The same under-root leak sat at four sibling sites, each forwarding a DISK load's diagnostics — positioned under absolute workspace paths — to the client:
+
+    </details>
+
 ## [3.217.0](https://github.com/SocialGouv/iterion/compare/v3.216.0...v3.217.0) (2026-09-30)
 
 ### Features
