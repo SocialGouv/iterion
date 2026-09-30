@@ -48,21 +48,20 @@ func (b scratchBanked) event() map[string]any {
 // nodes left under ${PROJECT_SCRATCH_DIR} (a verify.sh an agent wrote, a
 // source clone, a measurement a later node reads) is streamed out as a
 // gzip'd tar into the run's scratch bank, and restoreBankedScratch puts it
-// back before the resumed run's first node. A run that reached a final
-// status keeps nothing: it will not resume.
+// back before the resumed run's first node. A finished run keeps nothing: it
+// will not resume. A failed one banks like a park: a rewind brings it back.
 func (e *Engine) bankScratchOnCleanup(runID string, active *activeSandbox, emit func(store.EventType, map[string]any) error) {
 	if active == nil || active.run == nil || active.scratchHostDir != "" || e.scratchBankHeld {
 		return
 	}
 	bs := store.AsScratchBankStore(e.store)
-	if bs == nil {
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), scratchBankTimeout)
 	defer cancel()
-	if r, err := e.store.LoadRun(ctx, runID); err == nil && (r.Status.IsFinalSuccess() || r.Status.IsFinalFailure()) {
-		if err := bs.DeleteScratchBank(ctx, runID); err != nil && e.logger != nil {
-			e.logger.Warn("runtime: the scratch bank of finished run %s could not be deleted: %v", runID, err)
+	if r, err := e.store.LoadRun(ctx, runID); err == nil && r.Status.IsFinalSuccess() {
+		if bs != nil {
+			if err := bs.DeleteScratchBank(ctx, runID); err != nil && e.logger != nil {
+				e.logger.Warn("runtime: the scratch bank of finished run %s could not be deleted: %v", runID, err)
+			}
 		}
 		return
 	}
@@ -85,17 +84,28 @@ func (e *Engine) bankScratchOnCleanup(runID string, active *activeSandbox, emit 
 // bankScratch streams dir, inside run, into runID's scratch bank: a gzip'd
 // tar through a host temporary file, so the cap is enforced before anything
 // is uploaded and nothing sits in memory. An empty scratch drops a previous
-// bank, which would otherwise restore a state the run has moved past.
+// bank, which would otherwise restore a state the run has moved past. A nil
+// bs keeps no bank: a scratch that holds something is recorded as not
+// banked, so the resume refuses rather than lose it.
 func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.ScratchBankStore, runID string, limit int64) scratchBanked {
-	res, err := run.Exec(ctx, []string{"sh", "-c", `[ -d "$1" ] && find "$1" -mindepth 1 -print -quit`, "sh", dir}, sandbox.ExecOpts{})
+	res, err := run.Exec(ctx, []string{"sh", "-c", `if [ -d "$1" ]; then find "$1" -mindepth 1 -print -quit; fi`, "sh", dir}, sandbox.ExecOpts{})
 	if err != nil {
 		return scratchBanked{reason: "the scratch could not be listed: " + err.Error()}
 	}
+	if res.ExitCode != 0 {
+		return scratchBanked{reason: fmt.Sprintf("listing the scratch exited %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))}
+	}
 	if len(bytes.TrimSpace(res.Stdout)) == 0 {
+		if bs == nil {
+			return scratchBanked{empty: true}
+		}
 		if err := bs.DeleteScratchBank(ctx, runID); err != nil {
 			return scratchBanked{empty: true, reason: "the scratch is empty, but a previous bank could not be dropped: " + err.Error()}
 		}
 		return scratchBanked{empty: true}
+	}
+	if bs == nil {
+		return scratchBanked{reason: "this store keeps no scratch bank"}
 	}
 	tmp, err := os.CreateTemp("", "iterion-scratch-bank-*.tgz")
 	if err != nil {
@@ -176,11 +186,13 @@ type scratchPark struct {
 
 // lastScratchPark reads the last sandbox_scratch_banked event of runID. A run
 // with none — parked before banking existed, or whose scratch never lived in
-// a sandbox that dies — recorded nothing.
-func (e *Engine) lastScratchPark(ctx context.Context, runID string) scratchPark {
+// a sandbox that dies — recorded nothing. Events that cannot be read are an
+// error, never "nothing recorded": that reading would skip a restore or a
+// refusal the run needs.
+func (e *Engine) lastScratchPark(ctx context.Context, runID string) (scratchPark, error) {
 	evs, err := e.store.LoadEvents(ctx, runID)
 	if err != nil {
-		return scratchPark{}
+		return scratchPark{}, err
 	}
 	for i := len(evs) - 1; i >= 0; i-- {
 		if evs[i].Type != store.EventSandboxScratchBanked {
@@ -190,9 +202,9 @@ func (e *Engine) lastScratchPark(ctx context.Context, runID string) scratchPark 
 		p.banked, _ = evs[i].Data["banked"].(bool)
 		p.empty, _ = evs[i].Data["empty"].(bool)
 		p.reason, _ = evs[i].Data["reason"].(string)
-		return p
+		return p, nil
 	}
-	return scratchPark{}
+	return scratchPark{}, nil
 }
 
 // refuseResumeLosingScratch refuses, before the resume claims the run, a run
@@ -203,7 +215,10 @@ func (e *Engine) refuseResumeLosingScratch(ctx context.Context, r *store.Run) er
 	if r == nil {
 		return nil
 	}
-	p := e.lastScratchPark(ctx, r.ID)
+	p, err := e.lastScratchPark(ctx, r.ID)
+	if err != nil {
+		return fmt.Errorf("runtime: resume run %q: its last teardown's record of the scratch cannot be read: %w", r.ID, err)
+	}
 	if !p.recorded || p.banked || p.empty {
 		return nil
 	}
@@ -225,20 +240,35 @@ func (e *Engine) refuseResumeLosingScratch(ctx context.Context, r *store.Run) er
 // that cannot be read or extracted fails the resume by name: continuing
 // would run the nodes on an empty scratch. The failure also holds the bank,
 // so this sandbox's teardown does not replace it with a partial scratch.
+// --force continues without it, as it does past the pre-claim refusal.
 func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	if e.activeShare == nil || e.activeShare.Run == nil {
 		return nil
 	}
-	if !e.lastScratchPark(ctx, runID).banked {
-		return nil
-	}
 	fail := func(what string, err error) error {
+		if e.forceResume {
+			reason := fmt.Sprintf("%s: %v", what, err)
+			if e.logger != nil {
+				e.logger.Warn("runtime: run %s resumed with --force WITHOUT its scratch: %s", runID, reason)
+			}
+			if eerr := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "forced": true, "reason": reason}); eerr != nil && e.logger != nil {
+				e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, eerr)
+			}
+			return nil
+		}
 		e.scratchBankHeld = true
 		return &RuntimeError{
 			Code:    ErrCodeScratchNotPortable,
 			Message: fmt.Sprintf("run %s: %s: %v", runID, what, err),
-			Hint:    "resume again (the bank is kept); or relaunch the run fresh",
+			Hint:    "resume again: the bank is kept; or resume with --force to continue without the scratch; or relaunch the run fresh",
 		}
+	}
+	p, err := e.lastScratchPark(ctx, runID)
+	if err != nil {
+		return fail("the last teardown's record of the scratch cannot be read", err)
+	}
+	if !p.banked {
+		return nil
 	}
 	bs := store.AsScratchBankStore(e.store)
 	if bs == nil {
@@ -255,7 +285,7 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	if err := restoreScratch(rctx, e.activeShare.Run, sandboxScratchContainerPath, counted); err != nil {
 		return fail("the scratch banked at the last teardown could not be restored", err)
 	}
-	if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"bytes": counted.n}); err != nil && e.logger != nil {
+	if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": true, "bytes": counted.n}); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, err)
 	}
 	return nil

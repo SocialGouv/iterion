@@ -83,11 +83,7 @@ type RunDiffBlobStore interface {
 // AsRunDiffBlobStore returns s as RunDiffBlobStore when the backend can
 // offload diff blobs, or nil otherwise.
 func AsRunDiffBlobStore(s RunStore) RunDiffBlobStore {
-	if s == nil {
-		return nil
-	}
-	g, _ := s.(RunDiffBlobStore)
-	return g
+	return capability[RunDiffBlobStore](s)
 }
 
 // diffBlobRef derives a filesystem-safe, collision-resistant blob ref from a

@@ -40,32 +40,35 @@ pods the same way.
 **(a), bounded.**
 
 - **Teardown.** A sandbox whose scratch is not host-backed banks the scratch
-  when the run may still resume. The gzip'd tar goes through a host temporary
-  file, so the cap is enforced before anything is uploaded; it is then
-  stored under the run (`ScratchBankStore`: `sessions/<run>/scratch.tgz` in
-  the cloud, `runs/<id>/scratch-bank.tgz` on the filesystem, swept with the
-  run). An empty scratch drops a previous bank, and a run that reached a
-  final status keeps none. The outcome is an event,
+  unless the run finished: a park, a failure, and a `failed` run — which a
+  rewind brings back — all may resume. The gzip'd tar goes through a host
+  temporary file, so the cap is enforced before anything is uploaded; it is
+  then stored under the run (`ScratchBankStore`: `sessions/<run>/scratch.tgz`
+  in the cloud, `runs/<id>/scratch-bank.tgz` on the filesystem, swept with
+  the run). An empty scratch drops a previous bank; a finished run keeps
+  none. The outcome is an event,
   `sandbox_scratch_banked {banked, empty, bytes, reason}`.
-- **Cap.** 256 MiB compressed. Past it, or on a tar or upload failure,
-  nothing is stored and the event names why.
+- **Cap.** 256 MiB compressed. Past it, or on a listing, tar or upload
+  failure, or in a store that keeps no bank, nothing is stored and the event
+  names why.
 - **Resume, before the claim.** A run whose last teardown recorded a
   non-empty scratch it could not bank is refused `SCRATCH_NOT_PORTABLE` (a
   deterministic failure code). `--force` resumes it without the scratch, and
-  says so.
+  says so. A timeline that cannot be read refuses the resume too: it never
+  reads as "nothing recorded".
 - **Resume, after the new sandbox starts** (the pause family and the failure
   path alike). The bank is extracted before the first node
   (`sandbox_scratch_restored`). A bank that cannot be read or extracted parks
   the run under the same code and is kept: the failed sandbox's teardown
-  banks nothing over it.
+  banks nothing over it. `--force` goes on without it, and the event says so.
 
 ## Consequences
 
 - A parked run on kubernetes resumes with its scratch. The eleven
   verify-gate bots, the assessment bot and the docs bot no longer depend on
   never parking.
-- Storage grows by one object per parked run, bounded, and removed with the
-  run.
+- Storage grows by one object per parked or failed run, bounded, and removed
+  with the run.
 - The refusal turns a late, misattributed failure into an immediate one that
   names its cause. Relaunching the run fresh is the remedy.
 - **Not covered: the host scratch of an unsandboxed cloud runner.** It is

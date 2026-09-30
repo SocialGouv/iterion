@@ -340,10 +340,7 @@ type RunBudgetOverridesPatcher interface {
 }
 
 func AsRunBudgetOverridesPatcher(s RunStore) RunBudgetOverridesPatcher {
-	if p, ok := s.(RunBudgetOverridesPatcher); ok {
-		return p
-	}
-	return nil
+	return capability[RunBudgetOverridesPatcher](s)
 }
 
 // QueuedAttemptStore is the optional atomic guard used when a queue delivery
@@ -368,11 +365,7 @@ type QueuedAttemptStore interface {
 // for third-party stores. Callers must fail safe when it is absent rather
 // than falling back to a status-only write that can clobber a newer attempt.
 func AsQueuedAttemptStore(s RunStore) QueuedAttemptStore {
-	if s == nil {
-		return nil
-	}
-	q, _ := s.(QueuedAttemptStore)
-	return q
+	return capability[QueuedAttemptStore](s)
 }
 
 // PIDStore is an optional interface implemented only by
@@ -391,11 +384,7 @@ type PIDStore interface {
 // files, or nil otherwise. Always check the return for nil before
 // dereferencing — local stores satisfy it, cloud stores do not.
 func AsPIDStore(s RunStore) PIDStore {
-	if s == nil {
-		return nil
-	}
-	p, _ := s.(PIDStore)
-	return p
+	return capability[PIDStore](s)
 }
 
 // QueuedRunCreator is the optional interface for stores that can persist
@@ -417,11 +406,7 @@ type QueuedRunCreator interface {
 // AsQueuedRunCreator returns s as QueuedRunCreator when the backend can
 // persist queued run docs, or nil otherwise. Check for nil before use.
 func AsQueuedRunCreator(s RunStore) QueuedRunCreator {
-	if s == nil {
-		return nil
-	}
-	q, _ := s.(QueuedRunCreator)
-	return q
+	return capability[QueuedRunCreator](s)
 }
 
 // ParentedRunCreator is the optional interface for stores that can persist
@@ -445,11 +430,7 @@ type ParentedRunCreator interface {
 // persist ParentRunID in the create write, or nil otherwise. Check for nil
 // before use.
 func AsParentedRunCreator(s RunStore) ParentedRunCreator {
-	if s == nil {
-		return nil
-	}
-	p, _ := s.(ParentedRunCreator)
-	return p
+	return capability[ParentedRunCreator](s)
 }
 
 // RunFilesStore is an optional interface implemented by stores that
@@ -504,11 +485,7 @@ type RunFileInfo struct {
 // per-run file artifacts, or nil otherwise. Filesystem and Mongo (cloud)
 // stores both satisfy it; third-party stores may not.
 func AsRunFilesStore(s RunStore) RunFilesStore {
-	if s == nil {
-		return nil
-	}
-	f, _ := s.(RunFilesStore)
-	return f
+	return capability[RunFilesStore](s)
 }
 
 // RunFilesUploader is an optional companion to RunFilesStore implemented
@@ -533,11 +510,7 @@ type RunFilesUploader interface {
 // a scratch→durable bridge for artifact files, or nil otherwise (the
 // common case — filesystem stores serve straight from the scratch dir).
 func AsRunFilesUploader(s RunStore) RunFilesUploader {
-	if s == nil {
-		return nil
-	}
-	u, _ := s.(RunFilesUploader)
-	return u
+	return capability[RunFilesUploader](s)
 }
 
 // ToolBlobStore is an optional interface implemented by stores that
@@ -571,11 +544,7 @@ type ToolBlobStore interface {
 // per-tool-call blob persistence, or nil otherwise. Callers MUST
 // nil-check (cloud stores return nil today).
 func AsToolBlobStore(s RunStore) ToolBlobStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(ToolBlobStore)
-	return t
+	return capability[ToolBlobStore](s)
 }
 
 // BackendSessionStore persists packed CLI session files for session: persist
@@ -589,11 +558,7 @@ type BackendSessionStore interface {
 
 // AsBackendSessionStore returns s as BackendSessionStore, or nil.
 func AsBackendSessionStore(s RunStore) BackendSessionStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(BackendSessionStore)
-	return t
+	return capability[BackendSessionStore](s)
 }
 
 // ScratchBankStore keeps a parked run's scratch directory (ADR-106): one
@@ -610,11 +575,7 @@ type ScratchBankStore interface {
 
 // AsScratchBankStore returns s as ScratchBankStore, or nil.
 func AsScratchBankStore(s RunStore) ScratchBankStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(ScratchBankStore)
-	return t
+	return capability[ScratchBankStore](s)
 }
 
 // RunLogStore is an optional interface implemented by stores that
@@ -644,11 +605,7 @@ type RunLogStore interface {
 // AsRunLogStore returns s as RunLogStore when the backend persists run
 // logs, or nil otherwise. Callers MUST nil-check.
 func AsRunLogStore(s RunStore) RunLogStore {
-	if s == nil {
-		return nil
-	}
-	l, _ := s.(RunLogStore)
-	return l
+	return capability[RunLogStore](s)
 }
 
 // TurnStore is an optional interface implemented by stores that
@@ -699,11 +656,7 @@ type TurnStore interface {
 // AsTurnStore returns s as TurnStore when the backend supports
 // per-LLM-turn checkpointing, or nil otherwise.
 func AsTurnStore(s RunStore) TurnStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(TurnStore)
-	return t
+	return capability[TurnStore](s)
 }
 
 // SpendStore is an optional interface implemented by stores that can
@@ -728,9 +681,5 @@ type SpendStore interface {
 // spend ledger, or nil otherwise. Filesystem stores satisfy it; cloud
 // (Mongo) stores currently do not.
 func AsSpendStore(s RunStore) SpendStore {
-	if s == nil {
-		return nil
-	}
-	sp, _ := s.(SpendStore)
-	return sp
+	return capability[SpendStore](s)
 }

@@ -99,9 +99,5 @@ const (
 // AsRouteDecisionStore returns the registry capability, or nil when the
 // backend has none. Callers must treat nil as "router disabled".
 func AsRouteDecisionStore(s RunStore) RouteDecisionStore {
-	if s == nil {
-		return nil
-	}
-	r, _ := s.(RouteDecisionStore)
-	return r
+	return capability[RouteDecisionStore](s)
 }

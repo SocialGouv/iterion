@@ -2119,7 +2119,7 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 	}
 	evs, err := e.store.LoadEvents(ctx, r.ID)
 	if err != nil {
-		return nil
+		return fmt.Errorf("runtime: resume run %q: the record of the sandbox it executed in cannot be read: %w", r.ID, err)
 	}
 	for i := len(evs) - 1; i >= 0; i-- {
 		ev := evs[i]

@@ -2,6 +2,10 @@ package dispatcher
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,5 +160,59 @@ func TestHeartbeatStoreForwardsReliabilityCapabilities(t *testing.T) {
 	}
 	if got := loaded.OutputCorrections["agent_root"].EpisodeID; got != "agent/root" {
 		t.Fatalf("persisted correction episode = %q", got)
+	}
+}
+
+// TestHeartbeatStoreHidesNoCapabilityTheEngineProbes: every optional store
+// capability the engine probes (store.As* in pkg/runtime) that the wrapped
+// store has is visible through the heartbeat wrapper. A hidden one degrades
+// in silence: a dispatcher run parks without banking its scratch, persists
+// no packed CLI session, mounts no run-files directory.
+func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
+	probes := map[string]func(store.RunStore) bool{
+		"AsBackendSessionStore":   func(s store.RunStore) bool { return store.AsBackendSessionStore(s) != nil },
+		"AsOutputCorrectionStore": func(s store.RunStore) bool { return store.AsOutputCorrectionStore(s) != nil },
+		"AsParentedRunCreator":    func(s store.RunStore) bool { return store.AsParentedRunCreator(s) != nil },
+		"AsRunFilesStore":         func(s store.RunStore) bool { return store.AsRunFilesStore(s) != nil },
+		"AsScratchBankStore":      func(s store.RunStore) bool { return store.AsScratchBankStore(s) != nil },
+		"AsSpendStore":            func(s store.RunStore) bool { return store.AsSpendStore(s) != nil },
+	}
+	files, err := filepath.Glob(filepath.Join("..", "runtime", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probed := map[string]bool{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range regexp.MustCompile(`store\.(As[A-Z][A-Za-z]*)\(`).FindAllStringSubmatch(string(src), -1) {
+			probed[m[1]] = true
+		}
+	}
+	if len(probed) < 5 {
+		t.Fatalf("found %d store probes in pkg/runtime, want the engine's ~6 — the scan no longer reads them", len(probed))
+	}
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb := newHeartbeatStore(base, func(string) {})
+	for name := range probed {
+		probe, ok := probes[name]
+		if !ok {
+			t.Errorf("the engine probes store.%s: add it to this table", name)
+			continue
+		}
+		if probe(base) && !probe(hb) {
+			t.Errorf("store.%s finds the capability on the dispatcher's store but not through the heartbeat wrapper", name)
+		}
+	}
+	if !probes["AsScratchBankStore"](hb) {
+		t.Fatal("the dispatcher's store keeps no scratch bank — the check above proves nothing for it")
 	}
 }
