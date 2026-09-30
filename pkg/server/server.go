@@ -32,6 +32,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
@@ -113,6 +114,12 @@ type Server struct {
 	localEvents            eventbus.Bus             // local outcome spine when no trigger coordinator is configured
 	triggerCoord           *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
 	cloudTriggerCoord      *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
+
+	// leases elects the replica that runs each singleton net (pkg/lease);
+	// never nil after New. replicaID is this process's owner identity in them.
+	leases    lease.Store
+	replicaID string
+
 	// userNotify + pushSink are the user-notification stack (web push on
 	// human-input pauses and run outcomes); nil when the feature is off
 	// (no subscription store / no VAPID keys). userNotifyCancel detaches
@@ -316,6 +323,9 @@ type Server struct {
 	// lookback window by (test seam — a test cannot wait an hour to reach the
 	// last pass over a run). nil → time.Now().UTC().
 	gateClock func() time.Time
+	// gateSweepTick overrides the merge-gate sweep cadence (test seam — an
+	// election test cannot wait a minute per pass). Zero → gateSweepInterval.
+	gateSweepTick time.Duration
 	// sweepDegraded brackets the orphan sweeper's degradation episode
 	// (edge-triggered Warn on entry, Info on recovery). The two failing
 	// stages are tracked as INDEPENDENT flags because they recover on
@@ -404,6 +414,9 @@ type Server struct {
 	// preserved across forge operations. Use forgeHTTPClient().
 	forgeHTTP     *http.Client
 	forgeHTTPOnce sync.Once
+	// forgeRequests counts every request forgeHTTP sends, by host, API and
+	// lane, and reports each hour's counts. Built with forgeHTTP.
+	forgeRequests *forgeRequestTally
 
 	// detector is the cached LLM credential detector backing
 	// /api/backends/detect. Lazily constructed on first request.
@@ -988,6 +1001,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.assistantMissions = assistantmission.NewFSStore(rs.Root())
 		}
 	}
+	s.leases = leaseStoreFor(cfg, s.warnf)
+	s.replicaID = newReplicaID()
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket
 	// upgrader so cross-origin browser tabs can't subscribe to file events.
 	SetWebSocketOriginCheck(s.isAllowedOrigin)

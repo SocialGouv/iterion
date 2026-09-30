@@ -91,7 +91,7 @@ func TestTheGraceFollowsWhoActuallyOwesAVerdict(t *testing.T) {
 // horizon real rather than declared.
 func TestOnlyTheDeepPassReachesTheHorizon(t *testing.T) {
 	if got := gateSweepWindowFor(0); got != gateSweepHorizon {
-		t.Errorf("the first pass reaches %s, want the full %s — a replica that just started is the one that missed the most", got, gateSweepHorizon)
+		t.Errorf("the first pass reaches %s, want the full %s — a replica that just took the sweep is the one that missed the most", got, gateSweepHorizon)
 	}
 	if got := gateSweepWindowFor(1); got != gateSweepLookback {
 		t.Errorf("an ordinary pass reaches %s, want %s", got, gateSweepLookback)

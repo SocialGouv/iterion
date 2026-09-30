@@ -366,9 +366,9 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 	})
 
 	// A settled head must cost ZERO forge round-trips on re-offer: the sweep
-	// net re-offers every gating run ~once a minute for an hour on every
-	// replica, against the same App quota the merge-gate reconciler lives
-	// on — without the early claim probe the net starves the gate it backs.
+	// net re-offers every gating run ~once a minute for an hour, against the
+	// same App quota the merge-gate reconciler lives on — without the early
+	// claim probe the net starves the gate it backs.
 	t.Run("a settled head costs no forge traffic", func(t *testing.T) {
 		w := build(t, nil)
 		counter := &countingGateClient{inner: stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm}}
@@ -390,7 +390,7 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 			t.Fatal("a settled head launched again")
 		}
 		if counter.calls != 0 {
-			t.Fatalf("%d forge calls for a settled head, want 0 — the sweep amplifies this ~57× per hour per replica", counter.calls)
+			t.Fatalf("%d forge calls for a settled head, want 0 — the sweep amplifies this ~57× per hour", counter.calls)
 		}
 	})
 

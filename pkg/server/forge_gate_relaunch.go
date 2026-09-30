@@ -286,10 +286,11 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		// provider quota, a bot defect) than any single death.
 		//
 		// But "duplicate" alone does not mean the replacement died: the
-		// idempotency claim is a read-then-insert, and the gate sweep runs
-		// unelected on every replica, so two passes landing on one dead run
-		// give one StatusLaunched and one StatusDuplicate — for a relaunch
-		// that just SUCCEEDED. Escalating on that files a card telling a human
+		// idempotency claim is a read-then-insert, and two offers can still
+		// land on one dead run (the event path beside the elected sweep, or
+		// two sweeps overlapping across a lease hand-over), giving one
+		// StatusLaunched and one StatusDuplicate — for a relaunch that just
+		// SUCCEEDED. Escalating on that files a card telling a human
 		// the automation is out of moves while the replacement is alive and
 		// reviewing. The card is worth filing only once the named run has
 		// itself stopped without answering.
@@ -502,9 +503,10 @@ func orNoError(err string) string {
 // relaunchStillRunning reports whether the run an idempotency claim named is
 // still working, and a short phrase saying how it was decided.
 //
-// The claim is a read-then-insert, and the gate sweep runs unelected on every
-// replica, so a StatusDuplicate does NOT by itself mean the replacement died:
-// two passes on one dead run give one launch and one duplicate for the SAME,
+// The claim is a read-then-insert, and two offers can still land on one dead
+// run — the event path beside the elected sweep, or two sweeps overlapping
+// across a lease hand-over — so a StatusDuplicate does NOT by itself mean the
+// replacement died: two offers give one launch and one duplicate for the SAME,
 // live, replacement. Escalation is a message to a human ("automation is out of
 // moves"), so it must be false only in the direction that stays quiet: an
 // unknown run — never launched, already pruned, unreadable store — is reported
