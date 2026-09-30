@@ -206,6 +206,8 @@ type Engine struct {
 	// sandbox starts without it (startSandbox).
 	scratchBankHeld          bool
 	scratchBankRetryPause    time.Duration                        // first pause between the teardown's banking attempts; zero is scratchBankRetryPauseDefault
+	forcedForsake            map[string]any                       // the lineage forsake a forced lone resume of a child records once it runs (recordForcedForsake)
+	recordWriteLimit         time.Duration                        // the budget of a record a resume decides from (recordWriteBudget); zero is scratchBankRecordBudget
 	recordRetryPause         time.Duration                        // first pause between tries at writing a record a resume decides from (emitRecord); zero is recordRetryPauseDefault
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed

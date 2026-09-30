@@ -311,8 +311,9 @@ tool or subbot node finished after the last teardown banked, in a sandbox lost
 without a teardown (an OOM kill, a lost node): restored, the bank would revert
 what that node wrote. So is a subbot child that executed in its parent's
 sandbox while that sandbox's scratch lived in the container, resumed on its
-own. These refusals come before the check of the workflow source: the force
-offered for an edited source never waives a loss the operator was not shown.
+own. These refusals come before the check of the workflow source, and name it
+when the source changed: the one `--force` then given accepts both, knowing
+both.
 The resume surface refuses from a record the run's
 latest execution wrote, before anything moves the run (the studio and the API
 answer at once; a cloud resume is never flipped to `queued`). A run reads
@@ -341,7 +342,8 @@ archive is banked — even when a later try fails — with the raced members
 named (`raced`, repeated on the restore).
 
 Only a node that ran in the sandbox and succeeded ages the bank — an agent, a
-judge, a tool, a subbot or an LLM router; one that failed re-runs from the
+judge, a tool, a subbot or an LLM router, as the workflow that executed it said
+(recorded on its finish, whatever an edited source says since); one that failed re-runs from the
 checkpoint, and a rewind takes back the nodes it dropped — those on no loop or
 foreach cycle, whose earlier passes it does not replay (a rewind across a loop
 or a fan-out is refused; `--force` resumes it on the bank). The scratch itself

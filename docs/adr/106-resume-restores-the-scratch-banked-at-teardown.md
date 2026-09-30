@@ -88,15 +88,18 @@ pods the same way.
   a store that keeps no bank, nothing is stored and the event names why.
 - **Subbot children.** A child that can park (a human gate, an interactive
   node, an LLM node whose permission gate can ask — its mode asks, or its ask
-  rules apply under a gate that is on) is refused adoption into its parent's
+  rules apply under a gate that is on, read from the policy its executor arms,
+  so a gate the launch imposes counts) is refused adoption into its parent's
   sandbox when that sandbox's scratch lives in the container, as under a
   copy-based parent: parked, the child is resumed on its own, in a sandbox
   without that scratch. A child adopted there that parks anyway — a recovery
-  pause, an operator's pause, a cost cap, a gate the launch imposes — has
+  pause, an operator's pause, a cost cap — has
   its own resume refused `SCRATCH_NOT_PORTABLE` from the adoption's record
   (`sandbox_shared {scratch_container_local}`); `--force` goes on without the
-  scratch, and what the child writes there never reaches the parent's. That
-  record is written within its budget, or the child does not execute in the
+  scratch, and what the child writes there never reaches the parent's; the
+  record of that forsake is written once the forced resume runs, so a check
+  that still refuses it leaves the next resume refused. The adoption's record
+  is written within its budget, or the child does not execute in the
   parent's sandbox.
 - **Resume, before anything moves the run.** A run whose last teardown
   recorded a non-empty scratch it could not bank is refused
@@ -104,7 +107,10 @@ pods the same way.
   moved past its bank: a node that runs in the sandbox — an agent, a judge,
   a tool, a subbot, an LLM router — finished after the bank was recorded,
   which only a sandbox lost without a teardown leaves behind: restored, the
-  bank would revert what that node wrote. Only a node that succeeded counts:
+  bank would revert what that node wrote. Where a node ran is what the
+  workflow that executed it said, recorded on its finish
+  (`node_finished {_in_sandbox}`): an edited source that renamed the node or
+  changed its kind does not change it. Only a node that succeeded counts:
   one that failed re-runs from the checkpoint. The engine-side kinds (a
   human node, a condition router, a compute) never wrote there, nor did a
   paused node — a human node or an agent that asked — that a resume records
@@ -115,8 +121,9 @@ pods the same way.
   (`--force` past a bank that is gone) forsakes it: nothing is restored or
   refused over it later; one that restored a stale bank with `--force` makes
   it the run's scratch again. These refusals, and a lone child's, come
-  before the check of the workflow source: a `--force` given for an edited
-  source never waives a loss the operator was not shown. The
+  before the check of the workflow source, and name it when the source
+  changed: the one `--force` the operator then gives accepts both, knowing
+  both. The
   resume surface refuses from a record the run's latest execution wrote,
   before a cloud resume is flipped to `queued`. A latest execution that wrote
   none may still be banking — the run already reads paused or failed while
@@ -140,7 +147,9 @@ pods the same way.
   A bank restored into a host directory — the run resumed with its host
   state on — hands the scratch over to that directory (`host_backed` on the
   record): from then on no bank decides what a resume on that host finds,
-  and none is restored over it.
+  and none is restored over it. That record is written within its budget,
+  or the resume fails without a code and the next one restores the bank
+  again.
 
 ## Consequences
 
@@ -194,3 +203,6 @@ pods the same way.
   the next resume does not restore it.
 - **Not covered: a child adopted by an engine without the lineage record**
   (`scratch_container_local` absent). Its lone resume is not refused.
+- **Not covered: a studio child under a gate the launch imposes.** The studio
+  does not hand a subbot child the run's permission, so its gate is not armed
+  and nothing counts it at adoption; the cloud runner does both.

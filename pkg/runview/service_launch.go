@@ -467,6 +467,20 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		})
 }
 
+// alsoNamingSourceChange is a scratch or lineage refusal that also names
+// the source check's refusal when the source changed, as the engine's does:
+// the one --force the operator then gives accepts both. A legacy bare digest
+// the source check accepts is no change.
+func alsoNamingSourceChange(r *store.Run, hash string, b *bundle.Bundle, refusal error) error {
+	if runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, false) == nil {
+		return refusal
+	}
+	if b != nil && runtime.LegacyBareDigestMatches(r, b.IterPath) {
+		return refusal
+	}
+	return runtime.WithSourceChange(refusal)
+}
+
 // PreflightResume runs the checks Resume performs before it takes any
 // action, WITHOUT starting anything: the run must exist, be in a
 // resumable status, and (unless spec.Force) keep its scratch and its
@@ -508,13 +522,13 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	// A scratch or a lineage that does not travel is refused before the
 	// source check, as the engine does: a force offered for an edited source
 	// would otherwise waive a loss the operator was never shown.
+	hash := pfSources.Hash
 	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
-		return err
+		return alsoNamingSourceChange(r, hash, pfBundle, err)
 	}
 	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
-		return err
+		return alsoNamingSourceChange(r, hash, pfBundle, err)
 	}
-	hash := pfSources.Hash
 	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		// The bare digest of a run launched before the promotion is accepted
@@ -638,13 +652,13 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// anything moves the run and before the source check — a force offered
 	// for an edited source would otherwise waive a loss the operator was
 	// never shown. The engine repeats both under its own boundary.
+	hash := cs.Hash
 	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
-		return nil, err
+		return nil, alsoNamingSourceChange(r, hash, resumeBundle, err)
 	}
 	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
-		return nil, err
+		return nil, alsoNamingSourceChange(r, hash, resumeBundle, err)
 	}
-	hash := cs.Hash
 	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		// A run launched before its bundle's prompts entered the digest

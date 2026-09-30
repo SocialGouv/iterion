@@ -23,6 +23,9 @@ func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, no
 // branchID is the non-branch case (what emit forwards) and keeps the
 // branch-free error message.
 func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]any) error {
+	if typ == store.EventNodeFinished && nodeID != "" {
+		data = withInSandbox(data, nodeMayWriteScratch(e.workflow, nodeID))
+	}
 	evt := store.Event{
 		Type:     typ,
 		BranchID: branchID,
@@ -41,6 +44,17 @@ func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ sto
 	}
 	e.logEvent(typ, nodeID, branchID, data)
 	return nil
+}
+
+// withInSandbox returns data with nodeFinishedInSandbox set, leaving the
+// caller's map untouched.
+func withInSandbox(data map[string]any, in bool) map[string]any {
+	out := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		out[k] = v
+	}
+	out[nodeFinishedInSandbox] = in
+	return out
 }
 
 // logEvent writes a human-friendly console log for a given event type.

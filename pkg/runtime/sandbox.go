@@ -2025,6 +2025,32 @@ func workflowHasPausingNode(wf *ir.Workflow) bool {
 	return workflowHasInteractiveNode(wf)
 }
 
+// gateAsker is an executor that can tell whether the permission gate it arms
+// for a node can pause the run to ask — from its own resolution, the run's
+// override included, which a launch may impose on a child whose IR declares
+// no gate.
+type gateAsker interface {
+	GateCanAsk(node ir.Node) bool
+}
+
+// childCanPause is workflowHasPausingNode for this engine's child: its
+// declarations, and any gate its executor arms that can ask.
+func (e *Engine) childCanPause() bool {
+	if workflowHasPausingNode(e.workflow) {
+		return true
+	}
+	ga, ok := e.executor.(gateAsker)
+	if !ok || e.workflow == nil {
+		return false
+	}
+	for _, n := range e.workflow.Nodes {
+		if ga.GateCanAsk(n) {
+			return true
+		}
+	}
+	return false
+}
+
 // nodeGateCanAsk reports whether n's permission gate, as declared, can pause
 // its run to ask — the policy's CanAsk: an LLM node whose resolved mode asks,
 // or whose ask rules apply under a gate that is on (an ask rule takes
@@ -2074,10 +2100,10 @@ func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, m
 		}
 		return false, nil
 	}
-	if copyBased && workflowHasPausingNode(e.workflow) {
+	if copyBased && e.childCanPause() {
 		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's copy-based sandbox (%s): a parked child is resumed outside its parent, in a sandbox of its own, and its work diverges from the parent's tree — declare the gate in the parent, or run the parent unsandboxed", shared.Run.Driver())
 	}
-	if shared.ScratchContainerLocal && workflowHasPausingNode(e.workflow) {
+	if shared.ScratchContainerLocal && e.childCanPause() {
 		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's sandbox (%s), whose ${PROJECT_SCRATCH_DIR} lives in the container: a parked child is resumed outside its parent, in a sandbox of its own, without that scratch — declare the gate in the parent, or give the parent a host-backed scratch", shared.Run.Driver())
 	}
 	return true, nil
@@ -2247,12 +2273,24 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 	if e.logger != nil {
 		e.logger.Warn("runtime: run %s executed in its parent run %s's sandbox; resumed with --force it starts with %s", r.ID, r.ParentRunID, warning)
 	}
-	if err := e.emit(ctx, r.ID, store.EventSandboxShared, "", map[string]any{
-		"adopted": false, "forced": true, "parent_run": r.ParentRunID, "reason": reason,
-	}); err != nil && e.logger != nil {
+	// Recorded once the resume runs (recordForcedForsake): a later check
+	// that still refuses this resume must leave the lineage refusing the
+	// child's next, unforced one.
+	e.forcedForsake = map[string]any{"adopted": false, "forced": true, "parent_run": r.ParentRunID, "reason": reason}
+	return nil
+}
+
+// recordForcedForsake writes the lineage forsake a forced lone resume of a
+// child decided before its claim, now that the resume runs past its checks.
+func (e *Engine) recordForcedForsake(ctx context.Context, runID string) {
+	if e.forcedForsake == nil {
+		return
+	}
+	data := e.forcedForsake
+	e.forcedForsake = nil
+	if err := e.emit(ctx, runID, store.EventSandboxShared, "", data); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
 	}
-	return nil
 }
 
 // adoptSharedSandbox settles this run on a PARENT run's live sandbox: the
@@ -2357,7 +2395,7 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	// A lone resume of this child is refused from this record
 	// (refuseResumeOfSharedChild): written within its budget, or the child
 	// does not run here — a resume could not tell what it would lose.
-	rctx, cancel := context.WithTimeout(ctx, scratchBankRecordBudget)
+	rctx, cancel := context.WithTimeout(ctx, e.recordWriteBudget())
 	defer cancel()
 	if err := e.emitRecord(rctx, runID, store.EventSandboxShared, record); err != nil {
 		devboxCleanup()

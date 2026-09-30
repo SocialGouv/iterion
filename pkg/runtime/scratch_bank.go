@@ -265,11 +265,19 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 	// The record is what a resume decides from: a store that fails its write
 	// — a blip, a failover — does not leave an exact bank behind an older
 	// record while the budget lasts.
-	wctx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), scratchBankRecordBudget)
+	wctx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), e.recordWriteBudget())
 	defer cancelWrite()
 	if err := e.emitRecord(wctx, runID, store.EventSandboxScratchBanked, got.event()); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: emit %s: %v — a resume of run %s will not know what this teardown banked", store.EventSandboxScratchBanked, err, runID)
 	}
+}
+
+// recordWriteBudget bounds the write of a record a resume decides from.
+func (e *Engine) recordWriteBudget() time.Duration {
+	if e.recordWriteLimit > 0 {
+		return e.recordWriteLimit
+	}
+	return scratchBankRecordBudget
 }
 
 // emitRecord writes an event a later resume decides from. A store that fails
@@ -516,6 +524,12 @@ type scratchPark struct {
 // its answer finishes: nothing ran in a sandbox for it.
 const nodeFinishedAnswered = "answered"
 
+// nodeFinishedInSandbox marks, on every node_finished, whether the workflow
+// that executed the node runs it in the sandbox (nodeMayWriteScratch) — the
+// fact a resume ages the scratch bank from, whatever the source says by
+// then. Metadata: an underscore key, outside the node's output.
+const nodeFinishedInSandbox = "_in_sandbox"
+
 // lastScratchPark reads the last sandbox_scratch_banked event of runID. A run
 // with none — parked before banking existed, or whose scratch never lived in
 // a sandbox that dies — recorded nothing. Events that cannot be read are an
@@ -596,10 +610,17 @@ func lastScratchPark(ctx context.Context, st store.RunStore, wf *ir.Workflow, ru
 // ranInSandbox reports that ev, a node_finished, closes a node that ran in
 // the sandbox and succeeded. A node that failed — killed with its sandbox,
 // or abandoned with its branch — re-runs from the checkpoint, and the node
-// a resume records as finished by its answer ran nowhere.
+// a resume records as finished by its answer ran nowhere. Where the node ran
+// is what the workflow that executed it said, carried by the finish
+// (nodeFinishedInSandbox): an edited source may since have changed the
+// node's kind or renamed it. A finish written before that fact travelled is
+// read from the node's kind in wf.
 func ranInSandbox(wf *ir.Workflow, ev *store.Event) bool {
 	if ev.Data[nodeFinishedAnswered] == true || ev.Data["error"] != nil {
 		return false
+	}
+	if in, ok := ev.Data[nodeFinishedInSandbox].(bool); ok {
+		return in
 	}
 	return nodeMayWriteScratch(wf, ev.NodeID)
 }
@@ -849,8 +870,13 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 		// deciding what a later resume finds (lastScratchPark).
 		data["host_backed"] = true
 	}
-	if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", data); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, err)
+	// A later resume decides from this record — a host directory's handover,
+	// a stale bank made the run's scratch again: written within its budget,
+	// or this resume fails and the next one restores the bank again.
+	wctx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), e.recordWriteBudget())
+	defer cancelWrite()
+	if err := e.emitRecord(wctx, runID, store.EventSandboxScratchRestored, data); err != nil {
+		return unread("the record of the scratch's restore could not be written", err)
 	}
 	return nil
 }

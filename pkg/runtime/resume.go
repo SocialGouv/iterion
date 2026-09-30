@@ -99,10 +99,10 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// come before the source check: a --force given for an edited source
 	// would otherwise waive a loss the operator was never shown.
 	if rerr := e.refuseResumeLosingScratch(ctx, r); rerr != nil {
-		return rerr
+		return e.alsoNamingSourceChange(r, rerr)
 	}
 	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
-		return rerr
+		return e.alsoNamingSourceChange(r, rerr)
 	}
 	// Preserve the established source-change classification before the
 	// artifact guard reports derivative publish/schema mismatches. Dispatchers
@@ -268,19 +268,10 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 // the run was started. When forceResume is set, a mismatch is logged as a
 // warning instead of causing an error.
 func (e *Engine) checkWorkflowHash(ctx context.Context, r *store.Run) error {
-	workflowChanged := r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash
-	workflowErr := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, false)
-	_, bundleErr := ResolveResumeBundleWorkflow(r, e.bundle, e.filePath, false)
-	// Accept legacy bare-source digests only when the bundle identity still
-	// matches; a shared dependency change must retain its explicit force gate.
-	legacyPath := e.filePath
-	if legacyPath == "" && e.bundle != nil {
-		legacyPath = e.bundle.IterPath
-	}
-	if workflowErr != nil && bundleErr == nil && e.bundle != nil && LegacyBareDigestMatches(r, legacyPath) {
+	workflowErr, bundleErr, legacy := e.sourceChange(r)
+	workflowChanged := !legacy && r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash
+	if legacy {
 		e.legacyDigestAccepted = true
-		workflowErr = nil
-		workflowChanged = false
 		if e.logger != nil {
 			e.logger.Warn("run %q recorded a legacy bare-source digest; accepting unchanged workflow with its bundle resources", r.ID)
 		}
@@ -319,6 +310,48 @@ func (e *Engine) checkWorkflowHash(ctx context.Context, r *store.Run) error {
 		}
 	}
 	return nil
+}
+
+// sourceChange judges, without side effects, what checkWorkflowHash
+// refuses: the workflow's digest and the bundle's identity against those the
+// run started with. A legacy bare-source digest is accepted (legacy) while
+// the bundle's identity still matches; a shared dependency change keeps its
+// explicit force gate.
+func (e *Engine) sourceChange(r *store.Run) (workflowErr, bundleErr error, legacy bool) {
+	workflowErr = ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, false)
+	_, bundleErr = ResolveResumeBundleWorkflow(r, e.bundle, e.filePath, false)
+	legacyPath := e.filePath
+	if legacyPath == "" && e.bundle != nil {
+		legacyPath = e.bundle.IterPath
+	}
+	if workflowErr != nil && bundleErr == nil && e.bundle != nil && LegacyBareDigestMatches(r, legacyPath) {
+		return nil, nil, true
+	}
+	return workflowErr, bundleErr, false
+}
+
+// alsoNamingSourceChange is a refusal that comes before the source check
+// (the scratch's, a lone child's), naming that check's refusal too when the
+// source changed: the one --force the operator then gives accepts both.
+func (e *Engine) alsoNamingSourceChange(r *store.Run, refusal error) error {
+	if workflowErr, bundleErr, _ := e.sourceChange(r); workflowErr == nil && bundleErr == nil {
+		return refusal
+	}
+	return WithSourceChange(refusal)
+}
+
+// WithSourceChange adds to a scratch or lineage refusal that the workflow
+// source has changed too. The refusal keeps its code — the loss is what the
+// operator must see first — and says that --force would accept both.
+func WithSourceChange(refusal error) error {
+	var rt *RuntimeError
+	if !errors.As(refusal, &rt) {
+		return refusal
+	}
+	named := *rt
+	named.Message += "; the workflow source has also changed since the run started"
+	named.Hint += " (--force also accepts the changed source)"
+	return &named
 }
 
 func shortWorkflowHash(hash string) string {
@@ -1663,6 +1696,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		sandboxCleanup()
 		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, rsErr)
 	}
+	e.recordForcedForsake(ctx, runID)
 
 	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
@@ -1920,6 +1954,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	if rsErr := e.restoreBankedScratch(ctx, runID); rsErr != nil {
 		return e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, rsErr)
 	}
+	e.recordForcedForsake(ctx, runID)
 
 	e.resourcesReady()
 	rs := e.newRunState(runID, r.Inputs)
