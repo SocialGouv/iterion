@@ -395,3 +395,86 @@ func TestUsageCapPreflight_OwnConfigBackendsAreNotJudgedOnTheRunsCredentials(t *
 		t.Error("started an opencode route on the pod's capped ambient credential")
 	}
 }
+
+// zaiDefaultBesideForfait is a run holding a z.ai key as its DEFAULT credential
+// beside a Claude forfait: hint-less claude_code nodes spend the z.ai key.
+func zaiDefaultBesideForfait() context.Context {
+	return secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderZAI: "zai-default"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/forfait"},
+		PlatformSourced: map[string]bool{
+			string(secrets.OAuthKindClaudeCode): true,
+			string(secrets.ProviderZAI):         true,
+		},
+		Fingerprints: map[string]string{
+			string(secrets.OAuthKindClaudeCode): "fp-forfait",
+			string(secrets.ProviderZAI):         "fp-zai",
+		},
+	})
+}
+
+func preflightWithSupervisors(t *testing.T, caps usagecap.Store, ctx context.Context, wf *ir.Workflow, override string) error {
+	t.Helper()
+	r := capRunner(capTestPolicy(), caps, &capStatusStore{})
+	return r.usageCapPreflight(ctx, wf, &queue.RunMessage{RunID: "run-routes", Supervisors: override}, iterlog.Nop())
+}
+
+// A supervisor calls its model in process for the whole run — claw, which
+// reports no readings the mid-run guard could stop it on — so the credential
+// its model spends is judged like a route every execution takes: capped, soft
+// or hard, it parks the run whatever the nodes spend. The model is the one its
+// evaluator resolves on this runner: the pin, else the provider the watched
+// nodes run on, under the run's credentials.
+func TestUsageCapPreflight_ACappedSupervisorParksTheRun(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	resets := time.Now().UTC().Add(30 * time.Hour).Truncate(time.Second)
+	caps := usagecap.NewMemStore()
+	weekCapped(t, caps, platformKey("fp-forfait"), resets)
+	supervised := func(node ir.Node, model string) *ir.Workflow {
+		wf := chainWorkflow(node)
+		wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: model}}
+		return wf
+	}
+	glm := func() ir.Node { return agentRoute("glm", delegate.BackendClaudeCode, "zai", "glm-5.3") }
+	opus := func() ir.Node { return agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5") }
+
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), chainWorkflow(glm()), ""); err != nil {
+		t.Fatalf("bench: the nodes alone parked on the forfait they never spend: %v", err)
+	}
+	if at := parkedUntil(t, preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "anthropic/claude-opus-5-5"), "")); !at.Equal(resets) {
+		t.Errorf("a supervisor pinned to anthropic: parked until %v, want the forfait's reopening %v", at, resets)
+	}
+	// Unpinned, it follows the provider its watched nodes run on: zai here.
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), ""), ""); err != nil {
+		t.Errorf("parked a run whose unpinned supervisor follows its nodes onto the z.ai key: %v", err)
+	}
+	// Unpinned beside hint-less claude_code nodes, it resolves an Anthropic
+	// model the forfait funds, while the nodes spend the run's z.ai default.
+	if err := preflightWithSupervisors(t, caps, zaiDefaultBesideForfait(), chainWorkflow(opus()), ""); err != nil {
+		t.Fatalf("bench: hint-less nodes parked on a forfait they never spend: %v", err)
+	}
+	if err := preflightWithSupervisors(t, caps, zaiDefaultBesideForfait(), supervised(opus(), ""), ""); err == nil {
+		t.Error("started a run whose unpinned supervisor resolves onto the capped forfait")
+	}
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "openai/gpt-6"), ""); err != nil {
+		t.Errorf("parked a run whose supervisor is off the anthropic wire: %v", err)
+	}
+	// No node on the wire at all: the supervisor alone is judged.
+	offWire := supervised(agentRoute("impl", delegate.BackendCodex, "", "openai/gpt-6"), "anthropic/claude-opus-5-5")
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), offWire, ""); err == nil {
+		t.Error("started a run whose only anthropic-wire spender, its supervisor, is on the capped forfait")
+	}
+	// Supervisors the run will not spawn spend nothing.
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "anthropic/claude-opus-5-5"), "off"); err != nil {
+		t.Errorf("parked a run whose supervisors are off: %v", err)
+	}
+	// Under ITERION_FORBID_SUBSCRIPTION_OAUTH the in-process factory declines
+	// the forfait: the supervisor spends the pod's ambient env instead.
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "anthropic/claude-opus-5-5"), ""); err != nil {
+		t.Errorf("parked a supervisor on the forfait the factory declines: %v", err)
+	}
+}

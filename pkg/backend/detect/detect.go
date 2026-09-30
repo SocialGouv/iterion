@@ -620,6 +620,11 @@ func detectClaw(prov []ProviderStatus) BackendStatus {
 	return st
 }
 
+// Providers is Detect's provider half alone — environment reads and one file
+// read — without probing any backend: Detect's claude probe spawns the CLI.
+// Report.Providers is exactly this list; backend detection only reads it.
+func Providers() []ProviderStatus { return detectProviders() }
+
 func detectProviders() []ProviderStatus {
 	// z.ai exposes an Anthropic-API-compatible endpoint via
 	// ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (or its dedicated

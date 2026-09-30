@@ -448,7 +448,16 @@ capped branch is on every execution):
 - so does a **hard**-capped route on any backend but claude_code — claw, pi,
   opencode, or one resolved at dispatch: the mid-run guard reads the usage
   readings only claude_code sessions report, so nothing would stop that call
-  in flight.
+  in flight;
+- a **supervisor** is a route every execution takes, and nothing stops it in
+  flight: it calls its model in process for the whole run (claw, no
+  readings). Its model is the one its evaluator resolves on the runner — its
+  pin, else `ITERION_DEFAULT_SUPERVISOR_MODEL`, else the provider its watched
+  nodes run on, under the run's credentials — and the credential that model
+  spends parks the run when capped, soft or hard, whatever the nodes spend.
+  Supervisors the run will not spawn (`--supervisors off`,
+  `ITERION_SUPERVISORS=0`) are not judged; one that resolves no model spends
+  nothing.
 
 The retry is armed for the **earliest reopening after which the run could
 start**: on alternative branches the first hard-capped route to reopen is

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -431,9 +433,11 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// PRIMARY routes only — a rescue `fallbacks:` route onto the wire
 	// fires on a failure the mid-run guard already refuses, and cannot
 	// justify refusing the run before it starts. Every uncertainty
-	// answers "reachable".
+	// answers "reachable". A supervisor the run will spawn is a route too —
+	// one every execution takes (supervisorRouteID).
 	routes := model.AnthropicWireRoutes(wf, modelOverridesFromMsg(msg.ModelOverrides))
-	if len(routes) == 0 {
+	sups := preflightSupervisors(ctx, wf, msg)
+	if len(routes) == 0 && len(sups) == 0 {
 		if logger != nil {
 			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)
 		}
@@ -443,7 +447,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// default: a run holding a closed Claude forfait beside a key pinned for
 	// its GLM routes can serve those routes, and a run whose default has room
 	// may still route every node onto a walled key.
-	capped := r.cappedRoutes(ctx, msg, routes, pol, logger)
+	capped := r.cappedRoutes(ctx, msg, routes, sups, pol, logger)
 	if len(capped) == 0 {
 		return nil
 	}
@@ -488,21 +492,18 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 }
 
 // cappedRoutes reads, once per meter key, the cap's verdict on the credential
-// each primary route spends, and returns the capped ones by node id. It fails
-// OPEN per credential: a key the store cannot read is headroom, like the whole
-// pre-flight is when the store is down.
-func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes []model.WireRoute, pol usagecap.Policy, logger *iterlog.Logger) map[string]usagecap.Decision {
+// each primary route and each supervisor spends, and returns the capped ones by
+// node id (supervisorRouteID for a supervisor). It fails OPEN per credential: a
+// key the store cannot read is headroom, like the whole pre-flight is when the
+// store is down.
+func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes []model.WireRoute, sups []supervisorRoute, pol usagecap.Policy, logger *iterlog.Logger) map[string]usagecap.Decision {
 	keys := usageCapCredKeys(ctx, msg)
 	rctx, cancel := context.WithTimeout(ctx, usageCapStoreTimeout)
 	defer cancel()
 	now := time.Now().UTC()
 	byKey := map[string]usagecap.Decision{}
 	capped := map[string]usagecap.Decision{}
-	for _, route := range routes {
-		key, metered := keys.routeKey(ctx, route)
-		if !metered {
-			continue
-		}
+	judge := func(id, key string, stoppable bool) {
 		d, read := byKey[key]
 		if !read {
 			readings, err := r.cfg.UsageCaps.Latest(rctx, key)
@@ -516,19 +517,113 @@ func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes
 			byKey[key] = d
 		}
 		if d.Blocked {
-			// A hard cap stops a call in flight only through the readings
-			// the mid-run guard observes, and only claude_code sessions
-			// report them — pi only on a refusal, claw never. On any other
-			// backend, or one resolved at dispatch, nothing would stop the
-			// capped call once the run took the route: it parks the run as
-			// soon as it is reachable, like a soft cap.
-			if route.Backend != delegate.BackendClaudeCode {
+			if !stoppable {
 				d.Stop = false
 			}
-			capped[route.NodeID] = d
+			capped[id] = d
 		}
 	}
+	for _, route := range routes {
+		key, metered := keys.routeKey(ctx, route)
+		if !metered {
+			continue
+		}
+		// A hard cap stops a call in flight only through the readings the
+		// mid-run guard observes, and only claude_code sessions report them —
+		// pi only on a refusal, claw never. On any other backend, or one
+		// resolved at dispatch, nothing would stop the capped call once the
+		// run took the route: it parks the run as soon as it is reachable,
+		// like a soft cap.
+		judge(route.NodeID, key, route.Backend == delegate.BackendClaudeCode)
+	}
+	// A supervisor calls its model in process — claw, which reports no
+	// readings — for the whole run: nothing stops it in flight either.
+	for _, sup := range sups {
+		key, metered := keys.supervisorKey(ctx, sup.spec)
+		if !metered {
+			continue
+		}
+		judge(sup.id, key, false)
+	}
 	return capped
+}
+
+// supervisorRoute is one supervisor the run will spawn, and the model spec its
+// evaluator will resolve.
+type supervisorRoute struct{ id, spec string }
+
+// preflightSupervisors lists the supervisors this run will spawn on this
+// runner — none when the run-level override or ITERION_SUPERVISORS turns them
+// off, the check the run itself makes — each with the model its evaluator
+// resolves at its first evaluation (supervise.ResolveModel: the pin, the env
+// default, then the provider the watched nodes run on and the detector, under
+// the run's credentials). One that resolves no model fails every evaluation
+// and spends nothing.
+func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage) []supervisorRoute {
+	if wf == nil || len(wf.Supervisors) == 0 {
+		return nil
+	}
+	if enabled, _ := supervise.DeclaredEnabled(msg.Supervisors); !enabled {
+		return nil
+	}
+	var out []supervisorRoute
+	for i, spec := range supervise.SpecsFromWorkflow(wf, nil) {
+		resolved, err := supervise.ResolveModel(ctx, spec.Model, spec.ProviderHint)
+		if err != nil {
+			continue
+		}
+		out = append(out, supervisorRoute{id: supervisorRouteID(spec.Name, i), spec: resolved})
+	}
+	return out
+}
+
+// supervisorRouteIDPrefix marks a capped route that is a supervisor, not a
+// node: it is on every execution of the run. A node id is a DSL identifier,
+// which never holds the colon.
+const supervisorRouteIDPrefix = "supervisor:"
+
+func supervisorRouteID(name string, i int) string {
+	if name != "" {
+		return supervisorRouteIDPrefix + name
+	}
+	return fmt.Sprintf("%s#%d", supervisorRouteIDPrefix, i)
+}
+
+// supervisorKey is the meter key a supervisor's resolved model spec spends,
+// and whether the cap meters it at all. It spends in process, in
+// Registry.ResolveWithContext's order: `anthropic/…` the Anthropic key held for
+// the route, else the Claude forfait while the claw factory takes it (not under
+// ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic
+// ANTHROPIC_BASE_URL — anthropicFromCtxForfait), else the pod's ambient env —
+// a GLM id there the z.ai key first; `zai/…` and `moonshot/…` that provider's
+// key, else the ambient env. A spec the registry cannot parse spends nothing;
+// any other provider is off the wire the cap meters.
+func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string, metered bool) {
+	// Read as the registry reads it: untrimmed, case-sensitive.
+	provider, _, err := model.ParseModelSpec(spec)
+	if err != nil {
+		return "", false
+	}
+	creds, _ := secrets.CredentialsFromContext(ctx)
+	var slot string
+	switch secrets.Provider(provider) {
+	case secrets.ProviderAnthropic:
+		if model.GLMOnAnthropicWire(spec) {
+			slot = heldForRoute(creds, string(secrets.ProviderZAI))
+		}
+		if slot == "" {
+			slot = heldForRoute(creds, string(secrets.ProviderAnthropic))
+		}
+		if slot == "" && creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
+			!secrets.ForbidSubscriptionOAuth() && secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+			slot = string(secrets.OAuthKindClaudeCode)
+		}
+	case secrets.ProviderZAI, secrets.ProviderMoonshot:
+		slot = heldForRoute(creds, provider)
+	default:
+		return "", false
+	}
+	return k.keyForSlot(slot), true
 }
 
 // parkDecision answers whether a run cannot start, and when it can.
@@ -541,7 +636,8 @@ func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes
 // refuses NEW work — so a soft-capped route the run may reach at all
 // (ir.Workflow.CanReach) parks it: letting the run through to find out would
 // spend it uninterrupted. So does a hard cap on a route no in-flight guard
-// can stop (cappedRoutes clears its Stop).
+// can stop (cappedRoutes clears its Stop). A capped supervisor parks the run
+// whatever its paths: it runs on every execution.
 //
 // The retry is armed for the earliest reopening after which neither holds —
 // coming back later waits for nothing, coming back earlier parks again. A
@@ -557,14 +653,23 @@ func parkDecision(wf *ir.Workflow, capped map[string]usagecap.Decision) (usageca
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
+	stillCapped := func(d usagecap.Decision, t time.Time) bool {
+		return t.IsZero() || d.ResetsAt.IsZero() || d.ResetsAt.After(t)
+	}
 	cappedAt := func(n ir.Node, t time.Time, softOnly bool) bool {
 		d, ok := capped[n.NodeID()]
 		if !ok || (softOnly && d.Stop) {
 			return false
 		}
-		return t.IsZero() || d.ResetsAt.IsZero() || d.ResetsAt.After(t)
+		return stillCapped(d, t)
 	}
 	parkedAt := func(t time.Time) bool {
+		// A supervisor is on every execution, and nothing stops it in flight.
+		for _, id := range ids {
+			if strings.HasPrefix(id, supervisorRouteIDPrefix) && stillCapped(capped[id], t) {
+				return true
+			}
+		}
 		if wf.CanReach(func(n ir.Node) bool { return cappedAt(n, t, true) }) {
 			return true
 		}
