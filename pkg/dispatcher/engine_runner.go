@@ -308,11 +308,17 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		Ctx:      ctx,
 		Workflow: r.workflow,
 		Store:    s,
-		Inbox:    &model.StoreInboxBinder{Store: s},
-		RunID:    spec.RunID,
-		Logger:   runLogger,
-		StoreDir: spec.StoreDir,
-		WorkDir:  spec.WorkspacePath,
+		// The dispatcher's engine sets neither sandbox tier, so the
+		// workflow's own `sandbox:` block decides — which is exactly what
+		// these two empty tiers resolve to. Declared rather than left
+		// blank: an omission would read as "this surface did not look",
+		// and the MCP start policy would stay closed for the whole run.
+		SandboxTiersKnown: true,
+		Inbox:             &model.StoreInboxBinder{Store: s},
+		RunID:             spec.RunID,
+		Logger:            runLogger,
+		StoreDir:          spec.StoreDir,
+		WorkDir:           spec.WorkspacePath,
 		// The dispatcher runs a bot per ticket, so it has a real identity to
 		// key bot-scoped memory on. Empty for a standalone `.bot`, where the
 		// executor falls back to the workflow name — the same rule every other

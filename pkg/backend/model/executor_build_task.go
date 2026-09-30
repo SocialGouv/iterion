@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -1235,6 +1237,10 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// Resolve full tool definitions for backends that manage tool loops
 	// internally (claw). CLI-based backends (claude_code, codex) handle tools
 	// natively via AllowedTools and do not need ToolDefs.
+	// Held across the whole build: the drops a node runs without are only
+	// facts once the node is going to run on THIS route, and the last thing
+	// that can take that away is several statements below.
+	var degraded []mcpDegradeReport
 	if len(effectiveTools) > 0 && backendName == delegate.BackendClaw {
 		clawTools := effectiveTools
 		// Ambient plugin-MCP parity with claude_code (the claude_code branch
@@ -1248,34 +1254,114 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// wildcards; the len(effectiveTools)>0 gate keeps tool-less judges
 		// lean (no ambient fetch tools, no behaviour change).
 		//
-		// Each server is ensured HERE, one by one: these are ambient (the
-		// node never named them — they arrive from the target repo's
-		// .mcp.json or the plugin catalog), so one that cannot boot costs
-		// its own tools, never the run. The other backends already degrade
-		// per-server (claude_code's CLI skips a server it cannot start; pi
-		// bounds each connect with a timeout) — hard-failing here was a
-		// claw-path parity defect: one token-less repo server killed every
-		// claw node of the run. A tool the node names EXPLICITLY on a dead
-		// server still fails loud in resolveToolsForNode.
+		// Each server is ensured HERE, one by one, so that one which cannot
+		// boot costs its own tools and never the run. The other backends
+		// already degrade per-server (claude_code's CLI skips a server it
+		// cannot start; pi bounds each connect with a timeout) —
+		// hard-failing here was a claw-path parity defect: one token-less
+		// repo server killed every claw node of the run. A tool the node
+		// names EXPLICITLY on a dead server still fails loud in
+		// resolveToolsForNode.
+		//
+		// The list is the node's RESOLVED set: the ambient servers it
+		// inherited (target repo `.mcp.json`, plugin catalog, workflow) and
+		// the ones its own `mcp:` block named, merged by
+		// mcp.PrepareWorkflow. Anything reported from inside this loop
+		// therefore has to read which of the two a server was, rather than
+		// assume.
 		if e.mcpManager != nil && e.toolRegistry != nil {
+			// The servers the node named a tool on. Those do NOT degrade:
+			// resolveToolsForNode either carries a typed refusal to Execute,
+			// where the node's `fallbacks:` get their turn, or fails the
+			// build on a genuine boot failure. Announcing a missing tool set
+			// for one of them puts a sentence in the run record that the
+			// next second contradicts.
+			namedByNode := make(map[string]struct{})
+			for _, srv := range activeMCPServersForNames(node, f.tools) {
+				namedByNode[srv] = struct{}{}
+			}
 			for _, srv := range f.activeMCPServers {
 				if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{srv}); err != nil {
-					if e.logger != nil {
-						e.logger.Warn("[%s] ambient MCP server %q failed to boot — the node runs WITHOUT its tools: %v", f.id, srv, err)
+					if _, named := namedByNode[srv]; named {
+						continue
 					}
-					if e.hooks.OnMCPServerDegraded != nil {
-						e.hooks.OnMCPServerDegraded(f.id, MCPServerDegradedInfo{Server: srv, Source: "ambient", Err: err})
+					// Two different facts, reported as two different facts: a
+					// server that cannot boot is something to go and fix, a
+					// server this launcher may not start for a sandboxed run
+					// is working as intended. One message for both sent the
+					// operator after a boot bug that was not there.
+					// A refusal answers the PLACEMENT question, and a server
+					// may be both unwelcome here and broken. The health
+					// problem travels inside the refusal; lift it out as its
+					// own fact so a consumer reading `refused` does not read
+					// "nothing to fix".
+					refused := mcp.ServerNotStartable(err)
+					var cause error
+					var notStartable *mcp.ServerNotStartableError
+					if errors.As(err, &notStartable) {
+						cause = notStartable.Cause
 					}
+					// The origin comes from the REFUSAL when there is one,
+					// and from the catalog otherwise. One report must not
+					// mix two clocks: the cause above was produced by the
+					// gate reading the config the server's own state holds,
+					// while the catalog can already hold a newer one for a
+					// server that started before the sandbox settled.
+					//
+					// Origin.String(), not string(Origin): the cast defeats
+					// the Stringer and renders the ZERO value — an
+					// unclassified entry, or a plugin stripped of its
+					// authority — as the empty string. That is exactly the
+					// case this whole boundary is about, and it was the one
+					// the log and the event named as nothing at all.
+					origin := ""
+					switch {
+					case notStartable != nil:
+						origin = notStartable.Origin.String()
+					default:
+						if cfg, ok := e.mcpManager.ServerConfig(srv); ok && cfg != nil {
+							origin = cfg.Origin.String()
+						}
+					}
+					// Ambient or asked for: the node's active set holds both,
+					// merged, so the answer comes from the DECLARATION rather
+					// than from the fact that this loop walks the merged list.
+					// Calling a server the bot named "ambient" sends its
+					// author reading the target repo's `.mcp.json` for a line
+					// that is in their own `.bot`.
+					source := "ambient"
+					if ir.DeclaresMCPServer(node, e.wfMCP, srv) {
+						source = "declared"
+					}
+					// Held, not emitted. Resolution below can still fail the
+					// node — a tool named by the bare MCP shorthand on this
+					// very server does exactly that — and then no task was
+					// built and nothing lacked anything. A run record whose
+					// only trace of the drop is a sentence the next line
+					// contradicts is worse than no trace: a downstream gate
+					// reads it as "ran degraded".
+					degraded = append(degraded, mcpDegradeReport{
+						info: MCPServerDegradedInfo{
+							Server: srv, Source: source, Origin: origin,
+							Refused: refused, Cause: cause, Err: err,
+						},
+						refused: refused,
+					})
 					continue
 				}
 				clawTools = append(clawTools, "mcp."+srv+".*")
 			}
 		}
-		toolDefs, toolErr := e.resolveToolsForNode(ctx, node, clawTools)
+		toolDefs, refusedMCP, toolErr := e.resolveToolsForNode(ctx, node, clawTools)
 		if toolErr != nil {
 			return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
 		task.ToolDefs = toolDefs
+		// Carried, not raised. A build error aborts the node before its
+		// fallback chain is walked; this refusal must reach Execute, where a
+		// route that starts the server inside the container still gets its
+		// turn.
+		task.MCPServersRefusedOnLauncher = refusedMCP
 		task.HasTools = true // claw needs the tool loop active for ask_user
 	}
 
@@ -1333,6 +1419,22 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		}
 	}
 
+	// Here, and nowhere earlier: a build that FAILS produced no tool set, so
+	// there is nothing to report about one.
+	//
+	// And nowhere later, deliberately. The report's subject is this TASK's
+	// tool set — "these servers' tools are not in it" — which is settled
+	// here and stays true whatever becomes of the task. The earlier version
+	// claimed the NODE ran without them, and that claim belongs to no
+	// build-time predicate: claw declines a task at five separate points in
+	// Execute, and under any of them a `fallbacks:` route may serve the node
+	// with those very servers started in its container. Gating on the one
+	// decline this function can see (a carried refusal) left the other four
+	// lying, and suppressed a server that had simply FAILED TO BOOT — a fact
+	// about the server that no route repairs. Whether the node ended up with
+	// the tools is a question the timeline answers, with the fallback event
+	// beside this one.
+	e.reportMCPDegrades(f.id, degraded)
 	return task, nil
 }
 
@@ -1562,14 +1664,14 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	if delegate.HasRunsReadCapability(effectiveCaps) && len(effectiveTools) > 0 {
 		effectiveTools = append(effectiveTools, delegate.RunToolsFor(effectiveCaps)...)
 	}
-	// Ultracode grants standing consent to orchestrate subagents AND
-	// workflows. On claw the orchestration surface is the `agent` subagent
-	// tool and the `workflow` tool (a deterministic fan-out script whose
-	// agent() resolves with typed results); ensure both are in the allowlist
-	// when the node restricts its tool set (mirrors the board-tools append
-	// above). An unrestricted tool set already exposes the claw builtins,
-	// and the claude_code backend orchestrates via its native mechanism, so
-	// neither needs the explicit append.
+	// Ultracode grants standing consent to orchestrate subagents. On claw the
+	// orchestration surface is the `agent` subagent tool (claw's own
+	// `workflow` tool is not granted — see withClawOrchestrationTools); ensure
+	// it is in the allowlist when the node restricts its tool set (mirrors the
+	// board-tools append above). An unrestricted tool set already exposes the
+	// claw builtins, and the claude_code backend orchestrates via its native
+	// mechanism, so neither needs the explicit append. A sandboxed node keeps
+	// the grant: the runner registers `agent` in the container.
 	if ultracode && backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = withClawOrchestrationTools(effectiveTools)
 	}
@@ -1774,7 +1876,43 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 // resolved against the registry and an unknown name is an error, not a skip,
 // so a name granted without a registration kills the node at dispatch.
 // claw-code-go's own `workflow` tool is not among them: iterion builds its
-// own registry and wires the subagent runner into `agent` alone.
+// own registry and registers `agent` alone — today in claw's metadata-only
+// form, since no host wires a subagent runner into it.
 func withClawOrchestrationTools(tools []string) []string {
 	return ensureToolPresent(tools, "agent")
+}
+
+// mcpDegradeReport is one held "this task's tool set lacks that server"
+// report, waiting for the task to actually be built.
+type mcpDegradeReport struct {
+	info    MCPServerDegradedInfo
+	refused bool
+}
+
+// reportMCPDegrades emits the held reports, once the node's tools have
+// resolved and the task is genuinely built without them.
+//
+// The subject is the TASK's tool set, not the node's execution — the same
+// correction the degrade event carries. What this function knows is that the
+// task was built lacking those tools; whether the NODE ends up running
+// without them it cannot know, because claw declines a task at five points
+// in Execute and the node's `fallbacks:` then get a route that may well
+// start the server. A log line claiming the node ran degraded is read as a
+// fact about the run, and the next second can contradict it.
+func (e *ClawExecutor) reportMCPDegrades(nodeID string, reports []mcpDegradeReport) {
+	for _, r := range reports {
+		if e.logger != nil {
+			if r.refused {
+				e.logger.Warn("[%s] %s MCP server %q (origin: %s) is not started by this launcher — "+
+					"this task's tool set is built WITHOUT its tools: %v", nodeID, r.info.Source,
+					r.info.Server, r.info.Origin, r.info.Err)
+			} else {
+				e.logger.Warn("[%s] %s MCP server %q failed to boot — this task's tool set is built "+
+					"WITHOUT its tools: %v", nodeID, r.info.Source, r.info.Server, r.info.Err)
+			}
+		}
+		if e.hooks.OnMCPServerDegraded != nil {
+			e.hooks.OnMCPServerDegraded(nodeID, r.info)
+		}
+	}
 }

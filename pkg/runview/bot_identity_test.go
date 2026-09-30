@@ -2,12 +2,7 @@ package runview
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -120,50 +115,9 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 		"pkg/botreplay/record.go": "replay harness: single node, no memory space",
 	}
 
-	repoRoot := filepath.Join("..", "..")
-	var offenders []string
-	err := filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
-				return filepath.SkipDir
-			}
-			// A directory carrying its own .git is a NESTED CHECKOUT — a git
-			// worktree or a sibling clone an operator keeps on disk. Its files
-			// belong to another tree (none are tracked here), and its older
-			// copies would report as offenders of a rule they predate. Detect
-			// them by that marker rather than by directory name: where someone
-			// parks their checkouts is their business, not this test's.
-			if path != repoRoot {
-				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		rel := filepath.ToSlash(strings.TrimPrefix(path, repoRoot+string(filepath.Separator)))
-		if _, ok := exempt[rel]; ok {
-			return nil
-		}
-		file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-		if perr != nil {
-			t.Errorf("parse %s: %v", rel, perr)
-			return nil
-		}
-		if executorSpecMissesBotID(file) {
-			offenders = append(offenders, rel)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
+	var gaveUp []string
+	offenders := executorSpecSitesMissing(t, "BotID", exempt, &gaveUp)
+	assertGiveUpsAreOnTheRecord(t, gaveUp)
 	if len(offenders) > 0 {
 		t.Errorf("these build an executor without deciding its bot identity, so its bot-scoped memory "+
 			"falls back to the WORKFLOW name and silently diverges from every surface that sets it: %v\n"+
@@ -172,11 +126,29 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 	}
 }
 
-// executorSpecMissesBotID reports whether a file builds an ExecutorSpec without
-// setting BotID, by either construction shape: a composite literal, or a
-// variable whose fields are assigned one at a time.
-func executorSpecMissesBotID(file *ast.File) bool {
-	missing := false
+// executorSpecMissesField reports whether a file builds an ExecutorSpec
+// without setting `field`, by either construction shape: a composite literal,
+// or a variable whose fields are assigned one at a time.
+//
+// The walk is the field-independent part, and several fields of this spec are
+// load-bearing in the same way — decided at every construction site or
+// silently wrong at the one that forgot. Each such field gets its own test
+// over this one traversal.
+func executorSpecMissesField(file *ast.File, field string) (missing, unread bool) {
+	missing = false
+	// The identifier THIS file uses for the runview package. Hardcoding
+	// "runview" made the sweep blind to `rv "…/pkg/runview"` — an import
+	// alias is nobody's error and a guard that stops seeing a site because
+	// of one reads as coverage while covering nothing. Measured once
+	// already, on the manager-construction sweep of this same change.
+	pkgNames := runviewPackageIdents(file)
+	// Whether the BARE spelling `ExecutorSpec{…}` means ours: only inside
+	// package runview itself, or in a file that dot-imports it. Matching it
+	// unconditionally accused a file declaring its own package-local type of
+	// the same name, and the remedy the failure names does not even
+	// type-check there — the only way out would be an exempt entry about a
+	// file that has nothing to do with the rule.
+	bare := file.Name.Name == "runview" || pkgNames["."]
 
 	// Shape 1 — `ExecutorSpec{…}` / `runview.ExecutorSpec{…}`, including the
 	// ELIDED form Go allows inside a container literal: in
@@ -196,27 +168,34 @@ func executorSpecMissesBotID(file *ast.File) bool {
 		case *ast.ArrayType:
 			elem = t.Elt
 		}
-		if elem != nil && isExecutorSpecType(elem) {
-			for _, el := range lit.Elts {
-				inner := el
-				if kv, ok := el.(*ast.KeyValueExpr); ok {
-					inner = kv.Value
-				}
-				if c, ok := inner.(*ast.CompositeLit); ok && c.Type == nil {
-					elided[c] = true
-				}
-			}
+		// One container level deeper, so `[][]ExecutorSpec{{{…}}}` is judged
+		// too — and the DEPTH travels, because the recursion must stop at
+		// the level that holds the specs. Descending blindly marked a
+		// literal sitting in one of the spec's OWN fields as an elided
+		// spec: ExecutorSpec has value-struct-slice fields, so
+		// `[]ExecutorSpec{{BotID: "b", RunFallback: []ir.Fallback{{…}}}}`
+		// was judged for BotID on the `ir.Fallback` literal and accused a
+		// file that sets the field two lines up.
+		depth := 0
+		switch inner := elem.(type) {
+		case *ast.ArrayType:
+			elem, depth = inner.Elt, 1
+		case *ast.MapType:
+			elem, depth = inner.Value, 1
+		}
+		if elem != nil && isExecutorSpecType(elem, pkgNames, bare) {
+			markElidedElements(lit, depth, elided)
 		}
 		return true
 	})
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.CompositeLit)
-		if !ok || (!isExecutorSpecType(lit.Type) && !elided[lit]) {
+		if !ok || (!isExecutorSpecType(lit.Type, pkgNames, bare) && !elided[lit]) {
 			return true
 		}
 		for _, el := range lit.Elts {
 			if kv, ok := el.(*ast.KeyValueExpr); ok {
-				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "BotID" {
+				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == field {
 					return true
 				}
 			}
@@ -225,7 +204,7 @@ func executorSpecMissesBotID(file *ast.File) bool {
 		return true
 	})
 	if missing {
-		return true
+		return true, unread
 	}
 
 	// Shape 2 — `var spec ExecutorSpec` (or `new(ExecutorSpec)`) followed by
@@ -240,7 +219,7 @@ func executorSpecMissesBotID(file *ast.File) bool {
 		ast.Inspect(fn.Body, func(m ast.Node) bool {
 			switch v := m.(type) {
 			case *ast.ValueSpec:
-				if isExecutorSpecType(v.Type) {
+				if isExecutorSpecType(v.Type, pkgNames, bare) {
 					for _, name := range v.Names {
 						declared[name.Name] = true
 					}
@@ -254,7 +233,7 @@ func executorSpecMissesBotID(file *ast.File) bool {
 					if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "new" {
 						continue
 					}
-					if isExecutorSpecType(call.Args[0]) && i < len(v.Lhs) {
+					if isExecutorSpecType(call.Args[0], pkgNames, bare) && i < len(v.Lhs) {
 						if id, ok := v.Lhs[i].(*ast.Ident); ok {
 							declared[id.Name] = true
 						}
@@ -279,13 +258,44 @@ func executorSpecMissesBotID(file *ast.File) bool {
 				return true
 			}
 			for _, arg := range call.Args {
-				if id, ok := arg.(*ast.Ident); ok {
-					handed[id.Name] = true
+				switch a := arg.(type) {
+				case *ast.Ident:
+					handed[a.Name] = true
+				case *ast.StarExpr:
+					// `BuildExecutor(*spec)` after `spec := new(ExecutorSpec)`
+					// — the shape a refactor to a pointer produces.
+					if id, ok := a.X.(*ast.Ident); ok {
+						handed[id.Name] = true
+					}
+				}
+			}
+			return true
+		})
+		// A factory that fills a spec and RETURNS it is handing it to
+		// whoever calls BuildExecutor — the shape pkg/runner/loop.go's
+		// executorSpec has today, covered only because it happens to use a
+		// composite literal.
+		//
+		// Returned-and-never-assigned is a different animal: `var zero
+		// ExecutorSpec` returned beside an error is a sentinel, and the same
+		// file has one. Requiring at least one assigned field separates the
+		// two without guessing — a factory that fills nothing builds
+		// nothing.
+		returned := map[string]bool{}
+		ast.Inspect(fn.Body, func(m ast.Node) bool {
+			ret, ok := m.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			for _, res := range ret.Results {
+				if id, ok := res.(*ast.Ident); ok {
+					returned[id.Name] = true
 				}
 			}
 			return true
 		})
 		assigned := map[string]bool{}
+		anyField := map[string]bool{}
 		ast.Inspect(fn.Body, func(m ast.Node) bool {
 			as, ok := m.(*ast.AssignStmt)
 			if !ok {
@@ -293,23 +303,102 @@ func executorSpecMissesBotID(file *ast.File) bool {
 			}
 			for _, lhs := range as.Lhs {
 				sel, ok := lhs.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "BotID" {
+				if !ok {
 					continue
 				}
-				if id, ok := sel.X.(*ast.Ident); ok {
+				id, ok := sel.X.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				anyField[id.Name] = true
+				if sel.Sel.Name == field {
 					assigned[id.Name] = true
 				}
 			}
 			return true
 		})
+		for name := range returned {
+			if anyField[name] {
+				handed[name] = true
+			}
+		}
+		// The give-up the comment above promises, implemented: a spec
+		// whose ADDRESS is taken leaves this walk's sight — `fill(&s)` may
+		// be exactly where the field is set — so it is not judged. Without
+		// this, `fill(&s); BuildExecutor(s)` was flagged: correct code
+		// accused by a gate, which costs more than a miss because nobody
+		// looks for it.
+		escaped := map[string]bool{}
+		ast.Inspect(fn.Body, func(m ast.Node) bool {
+			u, ok := m.(*ast.UnaryExpr)
+			if !ok || u.Op != token.AND {
+				return true
+			}
+			if id, ok := u.X.(*ast.Ident); ok {
+				escaped[id.Name] = true
+			}
+			return true
+		})
 		for name := range declared {
-			if handed[name] && !assigned[name] {
+			switch {
+			case assigned[name]:
+				// Decided HERE, in plain sight. This arm comes first on
+				// purpose: with `escaped` ahead of it, a site that set both
+				// guarded fields three lines apart and also passed `&s` to a
+				// helper for an unrelated field was declared unjudgeable —
+				// the gate failed, demanding an allowlist entry, with a
+				// message that was factually false about the file.
+			case returned[name] && !anyField[name]:
+				// A zero-value sentinel returned beside an error. It builds
+				// nothing, so it owes nothing — and reporting it as
+				// unjudgeable would be noise about a variable nobody uses.
+			case returned[name]:
+				// A factory that FILLS a spec and returns it: the caller is
+				// the judgeable site, not this one. Reporting it as missing
+				// accused a legitimate shared-base helper whose caller
+				// decides the fields.
+				unread = true
+			case !handed[name], escaped[name]:
+				// Declared and then out of sight: handed nowhere this walk
+				// can see, or its address passed to a callee that may be
+				// exactly where the field is set. Not judged — and said so,
+				// because a site drifting into this shape otherwise leaves
+				// the guard covering nothing and reporting nothing.
+				unread = true
+			default:
 				missing = true
 			}
 		}
 		return true
 	})
-	return missing
+	return missing, unread
+}
+
+// markElidedElements records the type-less inner literals of a container
+// whose element type is an ExecutorSpec, so `map[string]ExecutorSpec{"a":
+// {…}}` is judged like a spelled-out one.
+//
+// depth is how many container levels still separate lit from the specs. At
+// depth 0 its direct elements ARE the specs; descending further would reach
+// a spec's own field values, which are not specs.
+func markElidedElements(lit *ast.CompositeLit, depth int, elided map[ast.Node]bool) {
+	for _, el := range lit.Elts {
+		inner := el
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			inner = kv.Value
+		}
+		c, ok := inner.(*ast.CompositeLit)
+		if !ok {
+			continue
+		}
+		if depth == 0 {
+			if c.Type == nil {
+				elided[c] = true
+			}
+			continue
+		}
+		markElidedElements(c, depth-1, elided)
+	}
 }
 
 // isBuildExecutorCall matches `BuildExecutor(…)` / `runview.BuildExecutor(…)`.
@@ -323,17 +412,40 @@ func isBuildExecutorCall(fun ast.Expr) bool {
 	return false
 }
 
+// runviewPackageIdents returns every identifier this file can spell the
+// runview package with: its alias when it has one, its default name
+// otherwise, and "." for a dot-import (which entitles the bare spelling).
+func runviewPackageIdents(file *ast.File) map[string]bool {
+	const path = `"github.com/SocialGouv/iterion/pkg/runview"`
+	out := map[string]bool{}
+	for _, imp := range file.Imports {
+		if imp.Path == nil || imp.Path.Value != path {
+			continue
+		}
+		if imp.Name == nil {
+			out["runview"] = true
+			continue
+		}
+		if imp.Name.Name != "_" {
+			out[imp.Name.Name] = true
+		}
+	}
+	return out
+}
+
 // isExecutorSpecType matches the type EXACTLY, so a neighbour named
-// MyExecutorSpec is not mistaken for it.
-func isExecutorSpecType(expr ast.Expr) bool {
+// MyExecutorSpec is not mistaken for it. pkgNames are the identifiers the
+// file under examination may prefix it with; bare says whether the
+// unqualified spelling means ours in that file.
+func isExecutorSpecType(expr ast.Expr, pkgNames map[string]bool, bare bool) bool {
 	switch t := expr.(type) {
 	case *ast.Ident:
-		return t.Name == "ExecutorSpec"
+		return bare && t.Name == "ExecutorSpec"
 	case *ast.SelectorExpr:
 		pkg, ok := t.X.(*ast.Ident)
-		return ok && pkg.Name == "runview" && t.Sel.Name == "ExecutorSpec"
+		return ok && pkgNames[pkg.Name] && t.Sel.Name == "ExecutorSpec"
 	case *ast.StarExpr:
-		return isExecutorSpecType(t.X)
+		return isExecutorSpecType(t.X, pkgNames, bare)
 	}
 	return false
 }

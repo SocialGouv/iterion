@@ -138,11 +138,18 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			Ctx:      managedCtx,
 			Workflow: childWf,
 			Store:    s.store,
-			RunID:    childRunID,
-			Logger:   runLogger,
-			StoreDir: s.storeDir,
-			Inbox:    s.inboxBinder(),
-			AsyncAsk: s.asyncAskBinder(),
+			// Deliberately NOT claiming to know the tiers: a subbot child
+			// under a sandboxed parent executes in the PARENT's sandbox
+			// (WithSharedSandbox below), which no tier of the child's own
+			// expresses. The executor stays closed until the child's engine
+			// settles — it adopts the parent's sandbox, or resolves its own —
+			// and nothing starts an MCP server before that point.
+			SandboxTiersKnown: false,
+			RunID:             childRunID,
+			Logger:            runLogger,
+			StoreDir:          s.storeDir,
+			Inbox:             s.inboxBinder(),
+			AsyncAsk:          s.asyncAskBinder(),
 			// A subbot is a DIFFERENT bot from its parent, so it keys its own
 			// bot-scoped memory. Derived from the child's own path, exactly as
 			// the CLI subbot runner does — without it the executor falls back

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // sdkClient wraps the official MCP go-sdk Client + ClientSession,
@@ -30,10 +32,26 @@ type sdkClient struct {
 	started       bool
 	startErr      error
 	session       *mcp.ClientSession
+
+	// gate is consulted before every protocol operation, including on an
+	// already-started session. The manager's start policy can tighten
+	// mid-run (the engine settles the sandbox after the launch surface's
+	// prediction), and a client handed to a registered tool closure is
+	// reachable for the rest of the run without passing through the
+	// manager again — so the check belongs here, at the one point every
+	// operation crosses. Nil means no gate (tests, and any host that
+	// builds a client directly).
+	gate func() error
+
+	// logger carries the one failure this client cannot simply return: a
+	// refused session whose close failed, which means a process left
+	// running beside the launcher. Nil-safe — pkg/log nil-checks its
+	// receiver.
+	logger *iterlog.Logger
 }
 
-func newSDKClient(cfg *ServerConfig, info clientInfo) *sdkClient {
-	return &sdkClient{cfg: cloneServerConfig(cfg), info: info}
+func newSDKClient(cfg *ServerConfig, info clientInfo, gate func() error, logger *iterlog.Logger) *sdkClient {
+	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate, logger: logger}
 }
 
 // protocolVersion20260728 is the first MCP revision that removed the
@@ -158,6 +176,15 @@ func (c *sdkClient) Close() error {
 }
 
 func (c *sdkClient) ensureStarted(ctx context.Context) error {
+	// The start gate first, and before the started short-circuit: this
+	// is the launcher's boundary. A server whose process must not run
+	// beside the launcher is refused here whether it is about to be
+	// spawned or was spawned earlier under a looser policy.
+	if c.gate != nil {
+		if err := c.gate(); err != nil {
+			return err
+		}
+	}
 	// Concurrent ListTools/CallTool callers must not serialise on a
 	// mutex held across slow I/O (HTTP dial / process spawn). We also
 	// must not permanently cache a context.DeadlineExceeded from one
@@ -191,7 +218,14 @@ func (c *sdkClient) ensureStarted(ctx context.Context) error {
 		}
 		return c.startErr
 	}
-	if c.startErr != nil && !isContextErr(c.startErr) {
+	// A launcher-start REFUSAL is not a permanent failure: it is the answer
+	// the policy gave at that moment, and the policy changes — the engine
+	// relaxes it when a run settles without a sandbox, which is the whole
+	// point of settling. Caching it here answered "no" for the rest of the
+	// run from a policy that no longer existed, and silently: the tool was
+	// advertised and simply never worked. The gate above this line is what
+	// decides; a fresh attempt gets a fresh verdict from it.
+	if c.startErr != nil && !isContextErr(c.startErr) && !ServerNotStartable(c.startErr) {
 		// Prior permanent failure — don't retry.
 		err := c.startErr
 		c.startMu.Unlock()
@@ -204,12 +238,38 @@ func (c *sdkClient) ensureStarted(ctx context.Context) error {
 	c.startInFlight = ch
 	c.startMu.Unlock()
 
-	err := c.start(ctx)
+	session, err := c.start(ctx)
 
 	c.startMu.Lock()
+	// The gate again, on the far side of the start. A start is slow — a
+	// process spawn, a TLS dial — and the run's sandbox settles while it is
+	// in flight: checking only on the way in means a server the launcher has
+	// just been told it may not run is already running by the time anyone
+	// asks. Re-consulted here, the session is closed before it is ever
+	// published, so the refusal costs the peer a connection rather than
+	// leaving a process alive beside the launcher.
+	if err == nil && c.gate != nil {
+		if gateErr := c.gate(); gateErr != nil {
+			err = gateErr
+			if session != nil {
+				// The close is the only thing standing between a refused
+				// server and a process running beside the launcher for the
+				// rest of the run, so its failure is reported rather than
+				// dropped: the SDK's stdio close returns early if it cannot
+				// close stdin, before it ever signals the child.
+				if closeErr := session.Close(); closeErr != nil && c.logger != nil {
+					c.logger.Warn("mcp: server %q (origin: %s) was refused after its start completed, and closing "+
+						"the session failed — its process may still be running: %v",
+						c.cfg.Name, c.cfg.Origin, closeErr)
+				}
+				session = nil
+			}
+		}
+	}
 	c.startErr = err
 	if err == nil {
 		c.started = true
+		c.session = session
 	}
 	c.startInFlight = nil
 	c.startMu.Unlock()
@@ -221,7 +281,7 @@ func isContextErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func (c *sdkClient) start(ctx context.Context) error {
+func (c *sdkClient) start(ctx context.Context) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    c.info.Name,
 		Version: c.info.Version,
@@ -233,7 +293,7 @@ func (c *sdkClient) start(ctx context.Context) error {
 
 	transport, err := c.buildTransport()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	session, err := client.Connect(ctx, transport, nil)
@@ -247,10 +307,15 @@ func (c *sdkClient) start(ctx context.Context) error {
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("mcp: connect to %q: %w", c.cfg.Name, err)
+		return nil, fmt.Errorf("mcp: connect to %q: %w", c.cfg.Name, err)
 	}
-	c.session = session
-	return nil
+	// RETURNED, not assigned: the caller publishes it under startMu. Assigning
+	// it here wrote c.session outside every lock, so a concurrent Close() —
+	// the one the manager performs when the start policy tightens mid-run —
+	// read nil, closed nothing, and dropped its only reference to a session
+	// that then came up: a server process left running beside the launcher,
+	// reachable by no one, past the end of the run.
+	return session, nil
 }
 
 func (c *sdkClient) buildTransport() (mcp.Transport, error) {

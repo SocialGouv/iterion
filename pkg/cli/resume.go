@@ -331,7 +331,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// each on purpose. Same doctrine as MergeResumeBudgetAsk: the record
 	// is the source, the flag layers over it. Fixes the classes named in
 	// #1435 (sandbox mode) and #1366 (branch name / merge target).
-	sandboxOverride := pickString(opts.Sandbox, r.SandboxOverride)
+	sandboxOverride := resumeSandboxOverride(opts, r)
 	sandboxDefaultImage := pickString(opts.SandboxDefaultImage, r.SandboxDefaultImage)
 	sandboxHostStateOverride := pickString(opts.SandboxHostState, r.SandboxHostState)
 	mergeInto := pickString(opts.MergeInto, r.MergeInto)

@@ -153,7 +153,7 @@ func TestManagerWithCache(t *testing.T) {
 	cache := NewToolCache(cacheDir, 1*time.Hour)
 
 	// First manager: should do live discovery and populate cache.
-	m1 := NewManager(cfg, WithToolCache(cache))
+	m1 := NewManager(cfg, WithToolCache(cache), WithStartPolicy(StartAllServers))
 	r1 := tool.NewRegistry()
 	if err := m1.EnsureServers(context.Background(), r1, []string{"cached"}); err != nil {
 		t.Fatalf("EnsureServers (m1): %v", err)
@@ -170,7 +170,7 @@ func TestManagerWithCache(t *testing.T) {
 
 	// Second manager: should use cache (no live ListTools needed).
 	// We verify by checking that tools are registered even with a fresh Manager.
-	m2 := NewManager(cfg, WithToolCache(cache))
+	m2 := NewManager(cfg, WithToolCache(cache), WithStartPolicy(StartAllServers))
 	r2 := tool.NewRegistry()
 	if err := m2.EnsureServers(context.Background(), r2, []string{"cached"}); err != nil {
 		t.Fatalf("EnsureServers (m2): %v", err)

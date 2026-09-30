@@ -80,6 +80,12 @@ type ClawExecutor struct {
 	wfCompaction   *ir.Compaction
 	wfCapabilities []string // workflow-level default host capabilities (nil = none)
 	wfSkills       []string // workflow-level default skill-library references (nil = none)
+	// wfMCP is the workflow's own `mcp:` block. A server it names is one the
+	// BOT asked for, and PrepareWorkflow folds it into every node's active
+	// set while leaving the node's own MCP config nil — so without this, the
+	// degrade event calls a server the bot declared "ambient" and sends its
+	// author to read the target repository's `.mcp.json`.
+	wfMCP *ir.MCPConfig
 	// skillHints maps a skill-library name to its description for every skill
 	// referenced by the workflow that RESOLVED in the library at run start
 	// (set by SetSkillHints from the runtime mirror). Per-node, the executor
@@ -361,12 +367,26 @@ func mergeProcessEnv(base, overlay []string) []string {
 
 // SetSandbox installs the live sandbox handle on the executor. The
 // engine calls this once per run, after [resolveAndStartSandbox]
-// returns. Subsequent tool node and backend invocations consult the
-// handle to route through the sandbox transparently.
+// returns — with the handle when a sandbox started, with nil when the
+// run settled without one. Subsequent tool node and backend invocations
+// consult the handle to route through the sandbox transparently.
 //
-// Passing nil clears the previous handle (used between runs).
+// It is also where the MCP manager learns the SETTLED answer to "may an
+// MCP server's process run beside this launcher". Until this call the
+// manager holds a prediction from the launch surface, which is not
+// always available and can be wrong in the permissive direction (a
+// sandbox-by-default run degrades to the host when no container runtime
+// is there). Both directions matter: the call tightens a run that turned
+// out sandboxed, and opens a run that turned out not to be.
 func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 	e.sandbox = run
+	if e.mcpManager != nil {
+		if run != nil {
+			e.mcpManager.SetStartPolicy(mcp.StartOperatorServersOnly)
+		} else {
+			e.mcpManager.SetStartPolicy(mcp.StartAllServers)
+		}
+	}
 }
 
 // SetSharedStateDir records a directory reachable at the SAME absolute path
@@ -845,6 +865,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCompaction:         wf.Compaction,
 		wfCapabilities:       wf.Capabilities,
 		wfSkills:             wf.Skills,
+		wfMCP:                wf.MCP,
 		botID:                wf.Name,
 		routeCooldowns: routeCooldownLedger{
 			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),

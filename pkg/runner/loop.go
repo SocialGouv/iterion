@@ -2304,7 +2304,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// wildcard resolves to zero tools (the firecrawl/repo-falcon plugins were
 	// silently inert in cloud runs). Fail loudly on a malformed catalog rather
 	// than run a bot missing the tools it declared.
-	if err := mcp.PrepareWorkflow(wf, workDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workDir, r.cfg.Logger); err != nil {
 		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
 	}
 
@@ -3053,7 +3053,10 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// that will run sandboxed, and sandboxed-or-not is this value's
 		// call for an inherit-everything node.
 		SandboxOverride: r.cfg.SandboxOverride,
-		SandboxDefault:  r.cfg.SandboxDefault,
+		// Both tiers come from the runner's own configuration — the same
+		// two the engine receives below.
+		SandboxTiersKnown: true,
+		SandboxDefault:    r.cfg.SandboxDefault,
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the

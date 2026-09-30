@@ -38,6 +38,13 @@ func (p *ClawProvider) GetResourceClient(name string) (clawmcp.ResourceClient, b
 	if _, ok := p.m.ServerConfig(name); !ok {
 		return nil, false
 	}
+	// A refused server still gets a client, deliberately. `ok=false` is
+	// claw's "server not found", and that is the one answer that is false:
+	// the server exists, it is simply not started here — and "not found"
+	// invites the model to re-list and try name variants for something it
+	// cannot have. The client's own operations carry the typed refusal
+	// instead (Manager.ListResources / ReadResource consult the gate before
+	// any dial), so the model gets the real reason and no process starts.
 	return &clawResourceClient{m: p.m, server: name}, true
 }
 
@@ -48,6 +55,18 @@ func (p *ClawProvider) ServerStatus(name string) (clawmcp.ServerStatus, bool) {
 	cfg, ok := p.m.ServerConfig(name)
 	if !ok {
 		return clawmcp.ServerStatus{Name: name, Status: "disconnected"}, false
+	}
+	// Answer for the server as it actually stands. Reporting "connected" for
+	// one the launcher may not start tells the model the opposite of the
+	// truth, and it does so while naming the resolved command — the
+	// operator's own filesystem layout — to a conversation that was just
+	// refused the server.
+	if err := p.m.checkStart(cfg); err != nil {
+		return clawmcp.ServerStatus{
+			Name:       name,
+			Status:     "disconnected",
+			ServerInfo: "not started by this launcher for this run",
+		}, true
 	}
 	switch cfg.Transport {
 	case TransportStdio:

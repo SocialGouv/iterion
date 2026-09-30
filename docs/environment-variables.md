@@ -70,6 +70,44 @@ default image are `ITERION_SANDBOX_DEFAULT`, `ITERION_SANDBOX_OVERRIDE`,
 `ITERION_SANDBOX_HOST_STATE`, and `ITERION_SANDBOX_DEFAULT_IMAGE` —
 documented in [sandbox.md](sandbox.md).
 
+## MCP catalog and the launcher
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_MCP_AUTOLOAD` | `0`/`false` stops iterion reading a `.mcp.json` next to the `.bot` (CLI, studio) or at the root of the cloned repository (cloud runner). Those entries are `project`-origin: under an active sandbox the launcher does not start them anyway — this removes them from the catalog entirely. | on |
+| `ITERION_MCP_HEALTHCHECK` | `0`/`false` skips the pre-run health check of the workflow's active MCP servers. The check connects — for a stdio server, spawns — so it only ever probes servers the launcher may start; the rest are skipped and logged. | on |
+| `ITERION_MCP_CACHE_TTL` | Lifetime of the on-disk tool-discovery cache (`0` disables it). The cache stores tool names and schemas only, keyed by a hash of the server's configuration. | `1h` |
+| `ITERION_MCP_EXPAND_UNTRUSTED_ENV` | `true` restores the pre-#1945 behaviour: a **workflow-controlled** server's `command`/`args`/`url` expand `${VAR}` against the launcher's own environment. Off by default — that expansion reads the operator's shell (or the cloud runner pod's credentials) on behalf of a definition the target repository controls, and the expanded value travels into the container as the CLI backends' MCP config. `plugin`-origin servers are unaffected. | off |
+
+Which servers the launcher starts at all is decided by their ORIGIN — see
+[sandbox.md § MCP servers under a sandbox](sandbox.md#mcp-servers-under-a-sandbox).
+Note that `ITERION_PLUGINS_ENABLE`, `ITERION_HOME` and
+`ITERION_PLUGIN_<NAME>_<KEY>` are honoured wherever they come from, but only
+speak for the OPERATOR when the process inherited them: a value a project
+`.env` filled in still applies and still does not confer the operator's
+authority.
+
+`ITERION_PLUGINS_DISABLE` is read live and applied whatever its source, with
+no provenance distinction — deliberately: disabling only ever removes a
+capability, so there is no authority to lose. A project `.env` can therefore
+silence a plugin the operator enabled in their own `plugins.yaml`.
+
+`ITERION_MCP_EXPAND_UNTRUSTED_ENV` is read **only** from the inherited
+environment, so a value a project `.env` planted does not turn the hatch on
+**through this variable**: it is an operator's consent to read the launcher's
+environment on behalf of a definition the repository controls, and a
+repository cannot consent on the operator's behalf. Setting it in a `.env` is
+reported as such in the diagnostic that names the missing variables. It is
+not the only door, though — the expansion also follows the SANDBOX (an
+unsandboxed run expands, because nothing crosses into a container), and
+`ITERION_SANDBOX_DEFAULT` / `ITERION_SANDBOX_OVERRIDE` are read live, so a
+`.env` setting either to `none` makes the run unsandboxed and the expansion
+happens. Closing that family is tracked separately.
+Note that an operator-installed plugin's stdio server inherits the whole
+environment of the launcher process: that is the operator's own binary and
+the operator's choice, but it is worth knowing before enabling one in a pod
+that holds platform credentials (`ITERION_PLUGINS_ENABLE`).
+
 ## Runtime and runner
 
 | Variable | Effect | Default |

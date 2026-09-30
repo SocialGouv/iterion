@@ -76,11 +76,15 @@ func Record(ctx context.Context, s Scenario) (*Fixture, error) {
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: wf,
-		Vars:     s.Vars,
-		Store:    st,
-		RunID:    runID,
-		Logger:   logger,
-		StoreDir: storeDir,
+		// stripSandbox cleared every sandbox declaration above, and no
+		// tier is set on this engine: the replay runs in-process, and the
+		// executor may predict exactly that.
+		SandboxTiersKnown: true,
+		Vars:              s.Vars,
+		Store:             st,
+		RunID:             runID,
+		Logger:            logger,
+		StoreDir:          storeDir,
 	})
 	if err != nil {
 		return nil, err

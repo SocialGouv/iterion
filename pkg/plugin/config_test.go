@@ -80,7 +80,11 @@ func TestEnabledRewriterSpecsExpandsConfig(t *testing.T) {
 			}}},
 		},
 	}
-	r := &Registry{home: t.TempDir(), plugins: []*Plugin{p}, state: map[string]bool{}, config: map[string]map[string]string{}}
+	// An installed plugin only reaches the rewrite chain when it is the
+	// operator's: the home is the one the operator's environment names, and
+	// the operator turned it on. Both legs are what a real load sets.
+	p.enabledByOperator = true
+	r := &Registry{home: t.TempDir(), homeOperatorChosen: true, plugins: []*Plugin{p}, state: map[string]bool{}, config: map[string]map[string]string{}}
 	if err := r.SetConfig("rw", map[string]string{"level": "ultra"}); err != nil {
 		t.Fatal(err)
 	}

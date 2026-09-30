@@ -338,7 +338,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks,
+	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, runID, storeDir, logger, exporterHooks,
 		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
 	if err != nil {
 		return err
@@ -521,8 +521,30 @@ func teeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID str
 // unless opts.Executor already supplies one (test path). Prometheus
 // hooks are wired in when the exporter started so the executor emits
 // the same per-turn metrics as the engine.
+// sandboxTiersClaim says whether the CLI's own sandbox tiers (--sandbox plus
+// the global default) are the tiers the ENGINE this executor serves will
+// receive. It is a named type rather than a bare bool because the two
+// answers are one token apart at the call site and only one of them is safe
+// to guess wrong: an executor that claims tiers its engine does not get
+// predicts the wrong sandbox, and the permissive direction starts a
+// workflow-controlled MCP server beside the launcher.
+type sandboxTiersClaim bool
+
+const (
+	// tiersMatchTheEngine: this executor's engine is built on the same path,
+	// from the same two tiers (the top-level `iterion run`).
+	tiersMatchTheEngine sandboxTiersClaim = true
+	// tiersUnknownToAChild: a subbot child may execute in its PARENT's
+	// sandbox, which no tier of its own expresses — its engine is built with
+	// WithSharedSandbox and neither tier. The executor stays fail-closed
+	// until that engine settles the question. Same answer, for the same
+	// reason, as runview's subbot runner.
+	tiersUnknownToAChild sandboxTiersClaim = false
+)
+
 func buildRunExecutor(
 	opts RunOptions,
+	tiers sandboxTiersClaim,
 	wf *ir.Workflow,
 	s store.RunStore,
 	runID, storeDir string,
@@ -568,9 +590,10 @@ func buildRunExecutor(
 		// The same tiers the engine resolves the sandbox from (see
 		// ExecutorSpec) — without them the codex screen is inert on the
 		// primary local surface while the run sandboxes two calls later.
-		SandboxOverride: opts.Sandbox,
-		SandboxDefault:  runtime.ResolveGlobalSandboxDefault(),
-		RunFallback:     []ir.Fallback{runFallback},
+		SandboxOverride:   opts.Sandbox,
+		SandboxTiersKnown: bool(tiers),
+		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(),
+		RunFallback:       []ir.Fallback{runFallback},
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
 		// future CLI chatbox) are drained at the agent's turn boundaries.
@@ -647,7 +670,10 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if childBundle != nil && childBundle.Manifest != nil {
 			bundleName = childBundle.Manifest.Name
 		}
-		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
+		// The child's engine below is built with WithSharedSandbox and
+		// neither sandbox tier: this executor must not predict from the
+		// PARENT's flags.
+		childExec, err := buildRunExecutor(opts, tiersUnknownToAChild, childWf, s, childRunID, storeDir, logger, nil,
 			runview.ResolveBotID("", bundleName, childPath), nil)
 		if err != nil {
 			return nil, err

@@ -17,6 +17,7 @@ import (
 	// log timestamps and time.Local then honour the operator's timezone.
 	_ "time/tzdata"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -251,6 +252,13 @@ func applyDotEnv(path string) bool {
 		if key == "" {
 			continue
 		}
+		// A key carrying the planted-names separator is refused, not set: it
+		// would reach a child as two names, and the extra one denies the
+		// OPERATOR's own environment its authority there. No shell can
+		// export such a name either, so the line is malformed anyway.
+		if strings.Contains(key, ",") {
+			continue
+		}
 		val := strings.TrimSpace(line[eq+1:])
 		// Strip a single surrounding pair of matching quotes.
 		if len(val) >= 2 {
@@ -259,8 +267,23 @@ func applyDotEnv(path string) bool {
 				val = val[1 : len(val)-1]
 			}
 		}
+		// The provenance record is not a value a repository gets to write.
+		// Without this, one `.env` line naming ITERION_DOTENV_PLANTED seeded
+		// the whole planted set from the file itself — marking the
+		// OPERATOR's own variables as planted, and stripping every plugin
+		// they installed of its authority. A marker can then only ever be
+		// what an ancestor process exported.
+		if key == envtrust.EnvPlantedNames {
+			continue
+		}
 		if _, exists := os.LookupEnv(key); !exists {
 			_ = os.Setenv(key, val)
+			// A `.env` sits in a repository — including one under review — so
+			// what it plants must not later speak for the operator. The value
+			// is used exactly as before; only questions of AUTHORITY consult
+			// this (see internal/envtrust), and the record travels to child
+			// processes so a fork cannot launder it.
+			envtrust.MarkPlanted(key)
 		}
 	}
 	return true

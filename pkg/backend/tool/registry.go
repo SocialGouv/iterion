@@ -208,15 +208,9 @@ func (r *Registry) resolve(ref string, aliases bool) (*ToolDef, error) {
 		// exactly one inner "__" (server / tool); accept more by
 		// taking everything before the LAST "__" as the server.
 		// This keeps tool names with embedded underscores intact.
-		body := ref[len("mcp__"):]
-		idx := strings.LastIndex(body, "__")
-		if idx > 0 {
-			server := body[:idx]
-			tool := body[idx+2:]
-			if server != "" && tool != "" {
-				if td, ok := r.tools["mcp."+server+"."+tool]; ok {
-					return td, nil
-				}
+		if server, toolName, ok := SplitMCPFQN(ref); ok {
+			if td, found := r.tools["mcp."+server+"."+toolName]; found {
+				return td, nil
 			}
 		}
 	}
@@ -322,6 +316,51 @@ func ParseMCPName(qualified string) (server, toolName string, err error) {
 		return "", "", fmt.Errorf("tool: invalid MCP qualified name %q (expected \"mcp.<server>.<tool>\")", qualified)
 	}
 	return rest[:idx], rest[idx+1:], nil
+}
+
+// SplitMCPFQN splits the claude_code-style FQN "mcp__<server>__<tool>" into
+// its two halves. ok is false for any other spelling.
+//
+// A well-formed FQN has one inner "__"; more are accepted by taking
+// everything before the LAST one as the server, which keeps tool names with
+// embedded underscores intact. Exported because the rule has three readers —
+// resolution, and the two places that must decide which SERVER a tool name
+// belongs to — and a rule copied into three readers is a rule that will
+// disagree with itself.
+func SplitMCPFQN(ref string) (server, toolName string, ok bool) {
+	const prefix = "mcp__"
+	if !strings.HasPrefix(ref, prefix) {
+		return "", "", false
+	}
+	body := ref[len(prefix):]
+	idx := strings.LastIndex(body, "__")
+	if idx <= 0 {
+		return "", "", false
+	}
+	server, toolName = body[:idx], body[idx+2:]
+	if server == "" || toolName == "" {
+		return "", "", false
+	}
+	return server, toolName, true
+}
+
+// MCPServerOf returns the MCP server a tool reference names, in EITHER
+// spelling: the qualified "mcp.<server>.<tool>" and the claude_code FQN
+// "mcp__<server>__<tool>", both of which Registry.Resolve accepts. A
+// non-MCP name returns ok false.
+//
+// Every caller that asks "which server does this name belong to" must accept
+// both, because the author may write either: a reader bound to one spelling
+// silently skips the other, and what it skips is a name the registry will
+// happily resolve.
+func MCPServerOf(name string) (server string, ok bool) {
+	if s, _, err := ParseMCPName(name); err == nil {
+		return s, true
+	}
+	if s, _, ok := SplitMCPFQN(name); ok {
+		return s, true
+	}
+	return "", false
 }
 
 // IsMCPName returns true if the qualified name follows the MCP convention.

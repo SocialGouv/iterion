@@ -38,7 +38,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `claw` | 🟢 | Recommended in-process backend for direct provider calls and native Iterion tools. anthropic + openai validated; bedrock/vertex/foundry ship but are **untested**. | Automatic or explicit. |
 | `claude_code` | 🟢 | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
-| `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
+| `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
 | `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -990,8 +990,43 @@ mode `deny`).
 > so the combination fails CLOSED, never open. What cannot cross is an
 > **Ask decision** — nothing inside the container can pause the parent
 > run — so an ask-capable policy is refused loudly at dispatch (and
-> C136 warns at compile time). Run such a node unsandboxed, or route it
-> to `claude_code`.
+> C136 warns at compile time). Run the workflow unsandboxed
+> (`sandbox: none` / `--sandbox none` — a node-level `sandbox:` is not
+> honoured at run time), or route the node to `claude_code`.
+
+> **A sandboxed `claw` node also refuses a tool the container cannot
+> execute.** Tools the runner does not run locally are proxied back and
+> executed on the HOST, so the split is decided by an explicit placement
+> rather than by which names the runner happens to register — and the
+> launcher refuses every forwarded call for a tool that is not
+> launcher-placed, or that the run's `permission:` policy denies. The
+> tools that start a process, touch the workspace or a model-supplied
+> path, or open a model-supplied URL, and `agent`, run in-container;
+> launcher-owned state (MCP, `ask_user`, the `task_*` / `team_*` /
+> `cron_*` registries, `todo_write`, `config`, `tool_search`, plan mode,
+> the privacy pair, `web_search`) keeps the IPC proxy; and `lsp`,
+> `screenshot`, `computer_use` and the `worker_*` family have no
+> in-container form, so a sandboxed node declaring one is refused when it
+> executes (its `fallbacks:` still get their turn) — drop it, or run the
+> workflow unsandboxed (`sandbox: none` / `--sandbox none`). A
+> `tool_policy` allowlist is applied to the in-container tools when the
+> node is built: a tool it denies is not advertised at all. The full table
+> and its reasons: [sandbox.md](sandbox.md#claw-backend-in-sandbox).
+>
+> The same boundary applies to MCP SERVERS, which are processes rather
+> than tools. `claude_code` and pi start their own, so a sandboxed node's
+> servers run in the container; claw connects them in the launcher, so
+> under an active sandbox it starts only the operator's — a BUILTIN, or a
+> plugin installed under the iterion home the operator's own environment
+> names, and in both cases enabled and configured by the operator too
+> (three legs; see sandbox.md's table). Builtins are the normal case: every
+> MCP-contributing plugin shipped today is one. A server the node
+> inherited is dropped with an
+> `mcp_server_degraded` event; a server it names refuses the node when it
+> executes, so a `claude_code` or pi fallback — which starts that server
+> in the container — gets its turn. Origins, and the two rules that
+> travel with them:
+> [sandbox.md](sandbox.md#mcp-servers-under-a-sandbox).
 
 ## Transient-error & network resilience
 
@@ -1066,18 +1101,27 @@ subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
 restores host-config inheritance. Settings remain inherited independently
 (`--setting-sources`, above).
 
-**Ambient servers degrade per-server, on every backend.** A server a node
-never named — inherited from the target repo's `.mcp.json` or the plugin
-catalog — that fails to boot costs its OWN tools, never the run:
-claude_code's CLI skips a server it cannot start, pi bounds each connect
-with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process splice
-skips it with a Warn log plus a `mcp_server_degraded` run event (server,
-source, error), so the drop is in the run record, not just the process
-log. Typical case: a repo-scoped server needing a credential the
-execution host doesn't have (a token-less Sentry server on a cloud
-runner pod). A tool the node names EXPLICITLY on a dead server still
-fails loud at resolution — a declared dependency is never silently
-dropped.
+**Unnamed servers degrade per-server, on every backend.** A server whose
+tools the node does not name that fails to boot costs its OWN tools, never
+the run: claude_code's CLI skips a server it cannot start, pi bounds each
+connect with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process
+splice skips it with a Warn log plus a `mcp_server_degraded` run event, so
+the drop is in the run record, not just the process log. Typical case: a
+repo-scoped server needing a credential the execution host doesn't have (a
+token-less Sentry server on a cloud runner pod). A tool the node names
+EXPLICITLY on a dead server still fails loud at resolution — a declared
+dependency is never silently dropped, and no degrade event is emitted for
+it either, since the node is not about to run without those tools.
+
+The event's `source` says why the server was in that node's reach:
+`declared` when the node's own `mcp: servers:` named it, `ambient` when it
+was inherited from the repo's `.mcp.json`, the plugin catalog or the
+workflow. It is read from the node's declaration, because
+`ActiveMCPServers` — the resolved set the splice walks — holds both merged
+and cannot tell them apart. `origin` (project / workflow / plugin) is the
+other question: who controls the *definition*. A bot that declares a
+server whose tools it never names sees `source: declared` with the
+`origin` of wherever that server is defined.
 
 **Stdio MCP startup diagnostics.** The in-process MCP client drains stderr
 through the official SDK's command hook and retains only an 8 KiB tail during
@@ -1919,9 +1963,10 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
   short-circuits it. External hooks cannot pause the parent run, so `ask`
   (including explicit `ask:` rules under `deny`) is refused. Guarded sandbox
   runs are also refused because neither CLI currently carries its home and hook
-  binary into the container — so a gated node needs `sandbox: none` (the
-  shipped default is `auto`, and **C136** warns at compile time rather than
-  letting the run die at the agent node). Windows is refused: the hook command
+  binary into the container — so a gated node needs an unsandboxed run:
+  `sandbox: none` on the workflow, or `--sandbox none` (a node-level
+  `sandbox:` is not honoured; the shipped default is `auto`, and **C136**
+  warns at compile time rather than letting the run die at the agent node). Windows is refused: the hook command
   is POSIX-quoted and a spawn failure is an ALLOW.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).

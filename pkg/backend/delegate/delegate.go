@@ -287,6 +287,11 @@ type ToolDef struct {
 	Description string
 	InputSchema json.RawMessage
 	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
+
+	// QualifiedName is the registry identity before provider-name
+	// sanitization (`mcp.<server>.<tool>` for an MCP tool). In-process only:
+	// it never crosses the sandbox IPC.
+	QualifiedName string
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
@@ -481,6 +486,19 @@ type Task struct {
 	// ToolDefs provides full tool definitions for backends that manage tool
 	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef
+
+	// MCPServersRefusedOnLauncher maps each MCP server this node named and
+	// the launcher may not start — the run is sandboxed and the server's
+	// definition is not the operator's — to the reason. Empty on every
+	// other run.
+	//
+	// It travels on the task rather than failing the build because a build
+	// error aborts the node before its fallback chain: a backend that starts
+	// the server INSIDE the container (claude_code, pi) can still serve this
+	// node, and only a refusal raised at execution time lets it try.
+	//
+	// In-process only: it never crosses the sandbox IPC.
+	MCPServersRefusedOnLauncher map[string]MCPLauncherRefusal `json:"-"`
 
 	// MCPServers are the user/plugin-declared MCP servers active for this
 	// node (from the workflow `mcp_server` decls, project .mcp.json, and
@@ -849,6 +867,23 @@ type Task struct {
 	// node into a single human-readable block (the await_answers tool
 	// result when nothing is pending).
 	CollectAsyncAnswers func() (string, error)
+}
+
+// MCPLauncherRefusal is why the launcher declined one MCP server, carrying
+// the one thing its reader cannot re-derive from the text.
+//
+// A remedy built from several of these has to know which reasons already end
+// with the route-it-elsewhere advice — appending it twice reads as two
+// remedies, never appending it leaves a refused-and-broken server with no way
+// forward. That answer belongs to whoever wrote the reason
+// (mcp.ServerNotStartableError.CarriesRouteAdvice); searching the sentence
+// for a phrase makes a reword change behaviour in another package.
+type MCPLauncherRefusal struct {
+	// Reason is the launcher's own message for declining this server.
+	Reason string
+	// CarriesRouteAdvice is the writer's answer to whether Reason already
+	// ends with the route-it-elsewhere remedy.
+	CarriesRouteAdvice bool
 }
 
 // Hostless reports whether this task's commands execute directly on the host —

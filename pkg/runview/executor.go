@@ -3,9 +3,11 @@ package runview
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +32,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // rewriteChainFromPlugins loads the plugin registry and builds the command-
@@ -115,8 +119,22 @@ type ExecutorSpec struct {
 	// runtime.WorkflowSandboxActive so the fallback screen refuses codex
 	// stages on exactly the runs the engine will sandbox — the same
 	// precedence, never a parallel resolution.
+	//
+	// They also arm the MCP manager's launcher-start policy. A spec that
+	// leaves them empty when the run may in fact be sandboxed is not a
+	// neutral omission: the policy then starts as "undecided", which
+	// starts only operator-controlled servers until the engine settles
+	// the sandbox for real. Pass them.
 	SandboxOverride string
 	SandboxDefault  string
+	// SandboxTiersKnown tells the two cases the empty strings cannot:
+	// "this surface knows the tiers and they are genuinely empty" from
+	// "this surface did not look". Set it wherever both tiers above are
+	// filled in from the surface's real configuration — including when
+	// that configuration is empty. It exists because the sandbox
+	// question fails CLOSED: a surface that did not look must not be
+	// read as one that looked and found no sandbox.
+	SandboxTiersKnown bool
 
 	// RunFallback is the operator's ordered run-level fallback chain
 	// (studio Launch row / CLI --fallback). Empty = none.
@@ -492,7 +510,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithToolPolicy(checker))
 	}
 
-	mcpManager, oauthBroker, mcpErr := buildMCPManager(spec.Workflow, spec.StoreDir, spec.Logger)
+	mcpManager, oauthBroker, mcpErr := buildMCPManager(spec.Workflow, spec.StoreDir, spec.Logger,
+		predictedStartPolicy(spec))
 	if mcpErr != nil {
 		return nil, mcpErr
 	}
@@ -670,9 +689,12 @@ func workflowUsesWorkspaceDiagnostics(wf *ir.Workflow) bool {
 }
 
 // MCPHealthCheck runs the executor's optional MCP health-check
-// implementation. The `iterion run` and `iterion resume` paths invoke
-// this just before eng.Run / eng.Resume so a misconfigured catalog
-// surfaces an error before any node is dispatched.
+// implementation. `iterion run` invokes it just before eng.Run so a
+// misconfigured catalog surfaces an error before any node is dispatched.
+// It is the only caller: a resume does not health-check.
+//
+// The manager skips (and logs) the servers this launcher may not start —
+// probing one would be the connection the start policy exists to refuse.
 func MCPHealthCheck(ctx context.Context, executor runtime.NodeExecutor, servers []string) error {
 	if len(servers) == 0 || !mcp.HealthCheckEnabled() {
 		return nil
@@ -695,50 +717,372 @@ func MCPHealthCheck(ctx context.Context, executor runtime.NodeExecutor, servers 
 // PrepareAuth failures are fatal — continuing would dispatch the run
 // with AuthFunc == nil and surface as 401s later, hiding the root
 // cause from the operator.
-func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (*mcp.Manager, *mcp.OAuthBroker, error) {
-	if len(wf.ResolvedMCPServers) == 0 {
-		return nil, nil, nil
+// expandsAgainstLauncherEnv reports whether a server of this origin may read
+// the launcher's environment when its config is expanded.
+//
+// The sandbox is part of the question, and leaving it out was a plain scope
+// error: on a run with no sandbox the workflow's own tool nodes already
+// execute beside the launcher with its whole environment, so suppressing the
+// expansion there protects nothing and costs an author their `${VAR}` —
+// silently, since an emptied command fails later as a protocol error. What
+// the suppression is for is the value CROSSING into a container the run asked
+// to be isolated by.
+//
+// `policy` carries that, in the only form available when the catalog is
+// built: `StartAllServers` means the launch surface knows this run is not
+// sandboxed. Undecided counts as sandboxed — the same fail-closed reading the
+// start policy itself uses.
+func expandsAgainstLauncherEnv(o mcp.Origin, policy mcp.StartPolicy) bool {
+	if o.OperatorControlled() || mcp.ExpandUntrustedEnvEnabled() {
+		return true
 	}
+	return policy == mcp.StartAllServers
+}
+
+// expandHatchAdvice names the escape hatch, and says where it has to be set.
+//
+// The hatch reads the INHERITED value, and a project `.env` is precisely
+// where iterion teaches people to put run variables — so an operator who
+// followed the advice got the identical warning back, with the same advice.
+// A remedy a message gives, and then repeats after it was applied, is worse
+// than no remedy.
+func expandHatchAdvice() string {
+	if envtrust.Planted(mcp.EnvExpandUntrustedEnv) {
+		return "you set " + mcp.EnvExpandUntrustedEnv + " in a project `.env`, which does not speak for the " +
+			"operator — export it in your shell instead"
+	}
+	return "set " + mcp.EnvExpandUntrustedEnv + "=true in your shell to restore the previous behaviour"
+}
+
+// expandMCPCatalog turns the workflow's resolved MCP servers into launcher
+// configs under a given start policy.
+//
+// It is a pure function of (workflow, policy) so that it can be run AGAIN:
+// the policy a manager is built with is a prediction, and everything this
+// function suppresses on that prediction has to be recoverable once the
+// engine settles the sandbox. mcp.WithConfigRefresher is where it goes back.
+func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.Logger) map[string]*mcp.ServerConfig {
 	catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
-	hasAuth := false
 	for name, server := range wf.ResolvedMCPServers {
+		origin := mcp.Origin(server.Origin)
+		// Whose environment answers `${VAR}` here? The launcher's — an
+		// operator's shell, or the runner pod holding the platform's
+		// credentials. That is the right answer for a server the operator
+		// installed, and the wrong one for a server the workflow's source
+		// tree declares: the expanded value travels into the container as
+		// the CLI backends' MCP config, so a repository could name any
+		// variable the launcher holds and read it back out. Untrusted
+		// origins expand against nothing, keeping `${X:-default}`.
+		// `dropped` records which references resolved to nothing, on BOTH
+		// paths. Recording it only on the suppression path meant the origin
+		// the launcher actually STARTS — an operator's own plugin server —
+		// got an emptied `command` with no StartErr and not one line of
+		// log, and the launcher then spawned "". That is verbatim the
+		// failure unusableAfterDroppedRefs exists to prevent, unmet for the
+		// only origin that reaches a spawn.
+		dropped := map[string]bool{}
+		suppressed := !expandsAgainstLauncherEnv(origin, policy)
+		expand := recordingExpander(name, server, logger, dropped, suppressed)
 		expandedArgs := make([]string, len(server.Args))
 		for i, a := range server.Args {
-			expandedArgs[i] = ir.ExpandEnvWithDefault(a)
+			expandedArgs[i] = expand(a)
 		}
 		catalog[name] = &mcp.ServerConfig{
 			Name:      server.Name,
+			Origin:    origin,
 			Transport: mcp.FromIRTransport(server.Transport),
-			Command:   ir.ExpandEnvWithDefault(server.Command),
+			Command:   expand(server.Command),
 			Args:      expandedArgs,
-			URL:       ir.ExpandEnvWithDefault(server.URL),
-			Headers:   server.Headers,
+			URL:       expand(server.URL),
+			Headers:   maps.Clone(server.Headers),
 			// Env is already fully resolved at catalog-build time (plugin
 			// {{config.*}} placeholders expanded by loadPluginServers) — copy
 			// verbatim, no os.ExpandEnv (a secret value may legitimately
-			// contain a `$`).
-			Env:  server.Env,
+			// contain a `$`). CLONED, like Headers: this function is a pure
+			// function of (workflow, policy) so it can run again, and two
+			// catalogs sharing one map with the IR is the one thing about it
+			// that was not.
+			Env:  maps.Clone(server.Env),
 			Auth: mcp.FromIRAuth(server.Auth),
 		}
-		if server.Auth != nil {
-			hasAuth = true
+		// A reference that was dropped can leave the config unusable — an
+		// empty `command` for a stdio server, an empty `url` for http/sse.
+		// Say so HERE, where the reason is known: the alternative is what
+		// the operator actually saw, a spawn of "" reported as
+		// "stdio initialization failed (reason=protocol_or_startup_failure,
+		// raw diagnostics withheld)", which names neither the variable nor
+		// the rule that dropped it.
+		if len(dropped) > 0 {
+			if err := unusableAfterDroppedRefs(catalog[name], dropped, suppressed); err != nil {
+				catalog[name].StartErr = err
+			}
+		}
+	}
+	return catalog
+}
+
+// recordStartErr sets the reason a server will not start, without
+// overwriting one that is already there.
+//
+// Two writers reach this field — the dropped-`${VAR}` diagnostic and the
+// auth verdict — and the first is the one carrying a remedy the operator can
+// act on. The auth loop runs second, so assigning blindly replaced "your
+// ${VAR} emptied the command, here is how to fix it" with a bare oauth
+// complaint, in the `Cause` that travels into the refusal and the run event.
+func recordStartErr(cfg *mcp.ServerConfig, err error) {
+	if cfg == nil || err == nil || cfg.StartErr != nil {
+		return
+	}
+	cfg.StartErr = err
+}
+
+// prepareMCPCatalogAuth installs each server's AuthFunc and returns the
+// per-server failures, or nothing when there is no broker.
+//
+// Both the initial build and the refresher go through here. A catalog is not
+// finished when its `${VAR}` are expanded — the auth closures are part of it,
+// and a rebuild that skips them hands every OAuth server an anonymous
+// transport.
+func prepareMCPCatalogAuth(catalog map[string]*mcp.ServerConfig, broker *mcp.OAuthBroker) map[string]error {
+	if broker == nil {
+		return nil
+	}
+	return mcp.PrepareAuthPerServer(catalog, broker)
+}
+
+// unusableAfterDroppedRefs reports why a config cannot be used now that some
+// of its references went unexpanded, naming the variables by NAME — never by
+// value, which is the whole point of not expanding them.
+func unusableAfterDroppedRefs(cfg *mcp.ServerConfig, dropped map[string]bool, suppressed bool) error {
+	names := make([]string, 0, len(dropped))
+	for name := range dropped {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var missing string
+	switch {
+	case cfg.Transport == mcp.TransportStdio && strings.TrimSpace(cfg.Command) == "":
+		missing = "its stdio `command` is empty"
+	case (cfg.Transport == mcp.TransportHTTP || cfg.Transport == mcp.TransportSSE) &&
+		strings.TrimSpace(cfg.URL) == "":
+		missing = "its `url` is empty"
+	default:
+		return nil
+	}
+	// Two reasons a reference resolved to nothing, and the remedy differs.
+	// Which one applies is NOT a property of the origin: a run with no
+	// sandbox, and the escape hatch, expand every origin against the
+	// launcher (expandsAgainstLauncherEnv). The suppression decision itself
+	// is the only thing that answers it — reading the origin here told an
+	// operator whose run has no sandbox that their `.mcp.json` server "is
+	// not expanded against this process's environment", and offered a hatch
+	// that was already in force.
+	if !suppressed {
+		return fmt.Errorf("%s after %v resolved to nothing in this process's environment: the definition in "+
+			"%s IS expanded here, so set the variable, or give the reference a `${VAR:-default}`",
+			missing, names, whoseDefinition(cfg.Origin))
+	}
+	return fmt.Errorf("%s after %v went unexpanded: the config of a server whose definition comes from %s is "+
+		"not expanded against this process's environment (%s, or give the reference a `${VAR:-default}`)",
+		missing, names, whoseDefinition(cfg.Origin), expandHatchAdvice())
+}
+
+// whoseDefinition names the file an untrusted server's definition lives in,
+// so a diagnostic sends its reader to the right one.
+//
+// "the workflow" for every untrusted origin was the mirror of the mistake the
+// degrade event's `source` field exists to remove: it sends a bot author to
+// their own `.bot` for a line that is in the target repository's `.mcp.json`.
+func whoseDefinition(o mcp.Origin) string {
+	switch o {
+	case mcp.OriginProject:
+		return "the target repository's `.mcp.json`"
+	case mcp.OriginWorkflow:
+		return "the workflow's own `mcp_server:` declaration"
+	case mcp.OriginPlugin:
+		return "an installed plugin"
+	default:
+		return "a catalog entry nobody classified"
+	}
+}
+
+// hasDefault reports whether this string writes the reference in its
+// defaulted form, `${VAR:-…}`.
+//
+// resolveBracedSegment looks the name up BEFORE it falls back, so a
+// reference whose default answers arrives here indistinguishable from one
+// that resolved to nothing — and `${PORT:-8080}` is not a dropped
+// reference, it is an author who supplied the answer. Recording it made the
+// diagnostic name variables that were never needed and told the operator to
+// set them.
+//
+// A string writing the same name both bare and defaulted resolves to
+// "defaulted" and says nothing. That is the deliberate direction: this
+// value feeds a message that REFUSES a server, where a false accusation
+// costs more than a missed one.
+func hasDefault(s, name string) bool {
+	return strings.Contains(s, "${"+name+":-")
+}
+
+// recordingExpander returns an expander that records every reference which
+// resolved to nothing, by NAME and never by value.
+//
+// When `suppressed`, an untrusted server's references are not read from this
+// process's environment at all and each one is named in the log. Otherwise
+// the launcher's environment answers — and a reference it does not hold
+// still resolved to nothing, which is exactly as unusable. Both cases feed
+// `dropped`, so unusableAfterDroppedRefs speaks for either.
+func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger, dropped map[string]bool, suppressed bool) func(string) string {
+	if !suppressed {
+		return func(s string) string {
+			// ir.LookupEnv, not os.Getenv: the engine installs an env
+			// OVERLAY that is consulted before the process environment, and
+			// reading the process directly skipped it — the same expansion
+			// ExpandEnvWithDefault performs, with a note taken when it
+			// comes back empty.
+			return ir.ExpandWithDefault(s, func(v string) string {
+				value := ir.LookupEnv(v)
+				if value == "" && !hasDefault(s, v) {
+					dropped[v] = true
+				}
+				return value
+			})
+		}
+	}
+	return func(s string) string {
+		return ir.ExpandWithDefault(s, func(v string) string {
+			if hasDefault(s, v) {
+				return ""
+			}
+			if !dropped[v] {
+				dropped[v] = true
+				// ir.MCPServer.Origin is a plain string, so it has no
+				// Stringer and renders the zero value as nothing. Give it
+				// back its type before printing it — and say WHOSE file the
+				// definition is, rather than blaming the workflow for a
+				// line that is in the target repository's `.mcp.json`.
+				origin := mcp.Origin(server.Origin)
+				logger.Warn("mcp: server %q (origin: %s) references ${%s}; it is not expanded against this process's "+
+					"environment because the server's definition comes from %s, not from the operator "+
+					"(%s)", name, origin, v, whoseDefinition(origin), expandHatchAdvice())
+			}
+			return ""
+		})
+	}
+}
+
+// predictedStartPolicy answers, as far as the launch surface can, whether
+// this run's MCP servers may be started beside the launcher.
+//
+// It is a PREDICTION, and it is only ever allowed to be the permissive
+// answer when the surface actually knows the sandbox tiers: a spec that
+// did not look leaves the policy undecided, which starts operator
+// servers only. The engine replaces the prediction with the settled
+// fact — ClawExecutor.SetSandbox, called with the live sandbox or with
+// nil when the run settles without one.
+func predictedStartPolicy(spec ExecutorSpec) mcp.StartPolicy {
+	if !spec.SandboxTiersKnown {
+		return mcp.StartPolicyUnknown
+	}
+	if runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault) {
+		return mcp.StartOperatorServersOnly
+	}
+	return mcp.StartAllServers
+}
+
+func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, policy mcp.StartPolicy) (*mcp.Manager, *mcp.OAuthBroker, error) {
+	if len(wf.ResolvedMCPServers) == 0 {
+		return nil, nil, nil
+	}
+	// Built SILENTLY. The policy here is a prediction, and on the ordinary
+	// `sandbox: auto` run that degrades to unsandboxed it predicts a
+	// suppression that does not happen — so a warning emitted now would tell
+	// the operator their `${VAR}` was dropped when the settled pass is about
+	// to expand it. The refresher below carries the real logger; the engine
+	// settles the sandbox on every run (runtime.resolveAndStartSandbox calls
+	// SetSandbox in BOTH branches), so the warning is not lost, only
+	// deferred to the pass whose verdict holds. What an operator needs
+	// before then travels on StartErr, which names the variable.
+	catalog := expandMCPCatalog(wf, policy, iterlog.Nop())
+	operatorAuth := false
+	for _, server := range wf.ResolvedMCPServers {
+		if server.Auth != nil && mcp.Origin(server.Origin).OperatorControlled() {
+			operatorAuth = true
 		}
 	}
 
+	// OAuth preparation follows the same line as the start gate. A
+	// malformed `auth:` block on an OPERATOR server is the operator's own
+	// mistake and stays fatal — dispatching with AuthFunc == nil would
+	// resurface as unexplained 401s mid-run. The same block on a
+	// workflow-controlled server fails THAT server, at its first use, and
+	// nothing else: a file in the repository under review must not be able
+	// to abort the run before the refusal and fallback paths exist.
 	broker, brokerErr := mcp.NewOAuthBroker(storeDir)
 	if brokerErr != nil {
-		if hasAuth {
+		if operatorAuth {
 			return nil, nil, fmt.Errorf("mcp: oauth broker init (required by catalog Auth): %w", brokerErr)
 		}
 		logger.Warn("mcp: oauth broker init: %v", brokerErr)
-	} else if err := mcp.PrepareAuth(catalog, broker); err != nil {
-		if hasAuth {
-			return nil, nil, fmt.Errorf("mcp: prepare oauth auth: %w", err)
+	}
+	for name, err := range prepareMCPCatalogAuth(catalog, broker) {
+		if catalog[name].Origin.OperatorControlled() {
+			return nil, nil, fmt.Errorf("mcp: prepare oauth auth for %q: %w", name, err)
 		}
-		logger.Warn("mcp: prepare oauth auth: %v", err)
+		logger.Warn("mcp: server %q (origin: %s) will not start — %v", name, catalog[name].Origin, err)
+		recordStartErr(catalog[name], err)
 	}
 
-	mcpOpts := []mcp.ManagerOption{mcp.WithLogger(logger)}
+	// The start policy goes in FIRST, so a reader of this slice sees the
+	// launcher-start decision before the incidental wiring. Go will not let
+	// it be passed positionally alongside the spread below, so the
+	// repo-wide sweep that checks every manager declares a policy cannot
+	// cover this call — its allowlist says so, and
+	// TestBuildMCPManagerArmsTheManagerWithItsPolicyArgument is what proves
+	// the value actually arrives. That test exists because this assignment
+	// was MISSING and everything upstream of it still passed.
+	// …and the way BACK from that prediction, in the same breath: the
+	// policy above decides whether an untrusted server's `${VAR}` was
+	// expanded, and a prediction that turns out permissive must return the
+	// author their variables.
+	//
+	// The refresher rebuilds the catalog THE SAME WAY this function did —
+	// expansion AND auth. Re-running the expansion alone dropped every
+	// `AuthFunc` the lines above installed, so an OAuth server was dialled
+	// with no Authorization header once the sandbox settled, and a server
+	// the build had REFUSED for a malformed `auth:` block became startable.
+	// Two construction paths for one catalog is one path too many; this one
+	// exists so they cannot drift.
+	mcpOpts := []mcp.ManagerOption{
+		mcp.WithStartPolicy(policy),
+		mcp.WithConfigRefresher(func(settled mcp.StartPolicy) map[string]*mcp.ServerConfig {
+			// This is the pass that speaks: the prediction above was
+			// built silently precisely so the log carries one verdict, the
+			// settled one.
+			fresh := expandMCPCatalog(wf, settled, logger)
+			// The same two arms as the build path above, deliberately: an
+			// OPERATOR server's malformed `auth:` is fatal there, and
+			// silently degrading it to a per-server StartErr here would
+			// hide it the day the auth verdict starts depending on the
+			// expanded config. It cannot today — `Auth` is copied
+			// unexpanded, so both passes reach the identical verdict and
+			// the build already aborted — which is exactly why the arms
+			// must not drift apart.
+			for name, err := range prepareMCPCatalogAuth(fresh, broker) {
+				if fresh[name].Origin.OperatorControlled() {
+					logger.Warn("mcp: server %q (origin: %s) will not start, and an operator server's auth "+
+						"failure is fatal at build — reaching it here means the two passes disagree: %v",
+						name, fresh[name].Origin, err)
+				} else {
+					logger.Warn("mcp: server %q (origin: %s) will not start — %v", name, fresh[name].Origin, err)
+				}
+				recordStartErr(fresh[name], err)
+			}
+			return fresh
+		}),
+		mcp.WithLogger(logger),
+	}
 	if cacheTTL := mcp.ResolveCacheTTL(); cacheTTL > 0 {
 		mcpOpts = append(mcpOpts, mcp.WithToolCache(mcp.NewToolCache(storeDir, cacheTTL)))
 	}

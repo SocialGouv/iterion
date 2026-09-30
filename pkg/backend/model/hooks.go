@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -1248,15 +1249,36 @@ func (h *storeHooks) onSessionDegraded(nodeID string, info SessionDegradedInfo) 
 }
 
 // onMCPServerDegraded implements the OnMCPServerDegraded hook: it turns a
-// dropped ambient MCP server into a first-class store event.
+// dropped MCP server into a first-class store event.
 //
-// Warn-level: the node is about to run, but without the tools of a
-// server the environment (repo .mcp.json / plugin catalog) put in its
-// reach — the only other trace is a process log line.
+// Warn-level: the node is about to run, but without the tools of one of
+// its active servers — the only other trace is a process log line.
 func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedInfo) {
 	data := map[string]any{
 		"server": info.Server,
 		"source": info.Source,
+	}
+	// Who controls the server's definition, and whether anything is actually
+	// broken — as fields, so a reader of the timeline can tell a repository's
+	// `.mcp.json` from the bot's own declaration, and a refusal from a boot
+	// failure, without parsing the error text.
+	// Always present. An empty Origin means the producer could not name one
+	// — which is itself the answer a reader needs ("nobody vouched for this
+	// server"), and dropping the key made the timeline silent on precisely
+	// the unclassified case.
+	if info.Origin != "" {
+		data["origin"] = info.Origin
+	} else {
+		data["origin"] = mcp.OriginUnknown.String()
+	}
+	if info.Refused {
+		data["refused"] = true
+	}
+	// A refused server that was ALSO broken: `refused` alone would read as
+	// "nothing to fix here", and the health problem only exists in the
+	// error text.
+	if info.Cause != nil {
+		data["cause"] = info.Cause.Error()
 	}
 	if info.Err != nil {
 		data["error"] = info.Err.Error()

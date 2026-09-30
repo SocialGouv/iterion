@@ -29,6 +29,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/automaintguard` | holds the acceptance witness of scripts/auto-maintenance-check.sh — the preflight that decides whether a repository's dependency loop is safe to… | — |
 | `internal/ciguard` | holds tests that keep this repository's CI configuration honest from inside the test suite, where a required check can see them. | — |
 | `internal/docsguard` | holds tests that keep this repository's documentation honest from inside the test suite, where a required check can see them. | `FS` |
+| `internal/envtrust` | tells apart the environment iterion INHERITED from the part a project `.env` filled in. | — |
 | `internal/floorsalign` | realigns the syntax-floor pins at the release cut. | — |
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — |
@@ -67,7 +68,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/secretguard` | protects secret values from leaking through an agent run. | — |
 | `pkg/backend/sessionpack` | packs and unpacks CLI session files for ADR-089 persist. | — |
 | `pkg/backend/thinktokens` | provides an approximate token count for extended-thinking (reasoning) text. | — |
-| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ToolChecker`, `WatchStore` |
+| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ModelConsultingChecker`, `ToolChecker`, `WatchStore` |
 | `pkg/backend/tool/privacy` | implements two iterion built-in tools that detect and redact personally identifiable information (PII): - privacy_filter: detect or redact 5… | — |
 | `pkg/backend/tool/privacy/detector` | implements the pure-Go PII detection backend used by the privacy_filter / privacy_unfilter built-in tools. | `Rule` |
 | `pkg/backend/toolcatalog` | the compile-time view of a node's `tools:` list: which backends the list actually CONSTRAINS, and which bare tool names the run-time registry can… | — |

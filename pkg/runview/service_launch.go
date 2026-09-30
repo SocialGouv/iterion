@@ -348,9 +348,13 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Inbox:          s.inboxBinder(),
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
-		SandboxDefault: s.sandboxDefault,
-		ModelOverrides: toModelOverrides(spec.ModelOverrides),
-		RunFallback:    toRunFallback(spec.Fallback),
+		// The engine of a LAUNCH receives this default and no
+		// CLI-strength override (ex.sandboxOverride is set on the resume
+		// path only), so these are its exact tiers.
+		SandboxDefault:    s.sandboxDefault,
+		SandboxTiersKnown: true,
+		ModelOverrides:    toModelOverrides(spec.ModelOverrides),
+		RunFallback:       toRunFallback(spec.Fallback),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
 		// launched by path (the studio's own file picker), and the executor
 		// would then fall back to the workflow name — while a RESUME of that
@@ -827,6 +831,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 // It matters most where it is least visible. A conversational run pauses on
 // its chat node and every operator reply is a Resume, so the chosen model
 // applied to exactly the first turn and nothing after it.
+// runSandboxOverride reads the CLI-strength sandbox tier a run recorded
+// at launch, tolerating a nil run the way the rest of this file does.
+func runSandboxOverride(r *store.Run) string {
+	if r == nil {
+		return ""
+	}
+	return r.SandboxOverride
+}
+
 func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *iterlog.Logger, autoMemory string) ExecutorSpec {
 	runWorkDir := ""
 	if r != nil {
@@ -837,9 +850,16 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		Store:    s.store,
 		Logger:   runLogger,
 		StoreDir: s.storeDir,
-		WorkDir:  s.effectiveWorkDir(runWorkDir),
-		Inbox:    s.inboxBinder(),
-		AsyncAsk: s.asyncAskBinder(),
+		// The resumed engine re-resolves the sandbox from the override the
+		// run recorded and the service's default (see the engine options
+		// built for a resume). Predict from the same two, or the executor
+		// would answer for a run that is not the one about to execute.
+		SandboxOverride:   runSandboxOverride(r),
+		SandboxDefault:    s.sandboxDefault,
+		SandboxTiersKnown: true,
+		WorkDir:           s.effectiveWorkDir(runWorkDir),
+		Inbox:             s.inboxBinder(),
+		AsyncAsk:          s.asyncAskBinder(),
 		// Same hook-seam wiring as a launch: a resume-spawned supervisor
 		// (or any live subscriber) is otherwise blind to assistant_text /
 		// tool_* events, which never fire the engine's observer.

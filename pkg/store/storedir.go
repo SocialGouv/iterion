@@ -3,7 +3,10 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // StoreDirName is the conventional directory name for an iterion run
@@ -117,6 +120,56 @@ func GlobalIterionDataDir() string {
 		return filepath.Join(home, StoreDirName)
 	}
 	return filepath.Join(os.TempDir(), "iterion-data")
+}
+
+// InheritedIterionDataDir resolves the same data dir as
+// GlobalIterionDataDir, but strictly from the environment the process
+// INHERITED — never from a value a project `.env` filled in (see
+// internal/envtrust).
+//
+// It answers one question: which iterion home did the OPERATOR choose?
+// Callers that merely need to read or write data use
+// GlobalIterionDataDir; callers deciding whether something carries the
+// operator's authority — today, whether an installed plugin's servers
+// may start on the launcher of a sandboxed run — use this one.
+//
+// Returns "" when the inherited environment names no home at all, which
+// no caller may read as "anywhere": it means "the operator said
+// nothing", and a trust decision on it fails closed.
+func InheritedIterionDataDir() string {
+	if dir := strings.TrimRight(envtrust.Inherited("ITERION_HOME"), string(filepath.Separator)); dir != "" {
+		return dir
+	}
+	// The SAME tiers as GlobalIterionDataDir, read from the inherited
+	// environment. A tier missing here that is present there does not fail
+	// safe — it makes the operator's own home unrecognisable, so their own
+	// installed plugins quietly lose their authority. That is how the
+	// Windows case was wrong: os.UserHomeDir reads %USERPROFILE%, HOME is
+	// normally unset there, and every installed plugin became untrusted.
+	if home := strings.TrimRight(envtrust.Inherited(homeEnvName()), string(filepath.Separator)); home != "" {
+		return filepath.Join(home, StoreDirName)
+	}
+	if tmp := strings.TrimRight(envtrust.Inherited("TMPDIR"), string(filepath.Separator)); tmp != "" {
+		return filepath.Join(tmp, "iterion-data")
+	}
+	if os.Getenv("TMPDIR") == "" {
+		// No TMPDIR at all: os.TempDir's answer is a compiled-in path no
+		// environment can move, so it is the operator's by construction.
+		return filepath.Join(os.TempDir(), "iterion-data")
+	}
+	return ""
+}
+
+// homeEnvName is the variable os.UserHomeDir consults on this platform.
+func homeEnvName() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "USERPROFILE"
+	case "plan9":
+		return "home"
+	default:
+		return "HOME"
+	}
 }
 
 // EncodeWorkDirKey produces a deterministic, filesystem-safe key
