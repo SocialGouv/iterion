@@ -388,20 +388,28 @@ func byBranchID(results []*branchResult) []*branchResult {
 
 // quotedBranchError is the branch error a wait_all failure quotes: the first
 // of ordered that failed by itself — the siblings its failure stopped carry
-// no verdict of their own (stoppedBranch) — or the first stopped one when
-// every branch was.
+// no verdict of their own (stoppedBranch). When every branch was stopped, a
+// deadline is quoted before a cancellation: a node that ran out its own
+// timeout cancels its siblings, and its deadline is what happened.
 func quotedBranchError(ordered []*branchResult) error {
-	var stopped error
+	var deadline, cancelled error
 	for _, r := range ordered {
 		switch {
 		case r.err == nil:
 		case !stoppedBranch(r.err):
 			return r.err
-		case stopped == nil:
-			stopped = r.err
+		case errors.Is(r.err, context.Canceled) || errors.Is(r.err, ErrRunCancelled):
+			if cancelled == nil {
+				cancelled = r.err
+			}
+		case deadline == nil:
+			deadline = r.err
 		}
 	}
-	return stopped
+	if deadline != nil {
+		return deadline
+	}
+	return cancelled
 }
 
 // stoppedBranch says a branch ended because the fan-out was stopped — a

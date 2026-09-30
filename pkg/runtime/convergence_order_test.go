@@ -44,7 +44,9 @@ func bothOrders(results ...*branchResult) [][]*branchResult {
 // TestConvergence_quotesTheBranchThatFailedByItself: a branch whose failure
 // cancels its siblings is what a wait_all failure quotes, whichever branch
 // sorts first and whichever finished first; the cancelled siblings carry no
-// verdict of their own. When every branch was stopped, the first by id is.
+// verdict of their own. When every branch was stopped, a branch that ran
+// out its own deadline is quoted before the siblings it cancelled, and the
+// first by id among equals.
 func TestConvergence_quotesTheBranchThatFailedByItself(t *testing.T) {
 	own := errors.New("runtime: pause branch: pause store unavailable")
 	cancelled := fmt.Errorf("%w: %v", ErrRunCancelled, context.Canceled)
@@ -56,13 +58,22 @@ func TestConvergence_quotesTheBranchThatFailedByItself(t *testing.T) {
 			t.Fatalf("finished %s first: the failure quotes %q, want the branch that failed by itself", results[0].branchID, err)
 		}
 	}
+	timedOut := fmt.Errorf("branch 1: node review: %w", context.DeadlineExceeded)
+	for _, results := range bothOrders(
+		&branchResult{branchID: "branch_dispatch_0", err: fmt.Errorf("branch 0: %w", context.Canceled)},
+		&branchResult{branchID: "branch_dispatch_1", err: timedOut},
+	) {
+		if err := convergeWaitAll(t, results); !strings.Contains(err.Error(), timedOut.Error()) {
+			t.Fatalf("finished %s first, a timeout cancelling its sibling: the failure quotes %q, want the timeout", results[0].branchID, err)
+		}
+	}
 	first := fmt.Errorf("branch 0: %w", context.Canceled)
 	for _, results := range bothOrders(
 		&branchResult{branchID: "branch_dispatch_0", err: first},
-		&branchResult{branchID: "branch_dispatch_1", err: fmt.Errorf("branch 1: %w", context.DeadlineExceeded)},
+		&branchResult{branchID: "branch_dispatch_1", err: fmt.Errorf("branch 1: %w", ErrRunCancelled)},
 	) {
 		if err := convergeWaitAll(t, results); !strings.Contains(err.Error(), first.Error()) {
-			t.Fatalf("finished %s first, every branch stopped: the failure quotes %q, want the first by id", results[0].branchID, err)
+			t.Fatalf("finished %s first, every branch cancelled: the failure quotes %q, want the first by id", results[0].branchID, err)
 		}
 	}
 }
