@@ -10,12 +10,13 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/server"
 )
 
-// APIError is a non-2xx response from the remote instance. Message is
-// the first line of the response body — the server's httpError text.
+// APIError is a non-2xx response from the remote instance. Body is the raw
+// response; Error() says what the server said (describeErrorBody).
 type APIError struct {
 	Status int
 	Method string
@@ -24,11 +25,74 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	msg := firstLine([]byte(e.Body))
-	if msg == "" {
-		msg = "(empty body)"
+	return fmt.Sprintf("HTTP %d %s %s: %s", e.Status, e.Method, e.Path, describeErrorBody([]byte(e.Body)))
+}
+
+// errorBody is the JSON error body the server answers with: the message
+// (error; a refusal that puts a stable token there says it in message or
+// detail), a stable code a client acts on (error_code), the remedy a refusal
+// names (hint — a resume that would lose its scratch names the consent it
+// needs), also_needs_force when the resume needs --force besides, and
+// retryable / reset_at when trying again later helps.
+type errorBody struct {
+	Error          string `json:"error"`
+	ErrorCode      string `json:"error_code"`
+	Message        string `json:"message"`
+	Detail         string `json:"detail"`
+	Hint           string `json:"hint"`
+	AlsoNeedsForce bool   `json:"also_needs_force"`
+	Retryable      bool   `json:"retryable"`
+	ResetAt        string `json:"reset_at"`
+}
+
+// describeErrorBody is what an error response says to an operator: a JSON
+// error body's fields, each in full — the server writes the hint after the
+// message, so a cut of the raw body loses it first — else the body's first
+// line.
+func describeErrorBody(body []byte) string {
+	var b errorBody
+	if err := json.Unmarshal(body, &b); err != nil || (b.Error == "" && b.Message == "" && b.Detail == "") {
+		if msg := firstLine(body); msg != "" {
+			return msg
+		}
+		return "(empty body)"
 	}
-	return fmt.Sprintf("HTTP %d %s %s: %s", e.Status, e.Method, e.Path, msg)
+	var words, facts []string
+	for _, w := range []string{b.Error, b.Message, b.Detail} {
+		if w = strings.TrimSpace(w); w != "" {
+			words = append(words, clipField(w))
+		}
+	}
+	if b.ErrorCode != "" {
+		facts = append(facts, "error_code: "+b.ErrorCode)
+	}
+	if b.AlsoNeedsForce {
+		facts = append(facts, "also needs --force")
+	}
+	if b.Retryable {
+		facts = append(facts, "retryable")
+	}
+	if b.ResetAt != "" {
+		facts = append(facts, "resets at "+b.ResetAt)
+	}
+	s := strings.Join(words, " — ")
+	if len(facts) > 0 {
+		s += " (" + strings.Join(facts, "; ") + ")"
+	}
+	if hint := strings.TrimSpace(b.Hint); hint != "" {
+		s += " — hint: " + clipField(hint)
+	}
+	return s
+}
+
+// clipField bounds one decoded field of an error body, on a rune boundary:
+// a terminal is not a sink for a body of any size.
+func clipField(s string) string {
+	const limit = 2000
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	return string([]rune(s)[:limit]) + "…"
 }
 
 // Call performs an authenticated JSON request. A non-nil `in` is

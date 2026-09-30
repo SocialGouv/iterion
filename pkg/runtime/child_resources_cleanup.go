@@ -65,10 +65,11 @@ func (e *Engine) finishRunResources(ctx context.Context, runID string, scope *ru
 func (e *Engine) recordResourceRestoreFailure(ctx context.Context, runID string, cause error) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), childResourceIOTimeout)
 	defer cancel()
-	err := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, cause.Error(), store.FailureResourceRestore)
+	remedy := setupFailureRemedy(cause, store.FailureResourceRestore)
+	err := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, remedy.Annotate(cause.Error()), store.FailureResourceRestore)
 	if err != nil && e.logger != nil {
 		e.logger.Error("runtime: could not record resource restoration failure for %s: %v (cause: %v)", runID, err, cause)
 	}
-	e.emitSetupFailure(ctx, runID, "resource restoration", store.RunStatusFailedResumable, cause.Error(), store.FailureResourceRestore)
+	e.emitSetupFailure(ctx, runID, "resource restoration", store.RunStatusFailedResumable, cause.Error(), store.FailureResourceRestore, remedy)
 	return &RuntimeError{Code: ErrCodeResourceRestore, Message: "resource restoration failed", Cause: errors.Join(cause, err)}
 }

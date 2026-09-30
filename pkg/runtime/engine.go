@@ -633,18 +633,19 @@ type resumeBackendState struct {
 func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
 	writeCtx := context.WithoutCancel(ctx)
 	status, msg, code := setupFailureStatus(ctx, phase, cause)
+	remedy := setupFailureRemedy(cause, code)
 	var err error
 	for attempt, delay := 0, 500*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*4 {
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
 		var changed bool
-		if changed, err = e.recordSetupOutcome(writeCtx, runID, status, msg, code); err == nil {
+		if changed, err = e.recordSetupOutcome(writeCtx, runID, status, remedy.Annotate(msg), code); err == nil {
 			if changed {
 				// Only the writer that RECORDED the stop announces it: a
 				// declined CAS means a peer got there first with its own
 				// reason, and a second event would contradict the document.
-				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code)
+				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code, remedy)
 			}
 			return
 		}
@@ -691,12 +692,14 @@ func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status st
 //
 // `phase` names the setup step, which is what an operator acts on: a
 // sandbox that would not start and a bundle skill that would not mirror are
-// the same status and a very different morning.
-func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, status store.RunStatus, reason string, code store.FailureCode) {
+// the same status and a very different morning. remedy is what the failure
+// tells the operator to do (setupFailureRemedy).
+func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, status store.RunStatus, reason string, code store.FailureCode, remedy Remedy) {
 	data := map[string]any{"error": reason, "phase": phase}
 	if code != "" {
 		data["code"] = string(code)
 	}
+	remedy.Record(data)
 	if status == store.RunStatusCancelled {
 		// The operator stopped it during setup: the same event the node
 		// loop writes for a cancel, so a consumer reads one vocabulary.
@@ -766,6 +769,17 @@ func setupFailureStatus(ctx context.Context, phase string, cause error) (store.R
 		return store.RunStatusCancelled, fmt.Sprintf("%s cancelled before the first node: %v", phase, cause), store.FailureCancelled
 	}
 	return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
+}
+
+// setupFailureRemedy is the remedy a setup failure's records carry: the
+// cause's own when the recorded code is the cause's verdict, none when
+// setupFailureStatus read the failure as a stall, a placement, a drain or a
+// cancel, whose remedy is not the cause's.
+func setupFailureRemedy(cause error, code store.FailureCode) Remedy {
+	if code == "" || code != setupFailureCode(cause) {
+		return Remedy{}
+	}
+	return RemedyOf(cause)
 }
 
 // setupFailureCode recovers a typed classification from a setup error

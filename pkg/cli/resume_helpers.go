@@ -47,7 +47,8 @@ func buildResumeAnswers(opts ResumeOptions, resumingFromFailure bool) (map[strin
 //
 // A shared dependency whose identity changed is not refused here: the
 // engine, handed the bundle, refuses it after the scratch and the lineage,
-// so the one --force the operator gives accepts a loss they were shown.
+// so their refusal names it and every consent the resume needs is shown at
+// once.
 //
 // The caller MUST defer the returned cleanup (no-op on the
 // non-bundle path).

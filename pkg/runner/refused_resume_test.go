@@ -274,7 +274,7 @@ func TestRecordRetrySkipped_aReleasedRunnerVerdictSaysWhatCuresIt(t *testing.T) 
 	} {
 		st, msg := queuedResume(t, store.RunStatusPausedWaitingHuman, store.RunStatusPausedWaitingHuman)
 		r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
-		r.recordRetrySkipped(msg, tc.code, "refused", store.RunStatusPausedWaitingHuman)
+		r.recordRetrySkipped(msg, tc.code, "refused", nil, store.RunStatusPausedWaitingHuman)
 		evs, err := st.LoadEvents(context.Background(), msg.RunID)
 		if err != nil {
 			t.Fatal(err)

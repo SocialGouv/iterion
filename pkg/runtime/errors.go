@@ -121,6 +121,71 @@ func (e *RuntimeError) Error() string {
 
 func (e *RuntimeError) Unwrap() error { return e.Cause }
 
+// Remedy is what a record of a failure or a refusal tells the operator to do
+// about it: the hint of the RuntimeError the error carries, and whether a
+// resume needs --force besides. Error() leaves the hint out, so every
+// operator-facing record — the run document's error, run_failed,
+// run_retry_skipped, the HTTP refusal — reads it here instead of composing a
+// remedy of its own.
+type Remedy struct {
+	Hint           string
+	AlsoNeedsForce bool
+}
+
+// RemedyOf is the remedy err carries: its RuntimeError's hint, else the one
+// that error's code names (CodeRemedy). Zero when err carries no RuntimeError.
+func RemedyOf(err error) Remedy {
+	var rt *RuntimeError
+	if !errors.As(err, &rt) || rt == nil {
+		return Remedy{}
+	}
+	if rt.Hint == "" {
+		return CodeRemedy(rt.Code)
+	}
+	return Remedy{Hint: rt.Hint, AlsoNeedsForce: rt.AlsoNeedsForce}
+}
+
+// CodeRemedy is the remedy a failure code names on its own, for a record that
+// kept the code but not the error (a run document read back). A code whose
+// remedy is a consent of its own — SCRATCH_NOT_PORTABLE, which --force never
+// gives — is never left to a writer's generic advice. Zero for every other
+// code.
+func CodeRemedy(code ErrorCode) Remedy {
+	if code == ErrCodeScratchNotPortable {
+		return Remedy{Hint: scratchLossHint}
+	}
+	return Remedy{}
+}
+
+// Annotate is text, a record's rendering of the failure, followed by the
+// hint: a run document keeps a single error string.
+func (r Remedy) Annotate(text string) string {
+	if r.Hint == "" {
+		return text
+	}
+	return text + " — hint: " + r.Hint
+}
+
+// Record puts the remedy in an event's data under the keys the HTTP refusal
+// answers with: hint, and also_needs_force when --force is needed too.
+func (r Remedy) Record(data map[string]any) {
+	if r.Hint != "" {
+		data["hint"] = r.Hint
+	}
+	if r.AlsoNeedsForce {
+		data["also_needs_force"] = true
+	}
+}
+
+// OperatorMessage is err's text as an operator-facing record carries it:
+// Error() followed by the remedy err names.
+func OperatorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return RemedyOf(err).Annotate(err.Error())
+}
+
 // ---------------------------------------------------------------------------
 // Recovery dispatch surface
 // ---------------------------------------------------------------------------

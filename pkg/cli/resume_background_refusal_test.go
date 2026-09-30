@@ -77,8 +77,8 @@ func TestResume_inTheBackgroundARefusalBeforeTheClaimIsLogged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the run's log: %v", err)
 	}
-	if !strings.Contains(string(log), "refused before it claimed the run") || !strings.Contains(string(log), string(runtime.ErrCodeScratchNotPortable)) {
-		t.Fatalf("the run's log does not say the resume was refused:\n%s", log)
+	if !strings.Contains(string(log), "refused before it claimed the run") || !strings.Contains(string(log), string(runtime.ErrCodeScratchNotPortable)) || !strings.Contains(string(log), "--accept-scratch-loss") {
+		t.Fatalf("the run's log does not say the resume was refused, and the consent it needs:\n%s", log)
 	}
 	if r, err := s.LoadRun(ctx, r.ID); err != nil || r.Status != store.RunStatusPausedOperator {
 		t.Fatalf("the refused resume moved the run: %v (%v)", r.Status, err)

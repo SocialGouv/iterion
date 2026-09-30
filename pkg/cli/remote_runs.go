@@ -584,9 +584,17 @@ func printRemoteEvent(p *Printer, e remoteEvent) {
 	if node != "" {
 		node = " " + node
 	}
+	// A failure's words are its error (run_failed, run_retry_skipped), and
+	// what to do about it its hint.
 	detail := ""
-	if msg, ok := e.Data["message"].(string); ok && msg != "" {
-		detail = " — " + firstLine([]byte(msg))
+	for _, key := range []string{"message", "error"} {
+		if msg, ok := e.Data[key].(string); ok && msg != "" {
+			detail = " — " + firstLine([]byte(msg))
+			break
+		}
+	}
+	if hint, ok := e.Data["hint"].(string); ok && strings.TrimSpace(hint) != "" {
+		detail += " — hint: " + clipField(strings.TrimSpace(hint))
 	}
 	p.Line("%s  %-22s%s%s", e.Timestamp.Format("15:04:05"), e.Type, node, detail)
 }

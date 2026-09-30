@@ -468,7 +468,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		// A managed runner's stdio goes nowhere, and a resume refused before
 		// its claim leaves the run where it was, its timeline untouched: the
 		// refusal is said where the studio reads the run, its log.
-		logger.Error("resume of run %s refused before it claimed the run, which stays %s: %v", opts.RunID, r.Status, err)
+		logger.Error("resume of run %s refused before it claimed the run, which stays %s: %s", opts.RunID, r.Status, runtime.OperatorMessage(err))
 	}
 	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget, opts.Retry), err, logger)
 	return reportResumeOutcome(p, s, opts.RunID, err, map[string]any{

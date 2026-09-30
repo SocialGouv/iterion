@@ -151,12 +151,13 @@ func RemotePoolPolicy(ctx context.Context, c *RemoteClient, p *Printer, teamID s
 		// an absent pool (the server describes "the pool that would be
 		// created" with an empty id) demands the switch stated
 		// explicitly rather than a silent dead-on-arrival create.
-		status, body, err := c.API(ctx, "GET", "/api/teams/"+teamID+"/pool", nil)
+		path := "/api/teams/" + teamID + "/pool"
+		status, body, err := c.API(ctx, "GET", path, nil)
 		if err != nil {
 			return fmt.Errorf("probe pool before policy write: %w", err)
 		}
 		if status < 200 || status >= 300 {
-			return fmt.Errorf("probe pool before policy write: HTTP %d: %s", status, body)
+			return fmt.Errorf("probe pool before policy write: %w", &APIError{Status: status, Method: "GET", Path: path, Body: string(body)})
 		}
 		var v struct {
 			ID string `json:"id"`

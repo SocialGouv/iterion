@@ -146,12 +146,16 @@ into a fresh file and refreshes it when it is at or past its expiry lead,
 so the *effective* token can differ even though the sealed blob does not.
 
 When a surface declines to bring a run back, it says so on the timeline:
-**`run_retry_skipped {reason: deterministic, code, error, status?}`** — the
-counterpart of `run_retry_scheduled`. Without it a `failed_resumable` row
-whose redelivery was dropped on purpose reads exactly like one still
-waiting for a pod. Measured on run `01a07804` before the classification
-existed: seven resumes of one compute-expression failure in ten minutes,
-each a fresh pod, clone and sandbox.
+**`run_retry_skipped {reason: deterministic, code, error, hint, status?,
+also_needs_force?}`** — the counterpart of `run_retry_scheduled`. Without it a
+`failed_resumable` row whose redelivery was dropped on purpose reads exactly
+like one still waiting for a pod. Measured on run `01a07804` before the
+classification existed: seven resumes of one compute-expression failure in ten
+minutes, each a fresh pod, clone and sandbox. Its `hint` is the failure's own
+remedy when the failure names one — a scratch that did not travel names
+`--accept-scratch-loss`, never `--force` — and "fix the cause, then resume
+with `--force`" only otherwise; `also_needs_force` says the resume needs
+`--force` besides.
 
 A cloud resume refused **before anything claims the run** — by the engine (a
 copy-based subbot child resumed on its own, an incompatible artifact contract,
@@ -166,6 +170,8 @@ one its cancel, and the refusal is its `error` (its failure code on
 newer resume or a run the engine claimed is left alone. The event then
 carries `status`, the status the run is back to. The revision the refused
 resume stamped stays recorded: resume with that source, or with `--force`.
+The run's `error` ends with the refusal's remedy when it names one
+(`— hint: …`), which the error's own words leave out.
 
 ## CLI
 
@@ -323,7 +329,11 @@ or an adoption does not carry it. A surface about to refuse a resume for a
 reason `--force` accepts (a changed source, an artifact contract) shows the
 scratch's loss first, even while the latest execution may still be banking.
 Over HTTP the refusal answers `error_code: scratch_not_portable`, with its
-`hint` and `also_needs_force` when `--force` is needed too.
+`hint` and `also_needs_force` when `--force` is needed too; `iterion remote
+runs resume` prints both. A refusal only the engine meets — after the surface
+deferred to it, or at the restore — names the same consent on the run's
+`error`, on `run_failed` (`hint`, `also_needs_force`) and on
+`run_retry_skipped`.
 The resume surface refuses from a record the run's
 latest execution wrote, before anything moves the run (the studio and the API
 answer at once; a cloud resume is never flipped to `queued`). A run reads

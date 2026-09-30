@@ -1843,6 +1843,10 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		cp = &store.Checkpoint{NodeID: fallbackNode}
 	}
 	status, msg, code := setupFailureStatus(ctx, "sandbox start", sbErr)
+	// The failure's remedy goes on the document and on run_failed — for the
+	// scratch's refusal, which only the restore finds, the consent that
+	// clears it.
+	remedy := setupFailureRemedy(sbErr, code)
 	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
 	defer cancelWrite()
 	if status == store.RunStatusCancelled {
@@ -1854,7 +1858,7 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		if changed {
 			// Only when THIS write landed: a declined CAS means a peer
 			// already recorded the stop and emitted for it.
-			e.emitSetupFailure(writeCtx, runID, "sandbox start", store.RunStatusCancelled, msg, code)
+			e.emitSetupFailure(writeCtx, runID, "sandbox start", store.RunStatusCancelled, msg, code, remedy)
 		}
 		switch {
 		case err != nil && e.logger != nil:
@@ -1877,7 +1881,7 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		}
 		return fmt.Errorf("%w: sandbox start: %v", ErrRunCancelled, sbErr)
 	}
-	if err := e.store.FailRunResumable(writeCtx, runID, cp, msg, code); err != nil {
+	if err := e.store.FailRunResumable(writeCtx, runID, cp, remedy.Annotate(msg), code); err != nil {
 		// Fall back to a plain terminal status so the run does not linger
 		// as `running`. On its OWN short budget: the park's budget is what
 		// a wedged store has just consumed, and a fallback sharing it
@@ -1885,7 +1889,7 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		// fails too the run is stuck non-terminal until the runner's
 		// redelivery adopts the `running` doc under the lock, so say so.
 		fbCtx, cancelFb := context.WithTimeout(context.WithoutCancel(ctx), resumeParkFallbackBudget)
-		uerr := e.store.UpdateRunStatusCoded(fbCtx, runID, store.RunStatusFailed, msg, code)
+		uerr := e.store.UpdateRunStatusCoded(fbCtx, runID, store.RunStatusFailed, remedy.Annotate(msg), code)
 		switch {
 		case uerr != nil:
 			if e.logger != nil {
@@ -1899,11 +1903,11 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 			// FALLBACK's budget, never the park's: this branch is reached
 			// only because writeCtx expired, so an emit riding it would be
 			// dead code on exactly the path it exists for.
-			e.emitSetupFailure(fbCtx, runID, "sandbox start", store.RunStatusFailed, msg, code)
+			e.emitSetupFailure(fbCtx, runID, "sandbox start", store.RunStatusFailed, msg, code, remedy)
 		}
 		cancelFb()
 	} else {
-		e.emitSetupFailure(writeCtx, runID, "sandbox start", status, msg, code)
+		e.emitSetupFailure(writeCtx, runID, "sandbox start", status, msg, code, remedy)
 	}
 	if code == store.FailureInterrupted {
 		return fmt.Errorf("%w: sandbox start: %v", ErrRunInterrupted, sbErr)

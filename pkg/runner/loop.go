@@ -1765,7 +1765,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
 		if pre.skippedRetry != "" {
-			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause, "")
+			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause, nil, "")
 		}
 		dispatchPrecondition(logger, delivery, pre, msg.RunID)
 		return
@@ -1908,9 +1908,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			r.recordRedeliveryDeferred(msg, outcome, err, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
 		}
 	}
-	if recordsRetrySkipped(outcome.finalStatus, released) {
-		r.recordRetrySkipped(msg, refusalCode(err), err.Error(), released)
-	}
+	r.recordDeliveryEnd(msg, err, outcome.finalStatus, released)
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchExecOutcome(logger, delivery, outcome, msg.RunID)
@@ -1986,29 +1984,50 @@ func (r *Runner) recordRunnerBuild(ctx context.Context, msg *queue.RunMessage, l
 // released is the status a resume refused before its claim went back to
 // (releaseRefusedResume), empty when the run was not released: the event
 // then says where the run waits.
-func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string, released store.RunStatus) {
+//
+// refusal is the error that decided it, nil when only the document's code
+// and error are known (a redelivery dropped on the document's code). The
+// remedy the hint names is the refusal's own, else its code's
+// (runtime.RemedyOf, runtime.CodeRemedy); "fix the cause, then --force" is
+// left to a failure that names none: --force never cures a scratch that did
+// not travel, and an operator sent there comes back to the same refusal.
+func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string, refusal error, released store.RunStatus) {
 	if r.cfg.Store == nil {
 		return
 	}
 	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
 	defer cancel()
 	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	remedy := runtime.RemedyOf(refusal)
+	if remedy.Hint == "" {
+		remedy = runtime.CodeRemedy(code)
+	}
+	why := "re-executing would run the same step against the same inputs"
+	todo := "fix the cause, then `iterion resume --force`"
+	if released != "" {
+		why = "the resume was refused before it claimed the run, which is back to " + string(released)
+		todo = "fix the cause, or resume with --force"
+	}
+	hint := why + "; " + todo
+	switch {
+	case released != "" && code == store.FailureIRUnloadable:
+		hint = why + ": this runner cannot load the IR the server compiled; align the runner with the server, then resume"
+	case released != "" && code == store.FailureBotRequiresNewerEngine:
+		hint = why + ": the bot requires a newer engine than this runner; bump the runner image, then resume"
+	case remedy.Hint != "":
+		hint = why + "; " + remedy.Hint
+	}
 	data := map[string]any{
 		"reason": "deterministic",
 		"code":   string(code),
 		"error":  cause,
-		"hint":   "re-executing would run the same step against the same inputs; fix the cause, then `iterion resume --force`",
+		"hint":   hint,
+	}
+	if remedy.AlsoNeedsForce {
+		data["also_needs_force"] = true
 	}
 	if released != "" {
 		data["status"] = string(released)
-		switch code {
-		case store.FailureIRUnloadable:
-			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + ": this runner cannot load the IR the server compiled; align the runner with the server, then resume"
-		case store.FailureBotRequiresNewerEngine:
-			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + ": the bot requires a newer engine than this runner; bump the runner image, then resume"
-		default:
-			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + "; fix the cause, or resume with --force"
-		}
 	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunRetrySkipped,
@@ -2016,6 +2035,16 @@ func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCod
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit run_retry_skipped: %v", msg.RunID, err)
 	}
+}
+
+// recordDeliveryEnd puts an executed delivery's end on the run's timeline
+// when no further attempt follows (recordsRetrySkipped), with the error that
+// decided it: its code, its words and its remedy.
+func (r *Runner) recordDeliveryEnd(msg *queue.RunMessage, execErr error, finalStatus string, released store.RunStatus) {
+	if !recordsRetrySkipped(finalStatus, released) {
+		return
+	}
+	r.recordRetrySkipped(msg, refusalCode(execErr), execErr.Error(), execErr, released)
 }
 
 // recordsRetrySkipped reports that a delivery's end is put on the run's
@@ -2065,7 +2094,7 @@ func (r *Runner) releaseRefusedResume(msg *queue.RunMessage, execErr error, logg
 	ctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
 	defer cancel()
 	sctx := store.WithIdentity(ctx, msg.TenantID, msg.OwnerID)
-	changed, err := rel.ReleaseQueuedRunIfAttempt(sctx, msg.RunID, to, execErr.Error(), publishedAt, meta)
+	changed, err := rel.ReleaseQueuedRunIfAttempt(sctx, msg.RunID, to, runtime.OperatorMessage(execErr), publishedAt, meta)
 	switch {
 	case err != nil:
 		logger.Warn("runner: run %s: could not put the refused resume back to %s — the run stays queued: %v", msg.RunID, to, err)

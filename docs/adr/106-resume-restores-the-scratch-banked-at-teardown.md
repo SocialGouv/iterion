@@ -181,7 +181,10 @@ pods the same way.
   attempt its delivery was published for, so no delivery lends its consent,
   nor its `--force`, to a resume queued after it. Over HTTP the refusal answers `error_code:
   scratch_not_portable` with its hint, and `also_needs_force` when it names
-  a change `--force` accepts.
+  a change `--force` accepts. Every other record of it — the run's error,
+  `run_failed`, `run_retry_skipped` — reads the same hint from the refusal
+  (`runtime.RemedyOf`): a generic `--force` advice there sent the operator
+  round again, each turn a claim and a pod.
 
 ## Consequences
 

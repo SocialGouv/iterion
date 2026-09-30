@@ -128,6 +128,11 @@ const (
 	//   - code: the failure code that decided it (EXPRESSION_FAILED,
 	//     SCHEMA_VALIDATION, AUTH_FAILED, …)
 	//   - error: the engine's own words, so the offending step is named
+	//   - hint: what to do about it — the failure's own remedy when it names
+	//     one (runtime.RemedyOf), never --force for a scratch that did not
+	//     travel
+	//   - also_needs_force: the resume needs --force besides
+	//   - status: the status a resume refused before its claim is back to
 	EventRunRetrySkipped EventType = "run_retry_skipped"
 	// EventUsageCap marks the provider's subscription telemetry crossing a
 	// cap the OPERATOR set, below the provider's own wall (see

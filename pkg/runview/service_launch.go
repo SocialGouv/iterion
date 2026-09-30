@@ -1696,7 +1696,7 @@ func (s *Service) logRunOutcome(runID string, err error) {
 	case errors.Is(err, runtime.ErrRunCancelled):
 		s.logger.Info("runview: run %s cancelled", runID)
 	default:
-		s.logger.Warn("runview: run %s failed: %v", runID, err)
+		s.logger.Warn("runview: run %s failed: %s", runID, runtime.OperatorMessage(err))
 	}
 }
 

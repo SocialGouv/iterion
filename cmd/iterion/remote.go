@@ -98,7 +98,7 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("the token was rejected by %s (HTTP %d)", base, code)
 	}
 	if code/100 != 2 {
-		return fmt.Errorf("%s: HTTP %d", base, code)
+		return fmt.Errorf("%s: %w", base, &cli.APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)})
 	}
 	if err := cli.SaveRemoteConfig(cfg); err != nil {
 		return err
@@ -201,7 +201,7 @@ var remoteStatusCmd = &cobra.Command{
 			return err
 		}
 		if code/100 != 2 {
-			return fmt.Errorf("HTTP %d", code)
+			return &cli.APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)}
 		}
 		var me struct {
 			User struct {

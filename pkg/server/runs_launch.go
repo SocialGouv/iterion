@@ -971,8 +971,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 
 // writeResumeError preserves the normal human-readable error response and
 // adds a stable code for the resume failures the studio must ACT on rather
-// than merely display: a changed source (offer --force) and a run that is no
-// longer parked (re-route to queue-message).
+// than merely display: a scratch that does not travel (its own consent), a
+// changed source (offer --force) and a run that is no longer parked
+// (re-route to queue-message). A refusal that names its remedy answers it
+// too (hint, also_needs_force), read from the error as every record of it is.
 func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err error) {
 	if s.writeQueueOutageError(w, r, "resume", err) {
 		return
@@ -980,48 +982,26 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	if s.writeNoLLMCredentialError(w, r, "resume", err) {
 		return
 	}
+	status, code := http.StatusBadRequest, ""
 	var rt *runtime.RuntimeError
-	if errors.As(err, &rt) && rt.Code == runtime.ErrCodeScratchNotPortable {
-		body := map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": scratchNotPortableErrorCode,
-			"hint":       rt.Hint,
-		}
-		if rt.AlsoNeedsForce {
-			body["also_needs_force"] = true
-		}
-		s.writeJSONError(w, r, http.StatusBadRequest, body)
-		return
+	switch {
+	case errors.As(err, &rt) && rt.Code == runtime.ErrCodeScratchNotPortable:
+		code = scratchNotPortableErrorCode
+	case runtime.IsWorkflowSourceChanged(err):
+		code = workflowSourceChangedErrorCode
+	case errors.Is(err, runtime.ErrArtifactContractUnavailable):
+		status, code = http.StatusServiceUnavailable, artifactContractUnavailableErrorCode
+	case errors.Is(err, runtime.ErrArtifactContractIncompatible):
+		code = artifactContractIncompatibleErrorCode
+	case errors.Is(err, runview.ErrRunNotResumable):
+		status, code = http.StatusConflict, runNotResumableErrorCode
 	}
-	if runtime.IsWorkflowSourceChanged(err) {
-		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": workflowSourceChangedErrorCode,
-		})
-		return
+	body := map[string]any{"error": fmt.Sprintf("resume: %v", err)}
+	if code != "" {
+		body["error_code"] = code
 	}
-	if errors.Is(err, runtime.ErrArtifactContractUnavailable) {
-		s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": artifactContractUnavailableErrorCode,
-		})
-		return
-	}
-	if errors.Is(err, runtime.ErrArtifactContractIncompatible) {
-		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": artifactContractIncompatibleErrorCode,
-		})
-		return
-	}
-	if errors.Is(err, runview.ErrRunNotResumable) {
-		s.writeJSONError(w, r, http.StatusConflict, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": runNotResumableErrorCode,
-		})
-		return
-	}
-	s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
+	runtime.RemedyOf(err).Record(body)
+	s.writeJSONError(w, r, status, body)
 }
 
 // writeNoLLMCredentialError answers a launch or resume the cloud publisher

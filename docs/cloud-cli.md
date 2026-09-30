@@ -199,9 +199,14 @@ iterion remote api-keys create --provider anthropic --name prod --from-env ANTHR
 
 ## Errors
 
-Any non-2xx response surfaces as `HTTP <code> <METHOD> <path>: <first
-line of the server's message>` and a non-zero exit. Admin commands do
-no client-side role check — a 403 from the server is the answer.
+Any non-2xx response surfaces as `HTTP <code> <METHOD> <path>: <what the
+server said>` and a non-zero exit. A JSON error body is read field by field:
+its message (with `message` / `detail` when the server puts them apart), then
+in parentheses its `error_code`, `also needs --force`, `retryable` and
+`reset_at` when present, then its `hint` — the remedy a refusal names, such as
+the `--accept-scratch-loss` a resume that would lose its scratch needs. Any
+other body prints its first line. Admin commands do no client-side role
+check — a 403 from the server is the answer.
 
 ## Everything else
 
