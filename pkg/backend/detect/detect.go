@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -516,11 +517,25 @@ func detectClaudeCode(ctx context.Context) BackendStatus {
 var claudeAuthStatusFn = func(ctx context.Context, binPath string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binPath, "auth", "status", "--json").Output()
+	cmd := exec.CommandContext(ctx, binPath, "auth", "status", "--json")
+	cmd.Env = claudeChildEnv()
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 	return claudeAuthStatusIsForfait(out)
+}
+
+// claudeChildEnv is the environment detection runs the claude CLI with: the
+// process's, minus a CLAUDE_CONFIG_DIR set to "" — which claudeConfigDir
+// reads as unset, but the CLI takes for a relative directory and writes its
+// config backups into the working directory.
+func claudeChildEnv() []string {
+	env := os.Environ()
+	if v, set := os.LookupEnv("CLAUDE_CONFIG_DIR"); set && v == "" {
+		env = slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") })
+	}
+	return env
 }
 
 // claudeAuthStatusIsForfait parses `claude auth status --json` output and

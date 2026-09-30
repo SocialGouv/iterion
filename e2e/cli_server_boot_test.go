@@ -34,22 +34,30 @@ import (
 
 // iterionBinaryOnce builds ./cmd/iterion exactly once per `go test` run.
 // Rebuilding per test would triple wall time on a cold cache without buying
-// isolation (the binary is a read-only artefact). The build directory is
-// deliberately outside t.TempDir() so it survives across tests in the same
-// process; a small /tmp leak is acceptable for an artefact that lives for
-// the test-run duration.
+// isolation (the binary is a read-only artefact). The build directory lives
+// in processScratch, outside any t.TempDir() so it survives across tests in
+// the same process, and goes with it when the suite ends.
 var (
 	iterionBinaryOnce sync.Once
 	iterionBinaryPath string
 	iterionBinaryErr  error
 )
 
+// processScratch is a directory this test process owns for the whole suite:
+// the iterion home hometest.Isolate creates in TestMain, removed at exit.
+// Captured there, before any test can t.Setenv ITERION_HOME to its own.
+var processScratch string
+
 // iterionBinary returns the path to a freshly built ./cmd/iterion binary.
 // Fails the test on build failure with the compiler output.
 func iterionBinary(t *testing.T) string {
 	t.Helper()
 	iterionBinaryOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "iterion-cli-server-e2e-bin-*")
+		if processScratch == "" {
+			iterionBinaryErr = fmt.Errorf("no process scratch directory to build into: TestMain did not set processScratch")
+			return
+		}
+		dir, err := os.MkdirTemp(processScratch, "iterion-cli-server-e2e-bin-*")
 		if err != nil {
 			iterionBinaryErr = fmt.Errorf("mkdir bin dir: %w", err)
 			return

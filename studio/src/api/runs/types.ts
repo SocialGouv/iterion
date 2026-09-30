@@ -741,8 +741,9 @@ export interface RunRepo {
 }
 
 // Shape of GET /api/runs/global-active — runs currently active in
-// ANY iterion store on the host (the global ~/.iterion slot plus
-// every per-project store under ~/.iterion/projects/). Surfaced on
+// ANY iterion store on the host (the iterion home's own slot plus
+// every per-project store under its projects/ — $ITERION_HOME, else
+// ~/.iterion). Surfaced on
 // the Home view so an operator sees in-flight work without having
 // to open each project first.
 export interface GlobalActiveRun {

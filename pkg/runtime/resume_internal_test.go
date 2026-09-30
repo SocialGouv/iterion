@@ -480,6 +480,9 @@ func TestResumeFromPauseConsumesThePausePointer(t *testing.T) {
 		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
 		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
 	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	// The helper below is driven without its owning ResumeWithHostInputs:
+	// the test owns the throw-away workdir the helper derives.
+	t.Cleanup(e.releaseTempWorkDir)
 	run, err := base.LoadRun(ctx, "run-consume")
 	if err != nil {
 		t.Fatal(err)
@@ -525,6 +528,9 @@ func TestReviewGateConsumesThePausePointer(t *testing.T) {
 		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
 		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
 	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	// The helper below is driven without its owning ResumeWithHostInputs:
+	// the test owns the throw-away workdir the helper derives.
+	t.Cleanup(e.releaseTempWorkDir)
 	run, err := base.LoadRun(ctx, "run-review")
 	if err != nil {
 		t.Fatal(err)

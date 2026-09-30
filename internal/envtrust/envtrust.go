@@ -32,8 +32,10 @@ package envtrust
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"sync"
+	"testing"
 )
 
 // EnvPlantedNames carries the names a project `.env` filled in, so a child
@@ -54,7 +56,7 @@ func MarkPlanted(names ...string) {
 	mu.Lock()
 	ensurePlantedLocked()
 	for _, name := range names {
-		planted[name] = true
+		planted[CanonicalName(name)] = true
 	}
 	marker := markerLocked()
 	mu.Unlock()
@@ -64,8 +66,10 @@ func MarkPlanted(names ...string) {
 	_ = os.Setenv(EnvPlantedNames, marker)
 }
 
-// exportableName reports whether a name is one a shell could export, which
-// is the only kind the marker can carry.
+// Exportable reports whether a name is one a shell could export, which is
+// the only kind the marker can carry — and the only kind a `.env` may plant
+// (cmd/iterion applyDotEnv refuses any other key): a name only ASCII spells is
+// also the only kind CanonicalName folds exactly as Windows does.
 //
 // The comma was the first character found to cross badly — the marker joins
 // on it and the reader splits on it — but it is not the class. The reader
@@ -74,7 +78,7 @@ func MarkPlanted(names ...string) {
 // operator's own home its authority there. One predicate, stated the way the
 // comma guard justified itself: nothing iterion asks about provenance is
 // spelled any other way.
-func exportableName(name string) bool {
+func Exportable(name string) bool {
 	if name == "" {
 		return false
 	}
@@ -95,14 +99,14 @@ func Planted(name string) bool {
 	mu.RLock()
 	if planted != nil {
 		defer mu.RUnlock()
-		return planted[name]
+		return planted[CanonicalName(name)]
 	}
 	mu.RUnlock()
 
 	mu.Lock()
 	defer mu.Unlock()
 	ensurePlantedLocked()
-	return planted[name]
+	return planted[CanonicalName(name)]
 }
 
 // Inherited returns the variable's value as the process INHERITED it: the
@@ -126,7 +130,7 @@ func ensurePlantedLocked() {
 	planted = map[string]bool{}
 	for _, name := range strings.Split(os.Getenv(EnvPlantedNames), ",") {
 		if name = strings.TrimSpace(name); name != "" {
-			planted[name] = true
+			planted[CanonicalName(name)] = true
 		}
 	}
 }
@@ -145,7 +149,7 @@ func ensurePlantedLocked() {
 func markerLocked() string {
 	names := make([]string, 0, len(planted))
 	for name := range planted {
-		if !exportableName(name) {
+		if !Exportable(name) {
 			continue
 		}
 		names = append(names, name)
@@ -162,6 +166,33 @@ func sortStrings(s []string) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+}
+
+// goos is the platform whose variable naming the planted set follows.
+var goos = runtime.GOOS
+
+// CanonicalName is the spelling the planted set records a variable under. On
+// Windows environment variable names are case-insensitive — a `.env` line
+// `iterion_home=…` sets ITERION_HOME — so the set records the upper-case name
+// and a question in any case finds it.
+func CanonicalName(name string) string {
+	if goos == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
+}
+
+// UseGOOSForTest makes the planted set follow platform's variable naming for
+// the rest of tb, and clears the set before and after. TESTS ONLY.
+func UseGOOSForTest(tb testing.TB, platform string) {
+	tb.Helper()
+	prev := goos
+	goos = platform
+	ResetForTest()
+	tb.Cleanup(func() {
+		goos = prev
+		ResetForTest()
+	})
 }
 
 // ResetForTest clears the planted set (and re-reads it from the marker on the

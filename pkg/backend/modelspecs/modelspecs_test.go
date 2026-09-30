@@ -498,3 +498,15 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func boolp(b bool) *bool { return &b }
+
+// The fetched table persists under the iterion home — $ITERION_HOME when set
+// — never under a $HOME/.iterion built by hand: a test with network access
+// wrote the operator's real cache.
+func TestDefaultCachePath_LivesUnderTheIterionHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	t.Setenv("HOME", t.TempDir())
+	if got, want := DefaultCachePath(), filepath.Join(home, "model-specs-cache.json"); got != want {
+		t.Fatalf("DefaultCachePath() = %q, want %q", got, want)
+	}
+}

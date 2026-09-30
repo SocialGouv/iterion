@@ -171,8 +171,8 @@ type Engine struct {
 	seamWarnOnce   sync.Once
 	onNodeFinished func(ctx context.Context, runID, nodeID string, output map[string]any)
 	// workDirTemp is the throw-away directory defaultWorkDir created under
-	// `go test` when the process cwd was the package directory (#1803); its
-	// owner removes it when the run is done.
+	// `go test` when the process cwd was the package directory (#1803);
+	// releaseTempWorkDir removes it when Run or ResumeWithHostInputs returns.
 	workDirTemp              string
 	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
