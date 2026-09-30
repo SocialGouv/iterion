@@ -122,6 +122,58 @@ func TestUsageCapCredKeys_NamedButUnheldSlotChargesNobody(t *testing.T) {
 	}
 }
 
+// "anthropic-direct" and "anthropic-oauth" NAME a slot, as a facade label
+// does, and are answered by that slot alone: a run holding no Anthropic key
+// charges such a reading to nobody — never to the z.ai key heading the
+// precedence, which the session did not spend.
+func TestUsageCapCredKeys_ADirectLabelTheRunDoesNotHoldChargesNobody(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+	scope := usagecap.TenantScope("team-7")
+	zaiOnly := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderZAI: "zai-token"},
+		Fingerprints: map[string]string{string(secrets.ProviderZAI): "fp-zai"},
+	}), msg)
+	for _, source := range []string{"anthropic-direct", "anthropic-oauth"} {
+		if got, want := zaiOnly.forSource(source), usagecap.Key(delegate.BackendClaudeCode, scope, ""); got != want {
+			t.Errorf("forSource(%q) = %q, want %q — a slot the run does not hold charges nobody", source, got, want)
+		}
+	}
+
+	// The slot the run DOES hold is still charged.
+	held := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderZAI: "zai-token", secrets.ProviderAnthropic: "sk-ant"},
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/forfait"},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):       "fp-zai",
+			string(secrets.ProviderAnthropic): "fp-ant",
+			delegate.BackendClaudeCode:        "fp-oauth",
+		},
+	}), msg)
+	for source, fp := range map[string]string{"anthropic-direct": "fp-ant", "anthropic-oauth": "fp-oauth"} {
+		if got, want := held.forSource(source), usagecap.Key(delegate.BackendClaudeCode, scope, fp); got != want {
+			t.Errorf("forSource(%q) = %q, want %q", source, got, want)
+		}
+	}
+}
+
+// A direct reading on an Anthropic key a shared tier PINNED for the route is
+// that key's, metered on its owner's ledger — the z.ai key holding the run's
+// default did not spend it.
+func TestUsageCapCredKeys_APinnedDirectKeyMetersOnItsOwnersLedger(t *testing.T) {
+	keys := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:         map[secrets.Provider]string{secrets.ProviderZAI: "zai-tenant"},
+		PinnedAPIKeys:   map[secrets.Provider]string{secrets.ProviderAnthropic: "ant-platform"},
+		PlatformSourced: map[string]bool{string(secrets.ProviderAnthropic): true},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):       "fp-zai",
+			string(secrets.ProviderAnthropic): "fp-ant",
+		},
+	}), &queue.RunMessage{TenantID: "team-7"})
+	if got, want := keys.forSource("anthropic-direct"), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "fp-ant"); got != want {
+		t.Errorf("forSource(anthropic-direct) = %q, want %q", got, want)
+	}
+}
+
 // A Moonshot-only bundle is the tenant's own, so its readings must open a
 // TENANT meter — not the cross-tenant platform one, where what this team
 // measured would be read by every other borrower of a key they do not share.

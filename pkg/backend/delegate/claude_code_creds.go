@@ -881,11 +881,11 @@ func facadeHintRefusal(providerHint string, env map[string]string) error {
 // on the run's credential-less meter either way.
 func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
 	task := Task{ProviderHint: providerHint}
-	env := anthropicCredEnvForTask(ctx, task)
+	env, selected := anthropicCredRouteForTask(ctx, task)
 	if facadeHintRefusal(providerHint, env) != nil {
 		return "", true
 	}
-	return providerFingerprint(anthropicFingerprintEnvForTask(task, env)), false
+	return providerFingerprint(anthropicFingerprintEnvForTask(task, env, selected)), false
 }
 
 // AnthropicWireFacadeSlot maps a usage Reading.Source label back onto the
@@ -1015,8 +1015,16 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 // credential route. The last layer includes suppression entries: an extra
 // variable must not redirect a selected facade's bearer or revive its forfait.
 func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
+	env, _ := anthropicCredRouteForTask(ctx, task)
+	return env
+}
+
+// anthropicCredRouteForTask is anthropicCredEnvForTask with the resolver's
+// selection beside the composed env: the credentials bound for the route,
+// which alone may name it (anthropicFingerprintEnvForTask).
+func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected map[string]string) {
 	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
-	env := map[string]string{}
+	env = map[string]string{}
 	if inheritAmbient && taskSandboxed(task) {
 		for key, value := range ambientAnthropicEnvForSandbox() {
 			env[key] = value
@@ -1051,36 +1059,51 @@ func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
 	for key, value := range selected {
 		env[key] = value
 	}
-	return env
+	return env, selected
 }
 
-// anthropicFingerprintEnvForTask accounts for a host-inherited endpoint without
-// changing the spawn environment. A sandbox already has explicit forwarding.
-// Preserve an explicit empty override and the historical cloud-mode labels:
-// a cloud switch makes an inherited Anthropic endpoint irrelevant to routing.
-func anthropicFingerprintEnvForTask(task Task, env map[string]string) map[string]string {
-	if taskSandboxed(task) {
-		return env
+// directCredentialChannels are the env entries that name a credential of the
+// run by themselves: the Anthropic key, the OAuth forfait's config dir.
+var directCredentialChannels = []string{"ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"}
+
+// anthropicFingerprintEnvForTask is the env a session's source label is read
+// from, never the one it spawns with. A direct credential names the route only
+// when the resolver selected it: the pod's ambient key forwarded into a
+// sandbox, or one a node's own env adds, is no credential of the run and reads
+// as the inherited env does on the host — the usage meter and the spend ledger
+// charge that label to no bundle credential. A host-inherited endpoint is
+// accounted for without changing the spawn environment; a sandbox already has
+// explicit forwarding. Preserve an explicit empty override and the historical
+// cloud-mode labels: a cloud switch makes an inherited Anthropic endpoint
+// irrelevant to routing.
+func anthropicFingerprintEnvForTask(task Task, env, selected map[string]string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	for key, value := range env {
+		out[key] = value
 	}
-	if _, explicit := env["ANTHROPIC_BASE_URL"]; explicit {
-		return env
+	for _, key := range directCredentialChannels {
+		if selected[key] == "" {
+			delete(out, key)
+		}
+	}
+	if taskSandboxed(task) {
+		return out
+	}
+	if _, explicit := out["ANTHROPIC_BASE_URL"]; explicit {
+		return out
 	}
 	base := os.Getenv("ANTHROPIC_BASE_URL")
 	if base == "" {
-		return env
+		return out
 	}
 	for _, key := range cloudProviderSwitches {
-		value, explicit := env[key]
+		value, explicit := out[key]
 		if !explicit {
 			value = os.Getenv(key)
 		}
 		if value != "" {
-			return env
+			return out
 		}
-	}
-	out := make(map[string]string, len(env)+1)
-	for key, value := range env {
-		out[key] = value
 	}
 	out["ANTHROPIC_BASE_URL"] = base
 	return out

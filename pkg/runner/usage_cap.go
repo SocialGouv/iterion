@@ -210,9 +210,10 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 // refusal to the z.ai fingerprint would park the healthy key and keep the
 // frozen one — the failure this whole struct exists to avoid.
 //
-// A label that NAMES a slot is answered by that slot ALONE: when the run holds
-// no fingerprint for it, the reading is keyed on the scope with no credential
-// rather than on whichever key the precedence happens to start with. That
+// A label that NAMES a slot is answered by that slot ALONE — a facade, the
+// Anthropic key, the OAuth dir: when the run holds no fingerprint for it, the
+// reading is keyed on the scope with no credential rather than on whichever
+// key the precedence happens to start with. That
 // state is reachable — a pod-level MOONSHOT_API_KEY funds a moonshot-pinned
 // node (facadeCredEnvForHint) without being a BYOK record, so the run carries
 // no moonshot fingerprint while its readings still say moonshot — and the
@@ -233,10 +234,16 @@ func (k runCredKeys) slotForSource(source string) string {
 		if s := delegate.AnthropicWireFacadeSlot(source); s != "" {
 			return s
 		}
-	case source == "anthropic-direct" && k.anthropicFP != "":
-		return string(secrets.ProviderAnthropic)
-	case source == "anthropic-oauth" && k.oauthFP != "":
-		return string(secrets.OAuthKindClaudeCode)
+	case source == "anthropic-direct":
+		if k.anthropicFP != "" {
+			return string(secrets.ProviderAnthropic)
+		}
+		return ""
+	case source == "anthropic-oauth":
+		if k.oauthFP != "" {
+			return string(secrets.OAuthKindClaudeCode)
+		}
+		return ""
 	case source == "anthropic-env":
 		return ""
 	}

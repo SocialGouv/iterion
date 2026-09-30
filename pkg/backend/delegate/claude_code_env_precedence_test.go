@@ -27,6 +27,7 @@ func TestClaudeTaskEnvPrecedenceAtSpawn(t *testing.T) {
 		ambient         map[string]string
 		extra           []string
 		keys            map[secrets.Provider]string
+		pinned          map[secrets.Provider]string
 		hint            string
 		want            map[string]string
 		refused         bool
@@ -37,7 +38,11 @@ func TestClaudeTaskEnvPrecedenceAtSpawn(t *testing.T) {
 		{name: "override ambient base", ambient: map[string]string{base: "https://old.example/api"}, extra: []string{base + "=https://new.example/api?version=1"}, want: map[string]string{base: "https://new.example/api?version=1"}},
 		{name: "last explicit value wins", ambient: map[string]string{base: "https://old.example/api"}, extra: []string{base + "=https://first.example", "invalid", "=invalid", base + "="}, want: map[string]string{base: ""}},
 		{name: "clear ambient API key", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "="}, want: map[string]string{api: ""}},
-		{name: "direct hint replaces inherited API key", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "=task-key"}, want: map[string]string{api: "task-key", base: "", auth: ""}},
+		{name: "direct hint replaces inherited API key", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "=task-key"}, want: map[string]string{api: "task-key", base: "", auth: ""}, fingerprint: "anthropic-env"},
+		{name: "the pod's ambient key names no credential of the run", ambient: map[string]string{api: "ambient-key"}, want: map[string]string{api: "ambient-key"}, fingerprint: "anthropic-env"},
+		{name: "a task's own key names no credential of the run", extra: []string{api + "=task-key"}, want: map[string]string{api: "task-key"}, fingerprint: "anthropic-env"},
+		{name: "a task's own config dir names no forfait of the run", extra: []string{"CLAUDE_CONFIG_DIR=/task/claude"}, want: map[string]string{}, fingerprint: "anthropic-env"},
+		{name: "a key pinned for the route names it", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, pinned: map[secrets.Provider]string{secrets.ProviderAnthropic: "pinned-key"}, want: map[string]string{api: "pinned-key"}, fingerprint: "anthropic-direct"},
 		{name: "direct hint clears inherited API key", hint: "anthropic", ambient: map[string]string{api: "ambient-key"}, extra: []string{api + "="}, want: map[string]string{api: "", base: "", auth: ""}},
 		{name: "direct hint replaces inherited OAuth token", hint: "anthropic", ambient: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "ambient-oauth"}, extra: []string{"CLAUDE_CODE_OAUTH_TOKEN=task-oauth"}, want: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "task-oauth", base: "", auth: ""}},
 		{name: "direct hint clears inherited OAuth token", hint: "anthropic", ambient: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "ambient-oauth"}, extra: []string{"CLAUDE_CODE_OAUTH_TOKEN="}, want: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "", base: "", auth: ""}},
@@ -82,8 +87,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 						t.Fatal(err)
 					}
 					ctx := context.Background()
-					if tc.keys != nil {
-						ctx = ctxWithCreds(t, tc.keys, nil)
+					if tc.keys != nil || tc.pinned != nil {
+						ctx = ctxWithPinnedCreds(t, tc.keys, tc.pinned, nil)
 					}
 					ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
