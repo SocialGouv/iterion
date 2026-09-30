@@ -290,11 +290,19 @@ timeline shows both halves: `sandbox_scratch_banked` (`banked`, `empty`,
 A run whose last teardown left a scratch it could **not** bank (past the cap, a
 listing, tar or upload failure, a store that keeps no bank) is refused
 `SCRATCH_NOT_PORTABLE` before the resume claims it: its next nodes would
-otherwise find the scratch empty and fail far from the cause. Relaunch it
-fresh, or resume with `--force` to continue without the scratch. A bank that
-cannot be read or extracted at resume — or a timeline that cannot be read to
-find it — parks the run under the same code and is kept for the next attempt;
-`--force` continues without it there too.
+otherwise find the scratch empty and fail far from the cause. So is a run that
+moved past its bank — a node finished after the last teardown banked, in a
+sandbox lost without a teardown (an OOM kill, a lost node): restored, the bank
+would revert what that node wrote. Relaunch it fresh, or resume with `--force`
+to continue as it stands — without the scratch, or with the older bank, marked
+`stale`. The teardown writes the bank and its record under the run's identity,
+after the run's cancellation (a drain, a lost lease, an operator's cancel).
+
+At resume, a bank that is gone or does not extract parks the run under the
+same code; `--force` continues without it, and its teardown banks the new
+scratch in its place. A read that fails on the way — the timeline, the bank's
+store, the stream into the sandbox — parks it with no code, so the resume is
+retried, `--force` or not, and the bank is kept for that attempt.
 
 Not banked: the host scratch of an unsandboxed run. It survives a resume on the
 same host, and is lost on another one, which happens in the cloud runner's

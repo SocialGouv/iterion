@@ -46,7 +46,7 @@ func (e *Engine) finishRunResources(ctx context.Context, runID string, scope *ru
 			defer scope.gate.sem.Release(resourceWriterWeight)
 			defer release()
 			if err := restore(); err != nil {
-				_ = e.recordResourceRestoreFailure(context.Background(), runID, err)
+				_ = e.recordResourceRestoreFailure(ctx, runID, err)
 			}
 		}()
 		return recorded

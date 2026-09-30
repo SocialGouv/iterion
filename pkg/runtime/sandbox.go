@@ -1860,7 +1860,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active.run != nil {
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
-			e.bankScratchOnCleanup(runID, active, emitForSandbox)
+			e.bankScratchOnCleanup(ctx, runID, active)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,6 +107,15 @@ func scratchEngine(s store.RunStore, exec *stubExecutor, d *podDriver) *Engine {
 			"docker": func() (sandbox.Driver, error) { return d, nil },
 		}),
 	)
+}
+
+// dataOf is what a list of events carries, for a failure message.
+func dataOf(evs []*store.Event) []map[string]any {
+	out := make([]map[string]any, len(evs))
+	for i, ev := range evs {
+		out[i] = ev.Data
+	}
+	return out
 }
 
 func eventsOf(t *testing.T, s store.RunStore, runID string, typ store.EventType) []*store.Event {
@@ -379,11 +389,9 @@ func TestBankScratchOnCleanup_leavesAHostBackedScratch(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(scratchWorkflow(), s, newStubExecutor(), WithLogger(iterlog.Nop()))
-	var events []store.EventType
-	emit := func(t store.EventType, _ map[string]any) error { events = append(events, t); return nil }
-	e.bankScratchOnCleanup(runID, &activeSandbox{run: localRun(dir), scratchHostDir: dir}, emit)
-	if len(events) != 0 {
-		t.Fatalf("a host-backed scratch was banked: %v", events)
+	e.bankScratchOnCleanup(ctx, runID, &activeSandbox{run: localRun(dir), scratchHostDir: dir})
+	if got := eventsOf(t, s, runID, store.EventSandboxScratchBanked); len(got) != 0 {
+		t.Fatalf("a host-backed scratch was banked: %v", dataOf(got))
 	}
 	if _, err := store.AsScratchBankStore(s).OpenScratchBank(ctx, runID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a host-backed scratch left a bank: %v", err)
@@ -570,7 +578,7 @@ func TestResume_forceContinuesPastAMissingBank(t *testing.T) {
 	}
 	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
 	if len(restored) != 1 || restored[0].Data["forced"] != true || restored[0].Data["restored"] != false {
-		t.Fatalf("the forced resume did not record that it ran without the scratch: %+v", restored)
+		t.Fatalf("the forced resume did not record that it ran without the scratch: %v", dataOf(restored))
 	}
 }
 
@@ -620,9 +628,10 @@ func (unreadableEventsStore) LoadEvents(context.Context, string) ([]*store.Event
 }
 
 // TestScratchBank_anUnreadableEventLogIsNotNothingRecorded: events that
-// cannot be read never read as "nothing banked". The restore fails by name
-// and holds the bank, so this sandbox's teardown does not replace it; the
-// pre-claim refusals refuse rather than wave the resume through.
+// cannot be read never read as "nothing banked". The restore fails — as a
+// read to retry, not a deterministic refusal, --force or not — and holds
+// the bank, so this sandbox's teardown does not replace it; the pre-claim
+// refusals refuse rather than wave the resume through.
 func TestScratchBank_anUnreadableEventLogIsNotNothingRecorded(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
@@ -630,16 +639,20 @@ func TestScratchBank_anUnreadableEventLogIsNotNothingRecorded(t *testing.T) {
 	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatal(err)
 	}
+	for _, force := range []bool{false, true} {
+		e := New(scratchWorkflow(), unreadableEventsStore{s}, newStubExecutor(), WithLogger(iterlog.Nop()))
+		e.forceResume = force
+		e.activeShare = &SharedSandbox{Run: localRun(t.TempDir())}
+		err := e.restoreBankedScratch(ctx, runID)
+		var rt *RuntimeError
+		if err == nil || errors.As(err, &rt) {
+			t.Fatalf("restore on an unreadable event log (force=%v): want an error to retry, got %v", force, err)
+		}
+		if !e.scratchBankHeld {
+			t.Fatalf("the failed restore (force=%v) did not hold the bank: this sandbox's teardown would replace it", force)
+		}
+	}
 	e := New(scratchWorkflow(), unreadableEventsStore{s}, newStubExecutor(), WithLogger(iterlog.Nop()))
-	e.activeShare = &SharedSandbox{Run: localRun(t.TempDir())}
-	err := e.restoreBankedScratch(ctx, runID)
-	var rt *RuntimeError
-	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
-		t.Fatalf("restore on an unreadable event log: want SCRATCH_NOT_PORTABLE, got %v", err)
-	}
-	if !e.scratchBankHeld {
-		t.Fatal("the failed restore did not hold the bank: this sandbox's teardown would replace it")
-	}
 	r, err := s.LoadRun(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
@@ -672,14 +685,10 @@ func TestBankScratchOnCleanup_aStoreWithoutBankRecordsWhy(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(scratchWorkflow(), bankLessStore{s}, newStubExecutor(), WithLogger(iterlog.Nop()))
-	emit := func(typ store.EventType, data map[string]any) error {
-		_, err := s.AppendEvent(ctx, runID, store.Event{Type: typ, Data: data})
-		return err
-	}
-	e.bankScratchOnCleanup(runID, &activeSandbox{run: localRun(dir)}, emit)
+	e.bankScratchOnCleanup(ctx, runID, &activeSandbox{run: localRun(dir)})
 	got := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
 	if len(got) != 1 || got[0].Data["banked"] != false || !strings.Contains(fmt.Sprint(got[0].Data["reason"]), "keeps no scratch bank") {
-		t.Fatalf("a store without a bank: %+v, want one not-banked event naming why", got)
+		t.Fatalf("a store without a bank: %v, want one not-banked event naming why", dataOf(got))
 	}
 	r, err := s.LoadRun(ctx, runID)
 	if err != nil {
@@ -688,5 +697,184 @@ func TestBankScratchOnCleanup_aStoreWithoutBankRecordsWhy(t *testing.T) {
 	var rt *RuntimeError
 	if err := e.refuseResumeLosingScratch(ctx, r); !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
 		t.Fatalf("the resume after it: want SCRATCH_NOT_PORTABLE, got %v", err)
+	}
+}
+
+// strictStore behaves as the cloud store does: a query without the run's
+// tenant panics, and a cancelled context fails.
+type strictStore struct{ store.RunStore }
+
+func (s strictStore) Unwrap() store.RunStore { return s.RunStore }
+
+func (s strictStore) check(ctx context.Context) error {
+	if tenant, ok := store.TenantFromContext(ctx); !ok || tenant == "" {
+		panic("store/mongo: tenant-scoped query without tenant in ctx")
+	}
+	return ctx.Err()
+}
+
+func (s strictStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	if err := s.check(ctx); err != nil {
+		return nil, err
+	}
+	return s.RunStore.LoadRun(ctx, id)
+}
+
+func (s strictStore) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	if err := s.check(ctx); err != nil {
+		return nil, err
+	}
+	return s.RunStore.AppendEvent(ctx, runID, evt)
+}
+
+// TestBankScratchOnCleanup_writesUnderTheRunsTenantPastItsCancel: the
+// teardown reaches the store with the run's identity — the cloud store
+// panics on a tenant-less query — and after the run's context is cancelled,
+// which a drain, a lost lease and an operator's cancel all do before it:
+// the bank and its record both land.
+func TestBankScratchOnCleanup_writesUnderTheRunsTenantPastItsCancel(t *testing.T) {
+	s := tmpStore(t)
+	const runID = "run-scratch-tenant"
+	idCtx := store.WithIdentity(context.Background(), "tenant-1", "owner-1")
+	if _, err := s.CreateRun(idCtx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "floor.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(idCtx)
+	cancel()
+	e := New(scratchWorkflow(), strictStore{s}, newStubExecutor(), WithLogger(iterlog.Nop()))
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("the teardown queried the store without the run's tenant: %v", r)
+			}
+		}()
+		e.bankScratchOnCleanup(runCtx, runID, &activeSandbox{run: localRun(dir)})
+	}()
+	got := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
+	if len(got) != 1 || got[0].Data["banked"] != true {
+		t.Fatalf("a cancelled run's teardown: %v, want one banked record", dataOf(got))
+	}
+	if _, err := store.AsScratchBankStore(s).OpenScratchBank(idCtx, runID); err != nil {
+		t.Fatalf("a cancelled run's teardown stored no bank: %v", err)
+	}
+}
+
+// flakyBankStore fails every read of its scratch bank on the way.
+type flakyBankStore struct{ store.RunStore }
+
+func (f flakyBankStore) PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error {
+	return store.AsScratchBankStore(f.RunStore).PutScratchBank(ctx, runID, body, size)
+}
+
+func (f flakyBankStore) OpenScratchBank(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("blob: GET sessions/run/scratch.tgz: 503 Slow Down")
+}
+
+func (f flakyBankStore) DeleteScratchBank(ctx context.Context, runID string) error {
+	return store.AsScratchBankStore(f.RunStore).DeleteScratchBank(ctx, runID)
+}
+
+// TestResume_aBankReadThatFailsOnTheWayIsRetried: a bank that could not be
+// read on the way is not SCRATCH_NOT_PORTABLE — the deterministic code the
+// runner acks without redelivering — and --force does not skip it: the bank
+// is there, and held for the retry.
+func TestResume_aBankReadThatFailsOnTheWayIsRetried(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-flaky-bank"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
+	})
+	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	for _, force := range []bool{false, true} {
+		before := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked))
+		e := scratchEngine(flakyBankStore{s}, x, d)
+		e.forceResume = force
+		err := e.Resume(ctx, runID, map[string]any{"ok": true})
+		var rt *RuntimeError
+		if err == nil || (errors.As(err, &rt) && rt.Code == ErrCodeScratchNotPortable) {
+			t.Fatalf("Resume on a bank read failing on the way (force=%v): want an error to retry, not %v", force, err)
+		}
+		if after := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked)); after != before {
+			t.Fatalf("the failed restore's teardown (force=%v) banked over the bank (%d → %d events)", force, before, after)
+		}
+		if r, _ := s.LoadRun(ctx, runID); r.FailureCode == store.FailureScratchNotPortable {
+			t.Fatalf("the run was parked SCRATCH_NOT_PORTABLE on a read to retry (force=%v)", force)
+		}
+		if err := s.SaveRun(ctx, resumable(t, s, runID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// resumable puts runID back in the status its pause left, as an operator's
+// next attempt finds it.
+func resumable(t *testing.T, s store.RunStore, runID string) *store.Run {
+	t.Helper()
+	r, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		r.Status, r.Error, r.FailureCode = store.RunStatusFailedResumable, "", ""
+	}
+	return r
+}
+
+// TestResume_refusesABankTheRunHasMovedPast: a node finished after the last
+// teardown banked the scratch, and no teardown banked again — the attempt
+// that ran it lost its sandbox without one. Restored, the bank would revert
+// what the node wrote: the resume refuses by name before claiming the run,
+// and --force restores it anyway, marked stale.
+func TestResume_refusesABankTheRunHasMovedPast(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-stale-bank"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "ledger.json"), []byte(`{"round": 1}`), 0o644)
+	})
+	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeFinished, NodeID: "measure"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
+	var rt *RuntimeError
+	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(rt.Message, "revert") {
+		t.Fatalf("Resume past a stale bank: want SCRATCH_NOT_PORTABLE naming the revert, got %v", err)
+	}
+	if r, _ := s.LoadRun(ctx, runID); r.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("the refused resume claimed the run: status %s", r.Status)
+	}
+	forced := scratchEngine(s, x, d)
+	forced.forceResume = true
+	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume --force: %v", err)
+	}
+	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
+	if len(restored) != 1 || restored[0].Data["stale"] != true {
+		t.Fatalf("the forced restore of a stale bank did not say so: %v", dataOf(restored))
 	}
 }

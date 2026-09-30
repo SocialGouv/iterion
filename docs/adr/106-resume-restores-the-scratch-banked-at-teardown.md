@@ -47,20 +47,28 @@ pods the same way.
   in the cloud, `runs/<id>/scratch-bank.tgz` on the filesystem, swept with
   the run). An empty scratch drops a previous bank; a finished run keeps
   none. The outcome is an event,
-  `sandbox_scratch_banked {banked, empty, bytes, reason}`.
+  `sandbox_scratch_banked {banked, empty, bytes, reason}`. Both are written
+  under the run's identity and past its cancellation: a drain, a lost lease
+  or an operator's cancel reaches the teardown first.
 - **Cap.** 256 MiB compressed. Past it, or on a listing, tar or upload
   failure, or in a store that keeps no bank, nothing is stored and the event
   names why.
 - **Resume, before the claim.** A run whose last teardown recorded a
   non-empty scratch it could not bank is refused `SCRATCH_NOT_PORTABLE` (a
-  deterministic failure code). `--force` resumes it without the scratch, and
-  says so. A timeline that cannot be read refuses the resume too: it never
-  reads as "nothing recorded".
+  deterministic failure code). So is a run that moved past its bank: a node
+  finished after the last `sandbox_scratch_banked`, which only a sandbox lost
+  without a teardown leaves behind — restored, the bank would revert what
+  that node wrote. `--force` resumes either as it stands, and says so. A
+  timeline that cannot be read refuses the resume too: it never reads as
+  "nothing recorded".
 - **Resume, after the new sandbox starts** (the pause family and the failure
   path alike). The bank is extracted before the first node
-  (`sandbox_scratch_restored`). A bank that cannot be read or extracted parks
-  the run under the same code and is kept: the failed sandbox's teardown
-  banks nothing over it. `--force` goes on without it, and the event says so.
+  (`sandbox_scratch_restored {restored, bytes, stale, forced, reason}`). Every
+  failure holds the bank: the failed sandbox's teardown banks nothing over it.
+  A bank that is gone or does not extract parks the run
+  `SCRATCH_NOT_PORTABLE`, and `--force` goes on without it. A read that fails
+  on the way — the timeline, the store, the stream — parks it without a
+  code: the runner redelivers, and `--force` does not skip it.
 
 ## Consequences
 
