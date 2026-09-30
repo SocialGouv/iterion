@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.217.2](https://github.com/SocialGouv/iterion/compare/v3.217.1...v3.217.2) (2026-09-30)
+
+### Bug Fixes
+
+* **instrument:** lessons from the graal campaign — redaction-net review, a verified capture helper, no docker in verify.sh ([#1929](https://github.com/SocialGouv/iterion/issues/1929)) ([27b7cd5](https://github.com/SocialGouv/iterion/commit/27b7cd5e995783dadf427ec960885e2a3aa55417))
+
+    <details><summary>why</summary>
+
+    Lessons from the graal observability campaign, landed in the instrument (Obsy) chassis and its ten verify-build siblings.
+
+    </details>
+* **tool-nodes:** python runs isolated in every tool node ([#1968](https://github.com/SocialGouv/iterion/issues/1968)) ([df7eb09](https://github.com/SocialGouv/iterion/commit/df7eb090e0989819b7851b5f4d2445b3770caf1f))
+
+    <details><summary>why</summary>
+
+    A tool node runs with the workspace as its working directory. `python3 -c` (and -m, and stdin) puts that directory first on sys.path, as python puts a script file's own directory, and the engine lands a `language: py` script in the workspace under a copy-based sandbox. A json.py, hashlib.py or subprocess.py at the root of the judged tree, git-ignored or not, replaced the standard module inside the node: a gate whose verdict the tree it judges writes (shown on a docs gate, where a forged corpus…
+
+    </details>
+
 ## [3.217.1](https://github.com/SocialGouv/iterion/compare/v3.217.0...v3.217.1) (2026-09-30)
 
 ### Bug Fixes
