@@ -962,12 +962,12 @@ func TestAProbeRefusalNeverNamesTheWorkspaceRoot(t *testing.T) {
 	}
 }
 
-// TestRelProbeDiagnosticsStripsTheUnitRoot: the rel-mapping itself. Every
-// name a probe diagnostic can carry is Join(Root, Rel), so the position
-// field and a message citing a name verbatim are both answered by cutting
-// the root — kind, line and column untouched. A files-map probe (Root "",
-// every name already the rel) is left alone.
-func TestRelProbeDiagnosticsStripsTheUnitRoot(t *testing.T) {
+// TestRelUnitDiagnosticsStripsTheUnitRoot: the rel-mapping itself. Every
+// name a disk-loaded unit's diagnostic can carry is Join(Root, Rel), so
+// the position field and a message citing a name verbatim are both
+// answered by cutting the root — kind, line and column untouched. A
+// files-map unit (Root "", every name already the rel) is left alone.
+func TestRelUnitDiagnosticsStripsTheUnitRoot(t *testing.T) {
 	sep := string(os.PathSeparator)
 	root := sep + filepath.Join("home", "operator", "project", "demo")
 	abs := func(rel string) string { return root + sep + filepath.FromSlash(rel) }
@@ -980,7 +980,7 @@ func TestRelProbeDiagnosticsStripsTheUnitRoot(t *testing.T) {
 			{Code: parser.DiagImportUnreadable, Severity: parser.SeverityError, File: abs("main.bot"), Line: 1, Column: 1, Message: "cannot read main.bot: open " + abs("main.bot") + ": permission denied"},
 		},
 	}
-	relProbeDiagnostics(probe)
+	relUnitDiagnostics(probe)
 	for _, d := range probe.Diagnostics {
 		if strings.Contains(d.File, root) || strings.Contains(d.Message, root) {
 			t.Fatalf("an absolute path survived the mapping: %v", d)
@@ -996,9 +996,48 @@ func TestRelProbeDiagnosticsStripsTheUnitRoot(t *testing.T) {
 	mapped := &unit.Unit{
 		Diagnostics: []parser.Diagnostic{{Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError, File: "main.bot", Line: 3, Column: 1, Message: "declared twice"}},
 	}
-	relProbeDiagnostics(mapped)
+	relUnitDiagnostics(mapped)
 	if d := mapped.Diagnostics[0]; d.File != "main.bot" || d.Message != "declared twice" {
 		t.Fatalf("a files-map probe was rewritten: %v", d)
+	}
+}
+
+// TestAnApplyNeverNamesTheWorkspaceRoot: the apply re-loads the unit from
+// DISK with the edited file staged, and its diagnostics are positioned
+// under absolute paths — the loader's. Both ways they cross to the client
+// are cut to the unit's relative names (#1934): an `import` the loader
+// cannot follow is a 422 whose body quotes the diagnostic, and an error
+// the edit introduces in a file the bot already holds rides the 200's
+// diagnostics.
+func TestAnApplyNeverNamesTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+
+	missing := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"", "import \"lib/nodes.bot\"\nimport \"lib/missing.bot\"", 1)
+	rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": missing})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an apply whose import does not resolve: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "lib/missing.bot") {
+		t.Fatalf("the refusal does not name the import as written: %s", body)
+	}
+	if strings.Contains(body, workdir) {
+		t.Fatalf("the refusal discloses the server's directory layout: %s", body)
+	}
+
+	dup := unitFixtureMain + "\nagent worker:\n  description: \"again\"\n"
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": dup})
+	if rec.Code != http.StatusOK || len(applied.Diagnostics) == 0 {
+		t.Fatalf("the duplicate is not the case under test: %d %s", rec.Code, rec.Body.String())
+	}
+	joined := strings.Join(applied.Diagnostics, "\n")
+	if !strings.Contains(joined, "main.bot:") {
+		t.Fatalf("the diagnostics do not cite the main by its relative path: %s", joined)
+	}
+	if strings.Contains(joined, workdir) {
+		t.Fatalf("the diagnostics disclose the server's directory layout: %s", joined)
 	}
 }
 
