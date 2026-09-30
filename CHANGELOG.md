@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.218.2](https://github.com/SocialGouv/iterion/compare/v3.218.1...v3.218.2) (2026-09-30)
+
+### Bug Fixes
+
+* **delegate:** run claude_code subagents in the foreground on every spawn ([#2017](https://github.com/SocialGouv/iterion/issues/2017)) ([fcc9e03](https://github.com/SocialGouv/iterion/commit/fcc9e0387ca795e3413c404547800e103e231233)), references [#1953](https://github.com/SocialGouv/iterion/issues/1953) [#2](https://github.com/SocialGouv/iterion/issues/2) [#1](https://github.com/SocialGouv/iterion/issues/1) [1/#2](https://github.com/SocialGouv/iterion/issues/2) [#N](https://github.com/SocialGouv/iterion/issues/N) [#N](https://github.com/SocialGouv/iterion/issues/N) [#N](https://github.com/SocialGouv/iterion/issues/N) [#2](https://github.com/SocialGouv/iterion/issues/2) [#N](https://github.com/SocialGouv/iterion/issues/N) [#1](https://github.com/SocialGouv/iterion/issues/1) [#2](https://github.com/SocialGouv/iterion/issues/2)
+
+    <details><summary>why</summary>
+
+    A documentation-campaign node on the claude_code backend (CLI 2.1.280, claude-opus-5-5, reasoning effort max, so not ultracode) lost its auditors' findings on three of the four passes of one run:
+
+    </details>
+* **sandbox:** the launcher starts only the operator's MCP servers on a sandboxed claw node ([#1945](https://github.com/SocialGouv/iterion/issues/1945)) ([#2008](https://github.com/SocialGouv/iterion/issues/2008)) ([d359758](https://github.com/SocialGouv/iterion/commit/d3597589b7c8c13cc8648d906db22c5d3683bb4f))
+
+    <details><summary>why</summary>
+
+    A sandboxed claw node advertises its resolved tools to the in-container runner, and the launcher executes every call the runner forwards. Where a tool may execute is now an explicit, exhaustive classification (tool.SandboxPlacementOf), and the launcher enforces it:
+
+    </details>
+
 ## [3.218.1](https://github.com/SocialGouv/iterion/compare/v3.218.0...v3.218.1) (2026-09-30)
 
 ### Bug Fixes
