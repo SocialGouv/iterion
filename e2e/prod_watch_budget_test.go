@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,25 +71,48 @@ func pwPromInputs(base string, deadline, probes, timeout int) map[string]any {
 // TestProdWatch_PlanRefusesFetchesOverTheRunBudget: a tick the run budget
 // kills posts nothing, the health probes included — plan refuses a config
 // whose fetches can wait longer than the budget keeps for them, naming each
-// wait; the defaults fit.
+// wait (a probe counts its retry and its host's lookup, the release endpoint
+// its lookup); the defaults fit.
 func TestProdWatch_PlanRefusesFetchesOverTheRunBudget(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
-	for name, c := range map[string]struct {
-		edit   func(cfg map[string]any)
-		refuse bool
-	}{
-		"the defaults": {func(cfg map[string]any) {}, false},
-		"slow probes": {func(cfg map[string]any) {
+	probes := func(n, timeout int, oneHost bool) func(cfg map[string]any) {
+		return func(cfg map[string]any) {
 			var ps []any
-			for k := 0; k < 10; k++ {
-				ps = append(ps, map[string]any{"id": fmt.Sprint("h", k), "url": "http://127.0.0.1:9/health", "timeout_secs": 40})
+			for k := 0; k < n; k++ {
+				host := fmt.Sprintf("h%d.example", k)
+				if oneHost {
+					host = "app.example"
+				}
+				ps = append(ps, map[string]any{"id": fmt.Sprint("h", k), "url": "http://" + host + fmt.Sprintf("/health%d", k), "timeout_secs": timeout})
 			}
 			cfg["probes"] = ps
-		}, true},
-		"long lane deadlines": {func(cfg map[string]any) {
-			cfg["grafana"].(map[string]any)["deadline_secs"] = 300
-		}, true},
+		}
+	}
+	for name, c := range map[string]struct {
+		edit   func(cfg map[string]any)
+		fetch  int
+		refuse string
+	}{
+		"the defaults": {func(cfg map[string]any) {}, 20, ""},
+		"slow probes":  {probes(10, 40, false), 20, "probes"},
+		// Counted once each they would fit (6 x 30 s on one host, looked up
+		// once); tried twice, two seconds apart, they do not.
+		"probes with their retry": {probes(6, 30, true), 20, "probes"},
+		"long lane deadlines":     {func(cfg map[string]any) { cfg["grafana"].(map[string]any)["deadline_secs"] = 300 }, 20, "loki"},
+		"a slow release endpoint": {func(cfg map[string]any) {}, 250, "release"},
+		"a long Sentry deadline": {func(cfg map[string]any) {
+			cfg["sentry"] = map[string]any{"base_url": "https://sentry.example", "org": "o", "project": "p", "deadline_secs": 600}
+		}, 20, "sentry"},
+		// Five probes on five hosts: their two tries fit (5 x 42 s), not with
+		// each host's lookup (5 x 62 s).
+		"probes and their lookups": {probes(5, 20, false), 20, "probes"},
+		// Every lane on at its defaults, three probes: the defaults fit.
+		"every lane on, three probes": {func(cfg map[string]any) {
+			probes(3, 10, false)(cfg)
+			cfg["sentry"] = map[string]any{"base_url": "https://sentry.example", "org": "o", "project": "p"}
+		}, 20, ""},
+		"no fetch timeout": {func(cfg map[string]any) {}, 0, "fetch_timeout_secs"},
 	} {
 		name, c := name, c
 		t.Run(name, func(t *testing.T) {
@@ -94,15 +120,15 @@ func TestProdWatch_PlanRefusesFetchesOverTheRunBudget(t *testing.T) {
 			h := newPWHarness(t)
 			h.writeConfig(t, c.edit)
 			vars := map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
-				"max_window_minutes": 60, "fetch_timeout_secs": 20, "ingest_lag_seconds": 0, "max_lines": 5000}
+				"max_window_minutes": 60, "fetch_timeout_secs": c.fetch, "ingest_lag_seconds": 0, "max_lines": 5000}
 			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars,
 				map[string]string{"grafana_token": h.tokenFile, "webhooks": h.webhooksFile}))
-			refused := err != nil && strings.Contains(stderr, "run budget")
-			if refused != c.refuse {
-				t.Fatalf("%s: refused=%v, want %v: %v %s", name, refused, c.refuse, err, stderr)
+			refused := err != nil && (strings.Contains(stderr, "run budget") || strings.Contains(stderr, "fetch_timeout_secs must"))
+			if refused != (c.refuse != "") {
+				t.Fatalf("%s: refused=%v, want %v: %v %s", name, refused, c.refuse != "", err, stderr)
 			}
-			if refused && (!strings.Contains(stderr, "probes") || strings.Contains(stderr, "Traceback")) {
-				t.Fatalf("%s: the refusal does not name the waits: %s", name, stderr)
+			if refused && (!strings.Contains(stderr, c.refuse+" ") || strings.Contains(stderr, "Traceback")) {
+				t.Fatalf("%s: the refusal does not name the %s wait: %s", name, c.refuse, stderr)
 			}
 		})
 	}
@@ -157,39 +183,81 @@ func TestProdWatch_AGrafanaCallAndItsRetryShareOneClock(t *testing.T) {
 	}
 }
 
+func pwProbeAlerts(n int) []map[string]any {
+	var alerts []map[string]any
+	for k := 0; k < n; k++ {
+		alerts = append(alerts, map[string]any{"fingerprint": fmt.Sprint("probe:api", k), "kind": "probe", "severity": "critical", "state": "new",
+			"title_key": "probe_down", "title_arg": fmt.Sprint("api", k), "detail_key": "probe_detail",
+			"fields":   map[string]any{"url": "u", "status": 503, "ms": 5, "expected": 200},
+			"evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-29T10:00:00+00:00"})
+	}
+	return alerts
+}
+
+func pwHooksFile(t *testing.T, hooks map[string]string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "webhooks.json")
+	b, _ := json.Marshal(hooks)
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // TestProdWatch_ADeliveryPostHasAWallClock: a sink trickling its answer fails
-// each post at its wall clock, and the delivery at its window — nothing is
-// consumed, the tick replays — instead of holding the tick until the run
-// budget kills it.
+// the post at its wall clock, and is not asked again this tick — its other
+// posts fail at once — so a sick sink costs the tick one wall clock, not one
+// per message; nothing is consumed, the tick replays.
 func TestProdWatch_ADeliveryPostHasAWallClock(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
-	hooks := filepath.Join(t.TempDir(), "webhooks.json")
-	b, _ := json.Marshal(map[string]string{"w1": pwRawServer(t, "HTTP/1.1 200 OK\r\nX-Pad: ", strings.Repeat("a", 60)) + "/hooks/x"})
-	if err := os.WriteFile(hooks, b, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var alerts []map[string]any
-	for k := 0; k < 6; k++ {
-		alerts = append(alerts, map[string]any{"fingerprint": fmt.Sprint("probe:api", k), "kind": "probe", "severity": "critical", "state": "new",
-			"title_key": "probe_down", "detail_key": "probe_detail", "fields": map[string]any{"url": "u", "status": 503, "ms": 5, "expected": 200},
-			"evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-29T10:00:00+00:00"})
-	}
+	hooks := pwHooksFile(t, map[string]string{"w1": pwRawServer(t, "HTTP/1.1 200 OK\r\nX-Pad: ", strings.Repeat("a", 60)) + "/hooks/x"})
 	start := time.Now()
 	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
-		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
+		"alerts": pwProbeAlerts(6), "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false,
-		"dry_run": false, "max_message_chars": 14000}, nil, map[string]string{"webhooks": hooks}))
+		"dry_run": false, "max_message_chars": 14000, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": hooks}))
 	took := time.Since(start)
-	if err == nil || !strings.Contains(stderr, "within its wall clock") {
-		t.Fatalf("a trickling sink: want each post failed by its wall clock, got %v %s", err, stderr)
+	if err == nil || !strings.Contains(stderr, "within its wall clock") || strings.Count(stderr, "skipped: the sink timed out") != 5 {
+		t.Fatalf("a trickling sink: want its first post failed by the wall clock and the five others skipped, got %v %s", err, stderr)
 	}
-	if !strings.Contains(stderr, "delivery window (90 s) closed") {
-		t.Fatalf("six posts of 20 s each: want the last ones failed by the delivery window, got %s", stderr)
+	if took > 25*time.Second {
+		t.Fatalf("the delivery ran %v (one wall clock of 20 s, the rest skipped)", took)
 	}
-	if took > 95*time.Second {
-		t.Fatalf("the delivery ran %v (its window is 90 s)", took)
+}
+
+// TestProdWatch_TheDeliveryStopsAtTheBudgetsDeadline: the delivery runs until
+// the time plan's budget keeps for it (deliver_by), at least a minute, then
+// fails the posts left — the state commit keeps its own time after it.
+func TestProdWatch_TheDeliveryStopsAtTheBudgetsDeadline(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	var got atomic.Int64
+	// 13 s a post: the fifth starts with 8 s of the minute left, the window
+	// cuts it, the sixth never starts — four delivered, whatever the jitter.
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(13 * time.Second)
+		got.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(slow.Close)
+	hooks := pwHooksFile(t, map[string]string{"w1": slow.URL + "/hooks/x"})
+	start := time.Now()
+	_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
+		"alerts": pwProbeAlerts(6), "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
+		"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false,
+		"dry_run": false, "max_message_chars": 14000, "deliver_by": time.Now().Add(30 * time.Second).Unix()}, nil, map[string]string{"webhooks": hooks}))
+	took := time.Since(start)
+	if err == nil || !strings.Contains(stderr, "delivery window closed") {
+		t.Fatalf("six posts of 13 s against a window of a minute: want the last ones failed by the window, got %v %s", err, stderr)
+	}
+	if strings.Contains(stderr, "skipped: the sink timed out") {
+		t.Fatalf("the window cut a post, and the sink was taken for timed out: %s", stderr)
+	}
+	if n := got.Load(); n != 4 {
+		t.Fatalf("a minute of 13-second posts: want 4 delivered, got %d (took %v)", n, took)
 	}
 }
 
@@ -278,8 +346,9 @@ func TestProdWatch_TheStateCommitRetriesWithinItsWindow(t *testing.T) {
 }
 
 // TestProdWatch_TheRunBudgetMatchesTheBot: plan's budget is the workflow's
-// budget.max_duration, and what it keeps after the fetches holds the
-// delivery's window and the state commit's.
+// budget.max_duration; what it keeps after the delivery holds the state
+// commit's window, and what it keeps between the fetches and the delivery's
+// deadline holds the delivery's floor.
 func TestProdWatch_TheRunBudgetMatchesTheBot(t *testing.T) {
 	t.Parallel()
 	src, err := os.ReadFile(filepath.Join("..", "bots", "prod-watch", "main.bot"))
@@ -296,15 +365,50 @@ func TestProdWatch_TheRunBudgetMatchesTheBot(t *testing.T) {
 		return n
 	}
 	minutes := num(`max_duration: "(\d+)m"`)
-	budget := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS = (\d+), \d+`)
-	after := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS = \d+, (\d+)`)
-	delivery := num(`DELIVERY_SECS = (\d+)`)
+	budget := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = (\d+), \d+, \d+`)
+	afterFetch := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = \d+, (\d+), \d+`)
+	afterDelivery := num(`RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = \d+, \d+, (\d+)`)
+	floor := num(`deliver_until = time.monotonic\(\) \+ max\((\d+), `)
 	commit := num(`COMMIT_SECS = (\d+)`)
 	if budget != minutes*60 {
 		t.Fatalf("plan's RUN_BUDGET_SECS %d is not the workflow's max_duration (%d min)", budget, minutes)
 	}
-	if delivery+commit >= after {
-		t.Fatalf("the delivery window (%d s) and the commit window (%d s) do not fit what plan keeps after the fetches (%d s)",
-			delivery, commit, after)
+	if afterDelivery < commit+30 {
+		t.Fatalf("what the budget keeps after the delivery (%d s) does not hold the commit window (%d s) and a margin", afterDelivery, commit)
+	}
+	if afterFetch-afterDelivery < floor+30 {
+		t.Fatalf("between the fetches and the delivery's deadline (%d s) the delivery's floor (%d s) and the leak scan do not fit",
+			afterFetch-afterDelivery, floor)
+	}
+}
+
+// TestProdWatch_TheRequiredSinksGoFirst: when the time left is short, the
+// required sinks take every message before an optional one takes any — an
+// optional sink slow but answering (15 s a post) cannot spend it.
+func TestProdWatch_TheRequiredSinksGoFirst(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	var got atomic.Int64
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fast.Close)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(15 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(slow.Close)
+	hooks := pwHooksFile(t, map[string]string{"w1": fast.URL + "/hooks/x", "slow": slow.URL + "/hooks/y"})
+	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
+		"alerts": pwProbeAlerts(6), "overflow_count": 0, "stale_sources": []any{},
+		"sinks": []map[string]any{{"webhook": "slow", "channel": "#backup", "min_severity": "low", "required": false},
+			{"webhook": "w1", "channel": "#ops", "min_severity": "low", "required": true}},
+		"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false,
+		"dry_run": false, "max_message_chars": 14000, "deliver_by": time.Now().Add(30 * time.Second).Unix()}, nil, map[string]string{"webhooks": hooks}))
+	if err != nil || out["consume"] != true || got.Load() != 6 {
+		t.Fatalf("a minute left, a slow optional sink listed first: want the required one to get 6 of 6 and the tick consumed, got %d, %v %v %s",
+			got.Load(), out["consume"], err, lastN(stderr, 300))
 	}
 }

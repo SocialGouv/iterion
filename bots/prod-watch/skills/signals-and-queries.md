@@ -259,7 +259,10 @@ whole and the cursor stays. The cursor's `since` is Sentry's own
 `Date` (the runner's clock, read before the first request, only when
 the header is missing — the walk says `clock: local`). `deadline_secs`
 is a wall clock over each exchange: a server or proxy trickling bytes
-into the headers, a chunk-size line or the body cannot outlast it, nor
+into the headers, a chunk-size line or the body cannot outlast it — nor
+can a name lookup (every node resolves a host once, in a worker thread
+it stops waiting for at its timeout, and connects to the addresses it
+checked) —, nor
 can one address of several the host resolves to hanging on connect (the
 walk stops; it does not move on to the next address). The cursor
 advances whenever the new-issue list was read whole (an activity lookup
@@ -282,13 +285,16 @@ a transition dated after the arming (minus the overlap) and newer than
 the recorded one posts `REGRESSED IN SENTRY` / `ESCALATING IN SENTRY` —
 tracked or not, backlog or not, with or without a new event this tick
 (the substatus is project-wide, the counts environment-scoped); an
-untracked issue of the new list posts NEW; an alerted issue whose last
-event moved is a sighting — `OPEN AGAIN IN SENTRY` when the channel's
-last word was its closing note and it is read open (Sentry reopens an
-issue archived for a while as ongoing, with no transition), `ESCALATED`
-when its level-mapped severity rose above the one the channel last
-heard, `STILL OPEN` once per `renotify_hours` (none of them while an
-alert of it is pending); an alerted issue Sentry reports closed gets one note
+untracked issue of the new list posts NEW; an issue whose last word in
+the channel was its closing note posts `OPEN AGAIN IN SENTRY` the first
+tick it is read open — by id, or in an unresolved list —, event or not
+(Sentry reopens an issue archived for a while as ongoing; an operator
+unresolving a resolved one through the API puts it in the transition
+list, undated); an alerted
+issue whose last event moved is a sighting — `ESCALATED` when its
+level-mapped severity rose above the one the channel last heard, `STILL
+OPEN` once per `renotify_hours` (none of them while an alert of it is
+pending); an alerted issue Sentry reports closed gets one note
 naming the status (`RESOLVED IN SENTRY`, `ARCHIVED IN SENTRY`, `DELETED
 OR MERGED IN SENTRY` — after any pending alert of it went out) and, while
 it stays closed, its events are no news (Sentry keeps ingesting an
@@ -307,14 +313,15 @@ log leak class, while their lane is on (off, the pending record waits,
 and retention may forget it, like a pending Sentry issue's). The Sentry
 lane and the log templates — data anyone can mint incidents in (a
 public DSN, log lines carrying user input) — post at most
-`--var max_alerts_per_lane` (5) alerts of one kind (new, escalated,
-still open, not observed any more) one by one per tick, the most severe
-first (pending ones first among equals); the others are named in ONE
-note of that kind, which says them: a Sentry issue named there becomes
-backlog (followed in Sentry — no reminder, escalation or note of its
-own; a transition still posts), and a note cut by the cap keeps each
-member pending. A flood neither drowns the channel, nor queues a backlog
-behind the cap, nor comes back as a flood of follow-ups. Anything
+`--var max_alerts_per_lane` (5) alerts of one kind (a state — new, a
+transition, a reopening, an escalation, a reminder, a note — at one
+severity) one by one per tick, pending ones first; the others are NAMED
+in notes of that kind — every one of them, as many notes as the message
+budget needs, each member one line of the alert log — and the per-run
+cap never cuts a note. Each member is then followed like any issue, its
+follow-ups folding the same way. A flood neither drowns the channel, nor
+queues behind the cap, nor hides a real incident: one at a severity the
+flood does not use posts one by one, any other is named. Anything
 else read is tracked silently: a backlog issue
 never posts on mere recurrence, and an issue merely re-read for
 `forget_after_days` leaves the tracked set — not while it is still in
@@ -365,11 +372,13 @@ precedes it. The label's own words render as written, and none of their
 markdown can wrap a value: emphasis, code, link and LaTeX characters are
 escaped, `&` and `<` are entities (the server rewrites `<url|text>`
 first), `$` becomes its full-width form (inline LaTeX ignores a
-backslash), a dot after a letter or digit is escaped (the autolinker
-reads `www.` through a zero-width space) and a zero-width space goes
-before a scheme's colon — a server's custom URL schemes included.
-Parentheses and plain colons stay as written, so a push notification
-shows the label's own text. A value is never scanned for placeholders,
+backslash), a dot where a host could form — before a letter, or ending
+the words right before a value — is escaped (the autolinker reads
+`www.` through a zero-width space) and a zero-width space goes before a
+scheme's colon — a server's custom URL schemes included. Parentheses,
+plain colons, a version's dots and emoji codes stay as written (an emoji
+glued to a value is escaped: its name could be a custom scheme), so a
+push notification shows the label's own text. A value is never scanned for placeholders,
 and a message over `max_message_chars` is cut on a line boundary.
 
 ## Health probes

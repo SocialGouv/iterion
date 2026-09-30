@@ -200,6 +200,9 @@ schema plan_output:
   halt: json
   ## The operator-facing reason the typed fail node renders ("" when not halted).
   halt_reason: string
+  ## The time (epoch seconds) the delivery must be done by: what the run's
+  ## budget keeps after it is the state commit's.
+  deliver_by: int
   summary: string
 
 schema release_input:
@@ -340,6 +343,7 @@ schema decide_input:
   source_stale_hours: int
   max_alerts: int
   max_alerts_per_lane: int
+  max_message_chars: int
 
 schema decide_output:
   ## Alerts to post this tick, rendered by notify: [{fingerprint, kind,
@@ -381,6 +385,7 @@ schema notify_input:
   release_known: bool
   dry_run: bool
   max_message_chars: int
+  deliver_by: int
 
 schema notify_output:
   posted: bool
@@ -523,7 +528,7 @@ tool plan:
     ## spend the time the delivery needs.
     g_deadline = grafana.get('deadline_secs')
     if g_deadline is None:
-        g_deadline = 120
+        g_deadline = 90
     if isinstance(g_deadline, bool) or not isinstance(g_deadline, int) or not 10 <= g_deadline <= 600:
         raise SystemExit('prod-watch: config.grafana.deadline_secs must be an integer in [10, 600], got ' + repr(g_deadline)[:40])
     grafana['deadline_secs'] = g_deadline
@@ -646,9 +651,16 @@ tool plan:
     ## delivery must fit in it at its worst — the release endpoint, each
     ## health probe in turn, each lane's deadline. The rest is the leak
     ## scan's, the delivery's, the state commit's and the engine's own.
-    RUN_BUDGET_SECS, AFTER_FETCH_SECS = 720, 240
-    waits = [('release', fetch_timeout if release['source'] != 'none' else 0),
-             ('probes', sum(p['timeout_secs'] for p in http_probes)),
+    RUN_BUDGET_SECS, AFTER_FETCH_SECS, AFTER_DELIVERY_SECS = 720, 240, 150
+    deliver_by = int(time.time()) + RUN_BUDGET_SECS - AFTER_DELIVERY_SECS
+    ## A name lookup is bounded like the answer after it (one per host and
+    ## node); a probe is tried twice, two seconds apart.
+    probe_hosts = {}
+    for p in http_probes:
+        h = urlsplit(p['url']).hostname or ''
+        probe_hosts[h] = max(probe_hosts.get(h, 0), p['timeout_secs'])
+    waits = [('release', 2 * fetch_timeout if release['source'] != 'none' else 0),
+             ('probes', sum(2 * p['timeout_secs'] + 2 for p in http_probes) + sum(probe_hosts.values())),
              ('loki', grafana['deadline_secs'] if queries else 0),
              ('prometheus', grafana['deadline_secs'] if norm_probes else 0),
              ('sentry', sentry['deadline_secs'] if sentry['enabled'] else 0)]
@@ -696,7 +708,7 @@ tool plan:
         'sentry_leak_detail': 'class {class} in {count} issue(s): {sources}',
         'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
         'overflow': '{n} more alert(s) exceeded the per-run cap; they stay open and will fire on the next tick',
-        'folded_detail': '{n} more incident(s) of this kind this tick, not posted one by one: {names}',
+        'folded_detail': '{n} more of this kind this tick, not posted one by one: {names}',
         'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
         'halted': 'watchdog halted since {since}: {reason}',
         'severity': 'severity',
@@ -771,8 +783,9 @@ tool plan:
         for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since', 'transition_seen_at'):
             if rec.get(f) is not None and not is_iso(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
-        if rec.get('backlog') is not None and not isinstance(rec['backlog'], bool):
-            refuse_state(where + '.backlog', rec['backlog'], 'a boolean')
+        for f in ('backlog', 'closed_said'):
+            if rec.get(f) is not None and not isinstance(rec[f], bool):
+                refuse_state(where + '.' + f, rec[f], 'a boolean')
     for src, hrec in (state.get('health') or {}).items():
         if not isinstance(hrec, dict):
             refuse_state('health[' + repr(src)[:40] + ']', hrec, 'an object')
@@ -974,7 +987,7 @@ tool plan:
     print(json.dumps({'app': app, 'release': release, 'grafana': grafana, 'loki': loki_plan,
                       'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sentry': sentry, 'sinks': sinks,
                       'labels': labels, 'lanes': lanes, 'halted': halted, 'halt': halt or {},
-                      'halt_reason': halt_reason, 'summary': summary}, ensure_ascii=False))
+                      'halt_reason': halt_reason, 'deliver_by': deliver_by, 'summary': summary}, ensure_ascii=False))
 
 ## The deployed version, from the source the config names. This slice
 ## reads a field of the health endpoint; release_known stays FALSE until
@@ -998,6 +1011,36 @@ tool resolve_release:
         print(json.dumps({'release': '', 'release_source': 'none', 'release_known': False,
                           'note': 'no release source configured'}))
         raise SystemExit(0)
+
+    ## Name resolution is bounded, and done once per host: getaddrinfo is a
+    ## C call no alarm interrupts (a resolver answering in 25 s held every
+    ## clock of the tick), so a worker thread runs it and the caller stops
+    ## waiting at the timeout. The answer is kept per host and re-used for
+    ## every port: the connection goes to the addresses the guard checked.
+    import threading
+    _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
+    def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host not in _gai_hosts:
+            box = {}
+            def work():
+                try:
+                    box['v'] = _gai(host, None, 0, socket.SOCK_STREAM)
+                except BaseException as e:
+                    box['e'] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            th.join(_gai_timeout[0])
+            if th.is_alive():
+                raise OSError('resolving ' + repr(host) + ' took longer than ' + str(_gai_timeout[0]) + ' s')
+            if 'e' in box:
+                raise box['e']
+            _gai_hosts[host] = box['v']
+        out = [(fam, type or typ, proto or pro, canon, (sa[0], port) + tuple(sa[2:]) if isinstance(port, int) else sa)
+               for fam, typ, pro, canon, sa in _gai_hosts[host] if not family or fam == family]
+        if not out:
+            raise socket.gaierror(socket.EAI_FAMILY, 'no address of the requested family for ' + repr(host))
+        return out
+    socket.getaddrinfo = _bounded_getaddrinfo
 
     def _addr_ok(ip):
         try:
@@ -1093,6 +1136,7 @@ tool poll_loki:
     grafana = {{input.grafana}} or {}
     loki = {{input.loki}} or {}
     timeout = int({{input.timeout_secs}})
+    lane_deadline = time.monotonic() + int(grafana.get('deadline_secs') or 90)
     scratch = {{input.scratch_dir}}
     allow_private = {{input.allow_private}}
     token_file = {{secrets.grafana_token.path}}
@@ -1132,6 +1176,36 @@ tool poll_loki:
     base = (grafana.get('base_url') or '').rstrip('/')
     uid = grafana.get('loki_uid') or ''
     origin = urlsplit(base)
+
+    ## Name resolution is bounded, and done once per host: getaddrinfo is a
+    ## C call no alarm interrupts (a resolver answering in 25 s held every
+    ## clock of the tick), so a worker thread runs it and the caller stops
+    ## waiting at the timeout. The answer is kept per host and re-used for
+    ## every port: the connection goes to the addresses the guard checked.
+    import threading
+    _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
+    def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host not in _gai_hosts:
+            box = {}
+            def work():
+                try:
+                    box['v'] = _gai(host, None, 0, socket.SOCK_STREAM)
+                except BaseException as e:
+                    box['e'] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            th.join(_gai_timeout[0])
+            if th.is_alive():
+                raise OSError('resolving ' + repr(host) + ' took longer than ' + str(_gai_timeout[0]) + ' s')
+            if 'e' in box:
+                raise box['e']
+            _gai_hosts[host] = box['v']
+        out = [(fam, type or typ, proto or pro, canon, (sa[0], port) + tuple(sa[2:]) if isinstance(port, int) else sa)
+               for fam, typ, pro, canon, sa in _gai_hosts[host] if not family or fam == family]
+        if not out:
+            raise socket.gaierror(socket.EAI_FAMILY, 'no address of the requested family for ' + repr(host))
+        return out
+    socket.getaddrinfo = _bounded_getaddrinfo
 
     def _addr_ok(ip):
         try:
@@ -1225,7 +1299,6 @@ tool poll_loki:
     def _exchange_alarm(signum, frame):
         raise ExchangeTimeout('the answer outlasted its wall clock (it trickled in, or never finished)')
     signal.signal(signal.SIGALRM, _exchange_alarm)
-    lane_deadline = time.monotonic() + int(grafana.get('deadline_secs') or 120)
 
     def get(path, params):
         url = base + path + '?' + urlencode(params)
@@ -1507,6 +1580,7 @@ tool poll_prom:
     grafana = {{input.grafana}} or {}
     prom = {{input.prometheus}} or {}
     timeout = int({{input.timeout_secs}})
+    lane_deadline = time.monotonic() + int(grafana.get('deadline_secs') or 90)
     allow_private = {{input.allow_private}}
     token_file = {{secrets.grafana_token.path}}
     probes = prom.get('probes') or []
@@ -1516,6 +1590,36 @@ tool poll_prom:
     base = (grafana.get('base_url') or '').rstrip('/')
     uid = grafana.get('prometheus_uid') or ''
     origin = urlsplit(base)
+
+    ## Name resolution is bounded, and done once per host: getaddrinfo is a
+    ## C call no alarm interrupts (a resolver answering in 25 s held every
+    ## clock of the tick), so a worker thread runs it and the caller stops
+    ## waiting at the timeout. The answer is kept per host and re-used for
+    ## every port: the connection goes to the addresses the guard checked.
+    import threading
+    _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
+    def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host not in _gai_hosts:
+            box = {}
+            def work():
+                try:
+                    box['v'] = _gai(host, None, 0, socket.SOCK_STREAM)
+                except BaseException as e:
+                    box['e'] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            th.join(_gai_timeout[0])
+            if th.is_alive():
+                raise OSError('resolving ' + repr(host) + ' took longer than ' + str(_gai_timeout[0]) + ' s')
+            if 'e' in box:
+                raise box['e']
+            _gai_hosts[host] = box['v']
+        out = [(fam, type or typ, proto or pro, canon, (sa[0], port) + tuple(sa[2:]) if isinstance(port, int) else sa)
+               for fam, typ, pro, canon, sa in _gai_hosts[host] if not family or fam == family]
+        if not out:
+            raise socket.gaierror(socket.EAI_FAMILY, 'no address of the requested family for ' + repr(host))
+        return out
+    socket.getaddrinfo = _bounded_getaddrinfo
 
     def _addr_ok(ip):
         try:
@@ -1607,7 +1711,6 @@ tool poll_prom:
     def _exchange_alarm(signum, frame):
         raise ExchangeTimeout('the answer outlasted its wall clock (it trickled in, or never finished)')
     signal.signal(signal.SIGALRM, _exchange_alarm)
-    lane_deadline = time.monotonic() + int(grafana.get('deadline_secs') or 120)
 
     def get(path, params):
         url = base + path + '?' + urlencode(params)
@@ -1728,6 +1831,7 @@ tool poll_sentry:
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     cfg = {{input.sentry}} or {}
     timeout = int({{input.timeout_secs}})
+    deadline = time.monotonic() + int(cfg.get('deadline_secs') or 120)
     scratch = {{input.scratch_dir}}
     allow_private = {{input.allow_private}}
     token_file = {{secrets.sentry_token.path}}
@@ -1746,6 +1850,36 @@ tool poll_sentry:
     min_rank = LEVELS.get(cfg.get('min_level') or 'error', 3)
     known = cfg.get('known') or {}
     bootstrap = bool(cfg.get('bootstrap'))
+
+    ## Name resolution is bounded, and done once per host: getaddrinfo is a
+    ## C call no alarm interrupts (a resolver answering in 25 s held every
+    ## clock of the tick), so a worker thread runs it and the caller stops
+    ## waiting at the timeout. The answer is kept per host and re-used for
+    ## every port: the connection goes to the addresses the guard checked.
+    import threading
+    _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
+    def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host not in _gai_hosts:
+            box = {}
+            def work():
+                try:
+                    box['v'] = _gai(host, None, 0, socket.SOCK_STREAM)
+                except BaseException as e:
+                    box['e'] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            th.join(_gai_timeout[0])
+            if th.is_alive():
+                raise OSError('resolving ' + repr(host) + ' took longer than ' + str(_gai_timeout[0]) + ' s')
+            if 'e' in box:
+                raise box['e']
+            _gai_hosts[host] = box['v']
+        out = [(fam, type or typ, proto or pro, canon, (sa[0], port) + tuple(sa[2:]) if isinstance(port, int) else sa)
+               for fam, typ, pro, canon, sa in _gai_hosts[host] if not family or fam == family]
+        if not out:
+            raise socket.gaierror(socket.EAI_FAMILY, 'no address of the requested family for ' + repr(host))
+        return out
+    socket.getaddrinfo = _bounded_getaddrinfo
 
     def _addr_ok(ip):
         try:
@@ -1825,7 +1959,6 @@ tool poll_sentry:
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
     _opener = urllib.request.build_opener(_NoRedirect())
-    deadline = time.monotonic() + int(cfg.get('deadline_secs') or 120)
     server_date = []
     MAX_BODY = 8 * 1024 * 1024
     ## The deadline is a wall clock. A server — or a proxy in front of it —
@@ -2196,6 +2329,36 @@ tool probe_http:
         print(json.dumps({'results': []}))
         raise SystemExit(0)
 
+    ## Name resolution is bounded, and done once per host: getaddrinfo is a
+    ## C call no alarm interrupts (a resolver answering in 25 s held every
+    ## clock of the tick), so a worker thread runs it and the caller stops
+    ## waiting at the timeout. The answer is kept per host and re-used for
+    ## every port: the connection goes to the addresses the guard checked.
+    import threading
+    _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [default_timeout]
+    def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host not in _gai_hosts:
+            box = {}
+            def work():
+                try:
+                    box['v'] = _gai(host, None, 0, socket.SOCK_STREAM)
+                except BaseException as e:
+                    box['e'] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            th.join(_gai_timeout[0])
+            if th.is_alive():
+                raise OSError('resolving ' + repr(host) + ' took longer than ' + str(_gai_timeout[0]) + ' s')
+            if 'e' in box:
+                raise box['e']
+            _gai_hosts[host] = box['v']
+        out = [(fam, type or typ, proto or pro, canon, (sa[0], port) + tuple(sa[2:]) if isinstance(port, int) else sa)
+               for fam, typ, pro, canon, sa in _gai_hosts[host] if not family or fam == family]
+        if not out:
+            raise socket.gaierror(socket.EAI_FAMILY, 'no address of the requested family for ' + repr(host))
+        return out
+    socket.getaddrinfo = _bounded_getaddrinfo
+
     def _addr_ok(ip):
         try:
             a = ipaddress.ip_address(ip)
@@ -2241,6 +2404,7 @@ tool probe_http:
         res = {'id': p['id'], 'url': url, 'ok': False, 'status': 0, 'ms': 0, 'error': '',
                'expected': int(p.get('expect_status') or 200), 'severity': p.get('severity') or 'critical'}
         t0 = time.monotonic()
+        _gai_timeout[0] = int(p.get('timeout_secs') or default_timeout)
         try:
             parts = urlsplit(url)
             if parts.scheme not in ('http', 'https'):
@@ -2842,6 +3006,7 @@ tool decide:
     max_per_lane = int({{input.max_alerts_per_lane}})
     if max_per_lane < 0:
         raise SystemExit('prod-watch: max_alerts_per_lane must be 0 or more, got ' + str(max_per_lane))
+    msg_chars = int({{input.max_message_chars}})
     os.chdir(ws)
     os.makedirs(scratch, exist_ok=True)
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -3047,6 +3212,8 @@ tool decide:
         ## a known issue's regression, reminder or pending alert included.
         s_cap = sentry_cfg.get('max_severity') or 'high'
         for rec in incidents.values():
+            if rec.get('kind') == 'sentry' and rec.get('alerted') and not rec.get('announced_severity'):
+                rec['announced_severity'] = rec.get('severity') or 'low'   # a record from before the field
             if rec.get('kind') == 'sentry' and RANK.get(rec.get('severity') or 'low', 1) > RANK.get(s_cap, 3):
                 rec['severity'] = s_cap
     s_issues = {}
@@ -3102,8 +3269,6 @@ tool decide:
             ## What the channel last heard: an escalation is measured against
             ## it, never against a severity a lowered max_severity re-capped.
             said_sev = (prev or {}).get('announced_severity') or prev_sev
-            ## Its last word was the closing note (archived, resolved).
-            prev_closed_said = bool((prev or {}).get('quiet_noted')) and ((prev or {}).get('status') or '') not in S_OPEN
             rec = s_record(it, fp)
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
@@ -3147,18 +3312,21 @@ tool decide:
                 rec['transition_seen_at'] = None
                 if armed is not None and tr_at >= armed - overlap_td and rec.get('pending') not in ('regressed', 'escalating'):
                     s_history.append(s_label(it) + '@' + it['transition_at'][:16])
+            ## Read open this tick: by id, or in a list of unresolved issues.
+            open_now = (bool(it.get('in_tracked')) and (it.get('status') or '') in S_OPEN) or bool(it.get('in_new') or it.get('in_transition'))
             if word_ is None and prev is None and it.get('in_new'):
                 word_ = 'new'
             elif word_ is None and prev is None:
                 rec['backlog'] = True
+            elif word_ is None and rec.get('closed_said') and open_now and not rec.get('pending'):
+                ## The channel's last word was its closing note, and it is open:
+                ## said once, event or not — Sentry reopens an issue archived
+                ## for a while as ongoing, an operator unresolves one by hand.
+                word_ = 'reopened'
             elif word_ is None and rec.get('alerted') and sighted and not closed_now and not rec.get('pending'):
                 ## (A pending alert goes out first: a reminder must not stand
                 ## in for a pending regression.)
-                if prev_closed_said and it.get('in_tracked'):
-                    ## Read open again, and firing: news — Sentry reopens an
-                    ## issue archived for a while as ongoing, no transition.
-                    word_ = 'reopened'
-                elif RANK.get(sev_now, 0) > RANK.get(said_sev or 'low', 0):
+                if RANK.get(sev_now, 0) > RANK.get(said_sev or 'low', 0):
                     word_ = 'escalated'
                 elif rec.get('last_notified') and not said_within(rec['last_notified'], renotify_h):
                     word_ = 'reminder'
@@ -3515,36 +3683,49 @@ tool decide:
     alerts.sort(key=pending_first)
     ## A lane whose data MINTS incidents — Sentry issues (anyone holding the
     ## public DSN creates them), log templates (log lines carry user input)
-    ## — posts at most max_alerts_per_lane alerts of one kind (new,
-    ## escalated, still open, not observed any more) one by one per tick,
-    ## the most severe first (pending ones first among equals); the others
-    ## are named in ONE note of that kind that stands for them: posted, it
-    ## says each of them — a Sentry issue named there becomes backlog,
-    ## followed in Sentry: no reminder, escalation or note of its own, a
-    ## transition still posts —; cut by the cap, each stays pending. A flood
-    ## can neither drown the channel, nor queue a backlog that holds a real
-    ## alert back for days, nor come back as a flood of follow-ups.
+    ## — posts at most max_alerts_per_lane alerts of one kind (its state,
+    ## its severity, a closing note's status) one by one per tick, pending
+    ## ones first; the others are NAMED in notes of that kind — as many as
+    ## their names need, each within the message budget — which the per-run
+    ## cap never cuts: posted, a note said each of its members, stamped as
+    ## such. A flood neither drowns the channel, nor queues behind the cap,
+    ## nor hides a real incident: one at a severity the flood does not use
+    ## posts one by one, any other is named.
+    def fold_name(a):
+        if a['kind'] == 'loki':
+            ## Two templates can share their first words: the id tells them apart.
+            return a['fingerprint'].split(':', 1)[-1][:8] + ' ' + str(a.get('title_arg') or '')[:120]
+        return str(a.get('log_title') or a.get('title_arg') or a['fingerprint'])[:64]
+    names_budget = max(200, min(3000, msg_chars - 1000))
     minted = {}
     for a in alerts:
-        if a.get('kind') in ('sentry', 'loki') and a.get('state') in ('new', 'escalated', 'reminder', 'quiet'):
-            minted.setdefault((a['kind'], a['state']), []).append(a)
-    for (kind, word), group in sorted(minted.items()):
+        if a.get('kind') in ('sentry', 'loki'):
+            status = str((a.get('evidence') or {}).get('status') or '') if a['state'] == 'resolved' else ''
+            minted.setdefault((a['kind'], a['state'], a['severity'], status), []).append(a)
+    for (kind, word, sev, status), group in sorted(minted.items()):
         if len(group) <= max_per_lane:
             continue
-        group.sort(key=lambda a: RANK.get(a['severity'], 0), reverse=True)
-        folded = group[max_per_lane:]
-        drop = set(id(a) for a in folded)
+        rest = group[max_per_lane:]
+        drop = set(id(a) for a in rest)
         alerts = [a for a in alerts if id(a) not in drop]
-        names = [str(a.get('log_title') or a.get('title_arg') or a['fingerprint'])[:60] for a in folded]
-        alerts.append({'fingerprint': 'folded:' + kind + ':' + word, 'kind': kind, 'state': word,
-                       'severity': max((a['severity'] for a in folded), key=lambda v: RANK.get(v, 0)),
-                       'title_key': folded[0].get('title_key'), 'title_arg': '', 'detail_key': 'folded_detail',
-                       'fields': {'n': len(folded), 'names': ', '.join(names)}, 'evidence': {},
-                       'count': sum(int(a.get('count') or 0) for a in folded),
-                       'first_seen': min(str(a.get('first_seen') or now_iso) for a in folded), 'prev_severity': '',
-                       'log_title': ', '.join(names)[:400],
-                       'members': [{'fp': a['fingerprint'], 'severity': a['severity'], 'prev_severity': a.get('prev_severity') or ''}
-                                   for a in folded]})
+        chunks, size = [[]], 0
+        for a in rest:
+            n = len(fold_name(a)) + 2
+            if chunks[-1] and size + n > names_budget:
+                chunks.append([])
+                size = 0
+            chunks[-1].append(a)
+            size += n
+        for k, chunk in enumerate(chunks):
+            names = ', '.join(fold_name(a) for a in chunk)
+            alerts.append({'fingerprint': 'folded:' + ':'.join((kind, word, sev, status, str(k))), 'kind': kind, 'state': word,
+                           'severity': sev, 'title_key': chunk[0].get('title_key'), 'title_arg': '', 'detail_key': 'folded_detail',
+                           'fields': {'n': len(chunk), 'names': names}, 'evidence': {'status': status} if status else {},
+                           'count': sum(int(a.get('count') or 0) for a in chunk),
+                           'first_seen': min(str(a.get('first_seen') or now_iso) for a in chunk), 'prev_severity': '',
+                           'members': [{'fp': a['fingerprint'], 'severity': a['severity'], 'prev_severity': a.get('prev_severity') or '',
+                                        'transition_at': a.get('transition_at'), 'name': fold_name(a), 'count': a.get('count')}
+                                       for a in chunk]})
 
     ## ── priority, cap, staging ────────────────────────────────────
     order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reopened': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
@@ -3570,34 +3751,33 @@ tool decide:
                     fair.append(queues[q].pop(0))
         i = j
     alerts = fair
-    overflow = max(0, len(alerts) - max_alerts)
-    posted, deferred = alerts[:max_alerts], alerts[max_alerts:]
+    ## A note of folded alerts is never cut by the per-run cap: it holds
+    ## what a flood would otherwise queue, said at once.
+    singles = [a for a in alerts if not a.get('members')]
+    overflow = max(0, len(singles) - max_alerts)
+    cut = set(id(a) for a in singles[max_alerts:])
+    posted = [a for a in alerts if id(a) not in cut]
+    deferred = [a for a in alerts if id(a) in cut]
     ## Stamps happen HERE, on what was actually selected: a deferred alert
     ## keeps its previous notification stamp, its previous severity and an
     ## un-noted quiet flag, so the same rule re-selects it next tick. A
     ## Sentry fact that will not recur by itself (a new issue, a dated
     ## transition) is kept PENDING and re-emitted until posted.
     def with_members(sel):
-        ## A fold stands for its members: posted, it said each of them;
-        ## deferred, each stays pending.
+        ## A note stands for its members: posted, it said each of them.
         for a in sel:
             yield a
             for m in a.get('members') or []:
                 yield {'fingerprint': m['fp'], 'kind': a['kind'], 'state': a['state'], 'severity': m['severity'],
-                       'prev_severity': m.get('prev_severity') or '', 'folded': True}
+                       'prev_severity': m.get('prev_severity') or '', 'transition_at': m.get('transition_at')}
     for a in with_members(posted):
         rec = incidents.get(a['fingerprint'])
         if rec is None:
             continue
-        if a.get('folded') and a['kind'] == 'sentry' and a['state'] == 'new':
-            ## Named in a fold: known, followed in Sentry — backlog.
-            rec['backlog'] = True
-            rec['pending'] = None
-            rec['pending_since'] = None
-            rec['pending_transition_at'] = None
-            continue
         if a['state'] in ('quiet', 'resolved'):
             rec['quiet_noted'] = True
+            if a['state'] == 'resolved':
+                rec['closed_said'] = True
         else:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
@@ -3617,7 +3797,8 @@ tool decide:
             if a['state'] not in ('quiet', 'resolved'):
                 rec['backlog'] = False
                 rec['announced_severity'] = a['severity']
-    for a in with_members(deferred):
+                rec['closed_said'] = False
+    for a in deferred:
         rec = incidents.get(a['fingerprint'])
         if rec is not None and a['state'] == 'escalated' and a.get('prev_severity') and a['kind'] != 'sentry':
             ## The chassis re-derives an escalation from the present (a
@@ -3699,10 +3880,13 @@ tool decide:
     with open(alertlog, 'w', encoding='utf-8') as fh:
         for a in posted:
             ## A Sentry alert logs its short id, never the issue's text: the
-            ## log is committed with the state.
-            fh.write(json.dumps({'at': now_iso, 'fp': a['fingerprint'], 'kind': a['kind'], 'severity': a['severity'],
-                                 'state': a['state'], 'title': a.get('log_title') or a['title_arg'], 'count': a['count'], 'release': release},
-                                ensure_ascii=False) + chr(10))
+            ## log is committed with the state. A note logs each member it
+            ## named, one line each.
+            for m in (a.get('members') or [None]):
+                line = ({'fp': a['fingerprint'], 'title': a.get('log_title') or a['title_arg'], 'count': a['count']} if m is None else
+                        {'fp': m['fp'], 'title': m['name'], 'count': m.get('count'), 'folded': True})
+                fh.write(json.dumps(dict(line, at=now_iso, kind=a['kind'], severity=m['severity'] if m else a['severity'],
+                                         state=a['state'], release=release), ensure_ascii=False) + chr(10))
     tick = os.path.join(scratch, 'tick-' + str({{run.id}})[-12:] + '.json')
     with open(tick, 'w', encoding='utf-8') as fh:
         json.dump({'at': now_iso, 'generation': state['generation'], 'lines': signals.get('lines_scanned', 0),
@@ -3732,7 +3916,7 @@ tool notify:
   output: notify_output
   language: py
   script: |
-    import json, os, re, sys, time, signal, urllib.request
+    import json, os, re, sys, time, signal, urllib.request, urllib.error
     from urllib.parse import urlsplit
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     alerts = {{input.alerts}} or []
@@ -3753,6 +3937,37 @@ tool notify:
     def out(o):
         print(json.dumps(o, ensure_ascii=False))
         raise SystemExit(0)
+    import socket
+    ## Name resolution is bounded, and done once per host: getaddrinfo is a
+    ## C call no alarm interrupts (a resolver answering in 25 s held every
+    ## clock of the tick), so a worker thread runs it and the caller stops
+    ## waiting at the timeout. The answer is kept per host and re-used for
+    ## every port: the connection goes to the addresses the guard checked.
+    import threading
+    _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [20]
+    def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host not in _gai_hosts:
+            box = {}
+            def work():
+                try:
+                    box['v'] = _gai(host, None, 0, socket.SOCK_STREAM)
+                except BaseException as e:
+                    box['e'] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            th.join(_gai_timeout[0])
+            if th.is_alive():
+                raise OSError('resolving ' + repr(host) + ' took longer than ' + str(_gai_timeout[0]) + ' s')
+            if 'e' in box:
+                raise box['e']
+            _gai_hosts[host] = box['v']
+        out = [(fam, type or typ, proto or pro, canon, (sa[0], port) + tuple(sa[2:]) if isinstance(port, int) else sa)
+               for fam, typ, pro, canon, sa in _gai_hosts[host] if not family or fam == family]
+        if not out:
+            raise socket.gaierror(socket.EAI_FAMILY, 'no address of the requested family for ' + repr(host))
+        return out
+    socket.getaddrinfo = _bounded_getaddrinfo
+
     def clip(text, n):
         ## Cut on a line boundary: a cut inside a value's code span would
         ## leave it open and the rest rendered as markdown.
@@ -3776,36 +3991,53 @@ tool notify:
         if not t:
             return ''
         return '`' + re.sub(r'(?i)(https?|ftp|mailto):', lambda m: m.group(1) + chr(8203) + ':', t) + '`'
-    def lab(t, cap=None):
+    def lab_text(t, before_value):
+        t = re.sub(r'([\\`*_~\[\]])', lambda m: '\\' + m.group(1), t)
+        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', chr(0xFF04))
+        t = re.sub(r'(?<=[A-Za-z0-9])\.(?=[A-Za-z])', r'\\.', t)
+        if before_value:
+            t = re.sub(r'(?<=[A-Za-z0-9])\.$', r'\\.', t)
+        return re.sub(r'(?<=[A-Za-z0-9+.-]):(?!\s)', chr(8203) + ':', t)
+    def lab(t, cap=None, before_value=False):
         ## An operator's label renders as written, and none of its markdown
         ## can wrap, open or link around a value's code span: emphasis, code,
-        ## link characters are escaped, and a dot after a letter or digit
-        ## (the autolinker reads `www.` and `host.tld/` through a zero-width
+        ## link characters are escaped, and a dot where a host could form —
+        ## before a letter, or ending the words right before a value (the
+        ## autolinker reads `www.` and `host.tld/` through a zero-width
         ## space); `&` and `<` are entities (the server rewrites `<url|text>`
         ## before any markdown); `$` is its full-width form (inline LaTeX
         ## ignores a backslash before it); a zero-width space precedes a colon
         ## after a letter or digit unless a space follows — every scheme, the
-        ## server's custom ones included. Parentheses, plain colons and emoji
-        ## codes stay as written: a push notification shows the label's own
+        ## server's custom ones included. An emoji code stays as written
+        ## (its underscores are inside a word) unless it touches a value: its
+        ## name could be a custom scheme. Parentheses, plain colons and a
+        ## version's dots stay too: a push notification shows the label's own
         ## text. A control character is dropped (a NUL gets the post
         ## refused); a capped label is one line.
         t = re.sub(r'[\x00-\x08\x0e-\x1f\x7f-\x9f]', '', str(t if t is not None else ''))
         if cap is not None:
             t = re.sub(r'[\s\u2424]+', ' ', t).strip()[:cap]
-        t = re.sub(r'([\\`*_~\[\]])', lambda m: '\\' + m.group(1), t)
-        t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', chr(0xFF04))
-        t = re.sub(r'(?<=[A-Za-z0-9])\.', r'\\.', t)
-        return re.sub(r'(?<=[A-Za-z0-9+.-]):(?!\s)', chr(8203) + ':', t)
-    def fmt(label, /, **kw):
+        parts = re.split(r'((?<![A-Za-z0-9]):[A-Za-z0-9_+-]{1,40}:(?![A-Za-z0-9]))', t)
+        glued = before_value and len(parts) > 1 and parts[-1] == ''
+        return ''.join(p if i % 2 and not (glued and i == len(parts) - 2)
+                       else lab_text(p, before_value and i >= len(parts) - 2)
+                       for i, p in enumerate(parts))
+    def fmt_capped(label, caps, /, **kw):
         ## Every value filled into a label is inline code: a Sentry culprit, a
         ## container, a URL — anything an attacker can write — can neither
         ## mention (@channel) nor autolink there (Mattermost's markdown turns
         ## a bare `host.tld/path`, `www1.` or a scheme glued to a word into a
         ## link in plain text, whatever escaping precedes it). One pass over
-        ## the LABEL's placeholders: a value is never scanned for more.
-        t = labels.get(label) or label
-        return ''.join(code(kw[x[1:-1]], 200) if x[:1] == '{' and x[-1:] == '}' and x[1:-1] in kw else lab(x)
-                       for x in re.split(r'(\{\w+\})', t))
+        ## the LABEL's placeholders: a value is never scanned for more. A value
+        ## is cut to 200 characters unless `caps` gives its field more.
+        parts = re.split(r'(\{\w+\})', labels.get(label) or label)
+        def is_value(x):
+            return x[:1] == '{' and x[-1:] == '}' and x[1:-1] in kw
+        return ''.join(code(kw[x[1:-1]], caps.get(x[1:-1], 200)) if is_value(x)
+                       else lab(x, before_value=i + 1 < len(parts) and is_value(parts[i + 1]))
+                       for i, x in enumerate(parts))
+    def fmt(label, /, **kw):
+        return fmt_capped(label, {}, **kw)
 
     scope = flat(app.get('name'), 60) + ('/' + flat(app.get('environment'), 40) if app.get('environment') else '')
     messages = []
@@ -3825,7 +4057,9 @@ tool notify:
             lines.append(code(a['title_arg'], 200))
         fields = a.get('fields') or {}
         if a.get('detail_key'):
-            lines.append(fmt(a['detail_key'], **{k: v for k, v in fields.items()}))
+            ## A note of folded alerts names every member: decide sized it to
+            ## the message budget.
+            lines.append(fmt_capped(a['detail_key'], {'names': max_chars} if a.get('members') else {}, **{k: v for k, v in fields.items()}))
         meta = [lab(labels.get('severity', 'severity')) + ' ' + sev.upper(),
                 fmt('new_since', date=(a.get('first_seen') or '')[:16]),
                 fmt('count', n=a.get('count') or 0)]
@@ -3884,6 +4118,9 @@ tool notify:
                 continue
             payloads.append((idx, s, {'text': clip(text, max_chars), 'channel': str(s.get('channel') or ''),
                                       'username': str(s.get('username') or 'Argus'), 'icon_emoji': str(s.get('icon_emoji') or ':eye:')}))
+    ## The required sinks take every message first: an optional sink's
+    ## slowness never spends their time.
+    payloads.sort(key=lambda p: not p[1].get('required', True))
     rendered = [{'webhook': s.get('webhook'), 'channel': p['channel'], 'text': p['text']} for _, s, p in payloads]
     if dry_run:
         for _, s, p in payloads:
@@ -3917,27 +4154,39 @@ tool notify:
             return False
         return bool(parts and parts.scheme in ('http', 'https') and parts.hostname and parts.username is None and parts.password is None
                     and port_ok and url.isascii() and url.isprintable() and ' ' not in url)
-    ## Each post has a wall clock (a sink trickling its answer) and the
-    ## delivery a window: a post that cannot start in it fails like one
-    ## refused — nothing is consumed, the tick replays — instead of the run
-    ## budget killing the tick mid-delivery.
+    ## Each post has a wall clock (a sink trickling its answer), a sink that
+    ## timed out once is not asked again this tick, and the delivery has
+    ## until the time the run's budget keeps for it (at least a minute): a
+    ## post that cannot start in it fails like one refused — nothing is
+    ## consumed, the tick replays — instead of the run budget killing the
+    ## tick mid-delivery.
     class ExchangeTimeout(Exception):
         pass
+    class WindowClosed(Exception):
+        pass
+    bound = ['']
     def _exchange_alarm(signum, frame):
+        if bound[0] == 'window':
+            raise WindowClosed('the delivery window closed during this post (the run budget keeps the rest for the state commit)')
         raise ExchangeTimeout('the sink did not answer within its wall clock')
     signal.signal(signal.SIGALRM, _exchange_alarm)
-    DELIVERY_SECS = 90
-    deliver_until = time.monotonic() + DELIVERY_SECS
+    deliver_until = time.monotonic() + max(60, int({{input.deliver_by}}) - time.time())
+    timed_out = set()
     for idx, s, p in payloads:
         url = whmap[s['webhook']]
         try:
+            if s['webhook'] in timed_out:
+                raise ExchangeTimeout('skipped: the sink timed out on an earlier post this tick')
             if not usable(url):
                 raise ValueError('the URL of this webhook in the webhooks secret is not one http(s) URL')
             left = deliver_until - time.monotonic()
             if left < 1:
-                raise ExchangeTimeout('the delivery window (' + str(DELIVERY_SECS) + ' s) closed before this post')
+                raise WindowClosed('the delivery window closed before this post (the run budget keeps the rest for the state commit)')
             req = urllib.request.Request(url, data=json.dumps(p).encode('utf-8'),
                                          headers={'Content-Type': 'application/json', 'User-Agent': 'prod-watch (iterion)'}, method='POST')
+            ## The post's own wall clock, or what is left of the window: a post
+            ## the window cuts says so, and its sink stays asked.
+            bound[0] = 'window' if left < 20 else 'post'
             signal.setitimer(signal.ITIMER_REAL, min(20, left))
             try:
                 with urllib.request.urlopen(req, timeout=20):
@@ -3948,6 +4197,8 @@ tool notify:
             msgs_ok.add(idx)
             targets.append(str(s['webhook']) + '->' + str(p['channel'] or 'default'))
         except Exception as e:
+            if isinstance(e, (ExchangeTimeout, TimeoutError)) or (isinstance(e, urllib.error.URLError) and isinstance(e.reason, TimeoutError)):
+                timed_out.add(s['webhook'])
             failures.append(str(s['webhook']) + ': ' + type(e).__name__ + ': ' + str(e).replace(str(url), '<the webhook URL>')[:200])
             if s.get('required', True):
                 required_failed.append(str(s['webhook']))
@@ -4266,7 +4517,8 @@ workflow prod_watch:
     forget_after_days: "{{vars.forget_after_days}}",
     source_stale_hours: "{{vars.source_stale_hours}}",
     max_alerts: "{{vars.max_alerts_per_run}}",
-    max_alerts_per_lane: "{{vars.max_alerts_per_lane}}"
+    max_alerts_per_lane: "{{vars.max_alerts_per_lane}}",
+    max_message_chars: "{{vars.max_message_chars}}"
   }
 
   decide -> notify with {
@@ -4280,7 +4532,8 @@ workflow prod_watch:
     release: "{{outputs.resolve_release.release}}",
     release_known: "{{outputs.resolve_release.release_known}}",
     dry_run: "{{vars.dry_run}}",
-    max_message_chars: "{{vars.max_message_chars}}"
+    max_message_chars: "{{vars.max_message_chars}}",
+    deliver_by: "{{outputs.plan.deliver_by}}"
   }
 
   ## Only a completed delivery (or a nothing-to-deliver tick) consumes

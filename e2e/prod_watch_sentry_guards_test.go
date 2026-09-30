@@ -422,6 +422,7 @@ func TestProdWatch_SentryForeignIncidentFieldIsRefusedByName(t *testing.T) {
 		state map[string]any
 	}{
 		{"backlog", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "backlog": "yes"}}}},
+		{"closed_said", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "closed_said": "yes"}}}},
 		{"tracked_read_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "tracked_read_at": 5}}}},
 		{"pending_since", map[string]any{"incidents": map[string]any{"leak:email": map[string]any{"kind": "leak", "pending_since": "soon"}}}},
 		{"transition_seen_at", map[string]any{"incidents": map[string]any{"sentry:1": map[string]any{"kind": "sentry", "transition_seen_at": 5}}}},
@@ -700,6 +701,47 @@ func TestProdWatch_SentryAnEmptyValueOpensNoSpan(t *testing.T) {
 	}
 	if strings.Contains(body, "``") {
 		t.Fatalf("an empty value rendered as an empty span:\n%s", body)
+	}
+}
+
+// TestProdWatch_ALabelsEmojiAndVersionStayAsWritten: an emoji code in a label
+// stays as written — before a comma, at the end, with an underscore — and so
+// do a version's dots: the channel and a push notification show the label's
+// own text. An emoji glued to a value is escaped (its name could be a custom
+// URL scheme).
+func TestProdWatch_ALabelsEmojiAndVersionStayAsWritten(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	h.writeConfig(t, func(cfg map[string]any) {
+		sentryOnly(h, nil)(cfg)
+		cfg["labels"] = map[string]any{"sentry_issue": ":rotating_light: issue",
+			"sentry_detail": ":fire:, {level} since v1.2.3 · {culprit} :bell:", "sentry_detail_total": "{level} :bell:{culprit}"}
+	})
+	sentryTick(t, h, wf)
+	now := time.Now()
+	h.sentry.put(&pwSentryIssue{ID: "4801", ShortID: strp("P-4801"), Title: "x", Culprit: "app.views", FirstProcessed: now, LastSeen: now, Count: 1})
+	n := len(h.bodies())
+	sentryTick(t, h, wf)
+	body := strings.Join(h.bodies()[n:], "\n")
+	for _, want := range []string{":rotating_light: issue", ":fire:, `error`", " since v1.2.3 · `app.views` :bell:"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the label's own text %q is not shown as written:\n%q", want, body)
+		}
+	}
+	// Read by id hours later, the detail is the whole-life one, the emoji glued to the value.
+	h.sentry.edit("4801", func(i *pwSentryIssue) {
+		i.FirstProcessed = now.Add(-3 * time.Hour)
+		i.LastSeen = time.Now().Add(time.Second)
+	})
+	sentryEditRecord(t, h, "4801", func(r map[string]any) {
+		r["last_notified"] = time.Now().Add(-25 * time.Hour).UTC().Format(time.RFC3339)
+	})
+	n = len(h.bodies())
+	sentryTick(t, h, wf)
+	body = strings.Join(h.bodies()[n:], "\n")
+	if !strings.Contains(body, ":bell\u200b:`app.views`") {
+		t.Fatalf("an emoji code glued to a value was not escaped:\n%q", body)
 	}
 }
 

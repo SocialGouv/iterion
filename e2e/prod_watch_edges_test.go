@@ -1946,7 +1946,7 @@ func TestProdWatch_NotifyRendersAnyFieldName(t *testing.T) {
 	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": map[string]any{"loki_template": "pattern", "loki_detail": "{count} line(s) since {first}, containers: {streams}"},
-		"app":    map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000},
+		"app":    map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000, "deliver_by": pwDeliverBy()},
 		nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, stderr)
@@ -2769,7 +2769,7 @@ func TestProdWatch_NoSecretEscapesAnyOutput(t *testing.T) {
 		}
 		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 			"alerts": alert, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "", "min_severity": "low"}},
-			"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": false, "max_message_chars": 14000},
+			"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": false, "max_message_chars": 14000, "deliver_by": pwDeliverBy()},
 			nil, map[string]string{"webhooks": h.webhooksFile}))
 		if all := fmt.Sprint(out) + stderr + fmt.Sprint(err); strings.Contains(all, "CANARY") {
 			t.Fatalf("webhook %q escapes: %s", hook, all)

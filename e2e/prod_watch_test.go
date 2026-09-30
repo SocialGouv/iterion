@@ -460,13 +460,13 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"sentry": plan["sentry"], "sentry_ok": sentry["ok"], "sentry_truncated": sentry["truncated"], "sentry_errors": sentry["errors"],
 		"sentry_walk": sentry["walk"], "sentry_issues": sentry["issues"],
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(), "max_alerts_per_lane": h.maxPerLane(),
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(), "max_alerts_per_lane": h.maxPerLane(), "max_message_chars": 14000,
 	})
 	notify := run("notify", map[string]any{
 		"alerts": decide["alerts"], "overflow_count": decide["overflow_count"], "stale_sources": decide["stale_sources"],
 		"sinks": plan["sinks"], "labels": plan["labels"], "app": plan["app"], "sentry": plan["sentry"],
 		"release": rel["release"], "release_known": rel["release_known"],
-		"dry_run": dryRun, "max_message_chars": 14000,
+		"dry_run": dryRun, "max_message_chars": 14000, "deliver_by": pwDeliverBy(),
 	})
 	if notify["consume"] == true {
 		run("commit_state", map[string]any{"state_next_file": decide["state_next_file"], "alertlog_file": decide["alertlog_file"],
@@ -927,7 +927,7 @@ func TestProdWatch_DeliverySemantics(t *testing.T) {
 		return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 			"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": sinks, "labels": labels,
 			"app": map[string]any{"name": "demo", "environment": "preprod"}, "release": "abc1234", "release_known": false,
-			"dry_run": dry, "max_message_chars": 14000},
+			"dry_run": dry, "max_message_chars": 14000, "deliver_by": pwDeliverBy()},
 			nil, map[string]string{"webhooks": h.webhooksFile}))
 	}
 	// required sink down → fails, nothing consumed
@@ -972,7 +972,7 @@ func TestProdWatch_DeliverySemantics(t *testing.T) {
 	out, stderr, err = runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": []any{}, "overflow_count": 2, "stale_sources": []map[string]any{{"source": "loki", "hours": 30, "last_ok": "2026-09-22T05:10:12+00:00"}, {"source": "coverage", "hours": -1, "last_ok": "partial"}},
 		"sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "critical"}}, "labels": labels,
-		"app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": false, "max_message_chars": 14000},
+		"app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": false, "max_message_chars": 14000, "deliver_by": pwDeliverBy()},
 		nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil || out["delivered"].(float64) != 3 || h.sinkHits.Load() != before+3 {
 		t.Fatalf("overflow, staleness and partial coverage must bypass the sink threshold: %v %s", out, stderr)
@@ -1574,8 +1574,9 @@ func pwOutsideCode(line string) string {
 // read as markdown or a link around a value: an unescaped emphasis, strike,
 // link, image or inline-LaTeX opener, an unpaired backtick, a raw `<` (a tag,
 // an autolink, a Slack link the server rewrites), a scheme's colon with no
-// zero-width space before it and text after it, a dot after a letter or
-// digit (a host) unescaped.
+// zero-width space before it and text after it, an unescaped dot after a
+// letter or digit where a host could form (before a letter, or right before
+// a value's span).
 func pwUnescapedActives(line string) []string {
 	var found []string
 	scheme := func(r rune) bool {
@@ -1598,7 +1599,8 @@ func pwUnescapedActives(line string) []string {
 			found = append(found, string(c))
 		case c == ':' && i > 0 && scheme(rs[i-1]) && (i+1 == len(rs) || !unicode.IsSpace(rs[i+1])):
 			found = append(found, string(rs[i-1])+":")
-		case c == '.' && i > 0 && rs[i-1] < 128 && (unicode.IsLetter(rs[i-1]) || unicode.IsDigit(rs[i-1])):
+		case c == '.' && i > 0 && rs[i-1] < 128 && (unicode.IsLetter(rs[i-1]) || unicode.IsDigit(rs[i-1])) &&
+			i+1 < len(rs) && (rs[i+1] == '`' || (rs[i+1] < 128 && unicode.IsLetter(rs[i+1]))):
 			found = append(found, string(rs[i-1])+".")
 		}
 	}
@@ -1745,7 +1747,7 @@ func (h *pwHarness) cursorTickWith(t *testing.T, wf *ir.Workflow, vars map[strin
 		"loki_ok": loki["ok"], "loki_truncated": loki["truncated"], "loki_errors": loki["errors"], "loki_per_query": loki["per_query"],
 		"prom_ok": true, "prom_errors": []any{}, "release": "unknown", "release_known": false,
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5,
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5, "max_message_chars": 14000,
 	}
 	for k, v := range decideExtra {
 		decideIn[k] = v
@@ -1763,6 +1765,9 @@ func (h *pwHarness) cursorTickWith(t *testing.T, wf *ir.Workflow, vars map[strin
 	}
 	return outs
 }
+
+// pwDeliverBy is a notify deadline far enough for any test's delivery.
+func pwDeliverBy() int64 { return time.Now().Add(10 * time.Minute).Unix() }
 
 func cursorVars(h *pwHarness, maxWindowMin, lagSec, maxLines int) map[string]any {
 	return map[string]any{"workspace_dir": h.ws, "config_path": "prod-watch.json", "mode": "watch", "state_dir": ".prod-watch",
@@ -2518,12 +2523,12 @@ func TestProdWatch_CoverageNoteCarriesTheLaneErrorAndRefiresOnChange(t *testing.
 			"loki_ok": loki["ok"], "loki_truncated": loki["truncated"], "loki_errors": loki["errors"], "loki_per_query": loki["per_query"],
 			"prom_ok": true, "prom_errors": []any{}, "release": "unknown", "release_known": false,
 			"lanes": map[string]any{"loki": true, "prometheus": false, "probes": true}, "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-			"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5,
+			"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5, "max_message_chars": 14000,
 		})
 		notify := run("notify", map[string]any{
 			"alerts": decide["alerts"], "overflow_count": decide["overflow_count"], "stale_sources": decide["stale_sources"],
 			"sinks": plan["sinks"], "labels": plan["labels"], "app": plan["app"], "release": "unknown", "release_known": false,
-			"dry_run": true, "max_message_chars": 14000,
+			"dry_run": true, "max_message_chars": 14000, "deliver_by": pwDeliverBy(),
 		})
 		b, _ := os.ReadFile(decide["state_next_file"].(string))
 		_ = os.MkdirAll(filepath.Join(h.ws, ".prod-watch"), 0o755)
@@ -2985,9 +2990,9 @@ func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 			"sentry": true, "sentry_ok": true, "sentry_truncated": true, "sentry_errors": true, "sentry_walk": true, "sentry_issues": true,
 			"lanes": true, "app": true, "workspace": true, "state_dir": true, "scratch_dir": true, "renotify_hours": true,
 			"quiet_after_hours": true, "forget_after_days": true, "source_stale_hours": true, "max_alerts": true,
-			"max_alerts_per_lane": true},
+			"max_alerts_per_lane": true, "max_message_chars": true},
 		"notify": {"alerts": true, "overflow_count": true, "stale_sources": true, "sinks": true, "labels": true, "app": true, "sentry": true,
-			"release": true, "release_known": true, "dry_run": true, "max_message_chars": true},
+			"release": true, "release_known": true, "dry_run": true, "max_message_chars": true, "deliver_by": true},
 		"commit_state": {"state_next_file": true, "alertlog_file": true, "tick_file": true, "generation": true,
 			"state_commit": true, "workspace": true, "state_dir": true},
 	}
@@ -3061,7 +3066,7 @@ func pwDecide(t *testing.T, wf *ir.Workflow, h *pwHarness, signals map[string]an
 		"loki_errors": []any{}, "loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}}, "prom_ok": true, "prom_errors": []any{},
 		"release": "", "release_known": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": true},
 		"app": map[string]any{"name": "demo"}, "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
-		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5,
+		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5, "max_message_chars": 14000,
 	}
 	for k, v := range inputs {
 		in[k] = v
@@ -3281,7 +3286,7 @@ func TestProdWatch_NotifyRendersUntrustedTextInert(t *testing.T) {
 		"evidence": map[string]any{"sample": hostile}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
 	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": alerts, "overflow_count": 0, "stale_sources": stale, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
-		"labels": labels, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000},
+		"labels": labels, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000, "deliver_by": pwDeliverBy()},
 		nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, stderr)
@@ -3333,7 +3338,7 @@ func TestProdWatch_NotifyCutsAMessageOnALineBoundary(t *testing.T) {
 		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 			"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 			"labels": map[string]any{"loki_detail": "{count} line(s) since {first}, containers: {streams}"}, "app": map[string]any{"name": "demo"},
-			"release": "", "release_known": false, "dry_run": true, "max_message_chars": max}, nil, map[string]string{"webhooks": h.webhooksFile}))
+			"release": "", "release_known": false, "dry_run": true, "max_message_chars": max, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": h.webhooksFile}))
 		if err != nil {
 			t.Fatalf("notify: %v %s", err, stderr)
 		}
@@ -3384,7 +3389,7 @@ func TestProdWatch_NotifyRendersTheReleaseInert(t *testing.T) {
 		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": map[string]any{"severity": "sév`érité", "release": `ver\sion\`}, "app": map[string]any{"name": "demo"},
 		"release": "v1 @channel www.evil-sso.com/login", "release_known": true,
-		"dry_run": true, "max_message_chars": 14000}, nil, map[string]string{"webhooks": h.webhooksFile}))
+		"dry_run": true, "max_message_chars": 14000, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {
 		t.Fatalf("notify: %v %s", err, stderr)
 	}

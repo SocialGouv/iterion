@@ -59,7 +59,7 @@ overrides).
   **datasource proxy** (`/api/datasources/proxy/uid/<uid>/…`) with the
   `grafana_token` secret as a bearer token; the service account needs
   datasource query rights (Viewer is enough on a default Grafana).
-  `deadline_secs` (120, 10–600): each Grafana lane — Loki, Prometheus —
+  `deadline_secs` (90, 10–600): each Grafana lane — Loki, Prometheus —
   starts no request after running that long, and the one running then
   stops there; the queries or probes left are the lane's errors.
 - `loki.queries` — a map name → LogQL. Every query feeds the redaction
@@ -87,12 +87,15 @@ overrides).
   large page arriving slowly is legitimate; a stall trips the socket
   timeout first) and never past its lane's `grafana.deadline_secs`.
   **The run's budget** (12 minutes) must hold every wait before the
-  delivery at its worst: the release endpoint, the probes' timeouts one
-  after the other, each lane's deadline. `plan` refuses a config whose
-  sum passes 480 s (a tick the budget kills posts nothing, the health
-  probes included), naming each wait; the delivery (90 s window, 20 s a
-  post) and the state commit (90 s window, 60 s a git call) have their
-  own.
+  delivery at its worst: the release endpoint and its host's lookup (2 ×
+  `fetch_timeout_secs`), each probe tried twice two seconds apart plus
+  one lookup per probed host, each lane's deadline (a name lookup is
+  bounded like the answer after it). `plan` refuses a config whose sum
+  passes 480 s (a tick the budget kills posts nothing, the health probes
+  included), naming each wait. The delivery has until the time the
+  budget keeps for it — at least a minute —, the required sinks first, a
+  sink that timed out once not asked again that tick (20 s a post); the
+  state commit has its own window (90 s, 60 s a git call).
 - `sentry` — absent or `null`: the lane is off. `base_url` (https, no
   query, fragment or credentials; the prefix of the ONE clickable link
   the bot renders), `org` and `project` (slugs), `environment` (strongly
@@ -134,11 +137,11 @@ overrides).
   a link can come out of it), truncated to 200 characters; the label's
   own words render as written — its markdown, links and LaTeX are shown,
   never live (a label cannot format, link or tag), while parentheses,
-  colons and emoji codes stay as they are. `sentry_reopened` says an
-  archived issue is open again; `folded_detail` words the note naming
-  the alerts of one kind past `--var max_alerts_per_lane` (5) — its
-  header is the kind's own (new, escalated, still open, not observed any
-  more).
+  colons, a version's dots and emoji codes stay as they are (an emoji
+  glued to a value is escaped). `sentry_reopened` says a closed issue is
+  open again; `folded_detail` words the notes naming the alerts of one
+  kind past `--var max_alerts_per_lane` (5) — their header is the kind's
+  own.
 
 ## The secrets
 
@@ -293,9 +296,9 @@ managed secret under the name `forge_token` (see vuln-watch's
   (tracked ids over `max_tracked` are not a cause: they take turns). Nothing is concluded from absence that
   tick (no "not observed any more"); a flood of distinct issues from a
   public DSN is one way there — raise the caps or tighten `min_level`
-  (past `max_alerts_per_lane`, the flood's new issues are named in one
-  note a tick and become backlog; nothing queues behind them — set a rate
-  limit on the DSN key in Sentry to stop it at the source). **`sentry: … carried no
+  (past `max_alerts_per_lane`, the flood's issues are named in notes a
+  tick, nothing queues behind them, and their follow-ups fold too — set a
+  rate limit on the DSN key in Sentry to stop it at the source). **`sentry: … carried no
   Link header`** — a proxy between the runner and Sentry strips it: no
   list can be read whole, so the lane never arms (or its cursor stays)
   until the proxy passes it. **`sentry: gap — the cursor was older
@@ -315,7 +318,8 @@ managed secret under the name `forge_token` (see vuln-watch's
   more transition(s) recorded as history …`** — past 100 names waiting,
   the oldest are counted instead.
 - **The run FAILS with "the fetches can wait N s at worst (…)"** — the
-  release endpoint, the probes' timeouts and the lanes' deadlines add up
+  release endpoint, the probes (their retry and lookup counted) and the
+  lanes' deadlines add up
   past what the 12-minute budget keeps before the delivery: lower
   `grafana.deadline_secs`, `sentry.deadline_secs`, a probe's
   `timeout_secs` or `fetch_timeout_secs` as the message names them.

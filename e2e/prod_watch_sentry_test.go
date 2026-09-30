@@ -1136,7 +1136,7 @@ func TestProdWatch_SentryNotifyRendersOnlyItsOwnLink(t *testing.T) {
 				"evidence": map[string]any{"link": link, "short_id": short}, "count": 1, "first_seen": "2026-09-29T00:00:00+00:00"}},
 			"overflow_count": 0, "stale_sources": []any{}, "sinks": []any{map[string]any{"webhook": "w1", "channel": "", "min_severity": "low"}},
 			"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "sentry": map[string]any{"enabled": true, "link_prefix": prefix},
-			"release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000}, nil, map[string]string{"webhooks": h.webhooksFile}))
+			"release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": h.webhooksFile}))
 		if err != nil {
 			t.Fatalf("notify: %v %s", err, stderr)
 		}
