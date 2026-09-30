@@ -74,39 +74,6 @@ func TestProdWatch_SentryAllReadIsNoCut(t *testing.T) {
 	}
 }
 
-// TestProdWatch_SentryAFutureReadStampGoesFirst: a read stamp a clock running
-// ahead wrote is taken for none — the issue is read first, the read replacing
-// the stamp, instead of looking freshest for ever.
-func TestProdWatch_SentryAFutureReadStampGoesFirst(t *testing.T) {
-	t.Parallel()
-	wf := compileFixture(t, "prod-watch/main.bot")
-	h := newPWHarness(t)
-	h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_tracked"] = 1 }))
-	sentryTick(t, h, wf)
-	now := time.Now()
-	for _, id := range []string{"21", "22"} {
-		h.sentry.put(&pwSentryIssue{ID: id, ShortID: strp("P-" + id), Title: "x", FirstProcessed: now, LastSeen: now, Count: 1})
-	}
-	sentryTick(t, h, wf)
-	for _, id := range []string{"21", "22"} {
-		h.sentry.edit(id, func(i *pwSentryIssue) { i.FirstProcessed = now.Add(-3 * time.Hour) })
-	}
-	sentryEditRecord(t, h, "21", func(r map[string]any) {
-		r["tracked_read_at"] = time.Now().Add(72 * time.Hour).UTC().Format("2006-01-02T15:04:05+00:00") // a runner 3 days ahead
-	})
-	read := map[string]bool{}
-	for k := 0; k < 3; k++ {
-		time.Sleep(1100 * time.Millisecond)
-		o := sentryTick(t, h, wf)
-		for _, x := range o["plan"]["sentry"].(map[string]any)["tracked_ids"].([]any) {
-			read[fmt.Sprint(x)] = true
-		}
-	}
-	if !read["21"] {
-		t.Fatalf("an issue stamped read 3 days ahead was never read in 3 ticks (max_tracked 1): %v", read)
-	}
-}
-
 // TestProdWatch_ANoteOwedStampLivesUntilSaid: a note owed since tick 0 that the
 // owed queue itself cannot absorb at tick 1 still goes before notes first owed
 // at tick 1 (the stamp keeps its first value), and its stamp is dropped once

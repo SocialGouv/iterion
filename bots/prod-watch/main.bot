@@ -118,8 +118,8 @@ vars:
   ## folds them all.
   max_alerts_per_lane: int = 5
   ## Per-MESSAGE character budget at delivery (under Mattermost's
-  ## 16383-char post limit; 1500 at least — a note names its members
-  ## inside one message).
+  ## 16383-char post limit; 1500 at least — a note's names take it less
+  ## 1000 characters, and go on in parts past it).
   max_message_chars: int = 14000
 
 secrets:
@@ -716,7 +716,7 @@ tool plan:
             ## sized to the message budget: once, in a label that leaves them
             ## the room.
             raise SystemExit('prod-watch: labels.' + k + ' must hold the {names} placeholder exactly once, in 400 characters at most '
-                             '(a note says its members by name, within the message)')
+                             '(a note says its members by name)')
 
     ## ── halt + cursor ──────────────────────────────────────────────
     state = {}
@@ -786,6 +786,9 @@ tool plan:
         for f in ('backlog', 'closed_said'):
             if rec.get(f) is not None and not isinstance(rec[f], bool):
                 refuse_state(where + '.' + f, rec[f], 'a boolean')
+        for f in ('tracked_read_gen', 'transition_checked_gen'):
+            if rec.get(f) is not None and not is_int(rec[f]):
+                refuse_state(where + '.' + f, rec[f], 'an integer')
     for src, hrec in (state.get('health') or {}).items():
         if not isinstance(hrec, dict):
             refuse_state('health[' + repr(src)[:40] + ']', hrec, 'an object')
@@ -954,28 +957,27 @@ tool plan:
         new_from = max(new_from, floor)
         sentry['new_since'] = new_from.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         known, tracked = {}, []
-        plan_now = now_dt.replace(microsecond=0).isoformat()
-        ## A stamp this bot wrote orders a queue — the by-id reads, the
-        ## transition re-checks: one a clock running ahead wrote is taken for
-        ## none, first in line, the next real stamp replacing it (clamped to
-        ## now it would always look freshest and never take its turn).
-        def past(stamp):
-            st = str(stamp or '')
-            return st if st <= plan_now else ''
+        ## The by-id reads and the transition re-checks take turns by the
+        ## state generation that last served each issue, never by a runner's
+        ## clock: runners taking turns on one state disagree on the time, and
+        ## a stamp one of them wrote can look future, or oldest, to the other
+        ## for ever. Never served: -1, first in line.
+        def served(gen):
+            return gen if gen is not None else -1
         if same:
             for ifp, rec in (state.get('incidents') or {}).items():
                 sid = ifp.split(':', 1)[1] if ifp.startswith('sentry:') else ''
                 if rec.get('kind') != 'sentry' or not re.fullmatch(r'[0-9]{1,20}', sid):
                     continue
                 known[sid] = {'transition_at': rec.get('transition_at'), 'last_seen': rec.get('sentry_last_seen'),
-                              'checked_at': past(rec.get('transition_checked_at'))}
+                              'checked_at': rec.get('transition_checked_at'), 'checked_gen': served(rec.get('transition_checked_gen'))}
                 ## Tracked by id: what is pending, and what was alerted and can
                 ## still change by itself — open; archived (Sentry reopens it as
                 ## ongoing); resolved (unresolved by hand — the issue page's
                 ## button, a bulk action — it is ongoing, in neither list).
                 if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved')
                                           in ('unresolved', 'reprocessing', 'ignored', 'resolved')):
-                    tracked.append((rec.get('status') == 'resolved' and not rec.get('pending'), past(rec.get('tracked_read_at')), sid))
+                    tracked.append((rec.get('status') == 'resolved' and not rec.get('pending'), served(rec.get('tracked_read_gen')), sid))
         ## The open ones first, then the resolved ones (read for a reopening
         ## by hand, best effort), the least recently read first in each: over
         ## max_tracked they take turns — none left out for ever — and the cut
@@ -2256,7 +2258,7 @@ tool poll_sentry:
                 r['transition_at'] = k.get('transition_at')
                 rechecks.append(r)
         undated.sort(key=lambda r: (r['last_seen'] or '', r['id']), reverse=True)
-        rechecks.sort(key=lambda r: ((known.get(r['id']) or {}).get('checked_at') or '', r['id']))
+        rechecks.sort(key=lambda r: ((known.get(r['id']) or {}).get('checked_gen', -1), r['id']))
         want = {'regressed': 'set_regression', 'escalating': 'set_escalating'}
         cap = int(cfg.get('max_transition_checks') or 0)
         for r in undated + rechecks:
@@ -3308,6 +3310,7 @@ tool decide:
                 rec['transition_at'] = s_as_of
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
+                rec['transition_checked_gen'] = state['generation']
             if it.get('last_seen'):
                 rec['sentry_last_seen'] = it['last_seen']
         if sentry_walk.get('answered') and sentry_walk.get('new_complete'):
@@ -3335,10 +3338,11 @@ tool decide:
             rec = s_record(it, fp)
             if it.get('transition_checked'):
                 rec['transition_checked_at'] = now_iso
+                rec['transition_checked_gen'] = state['generation']
             ## Read this tick, by id or in a list: the by-id reads take turns
-            ## from the least recently read, a fresh issue joining the back —
-            ## never ahead of the ones it would starve.
-            rec['tracked_read_at'] = now_iso
+            ## from the least recently read — in state generations —, a fresh
+            ## issue joining the back, never ahead of the ones it would starve.
+            rec['tracked_read_gen'] = state['generation']
             sev_now = s_sev(it.get('level') or '')
             sighted = bool(it.get('last_seen')) and (not prev_seen or it['last_seen'] > prev_seen)
             ## Closed in Sentry right now (read by id: resolved, archived …):
@@ -3436,7 +3440,7 @@ tool decide:
             if rec is not None:
                 ## Asked and absent (deleted, merged — or an answer that lost
                 ## it): read, nothing concluded; it takes its turn again.
-                rec['tracked_read_at'] = now_iso
+                rec['tracked_read_gen'] = state['generation']
         for fp, rec in sorted(incidents.items(), key=lambda kv: (str(kv[1].get('pending_since') or ''), kv[0])):
             if rec.get('kind') != 'sentry' or fp in s_emitted:
                 continue
@@ -3980,7 +3984,7 @@ tool decide:
     alertlog = os.path.join(scratch, 'alertlog_delta-' + str({{run.id}})[-12:] + '.jsonl')
     with open(alertlog, 'w', encoding='utf-8') as fh:
         for a in posted:
-            ## One line per message. A Sentry alert logs its short id, never
+            ## One line per alert or note (a note in parts is one line). A Sentry alert logs its short id, never
             ## the issue's text: the log is committed with the state. A note
             ## logs the names it said (within the message budget) and their
             ## number.
@@ -4152,8 +4156,10 @@ tool notify:
     MARKERS = {'new': 'alert', 'escalated': 'escalated', 'reminder': 'reminder', 'quiet': 'quiet',
                'regressed': 'sentry_regressed', 'escalating': 'sentry_escalating', 'reopened': 'sentry_reopened'}
     CLOSED = {'resolved': 'sentry_resolved', 'ignored': 'sentry_archived'}
+    def marker_key(state, status):
+        return CLOSED.get(status, 'sentry_closed') if state == 'resolved' else MARKERS.get(state)
     def header(sev, state, status, title_key):
-        key = CLOSED.get(status, 'sentry_closed') if state == 'resolved' else MARKERS.get(state)
+        key = marker_key(state, status)
         marker = (labels.get(key) if key else None) or state
         head = labels.get(title_key or 'alert') or (title_key or 'alert')
         return ICON.get(sev, ':bell:') + ' **' + lab(str(marker).upper(), 40) + ' · ' + lab(scope, 100) + ' — ' + lab(head, 120) + '**'
@@ -4225,24 +4231,29 @@ tool notify:
         return parts
 
     ## Every tick, whatever the data: the labels, the app and the budget
-    ## leave a note the room to name one member — the longest header of the
-    ## kinds decide folds (Sentry issues, log templates: NOTE_TITLES), the
-    ## longer fold label with eight-digit numbers, and a name of NAME_CAP
-    ## scheme-looking characters (a zero-width space before each colon). A
-    ## config that could not say one fails its first tick and its dry run,
-    ## never the tick of a flood.
-    NOTE_TITLES = ('sentry_issue', 'loki_template')
+    ## leave a note the room to name one member — the longest header of each
+    ## kind decide folds, with the states that kind takes (NOTE_KINDS: a log
+    ## template's note never carries a Sentry state), at every icon (a
+    ## closing or idle note always goes out at low, whose icon is up to 4
+    ## characters shorter: the check errs on the safe side there), and the
+    ## longer fold label naming one member (`n` 1, `more` of eight digits)
+    ## of NAME_CAP scheme-looking characters (a zero-width space before each
+    ## colon). A config that could not say one fails its first tick and its
+    ## dry run, never the tick of a flood.
+    NOTE_KINDS = {'sentry_issue': [(st, '') for st in MARKERS] + [('resolved', st) for st in ('resolved', 'ignored', 'closed')],
+                  'loki_template': [(st, '') for st in ('new', 'escalated', 'reminder', 'quiet')]}
     wide = 10 ** 8 - 1
     worst_name = ('ftp:' * NAME_CAP)[:NAME_CAP]
-    states = [(st, '') for st in MARKERS] + [('resolved', st) for st in ('resolved', 'ignored', 'closed')]
-    worst_head = max(len(header(sev, st, status, tk)) for sev in ICON for st, status in states for tk in NOTE_TITLES)
-    worst_names = max(len(fmt_capped(k, {'names': max_chars}, n=wide, names=worst_name, more=wide))
-                      for k in ('folded_detail', 'folded_detail_more'))
+    worst_head, head_keys = max((len(header(sev, st, status, tk)), (marker_key(st, status), tk))
+                                for tk, states in NOTE_KINDS.items() for st, status in states for sev in ICON)
+    worst_names, fold_key = max((len(fmt_capped(k, {'names': max_chars}, n=1, names=worst_name, more=wide)), k)
+                                for k in ('folded_detail', 'folded_detail_more'))
     if worst_head + 1 + worst_names > max_chars:
         raise SystemExit('prod-watch: these labels leave a note of folded alerts no room to name one member within max_message_chars ' +
-                         str(max_chars) + ': its header renders up to ' + str(worst_head) + ' characters and its names line up to ' +
-                         str(worst_names) + ' with one name -- shorten the state, title or fold labels (a label renders escaped: & '
-                         'becomes &amp;) or the app name, or raise max_message_chars')
+                         str(max_chars) + ': its header renders up to ' + str(worst_head) + ' characters (labels.' + head_keys[0] +
+                         ' with labels.' + head_keys[1] + ') and its names line up to ' + str(worst_names) + ' with one name (labels.' +
+                         fold_key + ') -- shorten those labels (a label renders escaped: & becomes &amp;) or the app name, or raise '
+                         'the max_message_chars var')
 
     messages = []
     for a in alerts:

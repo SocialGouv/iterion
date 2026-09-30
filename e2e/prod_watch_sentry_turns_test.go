@@ -26,7 +26,7 @@ func TestProdWatch_SentryAFreshFloodNeverStarvesAnOldRead(t *testing.T) {
 		if k == 2 {
 			h.sentry.edit("4242", func(i *pwSentryIssue) { i.Level = "fatal"; i.LastSeen = time.Now().Add(time.Second) })
 		}
-		time.Sleep(1100 * time.Millisecond) // tracked_read_at has a one-second resolution
+		time.Sleep(1100 * time.Millisecond) // one tick a second: the state's stamps have a one-second resolution
 		n := len(h.bodies())
 		o := sentryTick(t, h, wf)
 		if k == 2 && !strings.Contains(strings.Join(h.bodies()[n:], "\n"), "REAL-4242") {

@@ -725,7 +725,7 @@ func TestProdWatch_SentryTrackedSetTakesTurns(t *testing.T) {
 	h.sentry.edit("95", func(i *pwSentryIssue) { i.Status = "resolved" })
 	var all []string
 	for k := 0; k < 4; k++ {
-		time.Sleep(1100 * time.Millisecond) // tracked_read_at has a one-second resolution
+		time.Sleep(1100 * time.Millisecond) // one tick a second: the state's stamps have a one-second resolution
 		for _, id := range []string{"31", "38"} {
 			h.sentry.edit(id, func(i *pwSentryIssue) { i.LastSeen = time.Now().Add(time.Duration(k+1) * time.Second) })
 		}
@@ -1096,7 +1096,7 @@ func TestProdWatch_SentryGoneIssueTakesItsTurn(t *testing.T) {
 	h.sentry.edit("95", func(i *pwSentryIssue) { i.Status = "resolved" })
 	var all []string
 	for k := 0; k < 3; k++ {
-		time.Sleep(1100 * time.Millisecond) // tracked_read_at has a one-second resolution
+		time.Sleep(1100 * time.Millisecond) // one tick a second: the state's stamps have a one-second resolution
 		all = append(all, sentryAlerts(sentryTick(t, h, wf))...)
 	}
 	if strings.Join(all, " ") != "resolved:P-95:low" {

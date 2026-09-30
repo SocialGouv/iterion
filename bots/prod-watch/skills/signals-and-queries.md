@@ -233,7 +233,9 @@ error, never read as "no event"):
   first (one the cap leaves is a loss — partial coverage), then the
   re-checks — of dated ones, and of ones a check left undated (an issue
   unresolved through the API reads REGRESSED with a `set_unresolved`
-  only) — least recently checked first: a deferred re-check keeps its
+  only) — least recently checked first (in state generations, never by
+  a runner's clock: runners taking turns may disagree on the time): a
+  deferred re-check keeps its
   date and waits its turn, so neither busy regressed issues nor
   undatable ones ever starve a new one. Every dated one is re-checked in turn, whether or not an event
   moved in the watched environment: substatus and activities are
@@ -256,7 +258,8 @@ error, never read as "no event"):
   resolved (unresolved by hand — the issue page's button, a bulk action —
   an issue is ongoing, in neither list) — their current status and last
   event. The open ones go first, then the resolved ones (best effort),
-  the least recently read first in each — an issue read in a list this
+  the least recently read first in each (in state generations, like the
+  re-checks) — an issue read in a list this
   tick counts as read, so a fresh one joins the back: over `max_tracked`
   they take turns, none left out for ever, and a coverage note of its own
   says the cut once the open ones take every read while others wait —
