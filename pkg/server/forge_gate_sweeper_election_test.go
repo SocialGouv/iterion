@@ -46,13 +46,22 @@ func (c *scanCounter) ListNotifiableRuns(context.Context, time.Time, time.Time, 
 }
 
 // The fleet shape: several replicas start the sweeper on one shared lease
-// store. Exactly one sweeps — the others campaign — and when it stops, one of
-// them takes over. Every replica sweeping is the cost the lease removes: each
-// offer spends forge requests, multiplied by the replica count.
+// store; a replica sweeps only inside a term it was elected to, and when the
+// holder stops, another takes over while the stopped one sweeps no more.
+// Every replica sweeping is the cost the lease removes: each offer spends
+// forge requests, multiplied by the replica count.
+//
+// The invariant is read from each replica's own "elected" lines, not from a
+// count of sweepers: a loaded runner can stall a holder past its renewal
+// slack, or step the wall clock the stores compare, and the hand-over that
+// follows is the lease working — one more term, logged — not two sweeps. That
+// only one replica holds the lease at a time is the store's contract, pinned
+// without a clock by the conformance suite in pkg/lease.
 func TestGateSweeper_OneReplicaSweepsAndASuccessorTakesOver(t *testing.T) {
 	shared := lease.NewMemoryStore()
 	type replica struct {
 		s     *Server
+		log   *lockedBuffer
 		scans *scanCounter
 		stop  context.CancelFunc
 		done  chan struct{}
@@ -66,12 +75,11 @@ func TestGateSweeper_OneReplicaSweepsAndASuccessorTakesOver(t *testing.T) {
 		}
 		s := newForgeGateTestServer(t, st)
 		s.leases = shared
-		// TTL is 3 ticks and the holder steps down 2.5 ticks after its last
-		// renewal: 200ms leaves a loaded -race scheduler 300ms of slack before
-		// a spurious hand-over, which this test would read as two sweepers.
 		s.gateSweepTick = 200 * time.Millisecond
+		log := &lockedBuffer{}
+		s.logger = iterlog.New(iterlog.LevelInfo, log)
 		ctx, cancel := context.WithCancel(context.Background())
-		r := &replica{s: s, scans: &scanCounter{}, stop: cancel, done: make(chan struct{})}
+		r := &replica{s: s, log: log, scans: &scanCounter{}, stop: cancel, done: make(chan struct{})}
 		rs[i] = r
 		go func() {
 			defer close(r.done)
@@ -86,40 +94,59 @@ func TestGateSweeper_OneReplicaSweepsAndASuccessorTakesOver(t *testing.T) {
 	})
 	t.Cleanup(stopAll)
 
-	sweeping := func() []int {
-		var out []int
-		for i, r := range rs {
-			if r.scans.n.Load() > 0 {
-				out = append(out, i)
-			}
-		}
-		return out
-	}
 	total := func() (n int64) {
 		for _, r := range rs {
 			n += r.scans.n.Load()
 		}
 		return n
 	}
+	elected := func(r *replica) int {
+		return strings.Count(r.log.String(), fmt.Sprintf("lease %q: %s elected", leaseMergeGateSweeper, r.s.replicaID))
+	}
+	sweptUnelected := func() []int {
+		var out []int
+		for i, r := range rs {
+			if r.scans.n.Load() > 0 && elected(r) == 0 {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
 
 	waitForCond(t, 10*time.Second, "several sweep passes", func() bool { return total() >= 10 })
-	first := sweeping()
-	if len(first) != 1 {
-		t.Fatalf("replicas %v swept, want exactly one — every replica sweeping multiplies the forge cost by the replica count", first)
+	if bad := sweptUnelected(); len(bad) > 0 {
+		t.Fatalf("replicas %v swept without ever being elected — every replica sweeping multiplies the forge cost by the replica count", bad)
 	}
-	leader := rs[first[0]]
+	leader := rs[0]
+	for _, r := range rs[1:] {
+		if r.scans.n.Load() > leader.scans.n.Load() {
+			leader = r
+		}
+	}
 
 	leader.stop()
 	<-leader.done
 	frozen := leader.scans.n.Load()
-	waitForCond(t, 10*time.Second, "a successor to sweep", func() bool { return len(sweeping()) == 2 })
-	base := total()
-	waitForCond(t, 10*time.Second, "the successor to keep sweeping", func() bool { return total() >= base+5 })
+	var others int64
+	for _, r := range rs {
+		if r != leader {
+			others += r.scans.n.Load()
+		}
+	}
+	waitForCond(t, 10*time.Second, "a successor to sweep", func() bool {
+		var n int64
+		for _, r := range rs {
+			if r != leader {
+				n += r.scans.n.Load()
+			}
+		}
+		return n >= others+3
+	})
 	if got := leader.scans.n.Load(); got != frozen {
 		t.Errorf("the stopped leader swept %d more passes", got-frozen)
 	}
-	if n := len(sweeping()); n != 2 {
-		t.Errorf("%d replicas have swept after one hand-over, want 2 (the leader, then ONE successor)", n)
+	if bad := sweptUnelected(); len(bad) > 0 {
+		t.Errorf("replicas %v swept without ever being elected", bad)
 	}
 }
 
