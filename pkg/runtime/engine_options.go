@@ -46,6 +46,10 @@ type SharedSandbox struct {
 	BoardEndpoint   string
 	AskUserEndpoint string
 	AskUserToken    string
+	// ScratchContainerLocal: the sandbox's ${PROJECT_SCRATCH_DIR} lives in
+	// the container and dies with it. The parent's teardown banks it
+	// (ADR-106); a child resumed on its own starts a sandbox without it.
+	ScratchContainerLocal bool
 }
 
 // WithSharedSandbox makes the engine execute every node in the given

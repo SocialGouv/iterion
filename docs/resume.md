@@ -310,12 +310,14 @@ the bank and its record under the run's identity, after the run's
 cancellation. It tries again what another try may cure — a blip on the exec,
 a failed tar, a failed upload — and retries the record. tar runs untranslated
 (`LC_ALL=C`); a member it catches changing while it reads it may be archived
-torn or missing, so tar runs again while it races, and the last archive is
-banked with the raced members named (`raced`, repeated on the restore).
+torn or missing, so tar runs again while it races, and the last complete
+archive is banked — even when a later try fails — with the raced members
+named (`raced`, repeated on the restore).
 
 Only a node that ran in the sandbox and succeeded ages the bank — an agent, a
 judge, a tool, a subbot or an LLM router; one that failed re-runs from the
-checkpoint, and a rewind takes back the nodes it dropped. A `--force` resume
+checkpoint, and a rewind takes back the nodes it dropped — those on no loop or
+foreach cycle, whose earlier passes it does not replay. A `--force` resume
 that went on without the bank forsakes it; one that restored a stale bank
 makes it the run's scratch again.
 

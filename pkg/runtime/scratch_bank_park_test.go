@@ -228,6 +228,8 @@ func parkWorkflow() *ir.Workflow {
 	wf := scratchWorkflow()
 	wf.Nodes["route"] = &ir.RouterNode{BaseNode: ir.BaseNode{ID: "route"}, RouterMode: ir.RouterLLM}
 	wf.Nodes["pick"] = &ir.RouterNode{BaseNode: ir.BaseNode{ID: "pick"}, RouterMode: ir.RouterCondition}
+	wf.Nodes["fix"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}}
+	wf.Edges = append(wf.Edges, &ir.Edge{From: "fix", To: "fix", LoopName: "again"})
 	return wf
 }
 
@@ -246,6 +248,8 @@ func TestLastScratchPark_readsTheRecordThatDecides(t *testing.T) {
 	routed := store.Event{Type: store.EventNodeFinished, NodeID: "route"}
 	picked := store.Event{Type: store.EventNodeFinished, NodeID: "pick"}
 	rewound := store.Event{Type: store.EventRunRewound, NodeID: "report", Data: map[string]any{"dropped_nodes": []string{"report"}}}
+	fixed := store.Event{Type: store.EventNodeFinished, NodeID: "fix"}
+	rewoundLoop := store.Event{Type: store.EventRunRewound, NodeID: "fix", Data: map[string]any{"dropped_nodes": []string{"fix"}}}
 	forcedWithout := store.Event{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": false, "forced": true, "reason": "gone"}}
 	forcedStale := store.Event{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": true, "bytes": 10, "stale": true}}
 	started := store.Event{Type: store.EventRunStarted}
@@ -271,6 +275,7 @@ func TestLastScratchPark_readsTheRecordThatDecides(t *testing.T) {
 		{"a bank, a node, then a rewind that dropped it", []store.Event{banked, ran, rewound}, scratchPark{recorded: true, banked: true}, false, false},
 		{"a bank, two nodes, then a rewind that dropped one", []store.Event{banked, measured, ran, rewound}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
 		{"a bank, a rewind, then the node again", []store.Event{banked, ran, rewound, ran}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
+		{"a bank, a looped node, then a rewind that dropped it", []store.Event{banked, fixed, rewoundLoop}, scratchPark{recorded: true, banked: true, advanced: true}, true, true},
 		{"a start, then a bank", []store.Event{started, banked}, scratchPark{recorded: true, banked: true}, false, false},
 		{"a start, then a refusal", []store.Event{started, refused}, scratchPark{recorded: true, reason: "over the cap"}, true, true},
 		{"a bank, then an execution that wrote no record", []store.Event{banked, resumed}, scratchPark{recorded: true, banked: true, superseded: true}, false, false},
@@ -871,5 +876,203 @@ func TestResume_aRacedBankIsRestoredAndSaysSo(t *testing.T) {
 	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
 	if len(restored) != 1 || restored[0].Data["restored"] != true || restored[0].Data["raced"] != true {
 		t.Fatalf("want the restore of a raced bank to say so, got %v", dataOf(restored))
+	}
+}
+
+// TestOnCycle: a node on a loop's or a foreach's cycle may have run more
+// than once; one on none ran once.
+func TestOnCycle(t *testing.T) {
+	wf := &ir.Workflow{Edges: []*ir.Edge{
+		{From: "a", To: "b"}, {From: "b", To: "c"}, {From: "c", To: "b", LoopName: "again"}, {From: "c", To: "d"},
+		{From: "d", To: "d", ForeachName: "each"},
+	}}
+	for id, want := range map[string]bool{"a": false, "b": true, "c": true, "d": true, "x": false} {
+		if got := onCycle(wf, id); got != want {
+			t.Errorf("onCycle(%q) = %v, want %v", id, got, want)
+		}
+	}
+	if !onCycle(nil, "a") {
+		t.Error("a workflow not known may loop anywhere")
+	}
+}
+
+// raceThenFail runs commands like podRun; its first archive races — complete,
+// with tar's race warning — and every later one fails as fail says.
+type raceThenFail struct {
+	*podRun
+	fail func(ctx context.Context) (sandbox.ExecResult, error)
+	tars int
+}
+
+func (r *raceThenFail) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	if !strings.Contains(strings.Join(argv, " "), "-czf") {
+		return r.podRun.Exec(ctx, argv, opts)
+	}
+	r.tars++
+	if r.tars > 1 {
+		return r.fail(ctx)
+	}
+	res, err := r.podRun.Exec(ctx, argv, opts)
+	if err != nil || res.ExitCode != 0 {
+		return res, err
+	}
+	fmt.Fprintf(opts.Stderr, "tar: ./server.log: file changed as we read it\n%s\n", sandbox.KubectlRemoteExit1)
+	res.ExitCode = 1
+	return res, nil
+}
+
+// TestBankScratch_keepsTheLastCompleteArchiveARaceLeft: a scratch that races
+// is archived again; when that try is killed, or the budget ends it, the
+// complete archive that raced is banked, raced — not refused.
+func TestBankScratch_keepsTheLastCompleteArchiveARaceLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(ctx context.Context) (sandbox.ExecResult, error)
+	}{
+		{"the pod killed", func(context.Context) (sandbox.ExecResult, error) {
+			return sandbox.ExecResult{ExitCode: 137}, nil
+		}},
+		{"the budget ended", func(ctx context.Context) (sandbox.ExecResult, error) {
+			return sandbox.ExecResult{ExitCode: -1}, context.DeadlineExceeded
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-kept-archive"
+			if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "server.log"), []byte("listening\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			run := &raceThenFail{podRun: &podRun{scratch: dir}, fail: tc.fail}
+			got := bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), runID, scratchBankMaxBytes)
+			if run.tars < 2 || !got.banked || got.bytes == 0 || fmt.Sprint(got.raced) != "[./server.log]" {
+				t.Fatalf("after %d archive(s): %+v, want the raced archive banked", run.tars, got)
+			}
+			body, err := store.AsScratchBankStore(s).OpenScratchBank(ctx, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer body.Close()
+			if err := checkBankExtracts(body); err != nil {
+				t.Fatalf("the banked archive does not extract: %v", err)
+			}
+		})
+	}
+}
+
+// bankReadFailsOnce answers its first bank read with a transport error.
+type bankReadFailsOnce struct {
+	store.RunStore
+	failed bool
+}
+
+func (s *bankReadFailsOnce) PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error {
+	return store.AsScratchBankStore(s.RunStore).PutScratchBank(ctx, runID, body, size)
+}
+
+func (s *bankReadFailsOnce) OpenScratchBank(ctx context.Context, runID string) (io.ReadCloser, error) {
+	if !s.failed {
+		s.failed = true
+		return nil, errors.New("blob: GET sessions/run/scratch.tgz: 503 Slow Down")
+	}
+	return store.AsScratchBankStore(s.RunStore).OpenScratchBank(ctx, runID)
+}
+
+func (s *bankReadFailsOnce) DeleteScratchBank(ctx context.Context, runID string) error {
+	return store.AsScratchBankStore(s.RunStore).DeleteScratchBank(ctx, runID)
+}
+
+// TestResume_aHoldEndsWithItsSandbox: the command line resumes a run on one
+// engine. A restore that failed holds the bank from that sandbox's teardown
+// only: the next sandbox, restored, banks what its nodes wrote.
+func TestResume_aHoldEndsWithItsSandbox(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	base := tmpStore(t)
+	s := &bankReadFailsOnce{RunStore: base}
+	ctx := context.Background()
+	const runID = "run-scratch-hold-scope"
+	d := &podDriver{root: t.TempDir()}
+	wf := scratchWorkflow()
+	wf.Nodes["again"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "again"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}}
+	wf.Edges = []*ir.Edge{{From: "measure", To: "gate"}, {From: "gate", To: "report"}, {From: "report", To: "again"}, {From: "again", To: "done"}}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) {
+		if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("{}"), 0o644)
+	})
+	x.on("report", func(map[string]any) (map[string]any, error) {
+		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "report.json"), []byte("{}"), 0o644)
+	})
+	e := New(wf, s, x, WithLogger(iterlog.Nop()), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+		"docker": func() (sandbox.Driver, error) { return d, nil },
+	}))
+	if err := e.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err == nil {
+		t.Fatal("the resume whose bank read failed went on — this proves nothing")
+	}
+	if err := base.SaveRun(ctx, resumable(t, base, runID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("the resume on the same engine: want the second park, got %v", err)
+	}
+	banked := eventsOf(t, base, runID, store.EventSandboxScratchBanked)
+	if len(banked) != 2 || banked[1].Data["banked"] != true {
+		t.Fatalf("the second sandbox's teardown did not bank what report wrote: %v", dataOf(banked))
+	}
+}
+
+// bindPods starts pods like podDriver, on a driver that bind-mounts host
+// directories: the scratch is then the host's.
+type bindPods struct{ *podDriver }
+
+func (d bindPods) Capabilities() sandbox.Capabilities {
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsHostBindMounts: true}
+}
+
+// TestStartSandbox_aChildLearnsWhetherTheScratchDiesWithTheSandbox: the
+// sandbox a parent hands its children says whether its scratch lives in the
+// container, which a child that parks cannot take along.
+func TestStartSandbox_aChildLearnsWhetherTheScratchDiesWithTheSandbox(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	t.Setenv("ITERION_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name           string
+		driver         sandbox.Driver
+		hostState      string
+		containerLocal bool
+	}{
+		{"a container-local scratch", &podDriver{root: t.TempDir()}, "none", true},
+		{"a host-backed scratch", bindPods{&podDriver{root: t.TempDir()}}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := scratchWorkflow()
+			wf.Sandbox.HostState = tc.hostState
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-share"
+			if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+				t.Fatal(err)
+			}
+			e := New(wf, s, newStubExecutor(), WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+				"docker": func() (sandbox.Driver, error) { return tc.driver, nil },
+			}))
+			cleanup, err := e.startSandbox(ctx, runID, e.workDir, "", nil)
+			if err != nil {
+				t.Fatalf("startSandbox: %v", err)
+			}
+			defer cleanup()
+			if e.activeShare == nil || e.activeShare.ScratchContainerLocal != tc.containerLocal {
+				t.Fatalf("the share handed to children: %+v, want ScratchContainerLocal=%v", e.activeShare, tc.containerLocal)
+			}
+		})
 	}
 }

@@ -207,34 +207,46 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 	if bs == nil {
 		return scratchBanked{reason: "this store keeps no scratch bank"}
 	}
-	tmp, err := os.CreateTemp("", "iterion-scratch-bank-*.tgz")
-	if err != nil {
-		return scratchBanked{reason: "no host temporary file for the bank: " + err.Error()}
-	}
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-	}()
 	// GNU tar exits 1 when a member changed or vanished while it read it
 	// (sandbox.TarRace): the archive then holds what it caught, which may be
 	// no state the scratch was ever in — a file torn between two writes, a
-	// file renamed into place missing. tar runs again while it races; the
-	// last archive is banked, and what raced is recorded.
+	// file renamed into place missing. tar runs again while it races, into
+	// the other of two host files: the last complete archive that raced
+	// stays aside, and is banked with what raced recorded when no later try
+	// does better — a clean archive — before a failure or the budget ends
+	// the tries.
+	var files [2]*os.File
+	for i := range files {
+		f, err := os.CreateTemp("", "iterion-scratch-bank-*.tgz")
+		if err != nil {
+			return scratchBanked{reason: "no host temporary file for the bank: " + err.Error()}
+		}
+		defer func() {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+		}()
+		files[i] = f
+	}
+	cur, spare := files[0], files[1]
 	var (
-		capped *cappedWriter
-		stderr bytes.Buffer
-		raced  []string
+		capped    *cappedWriter
+		stderr    bytes.Buffer
+		kept      *os.File
+		keptBytes int64
+		keptRaced []string
 	)
 	for try := 1; try <= scratchTarAttempts; try++ {
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		if try > 1 && ctx.Err() != nil {
+			break
+		}
+		if _, err := cur.Seek(0, io.SeekStart); err != nil {
 			return scratchBanked{reason: "the host temporary file for the bank could not be rewound: " + err.Error()}
 		}
-		if err := tmp.Truncate(0); err != nil {
+		if err := cur.Truncate(0); err != nil {
 			return scratchBanked{reason: "the host temporary file for the bank could not be emptied: " + err.Error()}
 		}
-		capped = &cappedWriter{w: tmp, left: limit}
+		capped = &cappedWriter{w: cur, left: limit}
 		stderr.Reset()
-		raced = nil
 		res, err = run.Exec(ctx, []string{"tar", "-C", dir, "-czf", "-", "."}, sandbox.ExecOpts{Stdout: capped, Stderr: &stderr, Env: map[string]string{"LC_ALL": sandbox.TarLocale}})
 		if err != nil || capped.over || res.ExitCode != 1 {
 			break
@@ -243,27 +255,28 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 		if !only {
 			break
 		}
-		raced = members
-		if ctx.Err() != nil {
-			break
-		}
+		kept, keptBytes, keptRaced = cur, capped.n, members
+		cur, spare = spare, cur
 	}
+	archive, size, raced := cur, capped.n, []string(nil)
 	switch {
+	case err == nil && !capped.over && res.ExitCode == 0:
+	case kept != nil:
+		archive, size, raced = kept, keptBytes, keptRaced
 	case capped.over:
 		return scratchBanked{reason: fmt.Sprintf("the scratch compresses past the %d MiB cap", limit>>20)}
 	case err != nil:
 		return scratchBanked{retry: true, reason: "the scratch could not be archived: " + err.Error()}
-	case raced != nil:
-	case res.ExitCode != 0:
+	default:
 		return scratchBanked{retry: true, reason: fmt.Sprintf("tar exited %d archiving the scratch: %s", res.ExitCode, strings.TrimSpace(stderr.String()))}
 	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
 		return scratchBanked{reason: "the archived scratch could not be re-read: " + err.Error()}
 	}
-	if err := bs.PutScratchBank(ctx, runID, tmp, capped.n); err != nil {
+	if err := bs.PutScratchBank(ctx, runID, archive, size); err != nil {
 		return scratchBanked{retry: true, reason: "the scratch bank could not be stored: " + err.Error()}
 	}
-	return scratchBanked{banked: true, bytes: capped.n, raced: raced}
+	return scratchBanked{banked: true, bytes: size, raced: raced}
 }
 
 // cappedWriter refuses the byte past its budget, which ends the stream it
@@ -371,7 +384,12 @@ func lastScratchPark(ctx context.Context, st store.RunStore, wf *ir.Workflow, ru
 			}
 		case store.EventRunRewound:
 			for _, id := range droppedNodes(ev.Data["dropped_nodes"]) {
-				delete(aging, id)
+				// A node on a cycle may have run passes the rewind does not
+				// replay — it keeps the loop's counter and replays the pass
+				// it lands on — and their writes are not in the bank.
+				if !onCycle(wf, id) {
+					delete(aging, id)
+				}
 			}
 		case store.EventRunStarted, store.EventRunResumed:
 			p.superseded = p.recorded
@@ -394,6 +412,33 @@ func ranInSandbox(wf *ir.Workflow, ev *store.Event) bool {
 		return false
 	}
 	return nodeMayWriteScratch(wf, ev.NodeID)
+}
+
+// onCycle reports that node id lies on a cycle of wf's graph — a loop or a
+// foreach body — and so may have run more than once. A workflow not known
+// may loop anywhere.
+func onCycle(wf *ir.Workflow, id string) bool {
+	if wf == nil {
+		return true
+	}
+	next := make(map[string][]string, len(wf.Edges))
+	for _, e := range wf.Edges {
+		next[e.From] = append(next[e.From], e.To)
+	}
+	seen := map[string]bool{}
+	stack := append([]string(nil), next[id]...)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n == id {
+			return true
+		}
+		if !seen[n] {
+			seen[n] = true
+			stack = append(stack, next[n]...)
+		}
+	}
+	return false
 }
 
 // droppedNodes reads a run_rewound event's dropped_nodes, whatever slice

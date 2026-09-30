@@ -57,14 +57,20 @@ pods the same way.
   while it reads it (its warnings, with the line `kubectl exec` adds) leaves
   an archive that may hold no state the scratch was ever in — a file torn
   between two writes, a file renamed into place missing — so tar runs again
-  while it races; the last archive is banked with the raced members named
-  (`raced`), and its restore says so. Its notice for a socket, which no
+  while it races. The last complete archive — a clean one, or else the last
+  that raced — is banked even when a later try fails or runs out of time,
+  with the raced members named (`raced`), and its restore says so. Its
+  notice for a socket, which no
   archive holds, is neutral. A scratch the teardown cannot even list — the
   sandbox is already gone — is `unknown`: nobody knows whether it held
   anything. It does not replace a bank recorded before it: the lost sandbox
   started from that bank, which is still stored.
 - **Cap.** 256 MiB compressed. Past it, or on a tar or upload failure, or in
   a store that keeps no bank, nothing is stored and the event names why.
+- **Subbot children.** A child that can park (a human gate, an interactive
+  node) is refused adoption into its parent's sandbox when that sandbox's
+  scratch lives in the container, as under a copy-based parent: parked, the
+  child is resumed on its own, in a sandbox without that scratch.
 - **Resume, before anything moves the run.** A run whose last teardown
   recorded a non-empty scratch it could not bank is refused
   `SCRATCH_NOT_PORTABLE` (a deterministic failure code). So is a run that
@@ -76,7 +82,9 @@ pods the same way.
   human node, a condition router, a compute) never wrote there, nor did a
   paused node — a human node or an agent that asked — that a resume records
   as finished by its answer (`node_finished {answered}`). A rewind takes
-  back the nodes it dropped. A resume that went on without the bank
+  back the nodes it dropped that lie on no cycle: one in a loop or a foreach
+  may have run passes the rewind does not replay. A resume that went on
+  without the bank
   (`--force` past a bank that is gone) forsakes it: nothing is restored or
   refused over it later; one that restored a stale bank with `--force` makes
   it the run's scratch again. The
@@ -93,7 +101,8 @@ pods the same way.
   (`sandbox_scratch_restored {restored, bytes, stale, forced, reason}`),
   read onto the host and checked to extract first: a failure in the sandbox
   can then only be a transport's. Every failure holds the bank: the failed
-  sandbox's teardown banks nothing over it. A bank that is gone or does not
+  sandbox's teardown banks nothing over it (the hold ends with that
+  sandbox). A bank that is gone or does not
   extract, or a resume that runs without a sandbox, parks the run
   `SCRATCH_NOT_PORTABLE`, and `--force` goes on without it. A read that fails
   on the way — the timeline, the store, the stream into the sandbox — parks
@@ -128,8 +137,11 @@ pods the same way.
   bank looking fresh. Stamping the record with the checkpoint's progress,
   and comparing it with the checkpoint a resume runs from, would read
   staleness from the fact itself — the next step if that case is met.
-- **Not covered: races busybox tar does not report.** It exits 0 without a
-  warning for a member rewritten, renamed or removed while it reads it; no
-  check on its output can see them.
+- **Not covered: races tar does not report.** busybox tar exits 0 without a
+  warning for a member rewritten, renamed or removed while it reads it; GNU
+  tar says nothing of a file moved between two directories while it reads
+  them, and the archive misses it. No check on tar's output sees these;
+  comparing the archive's names with the scratch's after tar would — the
+  next step if that case is met.
 - **Not covered: sparse files.** A sparse file is banked compressed and
   restored dense (tar runs without `--sparse`, which busybox tar lacks).

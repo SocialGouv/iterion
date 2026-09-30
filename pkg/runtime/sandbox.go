@@ -1706,6 +1706,9 @@ type askUserMCPSetter interface {
 // The caller is responsible for failing the run; the returned cleanup
 // is a noop in that case but safe to defer.
 func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string, worktreeGitDir string, inputs map[string]any) (func(), error) {
+	// A hold on the scratch bank protects the sandbox a failed restore
+	// started (restoreBankedScratch); a new sandbox starts without one.
+	e.scratchBankHeld = false
 	noopCleanup := func() {}
 	emitForSandbox := func(t store.EventType, data map[string]any) error {
 		return e.emit(ctx, runID, t, "", data)
@@ -1811,6 +1814,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		e.activeShare = &SharedSandbox{
 			Run: active.run, WorkspaceFolder: active.workspaceFolder, SharedStateDir: active.sharedStateDir,
 			BoardEndpoint: active.boardEndpoint, AskUserEndpoint: active.askUserEndpoint, AskUserToken: active.askUserToken,
+			ScratchContainerLocal: active.scratchHostDir == "",
 		}
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
@@ -2034,6 +2038,9 @@ func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, m
 	}
 	if copyBased && workflowHasPausingNode(e.workflow) {
 		return false, fmt.Errorf("subbot child with a human gate or an interactive node cannot execute in its parent's copy-based sandbox (%s): a parked child is resumed outside its parent, in a sandbox of its own, and its work diverges from the parent's tree — declare the gate in the parent, or run the parent unsandboxed", shared.Run.Driver())
+	}
+	if shared.ScratchContainerLocal && workflowHasPausingNode(e.workflow) {
+		return false, fmt.Errorf("subbot child with a human gate or an interactive node cannot execute in its parent's sandbox (%s), whose ${PROJECT_SCRATCH_DIR} lives in the container: a parked child is resumed outside its parent, in a sandbox of its own, without that scratch — declare the gate in the parent, or give the parent a host-backed scratch", shared.Run.Driver())
 	}
 	return true, nil
 }

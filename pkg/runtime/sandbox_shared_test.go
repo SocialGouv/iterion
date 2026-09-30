@@ -294,7 +294,8 @@ func TestStartSandboxShared_ExplicitNoneIsHonouredOrRefused(t *testing.T) {
 // TestStartSandboxShared_PausingChildRefusedOnCopyBasedParent: a child
 // that can park for an operator is resumed outside its parent — in a
 // sandbox of its own, a fresh copy — so under a copy-based parent it is
-// refused at the door; under a bind-mount parent it runs.
+// refused at the door, and so under a parent whose scratch dies with its
+// container; under a bind-mount parent with a host-backed scratch it runs.
 func TestStartSandboxShared_PausingChildRefusedOnCopyBasedParent(t *testing.T) {
 	wf := compileBot(t, `
 schema answer:
@@ -319,6 +320,14 @@ workflow child:
 		_, err := e.startSandbox(ctx, "run-gate-copy", e.workDir, "", nil)
 		if err == nil || !strings.Contains(err.Error(), "human gate") {
 			t.Fatalf("err = %v, want the typed refusal of a pausing child", err)
+		}
+	})
+	t.Run("bind-mount, container-local scratch: refused", func(t *testing.T) {
+		e, _, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: bindOnly{&sharedFakeRun{}}, WorkspaceFolder: "/workspace", ScratchContainerLocal: true})
+		_, _ = st.CreateRun(ctx, "run-gate-scratch", "child", nil)
+		_, err := e.startSandbox(ctx, "run-gate-scratch", e.workDir, "", nil)
+		if err == nil || !strings.Contains(err.Error(), "human gate") || !strings.Contains(err.Error(), "PROJECT_SCRATCH_DIR") {
+			t.Fatalf("err = %v, want the typed refusal naming the container-local scratch", err)
 		}
 	})
 	t.Run("bind-mount: adopted", func(t *testing.T) {

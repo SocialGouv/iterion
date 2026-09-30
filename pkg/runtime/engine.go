@@ -200,9 +200,10 @@ type Engine struct {
 	validateOutputs        bool                     // when true, validate node outputs against declared schemas
 	outputCorrectionBudget int                      // bounded invalid-output correction calls per node episode
 	forceResume            bool                     // when true, skip workflow hash check on resume
-	// scratchBankHeld stops this run's sandbox teardown from banking its
+	// scratchBankHeld stops the current sandbox's teardown from banking its
 	// scratch: set when restoring the bank failed, so a partial scratch
-	// never replaces the bank a later resume will retry (ADR-106).
+	// never replaces the bank a later resume will retry (ADR-106). Each
+	// sandbox starts without it (startSandbox).
 	scratchBankHeld          bool
 	scratchBankRetryPause    time.Duration                        // first pause between the teardown's banking attempts; zero is scratchBankRetryPauseDefault
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
