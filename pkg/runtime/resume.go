@@ -91,6 +91,18 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	if err := e.admitRun(ctx, runID, r); err != nil {
 		return err
 	}
+	// A run whose scratch did not travel — its last teardown could not bank
+	// it, or the run moved past its bank — is refused before the claim, so
+	// it keeps its resumable status (ADR-106). So is a child whose lineage
+	// does not travel: resumed through its parent, never on its own. Both
+	// come before the source check: a --force given for an edited source
+	// would otherwise waive a loss the operator was never shown.
+	if rerr := e.refuseResumeLosingScratch(ctx, r); rerr != nil {
+		return rerr
+	}
+	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
+		return rerr
+	}
 	// Preserve the established source-change classification before the
 	// artifact guard reports derivative publish/schema mismatches. Dispatchers
 	// use this typed error to park the run for an explicit forced resume.
@@ -157,20 +169,8 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 			return fmt.Errorf("runtime: resume run %q: %w", runID, linkErr)
 		}
 	}
-	// A run whose scratch did not travel — its last teardown could not bank
-	// it, or the run moved past its bank — is refused before the claim, so
-	// it keeps its resumable status (ADR-106).
-	if rerr := e.refuseResumeLosingScratch(ctx, r); rerr != nil {
-		return rerr
-	}
-	// A child that executed in its parent's copy-based sandbox is resumed
-	// through the parent, never on its own: refused before the claim, so
-	// the run keeps the resumable status the parent's resume relies on.
-	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
-		return rerr
-	}
 	// The bundle may declare an engine this build is below. Refused BEFORE
-	// the claim, like the two guards above: the run keeps the resumable
+	// the claim, like the scratch and lineage guards: the run keeps the resumable
 	// status it had, so an operator who then aligns the build can resume it —
 	// nothing is lost by asking, and re-executing on this build could only
 	// reach the same verdict at the first node.

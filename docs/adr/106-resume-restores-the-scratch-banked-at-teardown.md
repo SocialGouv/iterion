@@ -51,7 +51,7 @@ pods the same way.
   written under the run's identity and past its cancellation (a drain, a lost
   lease or an operator's cancel reaches the teardown first). A failure
   another try may cure — a blip on the exec, a failed tar — is tried again,
-  and so is the record; a later try never replaces what an earlier one saw
+  and so is the record, until its budget runs out (a store failover); a later try never replaces what an earlier one saw
   with less (files, then empty, then nothing); an upload is tried again on
   the same archive. Before tar reads the scratch, every other process of
   the sandbox is stopped (`kill -STOP -1`: the export ran, the sandbox dies
@@ -61,9 +61,16 @@ pods the same way.
   run in a process namespace of their own is stopped
   (`sandbox.ProcessIsolated`): a kubernetes pod, and a container whose
   process namespace, read when it started, is its own — a runtime default
-  such as podman's `pidns = "host"` rules it out. A quiesce that fails is
-  recorded (`unquiesced`); once the archive is taken the processes go on,
-  so the sandbox's shutdown is not held. tar runs untranslated (`LC_ALL=C`). A member it catches
+  such as podman's `pidns = "host"` rules it out. The script itself refuses,
+  before any signal, a process namespace it cannot read, the host's initial
+  one, and a `/proc` that is not its own; it stops again what started since,
+  and checks that nothing else runs. A sandbox not read as isolated, a
+  quiesce that fails, and one that could not stop or check every process —
+  another user's, one whose status it cannot read, a `/proc` that hides other
+  users' — are recorded (`unquiesced`). Whatever the quiesce got to, the
+  processes it may have stopped go on once the archive is taken, or when
+  anything cuts the banking short, on a budget of their own: the sandbox's
+  shutdown is not held. tar runs untranslated (`LC_ALL=C`). A member it catches
   changing or vanishing while it reads it (its warnings, with the line
   `kubectl exec` adds) leaves an archive that may hold no state the scratch
   was ever in — a file torn between two writes, a file renamed into place
@@ -80,13 +87,17 @@ pods the same way.
 - **Cap.** 256 MiB compressed. Past it, or on a tar or upload failure, or in
   a store that keeps no bank, nothing is stored and the event names why.
 - **Subbot children.** A child that can park (a human gate, an interactive
-  node, a permission gate that asks) is refused adoption into its parent's sandbox when that sandbox's
-  scratch lives in the container, as under a copy-based parent: parked, the
-  child is resumed on its own, in a sandbox without that scratch. A child
-  adopted there that parks anyway — a recovery pause, an operator's pause,
-  a cost cap — records it (`sandbox_shared {scratch_container_local}`), and
-  its own resume is refused `SCRATCH_NOT_PORTABLE`; `--force` goes on
-  without the scratch.
+  node, an LLM node whose permission gate can ask — its mode asks, or its ask
+  rules apply under a gate that is on) is refused adoption into its parent's
+  sandbox when that sandbox's scratch lives in the container, as under a
+  copy-based parent: parked, the child is resumed on its own, in a sandbox
+  without that scratch. A child adopted there that parks anyway — a recovery
+  pause, an operator's pause, a cost cap, a gate the launch imposes — has
+  its own resume refused `SCRATCH_NOT_PORTABLE` from the adoption's record
+  (`sandbox_shared {scratch_container_local}`); `--force` goes on without the
+  scratch, and what the child writes there never reaches the parent's. That
+  record is written within its budget, or the child does not execute in the
+  parent's sandbox.
 - **Resume, before anything moves the run.** A run whose last teardown
   recorded a non-empty scratch it could not bank is refused
   `SCRATCH_NOT_PORTABLE` (a deterministic failure code). So is a run that
@@ -103,13 +114,16 @@ pods the same way.
   without the bank
   (`--force` past a bank that is gone) forsakes it: nothing is restored or
   refused over it later; one that restored a stale bank with `--force` makes
-  it the run's scratch again. The
+  it the run's scratch again. These refusals, and a lone child's, come
+  before the check of the workflow source: a `--force` given for an edited
+  source never waives a loss the operator was not shown. The
   resume surface refuses from a record the run's latest execution wrote,
   before a cloud resume is flipped to `queued`. A latest execution that wrote
   none may still be banking — the run already reads paused or failed while
   its teardown runs — so the surface leaves it to the engine, which checks
   under the run's lock, before its claim. `--force` resumes as it stands,
-  and says so. An `unknown` record is not refused; after a bank, the bank
+  and says so — past a scratch its teardown could not bank, on the record
+  too (`sandbox_scratch_restored {forced, reason}`). An `unknown` record is not refused; after a bank, the bank
   still decides. A timeline that cannot be read refuses the resume: it never
   reads as "nothing recorded".
 - **Resume, after the new sandbox starts** (the pause family and the failure
@@ -123,6 +137,10 @@ pods the same way.
   `SCRATCH_NOT_PORTABLE`, and `--force` goes on without it. A read that fails
   on the way — the timeline, the store, the stream into the sandbox — parks
   it without a code: the runner redelivers, and `--force` does not skip it.
+  A bank restored into a host directory — the run resumed with its host
+  state on — hands the scratch over to that directory (`host_backed` on the
+  record): from then on no bank decides what a resume on that host finds,
+  and none is restored over it.
 
 ## Consequences
 
@@ -166,3 +184,12 @@ pods the same way.
   bank replays it on what it wrote there, unlike the workspace's files.
 - **Not covered: sparse files.** A sparse file is banked compressed and
   restored dense (tar runs without `--sparse`, which busybox tar lacks).
+- **Not covered: a scratch that moves from a host directory into a
+  container** between two attempts (the host state switched off). A host
+  directory is not banked, and the resume starts without it, as before
+  banking existed.
+- **Not covered: a teardown record the store refuses for its whole budget**
+  (30 s, longer than a failover). The bank is stored but not recorded, and
+  the next resume does not restore it.
+- **Not covered: a child adopted by an engine without the lineage record**
+  (`scratch_container_local` absent). Its lone resume is not refused.

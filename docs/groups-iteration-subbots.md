@@ -193,6 +193,16 @@ just another answerable review on the parent's card. A child that ends
 subbot node (resuming the PARENT re-runs that subbot with a fresh child).
 Runnable demo: [examples/pipeline-board-demo](../examples/pipeline-board-demo/main.bot).
 
+**Not under a parent sandbox that keeps its scratch in the container, or
+copies its workspace.** A child that can pause — a human gate, an interactive
+node, an LLM node whose permission gate can ask — is refused adoption into
+such a sandbox, by name: resumed externally, it would run in a sandbox of its
+own, without the parent's `${PROJECT_SCRATCH_DIR}` or off the parent's tree.
+Declare the gate in the parent, or give the parent a host-backed scratch. A
+child adopted there that parks anyway (a recovery pause, an operator's pause)
+is refused its lone resume the same way: resume the parent, which re-runs the
+subbot ([ADR-106](adr/106-resume-restores-the-scratch-banked-at-teardown.md)).
+
 **The park is restart-safe (re-attach).** The parked parent is an in-memory
 goroutine, so a studio/CLI restart drops it: the orphan sweep promotes the
 parent to `failed_resumable` while the child stays answerable. To keep the

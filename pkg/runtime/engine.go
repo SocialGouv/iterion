@@ -206,6 +206,7 @@ type Engine struct {
 	// sandbox starts without it (startSandbox).
 	scratchBankHeld          bool
 	scratchBankRetryPause    time.Duration                        // first pause between the teardown's banking attempts; zero is scratchBankRetryPauseDefault
+	recordRetryPause         time.Duration                        // first pause between tries at writing a record a resume decides from (emitRecord); zero is recordRetryPauseDefault
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
 	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision

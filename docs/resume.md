@@ -285,7 +285,9 @@ sandbox before its first node
 ([ADR-106](adr/106-resume-restores-the-scratch-banked-at-teardown.md)). The
 timeline shows both halves: `sandbox_scratch_banked` (`banked`, `empty`,
 `bytes`, or the `reason` it could not be banked) and `sandbox_scratch_restored`
-(`restored`, `bytes`; `forced` and `reason` when `--force` went on without it).
+(`restored`, `bytes`; `forced` and `reason` when `--force` went on without it;
+`host_backed` when it was restored into a host directory, which keeps the
+scratch from then on — no bank is restored over it again).
 
 A run whose last teardown left a scratch it could **not** bank (past the cap, a
 tar or upload failure, a store that keeps no bank) is refused
@@ -293,7 +295,11 @@ tar or upload failure, a store that keeps no bank) is refused
 and fail far from the cause. So is a run that moved past its bank — an agent,
 tool or subbot node finished after the last teardown banked, in a sandbox lost
 without a teardown (an OOM kill, a lost node): restored, the bank would revert
-what that node wrote. The resume surface refuses from a record the run's
+what that node wrote. So is a subbot child that executed in its parent's
+sandbox while that sandbox's scratch lived in the container, resumed on its
+own. These refusals come before the check of the workflow source: the force
+offered for an edited source never waives a loss the operator was not shown.
+The resume surface refuses from a record the run's
 latest execution wrote, before anything moves the run (the studio and the API
 answer at once; a cloud resume is never flipped to `queued`). A run reads
 paused or failed while its teardown still banks: when the latest execution
@@ -308,10 +314,13 @@ already gone) records it as `unknown`: after a bank, that bank — still stored
 resume goes on without it, as it always did, and says so. The teardown writes
 the bank and its record under the run's identity, after the run's
 cancellation. It tries again what another try may cure — a blip on the exec,
-a failed tar, a failed upload (on the same archive) — and retries the record.
-Before tar reads the scratch, the sandbox's other processes are stopped (a
-docker or kubernetes sandbox only), so no write tears the archive unseen;
-a quiesce that fails is recorded (`unquiesced`). tar runs untranslated
+a failed tar, a failed upload (on the same archive) — and retries the record
+until its budget runs out. Before tar reads the scratch, the sandbox's other
+processes are stopped — in a sandbox whose process namespace is its own: a
+kubernetes pod, a docker or podman container not sharing the host's — so no
+write tears the archive unseen, and they go on once it is taken. A sandbox not
+read as isolated, a quiesce that fails, and one that could not stop or check
+every process are recorded (`unquiesced`, repeated on the restore). tar runs untranslated
 (`LC_ALL=C`); a member it catches changing while it reads it may be archived
 torn or missing, so tar runs again while it races, and the last complete
 archive is banked — even when a later try fails — with the raced members
@@ -333,9 +342,10 @@ resume that runs without a sandbox — parks the run under the same code;
 the bank's store, the stream into the sandbox) parks it with no code, so the
 resume is retried, `--force` or not, and the bank is kept for that attempt.
 
-Not banked: the host scratch of an unsandboxed run. It survives a resume on the
-same host, and is lost on another one, which happens in the cloud runner's
-in-pod mode.
+Not banked: the host scratch of an unsandboxed run, or of a sandbox that binds
+it to a host directory. It survives a resume on the same host, and is lost on
+another one, which happens in the cloud runner's in-pod mode — and when the
+host state is switched off between two attempts.
 
 ### When the final bank push fails
 

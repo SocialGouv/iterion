@@ -212,3 +212,90 @@ workflow operator_resume:
 		t.Fatalf("SubmitResume calls after the forced resume = %d, want 1", publisher.resumeCalls)
 	}
 }
+
+// scratchRefused reports err as the engine's refusal of a resume that would
+// lose or revert its scratch.
+func scratchRefused(err error) bool {
+	var rt *runtime.RuntimeError
+	return errors.As(err, &rt) && rt.Code == runtime.ErrCodeScratchNotPortable
+}
+
+// TestResume_refusesALoneChildBeforePublishing: a child that executed in a
+// parent sandbox whose scratch lived in the container is refused by the
+// surface, as the engine refuses it, before the publisher moves the run.
+func TestResume_refusesALoneChildBeforePublishing(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "operator_resume.bot")
+	if err := os.WriteFile(botPath, []byte("\nworkflow operator_resume:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	publisher := &operatorResumePublisher{}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithLaunchPublisher(publisher))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	const runID = "run-child-lone"
+	_, workflowHash, err := CompileWorkflowWithHash(botPath)
+	if err != nil {
+		t.Fatalf("CompileWorkflowWithHash: %v", err)
+	}
+	seedPausedOperatorRun(t, svc, runID, workflowHash)
+	ctx := context.Background()
+	r, err := svc.store.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ParentRunID = "run-parent"
+	if err := svc.store.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.store.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxShared, Data: map[string]any{
+		"adopted": true, "driver": "docker", "parent_run": "run-parent", "copy_based": false, "scratch_container_local": true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.PreflightResume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) {
+		t.Fatalf("PreflightResume of a lone child: %v, want SCRATCH_NOT_PORTABLE", err)
+	}
+	if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) || publisher.resumeCalls != 0 {
+		t.Fatalf("Resume of a lone child: %v, published %d, want SCRATCH_NOT_PORTABLE and nothing published", err, publisher.resumeCalls)
+	}
+}
+
+// TestResume_theScratchRefusalComesBeforeTheSourceCheck: a run whose source
+// changed and whose scratch did not travel is refused over the scratch first
+// — the force the studio offers for an edited source would otherwise waive a
+// loss it never showed.
+func TestResume_theScratchRefusalComesBeforeTheSourceCheck(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "operator_resume.bot")
+	if err := os.WriteFile(botPath, []byte("\nworkflow operator_resume:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	publisher := &operatorResumePublisher{}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithLaunchPublisher(publisher))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	const runID = "run-source-and-scratch"
+	_, hash, err := CompileWorkflowWithHash(botPath)
+	if err != nil {
+		t.Fatalf("CompileWorkflowWithHash: %v", err)
+	}
+	seedPausedOperatorRun(t, svc, runID, hash)
+	ctx := context.Background()
+	if _, err := svc.store.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
+		"banked": false, "empty": false, "reason": "the scratch compresses past the 256 MiB cap",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(botPath, []byte("\n## edited\nworkflow operator_resume:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.PreflightResume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) || runtime.IsWorkflowSourceChanged(err) {
+		t.Fatalf("PreflightResume over an edited source and a lost scratch: %v, want SCRATCH_NOT_PORTABLE first", err)
+	}
+	if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); !scratchRefused(err) || runtime.IsWorkflowSourceChanged(err) || publisher.resumeCalls != 0 {
+		t.Fatalf("Resume over an edited source and a lost scratch: %v, published %d, want SCRATCH_NOT_PORTABLE first and nothing published", err, publisher.resumeCalls)
+	}
+}

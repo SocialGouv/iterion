@@ -32,6 +32,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -2000,15 +2001,32 @@ func workflowHasPausingNode(wf *ir.Workflow) bool {
 		if _, ok := n.(*ir.HumanNode); ok {
 			return true
 		}
-		// A permission gate in ask mode parks its node whatever its
+		// A permission gate that can ask parks its node whatever its
 		// interaction mode. A launch may impose one the IR does not
 		// declare: the child's own resume refuses that case
 		// (refuseResumeOfSharedChild).
-		if pn, ok := n.(interface{ GetPermission() string }); ok && ir.EffectivePermission(pn.GetPermission(), wf.Permission) == "ask" {
+		if nodeGateCanAsk(n, wf) {
 			return true
 		}
 	}
 	return workflowHasInteractiveNode(wf)
+}
+
+// nodeGateCanAsk reports whether n's permission gate, as declared, can pause
+// its run to ask — the policy's CanAsk: an LLM node whose resolved mode asks,
+// or whose ask rules apply under a gate that is on (an ask rule takes
+// precedence over deny). A tool node's permission is inert (C112), and a
+// mode the gate cannot parse fails the node before it asks anything.
+func nodeGateCanAsk(n ir.Node, wf *ir.Workflow) bool {
+	nn, ok := n.(ir.LLMNode)
+	if !ok {
+		return false
+	}
+	mode, err := permission.ParseMode(ir.EffectivePermission(nn.GetPermission(), wf.Permission))
+	if err != nil || mode == permission.ModeOff {
+		return false
+	}
+	return mode == permission.ModeAsk || len(ir.EffectiveAskRules(nn, wf)) > 0
 }
 
 // shouldAdoptSharedSandbox decides what a child handed its parent's live
@@ -2044,10 +2062,10 @@ func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, m
 		return false, nil
 	}
 	if copyBased && workflowHasPausingNode(e.workflow) {
-		return false, fmt.Errorf("subbot child with a human gate or an interactive node cannot execute in its parent's copy-based sandbox (%s): a parked child is resumed outside its parent, in a sandbox of its own, and its work diverges from the parent's tree — declare the gate in the parent, or run the parent unsandboxed", shared.Run.Driver())
+		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's copy-based sandbox (%s): a parked child is resumed outside its parent, in a sandbox of its own, and its work diverges from the parent's tree — declare the gate in the parent, or run the parent unsandboxed", shared.Run.Driver())
 	}
 	if shared.ScratchContainerLocal && workflowHasPausingNode(e.workflow) {
-		return false, fmt.Errorf("subbot child with a human gate or an interactive node cannot execute in its parent's sandbox (%s), whose ${PROJECT_SCRATCH_DIR} lives in the container: a parked child is resumed outside its parent, in a sandbox of its own, without that scratch — declare the gate in the parent, or give the parent a host-backed scratch", shared.Run.Driver())
+		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's sandbox (%s), whose ${PROJECT_SCRATCH_DIR} lives in the container: a parked child is resumed outside its parent, in a sandbox of its own, without that scratch — declare the gate in the parent, or give the parent a host-backed scratch", shared.Run.Driver())
 	}
 	return true, nil
 }
@@ -2121,19 +2139,20 @@ func sandboxSpecFields(s *ir.SandboxSpec, prefix string) []string {
 	return f
 }
 
-// refuseResumeOfSharedChild refuses to resume, outside its parent, a child
-// run that executed in its parent's COPY-BASED sandbox: a resume here would
-// start a sandbox of its own — a fresh copy of the workspace — and the
-// child's later commits would die with it while the parent's tree stays
-// unchanged. Bind-mount lineages resume freely (host and container share
-// the tree). Nil when this engine holds a parent handle to adopt.
-func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) error {
-	if r == nil || r.ParentRunID == "" || (e.sharedSandbox != nil && e.sharedSandbox.Run != nil) {
-		return nil
-	}
-	evs, err := e.store.LoadEvents(ctx, r.ID)
+// sharedLineage is what a child's last sandbox_shared record says of the
+// parent's sandbox it executed in.
+type sharedLineage struct {
+	copyBased             bool
+	scratchContainerLocal bool
+}
+
+// readSharedLineage reads runID's last sandbox_shared record. A child whose
+// last record adopted nothing, or that has none, executed in a sandbox of
+// its own.
+func readSharedLineage(ctx context.Context, st store.RunStore, runID string) (sharedLineage, error) {
+	evs, err := st.LoadEvents(ctx, runID)
 	if err != nil {
-		return fmt.Errorf("runtime: resume run %q: the record of the sandbox it executed in cannot be read: %w", r.ID, err)
+		return sharedLineage{}, fmt.Errorf("runtime: resume run %q: the record of the sandbox it executed in cannot be read: %w", runID, err)
 	}
 	for i := len(evs) - 1; i >= 0; i-- {
 		ev := evs[i]
@@ -2141,51 +2160,84 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 			continue
 		}
 		if adopted, ok := ev.Data["adopted"].(bool); ok && !adopted {
-			return nil
+			return sharedLineage{}, nil
 		}
-		if cb, _ := ev.Data["copy_based"].(bool); cb {
-			if e.forceResume {
-				if e.logger != nil {
-					e.logger.Warn("runtime: run %s executed in its parent run %s's copy-based sandbox; resumed with --force it starts a sandbox of its own — a fresh copy of the workspace — and its later commits will not reach the parent's tree", r.ID, r.ParentRunID)
-				}
-				if err := e.emit(ctx, r.ID, store.EventSandboxShared, "", map[string]any{
-					"adopted": false, "forced": true, "parent_run": r.ParentRunID,
-					"reason": "resumed with --force outside the parent: a sandbox of its own, whose later commits do not reach the parent's tree",
-				}); err != nil && e.logger != nil {
-					e.logger.Warn("runtime: emit sandbox_shared: %v", err)
-				}
-				return nil
-			}
-			return &RuntimeError{
-				Code:    ErrCodeResumeInvalid,
-				Message: fmt.Sprintf("run %s executed in its parent run %s's copy-based sandbox; resumed on its own it would start a fresh copy of the workspace and its work would diverge from the parent's tree", r.ID, r.ParentRunID),
-				Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it in a sandbox of its own, where its later commits do not reach the parent's tree",
-			}
+		var l sharedLineage
+		l.copyBased, _ = ev.Data["copy_based"].(bool)
+		l.scratchContainerLocal, _ = ev.Data["scratch_container_local"].(bool)
+		return l, nil
+	}
+	return sharedLineage{}, nil
+}
+
+// refusal is what a resume of child r on its own gets for this lineage, or
+// nil. A copy-based sandbox: a resume elsewhere starts a fresh copy of the
+// workspace, and the child's later commits never reach the parent's tree. A
+// scratch that lives in the parent's container: a child parked for any
+// reason — a declared gate is refused at adoption, but a recovery pause, an
+// operator's pause or a cost cap park it all the same — resumes without it.
+// Bind-mount lineages with a host-backed scratch resume freely.
+func (l sharedLineage) refusal(r *store.Run) error {
+	switch {
+	case l.copyBased:
+		return &RuntimeError{
+			Code:    ErrCodeResumeInvalid,
+			Message: fmt.Sprintf("run %s executed in its parent run %s's copy-based sandbox; resumed on its own it would start a fresh copy of the workspace and its work would diverge from the parent's tree", r.ID, r.ParentRunID),
+			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it in a sandbox of its own, where its later commits do not reach the parent's tree",
 		}
-		// A child parked for any reason — a declared gate is refused at
-		// adoption, but a recovery pause, an operator's pause or a cost cap
-		// park it all the same — resumes without the parent's scratch when
-		// that scratch lived in the parent's container.
-		if cl, _ := ev.Data["scratch_container_local"].(bool); cl {
-			if e.forceResume {
-				if e.logger != nil {
-					e.logger.Warn("runtime: run %s executed in its parent run %s's sandbox, whose scratch lives in the container; resumed with --force it starts without that scratch", r.ID, r.ParentRunID)
-				}
-				if err := e.emit(ctx, r.ID, store.EventSandboxShared, "", map[string]any{
-					"adopted": false, "forced": true, "parent_run": r.ParentRunID,
-					"reason": "resumed with --force outside the parent: without the parent's container-local scratch",
-				}); err != nil && e.logger != nil {
-					e.logger.Warn("runtime: emit sandbox_shared: %v", err)
-				}
-				return nil
-			}
-			return &RuntimeError{
-				Code:    ErrCodeScratchNotPortable,
-				Message: fmt.Sprintf("run %s executed in its parent run %s's sandbox, whose ${PROJECT_SCRATCH_DIR} lives in the container; resumed on its own it would start without that scratch", r.ID, r.ParentRunID),
-				Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it without the parent's scratch",
-			}
+	case l.scratchContainerLocal:
+		return &RuntimeError{
+			Code:    ErrCodeScratchNotPortable,
+			Message: fmt.Sprintf("run %s executed in its parent run %s's sandbox, whose ${PROJECT_SCRATCH_DIR} lives in the container; resumed on its own it would start without that scratch", r.ID, r.ParentRunID),
+			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it without the parent's scratch, where what it writes never reaches the parent's",
 		}
+	}
+	return nil
+}
+
+// ValidateResumeLineage is the engine's refusal of a subbot child resumed on
+// its own, run by the resume surface before anything moves the run: an
+// operator hears it synchronously, and a cloud resume is refused before the
+// publisher flips the run to queued. force waives it, as it does the
+// engine's.
+func ValidateResumeLineage(ctx context.Context, st store.RunStore, r *store.Run, force bool) error {
+	if r == nil || r.ParentRunID == "" || force {
 		return nil
+	}
+	l, err := readSharedLineage(ctx, st, r.ID)
+	if err != nil {
+		return err
+	}
+	return l.refusal(r)
+}
+
+// refuseResumeOfSharedChild refuses to resume, outside its parent, a child
+// whose lineage does not travel (sharedLineage.refusal). Nil when this
+// engine holds a parent handle to adopt. --force resumes it on its own, and
+// the record says so.
+func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) error {
+	if r == nil || r.ParentRunID == "" || (e.sharedSandbox != nil && e.sharedSandbox.Run != nil) {
+		return nil
+	}
+	l, err := readSharedLineage(ctx, e.store, r.ID)
+	if err != nil {
+		return err
+	}
+	refusal := l.refusal(r)
+	if refusal == nil || !e.forceResume {
+		return refusal
+	}
+	warning, reason := "a sandbox of its own — a fresh copy of the workspace — whose later commits do not reach the parent's tree", "resumed with --force outside the parent: a sandbox of its own, whose later commits do not reach the parent's tree"
+	if !l.copyBased {
+		warning, reason = "no scratch: the parent's lived in its container, and what this child writes there never reaches the parent's", "resumed with --force outside the parent: without the parent's container-local scratch, and what it writes there never reaches the parent's"
+	}
+	if e.logger != nil {
+		e.logger.Warn("runtime: run %s executed in its parent run %s's sandbox; resumed with --force it starts with %s", r.ID, r.ParentRunID, warning)
+	}
+	if err := e.emit(ctx, r.ID, store.EventSandboxShared, "", map[string]any{
+		"adopted": false, "forced": true, "parent_run": r.ParentRunID, "reason": reason,
+	}); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
 	}
 	return nil
 }
@@ -2275,15 +2327,28 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	if e.logger != nil {
 		e.logger.Info("runtime: executing in the parent run's sandbox (driver=%s, workspace=%s, copy_based=%v, files written through=%d)", shared.Run.Driver(), shared.WorkspaceFolder, copyBased, pushed)
 	}
-	if err := emitForSandbox(store.EventSandboxShared, map[string]any{
+	record := map[string]any{
 		"adopted": true, "driver": shared.Run.Driver(), "workspace": shared.WorkspaceFolder,
 		"parent_run": e.parentRunID, "copy_based": copyBased, "scratch_container_local": shared.ScratchContainerLocal,
 		"skills_written_through": pushed,
 		"file_secrets_declared":  fileSecrets, "devbox_declared": devboxDeclared,
 		"board_endpoint_inherited": shared.BoardEndpoint != "", "ask_user_inherited": shared.AskUserEndpoint != "",
 		"attachments_mounted": false,
-	}); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+	}
+	if !copyBased && !shared.ScratchContainerLocal {
+		if err := emitForSandbox(store.EventSandboxShared, record); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+		}
+		return devboxCleanup, nil
+	}
+	// A lone resume of this child is refused from this record
+	// (refuseResumeOfSharedChild): written within its budget, or the child
+	// does not run here — a resume could not tell what it would lose.
+	rctx, cancel := context.WithTimeout(ctx, scratchBankRecordBudget)
+	defer cancel()
+	if err := e.emitRecord(rctx, runID, store.EventSandboxShared, record); err != nil {
+		devboxCleanup()
+		return func() {}, fmt.Errorf("runtime: run %s cannot execute in its parent's sandbox: the record a resume of it decides from could not be written: %w", runID, err)
 	}
 	return devboxCleanup, nil
 }

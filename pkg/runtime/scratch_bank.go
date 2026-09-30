@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -31,6 +32,14 @@ const scratchBankTimeout = 5 * time.Minute
 // own budget: a slow upload must not leave the record no time to land.
 const scratchBankRecordBudget = 30 * time.Second
 
+// recordRetryPauseDefault is the first pause between tries at writing a
+// record a resume decides from (emitRecord); it doubles up to
+// recordRetryPauseMax, within the write's budget.
+const (
+	recordRetryPauseDefault = time.Second
+	recordRetryPauseMax     = 8 * time.Second
+)
+
 // scratchBankAttempts bounds the teardown's tries at banking the scratch, a
 // failure another try may cure (scratchBanked.retry) apart. The pause before
 // each next try starts at scratchBankRetryPauseDefault and doubles.
@@ -49,42 +58,75 @@ const (
 // scratchRacedNamed bounds the raced members a record names.
 const scratchRacedNamed = 20
 
-// scratchQuiesceScript stops every process of the sandbox but its first and
-// the script itself, then checks that nothing else still runs: it exits 0
-// when all stopped, scratchQuiescePartial naming the processes it could not
-// stop (another user's), and 3 without signalling anything in the host's
-// initial process namespace — whose inode is a kernel constant — whatever
-// the Run declared.
-const scratchQuiesceScript = `case "$(readlink /proc/self/ns/pid 2>/dev/null)" in
-"pid:[4026531836]") echo "the sandbox runs in the host's initial process namespace" >&2; exit 3 ;;
+// scratchNamespaceGuard refuses, before anything is signalled (exit
+// scratchQuiesceRefused), a shell that does not run in a process namespace
+// of its own read through its own /proc: the host's initial namespace —
+// whose inode is a kernel constant — a namespace that cannot be read, and a
+// /proc that is not this namespace's process table (hidden, replaced,
+// another namespace's), whatever the Run declared.
+const scratchNamespaceGuard = `ns=$(readlink /proc/self/ns/pid 2>/dev/null) || ns=
+case "$ns" in
+""|"pid:[4026531836]") echo "the sandbox's process namespace is the host's initial one, or cannot be read: nothing is signalled" >&2; exit 3 ;;
 esac
-kill -STOP -1 2>/dev/null
+me=
+read -r me _ </proc/self/stat 2>/dev/null
+if [ "$me" != "$$" ]; then echo "/proc is not this sandbox's process table: nothing is signalled" >&2; exit 3; fi
+`
+
+// scratchQuiesceScript stops every process of the sandbox but its first and
+// the script itself, then checks that nothing else still runs, stopping
+// again what started since: it exits 0 when all stopped, and
+// scratchQuiescePartial naming what it could not stop (another user's) or
+// could not check (a process whose stat it cannot read, a /proc that hides
+// other users' processes). A process's stat is read whole and cut after its
+// name's last parenthesis: a name holds anything, a newline included.
+const scratchQuiesceScript = scratchNamespaceGuard + `hidden=
+if grep -Eq '^[^ ]+ /proc proc [^ ]*hidepid=([1-9]|invisible|noaccess|ptraceable)' /proc/mounts 2>/dev/null; then
+  hidden=" (/proc hides other users' processes: they cannot be checked)"
+fi
 tries=0
 while :; do
+  kill -STOP -1 2>/dev/null
   left=
   for d in /proc/[0-9]*; do
     p=${d#/proc/}
     case "$p" in 1|$$) continue ;; esac
-    set -- $(sed 's/.*) //' "$d/stat" 2>/dev/null)
+    s=$(cat "$d/stat" 2>/dev/null)
+    if [ -z "$s" ]; then
+      [ -d "$d" ] && left="$left $p(unreadable)"
+      continue
+    fi
+    s=${s##*) }
+    set -- $s
     [ "${2:-}" = "$$" ] && continue
-    case "${1:-}" in ""|T|t|Z|X|x) ;; *) left="$left $p($(cat "$d/comm" 2>/dev/null))" ;; esac
+    case "${1:-}" in T|t|Z|X|x) ;; *) left="$left $p($(tr -d '\n' <"$d/comm" 2>/dev/null))" ;; esac
   done
-  [ -z "$left" ] && exit 0
+  if [ -z "$left" ]; then
+    [ -z "$hidden" ] && exit 0
+    echo "not verified$hidden" >&2
+    exit 4
+  fi
   tries=$((tries+1))
-  if [ "$tries" -ge 5 ]; then echo "not stopped:$left" >&2; exit 4; fi
+  if [ "$tries" -ge 5 ]; then echo "not stopped:$left$hidden" >&2; exit 4; fi
   sleep 0.2 2>/dev/null || sleep 1
 done`
 
-// scratchQuiescePartial is scratchQuiesceScript's exit when some processes
-// still run.
-const scratchQuiescePartial = 4
+// scratchQuiesceRefused is the scripts' exit when scratchNamespaceGuard
+// refused them: nothing was signalled. scratchQuiescePartial is
+// scratchQuiesceScript's exit when some processes still run, or could not be
+// checked.
+const (
+	scratchQuiesceRefused = 3
+	scratchQuiescePartial = 4
+)
 
-// scratchResumeScript lets the stopped processes go on — never in the
-// host's initial process namespace.
-const scratchResumeScript = `case "$(readlink /proc/self/ns/pid 2>/dev/null)" in
-"pid:[4026531836]") exit 3 ;;
-esac
-kill -CONT -1 2>/dev/null
+// scratchResumeBudget bounds the resume of the processes a quiesce stopped,
+// on a budget of its own: the teardown's may be spent by then.
+const scratchResumeBudget = 30 * time.Second
+
+// scratchResumeScript lets the stopped processes go on, under the same
+// guard as the quiesce.
+const scratchResumeScript = scratchNamespaceGuard + `kill -CONT -1 2>/dev/null
 exit 0`
 
 // scratchBanked is what one teardown did with a container-local scratch.
@@ -108,6 +150,9 @@ type scratchBanked struct {
 	// unquiesced: why the sandbox's processes were not stopped before tar
 	// read the scratch — a write tar reports nothing of may have torn it.
 	unquiesced string
+	// resumeFailed: why the processes the quiesce stopped could not be let
+	// go on — logged, not recorded: the bank does not depend on it.
+	resumeFailed string
 }
 
 // knows ranks what a try saw of the scratch: nothing (unknown), an empty
@@ -176,7 +221,14 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 	if pause <= 0 {
 		pause = scratchBankRetryPauseDefault
 	}
-	got := bankScratch(bctx, active.run, sandboxScratchContainerPath, bs, runID, scratchBankMaxBytes)
+	bank := func() scratchBanked {
+		b := bankScratch(bctx, active.run, sandboxScratchContainerPath, bs, runID, scratchBankMaxBytes)
+		if b.resumeFailed != "" && e.logger != nil {
+			e.logger.Warn("runtime: run %s: %s — the sandbox's shutdown may wait its grace period", runID, b.resumeFailed)
+		}
+		return b
+	}
+	got := bank()
 	for attempt := 1; got.retry && attempt < scratchBankAttempts; attempt++ {
 		if e.logger != nil {
 			e.logger.Warn("runtime: banking the scratch of run %s failed (%s) — trying again in %s", runID, got.reason, pause)
@@ -189,7 +241,7 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 			break
 		}
 		pause *= 2
-		next := bankScratch(bctx, active.run, sandboxScratchContainerPath, bs, runID, scratchBankMaxBytes)
+		next := bank()
 		if next.knows() < got.knows() {
 			// What an earlier try saw stands: a sandbox killed between two
 			// tries cannot be listed any more, but the files it held were
@@ -210,22 +262,35 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 			e.logger.Warn("runtime: the sandbox scratch was NOT banked — a resume of run %s will be refused SCRATCH_NOT_PORTABLE: %s", runID, got.reason)
 		}
 	}
-	// The record is what a resume decides from: retried within its budget,
-	// so a store blip does not leave an exact bank behind an older record.
+	// The record is what a resume decides from: a store that fails its write
+	// — a blip, a failover — does not leave an exact bank behind an older
+	// record while the budget lasts.
 	wctx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), scratchBankRecordBudget)
 	defer cancelWrite()
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		if err = e.emit(wctx, runID, store.EventSandboxScratchBanked, "", got.event()); err == nil || wctx.Err() != nil {
-			break
+	if err := e.emitRecord(wctx, runID, store.EventSandboxScratchBanked, got.event()); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: emit %s: %v — a resume of run %s will not know what this teardown banked", store.EventSandboxScratchBanked, err, runID)
+	}
+}
+
+// emitRecord writes an event a later resume decides from. A store that fails
+// the write is tried again, the pause doubling, until ctx's budget runs out:
+// a failure is never taken for "nothing to record".
+func (e *Engine) emitRecord(ctx context.Context, runID string, t store.EventType, data map[string]any) error {
+	pause := e.recordRetryPause
+	if pause <= 0 {
+		pause = recordRetryPauseDefault
+	}
+	for {
+		err := e.emit(ctx, runID, t, "", data)
+		if err == nil || ctx.Err() != nil {
+			return err
 		}
 		select {
-		case <-wctx.Done():
-		case <-time.After(time.Duration(attempt+1) * time.Second):
+		case <-ctx.Done():
+			return err
+		case <-time.After(pause):
 		}
-	}
-	if err != nil && e.logger != nil {
-		e.logger.Warn("runtime: emit %s: %v — a resume of run %s will not know what this teardown banked", store.EventSandboxScratchBanked, err, runID)
+		pause = min(pause*2, recordRetryPauseMax)
 	}
 }
 
@@ -235,7 +300,7 @@ func (e *Engine) bankScratchOnCleanup(ctx context.Context, runID string, active 
 // bank, which would otherwise restore a state the run has moved past. A nil
 // bs keeps no bank: a scratch that holds something is recorded as not
 // banked, so the resume refuses rather than lose it.
-func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.ScratchBankStore, runID string, limit int64) scratchBanked {
+func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.ScratchBankStore, runID string, limit int64) (got scratchBanked) {
 	// "$1/": a scratch that is a symlink to a directory is listed as tar
 	// archives it, through the link.
 	res, err := run.Exec(ctx, []string{"sh", "-c", `if [ -d "$1" ]; then find "$1/" -mindepth 1 -print -quit; fi`, "sh", dir}, sandbox.ExecOpts{})
@@ -264,20 +329,42 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 	// shared mapping — would otherwise leave an archive torn in silence.
 	// Only in a sandbox whose commands run in a process namespace of their
 	// own: the same signal from a host shell would stop the host's.
-	var unquiesced string
-	quiesced := false
-	if pi, ok := run.(sandbox.ProcessIsolated); ok && pi.ProcessIsolated() {
+	var unquiesced, resumeFailed string
+	resume := func() {}
+	// Runs last: what the resume of the stopped processes met, whichever
+	// return ends the banking.
+	defer func() { got.resumeFailed = resumeFailed }()
+	if pi, ok := run.(sandbox.ProcessIsolated); !ok || !pi.ProcessIsolated() {
+		unquiesced = "the sandbox is not known to run in a process namespace of its own: its processes were not stopped"
+	} else {
 		q, err := run.Exec(ctx, []string{"sh", "-c", scratchQuiesceScript}, sandbox.ExecOpts{})
 		switch {
 		case err != nil:
 			unquiesced = "the sandbox's processes could not be stopped: " + err.Error()
 		case q.ExitCode == 0:
-			quiesced = true
 		case q.ExitCode == scratchQuiescePartial:
-			quiesced = true
 			unquiesced = "some of the sandbox's processes could not be stopped: " + strings.TrimSpace(string(q.Stderr))
 		default:
 			unquiesced = fmt.Sprintf("stopping the sandbox's processes exited %d: %s", q.ExitCode, strings.TrimSpace(string(q.Stderr)))
+		}
+		if err != nil || q.ExitCode != scratchQuiesceRefused {
+			// Whatever the script got to before it ended, the processes it
+			// may have stopped go on once the archive is taken — or when
+			// anything cuts the banking short: held stopped, they keep the
+			// sandbox's shutdown waiting its grace period (an entrypoint
+			// such as tini waits on a stopped child).
+			resume = sync.OnceFunc(func() {
+				rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scratchResumeBudget)
+				defer cancel()
+				r, err := run.Exec(rctx, []string{"sh", "-c", scratchResumeScript}, sandbox.ExecOpts{})
+				switch {
+				case err != nil:
+					resumeFailed = "the stopped processes could not be resumed: " + err.Error()
+				case r.ExitCode != 0:
+					resumeFailed = fmt.Sprintf("resuming the stopped processes exited %d: %s", r.ExitCode, strings.TrimSpace(string(r.Stderr)))
+				}
+			})
+			defer resume()
 		}
 	}
 	// GNU tar exits 1 when a member changed or vanished while it read it
@@ -337,12 +424,8 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 			break
 		}
 	}
-	if quiesced {
-		// The archive is taken: the stopped processes go on, so they end
-		// when the sandbox is shut down instead of holding its grace
-		// period (an entrypoint such as tini waits on a stopped child).
-		_, _ = run.Exec(ctx, []string{"sh", "-c", scratchResumeScript}, sandbox.ExecOpts{})
-	}
+	// The archive is taken: the stopped processes go on before the upload.
+	resume()
 	archive, size, raced := cur, capped.n, []string(nil)
 	switch {
 	case err == nil && !capped.over && res.ExitCode == 0:
@@ -472,7 +555,13 @@ func lastScratchPark(ctx context.Context, st store.RunStore, wf *ir.Workflow, ru
 			restored, _ := ev.Data["restored"].(bool)
 			forced, _ := ev.Data["forced"].(bool)
 			stale, _ := ev.Data["stale"].(bool)
+			hostBacked, _ := ev.Data["host_backed"].(bool)
 			switch {
+			case restored && hostBacked:
+				// Restored into a host directory that keeps the scratch from
+				// then on: no bank decides what a later resume finds there.
+				p = scratchPark{}
+				clear(aging)
 			case !restored && forced && p.banked:
 				p.banked, p.forsaken = false, true
 				clear(aging)
@@ -708,6 +797,13 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 		return nil
 	}
 	if !p.banked {
+		if cause := p.refusal(); cause != "" && e.forceResume {
+			// Only --force gets here past a scratch its teardown could not
+			// bank: said, as a stale bank's restore is.
+			if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", map[string]any{"restored": false, "forced": true, "reason": cause}); err != nil && e.logger != nil {
+				e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, err)
+			}
+		}
 		return nil
 	}
 	if e.activeShare == nil || e.activeShare.Run == nil {
@@ -746,6 +842,12 @@ func (e *Engine) restoreBankedScratch(ctx context.Context, runID string) error {
 	if p.advanced {
 		// Only --force gets here: the pre-claim refusal stopped the rest.
 		data["stale"] = true
+	}
+	if !e.activeShare.ScratchContainerLocal {
+		// This sandbox's scratch is a host directory, which keeps it from
+		// here on: what the bank held lives there now, and the bank stops
+		// deciding what a later resume finds (lastScratchPark).
+		data["host_backed"] = true
 	}
 	if err := e.emit(ctx, runID, store.EventSandboxScratchRestored, "", data); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: emit %s: %v", store.EventSandboxScratchRestored, err)

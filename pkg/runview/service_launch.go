@@ -466,8 +466,8 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 
 // PreflightResume runs the checks Resume performs before it takes any
 // action, WITHOUT starting anything: the run must exist, be in a
-// resumable status, and (unless spec.Force) still hash-match the
-// workflow source.
+// resumable status, and (unless spec.Force) keep its scratch and its
+// lineage and still hash-match the workflow source.
 //
 // It exists for callers that must not perform an irreversible side
 // effect on a resume that is going to be rejected anyway. The HTTP layer
@@ -502,6 +502,15 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err != nil {
 		return err
 	}
+	// A scratch or a lineage that does not travel is refused before the
+	// source check, as the engine does: a force offered for an edited source
+	// would otherwise waive a loss the operator was never shown.
+	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
+		return err
+	}
+	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
+		return err
+	}
 	hash := pfSources.Hash
 	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
@@ -513,10 +522,8 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 		}
 		legacy = true
 	}
-	if _, err := runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy); err != nil {
-		return err
-	}
-	return runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force)
+	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
+	return err
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -624,6 +631,16 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err != nil {
 		return nil, err
 	}
+	// A scratch or a lineage that does not travel is refused here, before
+	// anything moves the run and before the source check — a force offered
+	// for an edited source would otherwise waive a loss the operator was
+	// never shown. The engine repeats both under its own boundary.
+	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
+		return nil, err
+	}
+	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force); err != nil {
+		return nil, err
+	}
 	hash := cs.Hash
 	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
@@ -650,11 +667,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// under, exactly as --force would: nothing else changed.
 	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
 	if err != nil {
-		return nil, err
-	}
-	// A scratch that did not travel is refused here, before anything moves
-	// the run — the engine repeats the check under its own boundary.
-	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
 		return nil, err
 	}
 	if !inProcessResume {

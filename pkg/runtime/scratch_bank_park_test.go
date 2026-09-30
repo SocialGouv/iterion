@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1092,6 +1093,11 @@ type isolatedRecorder struct {
 	quiesceErr    error
 	quiesceExit   int
 	quiesceStderr string
+	// tarBlocks: the archive runs until its context ends, and its client is
+	// killed with it (exit -1) — a scratch too big for the budget.
+	tarBlocks bool
+	// resumeCtxErr: the context's error when the resume was delivered.
+	resumeCtxErr error
 }
 
 func (r *isolatedRecorder) ProcessIsolated() bool { return true }
@@ -1103,7 +1109,12 @@ func (r *isolatedRecorder) Exec(ctx context.Context, argv []string, opts sandbox
 		if strings.Contains(cmd, "kill -STOP -1") {
 			return sandbox.ExecResult{ExitCode: r.quiesceExit, Stderr: []byte(r.quiesceStderr)}, r.quiesceErr
 		}
+		r.resumeCtxErr = ctx.Err()
 		return sandbox.ExecResult{}, nil
+	}
+	if r.tarBlocks && strings.Contains(cmd, "-czf") {
+		<-ctx.Done()
+		return sandbox.ExecResult{ExitCode: -1}, nil
 	}
 	return r.podRun.Exec(ctx, argv, opts)
 }
@@ -1164,8 +1175,48 @@ func TestBankScratch_quiescesTheSandboxBeforeTarReadsIt(t *testing.T) {
 	})
 	t.Run("a quiesce that fails", func(t *testing.T) {
 		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, quiesceErr: errors.New("error dialing backend")}
-		if got := bank(t, run); !got.banked || !strings.Contains(got.unquiesced, "error dialing backend") || got.event()["unquiesced"] == nil {
+		got := bank(t, run)
+		if !got.banked || !strings.Contains(got.unquiesced, "error dialing backend") || got.event()["unquiesced"] == nil {
 			t.Fatalf("want the bank recorded, and why its sandbox was not stopped: %+v", got)
+		}
+		// The exec may have stopped the processes before it failed.
+		if _, _, resume := order(run.cmds); resume < 0 {
+			t.Fatalf("the processes a failed quiesce may have stopped were not resumed: %q", run.cmds)
+		}
+	})
+	for _, exit := range []int{-1, 1, 137} {
+		t.Run(fmt.Sprintf("a quiesce that ends exit %d", exit), func(t *testing.T) {
+			run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, quiesceExit: exit}
+			got := bank(t, run)
+			if _, _, resume := order(run.cmds); !got.banked || !strings.Contains(got.unquiesced, fmt.Sprintf("exited %d", exit)) || resume < 0 {
+				t.Fatalf("banked=%v unquiesced=%q: want the exit recorded and the processes it may have stopped resumed (%q)", got.banked, got.unquiesced, run.cmds)
+			}
+		})
+	}
+	t.Run("no host temporary file for the archive", func(t *testing.T) {
+		s := tmpStore(t)
+		ctx := context.Background()
+		if _, err := s.CreateRun(ctx, "run-scratch-quiesce", "wf", nil); err != nil {
+			t.Fatal(err)
+		}
+		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}}
+		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "gone"))
+		got := bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), "run-scratch-quiesce", scratchBankMaxBytes)
+		if _, _, resume := order(run.cmds); got.banked || !strings.Contains(got.reason, "no host temporary file") || resume < 0 {
+			t.Fatalf("banked=%v reason=%q: want the banking to fail by name and the stopped processes resumed (%q)", got.banked, got.reason, run.cmds)
+		}
+	})
+	t.Run("an archive that outlives the budget", func(t *testing.T) {
+		s := tmpStore(t)
+		if _, err := s.CreateRun(context.Background(), "run-scratch-quiesce", "wf", nil); err != nil {
+			t.Fatal(err)
+		}
+		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, tarBlocks: true}
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		got := bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), "run-scratch-quiesce", scratchBankMaxBytes)
+		if _, _, resume := order(run.cmds); got.banked || resume < 0 || run.resumeCtxErr != nil {
+			t.Fatalf("banked=%v resume ctx=%v: want the stopped processes resumed on a budget of their own (%q)", got.banked, run.resumeCtxErr, run.cmds)
 		}
 	})
 	t.Run("a quiesce that leaves processes running", func(t *testing.T) {
@@ -1187,6 +1238,11 @@ func TestBankScratch_quiescesTheSandboxBeforeTarReadsIt(t *testing.T) {
 		got := bank(t, run)
 		if q, _, resume := order(run.cmds); !got.banked || q >= 0 || resume >= 0 {
 			t.Fatalf("banked=%v, commands %q: a sandbox not isolated must never be signalled", got.banked, run.cmds)
+		}
+		// Nothing was stopped: the record says so, as it does a quiesce that
+		// failed.
+		if !strings.Contains(got.unquiesced, "process namespace of its own") || got.event()["unquiesced"] == nil {
+			t.Fatalf("unquiesced=%q: want the bank recorded as archived while nothing was stopped", got.unquiesced)
 		}
 	})
 }
@@ -1382,25 +1438,71 @@ func TestResume_aBankArchivedUnquiescedIsRestoredAndSaysSo(t *testing.T) {
 	}
 }
 
-// TestScratchQuiesceScripts_refuseTheHostsInitialNamespace: the scripts
-// that signal every process refuse to in the host's initial process
-// namespace, whatever the Run declared. Run on the host with every signal
-// replaced by an echo — never a kill.
-func TestScratchQuiesceScripts_refuseTheHostsInitialNamespace(t *testing.T) {
-	ns, err := os.Readlink("/proc/self/ns/pid")
-	if err != nil || ns != "pid:[4026531836]" {
-		t.Skipf("the test does not run in the host's initial process namespace (%q, %v)", ns, err)
+// dryScratchScript is script with its signal replaced by an echo: the copy a
+// test may run on the host side, where the real signal would stop the test's
+// own processes. A copy that still signals is never returned.
+func dryScratchScript(t *testing.T, script string) string {
+	t.Helper()
+	dry := strings.NewReplacer("kill -STOP -1", "echo WOULD_STOP", "kill -CONT -1", "echo WOULD_CONT").Replace(script)
+	if strings.Contains(dry, "kill") {
+		t.Fatal("the dry copy still signals — not run")
+	}
+	return dry
+}
+
+// TestScratchQuiesceScripts_guardRefusesBeforeAnySignal: both scripts exit
+// scratchQuiesceRefused before any signal when the process namespace is the
+// host's initial one — here the test's own namespace stands in for it, so
+// the guard is exercised wherever the test runs — and when it cannot be
+// read.
+func TestScratchQuiesceScripts_guardRefusesBeforeAnySignal(t *testing.T) {
+	own, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil {
+		t.Skipf("no readable process namespace here: %v", err)
+	}
+	noReadlink := t.TempDir()
+	if err := os.WriteFile(filepath.Join(noReadlink, "readlink"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	for name, script := range map[string]string{"quiesce": scratchQuiesceScript, "resume": scratchResumeScript} {
-		dry := strings.NewReplacer("kill -STOP -1", "echo WOULD_STOP", "kill -CONT -1", "echo WOULD_CONT").Replace(script)
-		if strings.Contains(dry, "kill") {
-			t.Fatalf("%s: the dry copy still signals — not run", name)
+		for why, run := range map[string]*exec.Cmd{
+			"the host's initial namespace": exec.Command("sh", "-c", strings.Replace(dryScratchScript(t, script), "pid:[4026531836]", own, 1)),
+			"an unreadable namespace":      exec.Command("sh", "-c", dryScratchScript(t, script)),
+		} {
+			if why == "an unreadable namespace" {
+				run.Env = append(os.Environ(), "PATH="+noReadlink+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
+			out, err := run.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != scratchQuiesceRefused || strings.Contains(string(out), "WOULD_") {
+				t.Errorf("%s, %s: err=%v out=%q, want exit %d before any signal", name, why, err, out, scratchQuiesceRefused)
+			}
 		}
-		out, err := exec.Command("sh", "-c", dry).CombinedOutput()
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 3 || strings.Contains(string(out), "WOULD_") {
-			t.Fatalf("%s: in the host's initial namespace: err=%v out=%q, want exit 3 before any signal", name, err, out)
+	}
+}
+
+// TestScratchQuiesceScript_dryScanNamesWhatRuns: in a process namespace of
+// its own, the dry quiesce — which stops nothing — finds this test's process
+// still running and names it, exit scratchQuiescePartial; in the host's
+// initial namespace the guard refuses it first.
+func TestScratchQuiesceScript_dryScanNamesWhatRuns(t *testing.T) {
+	own, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil {
+		t.Skipf("no readable process namespace here: %v", err)
+	}
+	out, err := exec.Command("sh", "-c", dryScratchScript(t, scratchQuiesceScript)).CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("the dry quiesce: err=%v out=%q, want it to exit non-zero", err, out)
+	}
+	if own == "pid:[4026531836]" {
+		if exit.ExitCode() != scratchQuiesceRefused || strings.Contains(string(out), "WOULD_") {
+			t.Fatalf("in the host's initial namespace: exit %d out=%q, want %d before any signal", exit.ExitCode(), out, scratchQuiesceRefused)
 		}
+		return
+	}
+	if exit.ExitCode() != scratchQuiescePartial || !strings.Contains(string(out), fmt.Sprintf(" %d(", os.Getpid())) {
+		t.Fatalf("exit %d out=%q, want %d naming this test's process %d", exit.ExitCode(), out, scratchQuiescePartial, os.Getpid())
 	}
 }
 
@@ -1492,4 +1594,210 @@ func TestSharedChildParked_isRefusedAloneUnderAContainerLocalScratch(t *testing.
 			}
 		})
 	}
+}
+
+// scratchChildWorkflow is a subbot child that writes ${PROJECT_SCRATCH_DIR}
+// in write, and needs it in read.
+func scratchChildWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "child",
+		Entry: "write",
+		Nodes: map[string]ir.Node{
+			"write": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "write"}},
+			"read":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "read"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "write", To: "read"}, {From: "read", To: "done"}},
+	}
+}
+
+// parkOnAuth pauses a node whose credentials the provider rejected, as the
+// default recipes do.
+func parkOnAuth(_ context.Context, err error, _ func(ErrorCode) int) (RecoveryAction, ErrorCode) {
+	var rt *RuntimeError
+	if errors.As(err, &rt) && rt.Code == ErrCodeAuthFailed {
+		return RecoveryAction{Kind: RecoveryPauseForHuman, Reason: "model provider rejected credentials"}, ErrCodeAuthFailed
+	}
+	return RecoveryAction{Kind: RecoveryFailTerminal}, ErrCodeExecutionFailed
+}
+
+// adoptedChild runs child id adopted into parent, a sandbox whose scratch
+// lives in the container, until read parks it on a recovery pause.
+func adoptedChild(t *testing.T, ctx context.Context, st store.RunStore, id, hash string, parent *podRun) (*Engine, error) {
+	t.Helper()
+	x := &sandboxCapturingExecutor{stubExecutor: newStubExecutor()}
+	x.on("write", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	x.on("read", func(map[string]any) (map[string]any, error) {
+		return nil, &RuntimeError{Code: ErrCodeAuthFailed, NodeID: "read", Message: "401 invalid token"}
+	})
+	e := New(scratchChildWorkflow(), st, x, WithWorkDir(t.TempDir()), WithSandboxOverride("none"), WithParentRunID("run-parent"),
+		WithSharedSandbox(&SharedSandbox{Run: parent, WorkspaceFolder: t.TempDir(), ScratchContainerLocal: true}),
+		WithRecoveryDispatch(parkOnAuth))
+	e.workflowHash = hash
+	e.recordRetryPause = time.Millisecond
+	return e, e.Run(ctx, id, nil)
+}
+
+// shareRecordRefused refuses a child's sandbox_shared appends: the first
+// times of them, every one when times is negative.
+type shareRecordRefused struct {
+	store.RunStore
+	mu      sync.Mutex
+	times   int
+	refused int
+}
+
+func (s *shareRecordRefused) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	s.mu.Lock()
+	refuse := evt.Type == store.EventSandboxShared && (s.times < 0 || s.refused < s.times)
+	if refuse {
+		s.refused++
+	}
+	s.mu.Unlock()
+	if refuse {
+		return nil, errors.New("store: insert event: connection reset by peer")
+	}
+	return s.RunStore.AppendEvent(ctx, runID, evt)
+}
+
+// TestAdoption_writesItsLineageRecordOrDoesNotAdopt: a lone resume of the
+// child is refused from the adoption's record. A store blip on it is tried
+// again — the record lands, and the parked child's lone resume is refused; a
+// store that refuses it for the record's whole budget fails the adoption by
+// name, and no node runs in the parent's sandbox without it.
+func TestAdoption_writesItsLineageRecordOrDoesNotAdopt(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	const id = "run-child"
+	t.Run("a store blip on the record", func(t *testing.T) {
+		ctx := context.Background()
+		st := &shareRecordRefused{RunStore: tmpStore(t), times: 1}
+		if _, err := adoptedChild(t, ctx, st, id, "", &podRun{scratch: t.TempDir()}); !errors.Is(err, ErrRunPaused) {
+			t.Fatalf("the child: want it parked, got %v", err)
+		}
+		if recs := eventsOf(t, st, id, store.EventSandboxShared); st.refused != 1 || len(recs) != 1 || recs[0].Data["scratch_container_local"] != true {
+			t.Fatalf("refused=%d records=%v: want the record written on a later try", st.refused, dataOf(recs))
+		}
+		err := New(scratchChildWorkflow(), st, newStubExecutor(), WithWorkDir(t.TempDir()), WithSandboxOverride("none")).Resume(ctx, id, map[string]any{"acknowledge_recovery": "continue"})
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
+			t.Fatalf("the child resumed on its own: want SCRATCH_NOT_PORTABLE, got %v", err)
+		}
+	})
+	t.Run("a store that refuses it throughout", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		st := &shareRecordRefused{RunStore: tmpStore(t), times: -1}
+		parent := &podRun{scratch: t.TempDir()}
+		_, err := adoptedChild(t, ctx, st, id, "", parent)
+		if err == nil || !strings.Contains(err.Error(), "could not be written") || st.refused < 2 {
+			t.Fatalf("err=%v refused=%d: want the adoption failed by name, after tries", err, st.refused)
+		}
+		if entries, _ := os.ReadDir(parent.scratch); len(entries) != 0 {
+			t.Fatalf("a node ran in the parent's sandbox without the record: %v", entries)
+		}
+	})
+}
+
+// TestNodeGateCanAsk: a permission gate reads as a pause when the policy it
+// arms can ask — its mode asks, whatever its spelling or where it is
+// declared, or its ask rules apply under a gate that is on — and only on the
+// LLM nodes it governs: a tool node's permission is inert.
+func TestNodeGateCanAsk(t *testing.T) {
+	const schema = "schema empty:\n  ok: bool\n\n"
+	for _, tc := range []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{"ask spelled Ask", schema + "agent act:\n  model: \"m\"\n  output: empty\n  permission: Ask\n\nworkflow child:\n  entry: act\n  act -> done\n", true},
+		{"ask on the workflow", schema + "agent act:\n  model: \"m\"\n  output: empty\n\nworkflow child:\n  entry: act\n  permission: ask\n  act -> done\n", true},
+		{"deny with an ask rule", schema + "judge review:\n  model: \"m\"\n  output: empty\n  ask: [\"Bash(git push:*)\"]\n\nworkflow child:\n  entry: review\n  permission: deny\n  review -> done\n", true},
+		{"deny without an ask rule", schema + "agent act:\n  model: \"m\"\n  output: empty\n  permission: deny\n\nworkflow child:\n  entry: act\n  act -> done\n", false},
+		{"ask on a tool node", schema + "tool lint:\n  command: \"true\"\n  output: empty\n  permission: ask\n\nworkflow child:\n  entry: lint\n  lint -> done\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := workflowHasPausingNode(compileBotText(t, tc.src)); got != tc.want {
+				t.Fatalf("workflowHasPausingNode = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResume_forcedPastAnUnbankedScratchIsRecorded: --force past a scratch
+// its teardown could not bank goes on without it, and the timeline says so.
+func TestResume_forcedPastAnUnbankedScratchIsRecorded(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-unbanked-forced"
+	d := &podDriver{root: t.TempDir()}
+	x := newStubExecutor()
+	x.on("measure", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: want ErrRunPaused, got %v", err)
+	}
+	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
+		"banked": false, "empty": false, "reason": "the scratch compresses past the 256 MiB cap",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	forced := scratchEngine(s, x, d)
+	forced.forceResume = true
+	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Resume --force: %v", err)
+	}
+	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
+	if len(restored) != 1 || restored[0].Data["restored"] != false || restored[0].Data["forced"] != true || !strings.Contains(fmt.Sprint(restored[0].Data["reason"]), "could not bank") {
+		t.Fatalf("the timeline after --force past an unbanked scratch: %v, want one record naming it", dataOf(restored))
+	}
+}
+
+// TestResume_scratchAndLineageRefusalsComeBeforeTheSourceCheck: an edited
+// source is refused only once the scratch and the lineage travel — the force
+// the source refusal asks for must not waive a loss the operator was never
+// shown.
+func TestResume_scratchAndLineageRefusalsComeBeforeTheSourceCheck(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	refusedFirst := func(t *testing.T, err error) {
+		t.Helper()
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || IsWorkflowSourceChanged(err) {
+			t.Fatalf("an edited source over a loss: got %v, want SCRATCH_NOT_PORTABLE before the source check", err)
+		}
+	}
+	t.Run("a scratch its teardown could not bank", func(t *testing.T) {
+		s := tmpStore(t)
+		ctx := context.Background()
+		const runID = "run-scratch-edited"
+		d := &podDriver{root: t.TempDir()}
+		x := newStubExecutor()
+		x.on("measure", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+		x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+		eng := func(hash string) *Engine {
+			e := scratchEngine(s, x, d)
+			e.workflowHash = hash
+			return e
+		}
+		if err := eng("sha256:launch").Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+			t.Fatalf("Run: want ErrRunPaused, got %v", err)
+		}
+		if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
+			"banked": false, "empty": false, "reason": "the scratch compresses past the 256 MiB cap",
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		refusedFirst(t, eng("sha256:edited").Resume(ctx, runID, map[string]any{"ok": true}))
+	})
+	t.Run("a child whose parent's scratch lived in its container", func(t *testing.T) {
+		ctx := context.Background()
+		st := tmpStore(t)
+		const id = "run-child-edited"
+		if _, err := adoptedChild(t, ctx, st, id, "sha256:launch", &podRun{scratch: t.TempDir()}); !errors.Is(err, ErrRunPaused) {
+			t.Fatalf("the child: want it parked, got %v", err)
+		}
+		lone := New(scratchChildWorkflow(), st, newStubExecutor(), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
+		lone.workflowHash = "sha256:edited"
+		refusedFirst(t, lone.Resume(ctx, id, map[string]any{"acknowledge_recovery": "continue"}))
+	})
 }

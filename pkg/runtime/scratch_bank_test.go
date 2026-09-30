@@ -1147,10 +1147,12 @@ func TestResume_aScratchTheTeardownCouldNotReadIsNotRefused(t *testing.T) {
 	}
 }
 
-// flakyRecordStore refuses the first write of a banked record.
+// flakyRecordStore refuses the first writes of a banked record: times of
+// them, one when times is zero.
 type flakyRecordStore struct {
 	store.RunStore
 	mu      sync.Mutex
+	times   int
 	refused int
 }
 
@@ -1158,7 +1160,7 @@ func (f *flakyRecordStore) Unwrap() store.RunStore { return f.RunStore }
 
 func (f *flakyRecordStore) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
 	f.mu.Lock()
-	refuse := evt.Type == store.EventSandboxScratchBanked && f.refused == 0
+	refuse := evt.Type == store.EventSandboxScratchBanked && f.refused < max(f.times, 1)
 	if refuse {
 		f.refused++
 	}
@@ -1187,6 +1189,29 @@ func TestBankScratchOnCleanup_retriesItsRecord(t *testing.T) {
 	New(scratchWorkflow(), flaky, newStubExecutor(), WithLogger(iterlog.Nop())).bankScratchOnCleanup(ctx, runID, &activeSandbox{run: localRun(dir)})
 	if got := eventsOf(t, s, runID, store.EventSandboxScratchBanked); flaky.refused != 1 || len(got) != 1 || got[0].Data["banked"] != true {
 		t.Fatalf("after one refused write: refused=%d records=%v, want the record written on retry", flaky.refused, dataOf(got))
+	}
+}
+
+// TestBankScratchOnCleanup_retriesItsRecordThroughAFailover: a store that
+// refuses the record for longer than three tries — a failover — still gets
+// it, within the record's budget.
+func TestBankScratchOnCleanup_retriesItsRecordThroughAFailover(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-record-failover"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "floor.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &flakyRecordStore{RunStore: s, times: 5}
+	e := New(scratchWorkflow(), flaky, newStubExecutor(), WithLogger(iterlog.Nop()))
+	e.recordRetryPause = time.Millisecond
+	e.bankScratchOnCleanup(ctx, runID, &activeSandbox{run: localRun(dir)})
+	if got := eventsOf(t, s, runID, store.EventSandboxScratchBanked); flaky.refused != 5 || len(got) != 1 || got[0].Data["banked"] != true {
+		t.Fatalf("after five refused writes: refused=%d records=%v, want the record written on a later try", flaky.refused, dataOf(got))
 	}
 }
 
