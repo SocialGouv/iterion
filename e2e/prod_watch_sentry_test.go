@@ -268,7 +268,12 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 		if delay > 0 {
 			time.Sleep(delay)
 		}
-		if q.Get("project") != "63" || q.Get("statsPeriod") != "14d" || q.Get("limit") != "100" {
+		// A list searches the events of the last 90 days, the by-id read 14 (its count is the whole life anyway).
+		period := "90d"
+		if len(q["group"]) > 0 {
+			period = "14d"
+		}
+		if q.Get("project") != "63" || q.Get("statsPeriod") != period || q.Get("limit") != "100" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"detail": "fake: unexpected parameters " + q.Encode()})
 			return
@@ -305,6 +310,11 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"detail": "fake: a list call without query would get the default priority filter"})
 			return
 		}
+		// Like Sentry 24.11.1's search executor: a list returns only issues with an event in the window
+		// [now − statsPeriod, now], whatever their firstSeen.
+		inWindow := func(i *pwSentryIssue) bool {
+			return !i.LastSeen.IsZero() && !i.LastSeen.Before(time.Now().Add(-90*24*time.Hour))
+		}
 		switch {
 		case strings.HasPrefix(query[0], "is:unresolved firstSeen:>="):
 			since, err := time.Parse(time.RFC3339, strings.TrimPrefix(query[0], "is:unresolved firstSeen:>="))
@@ -313,13 +323,13 @@ func (h *pwHarness) mountSentry(mux *http.ServeMux) {
 				return
 			}
 			for _, i := range s.issues {
-				if i.Status == "unresolved" && (env == "" || i.Env == env) && !i.FirstProcessed.Before(since) {
+				if i.Status == "unresolved" && (env == "" || i.Env == env) && !i.FirstProcessed.Before(since) && inWindow(i) {
 					sel = append(sel, i)
 				}
 			}
 		case query[0] == "is:unresolved substatus:[regressed,escalating]":
 			for _, i := range s.issues {
-				if i.Status == "unresolved" && (env == "" || i.Env == env) && i.Substatus != nil && (*i.Substatus == "regressed" || *i.Substatus == "escalating") {
+				if i.Status == "unresolved" && (env == "" || i.Env == env) && i.Substatus != nil && (*i.Substatus == "regressed" || *i.Substatus == "escalating") && inWindow(i) {
 					sel = append(sel, i)
 				}
 			}
@@ -917,7 +927,7 @@ func TestProdWatch_SentryWalkIsStrictAboutTheAPI(t *testing.T) {
 		t.Fatalf("a short page ended the walk: %d new issue(s) posted, want 4 (%v)", got, sentryAlerts(outs))
 	}
 	for _, c := range h.sentry.callsTo("list") {
-		if c.Q.Get("query") == "" || c.Q.Get("environment") != "preprod" || c.Q.Get("statsPeriod") != "14d" {
+		if c.Q.Get("query") == "" || c.Q.Get("environment") != "preprod" || c.Q.Get("statsPeriod") != "90d" {
 			t.Fatalf("a list call lacks a promised parameter: %v", c.Q)
 		}
 	}

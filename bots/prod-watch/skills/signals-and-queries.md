@@ -203,8 +203,13 @@ on every cluster — validate them on yours.
 
 Off unless `config.sentry` is set (see `skills/argus-config.md`). Each tick
 reads, through the org-scoped API (`/api/0/organizations/<org>/issues/`,
-`project=<id>`, the configured `environment`, `statsPeriod=14d`,
-`collapse=lifetime`, `collapse=filtered` and an empty `groupStatsPeriod`,
+`project=<id>`, the configured `environment`, `statsPeriod=90d` for the
+two lists (a list returns only issues with an event inside its window:
+90 days, which Sentry clamps to the retention, is as far back as Relay
+accepts an event's own time — an SDK's offline cache delivering a first
+event late still makes a new issue) and `14d` for the by-id read (its
+count is the issue's whole life anyway), `collapse=lifetime`,
+`collapse=filtered` and an empty `groupStatsPeriod`,
 100 per page — never `collapse=stats`: Sentry then drops an issue's seen
 stats (`count`, `userCount`, `firstSeen`, `lastSeen`), the only way the
 lane sees an event; an answer carrying none of them at all is a lane
@@ -250,11 +255,13 @@ error, never read as "no event"):
   reprocessed, archived (Sentry reopens an archived issue as ongoing) or
   resolved (unresolved by hand — the issue page's button, a bulk action —
   an issue is ongoing, in neither list) — their current status and last
-  event. The least recently read go first — an issue read in a list this
+  event. The open ones go first, then the resolved ones (best effort),
+  the least recently read first in each — an issue read in a list this
   tick counts as read, so a fresh one joins the back: over `max_tracked`
   they take turns, none left out for ever, and a coverage note of its own
-  says the cut once the OPEN ones pass it (a resolved one is read in its
-  turn, best effort; `max_tracked` 0 turns the reads off). An issue asked
+  says the cut once the open ones pass it — whatever else the lane says
+  (a resolved one starves only then; `max_tracked` 0 turns the reads
+  off). An issue asked
   and absent from the answer (deleted, merged) was read too, nothing
   more: it keeps its turn until retention forgets it.
 
@@ -335,7 +342,8 @@ that will not recur by itself — is named in full, in as many notes as its
 names need; what is derived again from the state every tick — a
 reminder, an idle note, a closing note — takes one note of its kind a
 tick, the members it has no room for counted and named by the next
-ticks' notes. The alert log takes one line a message (a note's, the
+ticks' notes, the longest owed first (a steady supply of fresher ones
+never holds one back). The alert log takes one line a message (a note's, the
 names it said). Each member is then followed like any issue, its
 follow-ups folding the same way. A flood neither drowns the channel nor
 holds the per-run cap — against another lane, or against its own lane's

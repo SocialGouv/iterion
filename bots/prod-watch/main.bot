@@ -611,6 +611,12 @@ tool plan:
         if s_env is not None and (not isinstance(s_env, str) or not s_env or len(s_env) > 64 or any(c in s_env for c in '\n\r\f/')):
             raise SystemExit('prod-watch: config.sentry.environment must be a Sentry environment name (1-64 characters, no slash or '
                              'line break), got ' + repr(s_env)[:80])
+        if s_env is not None and s_env.lower() == 'none':
+            ## Sentry reads `none` in a path as the empty environment name, and
+            ## literally in a list's query: the check and the lists would not
+            ## name the same environment.
+            raise SystemExit("prod-watch: config.sentry.environment 'none' names two different environments in Sentry's API -- "
+                             'use the real name, or leave the environment out')
         s_min = str(sentry_cfg.get('min_level') or 'error').lower()
         if s_min not in LEVELS:
             raise SystemExit('prod-watch: config.sentry.min_level must be one of ' + ', '.join(LEVELS) + ', got ' + repr(sentry_cfg.get('min_level'))[:40])
@@ -701,8 +707,8 @@ tool plan:
         'leak': 'personal data or secret detected in the logs',
         'leak_detail': '{count} match(es) of class {class} ({distinct} distinct) in {sources}',
         'sentry_issue': 'Sentry issue',
-        'sentry_detail': '{level} · {count} event(s) in 14 days · {users} user(s) · {culprit}',
-        'sentry_detail_total': '{level} · {count} event(s) in total · {users} user(s) · {culprit}',
+        'sentry_detail': '{level} · {count} event(s) in 90 days · {users} user(s) · {culprit}',
+        'sentry_detail_total': '{level} · {count} event(s) in total · {culprit}',
         'sentry_detail_short': '{level} · {short_id}',
         'sentry_regressed': 'regressed in Sentry',
         'sentry_escalating': 'escalating in Sentry',
@@ -727,10 +733,12 @@ tool plan:
         if k in labels and isinstance(v, str) and v:
             labels[k] = v
     for k in ('folded_detail', 'folded_detail_more'):
-        if '{names}' not in labels[k]:
-            ## A note stamps as said the members it names: without the names
-            ## it would say nobody.
-            raise SystemExit('prod-watch: labels.' + k + ' must keep the {names} placeholder (a note says its members by name)')
+        if labels[k].count('{names}') != 1 or len(labels[k]) > 400:
+            ## A note stamps as said the members it names, and its names are
+            ## sized to the message budget: once, in a label that leaves them
+            ## the room.
+            raise SystemExit('prod-watch: labels.' + k + ' must hold the {names} placeholder exactly once, in 400 characters at most '
+                             '(a note says its members by name, within the message)')
 
     ## ── halt + cursor ──────────────────────────────────────────────
     state = {}
@@ -794,7 +802,7 @@ tool plan:
         for f in ('short_id', 'level', 'link', 'substatus', 'status', 'pending', 'announced_severity'):
             if rec.get(f) is not None and not isinstance(rec[f], str):
                 refuse_state(where + '.' + f, rec[f], 'a string')
-        for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since', 'transition_seen_at'):
+        for f in ('sentry_last_seen', 'transition_at', 'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since', 'transition_seen_at', 'note_owed_at'):
             if rec.get(f) is not None and not is_iso(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an ISO timestamp')
         for f in ('backlog', 'closed_said'):
@@ -981,14 +989,15 @@ tool plan:
                 ## button, a bulk action — it is ongoing, in neither list).
                 if rec.get('pending') or (rec.get('alerted') and (rec.get('status') or 'unresolved')
                                           in ('unresolved', 'reprocessing', 'ignored', 'resolved')):
-                    tracked.append((rec.get('tracked_read_at') or '', sid, rec.get('status') == 'resolved' and not rec.get('pending')))
-        ## Least recently read first: over max_tracked they take turns — none
-        ## is left out for ever. The cut is said when the OPEN ones pass it (a
-        ## resolved one is read in its turn for a reopening by hand, best
-        ## effort); max_tracked 0 turns the reads off.
+                    tracked.append((rec.get('status') == 'resolved' and not rec.get('pending'), rec.get('tracked_read_at') or '', sid))
+        ## The open ones first, then the resolved ones (read for a reopening
+        ## by hand, best effort), the least recently read first in each: over
+        ## max_tracked they take turns — none left out for ever — and the cut
+        ## is said once the OPEN ones pass it, so a resolved one starves only
+        ## then; max_tracked 0 turns the reads off.
         tracked.sort()
-        sentry['tracked_ids'] = [sid for _, sid, _ in tracked[:sentry['max_tracked']]]
-        open_n = sum(1 for _, _, resolved in tracked if not resolved)
+        sentry['tracked_ids'] = [sid for _, _, sid in tracked[:sentry['max_tracked']]]
+        open_n = sum(1 for resolved, _, _ in tracked if not resolved)
         sentry['tracked_cut'] = sentry['max_tracked'] > 0 and open_n > sentry['max_tracked']
         sentry['tracked_total'] = open_n
         sentry['known'] = known
@@ -1948,6 +1957,8 @@ tool poll_sentry:
             return 'HTTPError: HTTP Error ' + str(e.code) + ': ' + phrase
         if isinstance(e, (CredentialRefused, LaneError, DeadlineReached, OSError)):
             return type(e).__name__ + ': ' + str(e)[:200]
+        if isinstance(e, NotFound):
+            return 'NotFound: Sentry answered 404 -- the organization or the environment is unknown to it'
         return type(e).__name__ + ': the answer did not parse (its text is withheld)'
 
     ## The environment the lane needs — a usable token, a scheme the bearer
@@ -2121,7 +2132,7 @@ tool poll_sentry:
                    'in_new': False, 'in_transition': False, 'in_tracked': False, 'transition_at': None, 'transition_kind': None,
                    ## The lists count events over their 14-day window; the by-id
                    ## answer counts the issue's whole life, every environment.
-                   'count_scope': 'total' if source == 'tracked' else '14d', 'transition_checked': False}
+                   'count_scope': 'total' if source == 'tracked' else '90d', 'transition_checked': False}
             records[i['id']] = rec
         elif seen and (not rec['last_seen'] or seen > rec['last_seen']):
             rec['last_seen'] = seen
@@ -2137,6 +2148,11 @@ tool poll_sentry:
     ## the lane sees an event; lifetime and filtered drop only their
     ## sub-objects, and an empty groupStatsPeriod skips the timeline.
     COLLAPSE = {'collapse': ['lifetime', 'filtered'], 'groupStatsPeriod': ''}
+    ## A list only returns issues with an event inside its window: 90 days
+    ## (Sentry clamps it to the retention) is as far back as Relay accepts an
+    ## event's own time — a new issue whose first event came late (an SDK's
+    ## offline cache) is still in the new list.
+    LIST_PERIOD = '90d'
     def seen_stats(body, what):
         ## An answer carrying no seen stats at all was stripped of them (a
         ## collapse, a server that no longer sends them): never read as "no
@@ -2146,7 +2162,7 @@ tool poll_sentry:
     def walk(query, sort, max_pages, what, name):
         ## Each page is taken as it arrives: a walk cut by an error, a cap
         ## or the deadline keeps what it read.
-        params = dict(COLLAPSE, project=project_id, query=query, sort=sort, statsPeriod='14d', limit=100)
+        params = dict(COLLAPSE, project=project_id, query=query, sort=sort, statsPeriod=LIST_PERIOD, limit=100)
         if env:
             params['environment'] = env
         cursor, pages = None, 0
@@ -3202,7 +3218,7 @@ tool decide:
             ## The lists count the last 14 days, the by-id answer the issue's
             ## whole life in every environment: the detail says which.
             title_arg = it.get('title') or short
-            detail_key = 'sentry_detail' if it.get('count_scope') == '14d' else 'sentry_detail_total'
+            detail_key = 'sentry_detail' if it.get('count_scope') == '90d' else 'sentry_detail_total'
             fields = {'level': it.get('level') or '?', 'count': it.get('count') if it.get('count') is not None else '?',
                       'users': it.get('user_count') if it.get('user_count') is not None else '?',
                       'culprit': it.get('culprit') or '-', 'short_id': short}
@@ -3669,9 +3685,10 @@ tool decide:
         why = [str(x) for x in (sentry_walk.get('partial') or []) if 'max_catchup_hours' not in str(x)]
         if why or not (sentry_walk.get('gap') or sentry_walk.get('tracked_cut')):
             pieces.append(('sentry truncated', 'sentry: partial walk (' + (', '.join(why[:6]) or 'incomplete') + ')'))
-        ## Its own component: a cut that lasts must not hide a later loss.
-        if sentry_walk.get('tracked_cut'):
-            pieces.append(('sentry tracked cut', 'sentry: ' + str(sentry_walk['tracked_cut'])))
+    ## Its own component, said whatever else the lane says: a cut that lasts
+    ## must not hide a later loss, nor a lane error hide the cut.
+    if lanes.get('sentry') and sentry_walk.get('tracked_cut'):
+        pieces.append(('sentry tracked cut', 'sentry: ' + str(sentry_walk['tracked_cut'])))
     components = sorted({c for c, _ in pieces})
     posted_kinds = {k: v for k, v in (state.get('coverage_posted') or {}).items() if said_within(v, renotify_h)}
     coverage_note = coverage == 'partial' and any(c not in posted_kinds for c in components)
@@ -3727,6 +3744,10 @@ tool decide:
         if rec.get('pending') and a.get('state') not in ('quiet', 'resolved'):
             return (0, str(rec.get('pending_since') or ''))
         return (1, '')
+    ## A note derived again from the state (an idle, a reminder, a closing
+    ## note) that a tick had no room for comes first once it is owed: the
+    ## oldest owed first (both sorts below are stable).
+    alerts.sort(key=lambda a: str((incidents.get(a['fingerprint']) or {}).get('note_owed_at') or now_iso))
     alerts.sort(key=pending_first)
     order = {'new': 3, 'escalated': 3, 'regressed': 3, 'escalating': 3, 'reopened': 3, 'reminder': 2, 'quiet': 1, 'resolved': 1}
     def rank_key(a):
@@ -3772,7 +3793,8 @@ tool decide:
         kind, word, sev, status = k
         chunks, size = [[]], 0
         for a in queue:
-            n = len(fold_name(a)) + 2
+            name = fold_name(a)
+            n = len(name) + len(re.findall(r'(?i)(https?|ftp|mailto):', name)) + 2
             if chunks[-1] and size + n > names_budget:
                 if word not in FACTS:
                     break
@@ -3781,6 +3803,10 @@ tool decide:
             chunks[-1].append(a)
             size += n
         more = len(queue) - sum(len(c) for c in chunks)
+        for a in queue[len(queue) - more:]:
+            rec = incidents.get(a['fingerprint'])
+            if rec is not None:
+                rec['note_owed_at'] = rec.get('note_owed_at') or now_iso
         for j, named in enumerate(chunks):
             last = j == len(chunks) - 1
             notes.append({'fingerprint': 'folded:' + ':'.join(k) + ':' + str(j), 'kind': kind, 'state': word, 'severity': sev,
@@ -3837,6 +3863,7 @@ tool decide:
         rec = incidents.get(a['fingerprint'])
         if rec is None:
             continue
+        rec.pop('note_owed_at', None)
         if a['state'] in ('quiet', 'resolved'):
             rec['quiet_noted'] = True
             if a['state'] == 'resolved':
@@ -4066,8 +4093,10 @@ tool notify:
         ## form (inline LaTeX ignores a backslash before it); a zero-width
         ## space precedes a colon after a letter or digit unless a space
         ## follows — every scheme, the server's custom ones included, and an
-        ## emoji code's own. Parentheses and plain colons stay as written. A
-        ## control character is dropped (a NUL gets the post refused).
+        ## emoji code's own; a zero-width space follows an `@` before a
+        ## letter or digit (no mention: @channel, @here). Parentheses and plain
+        ## colons stay as written. A control character is dropped (a NUL gets
+        ## the post refused).
         t = re.sub(r'[\x00-\x08\x0e-\x1f\x7f-\x9f]', '', str(t if t is not None else ''))
         t = re.sub(r'[\r\n\x0b\x0c\u2028\u2029\u2424]+', ' ', t)
         if cap is not None:
@@ -4075,6 +4104,7 @@ tool notify:
         t = re.sub(r'([\\`*_~\[\]])', lambda m: '\\' + m.group(1), t)
         t = t.replace('&', '&amp;').replace('<', '&lt;').replace('$', chr(0xFF04))
         t = t.replace('.', '\\.')
+        t = re.sub(r'@(?=[A-Za-z0-9])', '@' + chr(8203), t)
         return re.sub(r'(?<=[A-Za-z0-9+.-]):(?!\s)', chr(8203) + ':', t)
     def fmt_capped(label, caps, /, **kw):
         ## Every value filled into a label is inline code: a Sentry culprit, a

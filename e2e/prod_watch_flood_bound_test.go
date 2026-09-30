@@ -279,8 +279,12 @@ func TestProdWatch_AFoldedClosingMemberSaysReopened(t *testing.T) {
 			i.Substatus = strp("archived_until_condition_met")
 		})
 	}
+	n := len(h.bodies())
 	if o := sentryTick(t, h, wf); strings.Join(sentryFolds(o), " ") != "resolved:7" {
 		t.Fatalf("setup: 12 archived: want 5 notes one by one and a note of 7, got %v %v", sentryAlerts(o), sentryFolds(o))
+	}
+	if body := strings.Join(h.bodies()[n:], "\n"); strings.Count(body, "ARCHIVED IN SENTRY") != 6 || strings.Contains(body, "DELETED OR MERGED") {
+		t.Fatalf("12 archived issues (5 notes one by one, 7 folded): every message must say ARCHIVED IN SENTRY:\n%s", body)
 	}
 	for k := 0; k < 12; k++ {
 		h.sentry.edit(fmt.Sprint(5001+k), func(i *pwSentryIssue) {
