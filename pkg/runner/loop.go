@@ -2936,9 +2936,7 @@ func applyCloudBudgetCeiling(wf *ir.Workflow, logger *iterlog.Logger) {
 	if wf.Budget == nil {
 		wf.Budget = &ir.Budget{}
 	}
-	before := *wf.Budget
-	wf.Budget.ClampToCeiling(ceiling)
-	if logger != nil && *wf.Budget != before {
+	if imposed := wf.Budget.ClampToCeiling(ceiling); logger != nil && imposed {
 		logger.Info("runner: clamped workflow budget to platform ceiling (iterations=%d tokens=%d cost=%.2f dur=%q)",
 			wf.Budget.MaxIterations, wf.Budget.MaxTokens, wf.Budget.MaxCostUSD, wf.Budget.MaxDuration)
 	}

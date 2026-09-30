@@ -72,3 +72,49 @@ containment boundary (that is the overlay's ITERION_-gated reach).
   nothing is pinned on the RunMessage.
 - Concurrent PUTs are safe: the write is a CAS on `updated_at`; a lost
   race is a loud 409, never a silently dropped key.
+
+## Addendum (2026-09-30) — the refused set is a classification, held by a test
+
+The namespaces the Decision lists were the first cut. The rule they serve
+is now written above `botVarsInfraExact`: a stored bot var tunes how a bot's
+runs behave. It never sets a name that lifts or weakens a guard (security,
+spend and quota ceilings, bounds on untrusted input, workspace safety),
+configures the process or the fleet rather than a run, names an endpoint or
+an identity presented outside, or is written by the engine for a child
+process — a stored value would forge it: a tool command's
+`${ITERION_ARTIFACT_FILES_DIR}` resolves through the overlay before the
+child's own env.
+
+- `TestEveryEngineEnvNameIsClassified` walks what the engine ships — the
+  string literals of its Go source (`pkg`, `cmd`, `internal`) and of the
+  vendored claw, the head of a `NAME=value` assignment included, and every
+  name written in the manifests and scripts it embeds under `pkg` (plugin
+  manifests, the pi extension; gitignored build outputs excluded) — and fails
+  unless each one is refused or listed in `writableBotVars` with its reason.
+  A new switch cannot land without somebody deciding which side it belongs
+  on.
+- `TestGuardNamesAreNeverBotVars` pins the guard names themselves: the
+  classification alone would accept one moved to the writable side.
+- `TestEveryShippedBotKnobIsABotVar` holds the other side: every
+  `$ITERION_*` a shipped bot reads, braced or bare, stays writable, unless it
+  is listed as infrastructure or as a value the engine writes for a tool's
+  shell.
+- A bot var may tune a bot's own budget knob (`…_MAX_DURATION`). The value
+  `Budget.ClampToCeiling` judges against the platform ceiling is the value
+  that runs — frozen, so a stored value changed after the clamp does not
+  reach the budget — and a zero or negative duration, unlimited to the
+  runtime, is raised to the ceiling like an absent one. Two questions stay
+  open: the exit grace a run spends past a ceiling it sits under (#2024),
+  and one bot-var snapshot per run instead of reads at several moments
+  (#2025).
+- Credential-shaped names are refused by whole segments as well as by
+  substring (`PAT` would match `PATH`), and agree with
+  `store.IsSecretEnvName`: a name the engine redacts as secret is never a
+  bot var — an `AUTHOR` segment, a shipped knob, excepted.
+- The routed model pins stay writable — they pick a model, never whether a
+  guard runs. The permission classifier's model does not: naming it turns the
+  classifier ON, and a classifier Allow skips the workflow's `tool_policy`,
+  so it is refused with the gate's mode (`ITERION_PERMISSION`).
+- A stored entry the wider rule now refuses is not deleted: the overlay
+  ignores it with a warning (the pod env and the .bot default apply),
+  `RefusedEntries` names it, and the record stays editable.

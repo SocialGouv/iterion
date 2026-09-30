@@ -5,6 +5,7 @@
 package ir
 
 import (
+	"os"
 	"sort"
 	"time"
 
@@ -1569,18 +1570,29 @@ type Budget struct {
 // ceiling field means "no platform limit on this dimension" and is ignored. A
 // zero workflow field means "unlimited" and is RAISED to the ceiling (so an
 // unbudgeted bot still inherits the platform cap). Duration is compared by
-// parsed seconds; an unparseable value is replaced by the ceiling.
-func (b *Budget) ClampToCeiling(ceiling *Budget) {
+// parsed seconds; an unparseable, zero or negative value is replaced by the
+// ceiling, itself expanded from the process env, never from a stored bot var.
+// It reports whether it imposed a cap.
+func (b *Budget) ClampToCeiling(ceiling *Budget) (imposed bool) {
 	if b == nil || ceiling == nil {
-		return
+		return false
 	}
 	before := *b
+	var judged string
 	defer func() {
 		// One choke point marks every externally-imposed cap: both the
 		// platform ceiling and the pool-grant clamp go through here.
 		before.CapImposed = b.CapImposed
 		if *b != before {
 			b.CapImposed = true
+			imposed = true
+		}
+		// The duration the ceiling judged is the one that runs: the budget
+		// re-expands MaxDuration later, and a ${…} read again then could
+		// see a stored bot var changed since. Frozen after the comparison
+		// above — keeping the bot's own value is no imposed cap.
+		if judged != "" {
+			b.MaxDuration = judged
 		}
 	}()
 	b.MaxIterations = clampToCeiling(b.MaxIterations, ceiling.MaxIterations)
@@ -1588,14 +1600,22 @@ func (b *Budget) ClampToCeiling(ceiling *Budget) {
 	b.MaxParallelBranches = clampToCeiling(b.MaxParallelBranches, ceiling.MaxParallelBranches)
 	b.MaxCostUSD = clampToCeiling(b.MaxCostUSD, ceiling.MaxCostUSD)
 	if ceiling.MaxDuration != "" {
-		cd, cerr := time.ParseDuration(ExpandEnvWithDefault(ceiling.MaxDuration))
-		if cerr == nil {
-			vd, verr := time.ParseDuration(ExpandEnvWithDefault(b.MaxDuration))
-			if verr != nil || b.MaxDuration == "" || vd > cd {
-				b.MaxDuration = ceiling.MaxDuration
+		ceil := ExpandWithDefault(ceiling.MaxDuration, os.Getenv)
+		cd, cerr := time.ParseDuration(ceil)
+		// A zero ceiling is no platform limit, as for the numeric
+		// dimensions; a zero or negative bot duration is unlimited to the
+		// runtime, so it is raised to the ceiling like an absent one.
+		if cerr == nil && cd > 0 {
+			expanded := ExpandEnvWithDefault(b.MaxDuration)
+			vd, verr := time.ParseDuration(expanded)
+			if verr != nil || vd <= 0 || vd > cd {
+				b.MaxDuration = ceil
+			} else {
+				judged = expanded
 			}
 		}
 	}
+	return imposed
 }
 
 // clampToCeiling lowers v to max when max is a real ceiling (>0) and v either
