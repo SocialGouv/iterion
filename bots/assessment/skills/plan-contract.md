@@ -101,8 +101,11 @@ BESIDE it, in the plan's directory:
 | `defects-ledger.json` | the defects register | a NEW entry, for a defect it found; the entries its lot `remediates` |
 
 `lot_verify` compares each of them with the run's base before it runs a single
-gate command and refuses a lot that changed anything else, one named cause per
-file (`.modernize/outcomes.json: outcomes[engine-target].check changed`). It is
+gate command, and again after the last one — a gate command is the lot's own
+code — and refuses a lot that changed anything else, one named cause per file
+(`.modernize/outcomes.json: outcomes[engine-target].check changed`). Both trees
+that land are judged: the working tree as git would store it, and what is
+committed; `mark_done` writes `done` only on what that verdict judged. It is
 deny by default: a field nobody thought to list is protected like the ones
 somebody did, because a check that names what it protects leaves the next
 field open. A file created, deleted, swapped for a symlink or given a duplicate
