@@ -57,7 +57,7 @@ The `USABLE` column lists the backends that can drive the model **right now**;
 ```
 Not reachable from this host:
   openai/gpt-5.5 — no credential detected for provider "openai"
-  anthropic/glm-5.2 — no credential detected for provider "zai"
+  anthropic/glm-5.3 — no credential detected for provider "zai"
 ```
 
 ### Over HTTP

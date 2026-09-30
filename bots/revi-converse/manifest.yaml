@@ -1,7 +1,14 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.4
+version: 0.1.5
+## 0.1.5 — the converse agent gets review-pr 0.9.12's Anthropic pin and GLM
+## route, on the same dials (ITERION_VIBE_PROVIDER_CLAUDE,
+## ITERION_VIBE_MODEL_CLAUDE_FALLBACK): unpinned, a forfait skipped at a
+## closed window (a provider refusal, or an operator usage cap, soft or hard)
+## left a z.ai key as the run's default, which accepts
+## the claude id and answers with GLM under the claude label; and with no
+## route, a spent forfait left a `/revi <question>` unanswered.
 ## 0.1.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside two prompts (10 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.

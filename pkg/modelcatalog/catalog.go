@@ -38,7 +38,7 @@ type Entry struct {
 	Model string `json:"model"`
 	// CredentialProvider is the detect provider whose credential unlocks this
 	// spec. It differs from Provider for façade endpoints — the GLM family is
-	// served over the Anthropic-compatible API, so `anthropic/glm-5.2` needs a
+	// served over the Anthropic-compatible API, so `anthropic/glm-5.3` needs a
 	// "zai" credential, not an Anthropic one.
 	CredentialProvider string `json:"credential_provider"`
 	// Source is where the capability values came from: "aggregator" (models.dev)

@@ -239,10 +239,22 @@ schema converse_health_output:
 agent converse_agent:
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
+  ## Review-pr's claude slot, dials included (see its reviewer_claude for
+  ## the full account): the `anthropic` hint keeps a z.ai key holding the
+  ## wire from answering this claude id with GLM in silence; with no
+  ## Anthropic credential sealed and none ambient on the runner, the
+  ## primary fails "Not logged in" and the route below is the GLM lane.
+  provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"
   output: converse_output
   system: converse_system
   user: converse_user
   reasoning_effort: "${ITERION_VIBE_EFFORT_CONVERSE:-medium}"
+  fallbacks:
+    glm:
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
+      provider: "zai"
+      on: [usage_window, auth, unavailable]
+      metered: true
   ## No `interaction: human` here: an unattended webhook launch has
   ## nothing to ask a human about, and a leftover interactive turn
   ## let the agent finish with prose instead of the structured

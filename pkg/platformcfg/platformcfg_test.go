@@ -275,6 +275,8 @@ func TestBotVarsValidate(t *testing.T) {
 	ok := BotVars{Vars: map[string]string{
 		"ITERION_VIBE_EFFORT_CLAUDE":            "max",
 		"ITERION_GOLDEN_MASTER_ADVERSARY_MODEL": "claude-opus-5",
+		"ITERION_VIBE_MODEL_CLAUDE":             "claude-opus-5-5[1m]",
+		"ITERION_SEC_AUDIT_PROVIDER_CHAIN":      "zai:glm-5.3,anthropic:claude-opus-5-5",
 	}}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("valid vars: %v", err)
@@ -290,6 +292,7 @@ func TestBotVarsValidate(t *testing.T) {
 		"sandbox image family":   "ITERION_SANDBOX_DEFAULT_IMAGE",
 		"credential-shaped key":  "ITERION_MY_API_KEY",
 		"credential-shaped tok":  "ITERION_FORGE_TOKEN_TTL",
+		"dispatcher infra":       "ITERION_DISPATCHER_PORT",
 	}
 	for label, name := range rejected {
 		if err := (BotVars{Vars: map[string]string{name: "v"}}).Validate(); err == nil {
@@ -300,6 +303,13 @@ func TestBotVarsValidate(t *testing.T) {
 		"blank value":      "  ",
 		"multi-line value": "a\nb",
 		"oversized value":  strings.Repeat("x", botVarsMaxValueLen+1),
+		// Substituted raw into tool and script bodies: each of these would
+		// run as code in a publish step that holds the forge token.
+		"command separator":    "max; echo INJECTED #",
+		"command substitution": "$(id)",
+		"backtick":             "`id`",
+		"pipe":                 "max | cat",
+		"space":                "max now",
 	}
 	for label, v := range badValues {
 		if err := (BotVars{Vars: map[string]string{"ITERION_OK_VAR": v}}).Validate(); err == nil {

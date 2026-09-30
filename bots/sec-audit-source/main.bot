@@ -2569,7 +2569,7 @@ agent project_context_generate:
 ## (~200K effective window) on multi-language repos. The default now
 ## routes through `claude_code` with a per-element provider:model
 ## fallback chain so the node runs on a 1M-context model first (z.ai's
-## glm-5.2) and falls through to Anthropic's opus on a hard failure
+## glm-5.3) and falls through to Anthropic's opus on a hard failure
 ## (rate-limit / quota exhaustion). The chain form requires the
 ## claude_code backend — `claw` ignores `provider:` and would emit C088;
 ## the runtime collapses the chain to its head there, so a `claw`
@@ -2595,7 +2595,7 @@ agent project_context_generate:
 ##                                       chain. DEFAULT IS EMPTY → the
 ##                                       node runs on the first-class model
 ##                                       above (opus). Set e.g.
-##                                       `zai:glm-5.2,anthropic:claude-opus-5-5`
+##                                       `zai:glm-5.3,anthropic:claude-opus-5-5`
 ##                                       to put z.ai's 1M-ctx glm first with
 ##                                       opus on fall-through (ADR-043: GLM is
 ##                                       a second-tier opt-in lane; opus is

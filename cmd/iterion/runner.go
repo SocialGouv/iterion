@@ -274,14 +274,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// no restart. Precedence: setting > pod env > .bot default.
 	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](
 		platformcfg.NewMongoBotVars(st.DB()), logger.Warn)
-	ir.SetEnvOverlay(func(name string) (string, bool) {
-		rec := botVarsResolver.Get(context.Background())
-		if rec == nil {
-			return "", false
-		}
-		v, ok := rec.Vars[name]
-		return v, ok
-	})
+	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
 	// The schema is ensured unconditionally: a cap disabled in env can be
 	// armed at runtime through the settings record, and the readings
 	// ledger must exist by then.
