@@ -164,6 +164,10 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"data": map[string]any{"mergePullRequest": map[string]any{"clientMutationId": nil}},
 				})
+			case strings.Contains(body.Query, "dequeuePullRequest"):
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{"dequeuePullRequest": map[string]any{"clientMutationId": nil}},
+				})
 			case strings.Contains(body.Query, "enqueuePullRequest"):
 				// The queue door carries the same pin as the direct merge, for
 				// the same reason: enqueue the audited commit or nothing.
@@ -605,6 +609,29 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			}
 		})
 	}
+
+	// The queue half of the same scenario (#1633): pass 1 went green and armed,
+	// the forge moved the PR into the merge queue, and a later pass holds — a
+	// CVE published in the interval is the ordinary way a dependency guard
+	// changes its mind. Once queued, autoMergeRequest is null, so the disarm
+	// alone is a no-op: if the refusal does not dequeue, the queue still
+	// merges the very bump this pass refuses.
+	t.Run("a refusal dequeues what an earlier pass queued", func(t *testing.T) {
+		res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"hold_security"`},
+			withState(map[string]any{"mergeQueueEntry": map[string]any{"id": "MQE_1"}}), "", nil)
+		if res["armed"] != false {
+			t.Fatalf("want a refusal, got %v", res)
+		}
+		if !queried(calls, "dequeuePullRequest") {
+			t.Error("refused without dequeuing — the merge queue still merges this PR the moment its group checks go green")
+		}
+		if queried(calls, "enablePullRequestAutoMerge") {
+			t.Error("a refusal must never arm")
+		}
+		if reason, _ := res["reason"].(string); !strings.Contains(reason, "removed from the merge queue") {
+			t.Errorf("a PR taken out of the queue must say so, got %q", reason)
+		}
+	})
 
 	// Off means no mandate, not "undo what someone else decided". The bot must
 	// not touch the forge at all.
