@@ -30,15 +30,15 @@ func capFindingsScript(t *testing.T) string {
 		if !strings.Contains(blk, "INLINE_MAX=") {
 			continue
 		}
-		const marker = "python3 -c \""
+		const marker = "python3 -I -c \""
 		i := strings.Index(blk, marker)
 		if i < 0 {
-			t.Fatal("the capping command embeds no python3 -c body")
+			t.Fatal("the capping command embeds no python3 -I -c body")
 		}
 		start := i + len(marker)
 		end := strings.LastIndex(blk, "\"")
 		if end <= start {
-			t.Fatal("unterminated python3 -c body in the capping command")
+			t.Fatal("unterminated python3 -I -c body in the capping command")
 		}
 		return blk[start:end]
 	}

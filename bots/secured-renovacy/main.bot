@@ -2795,7 +2795,7 @@ tool capture_start_sha:
   ## The reference rides an env assignment and git is called with an argv
   ## list: a quote written around a reference does not nest with the one the
   ## runtime adds, it cancels or corrupts the value (diagnostic C137).
-  command: `WS={{input.workspace_dir}} python3 -c "
+  command: `WS={{input.workspace_dir}} python3 -I -c "
 import json, os, subprocess
 sha = subprocess.run(['git', '-C', os.environ['WS'], 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
 print(json.dumps({'sha': sha}))
@@ -3345,7 +3345,7 @@ tool revert_changes:
 ## p2_verify_run — the DETERMINISTIC half: re-runs verify.sh, reports
 ## the REAL exit code (no LLM judgment; no backticks — E012).
 tool p2_verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -4329,7 +4329,7 @@ tool select_family:
 ## Identical mechanics to batch_upgrade_patches; the family-specific commit
 ## subject comes later in family_commit.
 tool family_upgrade:
-  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} MEMBERS={{input.members}} python3 -c "
+  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} MEMBERS={{input.members}} python3 -I -c "
 import os, sys, json, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -4392,7 +4392,7 @@ emit({'success': True, 'output': 'family upgrade succeeded', 'upgraded_specs': [
 ## re-attempts each member individually with full agentic intel +
 ## validate, so we still get safety for genuinely tricky family bumps.
 tool family_validate:
-  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -c "
+  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -I -c "
 import os, sys, json, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -4491,7 +4491,7 @@ tool family_commit:
 ## it through the schema chain (yarn-up doesn't commit, so HEAD~0 is
 ## still the previous commit when family_validate flagged unstable).
 tool family_revert:
-  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -c "
+  command: `WS={{input.workspace_dir}} SKILLS={{vars.bundle_skills_dir}} PKG_MGR={{input.pkg_manager}} FAMILY={{input.family_name}} python3 -I -c "
 import os, sys, json, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)

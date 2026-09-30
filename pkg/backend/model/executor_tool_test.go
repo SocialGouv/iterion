@@ -6,6 +6,8 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -622,29 +624,66 @@ func TestSliceHasComplexElement(t *testing.T) {
 
 func TestScriptInterpreter(t *testing.T) {
 	cases := []struct {
-		lang    string
-		wantCmd string
-		wantExt string
+		lang     string
+		wantArgv []string
+		wantExt  string
 	}{
-		{"", "sh", ".sh"},
-		{"sh", "sh", ".sh"},
-		{"bash", "bash", ".sh"},
-		{"js", "node", ".js"},
-		{"node", "node", ".js"},
-		{"py", "python3", ".py"},
-		{"python", "python3", ".py"},
-		{"python3", "python3", ".py"},
-		{"unknown", "", ""},
-		{"PowerShell", "", ""},
+		{"", []string{"sh"}, ".sh"},
+		{"sh", []string{"sh"}, ".sh"},
+		{"bash", []string{"bash"}, ".sh"},
+		{"js", []string{"node"}, ".js"},
+		{"node", []string{"node"}, ".js"},
+		{"py", []string{"python3", "-I"}, ".py"},
+		{"python", []string{"python3", "-I"}, ".py"},
+		{"python3", []string{"python3", "-I"}, ".py"},
+		{"unknown", nil, ""},
+		{"PowerShell", nil, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.lang, func(t *testing.T) {
-			cmd, ext := scriptInterpreter(c.lang)
-			if cmd != c.wantCmd || ext != c.wantExt {
+			argv, ext := scriptInterpreter(c.lang)
+			if !slices.Equal(argv, c.wantArgv) || ext != c.wantExt {
 				t.Errorf("scriptInterpreter(%q) = (%q, %q), want (%q, %q)",
-					c.lang, cmd, ext, c.wantCmd, c.wantExt)
+					c.lang, argv, ext, c.wantArgv, c.wantExt)
 			}
 		})
+	}
+}
+
+// A python script body runs isolated: the script file's directory is not put
+// first on sys.path, so a json.py beside it (the workspace, under a
+// copy-based sandbox) cannot replace the standard module inside the node.
+func TestScriptRecipe_PythonRunsIsolated(t *testing.T) {
+	if _, err := osexec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	scratch := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "PLANTED_MODULE_LOADED")
+	plant := "open(" + strconv.Quote(marker) + ", 'a').write('loaded')\nraise ImportError('a planted module shadowed the standard one')\n"
+	if err := os.WriteFile(filepath.Join(scratch, "json.py"), []byte(plant), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Unsandboxed, the script file lands in the temp dir: plant the module
+	// beside it there.
+	t.Setenv("TMPDIR", scratch)
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(t.TempDir()))
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "py_node"},
+		Language: "py",
+		Script:   "import json\nprint(json.dumps({'ok': True}))\n",
+	}
+	resolve, buildCmd := e.scriptRecipe(context.Background(), node, map[string]any{})
+	cmd, cleanup, err := buildCmd(resolve())
+	if err != nil {
+		t.Fatalf("buildCmd: %v", err)
+	}
+	defer cleanup()
+	out, err := cmd.CombinedOutput()
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Fatalf("a module beside the script loaded inside the node: %s", out)
+	}
+	if err != nil || strings.TrimSpace(string(out)) != `{"ok": true}` {
+		t.Fatalf("the script did not run: %v: %s", err, out)
 	}
 }
 

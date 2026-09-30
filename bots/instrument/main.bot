@@ -801,7 +801,7 @@ agent finalize_mr:
 ## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
 ## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
 tool verify_probe:
-  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -c "
+  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -I -c "
 import os, subprocess, json
 scratch = os.environ.get('SCRATCH', '.')
 script = os.path.join(scratch, 'verify.sh')
@@ -835,7 +835,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
 tool verify_run:
   description: "Verify gate: run build+tests (real exit code)"
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -1111,7 +1111,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## the graph only pays finalize_mr when a push can actually happen. python3 for
 ## safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
 tool forge_auth_probe:
-  command: `python3 -c "
+  command: `python3 -I -c "
 import os, subprocess, json
 tok = '/run/iterion/secrets/forge_token'
 try:
@@ -1133,7 +1133,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
   output: forge_auth_state
 
 tool surface_pr_link:
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:

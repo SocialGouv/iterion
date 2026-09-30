@@ -277,7 +277,7 @@ agent author:
 ## the inter-run cache's git_head; short-circuits the whole run when the
 ## wiki is already current for HEAD (clean tree, no explicit request).
 tool scan_repo:
-  command: `WS={{vars.workspace_dir}} WIKI_DIR={{vars.wiki_dir}} CODE_GLOBS={{vars.code_scope_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} CACHE_PATH={{vars.wiki_cache_path}} ISSUE_ID={{vars.issue_id}} python3 -c "
+  command: `WS={{vars.workspace_dir}} WIKI_DIR={{vars.wiki_dir}} CODE_GLOBS={{vars.code_scope_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} CACHE_PATH={{vars.wiki_cache_path}} ISSUE_ID={{vars.issue_id}} python3 -I -c "
 import os, json, glob, subprocess
 ws = os.environ['WS']
 wiki_dir = os.environ.get('WIKI_DIR', 'wiki').strip('/')
@@ -389,7 +389,7 @@ print(json.dumps({'wiki_exists': wiki_exists, 'wiki_pages': wiki_pages, 'wiki_pa
 ## agent is forbidden to hand-write indexes, so this is their single
 ## source of truth. Commits the regenerated indexes when they changed.
 tool gen_indexes:
-  command: `WS={{input.workspace_dir}} WIKI_DIR={{input.wiki_dir}} OKF_VERSION={{input.okf_version}} python3 -c "
+  command: `WS={{input.workspace_dir}} WIKI_DIR={{input.wiki_dir}} OKF_VERSION={{input.okf_version}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ['WS']
 wiki_dir = os.environ.get('WIKI_DIR', 'wiki').strip('/')
@@ -476,7 +476,7 @@ print(json.dumps({'indexes_written': written, 'committed': committed, 'note': no
 ## changed outside the wiki tree since the run base). Orphan concepts and
 ## a missing quickstart are WARNINGS (surfaced, non-blocking).
 tool validate_wiki:
-  command: `WS={{input.workspace_dir}} WIKI_DIR={{input.wiki_dir}} BASE={{input.base}} python3 -c "
+  command: `WS={{input.workspace_dir}} WIKI_DIR={{input.wiki_dir}} BASE={{input.base}} python3 -I -c "
 import os, json, re, subprocess
 ws = os.environ['WS']
 wiki_dir = os.environ.get('WIKI_DIR', 'wiki').strip('/')
@@ -634,7 +634,7 @@ tool mark_issue_for_review:
 ## scan_repo can short-circuit (noop) when the wiki is still current.
 ## Empty cache_path disables the write.
 tool update_cache:
-  command: `python3 -c "
+  command: `python3 -I -c "
 import os, json, hashlib, sys, pathlib, subprocess
 ws = sys.argv[1]; wiki_dir = sys.argv[2].strip('/'); cache_path = sys.argv[3]
 if not cache_path:

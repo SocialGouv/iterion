@@ -378,7 +378,7 @@ agent llm_review:
 ## ecosystem:name:version (see filter_cached); the checksum is metadata
 ## compared on a hit to catch republish attacks.
 tool normalize_deps:
-  command: `DEPS={{input.deps}} ECOS={{input.ecosystems}} python3 -c "
+  command: `DEPS={{input.deps}} ECOS={{input.ecosystems}} python3 -I -c "
 import os, json, re
 try:    deps_in = json.loads(os.environ.get('DEPS','') or '[]')
 except Exception: deps_in = []
@@ -474,7 +474,7 @@ print(json.dumps({'deps': uniq, 'ecosystems': ecos,
 ## signals. Adding an ecosystem = drop a lang-<id>.md skill with a
 ## heuristics block (+ a parser here only if its output format is new).
 tool run_eco_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -I -c "
 import os, sys, json, re, subprocess
 raw = os.environ.get('ECOS', '[]') or '[]'
 try:
@@ -652,7 +652,7 @@ print(json.dumps({'packages': packages, 'errors': errors}))
 ## (eval-on-startup / base64-blob / network-on-import) and a typosquat corpus.
 ## The reviewer validates each signal against the cited evidence file.
 tool run_generic_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && (trivy fs --scanners vuln --quiet --format json --output {{vars.scan_dir}}/trivy.json {{vars.workspace_dir}} 2>/dev/null || true) && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && (trivy fs --scanners vuln --quiet --format json --output {{vars.scan_dir}}/trivy.json {{vars.workspace_dir}} 2>/dev/null || true) && WS={{vars.workspace_dir}} SCAN_DIR={{vars.scan_dir}} python3 -I -c "
 import os, json
 ws = os.environ.get('WS', '.')
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -772,7 +772,7 @@ tool load_cache:
   ## All in python (reads the path from env, not inline printf) so an empty
   ## cache yields clean JSON — the old shell form emitted a malformed
   ## line_count ("0 0") and a quoted cache_path on a cold cache.
-  command: `mkdir -p {{vars.cache_dir}} && CACHE_PATH={{vars.cache_path}} python3 -c "
+  command: `mkdir -p {{vars.cache_dir}} && CACHE_PATH={{vars.cache_path}} python3 -I -c "
 import os, json
 p = os.environ.get('CACHE_PATH','').strip()
 try:
@@ -791,7 +791,7 @@ print(json.dumps({'cache_path': p, 'raw_jsonl': raw, 'line_count': n}))
 ## pending (cache-miss or stale) and already_scanned (cache-hit
 ## within ttl and at acceptable scanner_version).
 tool filter_cached:
-  command: `DEPS={{input.deps}} RAW={{input.cache_raw_jsonl}} TTL={{input.ttl_days}} SVER={{input.scanner_version}} python3 -c "
+  command: `DEPS={{input.deps}} RAW={{input.cache_raw_jsonl}} TTL={{input.ttl_days}} SVER={{input.scanner_version}} python3 -I -c "
 import os, sys, json, datetime
 deps_json = os.environ.get('DEPS','')
 raw       = os.environ.get('RAW','')
@@ -851,7 +851,7 @@ tool update_cache:
   ## Appends one JSONL line per analysed package to the package
   ## cache at vars.cache_path. Atomic via
   ## printf >> (POSIX guarantees atomicity up to PIPE_BUF).
-  command: `VERDICTS={{input.verdicts}} CACHE_PATH={{input.cache_path}} SVER={{input.scanner_version}} python3 -c "
+  command: `VERDICTS={{input.verdicts}} CACHE_PATH={{input.cache_path}} SVER={{input.scanner_version}} python3 -I -c "
 import os, sys, json, datetime
 verdicts_raw = os.environ.get('VERDICTS','')
 verdicts = json.loads(verdicts_raw) if verdicts_raw else []

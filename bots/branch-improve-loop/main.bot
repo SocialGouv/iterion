@@ -1573,7 +1573,7 @@ judge plan_review:
 ## python3 for safe JSON (mirrors verify_run); read-only, ~100ms.
 tool workspace_probe:
   description: "Precondition: workspace_dir is a git repository with base_ref resolvable and reachable"
-  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -I -c "
 import os, subprocess, json, sys
 ws = (os.environ.get('WS') or '').strip()
 base = (os.environ.get('BASE') or '').strip()
@@ -1609,7 +1609,7 @@ print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + 
   output: workspace_probe_state
 
 tool delivery_probe:
-  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} PR={{vars.pr_url}} CHECK_URL={{vars.forge_delivery_preflight_url}} CHECK_AUTH={{vars.forge_publish_token}} TOKEN_PATH={{secrets.forge_token.path}} python3 -c "
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} PR={{vars.pr_url}} CHECK_URL={{vars.forge_delivery_preflight_url}} CHECK_AUTH={{vars.forge_publish_token}} TOKEN_PATH={{secrets.forge_token.path}} python3 -I -c "
 import os, subprocess, json, sys, re, hashlib, urllib.request, urllib.parse
 ws = os.environ.get('WS', '').strip()
 base = os.environ.get('BASE', '').strip()
@@ -1710,7 +1710,7 @@ except Exception:
 ## repo-agnostic. python3 for safe JSON (mirrors verify_probe/verify_run);
 ## read-only, idempotent.
 tool plan_scope_probe:
-  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} THRESH={{vars.plan_large_diff_lines}} python3 -c "
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} THRESH={{vars.plan_large_diff_lines}} python3 -I -c "
 import os, re, subprocess, json
 ws = os.environ.get('WS', '.')
 base = os.environ.get('BASE', 'main')
@@ -1761,7 +1761,7 @@ print(json.dumps({
 ## whatever image the target repo brings.
 tool delivery_deadline:
   description: "Stamp the working window as a UTC instant the campaign can re-read"
-  command: `LEFT={{input.work_seconds_left}} python3 -c "
+  command: `LEFT={{input.work_seconds_left}} python3 -I -c "
 import os, json
 from datetime import datetime, timedelta, timezone
 try:
@@ -1794,7 +1794,7 @@ else:
 ## probes); read-only.
 tool decline_probe:
   description: "Was the campaign's refusal earned? (repository untouched by this run)"
-  command: `WS={{vars.workspace_dir}} ENTRY={{input.entry_head}} REASON={{input.decline_reason}} python3 -c "
+  command: `WS={{vars.workspace_dir}} ENTRY={{input.entry_head}} REASON={{input.decline_reason}} python3 -I -c "
 import os, subprocess, json
 ws = (os.environ.get('WS') or '').strip()
 entry = (os.environ.get('ENTRY') or '').strip()
@@ -1851,7 +1851,7 @@ print(json.dumps({'honoured': True, 'reason': reason + ' [verified: HEAD unmoved
 ## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
 ## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
 tool verify_probe:
-  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -c "
+  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -I -c "
 import os, subprocess, json
 scratch = os.environ.get('SCRATCH', '.')
 script = os.path.join(scratch, 'verify.sh')
@@ -1884,7 +1884,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## the gate stays universal while the verdict stays deterministic. python3 for
 ## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -2157,7 +2157,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## actually happen. python3 for safe JSON + no quote clashes (mirrors
 ## verify_run); read-only, idempotent probes.
 tool forge_auth_probe:
-  command: `TOKEN_PATH={{secrets.forge_token.path}} python3 -c "
+  command: `TOKEN_PATH={{secrets.forge_token.path}} python3 -I -c "
 import os, subprocess, json
 tok = os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token'
 try:
@@ -2182,7 +2182,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 ## (a graph node is a unique instance, so the open_mr and push_back paths
 ## each carry their own probe). Same contract as forge_auth_probe.
 tool push_auth_probe:
-  command: `TOKEN_PATH={{secrets.forge_token.path}} python3 -c "
+  command: `TOKEN_PATH={{secrets.forge_token.path}} python3 -I -c "
 import os, subprocess, json
 tok = os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token'
 try:
@@ -2230,7 +2230,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 ## Keep this python body free of the double-quote character: the whole body is
 ## wrapped by the shell in a double-quoted argument.
 tool push_back_tool:
-  command: `TOKEN_PATH={{secrets.forge_token.path}} PUSH_BRANCH={{vars.push_branch}} PR_URL={{vars.pr_url}} PR_STATE_URL={{vars.forge_pr_state_url}} PR_STATE_TOKEN={{vars.forge_publish_token}} python3 -c "
+  command: `TOKEN_PATH={{secrets.forge_token.path}} PUSH_BRANCH={{vars.push_branch}} PR_URL={{vars.pr_url}} PR_STATE_URL={{vars.forge_pr_state_url}} PR_STATE_TOKEN={{vars.forge_publish_token}} python3 -I -c "
 import os, subprocess, json, re, urllib.request, urllib.error, urllib.parse
 branch = os.environ.get('PUSH_BRANCH', '').strip()
 out = {'pushed': False, 'superseded': False, 'reason': '', 'banked_branch': '', 'how_to_take': ''}
@@ -2343,7 +2343,7 @@ bank('push to ' + branch + ' refused (' + (err or 'unknown error') + ')', base)
   output: push_state
 
 tool surface_pr_link:
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} python3 -I -c "
 import os
 u = (os.environ.get('URL') or '').strip()
 if u:
@@ -2369,7 +2369,7 @@ if u:
 ## Keep this python body free of the double-quote character: the whole body is
 ## wrapped by the shell in a double-quoted argument.
 tool publish_verdict:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} VERIFY_PASSED={{input.verify_passed}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} VERIFY_PASSED={{input.verify_passed}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -I -c "
 import os, json, urllib.request, urllib.error
 
 def flag(name):

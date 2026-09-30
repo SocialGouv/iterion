@@ -2816,7 +2816,7 @@ human approve_fixes:
 ## node_modules/) returns 100k+ paths in one tool result and overflows
 ## the model context — the original detect_tech failure mode. No LLM.
 tool inventory:
-  command: `WS={{vars.workspace_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} python3 -I -c "
 import os, json
 ws = os.environ['WS']
 EXCLUDED = {'.git','node_modules','vendor','.iterion','.sec-audit','.works','.claude','.venv','venv','env','dist','build','.next','out','target','__pycache__','.cache','.terraform'}
@@ -2849,7 +2849,7 @@ print(json.dumps({'listing': listing}))
 ## frontmatter timestamp is treated as human-curated and never stale.
 ## See skills/project-context.md for the file shape.
 tool project_context_load:
-  command: `CTX={{vars.context_path}} TTL={{vars.context_ttl_days}} FORCE={{vars.force_context_refresh}} python3 -c "
+  command: `CTX={{vars.context_path}} TTL={{vars.context_ttl_days}} FORCE={{vars.force_context_refresh}} python3 -I -c "
 import os, json, datetime, re
 ctx = os.environ['CTX']
 try:
@@ -2919,7 +2919,7 @@ print(json.dumps({
 ## via the `file_filter` mapping, which already handles a comma-separated
 ## list (existing Cap. 3 shard mechanism, see triage_system:404-409).
 tool diff_scope:
-  command: `WS={{vars.workspace_dir}} BASE={{vars.diff_base}} python3 -c "
+  command: `WS={{vars.workspace_dir}} BASE={{vars.diff_base}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ['WS']
 base = (os.environ.get('BASE') or '').strip()
@@ -3005,7 +3005,7 @@ if [ "$SWEEP_TTL" -gt 0 ] 2>/dev/null; then
     -exec test -f {}/shard-files.json \; \
     -exec rm -rf {} + 2>/dev/null
 fi
-mkdir -p {{input.scan_dir}} && : > {{input.scan_dir}}/shard-files.json && WS={{vars.workspace_dir}} SHARD_SIZE={{vars.shard_size}} OUT={{input.scan_dir}}/shard-files.json python3 -c "
+mkdir -p {{input.scan_dir}} && : > {{input.scan_dir}}/shard-files.json && WS={{vars.workspace_dir}} SHARD_SIZE={{vars.shard_size}} OUT={{input.scan_dir}}/shard-files.json python3 -I -c "
 import os, sys, json
 ws = os.environ['WS']
 shard_size = int(os.environ.get('SHARD_SIZE','0'))
@@ -3046,7 +3046,7 @@ print(json.dumps({
 ## the audit trail; the tool returns a structured summary so the
 ## parent's exit code reflects shard failures.
 tool dispatch_shards:
-  command: `mkdir -p {{input.scan_dir}} && WS={{input.workspace_dir}} SHARD_SIZE={{input.shard_size}} CONCURRENCY={{input.shard_concurrency}} SEVTHR={{input.severity_threshold}} FPP={{input.fp_path}} REC={{input.records_dir}} MAT={{input.matchers_dir}} FILES={{input.files_path}} WORKFLOW={{input.workflow_path}} ENV_PATH={{input.scan_dir}}/shards.json RUN_ID={{run.id}} python3 -c "
+  command: `mkdir -p {{input.scan_dir}} && WS={{input.workspace_dir}} SHARD_SIZE={{input.shard_size}} CONCURRENCY={{input.shard_concurrency}} SEVTHR={{input.severity_threshold}} FPP={{input.fp_path}} REC={{input.records_dir}} MAT={{input.matchers_dir}} FILES={{input.files_path}} WORKFLOW={{input.workflow_path}} ENV_PATH={{input.scan_dir}}/shards.json RUN_ID={{run.id}} python3 -I -c "
 import os, json, time, subprocess, shutil
 ws = os.environ['WS']
 shard_size = int(os.environ['SHARD_SIZE'])
@@ -3129,7 +3129,7 @@ tool run_generic_scanners:
   ## and .works (sibling worktrees on the self-host) so the scanners
   ## don't traverse accumulated repo copies. sh -c is dash on some
   ## hosts, bash inside devbox — keep POSIX-compatible.
-  command: `mkdir -p {{input.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{input.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{input.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{input.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; SCAN_DIR={{input.scan_dir}} GEN_ERRS="$ERRS" python3 -c '
+  command: `mkdir -p {{input.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{input.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{input.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{input.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; SCAN_DIR={{input.scan_dir}} GEN_ERRS="$ERRS" python3 -I -c '
 import json, os
 scan_dir = os.environ["SCAN_DIR"]
 failed = os.environ.get("GEN_ERRS", "").split()
@@ -3170,7 +3170,7 @@ print(json.dumps({"scanner": "generic", "subscanners": ["gitleaks", "trivy", "se
 ## verify per-language coverage. Replaces the old per-language run_js/go/python
 ## scanner nodes + the closed has_js/has_go/has_python enum.
 tool run_lang_scanners:
-  command: `mkdir -p {{input.scan_dir}} && LANGS={{input.langs}} SCAN_DIR={{input.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -c "
+  command: `mkdir -p {{input.scan_dir}} && LANGS={{input.langs}} SCAN_DIR={{input.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.bundle_skills_dir}} python3 -I -c "
 import os, sys, json, re, subprocess
 _alias = {'javascript': 'js', 'typescript': 'js', 'ts': 'js', 'node': 'js', 'nodejs': 'js', 'golang': 'go', 'py': 'python', 'py3': 'python', 'python3': 'python'}
 def _norm_langs(_raw):
@@ -3275,7 +3275,7 @@ print(json.dumps({'scanner': 'lang', 'subscanners': sub, 'json_paths': paths, 'f
 ## that fails (non-zero exit, invalid JSON) is logged in errors[]
 ## and skipped; the workflow continues.
 tool run_custom_matchers:
-  command: `mkdir -p {{input.scan_dir}} && WS={{vars.workspace_dir}} OUT={{input.scan_dir}}/custom.json MATCHERS_DIR={{vars.matchers_dir}} python3 -c "
+  command: `mkdir -p {{input.scan_dir}} && WS={{vars.workspace_dir}} OUT={{input.scan_dir}}/custom.json MATCHERS_DIR={{vars.matchers_dir}} python3 -I -c "
 import os, sys, json, glob, subprocess, stat
 ws = os.environ['WS']
 out_path = os.environ['OUT']
@@ -3637,7 +3637,7 @@ fi
 # to source=unavailable and an UNKNOWN banner -- never to a clean bill.
 # Sub-second because deepsec stamps in milliseconds, and a whole-second floor
 # let the last second of the previous run back in.
-START_EPOCH=$(python3 -c "import time; print(time.time())" 2>/dev/null || date -u +%s)
+START_EPOCH=$(python3 -I -c "import time; print(time.time())" 2>/dev/null || date -u +%s)
 
 ( cd "$DSW" && deepsec scan ) >"$LOG_DIR/scan.log" 2>&1 || ERRS="$ERRS scan"
 
@@ -3788,7 +3788,7 @@ fi
 # without re-parsing the file (the format is a flat array of findings).
 FCNT=0
 if [ -f "$OUT_JSON" ]; then
-  FCNT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d) if isinstance(d,list) else len(d.get(\"findings\",[])) if isinstance(d,dict) else 0)" "$OUT_JSON" 2>/dev/null || echo 0)
+  FCNT=$(python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d) if isinstance(d,list) else len(d.get(\"findings\",[])) if isinstance(d,dict) else 0)" "$OUT_JSON" 2>/dev/null || echo 0)
 fi
 
 # A step failed AND nothing came out: whatever sits at OUT_JSON is not a scan
@@ -3871,7 +3871,7 @@ case "$ERRS" in *process*) PROC_FAILED=1 ;; *) PROC_FAILED=0 ;; esac
 SCAN_RID=$(_dsrid "$LOG_DIR/scan.log" "Run ID: " "Run ID: ")
 PROC_RID=$(_dsrunid)
 PROC_RIDS=$(_dsrunids | tr "\n" " ")
-COVERAGE=$(DSW="$DSW" PROC_LIMIT="$PROC_LIMIT" START_EPOCH="$START_EPOCH" PROC_FAILED="$PROC_FAILED" STEPS_FAILED="$ERRS" SCAN_RID="$SCAN_RID" PROC_RID="$PROC_RID" PROC_RIDS="$PROC_RIDS" python3 -c "
+COVERAGE=$(DSW="$DSW" PROC_LIMIT="$PROC_LIMIT" START_EPOCH="$START_EPOCH" PROC_FAILED="$PROC_FAILED" STEPS_FAILED="$ERRS" SCAN_RID="$SCAN_RID" PROC_RID="$PROC_RID" PROC_RIDS="$PROC_RIDS" python3 -I -c "
 import datetime, glob, json, math, os, time
 root = os.environ.get(\"DEEPSEC_DATA_ROOT\") or \"data\"
 if not os.path.isabs(root):
@@ -4058,7 +4058,7 @@ fi
 # question "which agent ran?" is asked. deepsec is absent from backends_used, so
 # this line is the only answer that exists.
 echo "[deepsec] agent_args=$AGENT_ARGS" >>"$LOG_DIR/env.log"
-ERR_JSON=$(printf "%s" "$ERRS" | LOG_DIR="$LOG_DIR" python3 -c "
+ERR_JSON=$(printf "%s" "$ERRS" | LOG_DIR="$LOG_DIR" python3 -I -c "
 import json, os, sys
 e = sys.stdin.read().strip().split()
 out = [\"step failed: \" + x for x in e]
@@ -4126,7 +4126,7 @@ printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s
 ## it: this node and scan_health were the two readers that went to disk
 ## instead. No path published means no bank, whatever the slot holds.
 tool bank_deepsec_findings:
-  command: `DEEPSEC_PATHS={{input.json_paths}} MAX_BYTES={{vars.deepsec_bank_max_bytes}} python3 -c '
+  command: `DEEPSEC_PATHS={{input.json_paths}} MAX_BYTES={{vars.deepsec_bank_max_bytes}} python3 -I -c '
 import json, os
 
 try:
@@ -4233,7 +4233,7 @@ emit(kept, len(kept), len(items), len(kept) < len(items),
 ## test resolves against the producer's own json_paths, which points at the
 ## per-pass path or is empty on every refusal.
 tool scan_health:
-  command: `SCAN_DIR={{input.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.bundle_skills_dir}} ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -c "
+  command: `SCAN_DIR={{input.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.bundle_skills_dir}} ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} DEEPSEC_PATHS={{input.deepsec_paths}} python3 -I -c "
 import os, sys, json, re
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -4478,7 +4478,7 @@ if generic_present < min_generic:
 ## emitted so triage surfaces the truncation in the report. Security signal
 ## is bounded, never silently dropped.
 tool cap_findings:
-  command: `SCAN_DIR={{input.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -c "
+  command: `SCAN_DIR={{input.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -I -c "
 import os, json, glob
 
 scan_dir = os.environ.get('SCAN_DIR', '.')
@@ -4725,7 +4725,7 @@ print(json.dumps({
 ##                        update_file_records.
 ## See skills/file-records.md for the data model.
 tool filter_cached_files:
-  command: `RECORDS_DIR={{input.records_dir}} WS={{input.workspace_dir}} CANDIDATES={{input.candidates}} SCANNER_V={{input.scanner_version}} TTL={{input.ttl_days}} python3 -c "
+  command: `RECORDS_DIR={{input.records_dir}} WS={{input.workspace_dir}} CANDIDATES={{input.candidates}} SCANNER_V={{input.scanner_version}} TTL={{input.ttl_days}} python3 -I -c "
 import os, sys, json, hashlib, datetime
 ws         = os.environ['WS']
 records    = os.environ['RECORDS_DIR']
@@ -4844,7 +4844,7 @@ print(json.dumps({
 ## so report_card + update_file_records receive the same shape the
 ## old revalidate node emitted.
 tool majority_verdict:
-  command: `V1={{input.v1}} V2={{input.v2}} V3={{input.v3}} CANDIDATES={{input.candidates}} CONFIRM_THRESHOLD={{vars.confirm_threshold}} FP_APPEND_POLICY={{vars.fp_append_policy}} python3 -c "
+  command: `V1={{input.v1}} V2={{input.v2}} V3={{input.v3}} CANDIDATES={{input.candidates}} CONFIRM_THRESHOLD={{vars.confirm_threshold}} FP_APPEND_POLICY={{vars.fp_append_policy}} python3 -I -c "
 import os, sys, json
 def _load(name):
     raw = os.environ.get(name, '') or ''
@@ -5024,7 +5024,7 @@ print(json.dumps({
 ## known_false_positives: list when present; creates the file/section
 ## when absent. Idempotent on empty fp_appends[] (returns count=0).
 tool fp_append:
-  command: `FP_PATH={{input.fp_path}} FP_APPENDS={{input.fp_appends}} python3 -c "
+  command: `FP_PATH={{input.fp_path}} FP_APPENDS={{input.fp_appends}} python3 -I -c "
 import os, sys, json, datetime, re
 fp_path = os.environ.get('FP_PATH', '')
 try:
@@ -5116,7 +5116,7 @@ print(json.dumps({
 ## the revalidate phase on unchanged files. See skills/file-records.md
 ## for the schema.
 tool update_file_records:
-  command: `RECORDS_DIR={{input.records_dir}} WS={{input.workspace_dir}} SCANNER_V={{input.scanner_version}} HASHES={{input.file_hashes}} CANDIDATES={{input.candidates}} VERDICTS={{input.verdicts}} ISSUES={{input.issues_created}} python3 -c "
+  command: `RECORDS_DIR={{input.records_dir}} WS={{input.workspace_dir}} SCANNER_V={{input.scanner_version}} HASHES={{input.file_hashes}} CANDIDATES={{input.candidates}} VERDICTS={{input.verdicts}} ISSUES={{input.issues_created}} python3 -I -c "
 import os, sys, json, hashlib, datetime, collections
 records    = os.environ['RECORDS_DIR']
 scanner_v  = os.environ.get('SCANNER_V','')
@@ -5185,7 +5185,7 @@ print(json.dumps({'written_count': written, 'summary': 'Wrote %d FileRecords to 
 ## remediation_plan -> done shortcut for the zero-fixable-findings
 ## case.
 tool remediation_plan:
-  command: `CONFIRMED={{input.confirmed}} HARD_STOP={{vars.hard_stop_categories}} REMEDIATE={{vars.remediate}} python3 -c "
+  command: `CONFIRMED={{input.confirmed}} HARD_STOP={{vars.hard_stop_categories}} REMEDIATE={{vars.remediate}} python3 -I -c "
 import os, json
 try:
     confirmed = json.loads(os.environ.get('CONFIRMED','[]') or '[]')
@@ -5240,7 +5240,7 @@ print(json.dumps({
 ## input.branch — empty branch means we degrade to propose-style revert
 ## even in apply mode (defence-in-depth — no committed state lost).
 tool prepare_branch:
-  command: `WS={{vars.workspace_dir}} RUN_ID={{run.id}} python3 -c "
+  command: `WS={{vars.workspace_dir}} RUN_ID={{run.id}} python3 -I -c "
 import os, sys, json, subprocess, re, time
 ws = os.environ.get('WS','')
 run_id = (os.environ.get('RUN_ID','') or '').strip()
@@ -5346,7 +5346,7 @@ print(json.dumps(result))
 ## `attempted` — a JSON array of strings; on first pass the loop
 ## seeds it as "[]".
 tool select_finding:
-  command: `TO_FIX={{input.to_fix}} ATTEMPTED={{input.attempted}} MAXFIX={{input.max}} python3 -c "
+  command: `TO_FIX={{input.to_fix}} ATTEMPTED={{input.attempted}} MAXFIX={{input.max}} python3 -I -c "
 import os, json
 def fid(f):
     if not isinstance(f, dict):
@@ -5376,7 +5376,7 @@ except Exception:
     # which json rejects. Without this fallback seen is empty every loop and
     # select_finding re-picks the same finding forever (infinite remediation
     # loop until the iteration budget caps). chr(34)/chr(39) avoid bare
-    # quote chars that would close the python3 -c double-quote.
+    # quote chars that would close the python3 -I -c double-quote.
     _s = _raw_att.strip().strip('[]')
     attempted = [x.strip().strip(chr(34)).strip(chr(39)) for x in _s.replace(',', ' ').split() if x.strip()]
 try:
@@ -5412,7 +5412,7 @@ print(json.dumps({
 ## (vars.build_cmd_hint) overrides the auto-detected command — currently
 ## unused (no var declared) but harmless future-proofing.
 tool build_rung:
-  command: `WS={{vars.workspace_dir}} LANGS={{input.langs}} python3 -c "
+  command: `WS={{vars.workspace_dir}} LANGS={{input.langs}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ['WS']
 try:
@@ -5470,7 +5470,7 @@ except Exception as e:
 ## — treated as "no signal" → uncertain (NOT verified) downstream in
 ## aggregate_verdict.
 tool reproduce_rung:
-  command: `WS={{vars.workspace_dir}} FINDING={{input.finding}} SKILLS={{vars.bundle_skills_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} FINDING={{input.finding}} SKILLS={{vars.bundle_skills_dir}} python3 -I -c "
 import os, sys, json, subprocess, re
 try:
     finding = json.loads(os.environ.get('FINDING','{}') or '{}')
@@ -5534,7 +5534,7 @@ print(json.dumps({
 ## go → go test ./...; js/ts → npm/pnpm test script else trivially
 ## pass. Always exits 0 (envelope carries passed=false on failure).
 tool regress_rung:
-  command: `WS={{vars.workspace_dir}} LANGS={{input.langs}} python3 -c "
+  command: `WS={{vars.workspace_dir}} LANGS={{input.langs}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ['WS']
 try:
@@ -5607,7 +5607,7 @@ except Exception as e:
 ## back to the propose-mode revert path. We never commit when the
 ## branch context is missing.
 tool record_finding:
-  command: `mkdir -p {{vars.patch_dir}} && WS={{vars.workspace_dir}} PATCH_DIR={{vars.patch_dir}} VERDICT={{input.verdict}} AUTHOR={{input.author}} IS_APPLY={{input.is_apply}} BRANCH={{input.branch}} python3 -c "
+  command: `mkdir -p {{vars.patch_dir}} && WS={{vars.workspace_dir}} PATCH_DIR={{vars.patch_dir}} VERDICT={{input.verdict}} AUTHOR={{input.author}} IS_APPLY={{input.is_apply}} BRANCH={{input.branch}} python3 -I -c "
 import os, sys, json, subprocess, re
 ws = os.environ['WS']
 patch_dir = os.environ['PATCH_DIR']
@@ -5730,7 +5730,7 @@ print(json.dumps({'artifact_path': artifact_path, 'reverted': reverted, 'committ
 ## driven so a missing artifact (e.g. the loop budget was hit) shows
 ## as zero instead of a crash.
 tool fix_summary:
-  command: `WS={{vars.workspace_dir}} PATCH_DIR={{vars.patch_dir}} BRANCH={{input.branch}} ORIGINAL={{input.original_branch}} HARD_STOPPED={{input.hard_stopped}} python3 -c "
+  command: `WS={{vars.workspace_dir}} PATCH_DIR={{vars.patch_dir}} BRANCH={{input.branch}} ORIGINAL={{input.original_branch}} HARD_STOPPED={{input.hard_stopped}} python3 -I -c "
 import os, sys, json, glob
 ws = os.environ['WS']
 patch_dir = os.environ['PATCH_DIR']
@@ -5803,7 +5803,7 @@ print(json.dumps({
 ## Zero-verified-commits = clean no-op (just checkout the original).
 ## Any stash captured by prepare_branch is restored AFTER the merge.
 tool merge_fixes:
-  command: `WS={{input.workspace_dir}} BRANCH={{input.branch}} ORIGINAL={{input.original_branch}} STASHED={{input.stashed}} STASH_REF={{input.stash_ref}} python3 -c "
+  command: `WS={{input.workspace_dir}} BRANCH={{input.branch}} ORIGINAL={{input.original_branch}} STASHED={{input.stashed}} STASH_REF={{input.stash_ref}} python3 -I -c "
 import os, sys, json, subprocess
 ws = os.environ['WS']
 branch = (os.environ.get('BRANCH','') or '').strip()
@@ -5861,7 +5861,7 @@ out(result)
 ## a subset, inspect a specific commit, or re-run with apply_auto on
 ## CI later). Restore any stash captured by prepare_branch.
 tool abandon_fixes:
-  command: `WS={{input.workspace_dir}} BRANCH={{input.branch}} ORIGINAL={{input.original_branch}} STASHED={{input.stashed}} STASH_REF={{input.stash_ref}} python3 -c "
+  command: `WS={{input.workspace_dir}} BRANCH={{input.branch}} ORIGINAL={{input.original_branch}} STASHED={{input.stashed}} STASH_REF={{input.stash_ref}} python3 -I -c "
 import os, sys, json, subprocess
 ws = os.environ['WS']
 branch = (os.environ.get('BRANCH','') or '').strip()

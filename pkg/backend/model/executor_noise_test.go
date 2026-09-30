@@ -34,7 +34,7 @@ func TestToolNodeCommandsCarryTheTreeNoiseEnvWithoutAnyProvisioning(t *testing.T
 		t.Fatalf("shell command ITERION_TREE_NOISE = %q, want %q", got, treenoise.EnvValue())
 	}
 
-	sc := e.toolNodeScriptCommand(context.Background(), "python3", "scope_check.py")
+	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
 	got = envValue(sc.Env, "ITERION_TREE_NOISE")
 	if got != treenoise.EnvValue() {
 		t.Fatalf("script command ITERION_TREE_NOISE = %q, want %q", got, treenoise.EnvValue())
@@ -210,7 +210,7 @@ func TestToolNodeCommandsStepAsideForARunOrNodeValue(t *testing.T) {
 		t.Fatalf("shell command with a node-env value = %q, want the node's value last", entries)
 	}
 
-	sc := e.toolNodeScriptCommand(context.Background(), "python3", "scope_check.py")
+	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
 	entries = envEntries(sc.Env, "ITERION_TREE_NOISE")
 	if len(entries) != 1 || entries[0] != "':(exclude,top)vendor'" {
 		t.Fatalf("script command ITERION_TREE_NOISE entries = %q, want exactly the run's value", entries)

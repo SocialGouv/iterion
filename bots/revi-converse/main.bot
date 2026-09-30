@@ -265,7 +265,7 @@ agent converse_agent:
 ## run still succeeds — this informs (degraded=true) rather than
 ## hard-failing. Forge-agnostic: pure invariant assertion.
 tool converse_health:
-  command: `POSTED={{input.posted}} REPLY_URL={{input.reply_url}} SKIPPED={{input.skipped_reason}} python3 -c "
+  command: `POSTED={{input.posted}} REPLY_URL={{input.reply_url}} SKIPPED={{input.skipped_reason}} python3 -I -c "
 import os, json, sys
 posted = os.environ.get('POSTED', 'false') == 'true'
 reply = os.environ.get('REPLY_URL', '')
