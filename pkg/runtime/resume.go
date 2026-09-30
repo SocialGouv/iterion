@@ -157,12 +157,15 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 			return fmt.Errorf("runtime: resume run %q: %w", runID, linkErr)
 		}
 	}
-	// A child that executed in its parent's copy-based sandbox is resumed
-	// through the parent, never on its own: refused before the claim, so
-	// the run keeps the resumable status the parent's resume relies on.
+	// A run whose scratch did not travel — its last teardown could not bank
+	// it, or the run moved past its bank — is refused before the claim, so
+	// it keeps its resumable status (ADR-106).
 	if rerr := e.refuseResumeLosingScratch(ctx, r); rerr != nil {
 		return rerr
 	}
+	// A child that executed in its parent's copy-based sandbox is resumed
+	// through the parent, never on its own: refused before the claim, so
+	// the run keeps the resumable status the parent's resume relies on.
 	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
 		return rerr
 	}

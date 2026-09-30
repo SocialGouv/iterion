@@ -47,29 +47,35 @@ pods the same way.
   in the cloud, `runs/<id>/scratch-bank.tgz` on the filesystem, swept with
   the run). An empty scratch drops a previous bank; a finished run keeps
   none. The outcome is an event,
-  `sandbox_scratch_banked {banked, empty, bytes, reason}`. Both are written
-  under the run's identity and past its cancellation: a drain, a lost lease
-  or an operator's cancel reaches the teardown first.
-- **Cap.** 256 MiB compressed. Past it, or on a listing, tar or upload
-  failure, or in a store that keeps no bank, nothing is stored and the event
-  names why.
-- **Resume, before the claim.** A run whose last teardown recorded a
-  non-empty scratch it could not bank is refused `SCRATCH_NOT_PORTABLE` (a
-  deterministic failure code). So is a run that moved past its bank: a node
-  finished in a sandbox started after the last `sandbox_scratch_banked`,
-  which only a sandbox lost without a teardown leaves behind — restored, the
-  bank would revert what that node wrote. A node a resume finishes before
-  its sandbox starts (the answered human node) does not count. `--force` resumes either as it stands, and says so. A
-  timeline that cannot be read refuses the resume too: it never reads as
-  "nothing recorded".
+  `sandbox_scratch_banked {banked, empty, unknown, bytes, reason}`. Both are
+  written under the run's identity and past its cancellation (a drain, a lost
+  lease or an operator's cancel reaches the teardown first), and the record
+  is retried. A scratch the teardown cannot even list — the sandbox is
+  already gone — is `unknown`: nobody knows whether it held anything.
+- **Cap.** 256 MiB compressed. Past it, or on a tar or upload failure, or in
+  a store that keeps no bank, nothing is stored and the event names why.
+- **Resume, before anything moves the run.** A run whose last teardown
+  recorded a non-empty scratch it could not bank is refused
+  `SCRATCH_NOT_PORTABLE` (a deterministic failure code). So is a run that
+  moved past its bank: an agent, tool or subbot node finished after the last
+  `sandbox_scratch_banked`, which only a sandbox lost without a teardown
+  leaves behind — restored, the bank would revert what that node wrote. The
+  engine-side kinds (the human node a resume records as answered, a router,
+  a compute) never wrote there. The resume surface refuses before a cloud
+  resume is flipped to `queued`, the engine again before its claim;
+  `--force` resumes as it stands, and says so. An `unknown` record is not
+  refused. A timeline that cannot be read refuses the resume: it never reads
+  as "nothing recorded".
 - **Resume, after the new sandbox starts** (the pause family and the failure
   path alike). The bank is extracted before the first node
-  (`sandbox_scratch_restored {restored, bytes, stale, forced, reason}`). Every
-  failure holds the bank: the failed sandbox's teardown banks nothing over it.
-  A bank that is gone or does not extract parks the run
+  (`sandbox_scratch_restored {restored, bytes, stale, forced, reason}`),
+  read onto the host and checked to extract first: a failure in the sandbox
+  can then only be a transport's. Every failure holds the bank: the failed
+  sandbox's teardown banks nothing over it. A bank that is gone or does not
+  extract, or a resume that runs without a sandbox, parks the run
   `SCRATCH_NOT_PORTABLE`, and `--force` goes on without it. A read that fails
-  on the way — the timeline, the store, the stream — parks it without a
-  code: the runner redelivers, and `--force` does not skip it.
+  on the way — the timeline, the store, the stream into the sandbox — parks
+  it without a code: the runner redelivers, and `--force` does not skip it.
 
 ## Consequences
 
@@ -87,3 +93,7 @@ pods the same way.
 - **Scratch as cross-run memory** (a ledger kept between runs of one bot) is
   still not portable on kubernetes. This decision banks one run's scratch
   for that run.
+- **Not covered: what a sandbox lost without a teardown wrote after an empty
+  or unknown record.** The resume goes on without it, as before banking
+  existed. Refusing would stop every hard-killed run, most of which never
+  write the scratch.

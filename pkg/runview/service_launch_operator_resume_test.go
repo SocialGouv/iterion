@@ -2,6 +2,8 @@ package runview
 
 import (
 	"context"
+	"errors"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,5 +159,56 @@ workflow operator_resume:
 	}
 	if publisher.resumeCalls != 1 {
 		t.Fatalf("SubmitResume calls after forced resume = %d, want 1", publisher.resumeCalls)
+	}
+}
+
+// TestResume_RefusesAScratchThatDidNotTravelBeforePublishing: a run whose
+// last teardown left a scratch it could not bank is refused by the resume
+// surface itself — synchronously, before the publisher flips it to queued,
+// where the engine's own refusal would leave it until the orphan sweeper.
+// --force publishes.
+func TestResume_RefusesAScratchThatDidNotTravelBeforePublishing(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "operator_resume.bot")
+	const source = `
+workflow operator_resume:
+  entry: done
+`
+	if err := os.WriteFile(botPath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	publisher := &operatorResumePublisher{}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithLaunchPublisher(publisher))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	const runID = "run-operator-scratch"
+	_, workflowHash, err := CompileWorkflowWithHash(botPath)
+	if err != nil {
+		t.Fatalf("CompileWorkflowWithHash: %v", err)
+	}
+	seedPausedOperatorRun(t, svc, runID, workflowHash)
+	if _, err := svc.store.AppendEvent(context.Background(), runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
+		"banked": false, "empty": false, "reason": "the scratch compresses past the 256 MiB cap",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath})
+	var rt *runtime.RuntimeError
+	if !errors.As(err, &rt) || rt.Code != runtime.ErrCodeScratchNotPortable {
+		t.Fatalf("Resume of a run whose scratch did not travel = %v, want SCRATCH_NOT_PORTABLE", err)
+	}
+	if publisher.resumeCalls != 0 {
+		t.Fatalf("SubmitResume calls after the refusal = %d, want 0", publisher.resumeCalls)
+	}
+	if r, _ := svc.store.LoadRun(context.Background(), runID); r.Status != store.RunStatusPausedOperator {
+		t.Fatalf("status after the refusal = %q, want paused_operator", r.Status)
+	}
+	if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath, Force: true}); err != nil {
+		t.Fatalf("forced Resume: %v", err)
+	}
+	if publisher.resumeCalls != 1 {
+		t.Fatalf("SubmitResume calls after the forced resume = %d, want 1", publisher.resumeCalls)
 	}
 }

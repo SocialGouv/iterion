@@ -513,8 +513,10 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 		}
 		legacy = true
 	}
-	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
-	return err
+	if _, err := runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy); err != nil {
+		return err
+	}
+	return runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force)
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -648,6 +650,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// under, exactly as --force would: nothing else changed.
 	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
 	if err != nil {
+		return nil, err
+	}
+	// A scratch that did not travel is refused here, before anything moves
+	// the run — the engine repeats the check under its own boundary.
+	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.Force); err != nil {
 		return nil, err
 	}
 	if !inProcessResume {
