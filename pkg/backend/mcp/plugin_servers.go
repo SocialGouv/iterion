@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"fmt"
+
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
@@ -19,6 +21,22 @@ import (
 // its servers are OriginUnknown, so the launcher will not start them while a
 // sandbox is active. Without the distinction, a repository carrying `.env` and
 // a `default_enabled` manifest would classify its own code as the operator's.
+
+// PluginServersUnavailable returns the reason no plugin MCP server can be
+// contributed to a workflow, or nil when the registry loads.
+//
+// PrepareWorkflow reports this through its optional logger, which the run
+// path passes and the read-only analyses (`iterion validate`, the studio
+// compile) have none of. Those surfaces ask here instead and put the answer
+// where their user looks — a validation whose tool list is silently missing
+// every plugin MCP server reads as "no plugins are enabled".
+func PluginServersUnavailable() error {
+	if _, err := plugin.Load(); err != nil {
+		return fmt.Errorf("mcp: plugin registry failed to load — NO plugin MCP server is available: %w", err)
+	}
+	return nil
+}
+
 func loadPluginServers(workspace string, logger *iterlog.Logger) map[string]*ServerConfig {
 	reg, err := plugin.Load()
 	if err != nil {

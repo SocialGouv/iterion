@@ -184,12 +184,17 @@ type SessionDegradedInfo struct {
 	Err    error // the failure the dropped session is being blamed for
 }
 
-// MCPServerDegradedInfo describes an ambient MCP server dropped from a
-// node's tool set because it failed to boot, passed to the
-// OnMCPServerDegraded hook.
+// MCPServerDegradedInfo describes an MCP server dropped from a node's tool
+// set because it failed to boot, or because this launcher may not start it,
+// passed to the OnMCPServerDegraded hook.
 type MCPServerDegradedInfo struct {
 	Server string // MCP server name whose tools were dropped
-	Source string // where the server came from — "ambient" (repo .mcp.json / plugin catalog)
+	// Source says why the server was in this node's reach — "declared"
+	// (the node's own `mcp: servers:`) or "ambient" (inherited from the
+	// target repo's .mcp.json, the plugin catalog or the workflow). It is
+	// read from the node's declaration, not from the merged active set,
+	// which holds both and so cannot tell them apart.
+	Source string
 	// Origin is who controls the server's definition — "project", "workflow",
 	// "plugin", or empty when unknown. It is a FIELD rather than a phrase
 	// inside Err because that is the difference between a consumer being able
@@ -198,11 +203,18 @@ type MCPServerDegradedInfo struct {
 	Origin string
 	// Refused distinguishes the two reasons the tools are gone: the server
 	// could not boot (Refused false — go and look at the server), or this
-	// launcher may not start it for a sandboxed run (Refused true — nothing
-	// is broken). Reporting the second as the first sends the operator after
-	// a bug that is not there.
+	// launcher may not start it for a sandboxed run (Refused true — the
+	// placement was declined). Reporting the second as the first sends the
+	// operator after a bug that is not there.
 	Refused bool
-	Err     error // why the tools were dropped
+	// Cause is a health problem the server had ANYWAY, known before the
+	// placement question was asked — a malformed auth block, an emptied
+	// command. It is a separate field because the two facts are
+	// independent: a refused server can also be broken, and a consumer
+	// reading Refused alone as "nothing to fix here" would then be wrong.
+	// Nil for the common refusal of a perfectly healthy server.
+	Cause error
+	Err   error // why the tools were dropped
 }
 
 // EventHooks allows the executor to emit observability events back to the caller.
@@ -279,12 +291,14 @@ type EventHooks struct {
 	// record; the process log alone leaves a downstream gate blind.
 	OnSessionDegraded func(nodeID string, info SessionDegradedInfo)
 
-	// OnMCPServerDegraded fires when an AMBIENT MCP server (repo
-	// .mcp.json / plugin catalog — never named by the node) fails to
-	// boot and is dropped from the node's tool set. Purely observational
-	// — the node runs on without that server's tools — but it is the
-	// only thing that puts "this node ran without an inherited server"
-	// in the run record.
+	// OnMCPServerDegraded fires when one of a node's active MCP servers is
+	// dropped from its tool set — it failed to boot, or this launcher may
+	// not start it for a sandboxed run. Purely observational — the node
+	// runs on without that server's tools — but it is the only thing that
+	// puts "this node ran without a server it had" in the run record.
+	// `info.Source` says whether the node named the server or inherited
+	// it; a tool it names EXPLICITLY on a dead server still fails loud at
+	// resolution instead.
 	OnMCPServerDegraded func(nodeID string, info MCPServerDegradedInfo)
 
 	// OnNodeFinished fires after a node's executor returns successfully.

@@ -30,6 +30,9 @@ func executorSpecSitesMissing(t *testing.T, field string, exempt map[string]stri
 		}
 		if d.IsDir() {
 			switch d.Name() {
+			// testdata is skipped because the toolchain skips it: a .go
+			// file there is never compiled. Kept identical to
+			// mcp's manager-construction sweep, which walks the same tree.
 			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
 				return filepath.SkipDir
 			}

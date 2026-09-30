@@ -252,6 +252,27 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		return delegate.Result{}, fmt.Errorf("claw backend: node %q: a continued conversation runs in-process, never through the sandbox runner", task.NodeID)
 	}
 
+	// Outside the sandbox arm, deliberately. Resolution DROPS a refused
+	// server's tools whatever the run's sandbox is, so the refusal that
+	// compensates for the drop has to read the same fact: gated on
+	// `task.Sandbox != nil` instead, the two disagreed whenever the policy
+	// refused without a live sandbox — the manager's undecided state, which
+	// is where a subbot child's executor starts — and the node's declared
+	// MCP tool then vanished with no error, no event and no fallback.
+	//
+	// A populated map can only mean this launcher declined to start a server
+	// the node asked for, which is a reason to refuse the ROUTE whether or
+	// not a sandbox is why.
+	if len(task.MCPServersRefusedOnLauncher) > 0 {
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: "MCP " + refusedMCPServerSummary(task.MCPServersRefusedOnLauncher),
+			Remedy: refusedMCPRemedy(task.MCPServersRefusedOnLauncher) +
+				"; route the node to a backend that starts them inside the container (claude_code, pi), " +
+				"or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)",
+		}
+	}
+
 	if task.Sandbox != nil {
 		// The permission gate crosses the sandbox IPC boundary as a
 		// pre-task permission_policy envelope: the in-container
@@ -275,20 +296,6 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if task.PostAsyncQuestion != nil {
 			return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
 				NodeID: task.NodeID, Backend: delegate.BackendClaw, Capability: "interaction: async in a sandboxed run"}
-		}
-		// This node named an MCP server whose process the launcher may not
-		// start under the run's sandbox. claw connects its MCP servers in
-		// the launcher process, so this route cannot serve the node —
-		// refused by type, at execution, so a route that starts the server
-		// inside the container (claude_code, pi) is still tried.
-		if len(task.MCPServersRefusedOnLauncher) > 0 {
-			return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
-				NodeID: task.NodeID, Backend: delegate.BackendClaw,
-				Capability: "MCP " + refusedMCPServerSummary(task.MCPServersRefusedOnLauncher) + " in a sandboxed run",
-				Remedy: "claw connects MCP servers in the launcher process, which is outside this run's sandbox; " +
-					"route the node to a backend that starts them inside the container (claude_code, pi), " +
-					"or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)",
-			}
 		}
 		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
 		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
@@ -1618,6 +1625,21 @@ func refusedMCPServerSummary(refused map[string]string) string {
 // so the node's `fallbacks:` still get their turn; the build-time effects
 // (llm_prompt, board token) have fired, but no runner starts and no token is
 // spent.
+// refusedMCPRemedy opens the remedy with the launcher's OWN reason for
+// declining, in a stable order. Asserting "outside this run's sandbox"
+// instead was wrong wherever the policy refuses without one.
+func refusedMCPRemedy(refused map[string]string) string {
+	names := make([]string, 0, len(refused))
+	for name := range refused {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "this launcher declined to start the MCP servers this node asked for"
+	}
+	return "claw connects MCP servers in the launcher process, and " + refused[names[0]]
+}
+
 func refuseToolsWithNoSandboxPlacement(task delegate.Task) error {
 	for _, td := range task.ToolDefs {
 		if placement, reason := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused {

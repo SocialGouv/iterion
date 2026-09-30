@@ -32,7 +32,6 @@ func TestTheServerNamingMCPToolsHonourTheNodesScope(t *testing.T) {
 	}{
 		{"a server the node declared", []string{"allowed", "other"}, "allowed", true},
 		{"a server another node declared", []string{"allowed"}, "other", false},
-		{"no MCP scope at all denies every server", nil, "allowed", false},
 		{"the implicit default server", []string{"allowed"}, "", false},
 	} {
 		for _, toolName := range []string{"list_mcp_resources", "read_mcp_resource", "mcp_auth"} {
@@ -203,5 +202,72 @@ func TestASubagentGetsNoNodeScopedMCPTool(t *testing.T) {
 		if got[withheld] {
 			t.Errorf("%q reaches an MCP server, and this runner has no node to scope it by", withheld)
 		}
+	}
+}
+
+// The list of server-naming tools must be the registrar's, not a copy.
+//
+// The failure it guards is quiet: a claw bump adds a fourth such builtin, the
+// placement table's own exhaustiveness guard reddens, the author adds a
+// `PlacementLauncher` entry by analogy with the other three — and the node's
+// MCP scope silently does not apply to it, because this map never heard of it.
+func TestTheServerNamingListIsTheRegistrarsOwn(t *testing.T) {
+	registered := tool.MCPServerNamingTools()
+	if len(registered) == 0 {
+		t.Fatal("the registrar names no server-naming tool — this guard has nothing to compare")
+	}
+	if len(mcpServerNamingTools) != len(registered) {
+		t.Fatalf("the scope check knows %d tools, the registrar creates %d", len(mcpServerNamingTools), len(registered))
+	}
+	for _, name := range registered {
+		if !mcpServerNamingTools[name] {
+			t.Errorf("%q takes a server name from the model and is not scoped by the node", name)
+		}
+	}
+}
+
+// An LLM node with NO active MCP server does not get these three at all.
+// The wrapper would refuse every call the model could make — there is no
+// server name that would pass — and a tool whose every invocation is refused
+// costs the node turns and reads, to a model, like a transient error worth
+// retrying. buildSubagentTools already takes that position for a child
+// conversation with no node; this is the same answer for a node with no
+// servers.
+func TestTheServerNamingToolsAreWithheldFromANodeWithNoMCPServers(t *testing.T) {
+	for _, toolName := range []string{"list_mcp_resources", "read_mcp_resource", "mcp_auth"} {
+		t.Run(toolName, func(t *testing.T) {
+			var reached string
+			e := scopingExecutor(t, toolName, func(input json.RawMessage) { reached = string(input) })
+
+			node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}}
+			defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{toolName})
+			if err != nil {
+				t.Fatalf("withholding a tool must not fail the node: %v", err)
+			}
+			for _, d := range defs {
+				if d.Name == toolName {
+					t.Fatalf("%s was advertised to a node that can name no server: every call it makes is refused", toolName)
+				}
+			}
+			if reached != "" {
+				t.Errorf("nothing may reach the provider — it connects the server: %q", reached)
+			}
+		})
+	}
+}
+
+// A TOOL node keeps them: it has no `mcp:` block to be scoped by, so an
+// empty active set means "unrestricted" there rather than "nothing". Reading
+// the two the same way is precisely the conflation scopeMCPServerNamingTool
+// exists to avoid, and withholding must not reintroduce it.
+func TestAToolNodeKeepsTheServerNamingTools(t *testing.T) {
+	e := scopingExecutor(t, "list_mcp_resources", func(json.RawMessage) {})
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "t"}}
+	defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{"list_mcp_resources"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "list_mcp_resources" {
+		t.Fatalf("a tool node has no MCP scope to be held to; it keeps the tool: %+v", defs)
 	}
 }

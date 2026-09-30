@@ -524,6 +524,17 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 		}
 	}
 
+	// Registration is idempotent: whatever this server left in the registry
+	// from an earlier discovery goes first. The registry refuses a name
+	// collision, and this function only runs when `discovered` is false —
+	// so anything still registered under this server's name is a leftover,
+	// not a live tool. Without this, a server discovered, then dropped when
+	// the start policy tightened (which clears `discovered` but cannot reach
+	// the registry), could never be discovered again: the re-registration
+	// failed on its own previous entries, with an error that says the server
+	// "cannot boot" and kills the node before its fallbacks.
+	registry.UnregisterServer(server)
+
 	workDir := state.cfg.WorkDir
 	for _, info := range toolsList {
 		serverName := server
@@ -687,7 +698,7 @@ func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
 	}
 
 	cfg := state.cfg
-	state.client = newSDKClient(cfg, info, func() error { return m.checkStart(cfg) })
+	state.client = newSDKClient(cfg, info, func() error { return m.checkStart(cfg) }, m.logger)
 	return state.client, nil
 }
 

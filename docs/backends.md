@@ -1083,18 +1083,27 @@ subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
 restores host-config inheritance. Settings remain inherited independently
 (`--setting-sources`, above).
 
-**Ambient servers degrade per-server, on every backend.** A server a node
-never named — inherited from the target repo's `.mcp.json` or the plugin
-catalog — that fails to boot costs its OWN tools, never the run:
-claude_code's CLI skips a server it cannot start, pi bounds each connect
-with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process splice
-skips it with a Warn log plus a `mcp_server_degraded` run event (server,
-source, error), so the drop is in the run record, not just the process
-log. Typical case: a repo-scoped server needing a credential the
-execution host doesn't have (a token-less Sentry server on a cloud
-runner pod). A tool the node names EXPLICITLY on a dead server still
-fails loud at resolution — a declared dependency is never silently
-dropped.
+**Unnamed servers degrade per-server, on every backend.** A server whose
+tools the node does not name that fails to boot costs its OWN tools, never
+the run: claude_code's CLI skips a server it cannot start, pi bounds each
+connect with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process
+splice skips it with a Warn log plus a `mcp_server_degraded` run event, so
+the drop is in the run record, not just the process log. Typical case: a
+repo-scoped server needing a credential the execution host doesn't have (a
+token-less Sentry server on a cloud runner pod). A tool the node names
+EXPLICITLY on a dead server still fails loud at resolution — a declared
+dependency is never silently dropped, and no degrade event is emitted for
+it either, since the node is not about to run without those tools.
+
+The event's `source` says why the server was in that node's reach:
+`declared` when the node's own `mcp: servers:` named it, `ambient` when it
+was inherited from the repo's `.mcp.json`, the plugin catalog or the
+workflow. It is read from the node's declaration, because
+`ActiveMCPServers` — the resolved set the splice walks — holds both merged
+and cannot tell them apart. `origin` (project / workflow / plugin) is the
+other question: who controls the *definition*. A bot that declares a
+server whose tools it never names sees `source: declared` with the
+`origin` of wherever that server is defined.
 
 **Stdio MCP startup diagnostics.** The in-process MCP client drains stderr
 through the official SDK's command hook and retains only an 8 KiB tail during

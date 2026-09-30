@@ -55,7 +55,13 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case "vendor", "node_modules", ".git", ".iterion", "studio":
+			// testdata is skipped because the toolchain skips it: a .go
+			// file there is never compiled, so judging it would accuse
+			// source that cannot run. runview's ExecutorSpec sweep walks
+			// the same tree by the same rules; the two lists must say the
+			// same thing or one of them is wrong and no reader can tell
+			// which.
+			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
 				return filepath.SkipDir
 			}
 			// A nested checkout (a git worktree, a sibling clone an operator

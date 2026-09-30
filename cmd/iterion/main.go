@@ -260,6 +260,15 @@ func applyDotEnv(path string) bool {
 				val = val[1 : len(val)-1]
 			}
 		}
+		// The provenance record is not a value a repository gets to write.
+		// Without this, one `.env` line naming ITERION_DOTENV_PLANTED seeded
+		// the whole planted set from the file itself — marking the
+		// OPERATOR's own variables as planted, and stripping every plugin
+		// they installed of its authority. A marker can then only ever be
+		// what an ancestor process exported.
+		if key == envtrust.EnvPlantedNames {
+			continue
+		}
 		if _, exists := os.LookupEnv(key); !exists {
 			_ = os.Setenv(key, val)
 			// A `.env` sits in a repository — including one under review — so

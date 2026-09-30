@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -253,10 +255,17 @@ func runSlowStdioHelper() {
 			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: "ok"}}}, nil, nil
 		})
 	if err := server.Run(context.Background(), &gomcp.StdioTransport{}); err != nil {
-		os.Exit(1)
+		// Not 1: this process IS a test binary re-executed as a helper, and
+		// 1 is what `go test` exits with on a failing test. A CI log showing
+		// 1 here says nothing about which of the two happened.
+		os.Exit(slowHelperServeFailure)
 	}
 	os.Exit(0)
 }
+
+// slowHelperServeFailure is the helper's own exit code, distinct from the
+// test binary's.
+const slowHelperServeFailure = 97
 
 // A start is slow — a process spawn, a dial, a handshake — and the run's
 // sandbox settles while it is in flight. Checking the policy only on the way
@@ -300,8 +309,9 @@ func TestTighteningWhileAStartIsInFlightLeavesNoProcessBehind(t *testing.T) {
 	if !ServerNotStartable(err) {
 		t.Fatalf("the call must be refused once the policy tightened, got %v", err)
 	}
-	if alive := processAliveWithin(pid, 5*time.Second); alive {
-		t.Errorf("pid %d (origin %s) is still running beside the launcher after the refusal", pid, cfg.Origin)
+	if alive, why := processAliveWithin(pid, 5*time.Second); alive {
+		t.Errorf("pid %d (origin %s) is still running beside the launcher after the refusal: %s",
+			pid, cfg.Origin, why)
 	}
 
 	state, stateErr := m.state("slow")
@@ -333,15 +343,30 @@ func waitForPID(t *testing.T, path string) int {
 }
 
 // processAliveWithin polls for the process to disappear, so a slow exit does
-// not read as a leak.
-func processAliveWithin(pid int, within time.Duration) bool {
+// not read as a leak. It reports whether the process is still there and, when
+// it is, why we know.
+//
+// Only ESRCH is "gone". EPERM says the opposite — the process EXISTS and this
+// uid may not signal it — and reading it as gone is how the leak this test
+// guards would report as absent: a process running beside the launcher,
+// reachable by nobody, is exactly the state that answers EPERM once its pid
+// belongs to someone else. Any other errno is unexpected and says so rather
+// than being folded into either answer.
+func processAliveWithin(pid int, within time.Duration) (alive bool, why string) {
 	deadline := time.Now().Add(within)
 	for {
-		if err := syscall.Kill(pid, 0); err != nil {
-			return false // gone (ESRCH) or not ours (EPERM — reparented, then reaped)
-		}
-		if time.Now().After(deadline) {
-			return true
+		err := syscall.Kill(pid, 0)
+		switch {
+		case err == nil:
+			if time.Now().After(deadline) {
+				return true, "signalable"
+			}
+		case errors.Is(err, syscall.ESRCH):
+			return false, ""
+		case errors.Is(err, syscall.EPERM):
+			return true, "alive but owned by another uid (EPERM) — the pid was recycled, or the child outlived us"
+		default:
+			return true, "kill(pid, 0): " + err.Error()
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -423,8 +448,19 @@ func TestTheProviderDoesNotVouchForAServerItMayNotStart(t *testing.T) {
 	if strings.Contains(status.ServerInfo, cfg.Command) {
 		t.Error("the refusal must not disclose the resolved command")
 	}
-	if _, got := p.GetResourceClient("repo"); got {
-		t.Error("no client for a server that may not start — the refusal belongs before the dial")
+	// A client IS handed back: `ok=false` is claw's "server not found", which
+	// is the one answer that is false — and the one that invites the model to
+	// retry name variants. The refusal has to come from the operation, with
+	// its own reason, and before any dial.
+	client, got := p.GetResourceClient("repo")
+	if !got {
+		t.Fatal("the server exists; answering \"not found\" sends the model looking for a name")
+	}
+	if _, err := client.ListResources(context.Background()); !ServerNotStartable(err) {
+		t.Errorf("the operation must carry the typed refusal, got %v", err)
+	}
+	if _, err := client.ReadResource(context.Background(), "file:///x"); !ServerNotStartable(err) {
+		t.Errorf("read must carry the typed refusal too, got %v", err)
 	}
 
 	// The same provider still serves what the operator installed.
@@ -436,5 +472,106 @@ func TestTheProviderDoesNotVouchForAServerItMayNotStart(t *testing.T) {
 	}
 	if _, ok := p2.GetResourceClient("firecrawl"); !ok {
 		t.Error("an operator server must still yield a client")
+	}
+}
+
+// A refusal is the answer the policy gave at one moment, not a property of
+// the server — and the policy changes: the engine RELAXES it when a run
+// settles without a sandbox, which is the whole point of settling.
+//
+// Both halves of the relaxation are asserted, because round 1 broke both
+// while fixing the tightening: a refusal cached as a permanent start failure
+// (so the client refused forever from a policy that no longer existed), and
+// tools left in the registry by a tightening that cleared `discovered` (so
+// re-discovery died on its own leftovers, with an error saying the server
+// "cannot boot" — which kills the node before its fallbacks).
+func TestARefusedServerWorksAgainOnceThePolicyRelaxes(t *testing.T) {
+	if slowHelperMode() {
+		runSlowStdioHelper()
+		return
+	}
+	cfg := &ServerConfig{
+		Name: "swings", Origin: OriginProject, Transport: TransportStdio,
+		Command: os.Args[0],
+		Args: []string{"-test.run=TestARefusedServerWorksAgainOnceThePolicyRelaxes",
+			"--", "mcp-slow-helper"},
+	}
+	registry := tool.NewRegistry()
+	m := NewManager(map[string]*ServerConfig{"swings": cfg}, WithStartPolicy(StartAllServers))
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Discovered and registered while the launcher was allowed to start it.
+	if err := m.EnsureServers(context.Background(), registry, []string{"swings"}); err != nil {
+		t.Fatalf("premise: the server discovers under StartAllServers: %v", err)
+	}
+	if len(registry.ListByServer("swings")) == 0 {
+		t.Fatal("premise: discovery registered its tools")
+	}
+
+	// The run turns out to be sandboxed.
+	m.SetStartPolicy(StartOperatorServersOnly)
+	if err := m.EnsureServers(context.Background(), registry, []string{"swings"}); !ServerNotStartable(err) {
+		t.Fatalf("while sandboxed the server must be refused, got %v", err)
+	}
+
+	// …and then the sandbox turns out not to have started (an `auto` run on a
+	// host with no container runtime): the engine says so, and the server is
+	// startable again.
+	m.SetStartPolicy(StartAllServers)
+	if err := m.EnsureServers(context.Background(), registry, []string{"swings"}); err != nil {
+		t.Fatalf("after the policy relaxed the server must work again: %v", err)
+	}
+	if len(registry.ListByServer("swings")) == 0 {
+		t.Error("its tools must be back in the registry")
+	}
+}
+
+// The far-side gate writes its refusal into the client's cached startErr, and
+// the next attempt reads that cache through a rule meant for PERMANENT
+// failures ("don't retry"). A refusal is not permanent: it is what the policy
+// said at one instant, and the engine relaxes the policy when a run settles
+// without a sandbox.
+//
+// The client that keeps the poison is the one a registered tool closure
+// captured — the manager drops its own reference when it tightens. So the
+// symptom is a tool that is advertised, has a live server behind it, and
+// refuses for the rest of the run from a policy that no longer exists.
+//
+// Deterministic by construction: the gate here answers from a variable this
+// test sets, refusing on the FAR side of one start (the entry check passes,
+// the post-start check does not) and allowing afterwards.
+func TestAFarSideRefusalIsNotCachedAsAPermanentFailure(t *testing.T) {
+	mcpServer := gomcp.NewServer(&gomcp.Implementation{Name: "far-side", Version: "v0.0.1"}, nil)
+	gomcp.AddTool(mcpServer, &gomcp.Tool{
+		Name: "noop", Description: "No-op", InputSchema: map[string]any{"type": "object"},
+	}, func(ctx context.Context, req *gomcp.CallToolRequest, input any) (*gomcp.CallToolResult, any, error) {
+		return &gomcp.CallToolResult{}, nil, nil
+	})
+	handler := gomcp.NewStreamableHTTPHandler(
+		func(r *http.Request) *gomcp.Server { return mcpServer },
+		&gomcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	peer := httptest.NewServer(handler)
+	defer peer.Close()
+
+	cfg := &ServerConfig{Name: "far", Origin: OriginProject, Transport: TransportHTTP, URL: peer.URL}
+	// calls: 1 = the entry check of the first start (allow, so the start
+	// runs), 2 = the post-start check (refuse — the policy tightened while
+	// the peer was handshaking), 3+ = the policy relaxed again.
+	calls := 0
+	gate := func() error {
+		calls++
+		if calls == 2 {
+			return &ServerNotStartableError{Server: "far", Origin: OriginProject, Policy: StartOperatorServersOnly}
+		}
+		return nil
+	}
+	client := newSDKClient(cfg, clientInfo{Name: "test", Version: "1"}, gate, nil)
+
+	if _, err := client.ListTools(context.Background()); !ServerNotStartable(err) {
+		t.Fatalf("premise: the far-side gate refuses this start, got %v", err)
+	}
+	// Same client — the one a registered tool closure would still be holding.
+	if _, err := client.ListTools(context.Background()); err != nil {
+		t.Fatalf("after the policy relaxed this client must work again, got %v", err)
 	}
 }

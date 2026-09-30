@@ -1240,11 +1240,10 @@ func (h *storeHooks) onSessionDegraded(nodeID string, info SessionDegradedInfo) 
 }
 
 // onMCPServerDegraded implements the OnMCPServerDegraded hook: it turns a
-// dropped ambient MCP server into a first-class store event.
+// dropped MCP server into a first-class store event.
 //
-// Warn-level: the node is about to run, but without the tools of a
-// server the environment (repo .mcp.json / plugin catalog) put in its
-// reach — the only other trace is a process log line.
+// Warn-level: the node is about to run, but without the tools of one of
+// its active servers — the only other trace is a process log line.
 func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedInfo) {
 	data := map[string]any{
 		"server": info.Server,
@@ -1259,6 +1258,12 @@ func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedIn
 	}
 	if info.Refused {
 		data["refused"] = true
+	}
+	// A refused server that was ALSO broken: `refused` alone would read as
+	// "nothing to fix here", and the health problem only exists in the
+	// error text.
+	if info.Cause != nil {
+		data["cause"] = info.Cause.Error()
 	}
 	if info.Err != nil {
 		data["error"] = info.Err.Error()

@@ -59,11 +59,14 @@ vars:
 ## A `mcp_server` block is WORKFLOW-controlled, and the claw backend
 ## connects its MCP servers in the launcher process. Under an active
 ## sandbox — which is the default on the cloud and with
-## `--sandbox auto` — the launcher will not start this server, and the
-## nodes below that declare `mcp: servers: [playwright]` are refused
-## when they execute (their `fallbacks:` still get their turn). Run
-## this fixture with `--sandbox none`, or route those nodes to
-## `claude_code`, which starts the server inside the container.
+## `--sandbox auto` — the launcher will not start this server, and this
+## fixture declares no `fallbacks:`, so: `browse`, which NAMES
+## `mcp.playwright.*` tools, is refused when it executes and the run
+## fails there; the other nodes, which inherit the server from the
+## workflow block without naming its tools, run without them and emit
+## an `mcp_server_degraded` event. Run this fixture with
+## `--sandbox none`, or route `browse` to `claude_code`, which starts
+## the server inside the container.
 ## See docs/sandbox.md § MCP servers under a sandbox.
 mcp_server playwright:
   transport: stdio

@@ -428,6 +428,18 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	annotateEdits(result, u, cr.Diagnostics, documentNameOf(doc))
 
 	if cr.Workflow != nil {
+		// A registry that cannot load takes every plugin MCP server off
+		// every node, which is not an invalid workflow — so it warns rather
+		// than failing — but it does mean the tool sets below are missing
+		// servers the same file would have on a healthy host. PrepareWorkflow
+		// says this through a logger that only the run path owns.
+		if err := mcp.PluginServersUnavailable(); err != nil {
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "compile",
+				Severity: "warning",
+				Message:  err.Error() + " — the tool sets reported here omit them",
+			})
+		}
 		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
 			result.CompileDiagnostics = append(result.CompileDiagnostics, err.Error())
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{

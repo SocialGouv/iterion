@@ -96,6 +96,9 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 		// tool_policy is configured. The wrapper travels with the ToolDef, so
 		// it applies in-process and on the launcher's side of a sandboxed
 		// run, which executes these same definitions.
+		if e.withholdUnscopedMCPServerNamingTool(t, node) {
+			continue
+		}
 		t = e.scopeMCPServerNamingTool(t, node)
 		tools = append(tools, t)
 	}
@@ -248,10 +251,44 @@ func (e *ClawExecutor) resolveToolReference(ctx context.Context, name string) (*
 // is therefore scoped by checkNodeToolAccess; these three are not, and they
 // reach the launcher's MCP provider, which connects the named server — for a
 // stdio server, starts its process.
-var mcpServerNamingTools = map[string]bool{
-	"list_mcp_resources": true,
-	"read_mcp_resource":  true,
-	"mcp_auth":           true,
+// Read from the registrar that creates them, never hand-copied: a second
+// copy is a list that will one day be shorter than the first, silently, for
+// exactly one new tool — and the placement table (which has its own
+// exhaustiveness guard) would happily accept that tool as launcher-placed
+// while this scope check quietly did not apply to it.
+var mcpServerNamingTools = func() map[string]bool {
+	out := map[string]bool{}
+	for _, name := range tool.MCPServerNamingTools() {
+		out[name] = true
+	}
+	return out
+}()
+
+// withholdUnscopedMCPServerNamingTool reports whether one of the three is to
+// be left out of an LLM node's tool set entirely, because that node's active
+// MCP set is empty: scopeMCPServerNamingTool would then refuse every call the
+// model could make.
+//
+// Advertising a tool whose every invocation is refused is worse than not
+// advertising it: the model spends turns discovering that, and a model that
+// keeps retrying reads the refusal as a transient error. The same reasoning
+// is already why buildSubagentTools withholds these three from a child
+// conversation that has no node to be scoped by.
+func (e *ClawExecutor) withholdUnscopedMCPServerNamingTool(t delegate.ToolDef, node ir.Node) bool {
+	if !mcpServerNamingTools[t.Name] || node == nil {
+		return false
+	}
+	if _, isLLM := node.(ir.LLMNode); !isLLM {
+		return false
+	}
+	if len(nodeActiveMCPServers(node)) > 0 {
+		return false
+	}
+	if e.logger != nil {
+		e.logger.Info("[%s] tool %q withheld: the node has no active MCP server for it to name",
+			node.NodeID(), t.Name)
+	}
+	return true
 }
 
 // scopeMCPServerNamingTool restricts those three to the node's own active MCP
@@ -263,10 +300,11 @@ var mcpServerNamingTools = map[string]bool{
 // what the author wrote.
 //
 // So the distinction is drawn on the NODE, not on the set: a non-LLM node is
-// left alone, and an LLM node is held to its active set — empty included,
-// where it denies every server. A workflow that declares no MCP server at all
-// therefore denies these three to its LLM nodes, which costs nothing: there is
-// no server for them to reach.
+// left alone, and an LLM node is held to its active set. The empty set still
+// denies every server here, deliberately, even though
+// withholdUnscopedMCPServerNamingTool means resolution does not normally
+// deliver a tool in that state: the wrapper travels ON the ToolDef, so it is
+// what guards the call if any other path ever hands one out.
 func (e *ClawExecutor) scopeMCPServerNamingTool(t delegate.ToolDef, node ir.Node) delegate.ToolDef {
 	if !mcpServerNamingTools[t.Name] || node == nil {
 		return t
@@ -340,16 +378,21 @@ func (e *ClawExecutor) collectRefusedMCPServers(ctx context.Context, node ir.Nod
 // refusedMCPServerFor reports whether a tool name belongs to a server the
 // launcher refused to start, in either spelling the registry resolves.
 // Non-MCP names never match.
+//
+// Every reading of an ambiguous FQN is checked, and a refusal on any of them
+// withholds the tool: `mcp__a__b__c` names server `a` or `a__b` depending on
+// where the tool name starts, and a guard that guesses one advertises a tool
+// whose server this launcher never started.
 func refusedMCPServerFor(name string, refused map[string]string) bool {
 	if len(refused) == 0 {
 		return false
 	}
-	server, ok := tool.MCPServerOf(name)
-	if !ok {
-		return false
+	for _, server := range tool.MCPServerCandidatesOf(name) {
+		if _, refusedHere := refused[server]; refusedHere {
+			return true
+		}
 	}
-	_, refusedHere := refused[server]
-	return refusedHere
+	return false
 }
 
 // mcpServerActiveForNode reports whether `server` is in the node's active MCP
@@ -393,35 +436,35 @@ func activeMCPServersForNames(node ir.Node, names []string) []string {
 	seen := make(map[string]struct{})
 	var servers []string
 	for _, name := range names {
-		var server string
+		var candidates []string
 		// Support wildcard patterns like "mcp.claude_code.*".
 		if tool.IsMCPWildcard(name) {
 			s, err := tool.ParseMCPWildcard(name)
 			if err != nil {
 				continue
 			}
-			server = s
+			candidates = []string{s}
 		} else {
 			// Both spellings the registry resolves: a node that names
 			// `mcp__srv__tool` asks for the same server as one that names
 			// `mcp.srv.tool`, and skipping it here left the server unensured
 			// — and, once a refusal existed to carry, unrecorded, so the
 			// node died at build with "unknown tool" instead of refusing at
-			// execution where its fallbacks could serve it.
-			s, ok := tool.MCPServerOf(name)
-			if !ok {
+			// execution where its fallbacks could serve it. An FQN whose
+			// tool name itself contains "__" has several readings; the
+			// node's own active set decides which one it meant.
+			candidates = tool.MCPServerCandidatesOf(name)
+		}
+		for _, server := range candidates {
+			if _, ok := active[server]; !ok {
 				continue
 			}
-			server = s
+			if _, ok := seen[server]; ok {
+				continue
+			}
+			seen[server] = struct{}{}
+			servers = append(servers, server)
 		}
-		if _, ok := active[server]; !ok {
-			continue
-		}
-		if _, ok := seen[server]; ok {
-			continue
-		}
-		seen[server] = struct{}{}
-		servers = append(servers, server)
 	}
 	return servers
 }

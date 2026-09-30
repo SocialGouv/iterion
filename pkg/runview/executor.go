@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +31,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // rewriteChainFromPlugins loads the plugin registry and builds the command-
@@ -699,25 +702,79 @@ func MCPHealthCheck(ctx context.Context, executor runtime.NodeExecutor, servers 
 // PrepareAuth failures are fatal — continuing would dispatch the run
 // with AuthFunc == nil and surface as 401s later, hiding the root
 // cause from the operator.
-// expandsAgainstLauncherEnv reports whether a server of this origin may
-// read the launcher's environment when its config is expanded.
-func expandsAgainstLauncherEnv(o mcp.Origin) bool {
-	return o.OperatorControlled() || mcp.ExpandUntrustedEnvEnabled()
+// expandsAgainstLauncherEnv reports whether a server of this origin may read
+// the launcher's environment when its config is expanded.
+//
+// The sandbox is part of the question, and leaving it out was a plain scope
+// error: on a run with no sandbox the workflow's own tool nodes already
+// execute beside the launcher with its whole environment, so suppressing the
+// expansion there protects nothing and costs an author their `${VAR}` —
+// silently, since an emptied command fails later as a protocol error. What
+// the suppression is for is the value CROSSING into a container the run asked
+// to be isolated by.
+//
+// `policy` carries that, in the only form available when the catalog is
+// built: `StartAllServers` means the launch surface knows this run is not
+// sandboxed. Undecided counts as sandboxed — the same fail-closed reading the
+// start policy itself uses.
+func expandsAgainstLauncherEnv(o mcp.Origin, policy mcp.StartPolicy) bool {
+	if o.OperatorControlled() || mcp.ExpandUntrustedEnvEnabled() {
+		return true
+	}
+	return policy == mcp.StartAllServers
+}
+
+// expandHatchAdvice names the escape hatch, and says where it has to be set.
+//
+// The hatch reads the INHERITED value, and a project `.env` is precisely
+// where iterion teaches people to put run variables — so an operator who
+// followed the advice got the identical warning back, with the same advice.
+// A remedy a message gives, and then repeats after it was applied, is worse
+// than no remedy.
+func expandHatchAdvice() string {
+	if envtrust.Planted(mcp.EnvExpandUntrustedEnv) {
+		return "you set " + mcp.EnvExpandUntrustedEnv + " in a project `.env`, which does not speak for the " +
+			"operator — export it in your shell instead"
+	}
+	return "set " + mcp.EnvExpandUntrustedEnv + "=true in your shell to restore the previous behaviour"
+}
+
+// unusableAfterDroppedRefs reports why a config cannot be used now that some
+// of its references went unexpanded, naming the variables by NAME — never by
+// value, which is the whole point of not expanding them.
+func unusableAfterDroppedRefs(cfg *mcp.ServerConfig, dropped map[string]bool) error {
+	names := make([]string, 0, len(dropped))
+	for name := range dropped {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var missing string
+	switch {
+	case cfg.Transport == mcp.TransportStdio && strings.TrimSpace(cfg.Command) == "":
+		missing = "its stdio `command` is empty"
+	case (cfg.Transport == mcp.TransportHTTP || cfg.Transport == mcp.TransportSSE) &&
+		strings.TrimSpace(cfg.URL) == "":
+		missing = "its `url` is empty"
+	default:
+		return nil
+	}
+	return fmt.Errorf("%s after %v went unexpanded: a workflow-controlled server's config is not expanded "+
+		"against this process's environment (set %s=true, or give the reference a `${VAR:-default}`)",
+		missing, names, mcp.EnvExpandUntrustedEnv)
 }
 
 // expandWithoutLauncherEnv returns an expander that resolves `${X:-default}`
 // from the default alone and every other reference to the empty string,
 // naming each dropped variable once in the log — by NAME, never by value.
-func expandWithoutLauncherEnv(name string, server *ir.MCPServer, logger *iterlog.Logger) func(string) string {
-	warned := map[string]bool{}
+func expandWithoutLauncherEnv(name string, server *ir.MCPServer, logger *iterlog.Logger, dropped map[string]bool) func(string) string {
 	return func(s string) string {
 		return ir.ExpandWithDefault(s, func(v string) string {
-			if !warned[v] {
-				warned[v] = true
+			if !dropped[v] {
+				dropped[v] = true
 				logger.Warn("mcp: server %q (origin: %s) references ${%s}; it is not expanded against this process's "+
 					"environment because the server's definition comes from the workflow, not from the operator "+
-					"(set %s=true to restore the previous behaviour)",
-					name, server.Origin, v, mcp.EnvExpandUntrustedEnv)
+					"(%s)", name, server.Origin, v, expandHatchAdvice())
 			}
 			return ""
 		})
@@ -760,8 +817,9 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 		// variable the launcher holds and read it back out. Untrusted
 		// origins expand against nothing, keeping `${X:-default}`.
 		expand := ir.ExpandEnvWithDefault
-		if !expandsAgainstLauncherEnv(origin) {
-			expand = expandWithoutLauncherEnv(name, server, logger)
+		dropped := map[string]bool{}
+		if !expandsAgainstLauncherEnv(origin, policy) {
+			expand = expandWithoutLauncherEnv(name, server, logger, dropped)
 		}
 		expandedArgs := make([]string, len(server.Args))
 		for i, a := range server.Args {
@@ -781,6 +839,18 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, p
 			// contain a `$`).
 			Env:  server.Env,
 			Auth: mcp.FromIRAuth(server.Auth),
+		}
+		// A reference that was dropped can leave the config unusable — an
+		// empty `command` for a stdio server, an empty `url` for http/sse.
+		// Say so HERE, where the reason is known: the alternative is what
+		// the operator actually saw, a spawn of "" reported as
+		// "stdio initialization failed (reason=protocol_or_startup_failure,
+		// raw diagnostics withheld)", which names neither the variable nor
+		// the rule that dropped it.
+		if len(dropped) > 0 {
+			if err := unusableAfterDroppedRefs(catalog[name], dropped); err != nil {
+				catalog[name].StartErr = err
+			}
 		}
 		if server.Auth != nil && origin.OperatorControlled() {
 			operatorAuth = true

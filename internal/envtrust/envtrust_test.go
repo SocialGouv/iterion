@@ -1,6 +1,7 @@
 package envtrust
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -37,10 +38,10 @@ func TestThePlantedRecordReachesAChildProcess(t *testing.T) {
 		// In the child: the marker arrived through the environment alone.
 		ResetForTest()
 		if Inherited("ITERION_TEST_TRUST") != "" {
-			os.Exit(3) // laundered
+			os.Exit(childLaundered)
 		}
 		if !Planted("ITERION_TEST_TRUST") {
-			os.Exit(4)
+			os.Exit(childMarkerLost)
 		}
 		os.Exit(0)
 	}
@@ -56,11 +57,32 @@ func TestThePlantedRecordReachesAChildProcess(t *testing.T) {
 	// children (pkg/runview/detached.go, pkg/operatormcp/spawn.go).
 	cmd.Env = append(os.Environ(), "ENVTRUST_CHILD=1")
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("the child re-derived the answer from its inherited environment and trusted a planted value: %v\n%s",
-			err, out)
+	if err == nil {
+		return
 	}
+	// Each exit code says which of the two failures happened, and anything
+	// else is neither: a test binary exits 1 on a failing test, so reporting
+	// every non-zero code as "trusted a planted value" names a defect that
+	// may not be the one that occurred.
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		switch exit.ExitCode() {
+		case childLaundered:
+			t.Fatalf("the child re-derived the answer from its inherited environment and trusted a planted "+
+				"value — the repository's answer laundered through one fork\n%s", out)
+		case childMarkerLost:
+			t.Fatalf("the child did not inherit the planted record at all: the marker is not re-exported, so "+
+				"every child starts trusting again\n%s", out)
+		}
+	}
+	t.Fatalf("the child failed for neither reason this test checks (%v) — read its output\n%s", err, out)
 }
+
+// Exit codes the child answers with, distinct from a test binary's own 1.
+const (
+	childLaundered  = 3
+	childMarkerLost = 4
+)
 
 // A forged marker can only ever REMOVE trust, so it needs no protection.
 func TestAMarkerFromTheEnvironmentIsHonoured(t *testing.T) {

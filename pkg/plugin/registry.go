@@ -312,8 +312,10 @@ func (r *Registry) resolveEnabled() {
 	// review can set either — enabling a plugin the operator left off, or
 	// silencing one they turned on — and the value is honoured either way;
 	// what it cannot do is make the result speak for the operator.
+	// The live lists decide WHAT happens (unchanged behaviour); the inherited
+	// enable list decides whether the operator is the one who asked.
+	// Disabling needs no such distinction — see below.
 	enableEnv := envNameSet(envtrust.Inherited("ITERION_PLUGINS_ENABLE"))
-	disableEnv := envNameSet(envtrust.Inherited("ITERION_PLUGINS_DISABLE"))
 	plantedEnable := envNameSet(os.Getenv("ITERION_PLUGINS_ENABLE"))
 	plantedDisable := envNameSet(os.Getenv("ITERION_PLUGINS_DISABLE"))
 	for _, p := range r.plugins {
@@ -333,16 +335,29 @@ func (r *Registry) resolveEnabled() {
 		// builtin via immutable env instead of the per-pod-ephemeral
 		// plugins.yaml. Disable wins over enable when a name is in both.
 		if plantedEnable[p.Name()] {
+			// This branch only ever turns a plugin ON, so it may only ever
+			// ADD provenance. Assigning instead let a repository's `.env`
+			// naming a plugin the operator had already enabled erase the
+			// operator's own decision — and the diagnosis they then read said
+			// their builtin "comes from the workflow, not from the operator".
+			if p.Enabled {
+				p.enabledByOperator = p.enabledByOperator || enableEnv[p.Name()]
+			} else {
+				// The variable is what turns it on, so the variable's
+				// provenance is the decision's: a plugin the operator stored
+				// as disabled and a repository switched on is the
+				// repository's.
+				p.enabledByOperator = enableEnv[p.Name()]
+			}
 			p.Enabled = true
-			p.enabledByOperator = enableEnv[p.Name()]
 		}
 		// Disabling only ever removes a capability, so its provenance does
 		// not matter: a `.env` that silences a plugin costs the operator a
-		// tool, never the other way round.
+		// tool, never the other way round. Read from the live environment for
+		// that reason.
 		if plantedDisable[p.Name()] {
 			p.Enabled = false
 		}
-		_ = disableEnv
 	}
 	sort.SliceStable(r.plugins, func(i, j int) bool {
 		return r.plugins[i].Name() < r.plugins[j].Name()

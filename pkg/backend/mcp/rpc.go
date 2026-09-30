@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // sdkClient wraps the official MCP go-sdk Client + ClientSession,
@@ -40,10 +42,16 @@ type sdkClient struct {
 	// operation crosses. Nil means no gate (tests, and any host that
 	// builds a client directly).
 	gate func() error
+
+	// logger carries the one failure this client cannot simply return: a
+	// refused session whose close failed, which means a process left
+	// running beside the launcher. Nil-safe — pkg/log nil-checks its
+	// receiver.
+	logger *iterlog.Logger
 }
 
-func newSDKClient(cfg *ServerConfig, info clientInfo, gate func() error) *sdkClient {
-	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate}
+func newSDKClient(cfg *ServerConfig, info clientInfo, gate func() error, logger *iterlog.Logger) *sdkClient {
+	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate, logger: logger}
 }
 
 // protocolVersion20260728 is the first MCP revision that removed the
@@ -210,7 +218,14 @@ func (c *sdkClient) ensureStarted(ctx context.Context) error {
 		}
 		return c.startErr
 	}
-	if c.startErr != nil && !isContextErr(c.startErr) {
+	// A launcher-start REFUSAL is not a permanent failure: it is the answer
+	// the policy gave at that moment, and the policy changes — the engine
+	// relaxes it when a run settles without a sandbox, which is the whole
+	// point of settling. Caching it here answered "no" for the rest of the
+	// run from a policy that no longer existed, and silently: the tool was
+	// advertised and simply never worked. The gate above this line is what
+	// decides; a fresh attempt gets a fresh verdict from it.
+	if c.startErr != nil && !isContextErr(c.startErr) && !ServerNotStartable(c.startErr) {
 		// Prior permanent failure — don't retry.
 		err := c.startErr
 		c.startMu.Unlock()
@@ -237,7 +252,16 @@ func (c *sdkClient) ensureStarted(ctx context.Context) error {
 		if gateErr := c.gate(); gateErr != nil {
 			err = gateErr
 			if session != nil {
-				_ = session.Close()
+				// The close is the only thing standing between a refused
+				// server and a process running beside the launcher for the
+				// rest of the run, so its failure is reported rather than
+				// dropped: the SDK's stdio close returns early if it cannot
+				// close stdin, before it ever signals the child.
+				if closeErr := session.Close(); closeErr != nil && c.logger != nil {
+					c.logger.Warn("mcp: server %q (origin: %s) was refused after its start completed, and closing "+
+						"the session failed — its process may still be running: %v",
+						c.cfg.Name, c.cfg.Origin, closeErr)
+				}
 				session = nil
 			}
 		}

@@ -828,7 +828,8 @@ across the channel.
 > - **launcher** — launcher-owned state, run with the launcher's process:
 >   `ask_user` and the async pair, every `mcp.*` / `mcp_*` / `mcp__*`
 >   tool, `list_mcp_resources`, `read_mcp_resource`, `mcp_auth`, the
->   `task_*` / `team_*` / `cron_*` registries, `todo_write`, `config`,
+>   `task_*` / `team_*` / `cron_*` registries and `run_task_packet`
+>   (which is one of them despite the name), `todo_write`, `config`,
 >   `tool_search`, the plan-mode pair, the privacy pair, `web_search`.
 >   Three caveats: the MCP tools and the resource pair reach servers
 >   through the launcher's MCP manager, which connects a server where it
@@ -1043,24 +1044,48 @@ definition, not who benefits from it:
 
 Consequences for a claw node under an active sandbox:
 
-- a server it INHERITED (ambient: the repo's `.mcp.json`, the plugin catalog)
-  is dropped with an `mcp_server_degraded` event naming the origin — the node
-  runs without those tools, loudly;
-- a server it NAMES (`tools: [mcp.srv.*]`, or an exact `mcp.srv.tool`) refuses
-  the node at execution time, as a typed capability refusal — so the node's
-  `fallbacks:` are walked and a `claude_code` or pi route, which starts the
-  server in the container, can serve it;
+- a server whose tools it does not name is dropped with an
+  `mcp_server_degraded` event naming the origin and whether the node had
+  declared the server (`source: declared`) or inherited it (`source:
+  ambient`) — the node runs without those tools, loudly;
+- a server whose TOOLS it names (`tools: [mcp.srv.*]`, or an exact
+  `mcp.srv.tool`) refuses the node at execution time, as a typed capability
+  refusal — so the node's `fallbacks:` are walked and a `claude_code` or pi
+  route, which starts the server in the container, can serve it. No degrade
+  event is emitted there: the node is not running without those tools, it is
+  taking another route;
 - the pre-run health check skips those servers rather than probing them: the
   probe IS a connection, and for a stdio server a spawn.
 
-Unsandboxed runs are unchanged: the run already executes beside the launcher,
-so a workflow-controlled server there adds no exposure the run does not have.
+Unsandboxed runs keep every server: the run already executes beside the
+launcher, so a workflow-controlled server there adds no exposure the run does
+not have. The `${VAR}` expansion below follows the same rule and is unchanged
+unsandboxed. The per-node scope, however, is not a sandbox rule at all and
+applies to every run — see the three facts under it.
 
 Two related rules travel with this one. A workflow-controlled server's
 `command`/`args`/`url` no longer expand `${VAR}` against the launcher's
-environment (`ITERION_MCP_EXPAND_UNTRUSTED_ENV=true` restores it); and
-`list_mcp_resources`, `read_mcp_resource` and `mcp_auth`, which take a server
-NAME the model writes, are restricted to the node's own active MCP servers.
+environment (`ITERION_MCP_EXPAND_UNTRUSTED_ENV=true` restores it, and only
+when the operator's own environment carries it — a value a project `.env`
+planted does not enable the hatch); and `list_mcp_resources`,
+`read_mcp_resource` and `mcp_auth`, which take a server NAME the model writes,
+are restricted to the node's own active MCP servers — and withheld outright
+from an LLM node whose active set is empty, where every call they could make
+would be refused. A `tool:` node keeps them: it has no `mcp:` block, so an
+empty set means "unrestricted" there, not "nothing".
+
+Three facts about that per-node scope, none of them sandbox-conditional:
+
+- it holds **whether or not a `tool_policy` is configured** — the node's
+  `mcp:` block is the author's declaration, not a permission rule, so it is
+  applied outside the policy branch and on unsandboxed runs too;
+- the check travels **on the tool definition**, so it applies in-process and
+  on the launcher's side of a sandboxed run, which executes those same
+  definitions;
+- it reads the `server` argument **exactly as the tool underneath reads it** —
+  out of a `map[string]any` by the literal key, defaulting a missing or
+  non-string value to `"default"` as claw does. A guard that decoded it any
+  other way would judge a value nobody uses.
 
 Why the qualifier on `plugin`: iterion fills unset variables from the nearest
 `.env` walking up from the working directory, before any subcommand runs. That
@@ -1077,6 +1102,16 @@ is bind-mounted read-write into the sandbox, so a sandboxed agent can write a
 manifest at the operator's own path. The trust root above answers "did the
 operator put this here", not "could a previous run have". Narrowing that mount
 is tracked separately.
+
+**Rollout order on a cluster: the sandbox image before the launcher.** The
+placement decision is the launcher's, and it refuses what it will not proxy —
+so a new launcher paired with an OLDER sandbox image refuses tools that image's
+runner would have proxied, and the node fails where it used to work. The
+reverse pairing is harmless: an older launcher proxies what a newer runner can
+also execute locally. Roll the runner/sandbox image out first, confirm it is
+serving, then the server and dispatcher —
+[cloud-deployment.md](cloud-deployment.md) for the pinning mechanics (both
+sides by digest, never a moving tag).
 
 Running claw's own MCP servers inside the container — parity with
 `claude_code` and pi — is the end state, and a follow-up.

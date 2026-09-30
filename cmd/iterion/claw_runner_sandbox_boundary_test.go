@@ -70,6 +70,24 @@ func (s *stubLauncher) sawCall(name string) bool {
 	return s.forwarded[name] > 0
 }
 
+// everythingForwarded returns every name the launcher was asked to run.
+//
+// sawCall answers a question keyed on the name the RUNNER chose to forward
+// under, so a call that crossed the boundary spelled differently — an FQN
+// rewrite, a wrapper prefix, a rename — reads there as "no escape". The
+// escape witness asserts on this instead: nothing at all may cross, whatever
+// it is called.
+func (s *stubLauncher) everythingForwarded() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.forwarded))
+	for name := range s.forwarded {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // newStubLauncher wires a runner-side dispatcher to a recording stub launcher
 // and returns both. Nothing the stub receives is executed.
 func newStubLauncher(t *testing.T) (*proxyDispatcher, *stubLauncher) {
@@ -221,6 +239,16 @@ func TestHybridToolDefs_ExecutionCapableToolsNeverLeaveTheSandbox(t *testing.T) 
 				"an execution-capable tool advertised to a sandboxed claw node must run inside the container "+
 				"or be refused at task-build time", name, escapes[name])
 		}
+	}
+
+	// And the same question asked without a name. Every tool probed above is
+	// contracted to stay in the container, so the launcher must have been
+	// asked to run NOTHING — a call that crossed under another spelling is
+	// invisible to the per-name check and is exactly the shape a refactor
+	// produces.
+	if crossed := stub.everythingForwarded(); len(crossed) > 0 {
+		t.Errorf("sandbox escape: the launcher was asked to run %v; none of the probed tools may cross, "+
+			"under any name", crossed)
 	}
 }
 

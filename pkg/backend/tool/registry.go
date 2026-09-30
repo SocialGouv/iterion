@@ -363,6 +363,42 @@ func MCPServerOf(name string) (server string, ok bool) {
 	return "", false
 }
 
+// MCPServerCandidatesOf returns EVERY server name a tool reference could
+// belong to, nearest-first (the shortest server, which is claude_code's own
+// reading, comes first).
+//
+// The FQN spelling is genuinely ambiguous when the tool name itself contains
+// "__": `mcp__a__b__c` reads as server `a` tool `b__c` and as server `a__b`
+// tool `c`, and only the registry knows which exists. SplitMCPFQN must pick
+// one because resolution needs a single key; the callers that ask "is this
+// name's server in that SET" must not, and a wrong single pick there is a
+// defect rather than a near miss: a guard that withholds a refused server's
+// tools stops withholding, and the loop that records the refusal skips the
+// server, so the node dies at build on an unknown tool instead of refusing
+// at execution where its fallbacks could serve it.
+func MCPServerCandidatesOf(name string) []string {
+	if s, _, err := ParseMCPName(name); err == nil {
+		return []string{s}
+	}
+	const prefix = "mcp__"
+	if !strings.HasPrefix(name, prefix) {
+		return nil
+	}
+	body := name[len(prefix):]
+	var servers []string
+	for i := strings.Index(body, "__"); i > 0; {
+		if i+2 < len(body) {
+			servers = append(servers, body[:i])
+		}
+		next := strings.Index(body[i+2:], "__")
+		if next < 0 {
+			break
+		}
+		i += 2 + next
+	}
+	return servers
+}
+
 // IsMCPName returns true if the qualified name follows the MCP convention.
 func IsMCPName(name string) bool {
 	_, _, err := ParseMCPName(name)

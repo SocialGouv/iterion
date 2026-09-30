@@ -624,6 +624,12 @@ type LLMNode interface {
 	GetCapabilities() []string
 	GetSkills() []string
 	GetActiveMCPServers() []string
+	// GetMCP returns the node's own `mcp:` block, nil when it has none.
+	// ActiveMCPServers is the RESOLVED set — ambient servers the node
+	// inherited and servers it named, merged — so it cannot answer "did
+	// this node ask for that server", and a reader that needs the
+	// difference (the degrade event's `source`) must read the declaration.
+	GetMCP() *MCPConfig
 	GetCompaction() *Compaction
 	GetMemory() *Memory
 	GetCursors() *CursorInvocation
@@ -661,6 +667,7 @@ func (n *AgentNode) GetToolMaxSteps() int                     { return n.ToolMax
 func (n *AgentNode) GetCapabilities() []string                { return n.Capabilities }
 func (n *AgentNode) GetSkills() []string                      { return n.Skills }
 func (n *AgentNode) GetActiveMCPServers() []string            { return n.ActiveMCPServers }
+func (n *AgentNode) GetMCP() *MCPConfig                       { return n.MCP }
 func (n *AgentNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *AgentNode) GetMemory() *Memory                       { return n.Memory }
 func (n *AgentNode) GetCursors() *CursorInvocation            { return n.Cursors }
@@ -685,6 +692,7 @@ func (n *JudgeNode) GetToolMaxSteps() int                     { return n.ToolMax
 func (n *JudgeNode) GetCapabilities() []string                { return n.Capabilities }
 func (n *JudgeNode) GetSkills() []string                      { return n.Skills }
 func (n *JudgeNode) GetActiveMCPServers() []string            { return n.ActiveMCPServers }
+func (n *JudgeNode) GetMCP() *MCPConfig                       { return n.MCP }
 func (n *JudgeNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *JudgeNode) GetMemory() *Memory                       { return n.Memory }
 func (n *JudgeNode) GetCursors() *CursorInvocation            { return n.Cursors }
@@ -817,6 +825,28 @@ func NodeActiveMCPServers(n Node) []string {
 		return ln.GetActiveMCPServers()
 	}
 	return nil
+}
+
+// NodeDeclaresMCPServer reports whether the node's own `mcp: servers:` block
+// names `server` — the half of its active set the node ASKED for, as opposed
+// to the ambient servers it inherited from the target repository's
+// `.mcp.json`, the plugin catalog or the workflow. ActiveMCPServers holds
+// both, merged, so this is the only place the difference survives.
+func NodeDeclaresMCPServer(n Node, server string) bool {
+	ln, ok := n.(LLMNode)
+	if !ok {
+		return false
+	}
+	cfg := ln.GetMCP()
+	if cfg == nil {
+		return false
+	}
+	for _, name := range cfg.Servers {
+		if name == server {
+			return true
+		}
+	}
+	return false
 }
 
 // IsTerminalNode returns true if the node is a DoneNode or FailNode.

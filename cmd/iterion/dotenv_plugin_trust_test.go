@@ -42,6 +42,10 @@ func TestAProjectDotenvCannotManufactureAnOperatorPlugin(t *testing.T) {
 	t.Cleanup(envtrust.ResetForTest)
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	t.Setenv("HOME", operatorHome)
+	// t.Setenv restores what it sets; os.Unsetenv does not, and the loader
+	// below PLANTS the variable for the rest of the test binary — pointing at
+	// a directory t.TempDir's cleanup then deletes. Restore it by hand.
+	restoreEnv(t, "ITERION_HOME")
 	if err := os.Unsetenv("ITERION_HOME"); err != nil {
 		t.Fatalf("unset: %v", err)
 	}
@@ -136,4 +140,23 @@ contributes:
 	if err := os.WriteFile(filepath.Join(dir, plugin.ManifestFile), []byte(manifest), 0o600); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
+}
+
+// restoreEnv captures a variable's current state and puts it back when the
+// test ends, for the cases t.Setenv cannot cover: a variable the test UNSETS,
+// and one the code under test then sets itself.
+func restoreEnv(t *testing.T, name string) {
+	t.Helper()
+	old, had := os.LookupEnv(name)
+	t.Cleanup(func() {
+		if had {
+			if err := os.Setenv(name, old); err != nil {
+				t.Errorf("restore %s: %v", name, err)
+			}
+			return
+		}
+		if err := os.Unsetenv(name); err != nil {
+			t.Errorf("unset %s: %v", name, err)
+		}
+	})
 }

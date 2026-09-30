@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -1249,40 +1250,80 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// wildcards; the len(effectiveTools)>0 gate keeps tool-less judges
 		// lean (no ambient fetch tools, no behaviour change).
 		//
-		// Each server is ensured HERE, one by one: these are ambient (the
-		// node never named them — they arrive from the target repo's
-		// .mcp.json or the plugin catalog), so one that cannot boot costs
-		// its own tools, never the run. The other backends already degrade
-		// per-server (claude_code's CLI skips a server it cannot start; pi
-		// bounds each connect with a timeout) — hard-failing here was a
-		// claw-path parity defect: one token-less repo server killed every
-		// claw node of the run. A tool the node names EXPLICITLY on a dead
-		// server still fails loud in resolveToolsForNode.
+		// Each server is ensured HERE, one by one, so that one which cannot
+		// boot costs its own tools and never the run. The other backends
+		// already degrade per-server (claude_code's CLI skips a server it
+		// cannot start; pi bounds each connect with a timeout) —
+		// hard-failing here was a claw-path parity defect: one token-less
+		// repo server killed every claw node of the run. A tool the node
+		// names EXPLICITLY on a dead server still fails loud in
+		// resolveToolsForNode.
+		//
+		// The list is the node's RESOLVED set: the ambient servers it
+		// inherited (target repo `.mcp.json`, plugin catalog, workflow) and
+		// the ones its own `mcp:` block named, merged by
+		// mcp.PrepareWorkflow. Anything reported from inside this loop
+		// therefore has to read which of the two a server was, rather than
+		// assume.
 		if e.mcpManager != nil && e.toolRegistry != nil {
+			// The servers the node named a tool on. Those do NOT degrade:
+			// resolveToolsForNode either carries a typed refusal to Execute,
+			// where the node's `fallbacks:` get their turn, or fails the
+			// build on a genuine boot failure. Announcing "the node runs
+			// WITHOUT its tools" for one of them puts a sentence in the run
+			// record that the next second contradicts.
+			namedByNode := make(map[string]struct{})
+			for _, srv := range activeMCPServersForNames(node, f.tools) {
+				namedByNode[srv] = struct{}{}
+			}
 			for _, srv := range f.activeMCPServers {
 				if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{srv}); err != nil {
+					if _, named := namedByNode[srv]; named {
+						continue
+					}
 					// Two different facts, reported as two different facts: a
 					// server that cannot boot is something to go and fix, a
 					// server this launcher may not start for a sandboxed run
 					// is working as intended. One message for both sent the
 					// operator after a boot bug that was not there.
+					// A refusal answers the PLACEMENT question, and a server
+					// may be both unwelcome here and broken. The health
+					// problem travels inside the refusal; lift it out as its
+					// own fact so a consumer reading `refused` does not read
+					// "nothing to fix".
 					refused := mcp.ServerNotStartable(err)
+					var cause error
+					var notStartable *mcp.ServerNotStartableError
+					if errors.As(err, &notStartable) {
+						cause = notStartable.Cause
+					}
 					origin := ""
 					if cfg, ok := e.mcpManager.ServerConfig(srv); ok && cfg != nil {
 						origin = string(cfg.Origin)
 					}
+					// Ambient or asked for: the node's active set holds both,
+					// merged, so the answer comes from the DECLARATION rather
+					// than from the fact that this loop walks the merged list.
+					// Calling a server the bot named "ambient" sends its
+					// author reading the target repo's `.mcp.json` for a line
+					// that is in their own `.bot`.
+					source := "ambient"
+					if ir.NodeDeclaresMCPServer(node, srv) {
+						source = "declared"
+					}
 					if e.logger != nil {
 						if refused {
-							e.logger.Warn("[%s] ambient MCP server %q (origin: %s) is not started by this launcher — "+
-								"the node runs WITHOUT its tools: %v", f.id, srv, origin, err)
+							e.logger.Warn("[%s] %s MCP server %q (origin: %s) is not started by this launcher — "+
+								"the node runs WITHOUT its tools: %v", f.id, source, srv, origin, err)
 						} else {
-							e.logger.Warn("[%s] ambient MCP server %q failed to boot — the node runs WITHOUT its tools: %v",
-								f.id, srv, err)
+							e.logger.Warn("[%s] %s MCP server %q failed to boot — the node runs WITHOUT its tools: %v",
+								f.id, source, srv, err)
 						}
 					}
 					if e.hooks.OnMCPServerDegraded != nil {
 						e.hooks.OnMCPServerDegraded(f.id, MCPServerDegradedInfo{
-							Server: srv, Source: "ambient", Origin: origin, Refused: refused, Err: err,
+							Server: srv, Source: source, Origin: origin,
+							Refused: refused, Cause: cause, Err: err,
 						})
 					}
 					continue

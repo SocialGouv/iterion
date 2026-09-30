@@ -122,6 +122,26 @@ Claude-subscription **forfait** via `CLAUDE_CODE_OAUTH_TOKEN`) with a one-node
 `backend: "claude_code"` bot: `system/init … model=claude-opus-5` in the run
 log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 
+### This repo's own `.mcp.json` does not reach a sandboxed claw node
+
+`.mcp.json` at the root of this repository declares two servers, `engine` and
+`sentry`. They are `project`-origin, so the launcher of a **sandboxed** run
+does not start them — and every dogfood run here is sandboxed by default: the
+devcontainer plus `--sandbox auto` is the normal shape. A claw node therefore
+runs WITHOUT their tools and the run record carries one
+`mcp_server_degraded` event per server (`source: ambient`, `origin: project`,
+`refused: true`) — nothing is broken, and a bot whose judgement depends on
+those tools is quietly weaker than the same bot on the operator's host.
+
+Three ways out, in order of preference: route the node to `claude_code` or
+pi, which start the servers inside the container; declare the node's
+`fallbacks:` so the typed refusal walks to such a route; or run that bot with
+`--sandbox none` and say so in the bilan. A node that NAMES one of their
+tools (`tools: [mcp.engine.…]`) is refused at execution rather than degraded,
+so the run fails loudly instead of thinking less — prefer that over hoping.
+Origins and the full table: [sandbox.md § MCP servers under a
+sandbox](../sandbox.md#mcp-servers-under-a-sandbox).
+
 ### Every dogfood run gets a bilan in `docs/bot-runs/<bot>.md`
 
 The run artifacts under `.iterion/runs/<id>/` are gitignored — they vanish from

@@ -35,16 +35,16 @@ func (p *ClawProvider) GetResourceClient(name string) (clawmcp.ResourceClient, b
 	if p.m == nil {
 		return nil, false
 	}
-	cfg, ok := p.m.ServerConfig(name)
-	if !ok {
+	if _, ok := p.m.ServerConfig(name); !ok {
 		return nil, false
 	}
-	// A server this launcher may not start has no client to offer. Handing
-	// one back means the refusal arrives as a failed dial instead — after the
-	// model was told the server was there.
-	if err := p.m.checkStart(cfg); err != nil {
-		return nil, false
-	}
+	// A refused server still gets a client, deliberately. `ok=false` is
+	// claw's "server not found", and that is the one answer that is false:
+	// the server exists, it is simply not started here — and "not found"
+	// invites the model to re-list and try name variants for something it
+	// cannot have. The client's own operations carry the typed refusal
+	// instead (Manager.ListResources / ReadResource consult the gate before
+	// any dial), so the model gets the real reason and no process starts.
 	return &clawResourceClient{m: p.m, server: name}, true
 }
 
