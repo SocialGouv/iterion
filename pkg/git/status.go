@@ -1,8 +1,8 @@
 package git
 
 import (
-	"bytes"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -79,39 +79,72 @@ func Status(dir string) ([]FileStatus, error) {
 	return files, nil
 }
 
-// parseStatusZ walks NUL-separated porcelain entries. The format is:
+// StatusRecord is one record of `git status --porcelain=v1 -z` output — the
+// NUL-terminated form, where every path is printed raw: no C-quoting, no
+// rename arrow, so a name holding " -> ", a newline or a non-ASCII byte
+// survives intact and no consumer ever cuts a rename at the wrong " -> "
+// (#1577).
+type StatusRecord struct {
+	// Status is the two-column XY code as printed (" M", "R ", "??", "!!").
+	Status string
+	// Path is the record's path — the destination for a rename/copy.
+	Path string
+	// Source is the rename/copy origin; empty for any other record.
+	Source string
+}
+
+// ParseStatusPorcelainZ walks the NUL-separated records of
+// `git status --porcelain=v1 -z`. The format is:
 //
 //	XY SP path NUL                 (most statuses)
-//	XY SP newpath NUL oldpath NUL  (renames/copies — oldpath comes second)
+//	XY SP newpath NUL oldpath NUL  (renames/copies — the destination first)
 //
-// X is the index column, Y the worktree column. We collapse the two into
-// one effective status per file, biased toward the worktree (what the
-// user actually sees on disk).
-func parseStatusZ(out []byte) ([]FileStatus, error) {
-	var files []FileStatus
-	parts := bytes.Split(out, []byte{0})
+// This is the ONE reader of git's status porcelain: Status (above),
+// pkg/runtime's tree probes and pkg/worktreepool's worktreeStatus all
+// consume it, so two packages cannot drift again on what a rename's
+// destination is — the class where one parser stepped over a quoted source
+// and the other cut at the first " -> " (#1577).
+func ParseStatusPorcelainZ(out string) ([]StatusRecord, error) {
+	var records []StatusRecord
+	parts := strings.Split(out, "\x00")
 	// Last element after a trailing NUL is empty — drop it.
-	if len(parts) > 0 && len(parts[len(parts)-1]) == 0 {
+	if len(parts) > 0 && parts[len(parts)-1] == "" {
 		parts = parts[:len(parts)-1]
 	}
 	for i := 0; i < len(parts); i++ {
 		entry := parts[i]
 		if len(entry) < 4 {
-			return nil, fmt.Errorf("git: malformed status entry %q", string(entry))
+			return nil, fmt.Errorf("git: malformed status entry %q", entry)
 		}
-		x, y := entry[0], entry[1]
-		// Byte 2 is a space separator before the path.
-		path := string(entry[3:])
-		fs := FileStatus{Path: path, Status: collapseStatus(x, y)}
-		// For renames/copies the next NUL-separated entry is the old path.
-		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+		rec := StatusRecord{Status: entry[:2], Path: entry[3:]}
+		// For renames/copies the next NUL-separated record is the old path.
+		if x, y := entry[0], entry[1]; x == 'R' || x == 'C' || y == 'R' || y == 'C' {
 			if i+1 >= len(parts) {
-				return nil, fmt.Errorf("git: rename entry missing source path: %q", string(entry))
+				return nil, fmt.Errorf("git: rename entry missing source path: %q", entry)
 			}
 			i++
-			fs.OldPath = string(parts[i])
+			rec.Source = parts[i]
 		}
-		files = append(files, fs)
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+// parseStatusZ adapts the shared record parser to Status's FileStatus rows,
+// collapsing the (index, worktree) pair into one effective status per file,
+// biased toward the worktree (what the user actually sees on disk).
+func parseStatusZ(out []byte) ([]FileStatus, error) {
+	records, err := ParseStatusPorcelainZ(string(out))
+	if err != nil {
+		return nil, err
+	}
+	files := make([]FileStatus, 0, len(records))
+	for _, rec := range records {
+		files = append(files, FileStatus{
+			Path:    rec.Path,
+			Status:  collapseStatus(rec.Status[0], rec.Status[1]),
+			OldPath: rec.Source,
+		})
 	}
 	return files, nil
 }

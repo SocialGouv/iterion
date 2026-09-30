@@ -717,32 +717,6 @@ var managedDirs = []string{
 // prefix test would have swallowed them.
 var scaffoldFiles = []string{".claude/settings.json"}
 
-// renameDestination returns the DEST half of a porcelain rename entry,
-// stepping over a quoted source rather than cutting at the first " -> ".
-func renameDestination(rest string) string {
-	if strings.HasPrefix(rest, `"`) {
-		if end := strings.Index(rest[1:], `"`); end >= 0 {
-			after := rest[1+end+1:]
-			if _, dst, ok := strings.Cut(after, " -> "); ok {
-				return dst
-			}
-			return rest
-		}
-	}
-	if _, dst, ok := strings.Cut(rest, " -> "); ok {
-		return dst
-	}
-	return rest
-}
-
-func dequotePath(p string) string {
-	p = strings.TrimSpace(p)
-	if len(p) >= 2 && strings.HasPrefix(p, `"`) && strings.HasSuffix(p, `"`) {
-		p = p[1 : len(p)-1]
-	}
-	return p
-}
-
 // isScaffold reports whether a porcelain entry is iterion's own mirror
 // rather than the run's work.
 //
@@ -813,7 +787,7 @@ func worktreeStatus(ctx context.Context, path string, countIgnored, excludeRunti
 	// --untracked-files=all, because git otherwise folds an untracked
 	// directory into a single `.claude/` line and the exclusion could not
 	// tell the mirror from anything else the run put beside it.
-	args := []string{"status", "--porcelain", "--untracked-files=all"}
+	args := []string{"status", "--porcelain", "-z", "--untracked-files=all"}
 	if countIgnored {
 		// Ask for ignored entries in the SAME full-tree pass. The runtime
 		// bound needs them for safety; a second status doubled launch cost.
@@ -825,28 +799,26 @@ func worktreeStatus(ctx context.Context, path string, countIgnored, excludeRunti
 		// of "we could not tell" is "there may be something here".
 		return true, 0, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "!!") {
-			if !excludeRuntimeIgnored || !isRuntimeIgnoredPath(dequotePath(strings.TrimSpace(line[2:]))) {
+	// The NUL-terminated porcelain is the only form read anywhere: a rename
+	// carries destination and source as two records (destination first), so
+	// a source literally named `x -> y.md` cannot be cut at the wrong arrow
+	// and judged instead of the destination (#1577). Judging a rename on
+	// its SOURCE would mean a file moved OUT of the scaffold takes the
+	// whole entry with it, and the destination — real, uncommitted work —
+	// is never seen. The one record-walker is gitlib.ParseStatusPorcelainZ.
+	records, perr := gitlib.ParseStatusPorcelainZ(out)
+	if perr != nil {
+		// Same conservative reading as an unreadable status.
+		return true, 0, perr
+	}
+	for _, rec := range records {
+		if rec.Status == "!!" {
+			if !excludeRuntimeIgnored || !isRuntimeIgnoredPath(rec.Path) {
 				ignored++
 			}
 			continue
 		}
-		if len(line) < 4 {
-			continue
-		}
-		status, rest := line[:2], strings.TrimSpace(line[2:])
-		// A rename is one line, `XY ORIG -> DEST`. Judging it on ORIG
-		// means a file moved OUT of the scaffold takes the whole entry
-		// with it, and the destination — real, uncommitted work — is
-		// never seen. The source is skipped past first: git quotes a path
-		// containing " -> ", and cutting the raw line would land inside
-		// the quotes and hand back a fragment of the source as the
-		// destination.
-		if strings.ContainsAny(status, "RC") {
-			rest = renameDestination(rest)
-		}
-		if p := dequotePath(rest); p != "" && !isScaffold(status, p) {
+		if rec.Path != "" && !isScaffold(rec.Status, rec.Path) {
 			dirty = true
 		}
 	}
