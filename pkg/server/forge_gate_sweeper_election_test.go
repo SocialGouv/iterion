@@ -66,7 +66,10 @@ func TestGateSweeper_OneReplicaSweepsAndASuccessorTakesOver(t *testing.T) {
 		}
 		s := newForgeGateTestServer(t, st)
 		s.leases = shared
-		s.gateSweepTick = 20 * time.Millisecond
+		// TTL is 3 ticks and the holder steps down 2.5 ticks after its last
+		// renewal: 200ms leaves a loaded -race scheduler 300ms of slack before
+		// a spurious hand-over, which this test would read as two sweepers.
+		s.gateSweepTick = 200 * time.Millisecond
 		ctx, cancel := context.WithCancel(context.Background())
 		r := &replica{s: s, scans: &scanCounter{}, stop: cancel, done: make(chan struct{})}
 		rs[i] = r
@@ -454,7 +457,7 @@ func TestGateSweeper_ADeposedHolderStopsSweeping(t *testing.T) {
 	}
 	s := newForgeGateTestServer(t, st)
 	s.leases = shared
-	const tick = 20 * time.Millisecond
+	const tick = 100 * time.Millisecond
 	s.gateSweepTick = tick
 	scans := &scanCounter{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -686,7 +689,7 @@ func TestGateSweeper_EveryTermOpensWithADeepPass(t *testing.T) {
 	}
 	s := newForgeGateTestServer(t, st)
 	s.leases = shared
-	const tick = 20 * time.Millisecond
+	const tick = 100 * time.Millisecond
 	s.gateSweepTick = tick
 	rec := &windowRecorder{}
 	ctx, cancel := context.WithCancel(context.Background())
