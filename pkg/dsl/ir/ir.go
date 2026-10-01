@@ -46,11 +46,12 @@ type Workflow struct {
 	// Contracts are the unit's `contract` declarations by name, each bound
 	// to this program (ADR-099); Contract is the one the workflow names by
 	// `contract:` (nil = none).
-	Contracts  map[string]*PublicContract
-	Contract   *PublicContract
-	Worktree   string // "auto" runs in a per-run git worktree; "" or "none" runs in-place
-	Compress   string // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	Contracts      map[string]*PublicContract
+	Contract       *PublicContract
+	Worktree       string // "auto" runs in a per-run git worktree; "" or "none" runs in-place
+	Compress       string // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory     string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	AmbientContext string // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset)
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -244,6 +245,7 @@ type AgentNode struct {
 	Fallbacks        []Fallback
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
@@ -282,6 +284,7 @@ type JudgeNode struct {
 	Fallbacks        []Fallback
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
@@ -644,6 +647,7 @@ type LLMNode interface {
 	GetFallbacks() []Fallback
 	GetCompress() string
 	GetAutoMemory() string
+	GetAmbientContext() string
 	GetPermission() string
 	GetPermissionAllow() []string
 	GetPermissionAsk() []string
@@ -675,6 +679,7 @@ func (n *AgentNode) GetCursors() *CursorInvocation            { return n.Cursors
 func (n *AgentNode) GetFallbacks() []Fallback                 { return n.Fallbacks }
 func (n *AgentNode) GetCompress() string                      { return n.Compress }
 func (n *AgentNode) GetAutoMemory() string                    { return n.AutoMemory }
+func (n *AgentNode) GetAmbientContext() string                { return n.AmbientContext }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 func (n *AgentNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *AgentNode) GetPermissionAsk() []string               { return n.PermissionAsk }
@@ -700,6 +705,7 @@ func (n *JudgeNode) GetCursors() *CursorInvocation            { return n.Cursors
 func (n *JudgeNode) GetFallbacks() []Fallback                 { return n.Fallbacks }
 func (n *JudgeNode) GetCompress() string                      { return n.Compress }
 func (n *JudgeNode) GetAutoMemory() string                    { return n.AutoMemory }
+func (n *JudgeNode) GetAmbientContext() string                { return n.AmbientContext }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 func (n *JudgeNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *JudgeNode) GetPermissionAsk() []string               { return n.PermissionAsk }

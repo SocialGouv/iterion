@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"math"
 	"net/url"
 	"os"
@@ -326,6 +327,84 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		}
 	}
 	c.warnIfWorkflowAutoMemoryIsInert(w)
+}
+
+// validateAmbientContext enforces that every ambient_context value (the
+// workflow's and each agent/judge node's) is one of the accepted barewords:
+// a typo would otherwise read as "inherit" and hand the node the default, so
+// an invalid value is an ERROR (C184). Empty means unset.
+//
+// It then warns (C185) when an EXPLICIT per-node value meets a backend that
+// does not translate the policy: the node's effective backend and every
+// backend its fallback chain may route to. The workflow default reaches every
+// node, so a mixed-backend workflow would warn on each node that cannot honour
+// it; the workflow-level value is only reported once, when no node at all can
+// honour it. An unresolved backend is left alone: the resolver falls through
+// to env and host detection, so the compiler cannot know.
+//
+// Both the accepted values and the backend list come from pkg/backend/ambient,
+// so the compiler and the engine cannot disagree.
+func (c *compiler) validateAmbientContext(w *Workflow) {
+	valid := func(v string) bool {
+		if strings.TrimSpace(v) == "" {
+			return true
+		}
+		_, ok := ambient.Parse(v)
+		return ok
+	}
+	accepted := strings.Join(ambient.Values, ", ")
+	if !valid(w.AmbientContext) {
+		c.errorfAtSpan(DiagInvalidAmbientContext, c.workflowSpan(w.Name),
+			"workflow %q has invalid ambient_context %q; valid values are %s",
+			w.Name, w.AmbientContext, accepted)
+	}
+	honouring, ignoring := 0, 0
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		kind, value := nn.NodeKind().String(), nn.GetAmbientContext()
+		if !valid(value) {
+			c.errorfAt(DiagInvalidAmbientContext, n.NodeID(), "",
+				"%s %q has invalid ambient_context %q; valid values are %s",
+				kind, n.NodeID(), value, accepted)
+			continue
+		}
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if backend == "" || ambient.Enforces(backend) {
+			honouring++
+		} else {
+			ignoring++
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if backend != "" && !ambient.Enforces(backend) {
+			c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
+				"%s %q: ambient_context: %s is not enforced on backend=%q — it keeps its own conventions; claude_code, claw, codex and pi apply the policy",
+				kind, n.NodeID(), strings.TrimSpace(value), backend)
+		}
+		for _, f := range nn.GetFallbacks() {
+			if f.Action == FallbackActionSkip {
+				continue
+			}
+			routeBackend := f.Backend
+			if routeBackend == "" {
+				routeBackend = backend
+			}
+			if routeBackend != "" && routeBackend != backend && !ambient.Enforces(routeBackend) {
+				c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
+					"%s %q: ambient_context: %s is not enforced if fallback route %q runs on backend=%q",
+					kind, n.NodeID(), strings.TrimSpace(value), f.Name, routeBackend)
+			}
+		}
+	}
+	if strings.TrimSpace(w.AmbientContext) != "" && valid(w.AmbientContext) && ignoring > 0 && honouring == 0 {
+		c.warnfAtSpan(DiagAmbientContextNotEnforced, c.workflowSpan(w.Name),
+			"workflow %q sets ambient_context: %s but no agent/judge node runs on a backend that enforces it (claude_code, claw, codex, pi)",
+			w.Name, strings.TrimSpace(w.AmbientContext))
+	}
 }
 
 // warnIfWorkflowAutoMemoryIsInert covers the one shape the per-node rule above

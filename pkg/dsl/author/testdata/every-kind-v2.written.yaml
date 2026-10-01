@@ -197,6 +197,7 @@ nodes:
     await: wait_all
     compress: on
     auto_memory: off
+    ambient_context: none
     permission: ask
     allow: [Read(**)]
     ask: [Bash(git *)]
@@ -251,6 +252,7 @@ nodes:
     model: anthropic/claude-opus-5
     output: verdict
     reasoning_effort: high
+    ambient_context: operator
     sandbox: none
   - router: split
     mode: fan_out_each
@@ -394,6 +396,7 @@ workflow:
   default_backend: claw
   compress: on
   auto_memory: on
+  ambient_context: all
   loop_budget_guard: on
   repo_devbox: off
   workspace_checkpoint: on

@@ -759,7 +759,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			Timeout:  a.Timeout,
 			Readonly: a.Readonly, FullAccess: a.FullAccess, Images: a.Images, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, AutoMemory: a.AutoMemory, Permission: a.Permission,
+			Compress: a.Compress, AutoMemory: a.AutoMemory, AmbientContext: a.AmbientContext, Permission: a.Permission,
 			Allow: a.Allow, Ask: a.Ask, Deny: a.Deny, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
@@ -797,7 +797,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			Timeout:  j.Timeout,
 			Readonly: j.Readonly, FullAccess: j.FullAccess, Images: j.Images, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, AutoMemory: j.AutoMemory, Permission: j.Permission,
+			Compress: j.Compress, AutoMemory: j.AutoMemory, AmbientContext: j.AmbientContext, Permission: j.Permission,
 			Allow: j.Allow, Ask: j.Ask, Deny: j.Deny, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
@@ -1256,6 +1256,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 
 		if wf.AutoMemory != "" {
 			writeProp(&w.b, "auto_memory", wf.AutoMemory)
+		}
+
+		if wf.AmbientContext != "" {
+			writeProp(&w.b, "ambient_context", wf.AmbientContext)
 		}
 
 		if wf.LoopBudgetGuard != "" {
@@ -1734,6 +1738,7 @@ type llmFields struct {
 	Await                               ast.AwaitMode
 	Compress                            string
 	AutoMemory                          string
+	AmbientContext                      string
 	Permission                          string
 	Allow, Ask, Deny                    []string
 	Needs                               []string
@@ -1833,6 +1838,9 @@ func writeAgentFields(b *buf, f llmFields) {
 	}
 	if f.AutoMemory != "" {
 		writeProp(b, "auto_memory", f.AutoMemory)
+	}
+	if f.AmbientContext != "" {
+		writeProp(b, "ambient_context", f.AmbientContext)
 	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)

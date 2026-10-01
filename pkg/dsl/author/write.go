@@ -1020,6 +1020,7 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 	}
 	p.str("compress", d.Compress)
 	p.str("auto_memory", d.AutoMemory)
+	p.str("ambient_context", d.AmbientContext)
 	p.str("permission", d.Permission)
 	p.set("allow", strList(d.Allow))
 	p.set("ask", strList(d.Ask))
@@ -1372,6 +1373,7 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	p.str("default_backend", wf.DefaultBackend)
 	p.str("compress", wf.Compress)
 	p.str("auto_memory", wf.AutoMemory)
+	p.str("ambient_context", wf.AmbientContext)
 	p.str("loop_budget_guard", wf.LoopBudgetGuard)
 	p.str("repo_devbox", wf.RepoDevbox)
 	p.str("workspace_checkpoint", wf.WorkspaceCheckpoint)

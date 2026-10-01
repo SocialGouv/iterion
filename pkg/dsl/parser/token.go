@@ -173,6 +173,8 @@ const (
 	TokenCompress
 	// AutoMemory backend auto-memory (MEMORY.md) switch: on|off
 	TokenAutoMemory
+	// AmbientContext the ambient context a node inherits: none|workspace|operator|all
+	TokenAmbientContext
 	// LoopBudgetGuard back-edge affordability guard switch: on|off
 	TokenLoopBudgetGuard
 	// RepoDevbox target-repo devbox.json provisioning switch: on|off
@@ -350,6 +352,7 @@ var tokenNames = map[TokenType]string{
 	TokenWorktree:            "worktree",
 	TokenCompress:            "compress",
 	TokenAutoMemory:          "auto_memory",
+	TokenAmbientContext:      "ambient_context",
 	TokenLoopBudgetGuard:     "loop_budget_guard",
 	TokenRepoDevbox:          "repo_devbox",
 	TokenWorkspaceCheckpoint: "workspace_checkpoint",
@@ -498,6 +501,7 @@ var keywords = map[string]TokenType{
 	"worktree":              TokenWorktree,
 	"compress":              TokenCompress,
 	"auto_memory":           TokenAutoMemory,
+	"ambient_context":       TokenAmbientContext,
 	"loop_budget_guard":     TokenLoopBudgetGuard,
 	"repo_devbox":           TokenRepoDevbox,
 	"workspace_checkpoint":  TokenWorkspaceCheckpoint,
