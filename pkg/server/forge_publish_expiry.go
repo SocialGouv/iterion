@@ -134,20 +134,13 @@ func (s *Server) expireForgePublishGrantForRun(ctx context.Context, runID string
 	if token == "" {
 		return nil // the run held no grant
 	}
-	switch {
-	case !run.Status.IsTerminal():
-		// Paused, or resumed since the outcome event that brought us here
-		// (an event can arrive late): the run will publish again.
-		return nil
-	case run.Status == store.RunStatusFailedResumable &&
-		run.FailureCode != store.FailureDLQParked &&
-		run.RetryState != nil && run.RetryState.RetryAfter != nil:
-		// A DLQ park is final for automation whatever RetryState says, which
-		// is why it is excluded above: only an operator replay wakes it, and
-		// the reconciler already treats it as dead.
+	if !runIsOver(run) {
+		// Paused, resumed since the outcome event that brought us here (an
+		// event can arrive late), or parked on an armed retry: the run will
+		// publish again.
 		return nil
 	}
-	if runOwesGateVerdict(run) && runInputString(run, "head_sha") != "" {
+	if runAwaitsGateRepair(run) {
 		s.forgePublishTokens.expireIn(token, forgePublishGateGrace)
 		return nil
 	}
@@ -182,4 +175,27 @@ func runOwesGateVerdict(run *store.Run) bool {
 		return false
 	}
 	return !runGateDisabled(run)
+}
+
+// runAwaitsGateRepair reports whether a dead run's grant must reach the sweep
+// horizon: the reconciler may still have to answer for it, on the revision it
+// names (one that names none is settled before any forge read).
+func runAwaitsGateRepair(run *store.Run) bool {
+	return runOwesGateVerdict(run) && runInputString(run, "head_sha") != ""
+}
+
+// runAwaitsArmedRetry reports a resumable failure something will actually
+// resume: the runner arms a durable retry for usage-window failures, and that
+// armed retry is the whole promise. A DLQ park is final for automation
+// whatever RetryState still says — only an operator replay wakes it.
+func runAwaitsArmedRetry(run *store.Run) bool {
+	return run != nil && run.Status == store.RunStatusFailedResumable &&
+		run.FailureCode != store.FailureDLQParked &&
+		run.RetryState != nil && run.RetryState.RetryAfter != nil
+}
+
+// runIsOver reports a run that will not publish again: ended, and not parked
+// on a retry that resumes it.
+func runIsOver(run *store.Run) bool {
+	return run != nil && run.Status.IsTerminal() && !runAwaitsArmedRetry(run)
 }

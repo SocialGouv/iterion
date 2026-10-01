@@ -591,6 +591,19 @@ type Delivery struct {
 	// only); the same lanes measure their backoff from it.
 	Attempts int        `bson:"attempts,omitempty" json:"attempts,omitempty"`
 	FailedAt *time.Time `bson:"failed_at,omitempty" json:"failed_at,omitempty"`
+	// ClaimedAt is when the current attempt claimed the row (insert or retry claim).
+	ClaimedAt *time.Time `bson:"claimed_at,omitempty" json:"claimed_at,omitempty"`
+}
+
+// ClaimStart is when the row's current attempt claimed it — what every reader
+// ages a launch still in flight by. A row written before claimed_at existed
+// falls back to its receipt, which a retry claim keeps from the FIRST attempt:
+// such a row reads older than it is.
+func (d Delivery) ClaimStart() time.Time {
+	if d.ClaimedAt != nil {
+		return *d.ClaimedAt
+	}
+	return d.ReceivedAt
 }
 
 // Delivery status values.

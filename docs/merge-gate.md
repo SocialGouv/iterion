@@ -1112,6 +1112,63 @@ completed and then had no way to post the verdict it had computed. The grant's
 TTL is therefore derived from the max retry wait, plus a margin for the resumed
 run itself.
 
+### A verdict the forge refuses for a while waits — it is not lost
+
+A verdict whose post the forge refuses for a rate limit (GitHub answers one
+`403`, or `429`), or for a failure on its side (a `5xx`, a call that timed out
+or was cut), is not a verdict lost: the forge says when its wait ends, or will
+answer a later try. Dropped, it made the run's silence read as a death once the
+limit lifted — the reconciler answered the head with a synthetic "review
+died", and the relaunch lane paid for a second review of a revision the first
+had already judged (#2002: 23 synthetic failures and 17 paid relaunches on
+2026-09-30).
+
+So the publish endpoint keeps such a **pinned** verdict on the run's grant
+(`deferred`: the gate, the review link, the pull request, when it was decided,
+when to retry, how many attempts it had) and answers `gate_error: "deferred
+until <instant>: …"`. The instant is the forge's reset, or a backoff from
+5 min doubling with each attempt — never more than an hour away, whatever the
+forge named. A refusal a retry would only repeat — forbidden, not found, a
+permission the installation withholds — is not deferred.
+
+- **Until then, the run's silence is answered with nothing** — no forge read,
+  no synthetic failure, no relaunch, by the reconciler or the auto-fix lane:
+  the budget a read would spend may be the one exhausted. The check keeps the
+  run's in-flight claim, a run whose verdict waits counts as alive to the
+  relaunch lane, and the grant is not cut back under it.
+- **Once due, the verdict is posted by the deferral's own terms** — its pull
+  request and its pin, whatever the run's inputs say: a bot may pin the commit
+  it pushed rather than the one it was launched on, or a short form of it. The
+  attempt is booked on the grant before the post, so a grant that cannot be
+  written is not posted from at all. A verdict that lands is recorded and, when
+  it answers the run's own check, settled like one the endpoint posted.
+- **A newer verdict is not overwritten.** Every verdict the endpoint posts,
+  fresh or replayed, first claims its check for the moment it was decided — a
+  mark per (forge, repo, head, check) naming the newest decision and the
+  status it posts — and a decision older than the mark is superseded: the
+  newer one answers the head, and a run whose own verdict it supersedes is
+  settled. Two posts in flight at once can still land out of order; the one
+  that landed then re-reads the mark and puts the newer status back on top —
+  up to three times, a decision claiming inside the last write is said in the
+  log, and the next verdict posted on this head puts it back. A decision that
+  will neither post nor wait — its post refused for good, its deferral
+  unwritable, no revision pinned — lets go of the check, so the deferred
+  verdicts older than it can still land; only a replica dying between its
+  claim and its post leaves the claim standing until the mark lapses, and
+  that run's own repair still answers the head. Decisions are ordered by the
+  clock of the replica that took each one (the replicas' clocks are assumed
+  synchronized far below the gap between two verdicts on one head), and a
+  status written outside iterion (an operator's manual override) is not
+  ordered: a replay due after it overwrites it.
+- A replay the forge still limits, or that fails on its side, waits again — 12
+  attempts in all, the refused original included. One refused for good (the
+  head moved, the pull request closed) or whose attempts are spent is cleared,
+  and the run handed back to the ordinary repair below; a run that owes no
+  repair then has its grant cut back, as its end would have.
+
+An unpinned verdict is not kept: posted hours later, it would land on whatever
+head the pull request has then.
+
 ### The grant's other two bounds: the run's own end, and a mint that fails
 
 A TTL sized for a seven-day quota wait is a long life for a credential that a
@@ -1185,10 +1242,20 @@ comment are bounded to once per (PR, head) by a **deterministic card id**
 offers of one dead run can still race (the event path beside the elected
 sweep, or two sweeps across a lease hand-over), and two racers past a
 List-based dedup would each file the card AND each post the comment — the
-store's unique-id insert is what serialises them. A required check dying
-repeatedly on one revision is a structural signal (a run budget too short for
-the workload, a recurring provider quota, a bot defect), which is a human's
-call.
+store's unique-id insert is what serialises them. Racing offers can also meet
+one relaunch still LAUNCHING: its claim row names no run until the launch
+returns, so a duplicate naming none is not a death for the 10 minutes after
+the claim (`claimed_at`, stamped by every attempt, a retry's included; a row
+written before the field existed dates its claim by its first receipt). A row
+still naming no run past that is a launch that died on the way — or, rarer,
+one whose run started but whose row was never told — and is escalated; a
+failed start read back by a racing loser is left to the retry budget, and a
+relaunch parked on an armed retry counts as alive. The launch tail books what
+it did — the row's run or its failure, the in-flight claims — even when its
+caller has gone, tries a refused row write again, and says so when it still
+cannot. A required check dying repeatedly on one revision is a structural
+signal (a run budget too short for the workload, a recurring provider quota,
+a bot defect), which is a human's call.
 
 A pull request that is **closed or merged** gets no synthetic failure at all:
 it owes nobody a verdict, and "push again to re-run the review" on work that

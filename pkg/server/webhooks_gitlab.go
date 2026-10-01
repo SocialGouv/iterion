@@ -1181,7 +1181,78 @@ func (s *Server) updateWebhookDelivery(ctx context.Context, d webhooks.Delivery)
 	if s.webhookDeliveries == nil {
 		return
 	}
-	_ = s.webhookDeliveries.Update(ctx, d)
+	// A row that misses its update keeps its previous state — a launched run
+	// whose row never names it reads as a launch still in flight, then as one
+	// that died — so a failed write is tried again (a primary election, a
+	// dropped connection), then said, not swallowed.
+	//
+	// A write that failed may still have COMMITTED (a lost ack), and a
+	// concurrent redelivery may have claimed the row since: rewriting the
+	// stale copy would roll that claim back. So the row is read BEFORE the
+	// first write, and a retry happens only while the row still is what it
+	// was then — the write landed (a lost ack) and a concurrent writer each
+	// end the loop, the newer state standing.
+	pre, rerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, d.IdempotencyKey)
+	if rerr == nil && deliveryRowEquals(pre, d) {
+		return // the row already says what this write says
+	}
+	var err error
+loop:
+	for attempt := 1; attempt <= webhookDeliveryUpdateAttempts; attempt++ {
+		err = s.webhookDeliveries.Update(ctx, d)
+		if err == nil || errors.Is(err, webhooks.ErrNotFound) || attempt == webhookDeliveryUpdateAttempts {
+			break
+		}
+		if rerr != nil {
+			// The row's prior state is unknown: a retry cannot be guarded, so
+			// give up and say the write failed.
+			break
+		}
+		cur, cerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, d.IdempotencyKey)
+		switch {
+		case cerr != nil:
+			// The row cannot be told either: retrying blind may roll a
+			// concurrent claim back.
+			break loop
+		case deliveryRowEquals(cur, d):
+			// The write landed after all — a lost ack, not a lost write.
+			err = nil
+			break loop
+		case !deliveryRowEquals(cur, pre):
+			// A concurrent writer owns the row now; the newer state stands.
+			err = nil
+			break loop
+		}
+		select {
+		case <-ctx.Done():
+			break loop
+		case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+		}
+	}
+	if err != nil && s.logger != nil {
+		s.logger.Warn("webhooks: delivery %s (%s, run %q) was not recorded: %v", d.ID, d.Status, d.RunID, err)
+	}
+}
+
+// webhookDeliveryUpdateAttempts bounds the writes one row update tries.
+const webhookDeliveryUpdateAttempts = 3
+
+// deliveryRowEquals reports whether two rows read the same, field by field:
+// a round-trip through a store may move a time's location, never its instant.
+func deliveryRowEquals(a, b webhooks.Delivery) bool {
+	at := func(x, y *time.Time) bool {
+		return (x == nil) == (y == nil) && (x == nil || x.Equal(*y))
+	}
+	return a.ID == b.ID && a.TenantID == b.TenantID && a.WebhookID == b.WebhookID &&
+		a.EventKind == b.EventKind &&
+		a.ProjectPath == b.ProjectPath && a.SubjectID == b.SubjectID &&
+		a.SubjectSHA == b.SubjectSHA &&
+		a.PayloadHash == b.PayloadHash && a.Status == b.Status &&
+		a.BotID == b.BotID && a.RunID == b.RunID && a.Error == b.Error &&
+		a.SourceIP == b.SourceIP && a.IdempotencyKey == b.IdempotencyKey &&
+		a.Attempts == b.Attempts &&
+		a.ReceivedAt.Equal(b.ReceivedAt) && at(a.LaunchedAt, b.LaunchedAt) &&
+		at(a.FailedAt, b.FailedAt) && at(a.ClaimedAt, b.ClaimedAt)
 }
 
 // scheduledLaunchActor is the auth principal a cron tick launches under: the

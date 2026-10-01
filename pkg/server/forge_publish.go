@@ -92,6 +92,10 @@ type ForgePublishGrant struct {
 	// posted, without reading the forge. It names the grant, not the run: it
 	// speaks for the run only while the grant is not Shared.
 	Verdict *gateVerdict `json:"verdict,omitempty"`
+	// Deferred is a verdict whose post the forge refused for a rate limit or a
+	// transient failure, kept for the reconciler to post once the wait is over
+	// (deferGateVerdict).
+	Deferred *gateDeferral `json:"deferred,omitempty"`
 	// Shared marks a grant a second run publishes with — a launch that pinned
 	// the token, a fork (shareGrant) — so no one run's verdict or end may cut
 	// it back to the post-run grace (the end of a gating run that names its
@@ -524,8 +528,12 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		// publish failure. Coupling the two meant one forge hiccup left the
 		// PR's required check permanently absent — indistinguishable from
 		// "never reviewed", and unblockable by another review.
-		gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, "")
-		s.recordGateVerdict(token, gate)
+		decision := newGateDecision(s.gateNow())
+		gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, "", decision)
+		if !s.deferGateVerdict(token, grant.Repo, number, req.Gate, "", decision, &gate) && !gate.posted && !gate.superseded {
+			s.releaseGateDecision(r.Context(), gate.markKey, decision)
+		}
+		s.recordGateVerdict(token, gate, decision)
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %s %s#%d review failed (%v); gate posted=%v state=%q",
 				conn.Provider, grant.Repo, number, reviewErr, gate.posted, gate.state)
@@ -552,8 +560,12 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 	// Merge gate: post the deterministic revi/review commit status on the PR
 	// head SHA. Additive — a failure here never fails the publish (the review
 	// already landed), it is reported in the response + logged.
-	gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, res.URL)
-	s.recordGateVerdict(token, gate)
+	decision := newGateDecision(s.gateNow())
+	gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, res.URL, decision)
+	if !s.deferGateVerdict(token, grant.Repo, number, req.Gate, res.URL, decision, &gate) && !gate.posted && !gate.superseded {
+		s.releaseGateDecision(r.Context(), gate.markKey, decision)
+	}
+	s.recordGateVerdict(token, gate, decision)
 	if s.logger != nil && gate.requested {
 		if gate.posted {
 			s.logger.Info("forge gate: %s %s#%d @%s → %s (%q)", conn.Provider, grant.Repo, number, gate.sha, gate.state, gate.context)
@@ -813,12 +825,21 @@ func (s *Server) gateClientFor(ctx context.Context, conn forge.Connection) (forg
 // A record that fails must not leave an EARLIER one standing — the reconciler
 // would trust a verdict the forge no longer shows — so the earlier record is
 // cleared, and the line says whether that landed.
-func (s *Server) recordGateVerdict(token string, gate gateOutcome) {
+//
+// A verdict that lands also retires the grant's deferral on the same check,
+// unless that one was decided later: it is still owed. A deferral on another
+// check is another check's verdict.
+func (s *Server) recordGateVerdict(token string, gate gateOutcome, decision gateDecision) {
 	if !gate.posted || s.forgePublishTokens == nil {
 		return
 	}
 	v := &gateVerdict{SHA: gate.sha, Context: gate.context, State: gate.state, At: time.Now().UTC()}
-	_, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) { g.Verdict = v })
+	_, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
+		g.Verdict = v
+		if d := g.Deferred; d != nil && gateContextOf(&d.Gate) == gate.context && !d.Decision.newerThan(decision) {
+			g.Deferred = nil
+		}
+	})
 	if err == nil {
 		return
 	}
@@ -845,6 +866,20 @@ type gateOutcome struct {
 	// shaUnpinned records a gate that carried no audited_sha: the status landed
 	// on whatever head was resolved, with nothing tying it to what was read.
 	shaUnpinned bool
+	// rateLimited reports a refusal the forge gave for a rate limit, and
+	// resetAt when it said its wait ends (zero: it said nothing).
+	rateLimited bool
+	resetAt     time.Time
+	// transient reports a refusal worth retrying: the forge failed on its own
+	// side (5xx), or never answered (noteTransient), or the verdict could not
+	// be ordered against newer ones.
+	transient bool
+	// superseded reports a verdict not posted because a newer one owns the
+	// head (claimGateDecision).
+	superseded bool
+	// markKey is the verdict-order mark this decision claimed (set once the
+	// claim was granted), for the caller that must release it again.
+	markKey string
 }
 
 // postGateStatus posts the deterministic merge-gate commit status. It resolves
@@ -852,7 +887,7 @@ type gateOutcome struct {
 // maps the bot's blocking-count verdict to success/failure, and writes the
 // commit status through the connection's live admin client. Every failure is
 // reported (never silently swallowed) but non-fatal to the publish.
-func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo string, number int, gate *publishReviewGate, reviewURL string) gateOutcome {
+func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo string, number int, gate *publishReviewGate, reviewURL string, decision gateDecision) gateOutcome {
 	if gate == nil || !gate.Enabled {
 		return gateOutcome{}
 	}
@@ -863,6 +898,8 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	gc, err := s.gateClientFor(ctx, conn)
 	if err != nil {
 		out.errText = "gate client: " + err.Error()
+		out.noteRateLimit(err)
+		out.noteTransient(err)
 		return out
 	}
 	if gc == nil {
@@ -872,6 +909,8 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	pr, err := gc.GetPullRequest(ctx, repo, number)
 	if err != nil {
 		out.errText = "resolve head sha: " + err.Error()
+		out.noteRateLimit(err)
+		out.noteTransient(err)
 		return out
 	}
 	if strings.TrimSpace(pr.HeadSHA) == "" {
@@ -947,6 +986,21 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	}
 	out.state = string(state)
 
+	// The check is claimed for this decision before the post, so a verdict
+	// decided earlier and posted later does not overwrite a newer one.
+	markKey := gateDecisionKey(conn, repo, out.sha, out.context)
+	mark := gateMark{Decision: decision, Status: gateMarkStatus{State: string(state), Description: desc, TargetURL: reviewURL}}
+	switch ok, err := s.claimGateDecision(ctx, markKey, mark); {
+	case err != nil:
+		out.errText = "order the verdict against newer ones: " + err.Error()
+		out.transient = true
+		return out
+	case !ok:
+		out.errText = "a newer verdict on " + out.sha + " supersedes it"
+		out.superseded = true
+		return out
+	}
+	out.markKey = markKey
 	if err := gc.SetCommitStatus(ctx, repo, out.sha, forge.CommitStatus{
 		State:       state,
 		Context:     out.context,
@@ -954,9 +1008,18 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		TargetURL:   reviewURL,
 	}); err != nil {
 		out.errText = "set commit status: " + err.Error()
+		out.noteRateLimit(err)
+		out.noteTransient(err)
+		if !out.rateLimited && !out.transient {
+			// A refusal a retry repeats: this verdict will neither post nor
+			// wait, and its claim must not supersede older deferred verdicts
+			// nobody else will answer.
+			s.releaseGateDecision(ctx, markKey, decision)
+		}
 		return out
 	}
 	out.posted = true
+	s.reassertNewerVerdict(ctx, gc, markKey, repo, out.sha, out.context, decision)
 	// Warned HERE rather than at the caller: a certificate that landed without
 	// a pin is the measurement the "absent still posts" decision rests on, and
 	// the caller has two exits — the review-failure branch answers 502 and

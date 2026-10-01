@@ -148,3 +148,45 @@ product decision the code refused to take on its own.
   answers 401 once the grace runs out. The exposure ends when the last grant
   an old pod minted or left unshared expires — its TTL, up to nine days — not
   with the rollout itself.
+
+## Addendum (#2002 lot 3) — a verdict the forge refuses for a while is deferred, not lost
+
+- The grant record gains `deferred {gate, review_url, repo, number, decision,
+  retry_at, attempts}`, written by the publish endpoint for a **pinned**
+  verdict whose post the forge refused for a rate limit
+  (`forge.StatusError.RateLimited()`, #1994) or a transient failure (a `5xx`,
+  a call that timed out or was cut, a verdict the order store could not
+  place). The retry instant is the forge's reset, else a backoff from 5 min
+  doubling — capped at an hour either way.
+- Until then the run's silence is answered with nothing — no forge read, no
+  synthetic failure, no relaunch, by the reconciler or the auto-fix lane. The
+  grant is not cut back under a deferral, and the relaunch lane counts a run
+  whose verdict waits as alive.
+- Once due, the reconciler posts it **by the deferral's own terms** (its pull
+  request and pin), before anything the run's inputs decide, booking the
+  attempt on the grant first. A replay that is refused again for those reasons
+  waits again (12 attempts in all, the original included); one refused for
+  good, or out of attempts, clears it and the ordinary repair takes over.
+- **Decisions are ordered.** Every verdict the endpoint posts claims its check
+  first — a mark per (forge, repo, head, check), Valkey or memory twin, naming
+  the newest decision and the status it posts — so a decision older than the
+  mark is superseded (the newer verdict answers the head, and the run whose
+  own verdict it supersedes is settled),
+  and a post that lands after a newer one's puts the newer status back on
+  top — up to three re-reads, a decision claiming inside the last write
+  logged and healed by the next post there. A decision that will neither post
+  nor wait releases its claim (the mark falls back to its predecessor), so
+  older deferred verdicts still land; only a replica dying between its claim
+  and its post leaves the claim until the mark lapses — that run's own repair
+  still answers the head.
+  Assumed: the replicas' clocks are synchronized far below the gap between two
+  verdicts on one head; a status posted outside iterion is not ordered (a
+  replay due after a manual override overwrites it). Two connections to one
+  forge share one status stream, and so its order: a late post may re-assert
+  the other connection's verdict text, which is already public on that pull
+  request.
+- **Consequence:** during a forge limit, a run's required check keeps its
+  in-flight claim until the reset, then gets the newest real verdict — instead
+  of a synthetic failure and a paid relaunch at the reset.
+- The relaunch lane's claim rows carry `claimed_at`: a duplicate naming no run
+  is a relaunch launching for 10 minutes after its claim, a death past that.
