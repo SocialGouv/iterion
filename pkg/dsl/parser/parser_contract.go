@@ -117,9 +117,20 @@ func (p *parser) contractIdent(name string, dotted bool) string {
 	return v
 }
 
-func (p *parser) contractJSONProp() json.RawMessage {
-	p.expect(TokenColon)
-	return p.contractJSON()
+func (p *parser) contractJSONProp(prop Token) json.RawMessage {
+	if _, ok := p.expect(TokenColon); !ok {
+		return nil
+	}
+	v := p.contractJSON()
+	// ANY failure that leaves the cursor on the line end — a container left
+	// open at it, a scalar refused, junk after the value — is the broken
+	// text an inline list broken across lines is, and gets the same
+	// recovery (#1630): without it the broken line's DEDENT closes the
+	// port's block and the property after this one is lost.
+	if v == nil && lineEnds(p.peek()) {
+		p.resyncBrokenBracketList(prop)
+	}
+	return v
 }
 
 // parseContractDecl reads `contract <name>:` and its body.
@@ -209,7 +220,7 @@ func (p *parser) parseContractPorts() []*ast.PortDecl {
 						port.Nullable = v
 					}
 				case "default":
-					port.Default = p.contractJSONProp()
+					port.Default = p.contractJSONProp(prop)
 				case "min_items":
 					if v, ok := p.contractInt(prop.Value); ok {
 						port.MinItems = &v
@@ -268,7 +279,7 @@ func (p *parser) parseContractCriterion(t Token) *ast.CriterionDecl {
 		case "port":
 			c.Port = p.contractIdent(prop.Value, true)
 		case "params":
-			c.Params = p.contractJSONProp()
+			c.Params = p.contractJSONProp(prop)
 		default:
 			return false
 		}

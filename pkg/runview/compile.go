@@ -278,7 +278,14 @@ func relLaunchError(path, bundleDir string, u *unit.Unit, err error) error {
 		}
 	}
 	if text != err.Error() {
-		return errors.New(text)
+		err = errors.New(text)
+	}
+	if u != nil && u.RootCutRefused() {
+		// The unit's own root cut was refused (#2047): this body keeps
+		// absolute names, so it also says why — the boundary serves an error
+		// TEXT, never the diagnostics list the E048 warning rides. The %w
+		// keeps the refusal's chain.
+		return fmt.Errorf("%w (file names not cut: the unit's root is the filesystem root)", err)
 	}
 	return err
 }

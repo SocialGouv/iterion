@@ -41,7 +41,9 @@ the parse-stage `E0xx` codes are in
 - One unit loader serves the CLI, the server, the runner and the studio; the
   studio saves each declaration back into the file that owns it. A path
   outside `lib/`, a missing fragment or a cycle is refused by name
-  (E044–E047); a file that imports, compiled alone, is refused as such (C030).
+  (E044–E047); a unit rooted at the filesystem's own root is named by a
+  warning instead of trusted with a name cut that can match nothing (E048);
+  a file that imports, compiled alone, is refused as such (C030).
   See [import](import.md).
 
 ## One description of the grammar, rendered everywhere
