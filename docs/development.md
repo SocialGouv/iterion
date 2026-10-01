@@ -124,10 +124,16 @@ from.
 task studio:dev              # backend + Vite HMR
 task studio:dev:backend
 task studio:dev:frontend
-task cloud:up                # local Mongo/NATS/MinIO/server stack
+task cloud:up                # local Mongo/NATS/SeaweedFS/server stack
+task cloud:test:s3           # S3 compatibility bench against its SeaweedFS, in its own bucket
 task cloud:logs
 task cloud:down              # also removes compose volumes
 ```
+
+A stack started before SeaweedFS replaced MinIO leaves two volumes that
+`cloud:down` no longer knows; remove them once with
+`docker volume rm -f iterion-cloud_minio-data iterion-cloud_runner-work` (`-f`
+ignores one that is not there).
 
 Desktop, chart, image, and cross-platform packaging tasks are listed by `task --list-all`; use their dedicated runbooks before releasing: [desktop build](desktop-build.md), [desktop release](desktop-release-checklist.md), and [cloud deployment](cloud-deployment.md).
 
