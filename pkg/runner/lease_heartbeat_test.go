@@ -8,7 +8,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -217,36 +220,84 @@ func TestLeaseHeartbeat_aFinishedRunKeepsItsLeaseThroughItsPostEngineSteps(t *te
 	})
 }
 
-// TestAwaitedAfterEngine_isWhatTheStoreSays: a resume can wait on a run its
-// engine returned with an error, and on one it left paused without an error
-// (a review dialogue re-paused for its next reply); only a run the store
-// reads finished is waited on by nobody. A run that cannot be read is held
-// as a park is.
+// TestAwaitedAfterEngine_isWhatTheStoreSays: a resume can wait on a run the
+// store reads parked, paused (a review dialogue re-paused for its next
+// reply) or still running; only a run it reads finished is waited on by
+// nobody. A run that cannot be read is held as a park is.
 func TestAwaitedAfterEngine_isWhatTheStoreSays(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
-	for _, status := range []store.RunStatus{store.RunStatusFinished, store.RunStatusPausedWaitingHuman} {
+	for _, status := range []store.RunStatus{store.RunStatusFinished, store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusRunning} {
 		if err := st.SaveRun(ctx, &store.Run{ID: "run-" + string(status), TenantID: "team-1", OwnerID: "u1", Status: status}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 	for _, tc := range []struct {
-		name   string
-		runID  string
-		runErr error
-		want   bool
+		name  string
+		runID string
+		want  bool
 	}{
-		{"an error", "run-" + string(store.RunStatusFinished), runtime.ErrRunPaused, true},
-		{"finished", "run-" + string(store.RunStatusFinished), nil, false},
-		{"re-paused without an error", "run-" + string(store.RunStatusPausedWaitingHuman), nil, true},
-		{"unreadable", "run-absent", nil, true},
+		{"finished", "run-" + string(store.RunStatusFinished), false},
+		{"re-paused", "run-" + string(store.RunStatusPausedWaitingHuman), true},
+		{"parked", "run-" + string(store.RunStatusFailedResumable), true},
+		{"still running", "run-" + string(store.RunStatusRunning), true},
+		{"unreadable", "run-absent", true},
 	} {
-		if got := r.awaitedAfterEngine(ctx, tc.runID, tc.runErr); got != tc.want {
+		if got := r.awaitedAfterEngine(ctx, tc.runID); got != tc.want {
 			t.Errorf("%s: awaitedAfterEngine = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// finishEventFails is a store whose run_finished event cannot be appended:
+// the engine has written the run finished, and returns that error.
+type finishEventFails struct{ store.RunStore }
+
+func (s finishEventFails) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	if evt.Type == store.EventRunFinished {
+		return nil, errors.New("the event log is unreachable")
+	}
+	return s.RunStore.AppendEvent(ctx, runID, evt)
+}
+
+func (s finishEventFails) Unwrap() store.RunStore { return s.RunStore }
+
+// TestExecuteRun_aRunFinishedPastAnEngineErrorIsAwaitedByNobody: the engine
+// wrote the run finished, then returned an error — its run_finished event
+// was not appended. What the store reads decides: nobody waits on a
+// finished run, so its post-engine steps are not held to a resume's
+// ceiling.
+func TestExecuteRun_aRunFinishedPastAnEngineErrorIsAwaitedByNobody(t *testing.T) {
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-finished-past-an-error"
+	if _, err := st.CreateRun(ctx, runID, "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+	body, err := ast.MarshalFile(pr.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Store: finishEventFails{st}, WorkDir: t.TempDir(), Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: runID, TenantID: "team-1", OwnerID: "u1", WorkflowName: "main", IRCompiled: body}
+	var awaited []bool
+	execErr := r.executeRun(ctx, msg, nil, func(a bool) { awaited = append(awaited, a) })
+	if execErr == nil {
+		t.Fatal("the engine returned no error: its run_finished event was appended")
+	}
+	if run, err := st.LoadRun(ctx, runID); err != nil || run.Status != store.RunStatusFinished {
+		t.Fatalf("run = %+v (%v), want it written finished before the engine's error", run, err)
+	}
+	if len(awaited) != 1 || awaited[0] {
+		t.Fatalf("a run the store reads finished is held as awaited (%v) because its engine returned %v", awaited, execErr)
 	}
 }

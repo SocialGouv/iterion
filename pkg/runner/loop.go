@@ -2904,7 +2904,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		}
 	}
 	if engineReturned != nil {
-		engineReturned(r.awaitedAfterEngine(ctx, msg.RunID, runErr))
+		engineReturned(r.awaitedAfterEngine(ctx, msg.RunID))
 	}
 	if runErr == nil {
 		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)
@@ -2975,14 +2975,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 }
 
 // awaitedAfterEngine reports whether a resume can wait on a run its engine
-// just returned: one that returned an error (a park, an interruption, a
-// death), and one it left paused without an error (a review dialogue
-// re-paused for its next reply). Only a run the store reads finished is
-// waited on by nobody; a run that cannot be read is held as a park is.
-func (r *Runner) awaitedAfterEngine(ctx context.Context, runID string, runErr error) bool {
-	if runErr != nil {
-		return true
-	}
+// just returned, from what the store reads, whatever the engine returned: a
+// park, an interruption, a death, a review dialogue re-paused for its next
+// reply can be resumed; a run the store reads finished is waited on by
+// nobody, an error its engine returned past the finish included (its
+// run_finished event not appended). A run that cannot be read is held as a
+// park is.
+func (r *Runner) awaitedAfterEngine(ctx context.Context, runID string) bool {
 	loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	run, err := r.cfg.Store.LoadRun(loadCtx, runID)
