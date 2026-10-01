@@ -66,7 +66,7 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
   const toggleExpanded = useUIStore((s) => s.toggleExpanded);
   const toggleLayer = useUIStore((s) => s.toggleLayer);
   const setCanvasTool = useUIStore((s) => s.setCanvasTool);
-  const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
+  const setPendingFitNodeId = useSelectionStore((s) => s.setPendingFitNodeId);
   const dismissEscape = useEscapeStack();
 
   const { search, quickAddMenu, setQuickAddMenu, setContextMenu, onSelectAll } = deps;

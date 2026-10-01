@@ -71,6 +71,8 @@ describe("the editor deep link", () => {
 
     expect(selectedNodeOf(tabId)).toBe("agent_1");
     expect(screen.getByText(/Opened from run/)).toBeTruthy();
+    // And asks this tab's canvas to centre on it.
+    expect(getOrCreateSelectionStore(tabId).getState().pendingFitNodeId).toBe("agent_1");
   });
 
   it("is left alone by a tab opened for another file", () => {
