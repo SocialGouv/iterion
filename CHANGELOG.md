@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.221.1](https://github.com/SocialGouv/iterion/compare/v3.221.0...v3.221.1) (2026-10-01)
+
+### Bug Fixes
+
+* **netproxy:** model requests keep their placeholders, inspected requests stay on their tunnel, plain HTTP is inspected ([#2031](https://github.com/SocialGouv/iterion/issues/2031)) ([9abcadd](https://github.com/SocialGouv/iterion/commit/9abcadd153e49ad0007d25ffc833f421b8cc0ce9))
+
+    <details><summary>why</summary>
+
+    The sandbox egress proxy's inspection now tells model API traffic from tool traffic, and applies one inspection to every request it forwards:
+
+    </details>
+
 ## [3.221.0](https://github.com/SocialGouv/iterion/compare/v3.220.2...v3.221.0) (2026-10-01)
 
 ### Features
