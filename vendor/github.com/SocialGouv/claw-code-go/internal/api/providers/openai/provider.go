@@ -81,6 +81,9 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	default:
 		return nil, fmt.Errorf("OpenAI provider: unknown OpenAIWireAPI %q (want %q, %q or empty)", cfg.OpenAIWireAPI, api.OpenAIWireChat, api.OpenAIWireResponses)
 	}
+	if cfg.OpenAIGenericRequest && cfg.OpenAIWireAPI != api.OpenAIWireChat {
+		return nil, fmt.Errorf("OpenAI provider: OpenAIGenericRequest needs OpenAIWireAPI %q: the automatic dispatch picks the endpoint from the model id, and only chat requests are shaped generically", api.OpenAIWireChat)
+	}
 	if cfg.OpenAIModelVerbatim && cfg.Model == "" {
 		return nil, fmt.Errorf("OpenAI provider: OpenAIModelVerbatim needs a model: the default OpenAI model is not a gateway's model id")
 	}
@@ -146,6 +149,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		WireAPI:          cfg.OpenAIWireAPI,
 		StreamUsage:      cfg.OpenAIStreamUsage,
 		ModelVerbatim:    cfg.OpenAIModelVerbatim,
+		GenericRequest:   cfg.OpenAIGenericRequest,
 	}, nil
 }
 
@@ -171,6 +175,9 @@ type Client struct {
 	StreamUsage bool
 	// ModelVerbatim sends the model id as given (no prefix strip, no claude swap).
 	ModelVerbatim bool
+	// GenericRequest shapes chat requests without reading the model id
+	// (max_tokens, tuning parameters as given).
+	GenericRequest bool
 }
 
 // ----- Request types ---------------------------------------------------------
@@ -317,7 +324,10 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error)
 	if c.ModelVerbatim {
 		wireModel = model
 	}
-	reasoning := isReasoningModel(model)
+	// api.openai.com's request shape follows the model's name; a generic
+	// OpenAI-compatible endpoint's does not.
+	reasoning := !c.GenericRequest && isReasoningModel(model)
+	maxCompTokens := !c.GenericRequest && usesMaxCompletionTokens(bareModel)
 
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
@@ -342,7 +352,7 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error)
 		Stop:             req.Stop,
 		ReasoningEffort:  req.ReasoningEffort,
 		isReasoningModel: reasoning,
-		useMaxCompTokens: usesMaxCompletionTokens(bareModel),
+		useMaxCompTokens: maxCompTokens,
 	}
 	// tool_choice is meaningless — and rejected — without tools. It reaches
 	// api.openai.com and callers that chose the chat wire; other hosts keep

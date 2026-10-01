@@ -235,7 +235,8 @@ func statusOf(s string) (int, bool) {
 // permanentProviderError reports whether an error's type or code names a
 // condition no new request clears: a malformed or refused request, missing
 // rights, an exhausted balance, a policy or content refusal, an unusable
-// image, or a 4xx status the HTTP path does not retry either (claw's
+// image, an input a validator rejected (Hugging Face TGI's `validation`
+// error_type), or a 4xx status the HTTP path does not retry either (claw's
 // IsRetryableStatus: 408, 409, 429 and 5xx are retried). A permanent type
 // counts in either field — Ollama's Responses failures carry it as their
 // code. Two labels are no verdict on their own: invalid_request_error beside
@@ -251,7 +252,7 @@ func permanentProviderError(typ, code string) bool {
 			if !retryableStatus {
 				return true
 			}
-		case "authentication_error", "permission_error", "not_found_error", "billing_error", "insufficient_quota":
+		case "authentication_error", "permission_error", "not_found_error", "billing_error", "insufficient_quota", "validation":
 			return true
 		}
 	}

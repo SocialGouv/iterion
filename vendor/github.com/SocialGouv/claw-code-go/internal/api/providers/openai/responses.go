@@ -144,8 +144,11 @@ type oaiResponsesEvent struct {
 	Response *oaiResponsesFinal `json:"response,omitempty"`
 
 	// type:"error" top-level SSE error frame (account/quota failures,
-	// model unavailable, etc.)
-	Error *oaiResponsesError `json:"error,omitempty"`
+	// model unavailable, etc.). The OpenAI SDKs' error event carries its code
+	// and message at the top level instead of under "error".
+	Error   *oaiResponsesError     `json:"error,omitempty"`
+	Code    openaiwire.LooseString `json:"code,omitempty"`
+	Message openaiwire.LooseString `json:"message,omitempty"`
 }
 
 type oaiResponsesOutputItem struct {
@@ -167,10 +170,22 @@ type oaiResponsesFinal struct {
 }
 
 type oaiResponsesError struct {
-	Reason  string `json:"reason,omitempty"`
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
-	Type    string `json:"type,omitempty"`
+	Reason  string                 `json:"reason,omitempty"`
+	Code    openaiwire.LooseString `json:"code,omitempty"`
+	Message openaiwire.LooseString `json:"message,omitempty"`
+	Type    string                 `json:"type,omitempty"`
+}
+
+// UnmarshalJSON takes an error object, or the bare string some gateways
+// send in its place as its message.
+func (e *oaiResponsesError) UnmarshalJSON(b []byte) error {
+	var text string
+	if json.Unmarshal(b, &text) == nil {
+		*e = oaiResponsesError{Message: openaiwire.LooseString(text)}
+		return nil
+	}
+	type plain oaiResponsesError
+	return json.Unmarshal(b, (*plain)(e))
 }
 
 type oaiResponsesUsage struct {
@@ -182,6 +197,41 @@ type oaiResponsesUsage struct {
 	OutputTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
 	} `json:"output_tokens_details"`
+	// counted records that the decoded object named a token counter.
+	counted bool
+}
+
+// UnmarshalJSON decodes the counters and records whether any was present:
+// a usage object naming none is no account of the call.
+func (u *oaiResponsesUsage) UnmarshalJSON(b []byte) error {
+	type plain oaiResponsesUsage
+	var present struct {
+		InputTokens  *int `json:"input_tokens"`
+		OutputTokens *int `json:"output_tokens"`
+	}
+	if err := json.Unmarshal(b, &present); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, (*plain)(u)); err != nil {
+		return err
+	}
+	u.counted = present.InputTokens != nil || present.OutputTokens != nil
+	return nil
+}
+
+// Counted reports whether the usage object named a token counter.
+func (u *oaiResponsesUsage) Counted() bool { return u != nil && u.counted }
+
+// failureText renders a failure's code and message — "code: message", the
+// message alone, or nothing — each bounded: the text travels on into errors
+// and logs.
+func failureText(code, message openaiwire.LooseString) string {
+	c := httputil.TruncateBody(string(code), httputil.FieldTruncateForLog)
+	m := httputil.TruncateBody(string(message), httputil.BodyTruncateForLog)
+	if c != "" {
+		return c + ": " + m
+	}
+	return m
 }
 
 // ----- Dispatch decision ----------------------------------------------------
@@ -518,7 +568,22 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		outputTokens    int
 		inputTokens     int
 		reasoningTokens int
+		sawUsage        bool
+		// sawTerminal: response.completed arrived. A stream that ends
+		// without it was cut, whatever it streamed before.
+		sawTerminal bool
 	)
+	// frameUsage is the usage a failure frame carries: the provider's own
+	// account of the failed call, or none. Usage only ever rides the
+	// terminal frames, so no other error has any to carry.
+	frameUsage := func(r *oaiResponsesFinal) api.UsageDelta {
+		var u api.UsageDelta
+		if r != nil && r.Usage.Counted() {
+			u = api.UsageDelta{OutputTokens: r.Usage.OutputTokens, InputTokens: r.Usage.InputTokens, Reported: true}
+			u.OutputTokensDetails.ThinkingTokens = r.Usage.OutputTokensDetails.ReasoningTokens
+		}
+		return u
+	}
 
 	// closeBlock emits content_block_stop for a started, not-yet-closed
 	// block. Shared by the text and reasoning close paths and the
@@ -559,6 +624,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 
 	closeReasoning := func(itemID string) bool { return closeBlock(reasonByItem[itemID]) }
 
+scan:
 	for scanner.Scan() {
 		wd.Touch() // any received line (incl. comments/keepalives) = stream alive
 		line := scanner.Text()
@@ -578,6 +644,27 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 
 		var ev oaiResponsesEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			// An event that does not decode is skipped, unless it ends the
+			// response: a failure still fails the stream, and a completion
+			// still completes it — its usage unknown.
+			var head struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal([]byte(data), &head)
+			switch head.Type {
+			case "error":
+				send(api.StreamEvent{Type: api.EventError, ErrorMessage: "openai stream error: " + openaiwire.ErrorEventMessage(data)})
+				return
+			case "response.failed":
+				send(api.StreamEvent{Type: api.EventError, ErrorMessage: "openai response failed: " + httputil.TruncateBody(data, httputil.BodyTruncateForLog)})
+				return
+			case "response.incomplete":
+				send(api.StreamEvent{Type: api.EventError, ErrorMessage: "openai response incomplete: unknown"})
+				return
+			case "response.completed":
+				sawTerminal = true
+				break scan
+			}
 			continue
 		}
 
@@ -592,13 +679,13 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// block" — a downstream symptom that hid the real cause.
 			// Surface as EventError so the agent loop fails fast
 			// with an actionable message.
+			code, message := ev.Code, ev.Message
+			if ev.Error != nil && (ev.Error.Code != "" || ev.Error.Message != "") {
+				code, message = ev.Error.Code, ev.Error.Message
+			}
 			msg := "openai stream error"
-			if ev.Error != nil {
-				if ev.Error.Code != "" {
-					msg = fmt.Sprintf("openai stream error: %s: %s", ev.Error.Code, ev.Error.Message)
-				} else if ev.Error.Message != "" {
-					msg = fmt.Sprintf("openai stream error: %s", ev.Error.Message)
-				}
+			if t := failureText(code, message); t != "" {
+				msg += ": " + t
 			}
 			send(api.StreamEvent{Type: api.EventError, ErrorMessage: msg})
 			return
@@ -612,13 +699,11 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// request entirely".
 			msg := "openai response failed"
 			if ev.Response != nil && ev.Response.Error != nil {
-				if ev.Response.Error.Code != "" {
-					msg = fmt.Sprintf("openai response failed: %s: %s", ev.Response.Error.Code, ev.Response.Error.Message)
-				} else if ev.Response.Error.Message != "" {
-					msg = fmt.Sprintf("openai response failed: %s", ev.Response.Error.Message)
+				if t := failureText(ev.Response.Error.Code, ev.Response.Error.Message); t != "" {
+					msg += ": " + t
 				}
 			}
-			send(api.StreamEvent{Type: api.EventError, ErrorMessage: msg})
+			send(api.StreamEvent{Type: api.EventError, ErrorMessage: msg, Usage: frameUsage(ev.Response)})
 			return
 
 		case "response.created":
@@ -796,10 +881,12 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			}
 
 		case "response.completed":
-			if ev.Response != nil && ev.Response.Usage != nil {
+			sawTerminal = true
+			if ev.Response != nil && ev.Response.Usage.Counted() {
 				outputTokens = ev.Response.Usage.OutputTokens
 				inputTokens = ev.Response.Usage.InputTokens
 				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
+				sawUsage = true
 			}
 			// Reconcile any function_call accumulator that landed
 			// without call_id/name at output_item.added time (under-
@@ -838,24 +925,24 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// stopReason is the source-of-truth set when each output_item
 			// was observed: "tool_use" the moment a function_call item
 			// landed, otherwise the initial "end_turn". No recompute here.
+			//
+			// response.completed is the stream's last event: what follows
+			// it is not read, so a connection held open after it does not
+			// park the reader until the idle watchdog fires.
+			break scan
 
 		case "response.incomplete":
 			// The model stopped before producing its terminal output
 			// (typically max_output_tokens hit while reasoning).
-			// Capture usage so the caller sees a non-zero token cost
-			// and surface as EventError so the agent loop reports a
-			// truncation failure rather than silently treating it as
-			// a successful empty turn.
-			if ev.Response != nil && ev.Response.Usage != nil {
-				outputTokens = ev.Response.Usage.OutputTokens
-				inputTokens = ev.Response.Usage.InputTokens
-				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
-			}
+			// Surface as EventError, carrying the frame's usage so the
+			// caller sees the token cost, so the agent loop reports a
+			// truncation failure rather than silently treating it as a
+			// successful empty turn.
 			reason := "unknown"
 			if ev.Response != nil && ev.Response.IncompleteDetails != nil && ev.Response.IncompleteDetails.Reason != "" {
-				reason = ev.Response.IncompleteDetails.Reason
+				reason = httputil.TruncateBody(ev.Response.IncompleteDetails.Reason, httputil.FieldTruncateForLog)
 			}
-			send(api.StreamEvent{Type: api.EventError, ErrorMessage: fmt.Sprintf("openai response incomplete: %s", reason)})
+			send(api.StreamEvent{Type: api.EventError, ErrorMessage: fmt.Sprintf("openai response incomplete: %s", reason), Usage: frameUsage(ev.Response)})
 			return
 		}
 	}
@@ -885,6 +972,16 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		return
 	}
 
+	// The connection closed — cleanly, or after a [DONE] some proxies
+	// append — before the response completed: what streamed is partial.
+	if !sawTerminal {
+		send(api.StreamEvent{
+			Type:         api.EventError,
+			ErrorMessage: "openai responses stream truncated: closed before response.completed",
+		})
+		return
+	}
+
 	// Close any reasoning blocks whose output_item.done never arrived,
 	// then any text blocks not explicitly closed by their own done event,
 	// each in open order.
@@ -908,7 +1005,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		}
 	}
 
-	usage := api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens}
+	usage := api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens, Reported: sawUsage}
 	usage.OutputTokensDetails.ThinkingTokens = reasoningTokens
 	if !send(api.StreamEvent{
 		Type:       api.EventMessageDelta,

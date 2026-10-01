@@ -115,6 +115,17 @@ type ProviderConfig struct {
 	// "claude…" id by the default OpenAI model. A gateway's model ids are
 	// its own namespace.
 	OpenAIModelVerbatim bool
+
+	// OpenAIGenericRequest shapes chat requests the way a generic
+	// OpenAI-compatible endpoint takes them, whatever the model id spells:
+	// max_tokens, and tuning parameters sent as given. Without it the
+	// provider reads the id as api.openai.com's models need it
+	// (max_completion_tokens for the GPT-5/6 and o-series, no temperature or
+	// top_p for a reasoning model) — wrong for a gateway alias that only
+	// shares the spelling. It needs OpenAIWireAPI = OpenAIWireChat (so not
+	// the ChatGPT forfait), and is not for api.openai.com, whose GPT-5/6
+	// and o-series models refuse max_tokens and tuning parameters.
+	OpenAIGenericRequest bool
 }
 
 // OpenAI endpoint families accepted by ProviderConfig.OpenAIWireAPI.
@@ -143,6 +154,9 @@ func RefuseOpenAIOnlyOptions(provider string, cfg ProviderConfig) error {
 	}
 	if cfg.OpenAIModelVerbatim {
 		set = append(set, "OpenAIModelVerbatim")
+	}
+	if cfg.OpenAIGenericRequest {
+		set = append(set, "OpenAIGenericRequest")
 	}
 	if len(set) == 0 {
 		return nil

@@ -80,8 +80,9 @@ func streamErrorOf(t *testing.T, write func(c net.Conn)) error {
 // What a stream ends on is classified from what claw's parser actually
 // emits, not from a string written to look like it: an error frame after the
 // provider accepted the request is retried unless it names a permanent
-// condition, and on the chat wire a connection cut in the middle of a data
-// line or left silent is retried like any truncated stream.
+// condition, and a connection cut in the middle of a line or left silent is
+// retried like any truncated stream — on the chat wire and the Responses API
+// alike.
 func TestStreamErrors_FromTheRealParser(t *testing.T) {
 	t.Setenv("CLAW_STREAM_IDLE_TIMEOUT", "300ms")
 	frames := []struct {
@@ -113,6 +114,8 @@ func TestStreamErrors_FromTheRealParser(t *testing.T) {
 		{"exception head naming a timeout", `{"error":"Error: upstream request timeout"}`, true, false},
 		{"litellm timeout labelled invalid_request_error", `{"error":{"message":"litellm.Timeout: APITimeoutError - Request timed out.","type":"invalid_request_error","param":null,"code":"408"}}`, true, false},
 		{"litellm conflict labelled invalid_request_error", `{"error":{"message":"Conflict.","type":"invalid_request_error","param":null,"code":"409"}}`, true, false},
+		{"tgi validation beside a bare string", `{"error":"Input validation error: inputs tokens + max_new_tokens must be <= 4096","error_type":"validation"}`, false, false},
+		{"tgi overloaded beside a bare string", `{"error":"Model is overloaded","error_type":"overloaded"}`, true, false},
 	}
 	for _, f := range frames {
 		t.Run("frame/"+f.name, func(t *testing.T) {
@@ -154,6 +157,44 @@ func TestStreamErrors_FromTheRealParser(t *testing.T) {
 			base := serveRawSSE(t, func(c net.Conn) {
 				_, _ = io.WriteString(c, sseHeadClose+`data: {"type":"response.failed","response":{"id":"r","status":"failed","error":{"code":"`+rc.code+`","message":"m"}}}`+"\n\n")
 			})
+			client, err := openaiprovider.New().NewClient(api.ProviderConfig{APIKey: "test-key", Model: "gpt-6-sol", BaseURL: base})
+			if err != nil {
+				t.Fatalf("client: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			ch, err := client.StreamResponse(ctx, api.CreateMessageRequest{Model: "gpt-6-sol", MaxTokens: 64,
+				Messages: []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}}}})
+			if err != nil {
+				t.Fatalf("StreamResponse: %v", err)
+			}
+			got := aggregateStream(ctx, ch).err
+			if got == nil {
+				t.Fatal("the stream ended without an error")
+			}
+			if isRetryable(got) != rc.retryable {
+				t.Errorf("isRetryable = %v, want %v (err %v)", isRetryable(got), rc.retryable, got)
+			}
+		})
+	}
+
+	// The Responses API's documented error event carries its code at the top
+	// level, and a stream that closes before response.completed was cut.
+	responses := []struct {
+		name      string
+		frames    string
+		retryable bool
+	}{
+		{"error event, transient top-level code", `data: {"type":"error","code":"server_error","message":"boom","param":null,"sequence_number":3}` + "\n\n", true},
+		{"error event, refusal top-level code", `data: {"type":"error","code":"invalid_prompt","message":"flagged","param":null,"sequence_number":3}` + "\n\n", false},
+		{"closed before response.completed", `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m1"}}` + "\n\n" +
+			`data: {"type":"response.output_text.delta","item_id":"m1","delta":"The answer is: Hel"}` + "\n\n", true},
+		{"cut inside an event", `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m1"}}` + "\n\n" +
+			`data: {"type":"response.output_text.delta","item_id":"m1","del`, true},
+	}
+	for _, rc := range responses {
+		t.Run("responses/"+rc.name, func(t *testing.T) {
+			base := serveRawSSE(t, func(c net.Conn) { _, _ = io.WriteString(c, sseHeadClose+rc.frames) })
 			client, err := openaiprovider.New().NewClient(api.ProviderConfig{APIKey: "test-key", Model: "gpt-6-sol", BaseURL: base})
 			if err != nil {
 				t.Fatalf("client: %v", err)
