@@ -99,8 +99,8 @@ const (
 	// then drops it (issue #481). 30s stretches the 8-delivery budget over
 	// ~4 minutes of wall clock, which covers a rolling restart of the runner
 	// deployment; if the fleet still hasn't caught up, the exhausted message
-	// is parked on the DLQ with an actionable run status (recoverable via
-	// /api/admin/dlq) rather than silently dropped.
+	// is parked on the DLQ with an actionable run status (recovered by a
+	// resume of the run) rather than silently dropped.
 	SchemaMismatchNakDelay = 30 * time.Second
 	// EpochMismatchNakDelay gives a cold replacement fleet enough time to
 	// become ready before the shared consumer spends its delivery budget.

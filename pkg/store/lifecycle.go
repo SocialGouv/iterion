@@ -151,7 +151,9 @@ const (
 	// accepted range. Declared for the schema-park writer (follow-up).
 	FailureQueueSchemaMismatch FailureCode = "QUEUE_SCHEMA_MISMATCH"
 	// FailureDLQParked: the queue exhausted its deliveries for this run
-	// and parked it on the DLQ — replay via /api/admin/dlq.
+	// and parked it on the DLQ. A redelivery of it is dropped on admission
+	// (the code is deterministic), so the DLQ replay refuses it: an
+	// operator's resume re-queues the run.
 	FailureDLQParked FailureCode = "DLQ_PARKED"
 	// FailureIRUnloadable: the runner could not decode or compile the IR a
 	// server ahead of it produced. Written by the runner before it acks the

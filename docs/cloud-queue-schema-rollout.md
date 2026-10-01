@@ -7,9 +7,17 @@ versions. Read it before every schema bump.
 
 This runbook is **mandatory** for every schema bump, and ordering is the first
 decision it makes for you: **server-first by default**, because that puts any
-parked message on the replayable side. Runner-first is an optimization with a
-precondition — see *Deploy ordering* — and the drain/replay paths below are
-what you fall back to when neither ordering can spare the queue.
+parked run on the side a resume recovers as soon as the fleet is upgraded.
+Runner-first is an optimization with a precondition — see *Deploy ordering* —
+and the drain/resume paths below are what you fall back to when neither
+ordering can spare the queue.
+
+> **A parked run is resumed, never replayed.** Every park marks its run
+> `failed_resumable` with `DLQ_PARKED`, a code a runner drops on admission:
+> `POST /api/admin/dlq/{seq}/replay` refuses it (409) and keeps the copy. A
+> resume (`POST /api/runs/{id}/resume`, `iterion remote runs resume`)
+> re-publishes the run at the server's current schema version; discard the
+> parked copy afterwards.
 
 ## Wire compatibility policy
 
@@ -17,11 +25,12 @@ what you fall back to when neither ordering can spare the queue.
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
   directions. The current v19 consumer accepts v10–v18 backlog explicitly;
   this is not implicit forward compatibility.
-- **Server first by default.** Both orders can park a message; only one park is
-  replayable. Old runners rejecting the new version park messages a DLQ replay
-  fixes once the fleet is upgraded; new runners rejecting a version below their
-  `MinSchemaVersion` park messages a replay can never fix. Server-first keeps the
-  risk on the recoverable side. Roll the runners first only when nothing below
+- **Server first by default.** Both orders can park a message, and a resume
+  recovers the run either way — but not at the same moment. Old runners
+  rejecting the new version park runs a resume recovers as soon as the fleet
+  is upgraded; new runners rejecting a version below their `MinSchemaVersion`
+  park runs a resume recovers only once the server publishes a version they
+  accept. Server-first keeps the risk on the side recovered first. Roll the runners first only when nothing below
   `Min(new)` can still be queued — automatic when the bump leaves
   `MinSchemaVersion` alone, and otherwise not worth asserting from a gauge. The
   precondition and the measured case are in *Deploy ordering* below.
@@ -64,11 +73,13 @@ Since #481, a version mismatch is transient and recoverable:
    schedule a pod that speaks the new version.
 2. If the budget is exhausted anyway, the consumer **parks the payload
    verbatim on the DLQ**, Terms the queue entry, and flips the run document
-   from `queued` to `failed_resumable` with an actionable error pointing at
-   this runbook and `/api/admin/dlq`. The run is never silently dropped and
-   never left `queued` with no recovery path.
-3. A DLQ replay re-publishes the **exact original bytes**, so a parked v8
-   message replays correctly once runners run v8.
+   from `queued` to `failed_resumable` (`DLQ_PARKED`) with an actionable error
+   pointing at this runbook. The run is never silently dropped and never left
+   `queued` with no recovery path.
+3. Once the fleet accepts the version the server publishes, a **resume** of
+   the run re-publishes it at that version and a runner picks it up. A DLQ
+   replay of the parked bytes is refused: a runner drops a `DLQ_PARKED` run's
+   redelivery on admission.
 
 ## v12 runner-epoch bootstrap
 
@@ -111,8 +122,8 @@ recoverable**, and that — not "which side rejects less" — is what decides.
 
 | roll first | what gets rejected | recovery |
 |---|---|---|
-| **server** | old runners reject the new vN+1 | **replayable**: once every runner is new, `/api/admin/dlq/$SEQ/replay` re-publishes the same bytes and they are accepted |
-| **runners** | new runners reject anything still queued *below* `Min(new)` | **not replayable**: a replay re-publishes the same old bytes, the new fleet rejects them identically and re-parks (Path B step 5) — recovery is a per-run resume plus a DLQ delete |
+| **server** | old runners reject the new vN+1 | **recovered at once**: as soon as every runner is new, resuming the run re-publishes it at vN+1 and it is accepted |
+| **runners** | new runners reject anything still queued *below* `Min(new)` | **recovered only after the server rolls**: a resume re-publishes at the server's version, which the new fleet rejects while the server is old (Path B step 5) — recovery is a per-run resume once the server is new, plus a DLQ delete |
 
 Server-first is therefore the safe default, for that reason and not a
 historical one: it puts the parking risk on the side that can be undone. The
@@ -170,7 +181,8 @@ early in the roll. What races the budget is time-to-first-Ready-new-runner,
 not the full roll — which under `drainMode: complete` can take hours.
 
 A fleet slow to become Ready spends the budget and parks the run
-`failed_resumable` — replayably. Runner-first removes that race; it is worth
+`failed_resumable` — recoverably, by a resume once a new runner is Ready.
+Runner-first removes that race; it is worth
 taking **when the condition above holds**, and it is what the v11 → v12
 cutover used (see the measurement below).
 
@@ -242,12 +254,12 @@ These two paths accompany the **server-first** default. Choose **one** of
 them: ordering alone is not a third option, because a server-first roll still
 parks the new version on the old fleet if no upgraded runner becomes Ready
 inside the delivery budget — Path A avoids that by draining first, Path B
-accepts it and replays afterwards.
+accepts it and resumes the parked runs afterwards.
 
 Both become unnecessary only when you **actually roll runner-first AND its
 precondition holds** — nothing below `Min(new runner)` can still be queued,
 which is automatic when the bump leaves `MinSchemaVersion` alone. Then nothing
-is rejected in either direction, so there is nothing to drain or replay. The
+is rejected in either direction, so there is nothing to drain or resume. The
 precondition alone does not exempt you: a server-first roll still needs one of
 these paths whatever the precondition says. See *Deploy ordering* above, and
 do not infer the precondition from the old server's version alone. Path A's
@@ -271,7 +283,7 @@ later bump as well.
    explicitly allows — so follow the order regardless.)
 4. Sanity-check: one launch end-to-end, DLQ depth 0.
 
-### Path B — DLQ identification + replay after cutover
+### Path B — DLQ identification + resume after cutover
 
 **Valid only from v8 → v9 onward.** Path B leans on the delayed Nak, the
 DLQ park and the status flip — and those ship *with* schema v8. For the
@@ -294,15 +306,18 @@ run Path B for v7 → v8; use Path A.**
    curl "https://iterion.example.com/api/admin/dlq?limit=200"
    curl "https://iterion.example.com/api/admin/dlq/$SEQ"   # peek: check the reason + run_id
    ```
-3. Replay each transition message; the replay re-publishes the exact payload
-   and a vN+1 runner picks it up:
+3. Resume each parked run: the publisher re-queues it at vN+1 and a vN+1
+   runner picks it up. Do not replay the parked message — the park marked the
+   run `DLQ_PARKED`, which a runner drops on admission, so the replay endpoint
+   answers 409 and keeps the copy:
 
    ```bash
-   curl -X POST "https://iterion.example.com/api/admin/dlq/$SEQ/replay"
+   curl -X POST "https://iterion.example.com/api/runs/$RUN_ID/resume"
    ```
-4. Verify each replayed run leaves `failed_resumable`: the runner treats the
-   replayed launch payload as a resume and transitions it directly to
-   `running`. Confirm the DLQ returns to its pre-rollout depth.
+4. Verify each resumed run leaves `failed_resumable` for `running`, then
+   discard its parked copy (`curl -X DELETE
+   "https://iterion.example.com/api/admin/dlq/$SEQ"`) and confirm the DLQ
+   returns to its pre-rollout depth.
 5. The reverse direction does **not** replay. If the queue still held vN
    messages when the vN+1 runners came up, they parked with reason
    `N unsupported (want N+1)` — and a replay re-publishes those exact
@@ -436,7 +451,7 @@ queue, not one feature.
 ## If something went wrong
 
 - **Runs stuck `queued` after a rollout**: check the DLQ (they parked there
-  if this runbook's mechanics were deployed) and the orphan sweeper; replay
+  if this runbook's mechanics were deployed) and the orphan sweeper; resume
   per Path B.
 - **A run executed with dropped semantics** (e.g. wrong model): that means a
   field crossed the wire without a schema bump. Treat as an incident, add

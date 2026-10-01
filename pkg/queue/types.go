@@ -28,10 +28,11 @@ import (
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
 //   - Deploy the server (producer) first by default. Both orders can park a
-//     message; only one park is replayable. Old runners rejecting the new
-//     version park messages a DLQ replay fixes once the fleet is upgraded;
-//     new runners rejecting a version below their MinSchemaVersion park
-//     messages a replay can never fix (it re-publishes the same bytes). Roll
+//     run, and a resume recovers it — not at the same moment. Old runners
+//     rejecting the new version park runs a resume recovers as soon as the
+//     fleet is upgraded; new runners rejecting a version below their
+//     MinSchemaVersion park runs a resume recovers only once the server
+//     publishes a version they accept. Roll
 //     the runners first only when nothing below MinSchemaVersion(new) can
 //     still be queued — automatic when the bump leaves MinSchemaVersion
 //     alone, otherwise a check against the queue, never against the old

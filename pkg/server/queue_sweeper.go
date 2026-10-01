@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 
+	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -350,11 +352,14 @@ func (s *Server) handleDLQPeek(w http.ResponseWriter, r *http.Request) {
 
 // handleDLQReplay re-enqueues a parked message. The run's doc is read
 // first, because a replay is only a delivery: the runner admits it against
-// the doc, and a run an operator cancelled is dropped there (the cancel
-// wins over the message) — so "replayed" would be answered and nothing
-// would happen. The refusal lands at the moment the operator acts, naming
-// the status and the way out. A doc that cannot be read fails CLOSED: a
-// side-effectful act is not performed on an unverifiable premise.
+// the doc (queue.Admit), and a message it drops — a run cancelled, finished,
+// failed or waiting for an answer, parked on a code no redelivery changes
+// (DLQ_PARKED among them), rewound for an explicit resume, or queued again
+// since the message was published — would be answered "replayed" while
+// nothing happens, the DLQ copy gone with it. The refusal lands at the moment
+// the operator acts, naming the status and the way out, and keeps the copy.
+// A doc that cannot be read fails CLOSED: a side-effectful act is not
+// performed on an unverifiable premise.
 func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	seq, ok := dlqSeq(r)
 	if !ok {
@@ -377,21 +382,15 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpError(w, http.StatusBadGateway, "dlq replay: run %s status unreadable, replay refused: %v", view.RunID, err)
 		return
-	case run.Status == store.RunStatusCancelled:
-		httpError(w, http.StatusConflict, "dlq replay: run %s is cancelled — a runner drops the redelivery on admission (the cancel wins over the message); resume the run explicitly instead, which re-queues it", view.RunID)
+	}
+	var msg queue.RunMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		httpError(w, http.StatusConflict, "dlq replay: the parked payload of run %s does not decode as a run message (%v) — a runner cannot execute it; resume the run instead, then discard the message (DELETE /api/admin/dlq/%d)", view.RunID, err, seq)
 		return
 	}
-	// A message published before the run was last queued belongs to an
-	// attempt that is over: a runner drops it on admission, whatever the
-	// run's status — so "replayed" would be answered and nothing would run.
-	var envelope struct {
-		PublishedAt string `json:"published_at"`
-	}
-	if json.Unmarshal(payload, &envelope) == nil && run.QueuedAt != nil {
-		if published, perr := time.Parse(time.RFC3339Nano, envelope.PublishedAt); perr == nil && run.QueuedAt.After(published) {
-			httpError(w, http.StatusConflict, "dlq replay: run %s was queued again at %s, after this message was published (%s) — a runner drops it on admission; resume the run instead", view.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), envelope.PublishedAt)
-			return
-		}
+	if admission := queue.Admit(&msg, run); !admission.Proceeds() {
+		httpError(w, http.StatusConflict, "dlq replay: %s", dlqReplayRefusal(admission.Drop, run, &msg, seq))
+		return
 	}
 	runID, err := s.queue.RepublishDLQ(r.Context(), seq)
 	if err != nil && runID == "" {
@@ -400,6 +399,31 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditPlatform(r, "", "dlq.replayed", "run", runID, map[string]any{"seq": seq})
 	writeJSON(w, map[string]any{"status": "replayed", "run_id": runID})
+}
+
+// dlqReplayRefusal says why a runner would drop the replay of msg (drop),
+// and what recovers the run instead.
+func dlqReplayRefusal(drop queue.Drop, run *store.Run, msg *queue.RunMessage, seq uint64) string {
+	discard := fmt.Sprintf("then discard the message (DELETE /api/admin/dlq/%d)", seq)
+	switch drop {
+	case queue.DropSupersededAttempt:
+		return fmt.Sprintf("run %s was queued again at %s, after this message was published (%s) — a runner drops it on admission; resume the run instead, %s", run.ID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC, discard)
+	case queue.DropExplicitResumeRequired:
+		return fmt.Sprintf("run %s was rewound and waits for an explicit resume — a runner drops a replayed launch on admission; resume the run instead, %s", run.ID, discard)
+	case queue.DropCancelled:
+		return fmt.Sprintf("run %s is cancelled — a runner drops the redelivery on admission (the cancel wins over the message); resume the run explicitly instead, which re-queues it, %s", run.ID, discard)
+	case queue.DropDeliberateFailure:
+		return fmt.Sprintf("run %s is %s on the code %q — a runner drops the redelivery on admission (the same message would fail identically); resume the run instead, which re-queues it as a new attempt, %s", run.ID, run.Status, run.FailureCode, discard)
+	case queue.DropSettled:
+		switch run.Status {
+		case store.RunStatusPausedWaitingHuman:
+			return fmt.Sprintf("run %s waits for a human answer — a runner drops the redelivery on admission; resume the run with its answers instead, %s", run.ID, discard)
+		case store.RunStatusFinished:
+			return fmt.Sprintf("run %s is finished — a runner drops the redelivery on admission and there is nothing to replay; discard the message (DELETE /api/admin/dlq/%d)", run.ID, seq)
+		}
+		return fmt.Sprintf("run %s is %s — a runner drops the redelivery on admission; relaunch it, %s", run.ID, run.Status, discard)
+	}
+	return fmt.Sprintf("run %s: a runner drops this message on admission (%s)", run.ID, drop)
 }
 
 func (s *Server) handleDLQDiscard(w http.ResponseWriter, r *http.Request) {

@@ -611,3 +611,79 @@ func TestDLQAdmin_ReplayOfASupersededMessageIsRefused(t *testing.T) {
 		t.Fatalf("replay of the current attempt's message: status=%d body=%s, want 200", code, body)
 	}
 }
+
+// TestDLQAdmin_ReplayIsRefusedForWhatARunnerDrops: a replay is only a
+// delivery, admitted against the run's document by the rule a runner applies
+// (queue.Admit). For every state a runner drops the message of the current
+// attempt in — a run finished, failed or waiting for an answer, parked on a
+// code no redelivery changes (the DLQ park's own, as the runner writes it),
+// rewound for an explicit resume — the replay is refused with the way out,
+// and the DLQ copy is kept. A run a redelivery resumes is replayed.
+func TestDLQAdmin_ReplayIsRefusedForWhatARunnerDrops(t *testing.T) {
+	ctx := context.Background()
+	for i, tc := range []struct {
+		name   string
+		status store.RunStatus
+		meta   store.RunOutcomeMeta
+		set    func(r *store.Run)
+		want   int
+		remedy string
+	}{
+		{name: "finished", status: store.RunStatusFinished, want: http.StatusConflict, remedy: "nothing to replay"},
+		{name: "failed", status: store.RunStatusFailed, want: http.StatusConflict, remedy: "relaunch"},
+		{name: "waiting for an answer", status: store.RunStatusPausedWaitingHuman, want: http.StatusConflict, remedy: "resume the run with its answers"},
+		{name: "parked on the DLQ by the runner", status: store.RunStatusFailedResumable,
+			meta: store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal}, want: http.StatusConflict, remedy: "resume the run"},
+		{name: "parked on a bot code", status: store.RunStatusFailedResumable, meta: store.RunOutcomeMeta{Code: "LOT_NOT_ACTIONABLE"}, want: http.StatusConflict, remedy: "resume the run"},
+		{name: "rewound for an explicit resume", status: store.RunStatusPausedOperator,
+			set: func(r *store.Run) { r.ResumeRequiresExplicit = true }, want: http.StatusConflict, remedy: "resume the run"},
+		{name: "orphaned (infrastructure)", status: store.RunStatusFailedResumable, meta: store.RunOutcomeMeta{Code: store.FailureProcessOrphaned}, want: http.StatusOK},
+		{name: "parked without a code", status: store.RunStatusFailedResumable, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newDLQAdminServer(t)
+			runID := fmt.Sprintf("run-drop-%d", i)
+			w.seedRun(t, runID, store.RunStatusRunning)
+			if ok, err := w.runs.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
+				t.Fatalf("the attempt's flip: %v %v", ok, err)
+			}
+			queued, err := w.runs.LoadRun(ctx, runID)
+			if err != nil || queued.QueuedAt == nil {
+				t.Fatalf("load: %v %v", queued, err)
+			}
+			// The message of the run's CURRENT attempt, parked.
+			seq := uint64(300 + i)
+			w.q.parkPublished(seq, runID, "max deliver exhausted", queued.QueuedAt.Add(3*time.Millisecond))
+			if ok, err := w.runs.UpdateRunOutcome(ctx, runID, tc.status, "boom", tc.meta, []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+				t.Fatalf("state: %v %v", ok, err)
+			}
+			if tc.set != nil {
+				r, err := w.runs.LoadRun(ctx, runID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tc.set(r)
+				if err := w.runs.SaveRun(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			code, body := dlqDo(t, w.hs, "POST", fmt.Sprintf("/api/admin/dlq/%d/replay", seq), w.admin)
+			republished, _, remaining := w.q.snapshot()
+			if code != tc.want {
+				t.Fatalf("replay answered %d %s, want %d", code, body, tc.want)
+			}
+			if tc.want == http.StatusOK {
+				if len(republished) != 1 || remaining != 0 {
+					t.Fatalf("a replay a runner admits: republished=%v remaining=%d", republished, remaining)
+				}
+				return
+			}
+			if !strings.Contains(string(body), tc.remedy) {
+				t.Fatalf("the refusal does not name its way out (%q): %s", tc.remedy, body)
+			}
+			if len(republished) != 0 || remaining != 1 {
+				t.Fatalf("a refused replay must keep the message parked: republished=%v remaining=%d", republished, remaining)
+			}
+		})
+	}
+}

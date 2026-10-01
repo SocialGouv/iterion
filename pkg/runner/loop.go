@@ -272,7 +272,9 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 
 // dispositionForStatus is the status switch of the admission gauntlet,
 // shared by the pre-lock pass and by the under-lock re-read of a running
-// doc: the same status must mean the same thing wherever it is read.
+// doc: the same status must mean the same thing wherever it is read. The
+// decision is queue.Admit's — the one rule the DLQ replay refuses by too —
+// and this maps it onto the delivery's disposition and its log.
 //
 // Redelivered launch messages can arrive after the first attempt
 // already persisted resumable state (failed_resumable,
@@ -285,18 +287,20 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 //
 // `queued` is the one status runResolveDoc DOES restart, so it is the
 // status where a redelivery from an earlier life of the run costs the
-// most: the arm below tells the message apart from the doc's current
-// attempt (QueuedAt) and from its history (the checkpoint) before
-// letting a launch through.
+// most: the rule tells the message apart from the doc's current attempt
+// (QueuedAt) and from its history (the checkpoint) before letting a
+// launch through.
 func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
-	if stale, ok := supersededAttempt(msg, run); ok {
-		return stale
-	}
-	// A successful rewind deliberately parks at paused_operator, but an old
-	// launch delivery must not turn that visible pause into a silent replay of
-	// an edited workflow. The marker survives the explicit resume's queued
-	// hand-off and is consumed only when that resume claims running.
-	if run.ResumeRequiresExplicit && msg.Resume == nil {
+	admission := queue.Admit(msg, run)
+	switch admission.Drop {
+	case queue.DropSupersededAttempt:
+		return supersededOutcome(msg, run)
+	case queue.DropExplicitResumeRequired:
+		// A successful rewind deliberately parks at paused_operator, but an
+		// old launch delivery must not turn that visible pause into a silent
+		// replay of an edited workflow. The marker survives the explicit
+		// resume's queued hand-off and is consumed only when that resume
+		// claims running.
 		return preconditionOutcome{
 			finalStatus: string(run.Status),
 			op:          "ack-explicit-resume-required",
@@ -305,9 +309,7 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 			logFmt:      "runner: run %s was rewound — dropping stale delivery (explicit resume required to continue)",
 			logArgs:     []any{msg.RunID},
 		}
-	}
-	switch run.Status {
-	case store.RunStatusCancelled:
+	case queue.DropCancelled:
 		// Cancelled is terminal for a redelivery — checkpoint or not, resume
 		// or not. Every cloud resume CASes the doc to queued BEFORE it
 		// publishes, so a doc that reads cancelled here was cancelled AFTER
@@ -348,49 +350,35 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 			logFmt:      "runner: run %s is cancelled (%q) — dropping delivery (resume=%v; an explicit operator resume re-queues it)",
 			logArgs:     []any{msg.RunID, strings.TrimSpace(run.Error), msg.Resume != nil},
 		}
-	case store.RunStatusFailedResumable, store.RunStatusPausedOperator:
+	case queue.DropDeliberateFailure:
 		// A run parked on a BOT-defined code refused deliberately: only an
 		// operator changing something (a raised cap, a different --var)
 		// can change the verdict, so synthesising a resume here re-runs
 		// the guard against identical inputs, forever. The runner holds no
 		// allow-list of its own — the ENGINE's vocabulary is the boundary,
-		// so only a reserved (engine) code may be auto-resumed. An empty
-		// code means UNKNOWN (legacy rows, paused_operator, which never
-		// carries one) and keeps resuming, as it always has.
-		//
-		// The same answer for an ENGINE code the shared classification
-		// calls deterministic (pkg/retrypolicy): a compute expression, a
-		// schema the output cannot meet, a credential the sealed bundle
-		// cannot refresh. Being the engine's own vocabulary does not make a
+		// so only a reserved (engine) code may be auto-resumed. The same
+		// answer for an ENGINE code the shared classification calls
+		// deterministic (pkg/retrypolicy): a compute expression, a schema
+		// the output cannot meet, a credential the sealed bundle cannot
+		// refresh. Being the engine's own vocabulary does not make a
 		// verdict re-decidable — this arm is what turned each of the seven
 		// redeliveries of run 01a07804 back into a run.
-		if code := run.FailureCode; code != "" && (!code.Reserved() || retrypolicy.IsDeterministic(code)) {
-			origin := "bot-defined"
-			if code.Reserved() {
-				origin = "deterministic"
-			}
-			return preconditionOutcome{
-				finalStatus:  string(run.Status),
-				op:           "ack-deliberate-failure",
-				action:       actionAck,
-				level:        logWarn,
-				skippedRetry: code,
-				skippedCause: strings.TrimSpace(run.Error),
-				logFmt:       "runner: run %s is parked on the %s code %q — dropping the redelivery, NOT auto-resuming (the same step would fail identically; an operator resume with changed inputs re-queues it)",
-				logArgs:      []any{msg.RunID, origin, code},
-			}
+		code := run.FailureCode
+		origin := "bot-defined"
+		if code.Reserved() {
+			origin = "deterministic"
 		}
-		if msg.Resume == nil {
-			msg.Resume = &queue.ResumeSpec{}
-			return preconditionOutcome{
-				proceed: true,
-				preRun:  run,
-				level:   logInfo,
-				logFmt:  "runner: run %s redelivered in status %s — resuming",
-				logArgs: []any{msg.RunID, run.Status},
-			}
+		return preconditionOutcome{
+			finalStatus:  string(run.Status),
+			op:           "ack-deliberate-failure",
+			action:       actionAck,
+			level:        logWarn,
+			skippedRetry: code,
+			skippedCause: strings.TrimSpace(run.Error),
+			logFmt:       "runner: run %s is parked on the %s code %q — dropping the redelivery, NOT auto-resuming (the same step would fail identically; an operator resume with changed inputs re-queues it)",
+			logArgs:      []any{msg.RunID, origin, code},
 		}
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusPausedWaitingHuman:
+	case queue.DropSettled:
 		return preconditionOutcome{
 			finalStatus: string(run.Status),
 			op:          "ack-stale-status",
@@ -399,21 +387,15 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 			logFmt:      "runner: run %s already in status %s — dropping stale delivery",
 			logArgs:     []any{msg.RunID, run.Status},
 		}
-	case store.RunStatusQueued:
-		// The publisher's pre-flip — of THIS attempt, or of a LATER one.
-		// A resume publication names itself and proceeds; a LAUNCH message
-		// has to be told apart from the run's own history first, because
-		// Engine.Run restarts it at the entry node.
-		if msg.Resume != nil {
-			break
-		}
-		// Evidence, when identity is unavailable (a publication with no
-		// usable published_at) or the message is the current attempt's:
-		// a queued doc carrying a checkpoint has already executed, so
-		// running it as a launch would re-spend exactly what the
-		// checkpoint exists to save.
-		if run.Checkpoint != nil {
-			msg.Resume = &queue.ResumeSpec{}
+	}
+	if admission.AsResume {
+		msg.Resume = &queue.ResumeSpec{}
+		if run.Status.IsQueued() {
+			// Evidence, when identity is unavailable (a publication with no
+			// usable published_at) or the message is the current attempt's:
+			// a queued doc carrying a checkpoint has already executed, so
+			// running it as a launch would re-spend exactly what the
+			// checkpoint exists to save.
 			return preconditionOutcome{
 				proceed: true,
 				preRun:  run,
@@ -422,28 +404,34 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 				logArgs: []any{msg.RunID, msg.PublishedAtRFC},
 			}
 		}
+		return preconditionOutcome{
+			proceed: true,
+			preRun:  run,
+			level:   logInfo,
+			logFmt:  "runner: run %s redelivered in status %s — resuming",
+			logArgs: []any{msg.RunID, run.Status},
+		}
 	}
 	// running (a live owner, or an orphan — told apart under the lock), a
-	// queued first attempt, and any status this switch does not know:
+	// queued first attempt, and any status the rule does not know:
 	// proceed.
 	return preconditionOutcome{proceed: true, preRun: run}
 }
 
-// supersededAttempt is the identity rule of a delivery: every transition
-// into `queued` refreshes QueuedAt, and only a publication makes one — so a
-// run queued after this delivery was published belongs to a newer attempt,
-// whatever its status now (queued, running, parked, terminal). That attempt
-// carries its own delivery; this one would act on it with its own answers,
-// consents and inputs, so it is dropped. A doc without the marker, or a
-// publication time that cannot be read, has no identity to tell.
+// supersededAttempt is the identity rule of a delivery (queue.Superseded):
+// a run queued after this delivery was published belongs to a newer
+// attempt, whatever its status now (queued, running, parked, terminal).
+// That attempt carries its own delivery; this one would act on it with its
+// own answers, consents and inputs, so it is dropped.
 func supersededAttempt(msg *queue.RunMessage, run *store.Run) (preconditionOutcome, bool) {
-	if run == nil || run.QueuedAt == nil {
+	if !queue.Superseded(msg, run) {
 		return preconditionOutcome{}, false
 	}
-	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
-	if perr != nil || !run.QueuedAt.After(publishedAt) {
-		return preconditionOutcome{}, false
-	}
+	return supersededOutcome(msg, run), true
+}
+
+// supersededOutcome is the drop of a delivery its run was queued past.
+func supersededOutcome(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
 	kind := "launch"
 	if msg.Resume != nil {
 		kind = "resume"
@@ -455,7 +443,7 @@ func supersededAttempt(msg *queue.RunMessage, run *store.Run) (preconditionOutco
 		level:       logWarn,
 		logFmt:      "runner: run %s was queued again at %s, after this %s message was published (%s) — dropping the stale delivery (the newer attempt carries its own)",
 		logArgs:     []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), kind, msg.PublishedAtRFC},
-	}, true
+	}
 }
 
 // supersededUnderLock re-reads the run once its lock is held and applies

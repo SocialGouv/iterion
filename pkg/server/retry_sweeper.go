@@ -121,9 +121,9 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
-	// A DLQ park is final for automation — only an operator's replay or
-	// resume wakes it — and the gate reconciler has already answered for
-	// it. The transition tail disarms retry_after on every final write
+	// A DLQ park is final for automation — only an operator's resume wakes
+	// it (its replay is refused) — and the gate reconciler has already
+	// answered for it. The transition tail disarms retry_after on every final write
 	// (statusTransitionSet / applyStatusTransitionOutcome), so an armed
 	// retry on a parked doc is one that predates that rule or bypassed the
 	// tail; resuming it would run the bot a second time on the same head,
@@ -137,7 +137,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone: a DLQ-parked run whose stale retry survived would be resumed on top of the gate reconciler's repair", ref.ID, lerr)
 	} else if run != nil && run.FailureCode == store.FailureDLQParked {
 		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
-			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator replay (iterion remote admin dlq) or resume wakes it")
+			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator's resume (iterion remote runs resume) wakes it")
 		return
 	}
 

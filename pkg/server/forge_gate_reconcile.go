@@ -65,7 +65,11 @@ var gateReasonWrappers = []*regexp.Regexp{
 // request and hide the one remedy that reaches the message. Reason-free on
 // purpose — the DLQ comment carries the cause and the status links to the run,
 // so the 140 characters a forge allows go to the remedy.
-const gateDLQDescription = "review parked on the DLQ — operator replay needed (iterion remote admin dlq)"
+const gateDLQDescription = "review parked on the DLQ — operator resume needed (iterion remote runs resume)"
+
+// gateDLQDescriptionReplay is gateDLQDescription as heads still carry it from
+// before it named the resume: a status this reconciler posted all the same.
+const gateDLQDescriptionReplay = "review parked on the DLQ — operator replay needed (iterion remote admin dlq)"
 
 // gateDeclineDescription is what a run that DECLINED its task leaves on the
 // head when nothing else answered the check. The generic trailer would be
@@ -142,7 +146,7 @@ const gateDiedDescriptionPrefix = "review died ("
 // there are no findings behind a synthetic failure for a fixer to address.
 func isSyntheticGateInterruption(description string) bool {
 	d := strings.TrimSpace(description)
-	return d == gateInterruptedDescription || d == gateDLQDescription ||
+	return d == gateInterruptedDescription || d == gateDLQDescription || d == gateDLQDescriptionReplay ||
 		d == gateDeclineDescription ||
 		strings.HasPrefix(d, gateDiedDescriptionPrefix)
 }

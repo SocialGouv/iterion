@@ -31,7 +31,7 @@ func TestNoHandRolledTerminalSets(t *testing.T) {
 	pkgs := []string{
 		"pkg/store", "pkg/supervise", "pkg/runview",
 		"pkg/runtime", "pkg/server/cloudpublisher", "pkg/dispatcher",
-		"pkg/cli", "pkg/notify", "pkg/worktreepool", "pkg/operatormcp", "pkg/runner",
+		"pkg/cli", "pkg/notify", "pkg/worktreepool", "pkg/operatormcp", "pkg/runner", "pkg/queue",
 	}
 
 	statusNames := map[string]bool{
@@ -296,10 +296,12 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/cli/remote_runs.go :: Cancelled+Failed+FailedResumable+Finished":  {[]string{"followRemoteRun"}, "--follow stop set over the WIRE statuses (strings): IsTerminal's set; the paused non-exit is the known bug #3 follow-up card"},
 
 	// -- pkg/runner.
-	"pkg/runner/loop.go :: Failed+Finished":                    {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
-	"pkg/runner/loop.go :: Failed+Finished+PausedWaitingHuman": {[]string{"dispositionForStatus"}, "stale-delivery drop set: shapes a redelivery can never legitimately target (the admission switch, shared by the pre-lock pass and the under-lock re-read)"},
-	"pkg/runner/loop.go :: FailedResumable+PausedOperator":     {[]string{"dispositionForStatus"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes; same switch)"},
-	"pkg/runner/usage_cap.go :: Queued+Running":                {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
+	"pkg/runner/loop.go :: Failed+Finished":     {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
+	"pkg/runner/usage_cap.go :: Queued+Running": {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
+
+	// -- pkg/queue: the admission rule (runner and DLQ replay).
+	"pkg/queue/admission.go :: Failed+Finished+PausedWaitingHuman": {[]string{"Admit"}, "settled drop set: shapes a delivery can never legitimately target (the admission rule the runner's pre-lock pass, its under-lock re-read and the DLQ replay share)"},
+	"pkg/queue/admission.go :: FailedResumable+PausedOperator":     {[]string{"Admit"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes; same rule)"},
 
 	// -- pkg/worktreepool.
 	"pkg/worktreepool/classify.go :: PausedOperator+PausedWaitingHuman": {[]string{"isPausedResumable"}, "the paused pair guarding checkout sparing (GC policy nuance documented at the site)"},
