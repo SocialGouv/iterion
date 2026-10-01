@@ -742,7 +742,7 @@ func ClearMirroredTierMarkers(workDir string) {
 // keep every mirror file — an orphan there costs one unused file; a false
 // positive costs an operator's edit. The escape hatch is a load-bearing
 // limit, greppable and opt-in: ITERION_PRUNE_MIRROR_IN_CHECKOUT=1 (see
-// CLAUDE.md philosophy #1).
+// docs/philosophy.md, principle 1).
 //
 // Best-effort throughout: a prune failure is logged but never fails a run.
 // The sweep walks all three mirror kind dirs (skills / commands / agents).

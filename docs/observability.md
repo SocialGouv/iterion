@@ -89,7 +89,8 @@ events work against:
 
 Nothing in iterion is Sentry-specific beyond the wire protocol. See
 [ADR-088](adr/088-error-tracking-via-sentry-dsn-protocol.md) for the
-choice and the rejected alternatives.
+choice and the rejected alternatives. A new capture site or signal extends
+`pkg/errtrack`; never add a second tracker.
 
 ### Wiring a deployment
 

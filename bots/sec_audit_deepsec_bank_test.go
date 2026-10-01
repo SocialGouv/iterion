@@ -281,8 +281,8 @@ func TestBankSitsBesideTheTriagePath(t *testing.T) {
 // The byte budget is the sole knob deciding how much of the operator's
 // investigation survives the pod, and on a large audit it silently drops
 // findings — reported, but unrecoverable. A literal here is a ceiling nobody
-// can raise short of editing the bot, which is the shape CLAUDE.md principle 1
-// names a defect, and the opposite of what every sibling deepsec knob does
+// can raise short of editing the bot, which is the shape docs/philosophy.md
+// principle 1 names a defect, and the opposite of what every sibling deepsec knob does
 // (enable_deepsec, deepsec_concurrency, deepsec_process_limit, deepsec_root,
 // deepsec_out are all declared vars).
 func TestBankBudgetIsOperatorOverridable(t *testing.T) {

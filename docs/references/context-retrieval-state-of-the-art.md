@@ -44,7 +44,8 @@ first row covers 6 % of the calls. Published alone under the label "tool
 wall time", as it was here, it understated this corpus by 6.7×. The two
 are never added: one is a measurement, the other would be an absence.
 
-And the size of what all that is searching:
+And the size of what all that is searching, measured on 2026-09-19 (the
+agent-tree row re-taken on 2026-10-01 by #2071):
 
 | Corpus | Size |
 |---|---|
@@ -53,7 +54,7 @@ And the size of what all that is searching:
 | of which `docs/**/*.md` | 317 files, 5.3 MB, including 110 ADRs |
 | of which bot skills | 186 files, 1.6 MB |
 | `.bot` workflows | 165 tracked (`git ls-files '*.bot'`), 78 outside `testdata/` |
-| Agent instruction tree | `CLAUDE.md` 15.3 KB **injected every turn** + `docs/agents/` 172 KB on demand |
+| Agent instruction tree | `AGENTS.md` + `CLAUDE.md` 6.6 KB **injected every turn**, budget-gated (was `CLAUDE.md` 15.3 KB) + `docs/agents/` 206 KB on demand |
 
 The markdown counts move when this page does: the five pages this change
 added are five of the 947, and the figures above were first published
@@ -81,9 +82,11 @@ evaluation tasks; code execution with MCP reports 150 000 → 2 000 tokens
 the task matches it. Cloudflare, Anthropic and Cursor converged on the
 same answer independently.
 
-**iterion already does this, by hand.** `CLAUDE.md` is a router of
-one-line entries; `docs/agents/README.md` states the contribution rule
-that keeps it short; a skill exposes only its frontmatter until it is
+**iterion already does this, by hand.** `AGENTS.md` is a root of
+one-line entries that every harness loads (Claude Code through
+`CLAUDE.md`'s import); `docs/agents/README.md` states the contribution
+rule that keeps it short, and `pkg/repomap/agenttree_test.go` holds its
+byte budgets; a skill exposes only its frontmatter until it is
 needed ([pkg/skilllib/frontmatter.go](../../pkg/skilllib/frontmatter.go));
 `memory:` has an index and `autoload:`
 ([pkg/knowledge/iface.go](../../pkg/knowledge/iface.go)). Anything
@@ -156,7 +159,7 @@ over a few hundred thousand edges is not the hard part.
 
 | Approach | What it is | What it would cost iterion | Verdict |
 |---|---|---|---|
-| **Hand-written router** (`CLAUDE.md` + `docs/agents/`) | Curated one-line index, read on demand | Already paid; drifts silently, no witness | **Keep**, and give it a generated twin |
+| **Hand-written router** (`AGENTS.md` + `docs/agents/`) | Curated one-line index, read on demand | Already paid; byte budgets and reachability gated since #2071, wording still unwitnessed | **Keep**, and give it a generated twin |
 | **Repo map** (Aider: tree-sitter + personalised PageRank, budget-packed) | Ranked signatures under a token budget | Cheap; tree-sitter approximates what Go's own parser knows exactly | **Import the idea**, not the parser |
 | **LSP symbol tools** (Serena) | Precise go-to-definition / references via a language server | Reactive only; no docs, no `.bot`; useless to a bot in a sandbox | Complementary, not the commons |
 | **SCIP / LSIF index** | Compiler-grade cross-repo symbol index | Real precision, heavy toolchain, symbols only | Not now; revisit if cross-repo lands |

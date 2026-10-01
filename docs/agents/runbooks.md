@@ -4,8 +4,8 @@ The discovery entry point for "how do I configure / operate / debug X on
 iterion". Each entry names **when to read it**, which is its whole value: an
 agent that does not know the runbook exists cannot look it up.
 
-Referenced from [CLAUDE.md](../../CLAUDE.md). Extend the index in the same
-change that adds the runbook.
+Routed from [the tree](README.md). Extend the index in the same change that
+adds the runbook.
 
 ## Operational-knowledge reflex — capture what a session cost you to discover
 
@@ -17,8 +17,8 @@ across the three surfaces by role:
 
 - **This page** — the *reflex* itself (this section) + the "read it when" line
   in the **operational runbook index** below, added in the same change as the
-  runbook. This is the discovery entry point, and
-  [CLAUDE.md](../../CLAUDE.md) routes here. The router itself takes at most
+  runbook. This is the discovery entry point, routed from
+  [the tree](README.md). The root, [AGENTS.md](../../AGENTS.md), takes at most
   *one line*, and only when an agent would never find the runbook otherwise —
   a paragraph added there belongs in the tree instead.
 - **`docs/`** — the *content*: one focused runbook per topic (the how + the
