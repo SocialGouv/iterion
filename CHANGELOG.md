@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.220.2](https://github.com/SocialGouv/iterion/compare/v3.220.1...v3.220.2) (2026-10-01)
+
+### Bug Fixes
+
+* **server,fswatch:** ghost team spellings refused on mutating routes; inotify watch refusals enriched ([#2076](https://github.com/SocialGouv/iterion/issues/2076)) ([c3e9d1b](https://github.com/SocialGouv/iterion/commit/c3e9d1baa63050b5053dcce6e9b134d2752c4ad5)), closes [#2046](https://github.com/SocialGouv/iterion/issues/2046) [#1554](https://github.com/SocialGouv/iterion/issues/1554), references [#1931](https://github.com/SocialGouv/iterion/issues/1931) [#2043](https://github.com/SocialGouv/iterion/issues/2043) [pre-#2046](https://github.com/pre-/issues/2046)
+
+    <details><summary>why</summary>
+
+    #1931 canonicalized resolvable /api/teams/{id} spellings to the team UUID but deliberately left unresolvable ones their old semantics: a super-admin passes canManageTeam and a mutating call wrote rows keyed by the ghost spelling, invisible to every UUID reader. canonicalizeTeamPathValue now reports whether {id} resolved; a state-changing call with a spelling that resolves to nothing gets a 404 naming it — only for callers who pass canManageTeam, so members keep their uniform 403 and the refusal…
+
+    </details>
+
 ## [3.220.1](https://github.com/SocialGouv/iterion/compare/v3.220.0...v3.220.1) (2026-10-01)
 
 ### Bug Fixes
