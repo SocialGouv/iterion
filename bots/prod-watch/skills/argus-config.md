@@ -113,8 +113,11 @@ overrides).
   on the issue's first event time, which a late event or a client clock
   can move; `none` — that exact word — is refused: Sentry reads it as two
   different environments; "None" is a name like any other), `min_level` (`fatal|error|warning|info|debug`, default
-  `error`: below it the lane never STARTS tracking an issue — an issue
-  already alerted stays observed whatever its latest event's level),
+  `error`: it decides what posts as NEW, nothing else — a regression or
+  an escalation posts whatever its level, at the severity that level maps
+  to, as Sentry's own regression alerts do: Sentry rewrites an issue's
+  level with every event, so a floor there would drop the regression of
+  an issue the lane does not hold the moment one event came lower),
   `severity` (level → `critical|high|medium|low`, defaults fatal→high,
   error→medium, warning and below→low), `max_severity` (default `high`:
   a level is event content anyone with the public DSN writes, so
@@ -133,7 +136,31 @@ overrides).
   `overlap_minutes`: a cursor older than that — the lane turned off, a
   long outage — opens at the floor and declares the gap instead of
   posting days-old issues as new, and a transition dated before the floor
-  is history). The lane's IDENTITY — base URL (compared as the host it
+  is history), `max_records` (5000; **0 = no cap**: the incident store's
+  cap — anyone holding a public DSN mints issues, and each would
+  otherwise stay a record for `forget_after_days`; past it the records
+  nothing protects go, oldest admission first, legacy backlog before
+  everything. A record is protected while one of the last
+  `read_protect_ticks` ticks read it (3, at least 1: a tick blind to
+  Sentry records nothing and evicts nothing it read lately; at 1, every
+  failed read evicts what it would have re-read), while this tick plans
+  to read it by id, while a pending alert is owed, and for a window after
+  its first fact posted ALONE — `max_records / (2 × min(max_alerts_per_lane,
+  max_alerts_per_run))` state generations, 500 at the defaults, written
+  once at that post (with the cap off, the default cap's window; a record
+  from before this release, or from an older runner, has none). A closing
+  note waiting its turn protects nothing: it is a follow-up, cut and said
+  like the others. A regression the lane watched but never dated nor
+  announced is never cut silently: it is announced — undated, in the list
+  since its watch began — and goes at a later cut; on the first tick
+  after an upgrade, or when the cap is first set, the store above it is
+  cut and its watches announced in one tick (said, but loud). An
+  announced regression stays tracked like any open issue: it can re-say
+  as a reminder after `renotify_hours`. The store holds `max_records`, or
+  what the protected terms hold when that is more (the reads of the last
+  `read_protect_ticks` ticks — the lists and the by-id rotation, at most
+  `max_tracked` —, the pending alerts, the windows — at most half the
+  cap): ~1 KB a record, and a store kept over its cap is said). The lane's IDENTITY — base URL (compared as the host it
   names: case and a default port do not count), org, project,
   environment — travels in its cursor: changing any of them
   drops the old identity's incidents and cursor, and re-arms the lane (a
@@ -326,9 +353,25 @@ managed secret under the name `forge_token` (see vuln-watch's
   public DSN is one way there — raise the caps or tighten `min_level`
   (past `max_alerts_per_lane`, the flood's issues are named in notes of
   their kind the tick they come, and their follow-ups fold too — set a
-  rate limit on the DSN key in Sentry to stop it at the source: a
-  sustained flood also grows the state, a record per issue kept for
-  `forget_after_days`). **`sentry: … carried no
+  rate limit on the DSN key in Sentry to stop it at the source; the
+  store stays near `max_records`, see below). **`sentry: N record(s) cut
+  past max_records — …`** — the incident store passed its cap and the
+  records nothing protected went (oldest admission first). A cut issue
+  loses its follow-ups — reminder, escalation, reopening, idle and
+  closing notes, leak detection on its later text; its first
+  announcement was made already, and one read again is said again (a
+  NEW issue named again, a backlog issue named for the first time). Said
+  once per `renotify_hours`, the count carried until then. During a
+  public-DSN flood it is the price of a bounded state: a real incident
+  posted ALONE keeps its follow-ups for its window (500 generations at
+  the defaults), one folded into a note for a few ticks. Raise
+  `max_records`, or stop the flood at the source. **`sentry: N records
+  kept for max_records M, every one protected: …`** — after the cut,
+  every record left was read in the last `read_protect_ticks` ticks,
+  owed a pending alert, posted alone within its window, or announced
+  this tick before its cut (a tick that reads more than the cap, in
+  practice). It is said in a note another reason posts — a flood's
+  capped lists, in practice — never on its own. **`sentry: … carried no
   Link header`** — a proxy between the runner and Sentry strips it: no
   list can be read whole, so the lane never arms (or its cursor stays)
   until the proxy passes it. **`sentry: gap — the cursor was older
@@ -342,8 +385,8 @@ managed secret under the name `forge_token` (see vuln-watch's
   shorten `overlap_minutes`. **`sentry: P-… regressed or escalated at …
   after the arming but was dated only past max_catchup_hours — recorded as
   history, not posted`** — a transition the lane first saw too late to call
-  news (it was off, the level floor was lowered, or the issue was new to
-  it): never posted, and named until a note has said it (after the lane's
+  news (it was off, the issue was new to it, or its record was cut from
+  the store): never posted, and named until a note has said it (after the lane's
   losses: the note's budget can defer it to a later tick). **`sentry: N
   more transition(s) recorded as history …`** — past 100 names waiting,
   the oldest are counted instead.
