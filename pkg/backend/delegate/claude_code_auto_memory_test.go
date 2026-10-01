@@ -73,8 +73,11 @@ func TestAutoMemorySpawn_OnPinsDirectory(t *testing.T) {
 }
 
 // The settings object merges over the operator's own configuration, so it
-// must carry nothing beyond the two memory keys and the pinned environment —
-// and the environment nothing beyond the four pinned variables.
+// must carry nothing beyond the two memory keys, the ambient-context
+// exclusions and the pinned environment — and the environment nothing beyond
+// the four pinned variables. claudeMdExcludes is safe there: the CLI
+// concatenates it across layers, so a repository's or an operator's own
+// exclusions survive it (measured on CLI 2.1.282, ADR-119).
 func TestFlagSettingsCarryOnlyMemoryKeysAndThePinnedEnvironment(t *testing.T) {
 	_, memory := autoMemorySpawn(Task{AutoMemoryDir: "/tmp/mem"})
 	if len(memory) == 0 {
@@ -91,7 +94,7 @@ func TestFlagSettingsCarryOnlyMemoryKeysAndThePinnedEnvironment(t *testing.T) {
 		t.Fatalf("the settings object is not valid JSON (%s): %v", raw, err)
 	}
 	for k := range parsed {
-		if k != "env" && !strings.HasPrefix(k, "autoMemory") {
+		if k != "env" && k != "claudeMdExcludes" && !strings.HasPrefix(k, "autoMemory") {
 			t.Errorf("settings carries an unrelated key %q — it merges over the "+
 				"operator's own settings and must touch nothing else", k)
 		}
