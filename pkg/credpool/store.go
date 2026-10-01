@@ -47,7 +47,8 @@ type LeaseStore interface {
 	// Put inserts an attempt's lease. Leases are never reused: a finished
 	// attempt's record is the donor's evidence for the charge on their
 	// ledger, and re-opening it would both erase that and re-arm the close
-	// CAS that keeps a redelivered report from charging twice.
+	// CAS that keeps a redelivered report from charging twice. A superseded
+	// close is not a report (Reopen).
 	Put(ctx context.Context, l Lease) error
 	// Get returns one lease by id.
 	Get(ctx context.Context, leaseID string) (Lease, error)
@@ -70,6 +71,15 @@ type LeaseStore interface {
 	// which is what stops a redelivered report double-charging. costUSD is
 	// ADDED to whatever interim charges the lease already carries.
 	Close(ctx context.Context, leaseID string, costUSD float64, outcome string, when time.Time) (won bool, err error)
+	// Reopen undoes a supersede: it reopens the lease only while it is
+	// closed as superseded at exactly supersededAt — the close an acquisition
+	// made for a takeover that did not happen. That close is not a report: it
+	// charged nothing (a superseded close adds $0) and no report has closed
+	// the lease since, so reopening erases no charge, and the close CAS it
+	// re-arms is the one the attempt still running on the lease reports
+	// through. A lease reported, or closed at another instant, is left alone
+	// (false).
+	Reopen(ctx context.Context, leaseID string, supersededAt time.Time) (bool, error)
 	// AddCost accumulates an interim attempt's spend on a still-open lease,
 	// so a redelivered run's audit trail matches the donor's ledger.
 	AddCost(ctx context.Context, leaseID string, costUSD float64) error

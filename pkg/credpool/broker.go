@@ -237,6 +237,18 @@ type Grant struct {
 	// Bound when the lease is inserted, never looked up by run ID later:
 	// concurrent acquisitions can hold different leases for the same run.
 	releaseGuard *ReleaseGuard
+	// superseded is what this acquisition closed of the run's previous
+	// attempt: what ReopenSuperseded puts back when the takeover did not
+	// happen.
+	superseded []supersededLease
+}
+
+// supersededLease is a lease an acquisition closed as superseded, and the
+// instant of that close: what undoing it reopens (LeaseStore.Reopen).
+type supersededLease struct {
+	id    string
+	runID string
+	at    time.Time
 }
 
 // Acquire finds a donor for req and records the lease. Returns ErrNoDonor
@@ -269,10 +281,26 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// so the retry is admitted as new. A run id another team holds is
 	// refused instead: its leases are that team's record of what their runs
 	// consumed, not this requester's to close.
-	if err := b.supersedeOpenLeases(ctx, req, now); err != nil {
+	superseded, err := b.supersedeOpenLeases(ctx, req, now)
+	if err != nil {
 		return nil, err
 	}
+	grant, err := b.admit(ctx, req, now)
+	if grant == nil {
+		// No takeover: the attempt those leases serve goes on — a resume
+		// that found no donor may still be refused before its publication —
+		// so they are reopened. A publication that goes ahead without a
+		// grant supersedes them then (SupersedeRun).
+		b.reopenSuperseded(ctx, superseded)
+		return nil, err
+	}
+	grant.superseded = superseded
+	return grant, nil
+}
 
+// admit is Acquire past the supersede: the pools, the walk of the pledges
+// and the admission of the first that serves.
+func (b *Broker) admit(ctx context.Context, req Request, now time.Time) (*Grant, error) {
 	poolsEnabled, allowed, err := b.resolvePools(ctx, req)
 	if err != nil {
 		return nil, err
@@ -742,33 +770,67 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (c
 var ErrRunHeldElsewhere = errors.New("credpool: run id held by another team's open lease")
 
 // supersedeOpenLeases closes every open lease the requesting team holds on
-// this run. Their donors get their slot and committed allowance back; the
-// run unit stays consumed, because those attempts did run. An open lease of
-// ANOTHER team refuses the acquire: closing it would free the donor's slot
-// and erase the charge while the run still uses the credential. Best-effort:
-// a store miss only costs a slot until the lease TTL.
-func (b *Broker) supersedeOpenLeases(ctx context.Context, req Request, now time.Time) error {
+// this run, and returns those it closed. Their donors get their slot and
+// committed allowance back; the run unit stays consumed, because those
+// attempts did run. An open lease of ANOTHER team refuses the acquire:
+// closing it would free the donor's slot and erase the charge while the run
+// still uses the credential. Best-effort: a store miss only costs a slot
+// until the lease TTL.
+func (b *Broker) supersedeOpenLeases(ctx context.Context, req Request, now time.Time) ([]supersededLease, error) {
 	open, err := b.leases.ListOpenByRun(ctx, req.RunID)
 	if err != nil {
 		b.logger.Warn("credpool: could not check the open leases of run %s: %v", req.RunID, err)
-		return nil
+		return nil, nil
 	}
 	for _, l := range open {
 		// An unstamped side of the pair is legacy (pre-tenancy leases,
 		// bounded by the lease TTL): it supersedes rather than refuses,
 		// so an old lease cannot block the owning team's own retry.
 		if req.TenantID != "" && l.TenantID != "" && l.TenantID != req.TenantID {
-			return fmt.Errorf("%w: run %q is held by team %q", ErrRunHeldElsewhere, req.RunID, l.TenantID)
+			return nil, fmt.Errorf("%w: run %q is held by team %q", ErrRunHeldElsewhere, req.RunID, l.TenantID)
 		}
 	}
+	var closed []supersededLease
 	for _, l := range open {
 		// Zero, not l.CostUSD: Close ADDS, and whatever this lease already
 		// carries was recorded when it was charged.
-		if _, cerr := b.leases.Close(ctx, l.ID, 0, OutcomeSuperseded, now); cerr != nil {
+		won, cerr := b.leases.Close(ctx, l.ID, 0, OutcomeSuperseded, now)
+		if cerr != nil {
 			b.logger.Warn("credpool: could not supersede lease %s of run %s: %v", l.ID, req.RunID, cerr)
+			continue
+		}
+		if won {
+			closed = append(closed, supersededLease{id: l.ID, runID: l.RunID, at: now})
 		}
 	}
-	return nil
+	return closed, nil
+}
+
+// reopenSuperseded undoes a supersede whose takeover did not happen: the
+// attempt those leases serve goes on, and reports against them. A lease that
+// attempt has reported since is left alone (LeaseStore.Reopen). Best-effort
+// and cancellation-immune, like the release it follows.
+func (b *Broker) reopenSuperseded(ctx context.Context, superseded []supersededLease) {
+	ctx = context.WithoutCancel(ctx)
+	for _, l := range superseded {
+		if _, err := b.leases.Reopen(ctx, l.id, l.at); err != nil {
+			b.logger.Warn("credpool: could not reopen lease %s of run %s after a takeover that did not happen: %v — the attempt it serves reports against no lease, and its donor's slot is free until it ends", l.id, l.runID, err)
+		}
+	}
+}
+
+// SupersedeRun closes the run's open leases as superseded: a newer attempt
+// of the run was published without a pool grant, so the attempt they serve
+// is over. An acquisition supersedes them itself (Acquire), and reopens them
+// when it grants nothing — which leaves them to this, after the
+// publication. Best-effort, like that supersede; ErrRunHeldElsewhere when
+// another team's lease holds the run id.
+func (b *Broker) SupersedeRun(ctx context.Context, runID, tenantID string) error {
+	if b == nil || runID == "" {
+		return nil
+	}
+	_, err := b.supersedeOpenLeases(ctx, Request{RunID: runID, TenantID: tenantID}, b.now())
+	return err
 }
 
 // releaseReservation gives back one admitted-but-unused run unit.
@@ -824,6 +886,19 @@ func (b *Broker) ReleaseGrant(ctx context.Context, grant *Grant) {
 		return
 	}
 	b.ReleaseCaptured(ctx, grant.releaseGuard)
+}
+
+// ReopenSuperseded undoes what grant's acquisition superseded, once the
+// caller knows that takeover did not happen: the attempt it superseded goes
+// on — a resume refused before its publication, whose flip to queued was
+// reverted — and reports against its lease. Release the grant first
+// (ReleaseGrant), so the run never holds two open leases. A resume that lost
+// its run to a newer one does not call it: that one took the run over.
+func (b *Broker) ReopenSuperseded(ctx context.Context, grant *Grant) {
+	if b == nil || grant == nil {
+		return
+	}
+	b.reopenSuperseded(ctx, grant.superseded)
 }
 
 // Release undoes an acquisition whose run never started — a launch that

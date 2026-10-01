@@ -2921,7 +2921,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// Any failure before a successful publish puts back what this resume's
 	// flip replaced — and only while the run is still queued for that flip:
 	// a cancel, a claim, or another resume's flip since is never undone.
+	// The pool grant the resume acquired (below) superseded the previous
+	// attempt's lease: reverted, the flip gives it back to that attempt,
+	// which goes on (credpool ReopenSuperseded); refused, a newer resume
+	// owns the run and the lease stays superseded.
 	republished := false
+	var grant *credpool.Grant
 	defer func() {
 		if republished {
 			return
@@ -2938,8 +2943,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rollbackCancel()
 		if flipper != nil {
-			if _, rbErr := flipper.RevertQueuedFlip(rollbackCtx, spec.RunID, flip, runErr); rbErr != nil {
+			reverted, rbErr := flipper.RevertQueuedFlip(rollbackCtx, spec.RunID, flip, runErr)
+			if rbErr != nil {
 				p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+			}
+			if reverted {
+				p.credPool.ReopenSuperseded(rollbackCtx, grant)
 			}
 			return
 		}
@@ -2951,6 +2960,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			[]store.RunStatus{store.RunStatusQueued})
 		if rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+		}
+		if rolledBack {
+			p.credPool.ReopenSuperseded(rollbackCtx, grant)
 		}
 		// The rewind baseline goes back with the status — and ONLY with it.
 		// The source is stamped just before the publish, so a publish that
@@ -3003,7 +3015,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// launched before the field existed — the pre-existing
 	// one-key-per-family fill, which is what those runs already had.
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust, prior.PinnedProviders)
-	// Armed before the error check — see SubmitLaunch.
+	grant = creds.grant
+	// Armed before the error check — see SubmitLaunch. Runs before the
+	// rollback above (defers unwind in reverse): the grant's own lease is
+	// closed before the one it superseded can be reopened.
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
@@ -3159,6 +3174,15 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	republished = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
+	}
+	// Published: the previous attempt is over. A pool grant superseded its
+	// lease when it was acquired; without one — no donor, no pool asked —
+	// its lease is superseded now, or it would hold its donor's slot and
+	// allowance until the lease TTL.
+	if creds.grant == nil && p.credPool != nil {
+		if err := p.credPool.SupersedeRun(context.WithoutCancel(ctx), spec.RunID, prior.TenantID); err != nil {
+			p.logger.Warn("cloudpublisher: supersede the previous attempt's pool lease of %s after its resume: %v", spec.RunID, err)
+		}
 	}
 	// E4 (#652 review round 1): persist the MERGED budget ask onto the
 	// run doc, so a subsequent unattended auto-retry (usage-window

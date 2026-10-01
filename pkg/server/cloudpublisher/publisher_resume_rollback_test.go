@@ -67,6 +67,10 @@ func TestSubmitResume_aRefusedResumeLeavesAConcurrentResumesAttemptAlone(t *test
 	if err := p.CancelRun(ctx, runID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+	// An attempt's marker is to the millisecond (store.QueuedFlipAt): two
+	// flips in one are one attempt to every reader — a cancel and a resume
+	// by request take longer than that.
+	time.Sleep(2 * time.Millisecond)
 	csB := &runview.CompiledSource{Hash: "hB", Main: "main.bot", Files: map[string]string{"main.bot": "workflow w:\n  entry: b\n  b -> done\n"}}
 	if err := p.SubmitResume(ctx, runview.ResumeSpec{RunID: runID, FilePath: "main.bot", Source: csB.Files["main.bot"], AcceptScratchLoss: true}, &ir.Workflow{Name: "w"}, csB); err != nil {
 		t.Fatalf("B's resume = %v, want success", err)

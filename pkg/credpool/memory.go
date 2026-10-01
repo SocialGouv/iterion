@@ -237,6 +237,23 @@ func (s *MemoryLeaseStore) Close(_ context.Context, leaseID string, costUSD floa
 	return true, nil
 }
 
+func (s *MemoryLeaseStore) Reopen(_ context.Context, leaseID string, supersededAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.m[leaseID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if !l.Closed || l.Outcome != OutcomeSuperseded || l.ClosedAt == nil || !l.ClosedAt.Equal(supersededAt) {
+		return false, nil
+	}
+	l.Closed = false
+	l.Outcome = ""
+	l.ClosedAt = nil
+	s.m[leaseID] = l
+	return true, nil
+}
+
 func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

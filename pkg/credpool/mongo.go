@@ -278,6 +278,25 @@ func (s *MongoLeaseStore) Close(ctx context.Context, leaseID string, costUSD flo
 	return false, nil
 }
 
+// Reopen undoes a supersede — see LeaseStore.Reopen. The match on the
+// superseded close and the reopening land in one update.
+func (s *MongoLeaseStore) Reopen(ctx context.Context, leaseID string, supersededAt time.Time) (bool, error) {
+	res, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": leaseID, "closed": true, "outcome": OutcomeSuperseded, "closed_at": supersededAt.UTC()},
+		bson.M{"$set": bson.M{"closed": false}, "$unset": bson.M{"outcome": "", "closed_at": ""}})
+	if err != nil {
+		return false, fmt.Errorf("credpool: reopen lease: %w", err)
+	}
+	if res.MatchedCount > 0 {
+		return true, nil
+	}
+	n, cerr := s.col.CountDocuments(ctx, bson.M{"_id": leaseID})
+	if cerr == nil && n == 0 {
+		return false, ErrNotFound
+	}
+	return false, nil
+}
+
 // AddCost accumulates an interim attempt's spend onto an OPEN lease, so
 // the donor's audit trail matches their ledger for a redelivered run.
 func (s *MongoLeaseStore) AddCost(ctx context.Context, leaseID string, costUSD float64) error {
