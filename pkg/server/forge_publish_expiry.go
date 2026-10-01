@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -32,6 +33,14 @@ var errForgePublishGrantUnavailable = errors.New("forge publish grant unavailabl
 // revoked"). Past that, nothing revisits a run that owes no verdict, so the
 // grant has no reader left.
 const forgePublishPostRunGrace = gateSweepLookback + 30*time.Minute
+
+// postRunGrace is forgePublishPostRunGrace under the configured sweep cadence:
+// the fast sweep reaches a dead run for as long as its lookback, so the
+// ordinary grant has to outlive that, however far an operator set it.
+func (s *Server) postRunGrace() time.Duration {
+	lookback, _ := s.gateSweepCadence()
+	return lookback + (forgePublishPostRunGrace - gateSweepLookback)
+}
 
 // forgePublishGateGrace is the same figure for the small minority of runs the
 // merge-gate reconciler may still have to answer FOR — the ones holding a gate
@@ -102,7 +111,8 @@ func (s *Server) attachForgePublishGrantExpiry(bus eventbus.Bus) (func(context.C
 // Two shapes keep their grant at full length, because something WILL come back
 // and post their own verdict:
 //
-//   - a paused run — it is expected to resume;
+//   - a run that is not over — paused, expected to resume, or already resumed
+//     when a late outcome event lands;
 //   - a failed_resumable run with an ARMED retry (RetryAfter set, persisted
 //     before the outcome event fires). "Abandoned" is defined by the retry
 //     machinery, not re-derived here: the sweeper enforces the policy's
@@ -125,7 +135,9 @@ func (s *Server) expireForgePublishGrantForRun(ctx context.Context, runID string
 		return nil // the run held no grant
 	}
 	switch {
-	case run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator:
+	case !run.Status.IsTerminal():
+		// Paused, or resumed since the outcome event that brought us here
+		// (an event can arrive late): the run will publish again.
 		return nil
 	case run.Status == store.RunStatusFailedResumable &&
 		run.FailureCode != store.FailureDLQParked &&
@@ -135,11 +147,18 @@ func (s *Server) expireForgePublishGrantForRun(ctx context.Context, runID string
 		// the reconciler already treats it as dead.
 		return nil
 	}
-	grace := forgePublishPostRunGrace
-	if runOwesGateVerdict(run) {
-		grace = forgePublishGateGrace
+	if runOwesGateVerdict(run) && runInputString(run, "head_sha") != "" {
+		s.forgePublishTokens.expireIn(token, forgePublishGateGrace)
+		return nil
 	}
-	s.forgePublishTokens.expireIn(token, grace)
+	// Every other run — one that gates nothing, or names no reviewed revision
+	// (the reconciler settles it before any forge read) — leaves its grant no
+	// reader past the ordinary grace. That shortening is a cut-back like a
+	// verdict's: a grant a second run shares (a launch that pinned the token,
+	// a fork) is kept for it.
+	if _, err := s.cutBack(token, s.postRunGrace()); err != nil {
+		return fmt.Errorf("forge publish: retire the grant of run %s: %w — it lives out its TTL", runID, err)
+	}
 	return nil
 }
 

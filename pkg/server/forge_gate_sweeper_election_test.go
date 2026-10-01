@@ -21,7 +21,6 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
-	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // waitForCond polls pred until it holds or the budget runs out: every wait in
@@ -323,6 +322,27 @@ func TestForgeRequestTally_BoundsTheHostsOneHourNames(t *testing.T) {
 	}
 }
 
+// The host bound is per hour: a new hour names its hosts afresh, or a process
+// that met 64 hosts once would fold every later one for the rest of its life.
+func TestForgeRequestTally_ANewHourNamesItsHostsAfresh(t *testing.T) {
+	clock := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
+	tally := newForgeRequestTally(func() time.Time { return clock }, nil)
+	send := func(raw string) {
+		u, _ := url.Parse(raw)
+		tally.observe((&http.Request{Method: http.MethodGet, URL: u}).WithContext(context.Background()))
+	}
+	for i := 0; i < forgeTallyMaxHosts; i++ {
+		send(fmt.Sprintf("https://forge-%d.example/api/v4/projects", i))
+	}
+	clock = clock.Add(time.Hour)
+	send("https://api.github.com/repos/o/r/pulls/1")
+	tally.mu.Lock()
+	defer tally.mu.Unlock()
+	if tally.counts[forgeTallyKey{host: "api.github.com", api: "rest"}] != 1 {
+		t.Errorf("the next hour folded a new host: %v", tally.counts)
+	}
+}
+
 // After an idle gap, the hour a stopping process flushes is the last one it
 // counted — whole, not "cut short" at a stop that came hours later.
 func TestForgeRequestTally_AFlushAfterAnIdleGapReportsAWholeHour(t *testing.T) {
@@ -437,7 +457,7 @@ type listerStore struct {
 // silently give each replica its own lease — every replica elected — so that
 // case must say so.
 func TestLeaseStoreFor_EveryReplicaCampaignsOnTheSharedStore(t *testing.T) {
-	client, err := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:1")) // lazy: never dials
+	client, err := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:1")) // nothing listens there: no operation ever reaches a server
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,76 +595,17 @@ func (c *laneTaggingStub) GetPullRequest(ctx context.Context, base string, numbe
 // fix lane's reads spend the same installation budget, so they are charged to
 // the sweep too.
 func TestGateSweep_ChargesTheAutofixOfferToTheSweepLane(t *testing.T) {
-	const (
-		team  = "t1"
-		repo  = "acme/widgets"
-		prURL = "https://github.com/acme/widgets/pull/7"
-		head  = "cafe1234cafe1234cafe1234cafe1234cafe1234"
-	)
-	s := newWebhookTestServer(t)
-	s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
-	rs, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	w := newAutofixSweepWorld(t)
+	w.s.sweepGates(context.Background(), &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: w.run.ID}}}, time.Now().UTC(), gateSweepLookback, time.Time{})
+	if w.launched.Load() != 1 {
+		t.Fatalf("the sweep's autofix offer launched %d fixers, want 1 — the fix lane never ran, so its reads were not observed", w.launched.Load())
 	}
-	s.cfg.Store = rs
-	conns := forge.NewMemoryConnectionStore()
-	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}); err != nil {
-		t.Fatal(err)
+	w.gc.mu.Lock()
+	defer w.gc.mu.Unlock()
+	if len(w.gc.lanes) < 2 {
+		t.Fatalf("observed %d PR reads, want one per lane (reconcile + autofix)", len(w.gc.lanes))
 	}
-	s.forgeConnections = conns
-	s.forgePublishTokens = NewForgePublishTokenRegistry()
-	if err := s.forgePublishTokens.Register("run-token", ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo}); err != nil {
-		t.Fatal(err)
-	}
-	ints := forge.NewMemoryRepoIntegrationStore()
-	if err := ints.Create(context.Background(), forge.RepoIntegration{
-		ID: "i1", TenantID: team, ConnectionID: "c1", RepoFullName: repo,
-		BotIDs: []string{"fixer-bot"}, WebhookID: "w1", AutoFixOnGateFailure: true,
-		LaunchVars: map[string]string{gateContextVar: "iterion/review"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	s.forgeIntegrations = ints
-	if err := s.webhookConfigs.Create(context.Background(), webhooks.Config{
-		ID: "w1", TenantID: team, BotIDs: []string{"fixer-bot"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	gc := &laneTaggingStub{stubGateClient: stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: "iterion/review"}}
-	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
-	var launched atomic.Int32
-	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
-		launched.Add(1)
-		return "run-fixer", nil
-	}
-	id, err := store.GenerateRunID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	run, err := rs.CreateRun(context.Background(), id, "reviewer-bot", map[string]any{
-		"pr_url": prURL, "gate_context": "iterion/review", "head_sha": head,
-		forgePublishVarToken: "run-token",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run.BotID = "reviewer-bot"
-	run.Status = store.RunStatusFinished
-	if err := rs.SaveRun(context.Background(), run); err != nil {
-		t.Fatal(err)
-	}
-
-	s.sweepGates(context.Background(), &fakeGateSweepLister{refs: []mongostore.NotifiableRunRef{{ID: run.ID}}}, time.Now().UTC(), gateSweepLookback, time.Time{})
-	if launched.Load() != 1 {
-		t.Fatalf("the sweep's autofix offer launched %d fixers, want 1 — the fix lane never ran, so its reads were not observed", launched.Load())
-	}
-	gc.mu.Lock()
-	defer gc.mu.Unlock()
-	if len(gc.lanes) < 2 {
-		t.Fatalf("observed %d PR reads, want one per lane (reconcile + autofix)", len(gc.lanes))
-	}
-	for i, lane := range gc.lanes {
+	for i, lane := range w.gc.lanes {
 		if lane != forgeLaneGateSweeper {
 			t.Errorf("PR read %d was charged to lane %q, want %q", i, lane, forgeLaneGateSweeper)
 		}
@@ -656,7 +617,7 @@ func TestGateSweep_ChargesTheAutofixOfferToTheSweepLane(t *testing.T) {
 // exposing its database campaigns on the shared Mongo lease, and a cloud-shaped
 // store hiding it warns through the server's own logger.
 func TestNew_WiresTheSharedLeaseStore(t *testing.T) {
-	client, err := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:1")) // lazy: never dials
+	client, err := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:1")) // nothing listens there: no operation ever reaches a server
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,5 +714,52 @@ func TestGateSweeper_EveryTermOpensWithADeepPass(t *testing.T) {
 	rec.mu.Unlock()
 	if got != gateSweepHorizon {
 		t.Errorf("the second term's first pass reached back %s, want the whole %s horizon", got, gateSweepHorizon)
+	}
+}
+
+// ttlRecordingLeases records the TTL each campaign asks for.
+type ttlRecordingLeases struct {
+	lease.Store
+	mu   sync.Mutex
+	ttls []time.Duration
+}
+
+func (r *ttlRecordingLeases) Acquire(ctx context.Context, name, owner string, now time.Time, ttl time.Duration) (bool, error) {
+	r.mu.Lock()
+	r.ttls = append(r.ttls, ttl)
+	r.mu.Unlock()
+	return r.Store.Acquire(ctx, name, owner, now, ttl)
+}
+
+// An interval an operator stretched to spare the forge does not stretch the
+// failover with it: the lease stays paced by the default interval at most, so
+// a dead holder is replaced within minutes, not three of its intervals.
+func TestGateSweeper_ALongIntervalKeepsAQuickFailover(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newForgeGateTestServer(t, st)
+	s.gateSweep = gateSweepSettings{interval: time.Hour, lookback: 2 * time.Hour, deepEvery: 2}
+	rec := &ttlRecordingLeases{Store: lease.NewMemoryStore()}
+	s.leases = rec
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runElectedGateSweeper(ctx, &windowRecorder{})
+	}()
+	waitForCond(t, 10*time.Second, "a campaign", func() bool {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		return len(rec.ttls) > 0
+	})
+	cancel()
+	<-done
+	rec.mu.Lock()
+	ttl := rec.ttls[0]
+	rec.mu.Unlock()
+	if want := gateSweepLeaseTTLFactor * gateSweepInterval; ttl != want {
+		t.Errorf("under a 1h interval the sweep's lease lasts %s, want %s — a dead holder would keep the net down for hours", ttl, want)
 	}
 }

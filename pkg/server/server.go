@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -324,8 +325,11 @@ type Server struct {
 	// last pass over a run). nil → time.Now().UTC().
 	gateClock func() time.Time
 	// gateSweepTick overrides the merge-gate sweep cadence (test seam — an
-	// election test cannot wait a minute per pass). Zero → gateSweepInterval.
+	// election test cannot wait a minute per pass). Zero → the configured one.
 	gateSweepTick time.Duration
+	// gateSweep is the operator-configured sweep cadence
+	// (gateSweepSettingsFromEnv), resolved once in New.
+	gateSweep gateSweepSettings
 	// sweepDegraded brackets the orphan sweeper's degradation episode
 	// (edge-triggered Warn on entry, Info on recovery). The two failing
 	// stages are tracked as INDEPENDENT flags because they recover on
@@ -500,6 +504,12 @@ type Server struct {
 	// injectForgePublishVars; grants pin (team, connection, repo). Non-nil
 	// iff forgeConnections is wired.
 	forgePublishTokens ForgePublishTokenStore
+	// gateSettles holds the merge-gate reconciler's "settled" marks, read by
+	// the sweep before it offers a run (forge_gate_settle.go). Wired with
+	// forgePublishTokens, on the same backend. gateSettleReadFailing is the
+	// edge of a read-failure episode, so the sweep reports it once.
+	gateSettles           gateSettleStore
+	gateSettleReadFailing atomic.Bool
 
 	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
 	gateReconcileCancel func(context.Context)
@@ -836,8 +846,10 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// grants; single-replica keeps the in-memory registry.
 		if s.redis != nil {
 			s.forgePublishTokens = newValkeyForgePublishTokenStore(s.redis.Redis(), s.logger)
+			s.gateSettles = newValkeyGateSettleStore(s.redis.Redis(), s.logger)
 		} else {
 			s.forgePublishTokens = NewForgePublishTokenRegistry()
+			s.gateSettles = newMemoryGateSettleStore(s.logger)
 		}
 	}
 	// Auth rate limiter — eagerly built so the lazy `if s.authLimiter == nil`
@@ -1003,6 +1015,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	}
 	s.leases = leaseStoreFor(cfg, s.warnf)
 	s.replicaID = newReplicaID()
+	s.gateSweep = gateSweepSettingsFromEnv(os.Getenv, s.warnf)
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket
 	// upgrader so cross-origin browser tabs can't subscribe to file events.
 	SetWebSocketOriginCheck(s.isAllowedOrigin)

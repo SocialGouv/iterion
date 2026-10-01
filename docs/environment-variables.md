@@ -187,6 +187,29 @@ This is the *per-run* bound. The *per-org* monthly cost cap, run quota,
 concurrency and launch rate are a separate admission layer with its own
 variables — see [quotas-and-limits.md](quotas-and-limits.md).
 
+## Merge gate (server)
+
+The cadence of the [merge-gate sweep](merge-gate.md#two-triggers-because-one-event-is-not-a-guarantee),
+the net that re-offers dead gating runs to the reconciler. It runs on one
+elected server replica, and every offer it makes spends the forge's request
+budget, so these are the levers that slow it down without a release. Set on
+the **server** Deployment; read at start. A value that breaks the net keeps its
+default and warns in the server log, naming the variable:
+
+- a value that does not parse, or is not positive;
+- an interval under 1 s, or of half the 8-day horizon (96 h) or more;
+- a lookback that does not exceed the interval plus the sweep's 3-minute grace
+  (a run could end between two windows and never be examined), or that reaches
+  the horizon;
+- deep passes half the horizon apart or more (interval × deep-every of 96 h or
+  more).
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_GATE_SWEEP_INTERVAL` | Time between two passes (Go duration). The sweeper's lease is paced by it, capped at the default: its TTL is three intervals, three minutes at most, so a long interval does not delay the failover. A new term's first pass runs at once. | `1m` |
+| `ITERION_GATE_SWEEP_LOOKBACK` | How far back an ordinary pass reaches (Go duration). The ordinary publish grant outlives it by 30 minutes. | `1h` |
+| `ITERION_GATE_SWEEP_DEEP_EVERY` | Passes between two deep ones, which reach the whole 8-day horizon. | `30` |
+
 ## See also
 
 - [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md) — what the probe endpoints promise and how the delays compose.
