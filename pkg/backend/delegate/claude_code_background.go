@@ -109,9 +109,12 @@ func resolveBackgroundLifecycleConfig() backgroundLifecycleConfig {
 }
 
 // printBgWaitCeilingEnv bounds the CLI's own wind-down wait for background
-// work. The CLI reads 0 as "wait indefinitely", so it is pinned (both layers,
-// every spawn) rather than left to a settings `env`: defaultPrintBgWaitCeiling
-// is the CLI's own default, and ITERION_CLAUDE_CODE_BACKGROUND_WAIT lowers it.
+// work, past which the CLI TERMINATES the work it still holds ("Background
+// tasks still running after Ns; terminating"). The CLI reads 0 as "wait
+// indefinitely", so the value is pinned (both layers, every spawn) rather
+// than left to a settings `env` — at defaultPrintBgWaitCeiling, the CLI's own
+// default, and at nothing else: a shorter one would kill work the previous
+// behaviour delivered.
 const printBgWaitCeilingEnv = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
 
 // defaultPrintBgWaitCeiling is the CLI's own default for that ceiling.

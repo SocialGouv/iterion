@@ -1398,11 +1398,14 @@ the session ends when iterion decides, not on the CLI's own idle exit.
 
 The session waits for **subagents and workflows** (`local_agent`,
 `local_workflow`) — work the CLI's own print-mode wind-down waits for too, up
-to its own ceiling (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, which every spawn
-pins: the CLI reads `0` as "wait indefinitely", and the repository under
-review must not decide how long a wind-down holds the run. The pin is the
-CLI's own default, 10 minutes, lowered by
-`ITERION_CLAUDE_CODE_BACKGROUND_WAIT` when that is shorter). No spawn can
+to its own ceiling (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, past which the
+CLI **terminates** that work). Every spawn pins it at the CLI's own default,
+10 minutes, and at nothing else: the point is that the repository under
+review cannot move it — `0`, "wait indefinitely", included — not to shorten
+a deadline that kills, and iterion's own wave budget, which merely asks for
+a report, never derives it. The ceiling arms only where the CLI's stdin is
+closed, which is the structured-output pass: the one spawn with no lifecycle
+to catch what a kill loses. No spawn can
 start a workflow today — `Workflow` is withheld from every node — so the
 `local_workflow` arm is there for the task type, not for a tool the model
 can reach. A background shell (`run_in_background`:
@@ -1459,7 +1462,9 @@ the tasks that kept the CLI busy named and recorded lost; a nudge no turn
 ever takes ends the call on a retryable error — how long its answer may take
 is a wait of its own (`ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT`, five
 graces by default), because the grace decides when to nudge, and a replay
-plus the first message of the answering turn does not fit in it. Turns the CLI keeps running on
+plus the first message of the answering turn does not fit in it. The silence
+watchdogs are suspended while a nudge is outstanding, so that budget is how
+long a CLI that took the message and went quiet holds the node. Turns the CLI keeps running on
 its own once nothing held runs — a monitor's events, each re-kicking it right
 after an idle, so that no idle ever holds — do not restart that grace: the
 session ends at the close of the first such turn past the grace counted from

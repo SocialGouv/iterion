@@ -250,8 +250,8 @@ const headlessBackgroundRule = "\n\n## Background work in this session\n\n" +
 	"This session is not interactive: it ends with your final output. A background " +
 	"subagent is waited for: its report reaches you before the session ends — " +
 	"unless you launch it with `isolation: \"remote\"`, which is never waited for. A " +
-	"background command (`run_in_background`) is not: anything still " +
-	"running when you give your final output is killed, its completion " +
+	"background command (`run_in_background`), or a monitor you arm, is not: " +
+	"anything still running when you give your final output is killed, its completion " +
 	"notification with it. So, unlike what the Bash tool says, do not end your turn " +
 	"to wait for a background command whose result you need: read the output file " +
 	"its result names until the command has finished, or run it in the foreground " +
@@ -262,8 +262,8 @@ const headlessBackgroundRule = "\n\n## Background work in this session\n\n" +
 // runs in the background is waited for.
 const headlessBackgroundUnheldRule = "\n\n## Background work in this session\n\n" +
 	"This session is not interactive: it ends with your final output, and nothing " +
-	"that runs in the background is waited for. A background subagent or command " +
-	"(`run_in_background`) still running when you give your final output is " +
+	"that runs in the background is waited for. A background subagent, command " +
+	"(`run_in_background`) or monitor still running when you give your final output is " +
 	"killed, its completion notification with it. The Agent tool launches in the " +
 	"background by DEFAULT here, so pass `run_in_background: false` on every Agent " +
 	"call — its report is then the tool result — and give a command a timeout that " +
@@ -1701,20 +1701,16 @@ func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 	pin(autoMemoryDisableEnv, disable)
 	pin(bashDefaultTimeoutEnv, strconv.FormatInt(defaultMs, 10))
 	pin(bashMaxTimeoutEnv, strconv.FormatInt(maxMs, 10))
-	// How long the CLI's own wind-down waits for background work, bounded
-	// whatever the lifecycle: 0 means "wait indefinitely" to the CLI, and a
-	// settings `env` of the repository under review would otherwise spend
-	// the run's whole budget on one task that never ends — on the formatting
-	// pass too, which carries no deadline of its own.
+	// The CLI's own wind-down ceiling, pinned at the CLI's own default and at
+	// nothing else. Past it the CLI KILLS the background work it still holds,
+	// where iterion's wave budget only asks for a report — so this is never
+	// derived from that budget: the point is that the repository under review
+	// cannot MOVE it, `0` ("wait indefinitely") included, not to shorten a
+	// deadline that kills. It arms only where the CLI's stdin is closed,
+	// which is the formatting pass: the one spawn with no lifecycle to catch
+	// what a kill loses.
+	pin(printBgWaitCeilingEnv, strconv.FormatInt(defaultPrintBgWaitCeiling.Milliseconds(), 10))
 	cfg := resolveBackgroundLifecycleConfig()
-	// An iterion wait budget of 0 means unbounded to the wave; to the CLI it
-	// would mean "wait indefinitely", which is the hole this pin closes. The
-	// default stands then, and only a SHORTER budget lowers it.
-	ceiling := defaultPrintBgWaitCeiling
-	if cfg.wait > 0 && cfg.wait < ceiling {
-		ceiling = cfg.wait
-	}
-	pin(printBgWaitCeilingEnv, strconv.FormatInt(ceiling.Milliseconds(), 10))
 	if cfg.enabled {
 		for _, k := range slices.Sorted(maps.Keys(bgLifecycleEnv)) {
 			pin(k, bgLifecycleEnv[k])

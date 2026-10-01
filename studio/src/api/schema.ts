@@ -6299,6 +6299,7 @@ export interface components {
             selected_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
+            session_ledger?: components["schemas"]["SessionLedgerEntry"][];
             settled_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
@@ -7054,6 +7055,10 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             updated_by?: string;
+        };
+        SessionLedgerEntry: {
+            session_id: string;
+            tasks: string[];
         };
         Settings: {
             five_hour_pct?: number;

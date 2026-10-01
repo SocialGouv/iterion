@@ -314,7 +314,7 @@ func TestSandboxedSpawnsPinTheRoutingEnvironmentInsideTheContainer(t *testing.T)
 			t.Fatal(err)
 		}
 		if formatting {
-			_, _, err := b.formatOutput(context.Background(), task, "sid")
+			_, _, _, err := b.formatOutput(context.Background(), task, "sid")
 			t.Logf("formatOutput: %v", err)
 		} else {
 			_, err := b.Execute(context.Background(), task)

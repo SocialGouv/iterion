@@ -15,7 +15,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
-
 )
 
 // ---------------------------------------------------------------------------

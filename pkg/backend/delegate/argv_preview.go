@@ -62,7 +62,9 @@ func describeRedactedArgvValue(flag, value string) string {
 	if flag == "--settings" {
 		var doc map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(value), &doc); err != nil {
-			return "<redacted settings>"
+			// Since the routing pin, the value is a private file's path
+			// (claudeSettingsFiles): names the file, carries no value.
+			return "<redacted settings file>"
 		}
 		var env map[string]json.RawMessage
 		if err := json.Unmarshal(doc["env"], &env); err != nil {

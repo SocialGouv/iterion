@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
-	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"strings"
 	"time"
 

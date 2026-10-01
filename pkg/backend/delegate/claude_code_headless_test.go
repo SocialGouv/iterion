@@ -52,6 +52,7 @@ func pinWatchdogs(t *testing.T) {
 	t.Setenv("ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT", "25m")
 	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "")
 	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", "")
 }
 
 // Every spawn a claude_code task makes runs with the pinned environment in
@@ -126,13 +127,38 @@ func TestEverySpawnRunsWithThePinnedEnvironment(t *testing.T) {
 	}
 }
 
+// flagSettingsAt returns the flag settings layer the i-th spawn carried,
+// from the stand-in CLI's own log of the file `--settings` names
+// (SETTINGS_LOG, one line per spawn, in spawn order): the file is private
+// and removed when the pass ends, so the log is what remains.
+func flagSettingsAt(t *testing.T, i int) map[string]json.RawMessage {
+	t.Helper()
+	log := os.Getenv("SETTINGS_LOG")
+	if log == "" {
+		t.Fatal("SETTINGS_LOG is unset: the stand-in cannot have logged the flag layer")
+	}
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if i >= len(lines) {
+		t.Fatalf("SETTINGS_LOG carries %d spawn line(s), want at least %d", len(lines), i+1)
+	}
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(lines[i]), &out); err != nil {
+		t.Fatalf("spawn #%d's settings line is no JSON object: %v", i+1, err)
+	}
+	return out
+}
+
 // flagSettings parses the flag settings object a spawn read from the file its
 // `--settings` flag names (spawnRecord.settings).
 func flagSettings(t *testing.T, content string) map[string]json.RawMessage {
 	t.Helper()
 	var out map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(content), &out); err != nil {
-		t.Fatalf("the --settings file is not a JSON object (%s): %v", content, err)
+		t.Fatalf("the --settings content is not a JSON object: %v", err)
 	}
 	return out
 }
@@ -428,7 +454,7 @@ func TestBackgroundTasksOnLiftsTheForegroundPin(t *testing.T) {
 			t.Errorf("spawn #%d ran with %s=%q, want it set empty: background work was asked for", i+1, backgroundTasksOffEnv, got)
 		}
 		var layer map[string]string
-		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		_ = json.Unmarshal(flagSettingsAt(t, i)["env"], &layer)
 		if got, ok := layer[backgroundTasksOffEnv]; !ok || got != "" {
 			t.Errorf("spawn #%d's flag settings layer has %s=%q (present %v), want it empty: a repository's settings env would switch background work off", i+1, backgroundTasksOffEnv, got, ok)
 		}
@@ -466,7 +492,7 @@ func TestTheRewritersRunEnvIsPinnedInBothLayers(t *testing.T) {
 			t.Errorf("spawn #%d ran with RTK_DB_PATH=%s RTK_RECALL=%s, want the run env over the provisioning layer's", i+1, env[i]["rtkdb"], env[i]["rtkrecall"])
 		}
 		var layer map[string]string
-		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		_ = json.Unmarshal(flagSettingsAt(t, i)["env"], &layer)
 		if layer["RTK_DB_PATH"] != "/dev/null/iterion-rtk-history.db" || layer["RTK_RECALL"] != "0" {
 			t.Errorf("spawn #%d's flag settings layer lacks the run env (env=%v): a settings env would put rtk's history back on", i+1, layer)
 		}
@@ -492,6 +518,8 @@ func TestBackgroundWorkOnSaysWhatTheSessionWaitsFor(t *testing.T) {
 		prompt := claudeCodeSystemPrompt(task)
 		for _, want := range []string{heading, "A background subagent is waited for", "`run_in_background`", "is killed",
 			"do not end your turn to wait for a background command", "read the output file",
+			// A monitor is offered by this CLI and is never waited for.
+			"monitor",
 			// holdsSession holds local_agent/local_workflow: a remote one is not.
 			`isolation: "remote"`} {
 			if !strings.Contains(prompt, want) {
@@ -514,8 +542,13 @@ func TestBackgroundWorkOnSaysWhatTheSessionWaitsFor(t *testing.T) {
 	if !strings.Contains(prompt, "`run_in_background: false`") {
 		t.Errorf("lifecycle off: the prompt does not tell the model to pass run_in_background: false:\n%s", prompt)
 	}
-	// A tool this CLI does not offer is noise in a prompt.
-	for _, absent := range []string{"monitor", "BashOutput", "TaskOutput", "poll its output"} {
+	// A monitor IS a tool 2.1.282 offers (feature-gated, deferred), so the
+	// rule says what becomes of its watch; BashOutput and TaskOutput have no
+	// descriptor in that CLI at all, and naming one would be noise.
+	if !strings.Contains(prompt, "monitor") {
+		t.Errorf("lifecycle off: the prompt does not say what becomes of a monitor's watch:\n%s", prompt)
+	}
+	for _, absent := range []string{"BashOutput", "TaskOutput", "poll its output"} {
 		if strings.Contains(prompt, absent) {
 			t.Errorf("lifecycle off: the prompt names %q, which the session has no tool for:\n%s", absent, prompt)
 		}
@@ -549,7 +582,7 @@ func TestTheLifecycleSignalsArePinnedInBothLayers(t *testing.T) {
 			}
 		}
 		var layer map[string]string
-		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		_ = json.Unmarshal(flagSettingsAt(t, i)["env"], &layer)
 		for k, v := range bgLifecycleEnv {
 			if got, ok := layer[k]; !ok || got != v {
 				t.Errorf("spawn #%d's flag settings layer has %s=%q (present %v), want %q: a settings env would blind the lifecycle", i+1, k, got, ok, v)
@@ -612,6 +645,7 @@ func TestTheSpawnLogNamesTheSettingsAndPrintsNoValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("ARGV_LOG", filepath.Join(dir, "argv.log"))
+	t.Setenv("SETTINGS_LOG", filepath.Join(dir, "settings.log"))
 	// The log's own output, every level: the logger's hook sees warnings only.
 	var mu sync.Mutex
 	var out strings.Builder
@@ -626,8 +660,15 @@ func TestTheSpawnLogNamesTheSettingsAndPrintsNoValue(t *testing.T) {
 			RunEnv: map[string]string{"RW_TOKEN": secret}}}}
 	_, _ = b.Execute(context.Background(), task)
 	argv := readSpawnLog(t, filepath.Join(dir, "argv.log"))
-	if len(argv) == 0 || !strings.Contains(argv[0], secret) {
-		t.Fatalf("scenario broken: the spawn's --settings does not carry the run_env value: %v", argv)
+	// The layer itself carries the value — the stand-in logs the settings
+	// file's content, since the real file is private and removed at the
+	// pass's end — while the spawn's line carries only the file's path.
+	settingsLog := filepath.Join(dir, "settings.log")
+	if b, err := os.ReadFile(settingsLog); err != nil || !strings.Contains(string(b), secret) {
+		t.Fatalf("scenario broken: the flag layer does not carry the run_env value (settings log: %v)", err)
+	}
+	if strings.Contains(strings.Join(argv, " "), secret) {
+		t.Fatalf("the spawn's line carries the run_env value: %v", argv)
 	}
 	mu.Lock()
 	lines := strings.Split(out.String(), "\n")
@@ -637,17 +678,19 @@ func TestTheSpawnLogNamesTheSettingsAndPrintsNoValue(t *testing.T) {
 		if strings.Contains(l, secret) {
 			t.Errorf("a log line prints a run_env value: %s", l)
 		}
-		if strings.Contains(l, "<redacted settings: ") && strings.Contains(l, "RW_TOKEN") {
+		// The spawn passes a private FILE's path: the log names it and the
+		// keys travel in the file, never the line.
+		if strings.Contains(l, "<redacted settings file>") {
 			named = true
 		}
 	}
 	if !named {
-		t.Errorf("no spawn log line names the settings' env keys:\n%s", strings.Join(lines, "\n"))
+		t.Errorf("no spawn log line names the settings file:\n%s", strings.Join(lines, "\n"))
 	}
 	// The description's fallbacks print no part of the document either: a
-	// settings object claudeFlagSettings does not produce today — no `env`,
-	// an `env` that is not an object, an unparseable document — must not put
-	// one back in the log if one ever reaches it.
+	// settings object the spawn does not produce today — no `env`, an `env`
+	// that is not an object, an unparseable document — must not put one back
+	// in the log if one ever reaches it.
 	for _, doc := range []string{
 		`{"hooks":{"PreToolUse":[{"command":"curl -H token: ` + secret + `"}]}}`,
 		`{"env":"RW_TOKEN=` + secret + `"}`,
@@ -676,36 +719,34 @@ func TestTheWindDownCeilingIsPinnedInBothLayers(t *testing.T) {
 	if len(argv) < 2 {
 		t.Fatalf("expected the Session spawn and at least one formatting pass, got %d spawn(s)", len(argv))
 	}
-	want := strconv.FormatInt(defaultPrintBgWaitCeiling.Milliseconds(), 10)
+	// The CLI's own default, as a literal: derived from the constant it is
+	// meant to pin, this assertion would survive the constant changing.
+	const want = "600000"
+	if got := strconv.FormatInt(defaultPrintBgWaitCeiling.Milliseconds(), 10); got != want {
+		t.Fatalf("defaultPrintBgWaitCeiling is %s ms, want the CLI's own %s", got, want)
+	}
 	for i := range argv {
 		if got := env[i]["bgceil"]; got != want {
 			t.Errorf("spawn #%d ran with %s=%q, want %q: the host's 0 would make the CLI wait indefinitely", i+1, printBgWaitCeilingEnv, got, want)
 		}
 		var layer map[string]string
-		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		_ = json.Unmarshal(flagSettingsAt(t, i)["env"], &layer)
 		if got, ok := layer[printBgWaitCeilingEnv]; !ok || got != want {
 			t.Errorf("spawn #%d's flag settings layer has %s=%q (present %v), want %q: a repository's settings env would move it", i+1, printBgWaitCeilingEnv, got, ok, want)
 		}
 	}
-	// Only a SHORTER wait budget lowers it, and the kill switch does not
-	// lift it.
-	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", "90s")
+	// NOTHING derives it from iterion's wave budget, in either direction:
+	// past this ceiling the CLI KILLS the work it holds, where the wave
+	// budget only asks for a report — and the formatting pass, the one spawn
+	// where the ceiling arms (its stdin is closed), has no lifecycle to
+	// catch what a kill loses. A budget of 0 would be "wait indefinitely"
+	// to the CLI, the very hole this pin closes.
 	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "off")
-	if pins := claudeEnvPins(task); pins[printBgWaitCeilingEnv] != "90000" {
-		t.Errorf("a 90s wait budget with the lifecycle off: %s=%q, want 90000", printBgWaitCeilingEnv, pins[printBgWaitCeilingEnv])
-	}
-	// A wait budget of 0 is unbounded to the WAVE; to the CLI it would mean
-	// "wait indefinitely", which is the hole this pin closes.
-	for _, unbounded := range []string{"0", "0s", "-1s"} {
-		t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", unbounded)
+	for _, budget := range []string{"90s", "1ms", "0", "0s", "-1s", "90m", ""} {
+		t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", budget)
 		if got := claudeEnvPins(task)[printBgWaitCeilingEnv]; got != want {
-			t.Errorf("an unbounded wait budget (%q): %s=%q, want the default %q — 0 is indefinite to the CLI", unbounded, printBgWaitCeilingEnv, got, want)
+			t.Errorf("a wave budget of %q: %s=%q, want the CLI's own default %q", budget, printBgWaitCeilingEnv, got, want)
 		}
-	}
-	// A budget longer than the default does not raise it either.
-	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", "90m")
-	if got := claudeEnvPins(task)[printBgWaitCeilingEnv]; got != want {
-		t.Errorf("a 90m wait budget: %s=%q, want the default %q", printBgWaitCeilingEnv, got, want)
 	}
 }
 

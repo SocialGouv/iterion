@@ -219,6 +219,7 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 		"ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE":        "",
 		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":             "",
 		"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT": "",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":      "",
 		"ITERION_CLAUDE_CODE_BACKGROUND_TASKS":            "",
 	}
 	for k, v := range env {
@@ -543,7 +544,11 @@ func TestBackground_ANudgeAnsweredSlowerThanTheGraceIsStillDelivered(t *testing.
 		"@drain",
 	)
 	run := runBgSession(t, delivered, map[string]string{
-		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "1s",
+		// A grace far shorter than the answer: with one grace of 1s the
+		// answer lands around the deadline a mutant that reuses the grace
+		// would set, and the witness stops biting (measured: it survived 4
+		// runs in 6).
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "250ms",
 		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":    "30s",
 	}, Task{})
 	if run.err != nil {
@@ -565,6 +570,52 @@ func TestBackground_ANudgeAnsweredSlowerThanTheGraceIsStillDelivered(t *testing.
 	}, Task{})
 	if run.err == nil || !strings.Contains(run.err.Error(), "took no turn to answer") {
 		t.Fatalf("an answer slower than its budget: err = %v, want the undelivered-work error", run.err)
+	}
+}
+
+// A second nudge is judged on its own answer budget, not on the first one's:
+// the deadline is cleared once nothing is being answered, so a budget that
+// expired during the first delivery does not fail the second on sight.
+func TestBackground_ASecondNudgeIsNotJudgedOnTheFirstsExpiredBudget(t *testing.T) {
+	script := append(launchAgent(),
+		lnAssistant("m2", "", cText("WAITING")),
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		lnSnapshot(),
+		lnTaskNotif("t1", "tuA"),
+		`@wait "type":"user"`,
+		// A tick finds the first nudge unanswered: its deadline is armed.
+		"@sleep 0.8",
+		lnInit("2.1.280"),
+		"@replay",
+		lnAssistant("m3", "", cToolUse("tuB", "Agent", map[string]any{"prompt": "y", "description": "second"})),
+		lnSnapshot("t2"),
+		lnTaskStarted("t2", "tuB", true, false),
+		lnToolResult("tuB", "Async agent launched successfully.", false, ""),
+		lnAssistant("m4", "", cText("GOT t1; WAITING for t2")),
+		lnResult(resultSpec{text: "GOT t1; WAITING for t2", turns: 2, cost: 0.02}),
+		// t2 is held, so the wave timer governs and no auto-turn tick runs —
+		// meanwhile the first nudge's 1s answer budget goes by.
+		"@sleep 2.5",
+		lnSnapshot(),
+		lnTaskNotif("t2", "tuB"),
+		`@wait "type":"user"`,
+		"@sleep 0.8",
+		lnInit("2.1.280"),
+		"@replay",
+		lnAssistant("m5", "", cText("GOT t2")),
+		lnResult(resultSpec{text: "GOT t2", turns: 1, cost: 0.03}),
+		lnIdle(),
+		"@drain",
+	)
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "400ms",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":    "1s",
+	}, Task{})
+	if run.err != nil {
+		t.Fatalf("runSession: %v — the second nudge was judged on the first one's expired budget", run.err)
+	}
+	if got := run.resultText(); got != "GOT t2" {
+		t.Fatalf("final text = %q, want the second delivery's answer", got)
 	}
 }
 

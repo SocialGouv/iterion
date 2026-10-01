@@ -137,9 +137,9 @@ type Guard struct {
 	placeholderValue   map[string]string // placeholder → raw value (Materialize)
 	filePathByName     map[string]string // secret name → mounted file path
 	fileHints          []FileSecretHint
-	fileValueByName    map[string]string   // secret name → file plaintext (host materialisation)
-	encodingsByName    map[string][]string // secret name → its value encodings (egress DLP)
-	longestLiteral     int                 // the longest registered encoding, in bytes
+	fileValueByName    map[string]string // secret name → file plaintext (host materialisation)
+	encodings          [][]string        // per entry of secrets: its value encodings (egress DLP)
+	longestLiteral     int               // the longest registered encoding, in bytes
 	det                *detector.Detector
 	cfg                Config
 }
@@ -270,7 +270,7 @@ func New(secrets []Secret, cfg Config) *Guard {
 				trimmed = append(trimmed, literal{enc, ph})
 			}
 		}
-		g.encodingsByName[s.Name] = encs
+		g.encodings = append(g.encodings, encs)
 	}
 	for _, l := range trimmed {
 		if _, ok := g.literalPlaceholder[l.enc]; !ok {

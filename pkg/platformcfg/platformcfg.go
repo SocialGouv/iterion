@@ -284,10 +284,13 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_PI_NO_PROGRESS_TIMEOUT":          true,
 	"ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS":     true,
 	// How patient a claude_code session is with the background work it
-	// launched: the wave's budget, when to nudge a CLI that takes no turn,
+	// launched — the wave's budget, when to nudge a CLI that takes no turn,
 	// how long an answer to that nudge may take, how long a report is asked
 	// for, how long an idle must hold, how long a result on its way is
-	// waited for. Each bounds only the run that sets it.
+	// waited for. Refused like their sibling NO_PROGRESS_TIMEOUT above: at
+	// their edges they disable what they bound (a wave budget of 0 is
+	// unbounded, a grace of 0 is no grace), so a stored bot var never tunes
+	// the engine's patience — the operator's environment does.
 	"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":             true,
 	"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE":   true,
 	"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":      true,
