@@ -109,6 +109,12 @@ on the index and on what is committed. `mark_done` then writes `done` only on th
 working tree that verdict judged — a commit or an edit that arrived since is
 refused, never committed under the gate's subject
 ([ADR-107](../../docs/adr/107-a-lots-contract-is-a-directory-judged-on-what-lands.md)).
+The verdict names the table's five files and holds the rest of the directory
+as a count and a digest, so it does not grow with a lot's captures. A gate
+command that is a record's predicate (`test -s .modernize/sweeps/<lot>.md`)
+is judged on what lands too: the record must be a non-empty file in the
+commit `done` is written on. And no git command iterion runs executes the
+repository's hooks — the landing of a run on the operator's branch included.
 
 ## Running
 

@@ -174,7 +174,7 @@ func (g *GitTreeFS) list() error {
 }
 
 func (g *GitTreeFS) git(args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", gitlib.NoRunHooks(args...)...)
 	cmd.Dir = g.Root
 	// An inherited GIT_DIR would make the answer about another repository.
 	cmd.Env = gitlib.SanitizeEnv(os.Environ())

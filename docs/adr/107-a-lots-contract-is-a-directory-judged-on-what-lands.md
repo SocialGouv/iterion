@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-09-30
-- **Applies to**: `bots/modernize` (Morphy) — `plan_read`, `lot_verify`, `lot_gate`, `mark_done`; the `plan-contract` skill it shares with `bots/assessment`; the engine's wip bank (`pkg/runtime`, `finalizeWorktree`)
+- **Applies to**: `bots/modernize` (Morphy) — `plan_read`, `lot_verify`, `lot_gate`, `mark_done`; the `plan-contract` skill it shares with `bots/assessment`; every git command iterion runs (`pkg/git.NoRunHooks`), the landing of a run above all (`pkg/runtime`: `finalizeWorktree`, `PerformDeferredMerge`, `FinalizeConflictMerge`)
 - **Neighbours**: [ADR-104](104-product-docs-route-table-resolved-once-at-the-run-base.md) (a verdict read from a commit, not from what the judged agent wrote)
 
 ## Context
@@ -70,6 +70,20 @@ path the base did not hold. Measured on it:
   before `L22` had run;
 - lot `L1` did the same with no file named for `L22`: `sweeps` linked to a
   directory of its own holding `L22.md`.
+
+A third review measured three more:
+
+- the gestures that LAND a run — the squash commit and the fast-forward, at
+  finalize or through `POST /merge`, and the commit of a resolved conflict —
+  ran the repository's hooks. A `pre-commit` hook planted through the run's
+  worktree rewrote the plan inside the landing commit; `merge_status` read
+  `merged`, and the rewrite reached the operator's branch under `done`;
+- a lot was marked `done` while the sweep record its own gate asserts
+  (`test -s .modernize/sweeps/L1.md`) was in no commit: left uncommitted,
+  ignored by a root `.gitignore`, or removed by a commit and put back on disk.
+  The gate's commands read the working tree;
+- the verdict grew with the directory: 2,000 captures gave a 279 kB
+  `contract_tree`, carried on every pass.
 
 ## Options
 
@@ -151,6 +165,12 @@ path the base did not hold. Measured on it:
     and the landing differently: the judge exports `GIT_NO_REPLACE_OBJECTS`,
     the engine's bank does not.
 
+  A conversion git cannot apply to a contract path — a `working-tree-encoding`
+  the file does not satisfy, a clean filter that fails — is refused by name,
+  with the attribute: the file reads fine as raw bytes, and what git would
+  store from it cannot be judged. Hashing writes the object, as a commit
+  does: without `-w`, git prints the error, exits 0 and hashes the raw bytes.
+
   History is read as committed (`GIT_NO_REPLACE_OBJECTS`).
 - **Judged twice:**
   - before any gate command, as a cheap refusal;
@@ -160,14 +180,28 @@ path the base did not hold. Measured on it:
   A refusal after the gates goes back to the worker through the repair loop.
   `lot_gate`'s `converged` and `stop` both carry the contract as a term, so a
   refused verdict neither lands nor ends the run.
-- **`mark_done` commits only what was judged.** The verdict carries the HEAD it
-  judged and, for the table's files and every path the landing carries in the
-  directory (HEAD's tree, the index, the files `git add` takes), what a commit
-  of the working tree would take: the working tree as git would store it, the
-  index entries and flags, the `filter` attribute. `mark_done` refuses any of
-  them that moved since, and any path of the directory the verdict did not
-  list. It applies no rule of its own: it only compares the landing with the
-  verdict.
+- **The gate's record predicate is judged on what lands.** A gate command that
+  IS the predicate over a record in the contract's directory — `test -s
+  <path>` or `[ -s <path> ]`, the whole command — holds on the working tree
+  the commands read. After the last command, `lot_verify` also requires the
+  record as a non-empty file in HEAD, the commit `done` is written on (and,
+  on a cloud run, the whole landing). Otherwise the gate fails by name, and
+  says when git ignores the record. A record an earlier attempt committed and
+  this one refreshed on disk lands.
+- **`mark_done` commits only what was judged.** For the table's files and
+  every path the landing carries in the directory (HEAD's tree, the index,
+  the files `git add` takes), the verdict records what a commit of the working
+  tree would take: the working tree as git would store it, the index entries
+  and flags, the `filter` attribute. It carries the HEAD it judged, the five
+  table files by name, and the rest of the directory as a count and a SHA-256
+  of those states (canonical JSON). The verdict therefore stays under a
+  kilobyte, whatever the lot's captures; it rides the checkpoint and the
+  edges on every pass.
+  - `mark_done` recomputes the same. It names a table file that moved, and
+    otherwise says the rest of the directory moved: the same count with
+    another state, or a path that appeared or went.
+  - It applies no rule of its own: it only compares the landing with the
+    verdict.
   Its own work is recognised exactly, so a re-execution after a crash stays
   idempotent:
   - its line in the plan: the plan the verdict judged in the working tree
@@ -177,11 +211,24 @@ path the base did not hold. Measured on it:
     change, the plan at its base mode carrying the blob it commits. A commit
     storing the same bytes at another mode (a symlink whose target is the
     plan's text) is not its own.
-- **The engine's bank runs no hook.** The wip bank commits a run's own output
-  in the run's tree, and the hooks directory is one the run can write. The
-  bank's commit points `core.hooksPath` at nothing: `--no-verify` alone leaves
-  `prepare-commit-msg` and `post-commit` running, and a `post-commit` hook can
-  commit again on top of the bank.
+- **No git iterion runs executes a repository hook.** A run writes its
+  repository's hooks directory and config: a worktree shares them with the
+  operator's checkout and every other run there, and a cloud run's clone is
+  the run's own. A hook there, or the program `core.fsmonitor` names, is the
+  run's code executed inside iterion's own gestures:
+  - the landing of a run — squash, fast-forward, resolved conflict;
+  - the wip bank and the salvage commit;
+  - the bank's push;
+  - a fork's checkout;
+  - a delegation's snapshot.
+
+  Every git command iterion builds therefore goes through
+  `pkg/git.NoRunHooks`, which points `core.hooksPath` at nothing and turns
+  `core.fsmonitor` off: `--no-verify` alone leaves `prepare-commit-msg`,
+  `post-commit`, `post-merge` and `reference-transaction` running. A test
+  sweeps the tree for every git subprocess and fails on one that does not.
+  The studio's authoring is the one named exception: it commits for the user,
+  in the user's own checkout.
 - **One implementation.** Tool scripts share no code in the DSL: includes are
   for prompts only. So the comparison lives once, in `lot_verify`, and
   `mark_done` checks identity with the verdict rather than re-judging the
@@ -233,3 +280,13 @@ path the base did not hold. Measured on it:
     HEAD.
   - A link the base holds beside the plan is frozen as a link. What it points
     at is not judged: records kept through it live outside the contract.
+  - Only hooks and `core.fsmonitor` are switched off. Other programs a
+    repository's config can name still run in iterion's git: a merge driver,
+    a smudge filter on checkout, `core.sshCommand`. Measured: a run set a
+    merge driver in the shared repository and declared it for `*.yaml` in
+    `.git/info/attributes`. When the operator's branch had moved on the plan,
+    the squash that landed the run called that driver, and the driver wrote
+    the landed plan. Closing that class means landing from a checkout whose
+    config the run never wrote.
+  - The studio's authoring commits run the user's hooks. A run in the same
+    repository can plant one there.
