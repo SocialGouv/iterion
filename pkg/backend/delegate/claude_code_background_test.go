@@ -517,6 +517,57 @@ func TestBackground_NoAutoTurnGetsOneNudgeThenTheDeliveringTurn(t *testing.T) {
 	}
 }
 
+// A nudge's answer has its own budget, not the grace that decides when to
+// nudge: one grace has to cover the CLI's replay of the message AND the first
+// assistant message of the turn that took it, and a provider backoff in
+// between spends it — the session then dies on a transient error and answers
+// with the text that predates the nudge, losing work the CLI had delivered.
+// Past the answer budget it still gives up, which is the other arm here.
+func TestBackground_ANudgeAnsweredSlowerThanTheGraceIsStillDelivered(t *testing.T) {
+	nudged := append(launchAgent(),
+		lnAssistant("m2", "", cText("WAITING")),
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		lnSnapshot(),
+		lnTaskNotif("t1", "tuA"),
+		`@wait "type":"user"`,
+	)
+	// Slower than the grace to replay and answer, well inside the answer
+	// budget: the delivered report is the node's answer.
+	delivered := append(append([]string{}, nudged...),
+		"@sleep 2",
+		lnInit("2.1.280"),
+		"@replay",
+		lnAssistant("m3", "", cText("GOT AFTER NUDGE")),
+		lnResult(resultSpec{text: "GOT AFTER NUDGE", turns: 1, cost: 0.02}),
+		lnIdle(),
+		"@drain",
+	)
+	run := runBgSession(t, delivered, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "1s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":    "30s",
+	}, Task{})
+	if run.err != nil {
+		t.Fatalf("a 2s answer under a 1s grace: %v (the answer window must not be the grace)", run.err)
+	}
+	if got := run.resultText(); got != "GOT AFTER NUDGE" {
+		t.Fatalf("final text = %q, want the answer the nudge delivered", got)
+	}
+
+	// The same stream, with a budget far shorter than the answer takes: the
+	// delivery is given up on, so the budget bounds it and does not merely
+	// postpone the verdict. The budget is read on a grace tick, so the grace
+	// is short enough here for a tick to fall inside the 2 s answer.
+	run = runBgSession(t, delivered, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "500ms",
+		// Far under five graces, so the budget read is this one and not the
+		// default derived from the grace.
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT": "10ms",
+	}, Task{})
+	if run.err == nil || !strings.Contains(run.err.Error(), "took no turn to answer") {
+		t.Fatalf("an answer slower than its budget: err = %v, want the undelivered-work error", run.err)
+	}
+}
+
 func TestBackground_WaitBudgetSpentWhileIdleAsksForTheReport(t *testing.T) {
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
@@ -4815,14 +4866,26 @@ func threeMonitorTurns() []string {
 func TestBackground_TheLifecycleDefaultsAreTheDocumentedOnes(t *testing.T) {
 	for _, k := range []string{"ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "ITERION_CLAUDE_CODE_BACKGROUND_WAIT",
 		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE", "ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT",
-		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE", "ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT"} {
+		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE", "ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT"} {
 		t.Setenv(k, "")
 	}
 	got := resolveBackgroundLifecycleConfig()
 	want := backgroundLifecycleConfig{enabled: true, wait: 30 * time.Minute, autoTurnGrace: 90 * time.Second,
-		finalizeTimeout: 10 * time.Minute, idleSettle: time.Second, resultWait: 5 * time.Minute}
+		answerWait: 7*time.Minute + 30*time.Second, finalizeTimeout: 10 * time.Minute,
+		idleSettle: time.Second, resultWait: 5 * time.Minute}
 	if got != want {
 		t.Fatalf("defaults = %+v, want the documented %+v", got, want)
+	}
+	// The answer wait follows the grace it is derived from, and the variable
+	// of its own outranks that.
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE", "10s")
+	if got := resolveBackgroundLifecycleConfig(); got.answerWait != 50*time.Second {
+		t.Errorf("a 10s grace: answerWait = %s, want 50s (five graces)", got.answerWait)
+	}
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT", "3s")
+	if got := resolveBackgroundLifecycleConfig(); got.answerWait != 3*time.Second {
+		t.Errorf("the variable's own value: answerWait = %s, want 3s", got.answerWait)
 	}
 }
 

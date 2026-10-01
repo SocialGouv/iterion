@@ -93,10 +93,10 @@
     },
     {
       "target": "test:live:claude-bg",
-      "last_run": "2026-09-29T17:19:18.058533025Z",
+      "last_run": "2026-10-01T08:51:24.392654714Z",
       "verdict": "pass",
-      "duration_sec": 30,
-      "ref": "45c27cb84780"
+      "duration_sec": 58,
+      "ref": "2c32492286c3"
     },
     {
       "target": "test:live:claw",

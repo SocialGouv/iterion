@@ -49,8 +49,13 @@ import (
 // error_max_structured_output_retries.
 
 const (
-	defaultBackgroundWait            = 30 * time.Minute
-	defaultBackgroundAutoTurnGrace   = 90 * time.Second
+	defaultBackgroundWait          = 30 * time.Minute
+	defaultBackgroundAutoTurnGrace = 90 * time.Second
+	// backgroundAnswerWaitFactor derives the default answer wait from the
+	// auto-turn grace: an operator who shortens the grace to nudge sooner
+	// shortens the answer window with it, in proportion, and
+	// ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT sets it outright.
+	backgroundAnswerWaitFactor       = 5
 	defaultBackgroundFinalizeTimeout = 10 * time.Minute
 	// defaultBackgroundIdleSettle is how long the CLI's idle must hold before
 	// the session ends on it: the CLI reports idle a moment before a turn it
@@ -72,9 +77,15 @@ const (
 )
 
 type backgroundLifecycleConfig struct {
-	enabled         bool
-	wait            time.Duration // absolute, from the first unsettled result; 0 = unbounded
-	autoTurnGrace   time.Duration
+	enabled       bool
+	wait          time.Duration // absolute, from the first unsettled result; 0 = unbounded
+	autoTurnGrace time.Duration
+	// answerWait is how long the CLI may take to ANSWER a message of
+	// iterion's before the delivery is given up on — a different wait from
+	// autoTurnGrace, which is how long the CLI gets to start a turn of its
+	// own before iterion nudges it. One grace covers a replay and the turn's
+	// first assistant message, and a provider backoff in between spends it.
+	answerWait      time.Duration
 	finalizeTimeout time.Duration
 	idleSettle      time.Duration
 	resultWait      time.Duration // how long a held result on its way is waited for; 0 = the grace alone
@@ -89,12 +100,22 @@ func resolveBackgroundLifecycleConfig() backgroundLifecycleConfig {
 		idleSettle:      envDurationOr("ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE", defaultBackgroundIdleSettle),
 		resultWait:      envDurationOr("ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT", defaultBackgroundResultWait),
 	}
+	cfg.answerWait = envDurationOr("ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT", cfg.autoTurnGrace*backgroundAnswerWaitFactor)
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE"))) {
 	case "off", "0", "false", "no", "disabled":
 		cfg.enabled = false
 	}
 	return cfg
 }
+
+// printBgWaitCeilingEnv bounds the CLI's own wind-down wait for background
+// work. The CLI reads 0 as "wait indefinitely", so it is pinned (both layers,
+// every spawn) rather than left to a settings `env`: defaultPrintBgWaitCeiling
+// is the CLI's own default, and ITERION_CLAUDE_CODE_BACKGROUND_WAIT lowers it.
+const printBgWaitCeilingEnv = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
+
+// defaultPrintBgWaitCeiling is the CLI's own default for that ceiling.
+const defaultPrintBgWaitCeiling = 10 * time.Minute
 
 // bgLifecycleEnv is the environment the background lifecycle reads the CLI's
 // own signals through: its session state (idle is otherwise reported while
@@ -1376,7 +1397,11 @@ type bgLifecycle struct {
 	wrapUpTakenAt    time.Time // when the CLI's replay showed a turn took the wrap-up
 	autoTurnNudged   bool
 	autoTurnDeadline time.Time
-	idleSince        time.Time // when the select loop first saw the CLI's current idle
+	// answerDeadline bounds the wait for the CLI to answer a message of
+	// iterion's, armed when its turn is first seen taken and cleared when
+	// nothing is being answered.
+	answerDeadline time.Time
+	idleSince      time.Time // when the select loop first saw the CLI's current idle
 	// restSince: the first close with nothing held running since the
 	// tracker's restEpoch last moved (restMark: its value then) or iterion
 	// last nudged. Turns the CLI runs after it for work that never ends do not
@@ -1781,7 +1806,20 @@ func (l *bgLifecycle) episodeCheck(now time.Time) {
 func (l *bgLifecycle) autoTurnExpired(now time.Time) (done bool, msg string, err error) {
 	v := l.tracker.view()
 	l.autoTurnDeadline = now.Add(l.cfg.autoTurnGrace)
+	if !v.answering {
+		l.answerDeadline = time.Time{}
+	}
 	if v.answering {
+		// The CLI took the message: it gets answerWait to answer it, not the
+		// one grace that re-armed above — a replay and the turn's first
+		// assistant message do not fit in the window that decides when to
+		// nudge.
+		if l.answerDeadline.IsZero() {
+			l.answerDeadline = now.Add(l.cfg.answerWait)
+		}
+		if now.Before(l.answerDeadline) {
+			return false, "", nil
+		}
 		reason := "the CLI took no turn to answer iterion's message"
 		l.terminate(v.lost, reason)
 		return true, "", &ErrTransient{Provider: BackendClaudeCode, Reason: "background work never delivered",

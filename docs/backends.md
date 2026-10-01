@@ -1398,8 +1398,14 @@ the session ends when iterion decides, not on the CLI's own idle exit.
 
 The session waits for **subagents and workflows** (`local_agent`,
 `local_workflow`) — work the CLI's own print-mode wind-down waits for too, up
-to its own ceiling (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, 10 minutes by
-default, past which it kills them). A background shell (`run_in_background`:
+to its own ceiling (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, which every spawn
+pins: the CLI reads `0` as "wait indefinitely", and the repository under
+review must not decide how long a wind-down holds the run. The pin is the
+CLI's own default, 10 minutes, lowered by
+`ITERION_CLAUDE_CODE_BACKGROUND_WAIT` when that is shorter). No spawn can
+start a workflow today — `Workflow` is withheld from every node — so the
+`local_workflow` arm is there for the task type, not for a tool the model
+can reach. A background shell (`run_in_background`:
 a dev server never ends), a monitor, a teammate or an MCP task does not hold
 it, by choice — the CLI's wind-down also holds armed monitors (behind a
 feature flag) and active teammates: those die with the session as they always
@@ -1450,7 +1456,10 @@ a remote agent, a teammate, a timed monitor) keeping it from idle — gets a
 grace (`ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE`): one nudge if a
 result may still be owed, then the session ends with the last turn's report,
 the tasks that kept the CLI busy named and recorded lost; a nudge no turn
-ever takes ends the call on a retryable error. Turns the CLI keeps running on
+ever takes ends the call on a retryable error — how long its answer may take
+is a wait of its own (`ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT`, five
+graces by default), because the grace decides when to nudge, and a replay
+plus the first message of the answering turn does not fit in it. Turns the CLI keeps running on
 its own once nothing held runs — a monitor's events, each re-kicking it right
 after an idle, so that no idle ever holds — do not restart that grace: the
 session ends at the close of the first such turn past the grace counted from

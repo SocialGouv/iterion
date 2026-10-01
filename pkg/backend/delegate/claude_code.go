@@ -248,23 +248,27 @@ const headlessSubagentRule = "\n\n## Subagents in this session\n\n" +
 // and a shell or a monitor dies with the session.
 const headlessBackgroundRule = "\n\n## Background work in this session\n\n" +
 	"This session is not interactive: it ends with your final output. A background " +
-	"subagent is waited for: its report reaches you before the session ends. A " +
-	"background command (`run_in_background`) or a monitor is not: anything still " +
+	"subagent is waited for: its report reaches you before the session ends — " +
+	"unless you launch it with `isolation: \"remote\"`, which is never waited for. A " +
+	"background command (`run_in_background`) is not: anything still " +
 	"running when you give your final output is killed, its completion " +
 	"notification with it. So, unlike what the Bash tool says, do not end your turn " +
-	"to wait for a background command whose result you need: poll its output until " +
-	"it has finished, or run it in the foreground with a timeout that fits."
+	"to wait for a background command whose result you need: read the output file " +
+	"its result names until the command has finished, or run it in the foreground " +
+	"with a timeout that fits."
 
 // headlessBackgroundUnheldRule is headlessBackgroundRule with the background
 // lifecycle off (ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE=off): nothing that
 // runs in the background is waited for.
 const headlessBackgroundUnheldRule = "\n\n## Background work in this session\n\n" +
 	"This session is not interactive: it ends with your final output, and nothing " +
-	"that runs in the background is waited for. A background subagent, command " +
-	"(`run_in_background`) or monitor still running when you give your final output " +
-	"is killed, its completion notification with it. Never end your turn to wait " +
-	"for one: wait for every background task whose result you need before your " +
-	"final output."
+	"that runs in the background is waited for. A background subagent or command " +
+	"(`run_in_background`) still running when you give your final output is " +
+	"killed, its completion notification with it. The Agent tool launches in the " +
+	"background by DEFAULT here, so pass `run_in_background: false` on every Agent " +
+	"call — its report is then the tool result — and give a command a timeout that " +
+	"fits instead of backgrounding it. Never end your turn to wait for background " +
+	"work: no turn will come to deliver it."
 
 // claudeCodeSystemPrompt is the text Execute's spawn appends to the CLI's
 // native system prompt: the task's own sections, then what the session does
@@ -679,6 +683,13 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	for _, key := range overridden {
 		b.Logger.Warn("[%s#%d/claude-code] ExtraEnv sets %s, which every claude_code spawn pins: the entry is ignored and the pinned value applies",
 			task.NodeID, task.Iteration, key)
+	}
+	// Same for a rewriter plugin's run_env: a pin outranks it, said out loud.
+	if _, dropped := claudeEnvPinsAndDropped(task); len(dropped) > 0 {
+		for _, key := range dropped {
+			b.Logger.Warn("[%s#%d/claude-code] a rewriter's run_env sets %s, which every claude_code spawn pins: the entry is ignored and the pinned value applies",
+				task.NodeID, task.Iteration, key)
+		}
 	}
 
 	return opts, cleanup
@@ -1635,6 +1646,8 @@ func claudeCodeEffort(effort string) string {
 //     no-op: it force-ENABLES over a settings file that turned auto-memory
 //     off;
 //   - BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (claudeBashTimeouts);
+//   - CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, the bound of the CLI's own
+//     wind-down wait for background work (printBgWaitCeilingEnv);
 //   - the background lifecycle's signals (bgLifecycleEnv), while the
 //     lifecycle is on: a settings `env` that turned them off would leave it
 //     waiting for an idle the CLI never reports;
@@ -1652,6 +1665,14 @@ func claudeCodeEffort(effort string) string {
 // against the operator's personal memory. The flag layer comes after them;
 // only managed policy settings come later.
 func claudeEnvPins(task Task) map[string]string {
+	pins, _ := claudeEnvPinsAndDropped(task)
+	return pins
+}
+
+// claudeEnvPinsAndDropped is claudeEnvPins plus the rewriter run_env names it
+// dropped: a plugin's explicit choice that a pin outranks is said out loud,
+// like an ExtraEnv entry for a pinned key (claudeExtraEnvEntries).
+func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 	disable, _ := autoMemorySpawn(task)
 	defaultMs, maxMs := claudeBashTimeouts()
 	background := "1"
@@ -1669,16 +1690,38 @@ func claudeEnvPins(task Task) map[string]string {
 		k, v, _ := strings.Cut(kv, "=")
 		pins[k] = v
 	}
-	pins[backgroundTasksOffEnv] = background
-	pins[autoMemoryDisableEnv] = disable
-	pins[bashDefaultTimeoutEnv] = strconv.FormatInt(defaultMs, 10)
-	pins[bashMaxTimeoutEnv] = strconv.FormatInt(maxMs, 10)
-	if resolveBackgroundLifecycleConfig().enabled {
-		for k, v := range bgLifecycleEnv {
-			pins[k] = v
+	var dropped []string
+	pin := func(k, v string) {
+		if _, fromRunEnv := pins[k]; fromRunEnv {
+			dropped = append(dropped, k)
+		}
+		pins[k] = v
+	}
+	pin(backgroundTasksOffEnv, background)
+	pin(autoMemoryDisableEnv, disable)
+	pin(bashDefaultTimeoutEnv, strconv.FormatInt(defaultMs, 10))
+	pin(bashMaxTimeoutEnv, strconv.FormatInt(maxMs, 10))
+	// How long the CLI's own wind-down waits for background work, bounded
+	// whatever the lifecycle: 0 means "wait indefinitely" to the CLI, and a
+	// settings `env` of the repository under review would otherwise spend
+	// the run's whole budget on one task that never ends — on the formatting
+	// pass too, which carries no deadline of its own.
+	cfg := resolveBackgroundLifecycleConfig()
+	// An iterion wait budget of 0 means unbounded to the wave; to the CLI it
+	// would mean "wait indefinitely", which is the hole this pin closes. The
+	// default stands then, and only a SHORTER budget lowers it.
+	ceiling := defaultPrintBgWaitCeiling
+	if cfg.wait > 0 && cfg.wait < ceiling {
+		ceiling = cfg.wait
+	}
+	pin(printBgWaitCeilingEnv, strconv.FormatInt(ceiling.Milliseconds(), 10))
+	if cfg.enabled {
+		for _, k := range slices.Sorted(maps.Keys(bgLifecycleEnv)) {
+			pin(k, bgLifecycleEnv[k])
 		}
 	}
-	return pins
+	slices.Sort(dropped)
+	return pins, dropped
 }
 
 // claudeSpawnPins returns the pinned environment and the one `--settings`

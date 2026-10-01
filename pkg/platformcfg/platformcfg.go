@@ -233,6 +233,8 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_CLAUDE_CODE_SETTING_SOURCES":              true,
 	"ITERION_CLAUDE_CODE_STRICT_MCP":                   true,
 	"ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS": true,
+	"ITERION_CLAUDE_CODE_BACKGROUND_TASKS":             true,
+	"ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE":         true,
 	"ITERION_PI_NO_CONTEXT_FILES":                      true,
 	"ITERION_CLAW_SLASH_COMMANDS":                      true,
 	"ITERION_WEB_SEARCH":                               true,
@@ -281,6 +283,17 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT": true,
 	"ITERION_PI_NO_PROGRESS_TIMEOUT":          true,
 	"ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS":     true,
+	// How patient a claude_code session is with the background work it
+	// launched: the wave's budget, when to nudge a CLI that takes no turn,
+	// how long an answer to that nudge may take, how long a report is asked
+	// for, how long an idle must hold, how long a result on its way is
+	// waited for. Each bounds only the run that sets it.
+	"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":             true,
+	"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE":   true,
+	"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":      true,
+	"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT": true,
+	"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":      true,
+	"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":      true,
 	// Defaults a node that names nothing inherits and a bot's author may
 	// have relied on: its backend (what its tools and its gate can be),
 	// auto-memory, off so a run neither reads nor writes the operator's, and

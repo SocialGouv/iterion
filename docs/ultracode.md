@@ -49,8 +49,8 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    the session open until its report is delivered — and a
    `## Background work in this session` section says so. The multi-agent
    `Workflow` tool is withheld from every node, ultracode included, whether
-   background work is on or not: it only runs in the background, and the
-   default session cannot wait on it (see
+   background work is on or not: a workflow fans out agents of its own, whose
+   cost and scope the node never declared (see
    [backends.md](backends.md#claude_code)).
 4. **Warns off Opus 4.8.** Compiling `ultracode` on a model that isn't
    `claude-opus-4-8` emits diagnostic **C089** (a warning, not an error): the

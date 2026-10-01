@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -489,7 +490,10 @@ func TestBackgroundWorkOnSaysWhatTheSessionWaitsFor(t *testing.T) {
 			t.Fatalf("scenario broken: DISALLOW_ORCHESTRATION_TOOLS=%q, subagents kept %v", withheld, claudeKeepsSubagents(task))
 		}
 		prompt := claudeCodeSystemPrompt(task)
-		for _, want := range []string{heading, "A background subagent is waited for", "`run_in_background`", "is killed", "do not end your turn to wait for a background command"} {
+		for _, want := range []string{heading, "A background subagent is waited for", "`run_in_background`", "is killed",
+			"do not end your turn to wait for a background command", "read the output file",
+			// holdsSession holds local_agent/local_workflow: a remote one is not.
+			`isolation: "remote"`} {
 			if !strings.Contains(prompt, want) {
 				t.Errorf("subagents kept %v: the prompt does not say %q:\n%s", withheld == "", want, prompt)
 			}
@@ -503,6 +507,18 @@ func TestBackgroundWorkOnSaysWhatTheSessionWaitsFor(t *testing.T) {
 	prompt := claudeCodeSystemPrompt(task)
 	if !strings.Contains(prompt, heading) || !strings.Contains(prompt, "nothing that runs in the background is waited for") {
 		t.Errorf("lifecycle off: the prompt does not say nothing is waited for:\n%s", prompt)
+	}
+	// Nothing forces the foreground in that configuration, so the rule names
+	// the one lever that works: the CLI launches an Agent in the background
+	// by default there.
+	if !strings.Contains(prompt, "`run_in_background: false`") {
+		t.Errorf("lifecycle off: the prompt does not tell the model to pass run_in_background: false:\n%s", prompt)
+	}
+	// A tool this CLI does not offer is noise in a prompt.
+	for _, absent := range []string{"monitor", "BashOutput", "TaskOutput", "poll its output"} {
+		if strings.Contains(prompt, absent) {
+			t.Errorf("lifecycle off: the prompt names %q, which the session has no tool for:\n%s", absent, prompt)
+		}
 	}
 	if strings.Contains(prompt, "A background subagent is waited for") {
 		t.Errorf("lifecycle off: the prompt promises a background subagent is waited for:\n%s", prompt)
@@ -627,6 +643,115 @@ func TestTheSpawnLogNamesTheSettingsAndPrintsNoValue(t *testing.T) {
 	}
 	if !named {
 		t.Errorf("no spawn log line names the settings' env keys:\n%s", strings.Join(lines, "\n"))
+	}
+	// The description's fallbacks print no part of the document either: a
+	// settings object claudeFlagSettings does not produce today — no `env`,
+	// an `env` that is not an object, an unparseable document — must not put
+	// one back in the log if one ever reaches it.
+	for _, doc := range []string{
+		`{"hooks":{"PreToolUse":[{"command":"curl -H token: ` + secret + `"}]}}`,
+		`{"env":"RW_TOKEN=` + secret + `"}`,
+		`{"env":{"RW_TOKEN":"` + secret + `"}`,
+		`["` + secret + `"]`,
+		`"` + secret + `"`,
+	} {
+		if got := describeRedactedArgvValue("--settings", doc); strings.Contains(got, secret) {
+			t.Errorf("the description of a settings document printed its value: %s", got)
+		}
+	}
+}
+
+// The CLI's own wind-down wait for background work is bounded on every spawn,
+// in both layers, whatever the lifecycle: the CLI reads 0 as "wait
+// indefinitely", so a repository's settings env would otherwise decide how
+// long a wind-down holds the run — the formatting pass included, which
+// carries no deadline of its own. The pin is the CLI's default, lowered by
+// iterion's own wait budget when that is shorter.
+func TestTheWindDownCeilingIsPinnedInBothLayers(t *testing.T) {
+	pinWatchdogs(t)
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	t.Setenv(printBgWaitCeilingEnv, "0")
+	task := Task{NodeID: "n", OutputSchema: []byte(schemaOK)}
+	argv, env := spawnArgvEnv(t, task)
+	if len(argv) < 2 {
+		t.Fatalf("expected the Session spawn and at least one formatting pass, got %d spawn(s)", len(argv))
+	}
+	want := strconv.FormatInt(defaultPrintBgWaitCeiling.Milliseconds(), 10)
+	for i := range argv {
+		if got := env[i]["bgceil"]; got != want {
+			t.Errorf("spawn #%d ran with %s=%q, want %q: the host's 0 would make the CLI wait indefinitely", i+1, printBgWaitCeilingEnv, got, want)
+		}
+		var layer map[string]string
+		_ = json.Unmarshal(flagSettings(t, argv[i])["env"], &layer)
+		if got, ok := layer[printBgWaitCeilingEnv]; !ok || got != want {
+			t.Errorf("spawn #%d's flag settings layer has %s=%q (present %v), want %q: a repository's settings env would move it", i+1, printBgWaitCeilingEnv, got, ok, want)
+		}
+	}
+	// Only a SHORTER wait budget lowers it, and the kill switch does not
+	// lift it.
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", "90s")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "off")
+	if pins := claudeEnvPins(task); pins[printBgWaitCeilingEnv] != "90000" {
+		t.Errorf("a 90s wait budget with the lifecycle off: %s=%q, want 90000", printBgWaitCeilingEnv, pins[printBgWaitCeilingEnv])
+	}
+	// A wait budget of 0 is unbounded to the WAVE; to the CLI it would mean
+	// "wait indefinitely", which is the hole this pin closes.
+	for _, unbounded := range []string{"0", "0s", "-1s"} {
+		t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", unbounded)
+		if got := claudeEnvPins(task)[printBgWaitCeilingEnv]; got != want {
+			t.Errorf("an unbounded wait budget (%q): %s=%q, want the default %q — 0 is indefinite to the CLI", unbounded, printBgWaitCeilingEnv, got, want)
+		}
+	}
+	// A budget longer than the default does not raise it either.
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_WAIT", "90m")
+	if got := claudeEnvPins(task)[printBgWaitCeilingEnv]; got != want {
+		t.Errorf("a 90m wait budget: %s=%q, want the default %q", printBgWaitCeilingEnv, got, want)
+	}
+}
+
+// A rewriter plugin's run_env naming a pinned variable loses to the pin —
+// and is told so, like an ExtraEnv entry for a pinned key.
+func TestARewritersRunEnvOnAPinnedKeyIsWarned(t *testing.T) {
+	pinWatchdogs(t)
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
+	dir := t.TempDir()
+	rw := filepath.Join(dir, "fakerw")
+	if err := os.WriteFile(rw, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(dir, "fake-claude")
+	if err := os.WriteFile(fake, []byte(fakeClaudeArgv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ARGV_LOG", filepath.Join(dir, "argv.log"))
+	var mu sync.Mutex
+	var warned []string
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
+	b.Logger.SetHook(func(level iterlog.Level, msg string, _ map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if level == iterlog.LevelWarn {
+			warned = append(warned, msg)
+		}
+	})
+	task := Task{NodeID: "n", Command: fake, WorkDir: dir, UserPrompt: "x",
+		Rewriters: []plugin.RewriterSpec{{ID: "rw", Locate: plugin.LocateSpec{Paths: []string{rw}},
+			Invoke: plugin.InvokeSpec{Argv: []string{"rewrite", "{{command}}"}},
+			RunEnv: map[string]string{bashMaxTimeoutEnv: "1", "RW_OWN": "kept"}}}}
+	if pins, dropped := claudeEnvPinsAndDropped(task); pins[bashMaxTimeoutEnv] != wantBashMaxMs || len(dropped) != 1 || dropped[0] != bashMaxTimeoutEnv {
+		t.Fatalf("the pin must outrank the run_env and say so: %s=%q, dropped %v", bashMaxTimeoutEnv, pins[bashMaxTimeoutEnv], dropped)
+	}
+	_, _ = b.Execute(context.Background(), task)
+	mu.Lock()
+	defer mu.Unlock()
+	said := false
+	for _, w := range warned {
+		if strings.Contains(w, "run_env sets "+bashMaxTimeoutEnv) {
+			said = true
+		}
+	}
+	if !said {
+		t.Errorf("no warning named the dropped run_env key:\n%s", strings.Join(warned, "\n"))
 	}
 }
 

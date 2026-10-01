@@ -102,10 +102,11 @@ func TestFlagSettingsCarryOnlyMemoryKeysAndThePinnedEnvironment(t *testing.T) {
 		}
 	}
 	env := flagSettingsEnv(t, raw)
-	// The four switches, and the background lifecycle's signals (the
-	// lifecycle is on by default).
+	// The four switches, the CLI's wind-down ceiling, and the background
+	// lifecycle's signals (the lifecycle is on by default).
 	want := []string{"BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS", "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
-		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "CLAUDE_CODE_EXIT_AFTER_STOP_DELAY"}
+		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "CLAUDE_CODE_EXIT_AFTER_STOP_DELAY",
+		"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"}
 	if got := slices.Sorted(maps.Keys(env)); !slices.Equal(got, want) {
 		t.Errorf("the env block carries %v, want exactly %v", got, want)
 	}
