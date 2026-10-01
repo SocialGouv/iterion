@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -656,13 +657,46 @@ func (s *FilesystemRunStore) ReleaseQueuedRunIfAttempt(_ context.Context, id str
 	return s.transitionQueuedAttempt(id, to, runErr, publishedAt, meta)
 }
 
-var _ QueuedFlipReverter = (*FilesystemRunStore)(nil)
+var _ QueuedFlipper = (*FilesystemRunStore)(nil)
 
-// RevertQueuedRun undoes a resume's flip to queued, attempt marker included
-// — see QueuedFlipReverter.
-func (s *FilesystemRunStore) RevertQueuedRun(_ context.Context, id string, to RunStatus, runErr string, code FailureCode, queuedAt *time.Time) (bool, error) {
-	if !to.CanOperatorResume() {
-		return false, fmt.Errorf("store: revert queued run %s to %q: not a status a resume comes from", id, to)
+// FlipToQueued flips a run to queued for a resume, returning what it
+// replaced — see QueuedFlipper.
+func (s *FilesystemRunStore) FlipToQueued(_ context.Context, id string, from RunStatus, at time.Time) (QueuedFlip, bool, error) {
+	if at.IsZero() {
+		return QueuedFlip{}, false, fmt.Errorf("store: flip %s to queued without an attempt marker", id)
+	}
+	at = QueuedFlipAt(at)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return QueuedFlip{}, false, err
+	}
+	if r.Status != from {
+		return QueuedFlip{}, false, nil
+	}
+	flip := QueuedFlip{At: at, Prior: QueuedFlipPrior{
+		Status: r.Status, QueuedAt: cloneTimePtr(r.QueuedAt), Error: r.Error, FailureCode: r.FailureCode,
+		EndReason: r.EndReason, OutcomeSeq: r.OutcomeSeq, ContinuationState: r.ContinuationState, FinishedAt: cloneTimePtr(r.FinishedAt),
+		WorkflowSource: r.WorkflowSource, WorkflowSources: slices.Clone(r.WorkflowSources), WorkflowHash: r.WorkflowHash,
+	}}
+	transitionRunStatus(r, RunStatusQueued, "", RunOutcomeMeta{})
+	r.QueuedAt = &at
+	if err := s.writeRun(r); err != nil {
+		return QueuedFlip{}, false, err
+	}
+	return flip, true, nil
+}
+
+// RevertQueuedFlip puts back what a resume's flip replaced, while the run is
+// still queued for that flip — see QueuedFlipper.
+func (s *FilesystemRunStore) RevertQueuedFlip(_ context.Context, id string, flip QueuedFlip, runErr string) (bool, error) {
+	if !flip.Prior.Status.CanOperatorResume() {
+		return false, fmt.Errorf("store: revert queued run %s to %q: not a status a resume comes from", id, flip.Prior.Status)
+	}
+	if flip.At.IsZero() {
+		return false, fmt.Errorf("store: revert queued run %s without its flip's marker", id)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -671,18 +705,38 @@ func (s *FilesystemRunStore) RevertQueuedRun(_ context.Context, id string, to Ru
 	if err != nil {
 		return false, err
 	}
-	if !r.Status.IsQueued() {
+	if !r.Status.IsQueued() || r.QueuedAt == nil || !r.QueuedAt.Equal(flip.At) {
 		return false, nil
 	}
-	r.QueuedAt = nil
-	if queuedAt != nil {
-		t := *queuedAt
-		r.QueuedAt = &t
+	prior := flip.Prior
+	r.Status = prior.Status
+	r.QueuedAt = cloneTimePtr(prior.QueuedAt)
+	r.Error = prior.Error
+	if runErr != "" {
+		r.Error = runErr
 	}
-	if err := s.applyStatusTransition(r, to, runErr, code); err != nil {
+	r.FailureCode = prior.FailureCode
+	r.EndReason = prior.EndReason
+	r.OutcomeSeq = prior.OutcomeSeq
+	r.ContinuationState = prior.ContinuationState
+	r.FinishedAt = cloneTimePtr(prior.FinishedAt)
+	r.WorkflowSource = prior.WorkflowSource
+	r.WorkflowSources = slices.Clone(prior.WorkflowSources)
+	r.WorkflowHash = prior.WorkflowHash
+	r.AwaitAnswersWaits = nil
+	r.UpdatedAt = time.Now().UTC()
+	if err := s.writeRun(r); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func cloneTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	return &c
 }
 
 var _ QueuedAttemptClaimer = (*FilesystemRunStore)(nil)
@@ -739,11 +793,17 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 //     same-status rewrite (an untyped rewrite of an already-parked run
 //     must not erase a live retry_armed).
 //
-// The publisher's resume rollback (queued back to the prior resumable
-// status) is the one caller for which a transition is NOT a new
-// episode — it restores OutcomeSeq/ContinuationState by hand, the same
-// way it restores FailureCode.
+// The publisher's resume rollback is not a transition: it puts back what
+// its own flip replaced (RevertQueuedFlip), the episode and continuation
+// included.
 func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStatus, runErr string, meta RunOutcomeMeta) error {
+	transitionRunStatus(r, status, runErr, meta)
+	return s.writeRun(r)
+}
+
+// transitionRunStatus applies applyStatusTransitionOutcome's discipline to r
+// in memory; the caller persists it.
+func transitionRunStatus(r *Run, status RunStatus, runErr string, meta RunOutcomeMeta) {
 	terminal := status.IsFinalSuccess() || status.IsFinalFailure() || status.IsTerminalResumable()
 	transition := r.Status != status
 	if transition || status != RunStatusRunning {
@@ -845,7 +905,6 @@ func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStat
 	// at its first node boundary anyway. Finished likewise keeps it:
 	// `iterion fork` reads a terminal parent's checkpoint for its
 	// outputs. Only DeleteRun and the rewind machinery may remove one.
-	return s.writeRun(r)
 }
 
 // SaveCheckpoint persists a checkpoint on a paused run.

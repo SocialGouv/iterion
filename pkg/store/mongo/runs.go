@@ -1468,20 +1468,86 @@ func (s *Store) ReleaseQueuedRunIfAttempt(ctx context.Context, id string, to sto
 	return s.transitionQueuedAttempt(ctx, id, to, runErr, publishedAt, meta)
 }
 
-var _ store.QueuedFlipReverter = (*Store)(nil)
+var _ store.QueuedFlipper = (*Store)(nil)
 
-// RevertQueuedRun undoes a resume's flip to queued, attempt marker included
-// — see store.QueuedFlipReverter. Status and queued_at land in one update.
-func (s *Store) RevertQueuedRun(ctx context.Context, id string, to store.RunStatus, runErr string, code store.FailureCode, queuedAt *time.Time) (bool, error) {
-	if !to.CanOperatorResume() {
-		return false, fmt.Errorf("store/mongo: revert queued run %s to %q: not a status a resume comes from", id, to)
+// queuedFlipPriorDoc is what a flip to queued replaces, as the document
+// stores it.
+type queuedFlipPriorDoc struct {
+	Status            store.RunStatus            `bson:"status"`
+	QueuedAt          *time.Time                 `bson:"queued_at"`
+	Error             string                     `bson:"error"`
+	FailureCode       store.FailureCode          `bson:"failure_code"`
+	EndReason         store.RunEndReason         `bson:"end_reason"`
+	OutcomeSeq        int64                      `bson:"outcome_seq"`
+	ContinuationState store.ContinuationState    `bson:"continuation_state"`
+	FinishedAt        *time.Time                 `bson:"finished_at"`
+	WorkflowSource    string                     `bson:"workflow_source"`
+	WorkflowSources   []store.WorkflowSourceFile `bson:"workflow_sources"`
+	WorkflowHash      string                     `bson:"workflow_hash"`
+}
+
+// FlipToQueued flips a run to queued for a resume, returning what it
+// replaced — see store.QueuedFlipper. The document before the update is the
+// prior, read by the same FindOneAndUpdate.
+func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time) (store.QueuedFlip, bool, error) {
+	if at.IsZero() {
+		return store.QueuedFlip{}, false, fmt.Errorf("store/mongo: flip %s to queued without an attempt marker", id)
 	}
-	set := statusTransitionSet(to, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC())
-	// A nil marker writes null: no attempt, as a run never queued — every
-	// reader of queued_at treats null as absent.
-	set["queued_at"] = queuedAt
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": store.RunStatusQueued}))
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(statusTransitionPipeline(set)))
+	at = store.QueuedFlipAt(at)
+	set := statusTransitionSet(store.RunStatusQueued, "", store.RunOutcomeMeta{}, time.Now().UTC())
+	set["queued_at"] = at
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from}))
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.Before).
+		SetProjection(bson.M{"status": 1, "queued_at": 1, "error": 1, "failure_code": 1, "end_reason": 1,
+			"outcome_seq": 1, "continuation_state": 1, "finished_at": 1,
+			"workflow_source": 1, "workflow_sources": 1, "workflow_hash": 1})
+	var before queuedFlipPriorDoc
+	err := s.runs.FindOneAndUpdate(ctx, filter, versionRunUpdate(statusTransitionPipeline(set)), opts).Decode(&before)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return store.QueuedFlip{}, false, nil
+	}
+	if err != nil {
+		return store.QueuedFlip{}, false, fmt.Errorf("store/mongo: flip %s to queued: %w", id, err)
+	}
+	return store.QueuedFlip{At: at, Prior: store.QueuedFlipPrior(before)}, true, nil
+}
+
+// RevertQueuedFlip puts back what a resume's flip replaced, while the run is
+// still queued for that flip — see store.QueuedFlipper. The match on
+// queued_at and the restore land in one update.
+func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.QueuedFlip, runErr string) (bool, error) {
+	prior := flip.Prior
+	if !prior.Status.CanOperatorResume() {
+		return false, fmt.Errorf("store/mongo: revert queued run %s to %q: not a status a resume comes from", id, prior.Status)
+	}
+	if flip.At.IsZero() {
+		return false, fmt.Errorf("store/mongo: revert queued run %s without its flip's marker", id)
+	}
+	if runErr == "" {
+		runErr = prior.Error
+	}
+	set := bson.M{"status": prior.Status, "updated_at": time.Now().UTC()}
+	unset := bson.M{"await_answers_waits": ""}
+	field := func(key string, val any, empty bool) {
+		if empty {
+			unset[key] = ""
+		} else {
+			set[key] = val
+		}
+	}
+	field("queued_at", prior.QueuedAt, prior.QueuedAt == nil)
+	field("error", runErr, runErr == "")
+	field("failure_code", prior.FailureCode, prior.FailureCode == "")
+	field("end_reason", prior.EndReason, prior.EndReason == "")
+	field("outcome_seq", prior.OutcomeSeq, prior.OutcomeSeq == 0)
+	field("continuation_state", prior.ContinuationState, prior.ContinuationState == "")
+	field("finished_at", prior.FinishedAt, prior.FinishedAt == nil)
+	field("workflow_source", prior.WorkflowSource, prior.WorkflowSource == "")
+	field("workflow_sources", prior.WorkflowSources, len(prior.WorkflowSources) == 0)
+	field("workflow_hash", prior.WorkflowHash, prior.WorkflowHash == "")
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": store.RunStatusQueued, "queued_at": flip.At}))
+	res, err := s.runs.UpdateOne(ctx, filter, bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"version": 1}})
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: revert queued run %s: %w", id, err)
 	}

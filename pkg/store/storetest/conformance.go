@@ -488,64 +488,155 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 }
 
-// testQueuedFlipRevert: a resume refused before its publication puts the run
-// back where it was, attempt marker included — the previous attempt's marker,
-// or none — so only a publication ever leaves a queued_at behind.
+// testQueuedFlipRevert: a resume's flip to queued stamps its own attempt
+// marker and hands back what it replaced; refused before its publication,
+// the resume puts that back — the status, the failure, its code, the
+// episode, the continuation, the end time, the previous attempt's marker,
+// the rewind baseline — and only while the run is still queued for that
+// flip: a run claimed, or queued again by another resume, is left alone.
 func testQueuedFlipRevert(t *testing.T, s store.RunStore) {
 	t.Helper()
-	rv := store.AsQueuedFlipReverter(s)
-	if rv == nil {
-		t.Skip("backend does not implement QueuedFlipReverter")
+	fl := store.AsQueuedFlipper(s)
+	if fl == nil {
+		t.Skip("backend does not implement QueuedFlipper")
 	}
 	ctx := testCtx()
-	const runID = "run-queued-revert"
-	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
-		t.Fatalf("CreateRun: %v", err)
-	}
-	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "boom"); err != nil {
-		t.Fatalf("UpdateRunStatus: %v", err)
-	}
-	if _, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusRunning, "x", "", nil); err == nil {
-		t.Fatal("a revert to running: want an error, running is not a status a resume comes from")
-	}
-	if changed, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusFailedResumable, "x", "", nil); err != nil || changed {
-		t.Fatalf("revert of a run not queued = (%t, %v), want (false, nil)", changed, err)
-	}
-	flip := func() time.Time {
+	parked := func(t *testing.T, runID string) {
 		t.Helper()
-		if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable}); err != nil || !ok {
-			t.Fatalf("queued flip = (%t, %v)", ok, err)
+		if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+		if err := s.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+			t.Fatalf("UpdateRunStatus: %v", err)
+		}
+		if ok, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "usage window",
+			store.RunOutcomeMeta{Code: store.FailureUsageLimitBlocked, Continuation: store.ContinuationRetryArmed},
+			[]store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
+			t.Fatalf("park = (%t, %v)", ok, err)
+		}
+		if err := s.SetRunRecordedSource(ctx, runID, "workflow wf:\n  entry: a\n", nil, "sha256:before"); err != nil {
+			t.Fatalf("SetRunRecordedSource: %v", err)
+		}
+	}
+	flipOf := func(t *testing.T, runID string, from store.RunStatus) store.QueuedFlip {
+		t.Helper()
+		// A marker other than the store's clock: a store that stamps its
+		// own time instead of the flip's is seen, whatever its precision.
+		f, ok, err := fl.FlipToQueued(ctx, runID, from, time.Now().Add(-1500*time.Millisecond))
+		if err != nil || !ok {
+			t.Fatalf("flip from %s = (%t, %v)", from, ok, err)
 		}
 		r, err := s.LoadRun(ctx, runID)
-		if err != nil || r.QueuedAt == nil {
-			t.Fatalf("after the flip: queued_at %v (%v)", r, err)
+		if err != nil || r.Status != store.RunStatusQueued || r.QueuedAt == nil || !r.QueuedAt.Equal(f.At) || !f.At.Equal(store.QueuedFlipAt(f.At)) {
+			t.Fatalf("after the flip: %v (%v), want queued at exactly the flip's marker %v", r, err, f.At)
 		}
-		return *r.QueuedAt
+		return f
 	}
-	// A first attempt refused before its publication: back to no marker.
-	flip()
-	if changed, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusFailedResumable, "refused", store.FailureDLQParked, nil); err != nil || !changed {
-		t.Fatalf("revert = (%t, %v), want (true, nil)", changed, err)
-	}
-	r, err := s.LoadRun(ctx, runID)
-	if err != nil || r.Status != store.RunStatusFailedResumable || r.QueuedAt != nil || r.Error != "refused" || r.FailureCode != store.FailureDLQParked {
-		t.Fatalf("after the revert: status %s queued_at %v error %q code %q (%v), want failed_resumable, no marker, the prior failure", r.Status, r.QueuedAt, r.Error, r.FailureCode, err)
-	}
-	// A later attempt refused: back to the previous attempt's marker.
-	previous := flip()
-	if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusFailedResumable, "died", []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
-		t.Fatalf("out of queued: %v %v", ok, err)
-	}
-	time.Sleep(2 * time.Millisecond)
-	if newer := flip(); !newer.After(previous) {
-		t.Fatalf("precondition: the second flip's marker %v is not after %v", newer, previous)
-	}
-	if changed, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusFailedResumable, "refused", "", &previous); err != nil || !changed {
-		t.Fatalf("revert = (%t, %v), want (true, nil)", changed, err)
-	}
-	if r, err = s.LoadRun(ctx, runID); err != nil || r.QueuedAt == nil || !r.QueuedAt.Equal(previous) {
-		t.Fatalf("after the revert: queued_at %v (%v), want the previous attempt's %v", r.QueuedAt, err, previous)
-	}
+
+	t.Run("refusals", func(t *testing.T) {
+		const runID = "run-flip-refusals"
+		parked(t, runID)
+		if _, _, err := fl.FlipToQueued(ctx, runID, store.RunStatusFailedResumable, time.Time{}); err == nil {
+			t.Fatal("a flip without a marker: want an error")
+		}
+		if _, ok, err := fl.FlipToQueued(ctx, runID, store.RunStatusPausedOperator, time.Now()); err != nil || ok {
+			t.Fatalf("a flip from a status the run is not in = (%t, %v), want (false, nil)", ok, err)
+		}
+		bad := store.QueuedFlip{At: time.Now(), Prior: store.QueuedFlipPrior{Status: store.RunStatusRunning}}
+		if _, err := fl.RevertQueuedFlip(ctx, runID, bad, "x"); err == nil {
+			t.Fatal("a revert to running: want an error, running is not a status a resume comes from")
+		}
+		ok := store.QueuedFlip{At: time.Now(), Prior: store.QueuedFlipPrior{Status: store.RunStatusFailedResumable}}
+		if changed, err := fl.RevertQueuedFlip(ctx, runID, ok, "x"); err != nil || changed {
+			t.Fatalf("revert of a run not queued = (%t, %v), want (false, nil)", changed, err)
+		}
+	})
+
+	t.Run("the revert restores the episode and the continuation", func(t *testing.T) {
+		const runID = "run-flip-restore"
+		parked(t, runID)
+		before, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := flipOf(t, runID, store.RunStatusFailedResumable)
+		if f.Prior.Status != store.RunStatusFailedResumable || f.Prior.OutcomeSeq != before.OutcomeSeq || f.Prior.ContinuationState != store.ContinuationRetryArmed ||
+			f.Prior.FailureCode != store.FailureUsageLimitBlocked || f.Prior.Error != "usage window" || f.Prior.WorkflowHash != "sha256:before" {
+			t.Fatalf("the flip's prior = %+v, want the parked run's state", f.Prior)
+		}
+		// The resume stamps the source it compiled before publishing.
+		if err := s.SetRunRecordedSource(ctx, runID, "workflow wf:\n  entry: b\n", nil, "sha256:after"); err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := fl.RevertQueuedFlip(ctx, runID, f, "queue resume: refused"); err != nil || !changed {
+			t.Fatalf("revert = (%t, %v), want (true, nil)", changed, err)
+		}
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Status != store.RunStatusFailedResumable || r.Error != "queue resume: refused" || r.FailureCode != store.FailureUsageLimitBlocked {
+			t.Fatalf("after the revert: status %s error %q code %q, want failed_resumable, the refusal, the prior code", r.Status, r.Error, r.FailureCode)
+		}
+		if (r.QueuedAt == nil) != (before.QueuedAt == nil) || (r.QueuedAt != nil && !r.QueuedAt.Equal(*before.QueuedAt)) {
+			t.Fatalf("after the revert: queued_at %v, want the marker before the flip, %v", r.QueuedAt, before.QueuedAt)
+		}
+		if r.OutcomeSeq != before.OutcomeSeq || r.ContinuationState != store.ContinuationRetryArmed {
+			t.Fatalf("after the revert: outcome_seq %d continuation %q, want the parked run's %d %q — a refused resume is no new episode", r.OutcomeSeq, r.ContinuationState, before.OutcomeSeq, before.ContinuationState)
+		}
+		if (r.FinishedAt == nil) != (before.FinishedAt == nil) || (r.FinishedAt != nil && !r.FinishedAt.Equal(*before.FinishedAt)) {
+			t.Fatalf("after the revert: finished_at %v, want the parked run's %v", r.FinishedAt, before.FinishedAt)
+		}
+		if r.WorkflowHash != "sha256:before" || !strings.Contains(r.WorkflowSource, "entry: a") {
+			t.Fatalf("after the revert: recorded source %q (%s), want the baseline before the refused resume's stamp", r.WorkflowSource, r.WorkflowHash)
+		}
+		// A later attempt refused: back to the previous attempt's marker.
+		previous := flipOf(t, runID, store.RunStatusFailedResumable)
+		if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
+		if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusFailedResumable, "died", []store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
+			t.Fatalf("park: %v %v", ok, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+		later := flipOf(t, runID, store.RunStatusFailedResumable)
+		if changed, err := fl.RevertQueuedFlip(ctx, runID, later, "refused"); err != nil || !changed {
+			t.Fatalf("revert = (%t, %v), want (true, nil)", changed, err)
+		}
+		if r, err = s.LoadRun(ctx, runID); err != nil || r.QueuedAt == nil || !r.QueuedAt.Equal(previous.At) {
+			t.Fatalf("after the revert: queued_at %v (%v), want the previous attempt's %v", r.QueuedAt, err, previous.At)
+		}
+	})
+
+	t.Run("a revert after another flip is refused", func(t *testing.T) {
+		const runID = "run-flip-race"
+		parked(t, runID)
+		a := flipOf(t, runID, store.RunStatusFailedResumable)
+		if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, "operator", []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+			t.Fatalf("cancel: %v %v", ok, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+		b := flipOf(t, runID, store.RunStatusCancelled)
+		if changed, err := fl.RevertQueuedFlip(ctx, runID, a, "queue resume: A refused"); err != nil || changed {
+			t.Fatalf("A's revert after B's flip = (%t, %v), want (false, nil)", changed, err)
+		}
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil || r.Status != store.RunStatusQueued || r.QueuedAt == nil || !r.QueuedAt.Equal(b.At) {
+			t.Fatalf("after A's revert: %v (%v), want B's attempt intact: queued at %v", r, err, b.At)
+		}
+	})
+
+	t.Run("a revert after a claim is refused", func(t *testing.T) {
+		const runID = "run-flip-claimed"
+		parked(t, runID)
+		f := flipOf(t, runID, store.RunStatusFailedResumable)
+		if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
+		if changed, err := fl.RevertQueuedFlip(ctx, runID, f, "refused"); err != nil || changed {
+			t.Fatalf("revert of a claimed run = (%t, %v), want (false, nil)", changed, err)
+		}
+	})
 }
 
 // testQueuedAttemptClaim: a queued run is claimed for the attempt a delivery

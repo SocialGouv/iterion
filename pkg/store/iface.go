@@ -386,22 +386,64 @@ func AsQueuedResumeReleaser(s RunStore) QueuedResumeReleaser {
 	return capability[QueuedResumeReleaser](s)
 }
 
-// QueuedFlipReverter undoes a resume's own flip to queued when the resume is
-// refused before its publication.
-type QueuedFlipReverter interface {
-	// RevertQueuedRun moves a queued run back to `to` — the status a resume
-	// flipped it from — with the failure it carried AND the attempt marker
-	// it had before the flip (queuedAt, nil for none): only a publication
-	// makes a queue attempt, so a delivery of the previous attempt still in
-	// flight must not read as superseded by a flip nothing published.
-	// Guarded on queued, like the flip it undoes.
-	RevertQueuedRun(ctx context.Context, id string, to RunStatus, runErr string, code FailureCode, queuedAt *time.Time) (changed bool, err error)
+// QueuedFlip is a resume's flip of a run to queued: the attempt marker it
+// stamped, and what the run was before it — what a resume refused before
+// its publication puts back.
+type QueuedFlip struct {
+	// At is the QueuedAt the flip stamped (QueuedFlipAt): this flip's own
+	// marker, which its revert matches so it never reverts another flip.
+	At time.Time
+	// Prior is what the flip replaced, read in the same atomic operation.
+	Prior QueuedFlipPrior
 }
 
-// AsQueuedFlipReverter returns the revert capability, or nil for a store
-// that has none.
-func AsQueuedFlipReverter(s RunStore) QueuedFlipReverter {
-	return capability[QueuedFlipReverter](s)
+// QueuedFlipPrior is what a flip to queued, and the resume behind it,
+// replace on a run: its status, the previous attempt's marker, the outcome
+// bookkeeping of the state it leaves — the failure, its code and end reason,
+// the episode, the continuation, the end time — and the recorded source the
+// resume stamps before its publication (the rewind baseline).
+type QueuedFlipPrior struct {
+	Status            RunStatus
+	QueuedAt          *time.Time
+	Error             string
+	FailureCode       FailureCode
+	EndReason         RunEndReason
+	OutcomeSeq        int64
+	ContinuationState ContinuationState
+	FinishedAt        *time.Time
+	WorkflowSource    string
+	WorkflowSources   []WorkflowSourceFile
+	WorkflowHash      string
+}
+
+// QueuedFlipAt is the attempt marker a flip stamps at t: UTC, to the
+// millisecond — the precision every store reads back exactly as it wrote
+// it, so a revert's match on it is exact.
+func QueuedFlipAt(t time.Time) time.Time { return t.UTC().Truncate(time.Millisecond) }
+
+// QueuedFlipper flips a run to queued for a resume, and undoes that flip —
+// that one only — when the resume is refused before its publication.
+type QueuedFlipper interface {
+	// FlipToQueued moves the run from `from` to queued, its attempt marker
+	// stamped at QueuedFlipAt(at), and returns what the run was before, read
+	// in the same atomic operation. changed=false when the run is not
+	// `from`.
+	FlipToQueued(ctx context.Context, id string, from RunStatus, at time.Time) (flip QueuedFlip, changed bool, err error)
+	// RevertQueuedFlip puts flip.Prior back — only while the run is still
+	// queued with flip.At as its marker: a run claimed, cancelled, or queued
+	// again by another resume since is left alone. Only a publication makes
+	// a queue attempt, so a delivery of the previous attempt still in flight
+	// must not read as superseded by a flip nothing published, and the run's
+	// episode and continuation are the prior state's, not a new outcome.
+	// runErr, when not empty, replaces the prior error: why the resume was
+	// refused.
+	RevertQueuedFlip(ctx context.Context, id string, flip QueuedFlip, runErr string) (changed bool, err error)
+}
+
+// AsQueuedFlipper returns the flip capability, or nil for a store that has
+// none.
+func AsQueuedFlipper(s RunStore) QueuedFlipper {
+	return capability[QueuedFlipper](s)
 }
 
 // QueuedAttemptClaimer claims a queued run for one delivery's attempt.
