@@ -1526,6 +1526,94 @@ tool lot_verify:
         rewrites += ["%s: %s" % (rel, why) for rel, why in sorted(unhashable.items())]
         return done_in, rewrites, head, state, head_tree
 
+    def tree_entries_full(rev):
+        """{path: (mode, blob id)} for EVERY path `rev` holds — the committed
+        links in a record's path may lead out of the contract's directory."""
+        ls = git_bytes("ls-tree", "-r", "-z", rev)
+        if ls.returncode != 0:
+            git_fail("list", rev, ls)
+        out = {}
+        for e in ls.stdout.split(b"\0"):
+            meta, _, path = e.partition(b"\t")
+            if e:
+                mode, _, sha = meta.decode().split()
+                out[os.fsdecode(path)] = (mode, sha)
+        return out
+
+    def resolve_in_tree(rel, tree, hops=0):
+        """The path the commit carries `rel` under, following the committed
+        symlinks in its way — the base may ship `sweeps` as a link, and the
+        lot records behind it, as the base dictates. None when the commit
+        carries nothing there, a link loops, or a directory step lands on a
+        file."""
+        cur = os.path.normpath(rel)
+        if cur == ".." or cur.startswith("../") or cur.startswith("/") or hops > 40:
+            return None
+        parts = cur.split("/")
+        prefix = ""
+        i = 0
+        while i < len(parts):
+            cand = parts[i] if not prefix else prefix + "/" + parts[i]
+            last = i == len(parts) - 1
+            entry = tree.get(cand)
+            if entry is None:
+                if last:
+                    return None
+                prefix = cand  # a directory: the tree holds its files
+                i += 1
+                continue
+            mode, sha = entry
+            if last and mode != "120000":
+                return cand
+            if mode != "120000":
+                return None  # a file where the record's path needs a directory
+            target = git_bytes("cat-file", "blob", sha).stdout.decode("utf-8", "replace")
+            nxt = target.lstrip("/") if target.startswith("/") else (
+                os.path.normpath(target) if not prefix else os.path.normpath(prefix + "/" + target))
+            # The walk restarts over the link's target PLUS whatever remained
+            # of the path after it — the target may hold links of its own.
+            rest = "/".join(parts[i + 1:])
+            return resolve_in_tree(nxt + ("/" + rest if rest else ""), tree, hops + 1)
+        return None
+
+    def banked_tree():
+        """The tree the engine's wip bank would commit here: the index as the
+        bank's staging rebuilds it from the working tree (the tree noise
+        excluded), staged into a scratch index of this node's own. On a cloud
+        run nothing banks; HEAD is pushed as the verdict's node left it — the
+        record is required in both trees, so a record the run's own tree
+        would drop from the landing fails wherever it lands."""
+        import shutil
+        import tempfile
+        real = git_bytes("rev-parse", "--git-path", "index")
+        if real.returncode != 0:
+            git_fail("locate the index for", plan_file, real)
+        idx_path = os.fsdecode(real.stdout.strip())
+        if not os.path.isabs(idx_path):
+            idx_path = os.path.join(ws, idx_path)
+        scratch = os.path.join(tempfile.mkdtemp(prefix="modernize-bank-"), "index")
+        shutil.copyfile(idx_path, scratch)
+        # The same options the engine's own git runs with, and the same
+        # exclusions its bank stages with ($ITERION_TREE_NOISE, the mirror and
+        # the derivable noise): staging the bank's tree is an iterion gesture,
+        # not the run's to ride or to refuse.
+        env = dict(os.environ, GIT_INDEX_FILE=scratch)
+        add = subprocess.run(["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
+                              "-c", "core.fsmonitor=false", "add", "-A", "--", ":/"]
+                             + shlex.split(os.environ.get("ITERION_TREE_NOISE", "")),
+                             env=env, capture_output=True, timeout=300)
+        if add.returncode != 0:
+            unreadable("cannot stage the working tree as the bank would (%s): %s"
+                       % (plan_rel, add.stderr.decode("utf-8", "replace")[-300:]))
+        tree = subprocess.run(["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
+                               "-c", "core.fsmonitor=false", "write-tree"], env=env,
+                              capture_output=True, timeout=120)
+        if tree.returncode != 0:
+            unreadable("cannot write the tree the bank would commit (%s): %s"
+                       % (plan_rel, tree.stderr.decode("utf-8", "replace")[-300:]))
+        shutil.rmtree(os.path.dirname(scratch), ignore_errors=True)
+        return tree_entries_full(tree.stdout.decode().strip())
+
     def record_predicates():
         """The gate commands that ARE the predicate over a record in the
         contract's directory — `test -s <path>` or `[ -s <path> ]`, the whole
@@ -1548,39 +1636,52 @@ tool lot_verify:
                 found[rel] = cmd.strip()
         return found
 
-    def records_unlanded(head, head_tree):
+    def records_unlanded(head, head_tree, banked):
         """The gate's record predicates held on the working tree the commands
-        read — and `done` is written on what lands. A record the commit does
-        not carry as a non-empty file is the predicate holding on nothing that
-        lands: left uncommitted, ignored, or put back on disk after a commit
-        removed it."""
+        read — and `done` is written on what lands. The landing is HEAD (a
+        cloud run pushes it) and, on a run with a working tree, the commit the
+        engine's bank adds on top of it. A record must be in both, as a
+        non-empty file, under the path the commit really carries it — through
+        the committed links of its path. Left uncommitted, ignored, put back
+        on disk after a commit removed it, or carried as a directory, it is
+        the predicate holding on nothing that lands."""
         causes = []
+        full = tree_entries_full(head)
         for rel, cmd in sorted(record_predicates().items()):
-            entry = head_tree.get(rel)
-            if entry is None and any(p.startswith(rel + "/") for p in head_tree):
-                continue  # a directory the commit carries files under
-            if entry is None:
-                why = "the record is in no commit"
-                # check-ignore takes no pathspec magic: not through git_bytes.
-                ignored = subprocess.run(["git", "-C", ws, "check-ignore", "-q", "--", rel],
-                                         capture_output=True, timeout=60)
-                if ignored.returncode == 0:
-                    why += ", and git ignores it (add it with `git add -f`, or fix the ignore rule)"
-                elif ignored.returncode != 1:
-                    why += ", and git cannot say whether it ignores it (%s)" % (
-                        ignored.stderr.decode("utf-8", "replace").strip()[-200:])
-            elif not entry[0].startswith("100"):
-                why = "the commit carries it as %s, not as a file" % (
-                    "a symlink" if entry[0] == "120000" else "mode " + entry[0])
+            at = resolve_in_tree(rel, full)
+            why = None
+            if at is None:
+                if any(p.startswith(rel + "/") for p in full):
+                    why = "the commit carries it as a directory, not as a file"
+                else:
+                    why = "the record is in no commit"
+                    # check-ignore takes no pathspec magic: not through git_bytes.
+                    # It reads the WORKING TREE: beyond a committed link of the
+                    # path it cannot answer, and the hint would only confuse —
+                    # so it is spoken only when git answers "ignored".
+                    ignored = subprocess.run(["git", "-C", ws, "check-ignore", "-q", "--", rel],
+                                             capture_output=True, timeout=60)
+                    if ignored.returncode == 0:
+                        why += ", and git ignores it (add it with `git add -f`, or fix the ignore rule)"
             else:
-                size = git_bytes("cat-file", "-s", entry[1])
-                if size.returncode != 0:
-                    git_fail("size", rel, size)
-                if size.stdout.decode().strip() != "0":
-                    continue
-                why = "the commit carries it empty"
-            causes.append("%s: the gate's predicate `%s` holds on the working tree, but %s at HEAD "
-                          "%s — `done` is written on what lands: commit the record" % (rel, cmd, why, head[:12]))
+                mode, sha = full[at]
+                if mode != "100644" and mode != "100755":
+                    why = "the commit carries it as %s, not as a file" % (
+                        "a symlink" if mode == "120000" else "mode " + mode)
+                else:
+                    size = git_bytes("cat-file", "-s", sha)
+                    if size.returncode != 0:
+                        git_fail("size", at, size)
+                    if size.stdout.decode().strip() == "0":
+                        why = "the commit carries it empty"
+                    elif resolve_in_tree(at, banked) is None:
+                        why = ("the commit carries it, but the landing does not: the index and the "
+                               "working tree would not carry %s into the banked commit (left "
+                               "uncommitted, ignored, or removed from the index)" % at)
+            if why:
+                causes.append("%s: the gate's predicate `%s` holds on the working tree, but %s at HEAD "
+                              "%s — `done` is written on what lands: commit the record"
+                              % (rel, cmd, why, head[:12]))
         return causes
 
     def verdict_tree(state):
@@ -2174,7 +2275,7 @@ tool lot_verify:
     #     judged on what lands: the commands read the working tree, and on a
     #     cloud run HEAD alone is the landing.
     if report["gate_passed"]:
-        unlanded = records_unlanded(judged_head, judged_head_tree)
+        unlanded = records_unlanded(judged_head, judged_head_tree, banked_tree())
         if unlanded:
             report["gate_passed"] = False
             problems.extend(unlanded)
@@ -2275,8 +2376,13 @@ tool mark_done:
             os.unlink(tmp)
 
     def git(*args, **kw):
-        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
-                              text=True, timeout=120, **kw)
+        # No hook runs, and no program the repository's config names to watch
+        # the tree (the engine's own git runs the same): this node's writes —
+        # the ref update that lands the gate's word, the index entry that
+        # follows it — are not the run's to refuse or to ride.
+        return subprocess.run(["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
+                               "-c", "core.fsmonitor=false"] + list(args),
+                              capture_output=True, text=True, timeout=120, **kw)
 
     # The one line, edited in place: locate the lot's block by its `- id:`
     # line and the `status:` line at the item's key column. A structural
@@ -2380,7 +2486,9 @@ tool mark_done:
     committed_blob = git("hash-object", "--stdin", input=committed_text).stdout.strip()
 
     def git_bytes(*args, **kw):
-        return subprocess.run(["git", "--literal-pathspecs", "-C", ws] + list(args),
+        return subprocess.run(["git", "--literal-pathspecs", "-C", ws,
+                               "-c", "core.hooksPath=/dev/null",
+                               "-c", "core.fsmonitor=false"] + list(args),
                               capture_output=True, timeout=120, **kw)
 
     def landing_state(paths):

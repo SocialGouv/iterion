@@ -161,6 +161,20 @@ func TestPerformMerge_ConflictPath(t *testing.T) {
 		t.Errorf("after resolve Files=%d, want 0", len(det2.Files))
 	}
 
+	// The verdict the landing answers to: the judged HEAD carries the
+	// resolution's exact bytes, as the run's verifier recorded them.
+	judged := commitTreeOfStaged(t, repoDir)
+	loaded2, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun for the verdict: %v", err)
+	}
+	loaded2.Checkpoint = &store.Checkpoint{Outputs: map[string]map[string]any{
+		"lot_verify": {"contract_head": judged, "contract_tree": `{"table":{"file.txt":{"w":"file:x"}},"rest":{"count":0,"digest":"x"}}`},
+	}}
+	if err := st.SaveRun(ctx, loaded2); err != nil {
+		t.Fatalf("SaveRun with the verdict: %v", err)
+	}
+
 	// 5. Finalize commits the squash and flips status.
 	res, err := svc.FinalizeMergeAfterConflict(ctx, runID, "")
 	if err != nil {
@@ -303,4 +317,137 @@ func TestAbortMergeConflict_RestoresWorktree(t *testing.T) {
 func captureGitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return gittest.Run(t, dir, args...)
+}
+
+// commitTreeOfStaged commits the staged index to a plumbing commit (no
+// checkout, HEAD untouched) and returns its SHA: the judged HEAD a verdict
+// vouches for.
+func commitTreeOfStaged(t *testing.T, repoDir string) string {
+	t.Helper()
+	idx := filepath.Join(t.TempDir(), "index")
+	index := filepath.Join(repoDir, strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "--git-path", "index")))
+	b, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	if err := os.WriteFile(idx, b, 0o644); err != nil {
+		t.Fatalf("copy index: %v", err)
+	}
+	writeEnv := func(args ...string) string {
+		t.Helper()
+		cmd := gittest.Cmd(repoDir, args...)
+		cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+idx)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	tree := writeEnv("write-tree")
+	return writeEnv("-c", "user.email=t@t.t", "-c", "user.name=t",
+		"commit-tree", tree, "-m", "the verdict's judged HEAD")
+}
+
+// The landing is re-judged against the stored verdict: a resolution of a
+// contract file the verdict names must carry the bytes that verdict judged.
+// Whoever fills the resolver, a landing that rewrites the contract is refused
+// by name — the owner changes the contract between runs, by hand.
+func TestFinalizeMergeAfterConflict_RefusesAResolutionThatRewritesTheContract(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	repoDir := filepath.Join(dir, "repo")
+
+	logger := iterlog.Nop()
+	st, err := store.New(storeDir, store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		gittest.Run(t, repoDir, args...)
+	}
+	writeRepo := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repoDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	runGit("init", "-q", "-b", "main")
+	runGit("config", "user.email", "t@t.t")
+	runGit("config", "user.name", "t")
+	runGit("config", "commit.gpgsign", "false")
+	writeRepo("file.txt", "alpha\nbravo\ncharlie\n")
+	runGit("add", "file.txt")
+	runGit("commit", "-qm", "base")
+	baseSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
+
+	runGit("checkout", "-qb", "iterion/run/test-rewrite")
+	writeRepo("file.txt", "alpha\nBRAVO-INCOMING\ncharlie\n")
+	runGit("commit", "-qam", "feat")
+	storageSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	runGit("checkout", "-q", "main")
+	writeRepo("file.txt", "alpha\nbravo-main\ncharlie\n")
+	runGit("commit", "-qam", "main-change")
+
+	ctx := context.Background()
+	runID := "run-rewrite-test"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Worktree = true
+	r.RepoRoot = repoDir
+	r.WorkDir = repoDir
+	r.BaseCommit = baseSHA
+	r.FinalCommit = storageSHA
+	r.FinalBranch = "iterion/run/test-rewrite"
+	r.Status = store.RunStatusFinished
+	r.MergeStrategy = store.MergeStrategySquash
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun seed: %v", err)
+	}
+
+	svc, err := NewService(storeDir, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.PerformMergeCtx(ctx, runID, MergeRequest{}); err == nil {
+		t.Fatal("expected merge to fail with conflict")
+	}
+	// The resolver takes neither side: a rewrite nobody judged.
+	if err := svc.ResolveMergeConflictFile(ctx, runID, "file.txt", "alpha\nthe resolver's own\ncharlie\n"); err != nil {
+		t.Fatalf("ResolveMergeConflictFile: %v", err)
+	}
+	// The verdict's judged HEAD carries the run's version of file.txt.
+	judgedTree := commitTreeOfStaged(t, repoDir) // staged: the resolver's rewrite — not judged
+	_ = judgedTree
+	resolvedSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "iterion/run/test-rewrite"))
+	loaded, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun for the verdict: %v", err)
+	}
+	loaded.Checkpoint = &store.Checkpoint{Outputs: map[string]map[string]any{
+		"lot_verify": {"contract_head": strings.TrimSpace(resolvedSHA),
+			"contract_tree": `{"table":{"file.txt":{"w":"file:x"}},"rest":{"count":0,"digest":"x"}}`},
+	}}
+	if err := st.SaveRun(ctx, loaded); err != nil {
+		t.Fatalf("SaveRun with the verdict: %v", err)
+	}
+
+	_, err = svc.FinalizeMergeAfterConflict(ctx, runID, "")
+	if err == nil {
+		t.Fatal("the landing committed a resolution that rewrites the contract the verdict judged")
+	}
+	if !strings.Contains(err.Error(), "not the contract the verdict judged") {
+		t.Fatalf("the refusal does not name the rewritten contract: %v", err)
+	}
 }

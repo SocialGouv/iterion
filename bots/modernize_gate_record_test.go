@@ -18,6 +18,13 @@ func TestModernizeGateRecordPredicateHoldsOnWhatLands(t *testing.T) {
 	const record = ".modernize/sweeps/L1.md"
 	const gate = "test -s " + record
 
+	landsWith := func(t *testing.T, got landed) {
+		t.Helper()
+		if !got.converged || !got.marked {
+			t.Fatalf("a record that lands was refused: converged=%v marked=%v notice=%q log=%s",
+				got.converged, got.marked, got.notice, got.verdict.LogTail)
+		}
+	}
 	failsOn := func(t *testing.T, got landed, why string) {
 		t.Helper()
 		if got.converged || got.marked || got.stop {
@@ -64,7 +71,15 @@ func TestModernizeGateRecordPredicateHoldsOnWhatLands(t *testing.T) {
 		writeContract(t, ws, record, "# L1 sweep\n")
 		failsOn(t, landLot(t, ws, base, gate, nil), "the commit carries it empty")
 	})
-	t.Run("the record committed as a symlink", func(t *testing.T) {
+	t.Run("the bracket form, quoted, the record left uncommitted", func(t *testing.T) {
+		ws, base, _ := programmeOfLots(t)
+		writeContract(t, ws, record, "# L1 sweep\n")
+		failsOn(t, landLot(t, ws, base, `[ -s "`+record+`" ]`, nil), "the record is in no commit")
+	})
+
+	// The predicate is judged as the commit carries the path: through a link
+	// the commit holds, at the file the link resolves to.
+	t.Run("the record committed as a link to a file the commit carries", func(t *testing.T) {
 		ws, base, git := programmeOfLots(t)
 		writeContract(t, ws, ".modernize/L1-report.md", "# L1\n")
 		if err := os.MkdirAll(filepath.Join(ws, ".modernize", "sweeps"), 0o755); err != nil {
@@ -75,24 +90,29 @@ func TestModernizeGateRecordPredicateHoldsOnWhatLands(t *testing.T) {
 		}
 		git("add", "-A")
 		git("commit", "-qm", "the sweep record, linked")
-		failsOn(t, landLot(t, ws, base, gate, nil), "a symlink")
+		landsWith(t, landLot(t, ws, base, gate, nil))
 	})
-	t.Run("the bracket form, quoted, the record left uncommitted", func(t *testing.T) {
-		ws, base, _ := programmeOfLots(t)
-		writeContract(t, ws, record, "# L1 sweep\n")
-		failsOn(t, landLot(t, ws, base, `[ -s "`+record+`" ]`, nil), "the record is in no commit")
+	t.Run("the record committed as a link to nothing the commit carries", func(t *testing.T) {
+		ws, base, git := programmeOfLots(t)
+		if err := os.MkdirAll(filepath.Join(ws, ".modernize", "sweeps"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The target exists on DISK, so the shell's `test -s` holds through
+		// the link; the commit carries the link and nothing behind it.
+		if err := os.WriteFile(filepath.Join(ws, "scratch.md"), []byte("# the sweep, never committed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("../../scratch.md", filepath.Join(ws, record)); err != nil {
+			t.Fatal(err)
+		}
+		git("add", ".modernize/sweeps")
+		git("commit", "-qm", "the sweep record, linked to nothing the commit carries")
+		failsOn(t, landLot(t, ws, base, gate, nil), "the record is in no commit")
 	})
 
 	// The other face: a record the commit carries lands; a predicate over a
 	// path outside the contract's directory, or a command that is not the
 	// predicate, is the gate's own business.
-	landsWith := func(t *testing.T, got landed) {
-		t.Helper()
-		if !got.converged || !got.marked {
-			t.Fatalf("a record that lands was refused: converged=%v marked=%v notice=%q log=%s",
-				got.converged, got.marked, got.notice, got.verdict.LogTail)
-		}
-	}
 	t.Run("the record committed: it lands", func(t *testing.T) {
 		ws, base, git := programmeOfLots(t)
 		writeContract(t, ws, record, "# L1 sweep\n")
@@ -114,12 +134,17 @@ func TestModernizeGateRecordPredicateHoldsOnWhatLands(t *testing.T) {
 		writeContract(t, ws, "build/out.txt", "a build output nobody commits\n")
 		landsWith(t, landLot(t, ws, base, "test -s build/out.txt", nil))
 	})
-	t.Run("a predicate over a directory the commit carries files under", func(t *testing.T) {
+	// A directory where the record's name goes is not "a non-empty file in
+	// the commit": the shell's `test -s` holds on it, the record does not.
+	t.Run("the commit carries it as a directory", func(t *testing.T) {
 		ws, base, git := programmeOfLots(t)
 		writeContract(t, ws, ".modernize/L1-captures/one.json", "{}\n")
 		git("add", "-A")
 		git("commit", "-qm", "the captures")
-		landsWith(t, landLot(t, ws, base, "test -s .modernize/L1-captures", nil))
+		got := landLot(t, ws, base, "test -s .modernize/L1-captures", nil)
+		if got.converged || got.marked {
+			t.Fatalf("a directory where the record's name goes was taken for a landed record: log=%s", got.verdict.LogTail)
+		}
 	})
 	t.Run("a command that carries the predicate among other words", func(t *testing.T) {
 		ws, base, _ := programmeOfLots(t)

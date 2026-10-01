@@ -751,7 +751,71 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 	if head == "" {
 		return
 	}
+	if refusal := r.pushLFSObjects(ctx, msg, workDir, head); refusal != "" {
+		r.recordBankFailure(msg, refusal)
+		return
+	}
 	r.pushBank(ctx, msg, workDir, head, finalStatus)
+}
+
+// pushLFSObjects uploads the Git LFS objects the run's tree carries, before
+// the bank's push. The bank's push runs no hook (as every git iterion runs
+// does), and git-lfs uploads its objects from the pre-push hook: hookless, a
+// clone with git-lfs installed pushes the pointers, exits 0, and the objects
+// never reach the forge — a fresh clone of the banked branch then fails its
+// checkout (measured with git-lfs 3.4.1). So the objects are pushed
+// explicitly, for the bank's refspec only. When the upload fails, the bank is
+// refused by name — the run's work stays in the pod's clone, named in
+// FinalBranchError — where a silent pointer push would land a branch nobody
+// can check out. Nothing runs when the clone has no LFS filter configured, or
+// no tracked path declares one.
+func (r *Runner) pushLFSObjects(ctx context.Context, msg *queue.RunMessage, workDir, head string) string {
+	if _, err := r.runGitOutEnv(ctx, workDir, "", nil, "config", "--get-regexp", `^filter\.lfs\.`); err != nil {
+		return "" // no LFS filter configured in this clone: nothing could be a pointer
+	}
+	listed, err := r.runGitOutEnv(ctx, workDir, "", nil, "ls-files")
+	if err != nil {
+		return fmt.Sprintf("bank refused: cannot list the run's tree to check its Git LFS paths: %v: %s", err, listed)
+	}
+	var paths []string
+	for _, p := range strings.Split(strings.TrimSpace(listed), "\n") {
+		if strings.TrimSpace(p) != "" {
+			paths = append(paths, strings.TrimSpace(p))
+		}
+	}
+	lfsPath := ""
+	for i := 0; i < len(paths) && lfsPath == ""; i += 500 {
+		chunk := paths[i:min(i+500, len(paths))]
+		if len(chunk) == 0 {
+			continue
+		}
+		res, err := r.runGitOutEnv(ctx, workDir, "", nil,
+			append([]string{"check-attr", "-z", "filter", "--"}, chunk...)...)
+		if err != nil {
+			return fmt.Sprintf("bank refused: cannot read the filter attributes of the run's tree: %v: %s", err, res)
+		}
+		parts := strings.Split(res, "\x00")
+		for j := 0; j+2 < len(parts); j += 3 {
+			if parts[j+2] == "lfs" {
+				lfsPath = parts[j]
+				break
+			}
+		}
+	}
+	if lfsPath == "" {
+		return "" // nothing in the tree is LFS-tracked: the push carries no pointer
+	}
+	branch := "iterion/run-" + msg.RunID
+	tok := ""
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
+	}
+	if err := r.runGit(ctx, workDir, tok, "lfs", "push", "origin", head+":refs/heads/"+branch); err != nil {
+		return fmt.Sprintf("bank refused: the run's tree carries Git LFS paths (first: %s) and uploading their objects failed: %v — "+
+			"the bank's push runs no hook, so git-lfs never uploads from it; install git-lfs on the runner or land by hand", lfsPath, err)
+	}
+	r.cfg.Logger.Info("runner: run %s: bank: LFS objects for %s uploaded ahead of the push (first tracked path: %s)", msg.RunID, branch, lfsPath)
+	return ""
 }
 
 // resolveBankHead applies the export-integrity oracle to the host clone
