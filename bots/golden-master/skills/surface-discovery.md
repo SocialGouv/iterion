@@ -196,3 +196,56 @@ to the entry's), the reference captures every step's status and body plus the re
 file is named after its id, and renumbering silently re-points every mutant's `targets`. Keep a
 `note` wherever the entry's purpose is not obvious from its path; the next reader is deciding
 whether a diff matters, and the note is what lets them.
+
+## JSON bodies, and the token a protected request carries
+
+A route that reads a JSON body — an API endpoint, the XHR a screen sends — is observed by an
+entry declaring `json`. A form encoding cannot reach it: the request would leave urlencoded, the
+application would refuse it for the wrong reason, and the reference would record that refusal.
+
+```json
+{"id": "041", "persona": "manager", "surface": "write",
+ "method": "POST", "path": "/api/items",
+ "json": {"name": "Probe item", "tags": ["a", "b"]},
+ "csrf_field": "_csrf", "csrf_header_meta": "_csrf_header", "csrf_from": "/items/new",
+ "readback": "/items?q=Probe+item",
+ "note": "the XHR the creation screen sends; its token rides a header"},
+{"id": "042", "persona": "manager", "surface": "write",
+ "method": "DELETE", "path": "/api/items/7",
+ "csrf_field": "_csrf", "csrf_header": "X-CSRF-TOKEN", "csrf_from": "/items",
+ "readback": "/items"}
+```
+
+- **`json` is any JSON value, and its PRESENCE selects the encoding**: `{}`, `[]`, `null`,
+  `false`, `0` and `""` are each a body. It leaves as a browser's `JSON.stringify` sends it —
+  `Content-Type: application/json`, the declared key order, no whitespace, UTF-8 — byte-identical
+  on every replay. One request carries `json` or `fields`, never both; `fields` keeps the form
+  encodings (urlencoded, multipart when a field is a file).
+- **JSON on the `http` surface** is for a POST that only queries (a search API): the surface
+  says the request changes nothing, so no `restore` follows it. Anything that stores is a `write`.
+- **The token.** `csrf_field` names it and turns its lookup on. Before every non-GET request of
+  the entry — the `http` surface included — the harness GETs `csrf_from` (default: the entry's
+  `path`) in the same session, redirects followed, and takes the token from the first source
+  that carries one, in this FIXED order: `<input name=csrf_field>` (its `value`), `<meta
+  name=csrf_field>` (its `content`), then the cookie named by `csrf_cookie` in the session's jar.
+  Each attribute is read from the one tag carrying that name, whatever the attribute order or
+  quoting. A GET never carries a token and never fetches the page.
+- **Where it travels.** In a header when one is declared — the name a `<meta
+  name=csrf_header_meta>` renders when the page renders it, else `csrf_header` — and otherwise
+  as the form field `csrf_field`. A token found whose header has no name is refused.
+- **No token found: the request goes without one**, never with an empty header. A baseline may
+  predate the protection its target adds, and the net must capture both.
+- **Read once per entry.** Steps share the entry's read; a step declaring its own `csrf_from`
+  re-reads before itself. A step inherits `method`, `path`, the token declarations and `headers`
+  from its entry and may override each; its body (`fields` or `json`) is its own.
+- **`headers`** adds request headers to the entry's requests (not to the token page, not to the
+  readback): `Accept-Language`, `X-Requested-With`, an `Accept` that replaces the default `*/*`.
+  It never names `Content-Type`, `Content-Length`, `Cookie`, `Host`, `Transfer-Encoding` or the
+  token's header — the harness writes those.
+
+Refused by name before anything boots, and again before an entry's first byte: `json` with
+`fields` on one request, or on a GET or HEAD; `json` with `csrf_field` and no header declared (a
+JSON body cannot carry a form field); `csrf_header`, `csrf_header_meta` or `csrf_cookie` without
+`csrf_field`; `csrf_cookie` with no header declared; `steps` that are not a list of objects. A
+persona `login` keeps the form — a login declaring `json`, a token key other than `csrf_field`
+or `headers` is refused too.

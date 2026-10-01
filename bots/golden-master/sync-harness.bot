@@ -342,6 +342,12 @@ tool sync_harness:
 
     # ─── HTTP capture ───────────────────────────────────────────────────────────
 
+    # `json` selects its encoding by PRESENCE, never by truthiness: `null`,
+    # `false`, `0`, `""`, `[]` and `{}` are each a body a client sends, and `None`
+    # is one of them — so "no JSON body" needs a value no corpus can spell.
+    ABSENT = object()
+
+
     class Session:
         """One persona's HTTP session: cookie jar + form login."""
 
@@ -360,13 +366,31 @@ tool sync_harness:
                 urllib.request.HTTPCookieProcessor(self.jar), _NoRedirect()
             )
 
-        def fetch(self, method, path, fields=None, timeout=60, follow=True):
+        def fetch(self, method, path, fields=None, timeout=60, follow=True,
+                  json_body=ABSENT, extra_headers=None):
             """follow=False captures the redirect ITSELF.
 
             An authorisation refusal that answers 302 -> /login records the login
             page as its reference when redirects are followed: stable, plausible,
             and blind to the refusal it was meant to cover.
+
+            `json_body` sends a JSON body whenever it is not ABSENT (see
+            `json_body_bytes`); `extra_headers` adds request headers, and `Accept`
+            stays the harness default unless they name their own. A request
+            `request_problems` refuses never leaves: the refusal comes before the
+            first byte.
             """
+            view = {"method": method}
+            if fields is not None:
+                view["fields"] = fields
+            if json_body is not ABSENT:
+                view["json"] = json_body
+            if extra_headers is not None:
+                view["headers"] = extra_headers
+            problems = request_problems(view)
+            if problems:
+                raise SystemExit("%s %s cannot be sent as declared: %s"
+                                 % (method, path, "; ".join(problems)))
             url = self.base_url + path
             data = None
             headers = {"Accept": "*/*", "User-Agent": "iterion-golden-master/1"}
@@ -379,6 +403,12 @@ tool sync_harness:
                 else:
                     data = urllib.parse.urlencode(fields).encode()
                     headers["Content-Type"] = "application/x-www-form-urlencoded"
+            elif json_body is not ABSENT:
+                data = json_body_bytes(json_body)
+                headers["Content-Type"] = "application/json"
+            # AFTER the defaults: `Request` stores names capitalised, so a declared
+            # `accept` lands on the default's key and replaces it.
+            headers.update(extra_headers or {})
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             opener = self.opener if follow else self.no_redirect_opener
             try:
@@ -395,13 +425,22 @@ tool sync_harness:
             Defensive on a missing token: a baseline may have no CSRF protection at
             all while its modernised target does. Requiring a token here would make
             the harness unusable on the very baseline it must capture.
+
+            A FORM, and only a form: the token is the `<input>` the form carries,
+            sent as a form field. A login spec declaring a JSON body or a
+            header-borne token is refused before anything is sent
+            (`login_problems`).
             """
+            problems = login_problems(spec)
+            if problems:
+                raise SystemExit("login %s cannot be sent as declared: %s"
+                                 % (spec.get("path", "/login"), "; ".join(problems)))
             path = spec.get("path", "/login")
             fields = dict(spec.get("fields", {}))
             token_field = spec.get("csrf_field")
             if token_field:
                 _, _, body = self.fetch("GET", path)
-                tok = extract_input_value(body, token_field)
+                tok = tag_attribute(body, "input", token_field, "value")
                 if tok:
                     fields[token_field] = tok
             status, _, _ = self.fetch(spec.get("method", "POST"), path, fields=fields)
@@ -622,22 +661,262 @@ tool sync_harness:
         return b"".join(parts), 'multipart/form-data; boundary=%s' % boundary
 
 
-    def extract_input_value(body, name):
-        """Pull `value` out of <input name="<name>" value="…">. No HTML parser: the
-        harness must not depend on how well-formed the page is."""
-        try:
-            text = body.decode("utf-8", "replace")
-        except Exception:
-            return None
-        needle = 'name="%s"' % name
-        i = text.find(needle)
-        if i < 0:
-            return None
-        seg = text[max(0, i - 300): i + 300]
-        k = seg.find('value="')
-        if k < 0:
-            return None
-        return seg[k + 7: seg.find('"', k + 7)]
+    # ─── Requests: JSON bodies and anti-forgery tokens ──────────────────────────
+    #
+    # A corpus entry that could only send forms could not observe a route that
+    # reads a JSON body: the request went out urlencoded, the application refused
+    # it for the wrong reason, and the reference recorded that refusal. The same
+    # holds for the token: read only from an `<input>`, sent only as a form field,
+    # and only on the write lane, a JSON or XHR write protected by a header-borne
+    # token captured a 403 that can never fail again.
+
+    def json_body_bytes(value):
+        """The bytes a browser's `JSON.stringify` sends: declared key order kept
+        (never sorted), no whitespace, non-ASCII raw in UTF-8. The same value
+        encodes to the same bytes on every replay, so nothing the application
+        echoes back needs a canonicalisation rule."""
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+    # Headers the harness writes itself. A corpus naming one would replace the
+    # body's encoding, its length, the session or the target of the request.
+    HARNESS_OWNED_HEADERS = ("content-type", "content-length", "cookie", "host",
+                             "transfer-encoding")
+    # The token declarations that are strings when present.
+    TOKEN_KEYS = ("csrf_from", "csrf_cookie", "csrf_header", "csrf_header_meta")
+    # What a step inherits from its entry and may override. The body (`fields`,
+    # `json`) is never inherited: a step sends its own, as `fields` always did.
+    STEP_INHERITED = ("method", "path", "csrf_field") + TOKEN_KEYS + ("headers",)
+    # What a persona login does not honour: it posts a FORM, its token in a field.
+    LOGIN_UNSUPPORTED = ("json",) + TOKEN_KEYS + ("headers",)
+    # RFC 9110 token characters: a header name outside them is refused by the HTTP
+    # client as a transport error, which would record that error as the response.
+    _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+
+    def header_problems(hdrs, token_header=None):
+        """What is wrong with an entry's `headers` — [] when they can be sent."""
+        if not (isinstance(hdrs, dict)
+                and all(isinstance(k, str) and isinstance(v, str) for k, v in hdrs.items())):
+            return ["`headers` must be an object of header name to string value, got %s"
+                    % json.dumps(hdrs, ensure_ascii=False, default=repr)]
+        out = []
+        for name, value in hdrs.items():
+            if not _HEADER_NAME_RE.fullmatch(name) or any(c in value for c in "\r\n\0"):
+                out.append("`headers` %s: a header name is a token and a value holds no "
+                           "CR, LF or NUL — the HTTP client would refuse it, and the "
+                           "reference would record that transport error"
+                           % json.dumps(name, ensure_ascii=False))
+            elif name.lower() in HARNESS_OWNED_HEADERS:
+                out.append("`headers` names %s, which the harness writes itself (%s)"
+                           % (name, ", ".join(HARNESS_OWNED_HEADERS)))
+            elif isinstance(token_header, str) and name.lower() == token_header.lower():
+                out.append("`headers` names %s, the header the token travels in — the "
+                           "harness writes it with the token it reads" % name)
+        return out
+
+
+    def request_problems(req):
+        """What stops ONE request from being sent as declared — [] when it can go.
+
+        `req` is a request view: an entry, one of its steps over the entry
+        (`entry_requests`), or the arguments of `Session.fetch`. One function for
+        the preflight, the capture and the session, so the three cannot disagree
+        on what a request may say.
+        """
+        problems = []
+        field = req.get("csrf_field")
+        if field and not isinstance(field, str):
+            problems.append("`csrf_field` must be a string, got %s"
+                            % json.dumps(field, ensure_ascii=False, default=repr))
+        for k in TOKEN_KEYS:
+            if k in req and not (isinstance(req[k], str) and req[k]):
+                problems.append("`%s` must be a non-empty string, got %s"
+                                % (k, json.dumps(req[k], ensure_ascii=False, default=repr)))
+        header = req.get("csrf_header") or req.get("csrf_header_meta")
+        method = req.get("method")
+        verb = method.upper() if isinstance(method, str) else ""
+        if "json" in req:
+            if "fields" in req:
+                problems.append("`json` and `fields` on the same request — a body has ONE "
+                                "encoding; declare the one the application reads")
+            if verb in ("GET", "HEAD"):
+                problems.append("`json` on a %s — a body there is not what a client "
+                                "sends; declare the method the route reads it with" % verb)
+            if field and not header:
+                problems.append("`json` with `csrf_field` and no `csrf_header` or "
+                                "`csrf_header_meta` — a JSON body cannot carry a form "
+                                "field; declare the header the token travels in")
+        if not field:
+            given = [k for k in ("csrf_header", "csrf_header_meta", "csrf_cookie") if req.get(k)]
+            if given:
+                problems.append("%s without `csrf_field` — `csrf_field` names the token "
+                                "and turns its lookup on; without it nothing is read"
+                                % ", ".join("`%s`" % k for k in given))
+        if req.get("csrf_cookie") and not header:
+            problems.append("`csrf_cookie` with no `csrf_header` or `csrf_header_meta` — "
+                            "a token read from a cookie travels in a header, and none is "
+                            "declared")
+        if "headers" in req:
+            problems.extend(header_problems(req["headers"], req.get("csrf_header")))
+        return problems
+
+
+    def login_problems(spec):
+        """A persona login keeps the form behaviour; a request key it does not
+        honour is a declaration nobody would act on — refused by name."""
+        given = [k for k in LOGIN_UNSUPPORTED if k in spec]
+        if not given:
+            return []
+        return ["%s: a persona login posts a FORM, its token in a form field "
+                "(`fields`, `csrf_field`) — the harness would not honour it"
+                % ", ".join("`%s`" % k for k in given)]
+
+
+    def entry_requests(e):
+        """Every request the harness sends for an entry, as (label, view, own_from).
+
+        One for the `http` surface (and every surface captured by a plain fetch)
+        and for a single-shot `write`; one per object of `steps` on a `write`. A
+        step's own value overrides the entry's (`STEP_INHERITED`); its body is its
+        own. `own_from` is the `csrf_from` a STEP declares itself, None otherwise:
+        that step re-reads its token, the others share the entry's read. The
+        token page and the readback are not listed — GETs, with no body and no
+        token.
+        """
+        write = e.get("surface") == "write"
+        eid = e.get("id", "?")
+        base = {k: e[k] for k in STEP_INHERITED if k in e}
+        base.setdefault("method", "POST" if write else "GET")
+        steps = e.get("steps") if write else None
+        if not steps:
+            view = dict(base)
+            view.update((k, e[k]) for k in ("fields", "json") if k in e)
+            return [("entry %s" % eid, view, None)]
+        out = []
+        for n, st in enumerate(steps, 1):
+            view = dict(base)
+            view.update((k, st[k]) for k in STEP_INHERITED + ("fields", "json") if k in st)
+            out.append(("entry %s step %d" % (eid, n), view, st.get("csrf_from")))
+        return out
+
+
+    def request_shape_problems(corpus, config=None):
+        """Every request the corpus declares that cannot be sent as written, each
+        named by its entry and step — [] when all can go.
+
+        Run in preflight before `config.up`, so a malformed line costs no boot,
+        and by `capture` before an entry's first byte. The persona logins of
+        `config` are read too: a login a corpus line would send otherwise than
+        declared fails every capture after it.
+        """
+        problems = []
+        for e in (corpus or {}).get("entries") or []:
+            if not isinstance(e, dict):
+                continue
+            steps = e.get("steps")
+            if (e.get("surface") == "write" and steps is not None
+                    and not (isinstance(steps, list)
+                             and all(isinstance(st, dict) for st in steps))):
+                problems.append("entry %s: `steps` must be a list of objects, one per "
+                                "request" % e.get("id", "?"))
+                continue
+            for label, view, _own in entry_requests(e):
+                problems.extend("%s: %s" % (label, p) for p in request_problems(view))
+        for p in (config or {}).get("personas") or []:
+            if isinstance(p, dict) and isinstance(p.get("login"), dict):
+                problems.extend("persona %s login: %s" % (p.get("name", "?"), q)
+                                for q in login_problems(p["login"]))
+        return problems
+
+
+    # One attribute of a start tag: a name, then a value in double quotes, single
+    # quotes or none — unquoted, it runs to whitespace or `>`, as a browser reads it.
+    _ATTR_RE = re.compile(r"""([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?""")
+
+
+    def tag_attribute(body, tag, name, attr):
+        """`attr` of the first `<tag>` whose `name` attribute is exactly `name`,
+        read from THAT tag: any attribute order, double, single or no quotes.
+
+        A window of text around the name returned a NEIGHBOUR's value as soon as
+        the token's own tag carried none, or carried it before its name, and saw
+        nothing in single quotes. No HTML parser: the harness must not depend on
+        how well-formed the page is.
+        """
+        text = body.decode("utf-8", "replace") if isinstance(body, bytes) else (body or "")
+        # A quoted value may hold `>`; the tag ends at the first `>` outside quotes.
+        for m in re.finditer(r"<%s\b((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>" % tag, text, re.I):
+            attrs = {}
+            for a in _ATTR_RE.finditer(m.group(1)):
+                attrs.setdefault(a.group(1).lower(),
+                                 next((v for v in a.group(2, 3, 4) if v is not None), ""))
+            if attrs.get("name") == name:
+                return attrs.get(attr)
+        return None
+
+
+    def csrf_token(page, jar, field, cookie=None):
+        """The anti-forgery token, by a FIXED lookup order: `<input name=field>`,
+        then `<meta name=field>` on the page, then the cookie `cookie` in the
+        session's jar. First found wins; an empty value is not a token. None when
+        no source carries one."""
+        for tag, attr in (("input", "value"), ("meta", "content")):
+            tok = tag_attribute(page, tag, field, attr)
+            if tok:
+                return tok
+        if cookie:
+            for c in jar:
+                if c.name == cookie and c.value:
+                    return c.value
+        return None
+
+
+    def send_entry_request(s, e, label, view, own_from, page, follow=True):
+        """Send ONE request of an entry: its body by its own declaration, its
+        token by the entry's.
+
+        Every non-GET request whose view declares `csrf_field` carries the token —
+        the `http` lane as much as the writes. The token page is GET-fetched in
+        the same session, redirects followed: once per entry, from `csrf_from`
+        (default: the entry's path), cached in `page`; a step with its own
+        `csrf_from` re-reads before itself. The token travels in the header when
+        one is declared — the name a `<meta name=csrf_header_meta>` renders wins
+        over `csrf_header` — else in the form field `csrf_field`. No token found:
+        the request goes without one, never with an empty header — a baseline may
+        predate the protection its target adds.
+        """
+        fields = dict(view.get("fields") or {})
+        extra = dict(view.get("headers") or {})
+        field = view.get("csrf_field")
+        if field and str(view["method"]).upper() != "GET":
+            if own_from:
+                body = s.fetch("GET", own_from)[2]
+            else:
+                if "body" not in page:
+                    page["body"] = s.fetch("GET", e.get("csrf_from") or e["path"])[2]
+                body = page["body"]
+            tok = csrf_token(body, s.jar, field, view.get("csrf_cookie"))
+            meta = view.get("csrf_header_meta")
+            if tok and (meta or view.get("csrf_header")):
+                name = (meta and tag_attribute(body, "meta", meta, "content")) or view.get("csrf_header")
+                if not name:
+                    raise SystemExit(
+                        "%s: a token was found but the header it travels in has no name — "
+                        "the page renders no <meta name=%s> and no `csrf_header` is "
+                        "declared. Sending it nowhere would record the refusal of an "
+                        "unprotected request." % (label, json.dumps(meta)))
+                if any(k.lower() == name.lower() for k in extra):
+                    raise SystemExit(
+                        "%s: `headers` names %s, the header the page names for the "
+                        "token — the harness writes it with the token it reads"
+                        % (label, name))
+                extra[name] = tok
+            elif tok:
+                fields[field] = tok
+        return s.fetch(view["method"], view["path"], fields=fields or None,
+                       json_body=view.get("json", ABSENT),
+                       extra_headers=extra or None, follow=follow)
 
 
 
@@ -1159,7 +1438,14 @@ tool sync_harness:
                 s = sessions.get(e.get("persona", "anon"))
                 if s is None:
                     raise SystemExit("entry %s names unknown persona %r" % (e["id"], e.get("persona")))
+                # The preflight's rules again, before this entry's first byte —
+                # its token page included: a capture reached without the preflight
+                # must not send a request otherwise than declared.
+                shape = request_shape_problems({"entries": [e]})
+                if shape:
+                    raise SystemExit("cannot be sent as declared: %s" % "; ".join(shape))
                 surface = e.get("surface")
+                follow = not e.get("no_redirect", False)
                 if surface == "asset":
                     if jar_path is None:
                         jar_path = resolve_artifact(config, os.environ.get("GM_WORKSPACE", "."))
@@ -1179,41 +1465,24 @@ tool sync_harness:
                     # A write entry therefore captures TWO things: what the write
                     # answers, and what the readback renders. The second is the one
                     # that counts — that is where content comes back deformed.
-                    # The token comes off the FORM. A security major can turn CSRF
-                    # on for state-changing requests where it was off; without it
-                    # the entry captures a refusal and yields a reference that can
-                    # never fail again — the very defect family this net hunts.
-                    tok_field = e.get("csrf_field")
-                    tok = None
-                    if tok_field:
-                        _, _, form_body = s.fetch("GET", e["path"])
-                        tok = extract_input_value(form_body, tok_field)
-
-                    def write_once(method, path, fields):
-                        f = dict(fields or {})
-                        if tok_field and tok:
-                            f[tok_field] = tok
-                        return s.fetch(method, path, fields=f,
-                                       follow=not e.get("no_redirect", False))
-
+                    # The token is read before the write (`send_entry_request`). A
+                    # security major can turn CSRF on for state-changing requests
+                    # where it was off; without it the entry captures a refusal and
+                    # yields a reference that can never fail again — the very
+                    # defect family this net hunts.
+                    #
+                    # `steps` make a SEQUENCE, captured whole, in one session. The
+                    # probe this exists for is `error_then_corrected`: submit an
+                    # invalid form, then submit its correction. What must not
+                    # regress is the JOURNEY — an error state that sticks to the
+                    # re-rendered form turns every later submission into a refusal,
+                    # and a single-shot write can never see it.
                     steps = e.get("steps") or []
-                    trail = []
-                    if steps:
-                        # A SEQUENCE, captured whole, in one session. The probe
-                        # this exists for is `error_then_corrected`: submit an
-                        # invalid form, then submit its correction. What must not
-                        # regress is the JOURNEY — an error state that sticks to
-                        # the re-rendered form turns every later submission into a
-                        # refusal, and a single-shot write can never see it.
-                        for st in steps:
-                            st_status, st_headers, st_body = write_once(
-                                st.get("method", e.get("method", "POST")),
-                                st.get("path", e["path"]), st.get("fields"))
-                            trail.append((st_status, st_body))
-                        w_status, w_headers = st_status, st_headers
-                    else:
-                        w_status, w_headers, _ = write_once(
-                            e.get("method", "POST"), e["path"], e.get("fields"))
+                    trail, page = [], {}
+                    for label, view, own_from in entry_requests(e):
+                        w_status, w_headers, w_body = send_entry_request(
+                            s, e, label, view, own_from, page, follow)
+                        trail.append((w_status, w_body))
                     rb = e.get("readback")
                     if not rb:
                         raise SystemExit(
@@ -1225,10 +1494,9 @@ tool sync_harness:
                     body = ((trail, (r_status, r_headers, r_body)) if steps
                             else (r_status, r_headers, r_body))
                 else:
-                    status, headers, body = s.fetch(
-                        e.get("method", "GET"), e["path"], fields=e.get("fields"),
-                        follow=not e.get("no_redirect", False),
-                    )
+                    (label, view, own_from), = entry_requests(e)
+                    status, headers, body = send_entry_request(
+                        s, e, label, view, own_from, {}, follow)
                 out[e["id"]] = canon.canonicalize(e, status, headers, body)
                 if surface == "write":
                     restore_world(config, ws)
@@ -1569,8 +1837,10 @@ tool sync_harness:
     ## discriminate; if the harness later grows a discriminating field, the
     ## failure mode is a FALSE collision — refused, escalated to the requester —
     ## never a masked duplicate.
-    OBSERVATION_FIELDS = ("method", "path", "persona", "surface", "fields",
+    OBSERVATION_FIELDS = ("method", "path", "persona", "surface", "fields", "json",
                           "steps", "readback", "no_redirect", "csrf_field",
+                          "csrf_from", "csrf_cookie", "csrf_header",
+                          "csrf_header_meta", "headers",
                           "static_prefix", "template_prefix", "probes")
 
 
@@ -1578,8 +1848,12 @@ tool sync_harness:
         """What an entry OBSERVES: two entries equal under this key are two
         references for one observation — a collision, not an addition. Absent
         and empty collapse together — a twin carrying `"query": ""` must not
-        split the key on mere PRESENCE (consolidation finding, executed)."""
-        return json.dumps({k: (entry.get(k) or None) for k in OBSERVATION_FIELDS},
+        split the key on mere PRESENCE (consolidation finding, executed).
+        `json` is the exception: it is a body by presence (`{}`, `[]`, `false`,
+        `null` each send bytes, absence sends none), so it keys on presence."""
+        return json.dumps({k: (([entry[k]] if k in entry else None) if k == "json"
+                               else (entry.get(k) or None))
+                           for k in OBSERVATION_FIELDS},
                           sort_keys=True, ensure_ascii=False)
 
 
@@ -4926,16 +5200,48 @@ tool sync_harness:
             import threading
 
             received = {}
+            # What the double serves on GET: path -> (body, response headers).
+            pages = {}
 
             class _Echo(http.server.BaseHTTPRequestHandler):
-                def do_POST(self):  # noqa: N802 (stdlib naming)
-                    n_ = int(self.headers.get("Content-Length") or 0)
-                    received["ctype"] = self.headers.get("Content-Type") or ""
-                    received["body"] = self.rfile.read(n_)
+                # Every request, whatever its method, lands in `received["log"]`:
+                # a refusal is proved by an EMPTY `received`, so a method the
+                # double did not record would let a request through unseen.
+                def _record(self):
+                    try:
+                        n_ = int(self.headers.get("Content-Length") or 0)
+                    except ValueError:
+                        n_ = 0
+                    body_ = self.rfile.read(n_)
+                    received.setdefault("log", []).append({
+                        "method": self.command, "path": self.path, "body": body_,
+                        "headers": {k.lower(): v for k, v in self.headers.items()}})
+                    return body_
+
+                def _answer(self, payload, extra=()):
                     self.send_response(200)
-                    self.send_header("Content-Length", "2")
+                    for k, v in extra:
+                        self.send_header(k, v)
+                    self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
-                    self.wfile.write(b"ok")
+                    if self.command != "HEAD":
+                        self.wfile.write(payload)
+
+                def do_GET(self):  # noqa: N802 (stdlib naming)
+                    self._record()
+                    page_, extra_ = pages.get(self.path, (b"", ()))
+                    self._answer(page_, extra_)
+
+                def do_POST(self):  # noqa: N802 (stdlib naming)
+                    received["ctype"] = self.headers.get("Content-Type") or ""
+                    received["body"] = self._record()
+                    self._answer(b"ok")
+
+                def do_HEAD(self):  # noqa: N802 (stdlib naming)
+                    self._record()
+                    self._answer(b"")
+
+                do_PUT = do_PATCH = do_DELETE = do_POST
 
                 def log_message(self, *_a):
                     pass
@@ -5021,6 +5327,397 @@ tool sync_harness:
             refuses("content_type non-chaine -> refus, jamais un en-tete malforme",
                     lambda: encode_multipart({"d": {"filename": "a", "text": "x",
                                                     "content_type": 5}}))
+
+            # 7c. JSON bodies and anti-forgery tokens. A route that reads a JSON
+            #     body was out of reach: the request left urlencoded or empty, and
+            #     the reference recorded the refusal of a request nobody declared.
+            #     The token was read from an `<input>` only, on the write lane
+            #     only, sent as a form field only. Each check drives the code the
+            #     gate runs — `Session.fetch`, `Session.login`, the real `capture`,
+            #     `main` — against a server that records what ARRIVES.
+            import contextlib
+            import io
+
+            srv7 = http.server.HTTPServer(("127.0.0.1", 0), _Echo)
+            threading.Thread(target=srv7.serve_forever, daemon=True).start()
+            base7 = "http://127.0.0.1:%d" % srv7.server_address[1]
+
+            class _Canon:
+                @staticmethod
+                def canonicalize(_e, status, _h, _b):
+                    return str(status)
+
+            def sent(fn):
+                """(refusal text or None, every request that arrived). A crash is
+                returned as text too, so it fails the check that met it, by name,
+                instead of ending the selftest with a traceback."""
+                received.clear()
+                try:
+                    fn()
+                    return None, received.get("log", [])
+                except SystemExit as e_:
+                    return str(e_), received.get("log", [])
+                except Exception as e_:                     # noqa: BLE001 - the bench names it
+                    return "CRASH %s: %s" % (type(e_).__name__, e_), received.get("log", [])
+
+            def captured(*entries):
+                # The REAL capture: `capture` itself is doubled above this point.
+                cfg7 = {"base_url": base7, "personas": [{"name": "anon"}], "restore": "true"}
+                return sent(lambda: saved["capture"](cfg7, {"entries": list(entries)}, _Canon))
+
+            def wire(got, *keys):
+                return [tuple(r["headers"].get(k) if k not in ("method", "path", "body")
+                              else r[k] for k in keys) for r in got]
+
+            def refused_unsent(case, name, outcome, *needles):
+                why, got = outcome
+                check("7c-%s %s: refused by name, nothing reached the server" % (case, name),
+                      [[n in (why or "") for n in needles], got],
+                      [[True] * len(needles), []])
+
+            pages.update({
+                "/form-input": (b'<form><input type="hidden" name="_csrf" value="T1"/></form>', ()),
+                "/form-meta": (b'<meta name="_csrf" content="T2">'
+                               b'<meta name="_csrf_header" content="X-CSRF-TOKEN">', ()),
+                "/form-cookie": (b"<p>no token in the markup</p>",
+                                 (("Set-Cookie", "XSRF-TOKEN=T3; Path=/"),)),
+                "/form-meta-cookie": (b'<meta name="_csrf" content="T2">',
+                                      (("Set-Cookie", "XSRF-TOKEN=T3; Path=/"),)),
+                "/form-both": (b'<meta name="_csrf" content="T2"><input name="_csrf" value="T1">', ()),
+                "/form-none": (b"<p>no token at all</p>", ()),
+                "/p1": (b'<input name="_csrf" value="T1">', ()),
+                "/p2": (b'<input name="_csrf" value="T2">', ()),
+                "/login": (b'<input name="x" value="DECOY"><input type="hidden" value="L1" name="_csrf">', ()),
+            })
+            try:
+                sess7 = Session(base7)
+                # a. The same data, as `json` and as `fields`.
+                _, got = sent(lambda: sess7.fetch("POST", "/j", json_body={"a": "é", "b": ""}))
+                check("7c-a json: application/json, the declared UTF-8 bytes, Accept */*",
+                      wire(got, "content-type", "body", "accept"),
+                      [("application/json", '{"a":"é","b":""}'.encode("utf-8"), "*/*")])
+                _, got = sent(lambda: sess7.fetch("POST", "/f", fields={"a": "é", "b": ""}))
+                check("7c-a the same data as fields stays urlencoded",
+                      wire(got, "content-type", "body"),
+                      [("application/x-www-form-urlencoded", b"a=%C3%A9&b=")])
+                # b. Presence, not truthiness.
+                bodies = []
+                for value in (None, False, [], {}, 0, ""):
+                    bodies.append(wire(sent(lambda: sess7.fetch(
+                        "POST", "/p", json_body=value))[1], "content-type", "body"))
+                check("7c-b json null, false, [], {}, 0, \"\" are each a body",
+                      bodies, [[("application/json", b)] for b in
+                               (b"null", b"false", b"[]", b"{}", b"0", b'""')])
+                check("7c-b no json and no fields: no body, no Content-Type",
+                      wire(sent(lambda: sess7.fetch("POST", "/none"))[1], "content-type", "body"),
+                      [(None, b"")])
+                # c. Declared key order, byte-identical replays.
+                ordered = {"z": 1, "a": [1, {"y": 2, "b": 3}], "m": "x"}
+                first = wire(sent(lambda: sess7.fetch("POST", "/o", json_body=ordered))[1], "body")
+                again = wire(sent(lambda: sess7.fetch("POST", "/o", json_body=ordered))[1], "body")
+                check("7c-c declared key order kept, no whitespace, two sends byte-identical",
+                      [first, again == first], [[(b'{"z":1,"a":[1,{"y":2,"b":3}],"m":"x"}',)], True])
+
+                # d. Each refusal, BEFORE the first byte — the token page included.
+                refused_unsent("d", "json + fields (fetch)", sent(lambda: sess7.fetch(
+                    "POST", "/d", fields={"a": "1"}, json_body={"a": 1})), "`json` and `fields`")
+                refused_unsent("d", "json on GET (fetch)", sent(lambda: sess7.fetch(
+                    "GET", "/d", json_body={"a": 1})), "`json` on a GET")
+                refused_unsent("d", "json on HEAD (fetch)", sent(lambda: sess7.fetch(
+                    "HEAD", "/d", json_body={"a": 1})), "`json` on a HEAD")
+                refused_unsent("d", "json on an http GET entry (capture)", captured(
+                    {"id": "d-1", "path": "/q", "json": {"q": 1}}), "entry d-1", "`json` on a GET")
+                refused_unsent("d", "json + csrf_field without a header", captured(
+                    {"id": "d-2", "surface": "write", "path": "/form-input", "readback": "/r",
+                     "json": {"a": 1}, "csrf_field": "_csrf"}),
+                    "entry d-2", "a JSON body cannot carry a form field")
+                for d_id, decl in (("d-3", {"csrf_header": "X-CSRF-TOKEN"}),
+                                   ("d-4", {"csrf_header_meta": "_csrf_header"}),
+                                   ("d-5", {"csrf_cookie": "XSRF-TOKEN", "csrf_header": "X-T"})):
+                    refused_unsent("d", "%s without csrf_field" % ", ".join(sorted(decl)), captured(
+                        dict({"id": d_id, "method": "POST", "path": "/form-input"}, **decl)),
+                        "entry %s" % d_id, "without `csrf_field`")
+                refused_unsent("d", "csrf_cookie without a header declaration", captured(
+                    {"id": "d-6", "method": "POST", "path": "/form-cookie",
+                     "csrf_field": "_csrf", "csrf_cookie": "XSRF-TOKEN"}),
+                    "entry d-6", "a token read from a cookie travels in a header")
+                refused_unsent("d", "json + fields inside a step, named by its step", captured(
+                    {"id": "d-7", "surface": "write", "path": "/w", "readback": "/r",
+                     "steps": [{"fields": {"a": "1"}}, {"fields": {"a": "2"}, "json": {"a": 2}}]}),
+                    "entry d-7 step 2", "`json` and `fields`")
+                refused_unsent("d", "steps that are not a list of objects", captured(
+                    {"id": "d-8", "surface": "write", "path": "/w", "readback": "/r",
+                     "steps": ["post it"]}), "entry d-8", "`steps` must be a list of objects")
+                refused_unsent("d", "a token declaration that is not a string", captured(
+                    {"id": "d-9", "method": "POST", "path": "/form-input",
+                     "csrf_field": ["_csrf"], "csrf_header": 5}),
+                    "entry d-9", "`csrf_field` must be a string",
+                    "`csrf_header` must be a non-empty string")
+
+                # e. The token, per source: present -> carried, absent -> nothing.
+                _, got = captured({"id": "e-1", "surface": "write", "path": "/form-input",
+                                   "fields": {"a": "1"}, "csrf_field": "_csrf", "readback": "/r"})
+                check("7c-e input -> form field _csrf=T1, as before",
+                      wire(got, "method", "path", "body"),
+                      [("GET", "/form-input", b""), ("POST", "/form-input", b"a=1&_csrf=T1"),
+                       ("GET", "/r", b"")])
+                _, got = captured({"id": "e-2", "surface": "write", "path": "/form-meta",
+                                   "json": {"a": 1}, "csrf_field": "_csrf",
+                                   "csrf_header_meta": "_csrf_header", "readback": "/r"})
+                check("7c-e meta -> the header the page names carries T2, the JSON body no token",
+                      wire(got, "method", "x-csrf-token", "content-type", "body"),
+                      [("GET", None, None, b""), ("POST", "T2", "application/json", b'{"a":1}'),
+                       ("GET", None, None, b"")])
+                _, got = captured({"id": "e-3", "surface": "write", "path": "/form-cookie",
+                                   "json": {"a": 1}, "csrf_field": "_csrf",
+                                   "csrf_cookie": "XSRF-TOKEN", "csrf_header": "X-XSRF-TOKEN",
+                                   "readback": "/r"})
+                check("7c-e cookie -> the declared header carries T3",
+                      wire(got, "method", "x-xsrf-token", "body"),
+                      [("GET", None, b""), ("POST", "T3", b'{"a":1}'), ("GET", None, b"")])
+                _, got = captured({"id": "e-4", "surface": "write", "path": "/form-none",
+                                   "fields": {"a": "1"}, "csrf_field": "_csrf",
+                                   "csrf_header": "X-CSRF-TOKEN", "csrf_cookie": "XSRF-TOKEN",
+                                   "readback": "/r"})
+                _, got_f = captured({"id": "e-5", "surface": "write", "path": "/form-none",
+                                     "fields": {"a": "1"}, "csrf_field": "_csrf", "readback": "/r"})
+                check("7c-e no token anywhere -> neither header nor field, the request still goes",
+                      [wire(got, "method", "x-csrf-token", "body"),
+                       wire(got_f, "method", "x-csrf-token", "body")],
+                      [[("GET", None, b""), ("POST", None, b"a=1"), ("GET", None, b"")]] * 2)
+                # The FIXED order: input before meta before cookie, whatever the
+                # order of the markup.
+                order = []
+                for page_, extra_ in (("/form-both", {}),
+                                      ("/form-meta-cookie", {"csrf_cookie": "XSRF-TOKEN"})):
+                    order.append(wire(captured(dict(
+                        {"id": "e-6", "method": "POST", "path": page_, "fields": {"a": "1"},
+                         "csrf_field": "_csrf", "csrf_header": "X-CSRF-TOKEN"}, **extra_))[1],
+                        "method", "x-csrf-token"))
+                check("7c-e lookup order: input, then meta, then cookie — first found wins",
+                      order, [[("GET", None), ("POST", "T1")], [("GET", None), ("POST", "T2")]])
+                # The header name the page renders wins over the literal one; the
+                # literal stands in when the page renders none.
+                _, got = captured({"id": "e-7", "method": "POST", "path": "/form-meta",
+                                   "fields": {"a": "1"}, "csrf_field": "_csrf",
+                                   "csrf_header": "X-LITERAL", "csrf_header_meta": "_csrf_header"})
+                _, got_l = captured({"id": "e-8", "method": "POST", "path": "/form-input",
+                                     "fields": {"a": "1"}, "csrf_field": "_csrf",
+                                     "csrf_header": "X-LITERAL", "csrf_header_meta": "_csrf_header"})
+                check("7c-e csrf_header_meta wins when rendered, csrf_header stands in otherwise",
+                      [wire(got, "method", "x-csrf-token", "x-literal", "body"),
+                       wire(got_l, "method", "x-csrf-token", "x-literal", "body")],
+                      [[("GET", None, None, b""), ("POST", "T2", None, b"a=1")],
+                       [("GET", None, None, b""), ("POST", None, "T1", b"a=1")]])
+                why, got = captured({"id": "e-9", "method": "POST", "path": "/form-input",
+                                     "fields": {"a": "1"}, "csrf_field": "_csrf",
+                                     "csrf_header_meta": "_csrf_header"})
+                check("7c-e a token whose header the page does not name -> refused, the write unsent",
+                      ["entry e-9" in (why or ""), "has no name" in (why or ""),
+                       wire(got, "method", "path")],
+                      [True, True, [("GET", "/form-input")]])
+
+                # f. Tag-exact extraction.
+                jar7 = http.cookiejar.CookieJar()
+
+                def tok(html):
+                    try:
+                        return csrf_token(html.encode("utf-8"), jar7, "_csrf")
+                    except Exception as e_:                 # noqa: BLE001 - the bench names it
+                        return "CRASH %s: %s" % (type(e_).__name__, e_)
+                check("7c-f the token comes from the ONE tag named _csrf",
+                      [tok('<input value="T" type="hidden" name="_csrf">'),
+                       tok('<input name="x" value="DECOY"><input type="hidden" value="T" name="_csrf">'),
+                       tok('<input name="_csrf" value="T"><input name="y" value="DECOY">'),
+                       tok("<input name='_csrf' value='T'>"),
+                       tok('<meta content="T2" name="_csrf">'),
+                       tok('<input name="_csrf"><input name="y" value="DECOY">'),
+                       tok('<INPUT NAME=_csrf VALUE=T>'),
+                       tok('<input title="a>b" name="_csrf" value="T">')],
+                      ["T", "T", "T", "T", "T2", None, "T", "T"])
+
+                # g. The http lane carries its token; a GET fetches no token page.
+                pages["/search"] = (b'<input name="_csrf" value="T1">', ())
+                _, got = captured({"id": "g-1", "method": "POST", "path": "/search",
+                                   "fields": {"q": "x"}, "csrf_field": "_csrf"})
+                check("7c-g an http-lane POST with csrf_field carries its token",
+                      wire(got, "method", "path", "body"),
+                      [("GET", "/search", b""), ("POST", "/search", b"q=x&_csrf=T1")])
+                _, got = captured({"id": "g-2", "method": "POST", "path": "/api/search",
+                                   "json": {"q": "x"}, "csrf_field": "_csrf",
+                                   "csrf_header": "X-CSRF-TOKEN", "csrf_from": "/search"})
+                check("7c-g an http-lane JSON query: token in its header, read from csrf_from",
+                      wire(got, "method", "path", "x-csrf-token", "body"),
+                      [("GET", "/search", None, b""), ("POST", "/api/search", "T1", b'{"q":"x"}')])
+                _, got = captured({"id": "g-3", "path": "/list", "csrf_field": "_csrf",
+                                   "csrf_from": "/search"})
+                check("7c-g a GET entry never fetches a token page",
+                      wire(got, "method", "path"), [("GET", "/list")])
+
+                # h. Steps: each encoded by its own declaration; a step with its
+                #    own csrf_from re-reads, the others share the entry's read.
+                _, got = captured({"id": "h-1", "surface": "write", "path": "/w", "readback": "/r",
+                                   "csrf_from": "/p1", "csrf_field": "_csrf",
+                                   "csrf_header": "X-CSRF-TOKEN",
+                                   "steps": [{"json": {"a": 1}}, {"fields": {"b": "2"}}]})
+                check("7c-h a json step then a fields step, each by its own declaration",
+                      wire(got, "method", "path", "content-type", "body", "x-csrf-token"),
+                      [("GET", "/p1", None, b"", None),
+                       ("POST", "/w", "application/json", b'{"a":1}', "T1"),
+                       ("POST", "/w", "application/x-www-form-urlencoded", b"b=2", "T1"),
+                       ("GET", "/r", None, b"", None)])
+                _, got = captured({"id": "h-2", "surface": "write", "path": "/w", "readback": "/r",
+                                   "csrf_from": "/p1", "csrf_field": "_csrf",
+                                   "steps": [{"fields": {"a": "1"}},
+                                             {"fields": {"a": "2"}, "csrf_from": "/p2"},
+                                             {"fields": {"a": "3"}}]})
+                check("7c-h a step's own csrf_from re-reads before it; the entry's page is read once",
+                      wire(got, "method", "path", "body"),
+                      [("GET", "/p1", b""), ("POST", "/w", b"a=1&_csrf=T1"),
+                       ("GET", "/p2", b""), ("POST", "/w", b"a=2&_csrf=T2"),
+                       ("POST", "/w", b"a=3&_csrf=T1"), ("GET", "/r", b"")])
+
+                # i. The observation key: one field apart is two observations.
+                base_i = {"id": "i", "method": "POST", "path": "/api/x", "surface": "http"}
+
+                def okey(**kw):
+                    try:
+                        return _entry_observation_key(dict(base_i, **kw))
+                    except Exception as e_:                 # noqa: BLE001 - the bench names it
+                        return "CRASH %s: %s" % (type(e_).__name__, e_)
+                check("7c-i entries differing only by a new request field are distinct",
+                      [okey(**{f_: a_}) == okey(**{f_: b_}) for f_, a_, b_ in (
+                          ("json", {"a": 1}, {"a": 2}), ("csrf_from", "/a", "/b"),
+                          ("csrf_cookie", "A", "B"), ("csrf_header", "X-A", "X-B"),
+                          ("csrf_header_meta", "_a", "_b"), ("headers", {"X-A": "1"}, {"X-A": "2"}))],
+                      [False] * 6)
+                check("7c-i a json body is keyed by PRESENCE: {} and null are not absence",
+                      [okey(json={}) == okey(), okey(json=None) == okey()], [False, False])
+                check("7c-i identical entries collide",
+                      okey(json={"a": 1}, csrf_header="X-A") == okey(json={"a": 1}, csrf_header="X-A"),
+                      True)
+
+                # j. The preflight bails before `config.up`: an `up` that leaves a
+                #    mark proves it never ran — and the same net, well-formed,
+                #    proves the bench reaches it.
+                ws_j = tempfile.mkdtemp(prefix="gm-selftest-shape-")
+                gm_j = os.path.join(ws_j, ".golden-master")
+                mark = os.path.join(ws_j, "up-ran.txt")
+                os.makedirs(os.path.join(gm_j, "canon"))
+                with open(os.path.join(gm_j, "canon", "rules.py"), "w", encoding="utf-8") as f:
+                    f.write("def canonicalize(entry, status, headers, body):\n    return ''\n")
+
+                def net(entries, personas=None):
+                    with open(os.path.join(gm_j, "config.json"), "w", encoding="utf-8") as f:
+                        json.dump({"up": "echo ran > up-ran.txt; exit 97", "base_url": base7,
+                                   "personas": personas or [{"name": "anon"}]}, f)
+                    with open(os.path.join(gm_j, "corpus.json"), "w", encoding="utf-8") as f:
+                        json.dump({"entries": entries}, f)
+
+                def gm_main(mode):
+                    keep = {k: os.environ.get(k) for k in ("GM_MODE", "GM_WORKSPACE", "GM_DIR")}
+                    out_ = io.StringIO()
+                    try:
+                        os.environ.update(GM_MODE=mode, GM_WORKSPACE=ws_j, GM_DIR=".golden-master")
+                        with contextlib.redirect_stdout(out_):
+                            try:
+                                main()
+                            except SystemExit:
+                                pass
+                            except Exception as e_:         # noqa: BLE001 - the bench names it
+                                print(json.dumps({"log_tail": "CRASH %s: %s"
+                                                  % (type(e_).__name__, e_)}))
+                    finally:
+                        for k, v in keep.items():
+                            if v is None:
+                                os.environ.pop(k, None)
+                            else:
+                                os.environ[k] = v
+                    lines = [l for l in out_.getvalue().splitlines() if l.startswith("{")]
+                    return json.loads(lines[-1]) if lines else {}
+
+                try:
+                    bad = {"id": "j-01", "surface": "write", "path": "/w", "readback": "/r",
+                           "fields": {"b": "2"}, "json": {"a": 1}}
+                    good = {k: v for k, v in bad.items() if k != "fields"}
+                    net([bad])
+                    for mode in ("gate", "record"):
+                        tail = gm_main(mode).get("log_tail", "")
+                        check("7c-j %s: a malformed request bails naming its entry, before config.up"
+                              % mode, ["entry j-01" in tail, "`json` and `fields`" in tail,
+                                       os.path.exists(mark)], [True, True, False])
+                    r_v = gm_main("validate")
+                    check("7c-j validate sends nothing: no shape refusal, its own terms stand",
+                          ["j-01" in r_v.get("log_tail", ""), "invalid" in r_v, "missing" in r_v],
+                          [False, True, True])
+                    net([good], personas=[{"name": "anon"},
+                                          {"name": "admin", "login": {"json": {"u": "a"}}}])
+                    tail = gm_main("gate").get("log_tail", "")
+                    check("7c-j a persona login with a JSON body bails by name, before config.up",
+                          ["persona admin login" in tail, os.path.exists(mark)], [True, False])
+                    net([good])
+                    tail = gm_main("record").get("log_tail", "")
+                    check("7c-j the same net, well-formed, DOES reach config.up (the bench bites)",
+                          ["config.up failed (exit 97)" in tail, os.path.exists(mark)], [True, True])
+                finally:
+                    shutil.rmtree(ws_j, ignore_errors=True)
+
+                # k. `headers`: extra request headers, never one the harness owns.
+                check("7c-k headers travel; a declared Accept replaces the default",
+                      wire(sent(lambda: sess7.fetch(
+                          "POST", "/k", json_body={},
+                          extra_headers={"accept": "application/json", "Accept-Language": "fr"}))[1],
+                          "accept", "accept-language"),
+                      [("application/json", "fr")])
+                for owned in ("Content-Type", "content-length", "Cookie", "HOST", "Transfer-Encoding"):
+                    refused_unsent("k", "headers naming %s" % owned, captured(
+                        {"id": "k-1", "method": "POST", "path": "/k", "headers": {owned: "x"}}),
+                        "entry k-1", "which the harness writes itself")
+                refused_unsent("k", "headers naming the token's header", captured(
+                    {"id": "k-2", "method": "POST", "path": "/form-meta", "json": {},
+                     "csrf_field": "_csrf", "csrf_header": "X-CSRF-TOKEN",
+                     "headers": {"x-csrf-token": "forged"}}),
+                    "entry k-2", "the header the token travels in")
+                refused_unsent("k", "a header value opening a line", captured(
+                    {"id": "k-3", "method": "POST", "path": "/k",
+                     "headers": {"X-A": "1\r\nX-Injected: 1"}}), "entry k-3", "no CR, LF or NUL")
+                refused_unsent("k", "headers that are not strings", captured(
+                    {"id": "k-4", "method": "POST", "path": "/k", "headers": {"X-A": 1}}),
+                    "entry k-4", "an object of header name to string value")
+                why, got = captured({"id": "k-5", "surface": "write", "path": "/form-meta",
+                                     "json": {"a": 1}, "csrf_field": "_csrf",
+                                     "csrf_header_meta": "_csrf_header", "readback": "/r",
+                                     "headers": {"X-Csrf-Token": "forged"}})
+                check("7c-k headers naming the header the PAGE names -> refused, the write unsent",
+                      ["entry k-5" in (why or ""), "the header the page names" in (why or ""),
+                       wire(got, "method", "path")],
+                      [True, True, [("GET", "/form-meta")]])
+
+                # l. A persona login keeps the form: the tag-exact token, as a
+                #    field; a JSON body or a header-borne token is refused unsent.
+                check("7c-l login reads the token from its own tag and sends it as a field",
+                      wire(sent(lambda: Session(base7).login(
+                          {"path": "/login", "fields": {"u": "a"}, "csrf_field": "_csrf"}))[1],
+                          "method", "path", "body"),
+                      [("GET", "/login", b""), ("POST", "/login", b"u=a&_csrf=L1")])
+                for k_, v_ in (("json", {"u": "a"}), ("csrf_header", "X-CSRF-TOKEN")):
+                    why, got = sent(lambda: Session(base7).login(
+                        {"path": "/login", "fields": {"u": "a"}, "csrf_field": "_csrf", k_: v_}))
+                    check("7c-l a login declaring `%s` is refused before any byte" % k_,
+                          ["a persona login posts a FORM" in (why or ""), got], [True, []])
+
+                # m. DELETE with a header-borne token and no body.
+                pages["/items"] = pages["/form-meta"]
+                _, got = captured({"id": "m-1", "surface": "write", "method": "DELETE",
+                                   "path": "/items/7", "csrf_from": "/items", "csrf_field": "_csrf",
+                                   "csrf_header_meta": "_csrf_header", "readback": "/items"})
+                check("7c-m DELETE: the token in its header, no body, no Content-Type",
+                      wire(got, "method", "path", "x-csrf-token", "content-type", "body"),
+                      [("GET", "/items", None, None, b""), ("DELETE", "/items/7", "T2", None, b""),
+                       ("GET", "/items", None, None, b"")])
+            finally:
+                srv7.shutdown()
+                srv7.server_close()
 
             # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
             routes = [{"method": "GET", "pattern": "/list"},
@@ -7539,6 +8236,18 @@ tool sync_harness:
                  "A declared exclusion is a decision the code honours, not a sentence "
                  "in a report — and a malformed one is named, never dropped in silence."
                  % (len(lane_problems), "; ".join(lane_problems)))
+        # A request the harness cannot send as declared is refused HERE, before a
+        # boot pays for it — in every mode that sends. Not in validate: it applies
+        # mutants and captures nothing, and its readers take a report without
+        # `invalid` as a set that validated clean.
+        if mode != "validate":
+            shape = request_shape_problems(corpus, config)
+            if shape:
+                bail("%d request(s) cannot be sent as declared: %s. A request sent "
+                     "otherwise records the application's answer to ANOTHER one — fix "
+                     "each named line (skills/surface-discovery.md)."
+                     % (len(shape), "; ".join(shape)))
+
         excluded_ids = lane_exclusion_ids(corpus, cfg_name)
         report["lane_exclusions_applied"] = sorted(excluded_ids)
         report["lane_exclusions_deferred"] = []
