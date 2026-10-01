@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.220.1](https://github.com/SocialGouv/iterion/compare/v3.220.0...v3.220.1) (2026-10-01)
+
+### Bug Fixes
+
+* **bots:** prod-watch — bound the Sentry incident store; min_level decides NEW only ([#2042](https://github.com/SocialGouv/iterion/issues/2042)) ([#2093](https://github.com/SocialGouv/iterion/issues/2093)) ([d89267e](https://github.com/SocialGouv/iterion/commit/d89267e0196e794db22c2c3cc5da3ae6526fe0ae)), references [#2057](https://github.com/SocialGouv/iterion/issues/2057)
+
+    <details><summary>why</summary>
+
+    Anyone holding a public DSN mints Sentry issues, and every issue the lane read became a record kept for forget_after_days: a sustained flood grew state.json past GitHub's 100 MB file limit (~134k records at the defaults).
+
+    </details>
+* **merge-gate:** defer a verdict the forge refuses for a while ([#2002](https://github.com/SocialGouv/iterion/issues/2002)) ([#2092](https://github.com/SocialGouv/iterion/issues/2092)) ([7d5ee02](https://github.com/SocialGouv/iterion/commit/7d5ee02ca2b83ece6b3aaadf391ecec722ea746f))
+
+    <details><summary>why</summary>
+
+    Lot 3 of #2002. On 2026-09-30 the App installation's REST budget ran out every hour, and a merge-gate verdict the forge refused for the limit was dropped: once the limit lifted, the run's silence read as a death — the reconciler answered the head with a synthetic "review died" failure (23 that day) and the relaunch lane paid for a second review of a revision already judged (17) — while a relaunch still launching was escalated as dead (6 false escalations).
+
+    </details>
+
 ## [3.220.0](https://github.com/SocialGouv/iterion/compare/v3.219.5...v3.220.0) (2026-10-01)
 
 ### Features
