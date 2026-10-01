@@ -19,7 +19,15 @@ version: 0.6.0
 ## refusal after the gates goes back to the worker (lot_gate's converged and
 ## stop carry the contract as a term). mark_done commits only on the HEAD and
 ## the working tree the verdict judged, and recognises its own work on a
-## re-execution. ADR-107.
+## re-execution. The contract is the plan's whole DIRECTORY: what the base
+## holds beside the plan is byte-frozen, except the lot's own records (a name
+## carrying its id, or a file it creates). The index is judged as a third tree,
+## and an index flag or a `filter` attribute on a contract path is refused —
+## a commit would store what no tree shows. mark_done holds the landing (the
+## working tree, the index entries, their flags, the filter attribute) to the
+## verdict, and recognises its own commit only at the plan's base mode.
+## plan_read refuses a plan that is not a regular file. The engine's wip bank
+## runs no repository hook. ADR-107.
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,

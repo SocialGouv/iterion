@@ -77,6 +77,21 @@ func gitCommitMessage(dir, message string) (string, error) {
 	return string(out), err
 }
 
+// gitCommitRunOutput is gitCommitMessage for the commit the ENGINE makes of a
+// run's own output in the run's tree: no repository hook runs. The hooks live
+// in a directory the run can write, so a hook there is the run's code executed
+// inside the landing gesture — after every verdict the run's bots took — free
+// to rewrite what is banked, or to refuse the commit and strand it. --no-verify
+// leaves prepare-commit-msg and post-commit running, and post-commit can commit
+// again on top of the bank: the hooks directory itself is pointed at nothing.
+func gitCommitRunOutput(dir, message string) (string, error) {
+	cmd, cancel := gitCmd("-C", dir, "-c", "core.hooksPath="+os.DevNull, "commit", "--no-verify", "-F", "-")
+	defer cancel()
+	cmd.Stdin = strings.NewReader(message)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // worktreeContext is the state captured at setupWorktree time and
 // consumed by finalizeWorktree to decide whether the run actually
 // produced new commits and whether a fast-forward of the user's branch
@@ -501,7 +516,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				logger.Warn("runtime: finalize: wip bank cannot %v — preserving worktree at %s", err, wc.wtPath)
 			}
 			res.PreserveWorktree = true
-		} else if out, err := gitCommitMessage(wc.wtPath, msg); err != nil {
+		} else if out, err := gitCommitRunOutput(wc.wtPath, msg); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank commit failed: %v (output: %s) — preserving worktree at %s", err, strings.TrimSpace(out), wc.wtPath)
 			}

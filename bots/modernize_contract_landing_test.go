@@ -188,6 +188,20 @@ func TestModernizeContractIsJudgedOnWhatLands(t *testing.T) {
 		nothingLandsUnderDone(t, ws, base, ".modernize/outcomes.json", landLot(t, ws, base, "true", nil))
 	})
 
+	t.Run("a rewrite committed, the index and the working tree both put back", func(t *testing.T) {
+		ws, base, git := programmeRepo(t)
+		baseBlob := git("rev-parse", base+":.modernize/outcomes.json")
+		editContract(t, ws, ".modernize/outcomes.json", `"check": "sh ci/runtime-gate.sh"`, `"check": "true"`)
+		git("commit", "-qam", "the worker rewrites a check")
+		git("update-index", "--cacheinfo", "100644,"+baseBlob+",.modernize/outcomes.json")
+		writeContract(t, ws, ".modernize/outcomes.json", contractOutcomes)
+		// Only HEAD's tree carries the rewrite now.
+		got := landLot(t, ws, base, "true", nil)
+		if !strings.Contains(strings.Join(got.verdict.ContractRewrite, "\n"), ".modernize/outcomes.json: outcomes[runtime-target].check changed (committed at HEAD") {
+			t.Fatalf("a rewrite only HEAD carries was not named: contract_rewritten=%q", got.verdict.ContractRewrite)
+		}
+		nothingLandsUnderDone(t, ws, base, ".modernize/outcomes.json", got)
+	})
 	t.Run("a done committed by the worker, the working tree restored", func(t *testing.T) {
 		ws, base, git := programmeRepo(t)
 		editContract(t, ws, ".modernize/plan.yaml", "    status: todo\n    remediates", "    status: done\n    remediates")
@@ -319,6 +333,75 @@ func TestModernizeMarkDoneCommitsOnlyWhatWasJudged(t *testing.T) {
 		}
 	})
 
+	t.Run("the index moved after the verdict", func(t *testing.T) {
+		ws, base, git := programmeRepo(t)
+		got := landLot(t, ws, base, "true", func() {
+			blob := filepath.Join(t.TempDir(), "forged.json")
+			if err := os.WriteFile(blob, []byte(strings.Replace(contractOutcomes, `"check": "sh ci/runtime-gate.sh"`, `"check": "true"`, 1)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git("update-index", "--cacheinfo", "100644,"+git("hash-object", "-w", blob)+",.modernize/outcomes.json")
+		})
+		if got.marked || !got.refused || !strings.Contains(got.notice, ".modernize/outcomes.json in the index") {
+			t.Fatalf("mark_done committed over an index the verdict never judged: marked=%v refused=%v notice=%q", got.marked, got.refused, got.notice)
+		}
+	})
+	t.Run("a filter put on a contract path after the verdict", func(t *testing.T) {
+		ws, base, _ := programmeRepo(t)
+		got := landLot(t, ws, base, "true", func() {
+			writeContract(t, ws, ".git/info/attributes", ".modernize/outcomes.json filter=late\n")
+		})
+		if got.marked || !got.refused || !strings.Contains(got.notice, "filter") {
+			t.Fatalf("mark_done committed under a filter the verdict never saw: marked=%v refused=%v notice=%q", got.marked, got.refused, got.notice)
+		}
+	})
+	t.Run("an earlier lot's record moved after the verdict", func(t *testing.T) {
+		ws, _, git := programmeRepo(t)
+		writeContract(t, ws, ".modernize/L0-report.md", "# L0\n")
+		git("add", ".modernize/L0-report.md")
+		git("commit", "-qm", "an earlier lot's record")
+		base := git("rev-parse", "HEAD")
+		got := landLot(t, ws, base, "true", func() {
+			writeContract(t, ws, ".modernize/L0-report.md", "# L0, rewritten after the verdict\n")
+		})
+		if got.marked || !got.refused || !strings.Contains(got.notice, ".modernize/L0-report.md") {
+			t.Fatalf("mark_done committed over a record the verdict never judged: marked=%v refused=%v notice=%q", got.marked, got.refused, got.notice)
+		}
+	})
+	t.Run("a worker's commit storing the plan as a symlink is not the gate's own", func(t *testing.T) {
+		ws, base, git := programmeRepo(t)
+		mark := toolScript(t, "modernize/main.bot", "mark_done")
+		res := modernizeLotVerify(t, toolScript(t, "modernize/main.bot", "lot_verify"), ws, "L1", base, "true")
+		// The same bytes as the gate's flip, stored at mode 120000, on the
+		// judged HEAD, the working tree untouched.
+		flipped := strings.Replace(contractPlan, "    status: todo\n    remediates", "    status: done\n    remediates", 1)
+		blobFile := filepath.Join(t.TempDir(), "plan.yaml")
+		if err := os.WriteFile(blobFile, []byte(flipped), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		blob := git("hash-object", "-w", blobFile)
+		index := filepath.Join(t.TempDir(), "index")
+		indexed := func(args ...string) string {
+			t.Helper()
+			cmd := gittest.Cmd(ws, args...)
+			cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+index)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("git %v: %v", args, err)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		indexed("read-tree", res.ContractHead)
+		indexed("update-index", "--cacheinfo", "120000,"+blob+",.modernize/plan.yaml")
+		tree := indexed("write-tree")
+		sha := git("commit-tree", tree, "-p", res.ContractHead, "-m", "chore: the worker's own subject")
+		git("update-ref", "HEAD", sha, res.ContractHead)
+		done := modernizeMarkDoneJudged(t, mark, ws, "L1", base, res.ContractHead, res.ContractTree, 0)
+		if done.Marked || !done.Refused || !strings.Contains(done.Notice, "HEAD moved") {
+			t.Fatalf("a commit storing the plan as a symlink was taken for the gate's own: %+v", done)
+		}
+	})
+
 	// The other face: an attempt of mark_done that died part-way is resumed
 	// on the SAME verdict, and must finish, not be refused for its own work.
 	t.Run("an attempt that committed and died is not committed twice", func(t *testing.T) {
@@ -336,6 +419,25 @@ func TestModernizeMarkDoneCommitsOnlyWhatWasJudged(t *testing.T) {
 		}
 		if head := git("rev-parse", "HEAD"); head != first.Commit {
 			t.Fatalf("HEAD moved on the re-execution: %s, the gate's commit %s", head, first.Commit)
+		}
+	})
+	t.Run("an attempt that wrote its line and died, a proposal left uncommitted: committed", func(t *testing.T) {
+		ws, base, git := programmeRepo(t)
+		verify := toolScript(t, "modernize/main.bot", "lot_verify")
+		mark := toolScript(t, "modernize/main.bot", "mark_done")
+		// The proposal a lot may write, left uncommitted; the verdict accepts it.
+		writeContract(t, ws, ".modernize/plan.yaml", contractPlan+"  - id: L3\n    title: \"a lot this one proposes\"\n    status: todo\n    exit_gate:\n      - \"true\"\n")
+		res := modernizeLotVerify(t, verify, ws, "L1", base, "true")
+		if len(res.ContractRewrite) != 0 {
+			t.Fatalf("an added lot is a proposal the verdict accepts, got %q", res.ContractRewrite)
+		}
+		editContract(t, ws, ".modernize/plan.yaml", "    status: todo\n    remediates", "    status: done\n    remediates")
+		done := modernizeMarkDoneJudged(t, mark, ws, "L1", base, res.ContractHead, res.ContractTree, 0)
+		if !done.Marked || done.Commit == "" {
+			t.Fatalf("the interrupted attempt's own line was refused on a legitimate plan: %+v", done)
+		}
+		if head := git("rev-parse", "HEAD"); head != done.Commit {
+			t.Fatalf("HEAD %s is not the gate's commit %s", head, done.Commit)
 		}
 	})
 	t.Run("an attempt that wrote its line and died before committing is committed", func(t *testing.T) {

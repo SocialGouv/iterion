@@ -474,6 +474,24 @@ func TestModernizeLotVerifyAcceptsTheLotsOwnContractWrites(t *testing.T) {
 					t.Fatalf("the lot's own blocked status must stay a stop: %+v", res)
 				}
 			}},
+		{name: "a register kept in UTF-16 in the working tree: the remediated fix, judged as git stores it", inBase: true,
+			write: func(t *testing.T, ws string, git func(...string) string) {
+				writeContract(t, ws, ".gitattributes", ".modernize/defects-ledger.json working-tree-encoding=UTF-16LE\n")
+				git("add", ".gitattributes")
+				git("commit", "-qm", "the owner keeps the register in UTF-16 on disk")
+				git("rm", "-q", "--cached", "-r", ".")
+				git("reset", "-q", "--hard")
+				// The lot records its fix in the file as it is on disk.
+				fixed := strings.Replace(contractRegister, `"disposition": "open", "reason": "carried by L1"`,
+					`"disposition": "fixed", "reason": "carried by L1"`, 1)
+				utf16 := make([]byte, 0, 2*len(fixed))
+				for _, r := range fixed {
+					utf16 = append(utf16, byte(r), byte(r>>8))
+				}
+				if err := os.WriteFile(filepath.Join(ws, ".modernize", "defects-ledger.json"), utf16, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}},
 		{name: "a checkout whose line endings git converts", inBase: true,
 			write: func(t *testing.T, ws string, git func(...string) string) {
 				writeContract(t, ws, ".gitattributes", ".modernize/** text eol=crlf\n")
