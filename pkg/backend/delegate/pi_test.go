@@ -185,8 +185,8 @@ func TestPiExtraArgsFor(t *testing.T) {
 	})
 
 	// Context files stay on for parity with claude_code, but they are the
-	// dominant per-call cost on a repo with a large CLAUDE.md (measured:
-	// 26,933 input tokens vs 448 on iterion's own tree), so the off switch
+	// dominant per-call cost on a repo with a large CLAUDE.md (ADR-085
+	// measured 26,933 input tokens vs 448 on a 103 KB one), so the off switch
 	// must exist and must be off by default.
 	t.Run("context files on by default, with an off switch", func(t *testing.T) {
 		if slices.Contains(piExtraArgsFor(Task{}, nil), "--no-context-files") {

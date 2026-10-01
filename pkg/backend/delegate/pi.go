@@ -578,10 +578,10 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 	// pi walks up from the working directory and injects every AGENTS.md and
 	// CLAUDE.md it finds into the system prompt. That is parity with
 	// claude_code and on by default for the same reason — but it is not free,
-	// and the bill is invisible until measured: on iterion's own tree (a
-	// 103 KB CLAUDE.md) a trivial one-word prompt costs 26,933 input tokens
-	// with context files against 448 without. Sixty times the input, before
-	// the node does any work, on every call.
+	// and the bill is invisible until measured: when iterion's own CLAUDE.md
+	// was 103 KB (ADR-085), a trivial one-word prompt cost 26,933 input
+	// tokens with context files against 448 without. Sixty times the input,
+	// before the node does any work, on every call.
 	//
 	// So it stays on, and it gets an off switch.
 	if strings.TrimSpace(os.Getenv("ITERION_PI_NO_CONTEXT_FILES")) == "1" {

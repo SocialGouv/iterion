@@ -2,7 +2,7 @@
 
 [Why Iterion?](why-iterion.md) explains what the engine is for. This page
 explains **how we decide** when a design question is open — the stance the
-tactical rules in `CLAUDE.md` serve, and the two arbitrations that are already
+tactical rules in [`AGENTS.md`](../AGENTS.md) serve, and the two arbitrations that are already
 settled so they don't get re-opened on every feature.
 
 | Pillar | One line |

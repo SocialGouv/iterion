@@ -5,6 +5,12 @@ it is visible, how to contain its side effects, why the installed binary's
 freshness decides what capabilities the agent actually gets, and the bilan that
 makes the run survive the gitignored artifacts.
 
+**Dogfood first, when it fits.** Before implementing by hand, ask whether a
+catalog bot can do the work and propose launching it — regularly, never as an
+imposition. A dogfood run is visible in the operator's studio, actively
+monitored and closed by a bilan, and every friction it surfaces becomes an
+improvement of the bot.
+
 ### Live dogfood runs MUST be visible in the operator's studio
 
 When you test or dogfood a catalog bot with a real run, launch it into the

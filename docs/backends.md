@@ -1701,10 +1701,10 @@ workflow that depends on those tools.**
   Two consequences:
   - If your repo carries an `AGENTS.md` meant for a different agent, it
     reaches pi nodes too.
-  - **Measure it before you budget.** On iterion's own tree (a 103 KB
-    `CLAUDE.md`) a one-word prompt costs **26,933 input tokens with context
-    files against 448 without** — sixty times the input, on every call,
-    before the node does any work. It stays on by default for parity with
+  - **Measure it before you budget.** When iterion's own `CLAUDE.md` was
+    103 KB, a one-word prompt cost **26,933 input tokens with context files
+    against 448 without** — sixty times the input, on every call, before the
+    node does any work ([ADR-085](adr/085-pi-as-execution-backend.md)). It stays on by default for parity with
     `claude_code`; set `ITERION_PI_NO_CONTEXT_FILES=1` to turn it off when a
     node does not need the repo's instructions.
 - **The target repo's `.pi/` directory is refused.** pi executes

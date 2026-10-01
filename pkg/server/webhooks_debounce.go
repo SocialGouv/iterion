@@ -326,7 +326,7 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 	// through — the `!Enabled → 410` guard lives in the auth middleware
 	// (middleware_webhook.go), which a replay never re-enters. Letting a
 	// parked row outlive the switch that turns it off would silently
-	// replace an operator's explicit choice (CLAUDE.md principle 1).
+	// replace an operator's explicit choice (docs/philosophy.md, principle 1).
 	// ReviewOnSync is the same call: every parked row IS a synchronize
 	// re-review (the only lane that defers), and clearing it is a
 	// deliberate repo-wide posture change the provisioner already logs

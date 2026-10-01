@@ -73,6 +73,34 @@ head sha, off by default so the developer keeps the choice.
 push re-reviews the new head, so the status tracks the code you actually fixed.
 It stays on.
 
+## A parked gate is a rerouting signal, not a wait
+
+When `revi/review` parks on provider quota (a `gate-paused` comment carrying
+the retry instant and, when the provider said so, the window it hit), the pull
+request is fine — the credential is not. Waiting for the window to reset is the last resort, never the plan:
+
+1. **Identify the blocked credential.** `iterion remote admin llm oauth` and
+   `iterion remote admin llm api-keys` list what the deployment draws on. A
+   stored **dated** reading stops being trusted at the earlier of its reset
+   instant and `ITERION_USAGE_CAP_TRUST_WINDOW` (three hours by default after
+   it was observed); a refusal with no reset instant (auth, rate, spend) is
+   trusted for its escalating rest instead — an hour at first, up to six
+   ([usage caps](../usage-caps.md)). Either way a provider that reopened a
+   window early self-heals within that bound. To cut the wait when the
+   provider's dashboard disagrees with the ledger, forget the credential's
+   readings: `iterion remote admin usage-readings clear <fingerprint>`; the
+   next run re-measures the windows itself.
+2. **Lend a live credential to the deployment** — no redeploy needed. A
+   forfait: `iterion remote admin llm oauth set <claude_code|codex> --rank <n>
+   --from-file <credentials.json|auth.json>`; a provider key:
+   `iterion remote admin llm api-keys create --provider <p> --name <n>
+   --from-env <VAR>`. Any credential write to a shared deployment waits for the
+   operator's explicit go, with the exact command in the question.
+3. **Keep the review pressure locally.** Run the
+   [local adversarial loop](adversarial-review-loop.md) on a forfait you hold
+   while the gate is parked; it does NOT replace the required status — the
+   merge still waits for a real `revi/review` verdict.
+
 ## <a name="billy-is-paused"></a>Billy is paused (2026-09-15)
 
 The fixer campaign (`bots/branch-improve-loop`, Billy) is a whole-session

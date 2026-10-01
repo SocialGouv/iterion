@@ -198,7 +198,7 @@ type Config struct {
 	// gating derivation then leaves ReviewOnSync alone in BOTH directions —
 	// it neither forces it on for a statuses-scope bot nor releases it on a
 	// gate_enabled=false pin. An explicit operator choice is never silently
-	// replaced (CLAUDE.md principle 1); without the pin, ReviewOnSync is
+	// replaced (docs/philosophy.md, principle 1); without the pin, ReviewOnSync is
 	// presumed derivation-owned. Clearable via the same PATCH
 	// (review_on_sync_pinned: false) to hand the field back.
 	ReviewOnSyncPinned bool `bson:"review_on_sync_pinned,omitempty" json:"review_on_sync_pinned,omitempty"`
