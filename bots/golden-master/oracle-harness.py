@@ -707,7 +707,7 @@ def request_problems(req):
         if fields is not None:
             problems.append("`json` and `fields` on the same request — a body has ONE "
                             "encoding; declare the one the application reads")
-        if verb in ("GET", "HEAD"):
+        if verb in SAFE_METHODS:
             problems.append("`json` on a %s — a body there is not what a client "
                             "sends; declare the method the route reads it with" % verb)
         if field and not header:
@@ -792,7 +792,7 @@ def request_shape_problems(corpus, config=None):
         if not isinstance(e, dict):
             continue
         if e.get("surface") in FETCHLESS_SURFACES:
-            given = [k for k in FETCH_ONLY_KEYS if k in e]
+            given = [k for k in ("csrf_field",) + FETCH_ONLY_KEYS if k in e]
             if given:
                 problems.append("entry %s: %s on a `%s` entry — that lane never sends "
                                 "the entry's own request, so the declaration would do "
@@ -822,14 +822,20 @@ _ATTR_RE = re.compile(r"""([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]
 
 
 _TAG_STOP_RE = re.compile(r"[>\"']")
+_TAG_SPACE = " \t\n\r\f"
 
 
 def start_tags(text, tag):
     """The attribute text of every `<tag ...>` start tag, in document order.
 
-    The tag ends at the first `>` outside quotes. A quote left open swallows
-    the rest of the page, as it does in a browser: no tag after it exists.
-    One forward pass — a pattern that backtracks over every open quote made a
+    Exactly two rules about quotes, and no more:
+    - a `"` or `'` opens a quoted value only immediately after `=` (whitespace
+      allowed between them). Anywhere else it is an ordinary character of an
+      unquoted value: the apostrophe of `value=l'adresse` never opens a quote;
+    - a quoted value left open runs to the end of the page, and no tag after
+      it exists — a browser's tokenizer does the same.
+
+    One forward pass: a pattern that backtracked over every open quote made a
     page of a few thousand broken tags cost seconds per lookup.
     """
     opening = re.compile(r"<%s\b" % tag, re.I)
@@ -838,19 +844,26 @@ def start_tags(text, tag):
         m = opening.search(text, pos)
         if not m:
             return
-        i = m.end()
+        i, end = m.end(), None
         while True:
             stop = _TAG_STOP_RE.search(text, i)
             if not stop:
                 return
             if stop.group() == ">":
+                end = stop.start()
                 break
-            close = text.find(stop.group(), stop.end())
-            if close < 0:
-                return
-            i = close + 1
-        yield text[m.end():stop.start()]
-        pos = stop.end()
+            before = stop.start() - 1
+            while before >= m.end() and text[before] in _TAG_SPACE:
+                before -= 1
+            if before >= m.end() and text[before] == "=":
+                close = text.find(stop.group(), stop.end())
+                if close < 0:
+                    return
+                i = close + 1
+            else:
+                i = stop.end()
+        yield text[m.end():end]
+        pos = end + 1
 
 
 def tag_attribute(body, tag, name, attr):
@@ -5875,6 +5888,69 @@ def _selftest():
                     else:
                         os.environ[k] = v
                 shutil.rmtree(ws_q, ignore_errors=True)
+
+            # aa. A capture that refuses still answers with its REPORT — a bare
+            #     SystemExit would leave the gate and the record with no JSON.
+            #     Driven through main(), record and gate, on a token page that
+            #     cannot be reached at all.
+            ws_a = tempfile.mkdtemp(prefix="gm-selftest-refusal-")
+            gm_a = os.path.join(ws_a, ".golden-master")
+            os.makedirs(os.path.join(gm_a, "canon"))
+            os.makedirs(os.path.join(gm_a, "mutants", "holdout"))
+            with open(os.path.join(gm_a, "canon", "rules.py"), "w", encoding="utf-8") as f:
+                f.write("def canonicalize(entry, status, headers, body):\n    return ''\n")
+            with open(os.path.join(gm_a, "config.json"), "w", encoding="utf-8") as f:
+                json.dump({"up": "true", "down": "true", "restore": "true", "base_url": base7,
+                           "routes_probe": "true", "personas": [{"name": "anon"}]}, f)
+            with open(os.path.join(gm_a, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [{"id": "a-1", "surface": "write", "path": "/w",
+                                        "readback": "/r", "fields": {"a": "1"},
+                                        "csrf_field": "_csrf", "csrf_from": "/drop"}]}, f)
+            os.makedirs(os.path.join(gm_a, "refs"))
+            with open(os.path.join(gm_a, "refs", "a-1.txt"), "w", encoding="utf-8") as f:
+                f.write("")
+            doubled_a = ("missing_archetypes", "missing_corpus_probes", "route_coverage",
+                         "seal_holdout", "app_up", "app_down", "app_restart", "capture")
+            keep_a = {k: g[k] for k in doubled_a}
+            keep_env_a = {k: os.environ.get(k) for k in ("GM_MODE", "GM_WORKSPACE", "GM_DIR")}
+            reports_a = {}
+            try:
+                g.update(missing_archetypes=lambda _c, _m: [],
+                         missing_corpus_probes=lambda _c, _cfg: [],
+                         route_coverage=lambda *_a: ([], 0, 0),
+                         seal_holdout=lambda *_a: False,
+                         app_up=lambda *_a: None, app_down=lambda *_a: None,
+                         app_restart=lambda *_a: None, capture=saved["capture"])
+                for a_mode in ("record", "gate"):
+                    out_a = io.StringIO()
+                    os.environ.update(GM_MODE=a_mode, GM_WORKSPACE=ws_a, GM_DIR=".golden-master")
+                    with contextlib.redirect_stdout(out_a):
+                        try:
+                            main()
+                        except SystemExit:
+                            pass
+                        except Exception as e_:         # noqa: BLE001 - the bench names it
+                            print(json.dumps({"log_tail": "CRASH %s: %s"
+                                              % (type(e_).__name__, e_)}))
+                    lines_a = [l for l in out_a.getvalue().splitlines() if l.startswith("{")]
+                    reports_a[a_mode] = json.loads(lines_a[-1]) if lines_a else {}
+            finally:
+                g.update(keep_a)
+                for k, v in keep_env_a.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+                shutil.rmtree(ws_a, ignore_errors=True)
+            check("7c-aa record: an unreachable token page answers with its report",
+                  ["capture stopped:" in reports_a["record"].get("log_tail", ""),
+                   "could not be reached" in reports_a["record"].get("log_tail", "")],
+                  [True, True])
+            check("7c-aa gate: the same refusal answers with its report",
+                  ["capture stopped:" in reports_a["gate"].get("log_tail", ""),
+                   "could not be reached" in reports_a["gate"].get("log_tail", "")],
+                  [True, True])
+
             misses = [{"entry": "q-1", "step": None, "page": "/gone", "status": 404},
                       {"entry": "q-2", "step": 2, "page": "/no-get", "status": 405}]
             check("7c-q record: the tokens not found are published, the record completes",
@@ -5959,10 +6035,11 @@ def _selftest():
             # w. The lanes that never send the entry's own request refuse the
             #    request keys rather than ignore them.
             for w_surface in FETCHLESS_SURFACES:
-                refused_unsent("w", "json and headers on a %s entry" % w_surface, captured(
+                refused_unsent("w", "request keys on a %s entry" % w_surface, captured(
                     {"id": "w-1", "surface": w_surface, "path": "/x", "json": {"a": 1},
-                     "headers": {"Accept-Language": "fr"}}),
-                    "entry w-1", "on a `%s` entry" % w_surface)
+                     "csrf_field": "_csrf", "headers": {"Accept-Language": "fr"}}),
+                    "entry w-1", "on a `%s` entry" % w_surface,
+                    "`csrf_field`", "`json`", "`headers`")
 
             # x. The extractor keeps the FIRST of two same-named attributes, as a
             #    browser does; an open quote swallows the rest of the page, and
@@ -5972,17 +6049,34 @@ def _selftest():
                    tok('<input value="T" name="_csrf" name="other">'),
                    tok("<input title='open <input name=\"_csrf\" value=\"T\">")],
                   ["T", "T", None])
+            check("7c-x a quote opens a value only after =: an apostrophe elsewhere "
+                  "is a character, a quoted value still parses",
+                  [tok("<input name=comment value=l'adresse>"
+                       "<input type=\"hidden\" name=\"_csrf\" value=\"T1\">"),
+                   tok("<meta name=desc content=l'adresse>"
+                       "<meta name=\"_csrf\" content=\"T2\">"),
+                   tok("<input title=aujourd'hui name=\"_csrf\" value=\"T1\">"),
+                   tok("<input name='_csrf' value='a b'>"),
+                   tok('<input name = "_csrf" value = "T9" >'),
+                   tok("<input name=comment value=l'adresse>"
+                       "<input name='_csrf' value='a b'>")],
+                  ["T1", "T2", "T1", "a b", "T9", "a b"])
             x_t0 = time.time()
             x_found = tok("<input a='x" * 20000)
             check("7c-x a page of 20000 unterminated quotes is read in one pass (< 2 s)",
                   [x_found, time.time() - x_t0 < 2.0], [None, True])
 
-            # y. Safe methods carry no token and fetch no token page.
+            # y. Safe methods carry no token and fetch no token page, and no
+            #    body either.
             check("7c-y HEAD, OPTIONS, TRACE: no token page, no token",
                   [wire(captured({"id": "y-1", "method": y_verb, "path": "/form-input",
                                   "csrf_field": "_csrf"})[1], "method", "path", "body")
                    for y_verb in ("HEAD", "OPTIONS", "TRACE")],
                   [[(y_verb, "/form-input", b"")] for y_verb in ("HEAD", "OPTIONS", "TRACE")])
+            for y_verb in ("OPTIONS", "TRACE"):
+                refused_unsent("y", "json on a %s" % y_verb,
+                               sent(lambda v_=y_verb: sess7.fetch(v_, "/p", json_body={})),
+                               "`json` on a %s" % y_verb)
 
             # z. Numbers as a browser's JSON.stringify writes them; what has no
             #    JSON bytes is refused before anything leaves.
@@ -8475,6 +8569,16 @@ def main():
         print(json.dumps(report))
         raise SystemExit(0)
 
+    def capture_reported(fn, *args, **kwargs):
+        """Run a capture-driven step. A refusal inside a capture raises before
+        any report exists — a bare SystemExit whose text only a log carries.
+        Every request rule (and an unreachable token page) must still answer
+        with the report the gate and the record read."""
+        try:
+            return fn(*args, **kwargs)
+        except SystemExit as e:
+            bail("capture stopped: %s" % e)
+
     def bail_malformed_mutant(e):
         """Refus du chargeur — pose TOUS les termes qu'une porte aval consomme.
 
@@ -8953,7 +9057,7 @@ def main():
                          "reference nothing will ever compare"
                          % (len(missing), "y" if len(missing) == 1 else "ies",
                             ", ".join(missing)))
-            snap = capture(config, corpus, canon, ids=only or None)
+            snap = capture_reported(capture, config, corpus, canon, ids=only or None)
             publish_token_not_found(report)
             for k, v in snap.items():
                 with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8", newline="") as f:
@@ -9004,7 +9108,7 @@ def main():
         report["duplicate_refs"] = sorted(
             sorted(ids) for ids in by_hash.values() if len(ids) > 1)
 
-        stab, _ = stability(config, corpus, canon, ws)
+        stab, _ = capture_reported(stability, config, corpus, canon, ws)
         report.update(stable=stab["stable"])
         publish_token_not_found(report)
         if not stab["stable"]:
@@ -9012,7 +9116,8 @@ def main():
                  "canonicalise these before any mutation figure means anything"
                  % (stab["ab_drift"][:8], stab["bc_drift"][:8]))
 
-        noop = score_noop(config, corpus, canon, refs, ws, 0, excluded_ids)
+        noop = capture_reported(score_noop, config, corpus, canon, refs, ws, 0,
+                                excluded_ids)
         report["noop_silent"] = noop["silent"]
 
         # GM_MUTANTS en mode porte — restreindre le PARCOURS, jamais le verdict.
@@ -9052,7 +9157,8 @@ def main():
         for seed, meta in enumerate(visible):
             if only and meta["id"] not in only:
                 continue
-            v = score_mutant(meta, config, corpus, canon, refs, ws, seed, excluded_ids)
+            v = capture_reported(score_mutant, meta, config, corpus, canon, refs,
+                                 ws, seed, excluded_ids)
             verdicts.append(v)
             if v.get("valid"):
                 if not v.get("detected"):
@@ -9079,7 +9185,8 @@ def main():
         held = []
         if mode != "selfcheck" and stopped is None:
             for i, m in enumerate(held_meta):
-                v = score_mutant(m, config, corpus, canon, refs, ws, 1000 + i, excluded_ids)
+                v = capture_reported(score_mutant, m, config, corpus, canon, refs,
+                                     ws, 1000 + i, excluded_ids)
                 held.append(v)
                 if scoring_must_stop(v, ws):
                     stopped = v

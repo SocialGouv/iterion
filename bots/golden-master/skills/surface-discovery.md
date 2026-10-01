@@ -233,9 +233,10 @@ application would refuse it for the wrong reason, and the reference would record
   redirects followed, and takes the token from the first source that carries one, in this FIXED
   order: `<input name=csrf_field>` (its `value`), `<meta name=csrf_field>` (its `content`), then
   the cookie named by `csrf_cookie`. Each attribute is read from the one tag carrying that name,
-  whatever the attribute order or quoting; of two same-named attributes the first counts, as in
-  a browser. The cookie is the one the request itself carries: of two sharing the name, the one
-  with the most specific path.
+  whatever the attribute order or quoting; of two same-named attributes the first counts, and a
+  quote opens a quoted value only immediately after `=` — an apostrophe elsewhere (`value=l'adresse`)
+  is a character of the value. The cookie is the one the request itself carries: of two sharing the
+  name, the one with the most specific path.
 - **`csrf_from`** is an absolute path (`/...`, no whitespace or control character); it defaults
   to the entry's `path`. A JSON request with `csrf_field` must declare it: the JSON route itself
   rarely renders a token, and its GET typically answers 405. A token page that cannot be reached
@@ -265,10 +266,12 @@ application would refuse it for the wrong reason, and the reference would record
   the token's header — the harness writes those.
 
 Refused by name before anything boots, and again before an entry's first byte: `json` with
-`fields` on one request, or on a GET or HEAD (however the method is spelled); `json` with
+`fields` on one request, or on a method that carries no body (GET, HEAD, OPTIONS, TRACE, however
+they are spelled); `json` with
 `csrf_field` and no header or no `csrf_from` declared; `csrf_header`, `csrf_header_meta` or
 `csrf_cookie` without `csrf_field`; `csrf_cookie` with no header declared; a token key that is
 not a non-empty string; `fields` that are not an object; `steps` that are not a list of
 objects. A persona `login` keeps the form — a login declaring `json`, a token key other than
 `csrf_field` or `headers` is refused — and an `a11y`, `canvas` or `asset` entry, whose lane never
-sends the entry's own request, refuses `json`, the token keys and `headers` the same way.
+sends the entry's own request, refuses `csrf_field`, `json`, the token keys and `headers` the same
+way.
