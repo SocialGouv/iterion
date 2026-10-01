@@ -297,6 +297,45 @@ func (s *MongoLeaseStore) Reopen(ctx context.Context, leaseID string, superseded
 	return false, nil
 }
 
+// ListByRun returns every lease of a run, any state, newest acquired
+// first — see LeaseStore.ListByRun.
+func (s *MongoLeaseStore) ListByRun(ctx context.Context, runID string) ([]Lease, error) {
+	cur, err := s.col.Find(ctx, bson.M{"run_id": runID},
+		options.Find().SetSort(bson.D{{Key: "acquired_at", Value: -1}}))
+	if err != nil {
+		return nil, fmt.Errorf("credpool: list leases of run: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []Lease
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("credpool: decode leases of run: %w", err)
+	}
+	return out, nil
+}
+
+// StampSupersededReport marks a superseded lease as reported by its own
+// attempt — see LeaseStore.StampSupersededReport. The match on the plain
+// superseded close and the stamp land in one update.
+func (s *MongoLeaseStore) StampSupersededReport(ctx context.Context, leaseID string, costUSD float64, when time.Time) (bool, error) {
+	res, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": leaseID, "closed": true, "outcome": OutcomeSuperseded},
+		bson.M{
+			"$inc": bson.M{"cost_usd": costUSD},
+			"$set": bson.M{"outcome": OutcomeSupersededReported, "closed_at": when.UTC()},
+		})
+	if err != nil {
+		return false, fmt.Errorf("credpool: stamp superseded report: %w", err)
+	}
+	if res.MatchedCount > 0 {
+		return true, nil
+	}
+	n, cerr := s.col.CountDocuments(ctx, bson.M{"_id": leaseID})
+	if cerr == nil && n == 0 {
+		return false, ErrNotFound
+	}
+	return false, nil
+}
+
 // AddCost accumulates an interim attempt's spend onto an OPEN lease, so
 // the donor's audit trail matches their ledger for a redelivered run.
 func (s *MongoLeaseStore) AddCost(ctx context.Context, leaseID string, costUSD float64) error {

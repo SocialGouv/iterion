@@ -254,6 +254,41 @@ func (s *MemoryLeaseStore) Reopen(_ context.Context, leaseID string, supersededA
 	return true, nil
 }
 
+// ListByRun returns every lease of a run, any state, newest acquired
+// first — see LeaseStore.ListByRun.
+func (s *MemoryLeaseStore) ListByRun(_ context.Context, runID string) ([]Lease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Lease
+	for _, l := range s.m {
+		if l.RunID == runID {
+			out = append(out, l)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AcquiredAt.After(out[j].AcquiredAt) })
+	return out, nil
+}
+
+// StampSupersededReport marks a superseded lease as reported by its own
+// attempt — see LeaseStore.StampSupersededReport.
+func (s *MemoryLeaseStore) StampSupersededReport(_ context.Context, leaseID string, costUSD float64, when time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.m[leaseID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if !l.Closed || l.Outcome != OutcomeSuperseded {
+		return false, nil
+	}
+	l.Outcome = OutcomeSupersededReported
+	l.CostUSD += costUSD
+	t := when.UTC()
+	l.ClosedAt = &t
+	s.m[leaseID] = l
+	return true, nil
+}
+
 func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

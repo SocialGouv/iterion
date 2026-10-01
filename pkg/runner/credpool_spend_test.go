@@ -342,3 +342,58 @@ func TestRecordPoolSpend_aSupersededDeliveryLeavesTheNewerAttemptsLease(t *testi
 		t.Fatalf("donor charged %v by a delivery that ran nothing", day.CostUSD)
 	}
 }
+
+// TestRecordPoolSpend_aLateReportStaysOnItsAttemptInsideASupersedeWindow:
+// an attempt's teardown can take minutes, and an operator resume acquires
+// inside that window. The report the runner makes carries the delivery's
+// publication, so it lands on the attempt's own (superseded) lease —
+// charged once through the stamp — and the successor's lease stays open
+// for the successor, whose own spend reaches the donor's ledger too.
+func TestRecordPoolSpend_aLateReportStaysOnItsAttemptInsideASupersedeWindow(t *testing.T) {
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10, MaxConcurrentRuns: 1})
+	ctx := context.Background()
+
+	// The run's first delivery, published after its lease was acquired.
+	T_A := time.Now().UTC()
+	msgA := &queue.RunMessage{RunID: "run-1", TenantID: "team-1", PublishedAtRFC: T_A.Format(time.RFC3339Nano)}
+	open, err := h.leases.GetOpenByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("attempt A's lease: %v", err)
+	}
+
+	// The resume's acquisition supersedes A's lease and opens its own.
+	if _, err := h.broker.Acquire(ctx, credpool.Request{
+		RunID: "run-1", OrgID: "org-1", TenantID: "team-1", UserID: "requester",
+		Wants: []credpool.Credential{{Source: credpool.SourceOAuth, Ref: "claude_code"}},
+	}); err != nil {
+		t.Fatalf("resume acquire: %v", err)
+	}
+	successor, err := h.leases.GetOpenByRun(ctx, "run-1")
+	if err != nil || successor.ID == open.ID {
+		t.Fatalf("the resume's lease = (%+v, %v), want a new one", successor, err)
+	}
+
+	// A's teardown reports, through the production hook.
+	h.runner.recordPoolSpend(msgA, usageWith(3, 400), nil, false)
+	stamped, err := h.leases.Get(ctx, open.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stamped.Closed || stamped.Outcome != credpool.OutcomeSupersededReported || stamped.CostUSD != 3 {
+		t.Fatalf("A's lease after its report: %+v, want closed %q with $3", stamped, credpool.OutcomeSupersededReported)
+	}
+	if now, err := h.leases.GetOpenByRun(ctx, "run-1"); err != nil || now.ID != successor.ID {
+		t.Fatalf("the successor lease is not open for the successor: (%+v, %v)", now, err)
+	}
+
+	// The successor's own attempt reports through its lease.
+	msgB := &queue.RunMessage{RunID: "run-1", TenantID: "team-1", PublishedAtRFC: time.Now().UTC().Add(2 * time.Millisecond).Format(time.RFC3339Nano)}
+	h.runner.recordPoolSpend(msgB, usageWith(2, 100), nil, false)
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if day.CostUSD != 5 {
+		t.Fatalf("the donor's ledger records $%.2f, want 3+2", day.CostUSD)
+	}
+}

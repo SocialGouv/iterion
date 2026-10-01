@@ -167,7 +167,15 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	}
 	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
-	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{
+	// The report carries this delivery's attempt identity — its
+	// publication — so a superseding acquisition's lease is never closed or
+	// charged by a previous attempt's late teardown report. A publication
+	// that cannot be read falls back to the open lease inside the broker.
+	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	if perr != nil {
+		publishedAt = time.Time{}
+	}
+	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
 		InputTokens:     in,
 		OutputTokens:    out,

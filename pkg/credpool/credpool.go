@@ -492,6 +492,11 @@ const (
 	OutcomeAbandoned = "abandoned"
 	// OutcomeSuperseded — a later attempt of the same run took over.
 	OutcomeSuperseded = "superseded"
+	// OutcomeSupersededReported — a superseded lease its own attempt later
+	// reported against: the supersede charged nothing, the stamp's CAS let
+	// exactly one report charge, and the lease no longer reads as a plain
+	// supersede (Reopen's CAS misses it).
+	OutcomeSupersededReported = "superseded_reported"
 	// OutcomeNotLaunched — the grant was returned; the run never started.
 	OutcomeNotLaunched = "not_launched"
 )

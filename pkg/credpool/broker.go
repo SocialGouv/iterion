@@ -1043,6 +1043,107 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 	return b.chargeAndReact(ctx, lease, out, now, runID)
 }
 
+// attemptLease picks the lease the attempt published at attemptPublishedAt
+// executed under: the run's newest lease acquired at or before it. A lease
+// a later resume's acquisition opened afterwards is not the reporting
+// attempt's. A run with no such lease — an attempt older than lease
+// stamping, or a publication that could not be read — falls back to the
+// open-lease lookup, the identity a report had before this rule; nil when
+// the run holds no lease at all.
+func attemptLease(ctx context.Context, leases LeaseStore, runID string, attemptPublishedAt time.Time) *Lease {
+	if attemptPublishedAt.IsZero() {
+		if l, err := leases.GetOpenByRun(ctx, runID); err == nil {
+			return &l
+		}
+		return nil
+	}
+	all, err := leases.ListByRun(ctx, runID)
+	if err != nil || len(all) == 0 {
+		return nil
+	}
+	for i := range all {
+		if !all[i].AcquiredAt.After(attemptPublishedAt) {
+			return &all[i]
+		}
+	}
+	// The attempt predates every lease the run carries: fall back to the
+	// open lease, the identity the report had before this rule.
+	if l, err := leases.GetOpenByRun(ctx, runID); err == nil {
+		return &l
+	}
+	return nil
+}
+
+// ReportAttempt is Report carrying the reporting attempt's identity — its
+// publication, which the runner's recordPoolSpend reads off the delivery —
+// so the spend is booked on the lease that attempt executed under, never on
+// a lease a later resume's acquisition opened or superseded inside the
+// previous attempt's unwind window.
+//
+// A superseded lease its attempt reports against still charges the donor —
+// the supersede that closed it charged nothing — once, through the stamp's
+// CAS: a redelivered report of the same attempt loses the CAS. A lease
+// reported, or closed any other way, stays silent, as in Report.
+func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublishedAt time.Time, out Outcome) error {
+	if b == nil || runID == "" {
+		return nil
+	}
+	lease := attemptLease(ctx, b.leases, runID, attemptPublishedAt)
+	if lease == nil {
+		return nil
+	}
+	now := b.now()
+
+	outcome := "ok"
+	switch out.Condition {
+	case ConditionUsageWindow:
+		outcome = string(ConditionUsageWindow)
+	case ConditionAuthFailed:
+		outcome = string(ConditionAuthFailed)
+	}
+
+	// The attempt's lease is superseded: charge through the stamp's CAS.
+	// The supersede added nothing, so this is the attempt's only charge,
+	// and a redelivered report of the same attempt loses the CAS.
+	if lease.Closed {
+		if lease.Outcome != OutcomeSuperseded {
+			return nil // reported, released or abandoned elsewhere — as in Report
+		}
+		won, err := b.leases.StampSupersededReport(ctx, lease.ID, out.CostUSD, now)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if !won {
+			return nil
+		}
+		return b.chargeAndReact(ctx, *lease, out, now, runID)
+	}
+
+	// Interim: the attempt spent but the queue will redeliver the same
+	// bundle — charge now, the lease stays open.
+	if out.Interim {
+		if err := b.leases.AddCost(ctx, lease.ID, out.CostUSD); err != nil {
+			b.logger.Warn("credpool: could not record the interim spend of run %s on lease %s: %v", runID, lease.ID, err)
+		}
+		return b.chargeAndReact(ctx, *lease, out, now, runID)
+	}
+
+	won, err := b.leases.Close(ctx, lease.ID, out.CostUSD, outcome, now)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("credpool: close lease: %w", err)
+	}
+	if !won {
+		return nil // another report got there first; it did the charging
+	}
+	return b.chargeAndReact(ctx, *lease, out, now, runID)
+}
+
 // chargeAndReact debits the donor for what an attempt consumed and applies
 // what that attempt says about their credential. Shared by the closing and
 // interim report paths.
