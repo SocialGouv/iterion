@@ -405,6 +405,9 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	if step.ThinkingMs > 0 {
 		data["thinking_ms"] = step.ThinkingMs
 	}
+	if step.UsageUnreported {
+		data["usage_unreported"] = true
+	}
 
 	// Always include response text in persisted events. Thinking text is
 	// deliberately NOT persisted here: it is routinely 10-50 KB per step,

@@ -702,13 +702,14 @@ func askUserResult(err error) (delegate.Result, bool) {
 //
 // Zero usage yields the zero Result: an empty output map with a `_tokens: 0`
 // stamp would read as an output rather than as a bill, and the engine's own
-// guard already skips a spendless failure.
+// guard already skips a spendless failure. A call whose usage went
+// unreported is no such zero: its bill is unknown, and the map says so.
 func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.UnreportedCalls == 0 {
 		return delegate.Result{}
 	}
 	output := map[string]any{}
-	tokens := cost.Annotate(output, task.Model, usage.InputTokens, usage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, usage)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,
@@ -716,6 +717,14 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 		ThinkingTokens: usage.ReasoningTokens,
 		ThinkingMs:     usage.ThinkingMs,
 	}
+}
+
+// annotateUsage stamps a generation's usage onto its output: the `_tokens` /
+// `_model` / `_cost_usd` keys, and the count of calls whose usage the
+// provider did not report, for which those figures are a lower bound.
+func annotateUsage(output map[string]any, model string, u Usage) int {
+	cost.SetUnreportedCalls(output, u.UnreportedCalls)
+	return cost.Annotate(output, model, u.InputTokens, u.OutputTokens)
 }
 
 // partialUsage reads the usage off a best-effort partial result, tolerating
@@ -755,7 +764,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		output = make(map[string]any)
 	}
 
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
 		Output:         output,
@@ -784,7 +793,7 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 	}
 
 	output := map[string]any{"text": result.Text}
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
 		Output:         output,
@@ -932,6 +941,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				accumulateUsage(&abandoned, partialUsage(reRun))
 				return meteredFailure(task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
 			}
+			// Falling through to recovery: the nudge was billed too, so its
+			// partial usage rides the first pass's into every exit below.
+			accumulateUsage(&result.TotalUsage, partialUsage(reRun))
 		}
 	}
 
@@ -943,7 +955,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text != "" {
 		var output map[string]any
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
-			tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+			tokens := annotateUsage(output, task.Model, result.TotalUsage)
 			return delegate.Result{
 				Output:         output,
 				Tokens:         tokens,
@@ -985,9 +997,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	}
 	obj, recErr := GenerateObjectDirect[map[string]any](ctx, client, recoveryOpts)
 	if recErr == nil && obj != nil && obj.Object != nil {
-		tokens := cost.Annotate(obj.Object, task.Model,
-			result.TotalUsage.InputTokens+obj.TotalUsage.InputTokens,
-			result.TotalUsage.OutputTokens+obj.TotalUsage.OutputTokens)
+		both := result.TotalUsage
+		accumulateUsage(&both, obj.TotalUsage)
+		tokens := annotateUsage(obj.Object, task.Model, both)
 		return delegate.Result{
 			Output:             obj.Object,
 			Tokens:             tokens,
@@ -1021,7 +1033,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
 	output := map[string]any{"text": text}
-	tokens := cost.Annotate(output, task.Model, billed.InputTokens, billed.OutputTokens)
+	tokens := annotateUsage(output, task.Model, billed)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,

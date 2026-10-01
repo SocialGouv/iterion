@@ -6247,6 +6247,7 @@ export interface components {
             budget_tokens_used?: number;
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
+            budget_unreported_calls?: number;
             cost_usd_total?: number;
             fired_events?: {
                 [key: string]: {

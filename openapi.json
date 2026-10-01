@@ -610,6 +610,9 @@
           "budget_unpriced_tokens": {
             "type": "integer"
           },
+          "budget_unreported_calls": {
+            "type": "integer"
+          },
           "cost_usd_total": {
             "type": "number"
           },

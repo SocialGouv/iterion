@@ -7,7 +7,6 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -16,13 +15,13 @@ import (
 // the shape the engine books from. Nil when nothing was served: an output map
 // carrying only meta keys would read as an answer on a path whose caller
 // degrades to a human pause, and the engine's own guard already skips a
-// spendless failure.
+// spendless failure. A call whose usage went unreported is no such zero.
 func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
-	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0) {
+	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0 && result.TotalUsage.UnreportedCalls == 0) {
 		return nil
 	}
 	output := map[string]any{}
-	cost.Annotate(output, modelSpec, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	annotateUsage(output, modelSpec, result.TotalUsage)
 	return output
 }
 
@@ -133,11 +132,11 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		output = make(map[string]any)
 	}
 
-	// Attach usage metadata. Going through cost.Annotate rather than
+	// Attach usage metadata. Going through annotateUsage rather than
 	// stamping the keys by hand is what puts `_cost_usd` on this path: an
 	// `interaction: llm` human node is a real LLM call, and hand-stamping
 	// left it invisible to max_cost_usd on every model, priced or not.
-	cost.Annotate(output, modelSpec, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	annotateUsage(output, modelSpec, result.TotalUsage)
 
 	return output, nil
 }
