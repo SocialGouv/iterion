@@ -69,9 +69,12 @@ Code:
   `--append-system-prompt`, **never** `--system-prompt`. Replacing would
   strip Claude Code's native system prompt (TodoWrite/plan-before-act/
   read-before-edit/parallel-tool/`file:line`/refusal posture); appending
-  keeps it as the base. iterion also emits `--setting-sources user,project`
-  so the target repo's `CLAUDE.md`/settings are honoured (tunable via
-  `ITERION_CLAUDE_CODE_SETTING_SOURCES`). MCP is the opposite —
+  keeps it as the base. iterion also emits `--setting-sources` on every
+  spawn so the target repo's settings are honoured — the scopes are the
+  node's `ambient_context:` policy (ADR-119, `workspace` by default: the
+  repo's memory and settings, not the operator's personal setup), with
+  `ITERION_CLAUDE_CODE_SETTING_SOURCES` as the raw override. MCP is the
+  opposite —
   `--strict-mcp-config` makes the node's resolved MCP set (`mcp_server:`/
   `mcp:` blocks, repo `.mcp.json`, iterion's ask_user/board servers)
   authoritative: the operator's personal `~/.claude.json` servers never

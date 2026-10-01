@@ -494,10 +494,12 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	// settings.json). --append-system-prompt alone does not re-enable settings
 	// discovery in --print mode; --setting-sources does. Honours the same paths
 	// in a sandbox (the workspace and ~/.claude are bind-mounted at their host
-	// absolute paths). Tunable/disable-able via ITERION_CLAUDE_CODE_SETTING_SOURCES.
-	if srcs := settingSourcesFromEnv(); len(srcs) > 0 {
-		opts = append(opts, claudesdk.WithSettingSources(srcs...))
-	}
+	// absolute paths). Which scopes, and which memory files they may not read,
+	// is the node's ambient-context policy (ADR-119, claudeAmbient); the
+	// exclusions ride the flag settings layer (claudeSpawnPins).
+	amb := claudeAmbient(task)
+	reportLegacySources(b.Logger, amb)
+	opts = append(opts, amb.settingSourcesOption())
 	// Setting sources are inherited (above); MCP servers are NOT. The node's
 	// resolved MCP set — .bot `mcp_server:`/`mcp:` blocks, the repo's
 	// .mcp.json via autoload_project, iterion's ask_user/board servers —
@@ -1582,24 +1584,29 @@ func claudeEnvPins(task Task) map[string]string {
 func claudeSpawnPins(task Task) (env map[string]string, settings []byte) {
 	env = claudeEnvPins(task)
 	_, memory := autoMemorySpawn(task)
-	settings, err := claudeFlagSettings(env, memory)
+	excludes := claudeAmbient(task).excludes
+	settings, err := claudeFlagSettings(env, memory, excludes)
 	if err != nil {
 		// Strings and a bool cannot fail to marshal. If they somehow did,
 		// enabling auto-memory without pinning the directory would send the
 		// agent's notes to the operator's personal memory instead of the
 		// run's space: stay off rather than write to the wrong place.
 		env[autoMemoryDisableEnv] = "1"
-		settings, _ = claudeFlagSettings(env, nil)
+		settings, _ = claudeFlagSettings(env, nil, excludes)
 	}
 	return env, settings
 }
 
 // claudeFlagSettings is the `--settings` object: the pinned environment as an
-// `env` block, and the memory keys when there are any.
-func claudeFlagSettings(env map[string]string, memory map[string]any) ([]byte, error) {
+// `env` block, the memory keys when there are any, and the memory files the
+// node's ambient-context policy keeps out (`claudeMdExcludes`).
+func claudeFlagSettings(env map[string]string, memory map[string]any, excludes []string) ([]byte, error) {
 	settings := map[string]any{"env": env}
 	for key, value := range memory {
 		settings[key] = value
+	}
+	if len(excludes) > 0 {
+		settings["claudeMdExcludes"] = excludes
 	}
 	return json.Marshal(settings)
 }
@@ -1892,6 +1899,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
 	opts = append(opts, perTaskSpawnOpts(task)...)
+	// The structured-output pass loads the same scopes as the session: an
+	// omitted --setting-sources would load every scope, `local` included.
+	opts = append(opts, claudeAmbient(task).settingSourcesOption())
 	credEnv := anthropicCredEnvForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
 		return nil, forfaitSpawn{}, err

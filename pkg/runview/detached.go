@@ -90,6 +90,9 @@ type detachedSpec struct {
 	// so anything not passed here is silently replaced by the workflow's own
 	// value — which for `off` means running with memory ON.
 	AutoMemory string
+	// AmbientContext forwards the run-level ambient-context override as the
+	// CLI's --ambient-context flag, for the same re-resolution reason.
+	AmbientContext string
 	// LoopBudgetGuard forwards the run-level back-edge affordability
 	// override as the CLI's --loop-budget-guard flag, for the same reason
 	// AutoMemory is forwarded: the subprocess re-resolves the knob from
@@ -140,6 +143,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
 		}
+		if spec.AmbientContext != "" {
+			args = append(args, "--ambient-context", spec.AmbientContext)
+		}
 		if spec.LoopBudgetGuard != "" {
 			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
 		}
@@ -157,6 +163,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
+		}
+		if spec.AmbientContext != "" {
+			args = append(args, "--ambient-context", spec.AmbientContext)
 		}
 		if spec.LoopBudgetGuard != "" {
 			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
@@ -414,6 +423,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		MergeInto:          spec.MergeInto,
 		BranchName:         spec.BranchName,
 		AutoMemory:         spec.AutoMemory,
+		AmbientContext:     spec.AmbientContext,
 		LoopBudgetGuard:    spec.LoopBudgetGuard,
 		Supervisors:        spec.Supervisors,
 		Permission:         spec.Permission,
@@ -462,6 +472,7 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		Answers:         answers,
 		StoreDir:        s.storeDir,
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      permission,

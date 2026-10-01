@@ -13,6 +13,7 @@ test("shows that a run permission override wins a node permission pin", () => {
       backendOverride=""
       compressOverride=""
       autoMemoryOverride=""
+      ambientContextOverride=""
       permissionOverride="deny"
       reviewModeOverride=""
       backendReport={null}
@@ -20,6 +21,7 @@ test("shows that a run permission override wins a node permission pin", () => {
         backend: { effective: "auto", source: "default" },
         compress: { effective: "auto", source: "default" },
         auto_memory: { effective: "off", source: "default" },
+        ambient_context: { effective: "workspace", source: "default" },
         permission: {
           effective: "ask",
           source: "workflow",
@@ -29,6 +31,7 @@ test("shows that a run permission override wins a node permission pin", () => {
       onBackendChange={vi.fn()}
       onCompressChange={vi.fn()}
       onAutoMemoryChange={vi.fn()}
+      onAmbientContextChange={vi.fn()}
       onPermissionChange={vi.fn()}
       onReviewModeChange={vi.fn()}
       showReviewMode={false}
@@ -39,4 +42,35 @@ test("shows that a run permission override wins a node permission pin", () => {
     "effective: deny · from run override · run override wins over node settings",
   );
   expect(container.textContent).not.toContain("override won’t affect them");
+});
+
+test("shows that the ambient-context default is the repository, not the operator", () => {
+  const { container } = render(
+    <RunSettingsSection
+      backendOverride=""
+      compressOverride=""
+      autoMemoryOverride=""
+      ambientContextOverride=""
+      permissionOverride=""
+      reviewModeOverride=""
+      backendReport={null}
+      effective={{
+        backend: { effective: "auto", source: "default" },
+        compress: { effective: "auto", source: "default" },
+        auto_memory: { effective: "off", source: "default" },
+        ambient_context: { effective: "workspace", source: "default" },
+        permission: { effective: "off", source: "default" },
+      }}
+      onBackendChange={vi.fn()}
+      onCompressChange={vi.fn()}
+      onAutoMemoryChange={vi.fn()}
+      onAmbientContextChange={vi.fn()}
+      onPermissionChange={vi.fn()}
+      onReviewModeChange={vi.fn()}
+      showReviewMode={false}
+    />,
+  );
+  expect(container.textContent).toContain(
+    "effective: workspace · from default",
+  );
 });

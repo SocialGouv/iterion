@@ -69,7 +69,7 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
 # github.com/SherClockHolmes/webpush-go v1.4.0
 ## explicit; go 1.13
 github.com/SherClockHolmes/webpush-go
-# github.com/SocialGouv/claw-code-go v0.1.1-0.20261001083837-ec3b52ad0082
+# github.com/SocialGouv/claw-code-go v0.1.1-0.20261001152229-1e658b98c835
 ## explicit; go 1.25.0
 github.com/SocialGouv/claw-code-go/hooks
 github.com/SocialGouv/claw-code-go/internal/api

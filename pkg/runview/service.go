@@ -100,6 +100,10 @@ type LaunchSpec struct {
 	// "off") from the studio Launch toggle. "" inherits the workflow/node
 	// `auto_memory:` DSL then ITERION_AUTO_MEMORY.
 	AutoMemory string
+	// AmbientContext is the run-level ambient-context override ("", "none",
+	// "workspace", "operator", "all"; ADR-119). "" inherits the workflow/node
+	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT.
+	AmbientContext string
 	// LoopBudgetGuard is the run-level back-edge affordability override
 	// ("", "on", "off"). "" inherits the workflow `loop_budget_guard:` then
 	// ITERION_LOOP_BUDGET_GUARD.
@@ -425,6 +429,11 @@ type ResumeSpec struct {
 	// back to the workflow's own value — turning memory on for a run the
 	// operator had launched hermetically.
 	AutoMemory string
+	// AmbientContext re-states the run-level ambient-context override, for the
+	// same reason AutoMemory does: a resume that said nothing would fall back
+	// to the workflow's value, and could hand the operator's setup to a run
+	// launched with `none`.
+	AmbientContext string
 	// LoopBudgetGuard re-states the run-level back-edge affordability
 	// override ("", "on", "off"), for the same reason AutoMemory does.
 	LoopBudgetGuard string

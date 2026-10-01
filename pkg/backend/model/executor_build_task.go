@@ -50,6 +50,7 @@ type backendFields struct {
 	cursors          *ir.CursorInvocation
 	compress         string // node-level `compress:` value ("" = unset)
 	autoMemory       string // node-level `auto_memory:` value ("" = inherit workflow)
+	ambientContext   string // node-level `ambient_context:` value ("" = inherit workflow)
 	permission       string // node-level `permission:` mode override ("" = inherit)
 	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
 	// REPLACES the workflow list of the same kind; see
@@ -100,6 +101,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
+			ambientContext:   n.AmbientContext,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -128,6 +130,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
+			ambientContext:   n.AmbientContext,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -1105,6 +1108,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	task := delegate.Task{
 		NodeID:                f.id,
+		AmbientContext:        e.ambientContextPolicy(f, backendName),
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,

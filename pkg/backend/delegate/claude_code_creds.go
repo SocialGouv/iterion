@@ -89,28 +89,29 @@ func isForfaitSuppressed(env map[string]string) bool {
 	return env[ForfaitSuppressedEnvKey] != ""
 }
 
-// settingSourcesFromEnv returns the CLI --setting-sources for claude_code
-// nodes. Default "user,project": load the operator's user-level CLAUDE.md /
-// settings.json and the target repo's project CLAUDE.md / .claude/settings.json
-// so the agent honours the same conventions native Claude Code would — a core
-// part of closing the adaptivity gap. Override via
-// ITERION_CLAUDE_CODE_SETTING_SOURCES (comma-separated user/project/local).
-// "" or "none" omits the flag, and the CLI then loads its own default: every
-// source, user, project and local alike. That widens what the target
-// repository's settings reach rather than narrowing it; the routing pin holds
-// either way (claudeRoutingPin). "local" is omitted from the default:
-// .claude/settings.local.json is machine-specific and may carry absolute paths
-// that don't resolve in a sandbox.
-func settingSourcesFromEnv() []claudesdk.SettingSource {
-	raw, ok := os.LookupEnv("ITERION_CLAUDE_CODE_SETTING_SOURCES")
+// settingSourcesEnv is the raw, claude_code-specific override of the scopes a
+// node loads. The ambient-context policy (ADR-119, claudeAmbient) decides them
+// otherwise.
+const settingSourcesEnv = "ITERION_CLAUDE_CODE_SETTING_SOURCES"
+
+// settingSourcesFromEnv reads ITERION_CLAUDE_CODE_SETTING_SOURCES, a
+// comma-separated list of user/project/local. set is false when the variable
+// is absent: the policy then decides. "" or "none" loads no scope at all,
+// which the caller must emit as `--setting-sources ""` — omitting the flag
+// would make the CLI load every scope, `local` included. The routing pin
+// (claudeRoutingPin) holds whatever the scopes. unknown lists the tokens that
+// are none of the three, for the caller to report: a list made only of typos
+// loads no scope at all.
+func settingSourcesFromEnv() (sources []claudesdk.SettingSource, set bool, unknown []string) {
+	raw, ok := os.LookupEnv(settingSourcesEnv)
 	if !ok {
-		raw = "user,project"
+		return nil, false, nil
 	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.EqualFold(raw, "none") {
-		return nil
+		return []claudesdk.SettingSource{}, true, nil
 	}
-	var out []claudesdk.SettingSource
+	out := []claudesdk.SettingSource{}
 	for _, part := range strings.Split(raw, ",") {
 		switch strings.ToLower(strings.TrimSpace(part)) {
 		case "user":
@@ -119,9 +120,11 @@ func settingSourcesFromEnv() []claudesdk.SettingSource {
 			out = append(out, claudesdk.SettingSourceProject)
 		case "local":
 			out = append(out, claudesdk.SettingSourceLocal)
+		default:
+			unknown = append(unknown, strings.TrimSpace(part))
 		}
 	}
-	return out
+	return out, true, unknown
 }
 
 // strictMCPFromEnv reports whether claude_code nodes should run with

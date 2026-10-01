@@ -7613,6 +7613,7 @@ export interface components {
             source: string;
         };
         previewEffectiveSettings: {
+            ambient_context: components["schemas"]["previewEffectiveKnob"];
             auto_memory: components["schemas"]["previewEffectiveKnob"];
             backend: components["schemas"]["previewEffectiveKnob"];
             compress: components["schemas"]["previewEffectiveKnob"];

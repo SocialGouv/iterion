@@ -282,11 +282,14 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_PI_NO_PROGRESS_TIMEOUT":          true,
 	"ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS":     true,
 	// Defaults a node that names nothing inherits and a bot's author may
-	// have relied on: its backend (what its tools and its gate can be), and
-	// auto-memory, off so a run neither reads nor writes the operator's.
+	// have relied on: its backend (what its tools and its gate can be),
+	// auto-memory, off so a run neither reads nor writes the operator's, and
+	// the ambient context, the repository's instructions without the
+	// operator's setup (ADR-119).
 	"ITERION_DEFAULT_BACKEND":    true,
 	"ITERION_BACKEND_PREFERENCE": true,
 	"ITERION_AUTO_MEMORY":        true,
+	"ITERION_AMBIENT_CONTEXT":    true,
 	// Workspace safety outside ITERION_WORKSPACE_: pruning a checkout the
 	// run does not own, and the host disk the worktree pool and scratch
 	// sweep bound.

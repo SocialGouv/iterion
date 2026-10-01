@@ -101,6 +101,12 @@ type CLIAgentProtocol struct {
 	// needing its own Backend implementation. nil emits nothing.
 	ExtraArgsFor func(task Task) []string
 
+	// SystemPromptSuffix returns per-task text appended to the composed system
+	// prompt, for what a backend must say that the generic composition does
+	// not know: pi's context files when iterion resolves them in its place
+	// (ADR-119). nil appends nothing.
+	SystemPromptSuffix func(task Task) string
+
 	// ParseOutput extracts the assistant's final text (plus optional session
 	// id and token count) from the CLI's raw stdout. For a stream-json
 	// protocol it walks the NDJSON events; for a text protocol it returns
@@ -309,6 +315,9 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	}
 
 	systemPrompt := task.BuildSystemPrompt()
+	if proto.SystemPromptSuffix != nil {
+		systemPrompt += proto.SystemPromptSuffix(task)
+	}
 	userPrompt := task.UserPrompt
 
 	// When the CLI exposes no system-prompt flag, fold the composed system

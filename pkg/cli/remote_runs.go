@@ -118,6 +118,7 @@ type RemoteRunsLaunchOptions struct {
 	Backend         string
 	Compress        string
 	AutoMemory      string
+	AmbientContext  string
 	LoopBudgetGuard string
 	Permission      string
 	ReviewMode      string
@@ -168,6 +169,7 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		"backend":           opts.Backend,
 		"compress":          opts.Compress,
 		"auto_memory":       opts.AutoMemory,
+		"ambient_context":   opts.AmbientContext,
 		"loop_budget_guard": opts.LoopBudgetGuard,
 		"permission":        opts.Permission,
 		"review_mode":       opts.ReviewMode,

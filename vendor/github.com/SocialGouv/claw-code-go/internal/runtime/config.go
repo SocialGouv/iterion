@@ -123,6 +123,10 @@ type Config struct {
 // PromptConfig holds the resolved (non-tri-state) system-prompt section
 // toggles. The zero value disables everything; use DefaultPromptConfig for
 // the all-on default.
+//
+// The Memory* scope fields at the end are not toggles: they say which files
+// the project-instructions section reads, and their zero values leave that
+// unscoped. See clawctx.MemoryOptions for their semantics.
 type PromptConfig struct {
 	Environment         bool
 	GitStatus           bool
@@ -144,6 +148,24 @@ type PromptConfig struct {
 	// AutoMemoryDir overrides where the auto-memory section reads MEMORY.md
 	// from (empty = derived from the working directory).
 	AutoMemoryDir string
+
+	// MemorySkipUser leaves ~/.claude/CLAUDE.md (and the user rules) out of
+	// the project instructions.
+	MemorySkipUser bool
+	// MemoryRoot is the workspace boundary — an absolute directory. The walk
+	// up from the working directory is split there: the ancestors up to and
+	// including MemoryRoot are the workspace's, those above it are outer.
+	// Empty = every ancestor is outer.
+	MemoryRoot string
+	// MemorySkipWorkspace leaves the working directory's files and the
+	// ancestors up to MemoryRoot out.
+	MemorySkipWorkspace bool
+	// MemorySkipOuter leaves the ancestors above MemoryRoot out.
+	MemorySkipOuter bool
+	// MemoryClaudeCodeLayout loads .claude/CLAUDE.md and .claude/rules/**/*.md
+	// from every included directory, and ~/.claude/rules/**/*.md with the
+	// user scope. Conditional rules (frontmatter `paths`) are skipped.
+	MemoryClaudeCodeLayout bool
 }
 
 // DefaultPromptConfig returns the all-on default (Claude Code parity).
@@ -183,9 +205,14 @@ func (p PromptConfig) AssembleOptions() clawctx.AssembleOptions {
 		AutoMemory:          p.AutoMemory,
 		AutoMemoryDir:       p.AutoMemoryDir,
 		Memory: clawctx.MemoryOptions{
-			WalkUp:   p.MemoryWalkUp,
-			Imports:  p.MemoryImports,
-			MaxBytes: p.MemoryMaxBytes,
+			WalkUp:           p.MemoryWalkUp,
+			Imports:          p.MemoryImports,
+			MaxBytes:         p.MemoryMaxBytes,
+			SkipUser:         p.MemorySkipUser,
+			Root:             p.MemoryRoot,
+			SkipWorkspace:    p.MemorySkipWorkspace,
+			SkipOuter:        p.MemorySkipOuter,
+			ClaudeCodeLayout: p.MemoryClaudeCodeLayout,
 		},
 	}
 }
@@ -227,6 +254,14 @@ func ResolvePromptConfig(p *config.RuntimePromptConfig) PromptConfig {
 // promptSections is the single registry of toggleable sections: canonical
 // (kebab-case) name + PromptConfig field accessor. Lookups normalize the
 // input (lowercase, "-"/"_" stripped), so "git-status" == "gitStatus".
+//
+// It lists sections — things that are on or off. The Memory* scope fields of
+// PromptConfig are not sections and are absent on purpose: MemoryRoot is a
+// path, and the booleans are restrictions whose zero value means "everything",
+// so an exclusive-enable list would switch a restriction ON while switching
+// every real section off. The embedding host sets them on the PromptConfig
+// itself, and they survive the minimal reset and the section overrides (see
+// ApplyPromptSectionOverrides).
 var promptSections = []struct {
 	canonical string
 	field     func(*PromptConfig) *bool
@@ -288,9 +323,16 @@ func ApplyPromptSectionOverrides(cfg *Config, minimal bool, only, disable []stri
 		base = *cfg.Prompt
 	}
 	if minimal || len(only) > 0 {
-		keep := base.MemoryMaxBytes
+		// Values, not sections: the minimal reset turns sections off and
+		// leaves what the host configured about the files they read.
+		keep := base
 		base = MinimalPromptConfig()
-		base.MemoryMaxBytes = keep
+		base.MemoryMaxBytes = keep.MemoryMaxBytes
+		base.MemorySkipUser = keep.MemorySkipUser
+		base.MemoryRoot = keep.MemoryRoot
+		base.MemorySkipWorkspace = keep.MemorySkipWorkspace
+		base.MemorySkipOuter = keep.MemorySkipOuter
+		base.MemoryClaudeCodeLayout = keep.MemoryClaudeCodeLayout
 	}
 	set := func(names []string, val bool) error {
 		for _, name := range names {

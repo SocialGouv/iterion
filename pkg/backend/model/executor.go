@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -138,6 +139,13 @@ type ClawExecutor struct {
 	autoMemoryOverride   string
 	autoMemoryEnvDefault string
 	autoMemStore         knowledge.MemoryStore
+
+	// Ambient context (ADR-119): what a node inherits besides its prompt. Same
+	// precedence shape: run override (CLI --ambient-context / launch API) >
+	// node DSL > workflow DSL > ITERION_AMBIENT_CONTEXT > workspace.
+	wfAmbientContext         string
+	ambientContextOverride   string
+	ambientContextEnvDefault string
 	// The space, its materialisation directory and the state-root guards are
 	// fixed for the whole run, so they are resolved on the first node that
 	// needs them and reused — including a failure, so a refused state root
@@ -546,6 +554,13 @@ func WithAutoMemoryOverride(mode string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.autoMemoryOverride = mode }
 }
 
+// WithAmbientContextOverride sets the run-level ambient-context override (CLI
+// --ambient-context / launch API): none|workspace|operator|all, or "" for
+// "unset, defer to DSL/env". Highest-priority input to ambient.ResolveSourced.
+func WithAmbientContextOverride(policy string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.ambientContextOverride = policy }
+}
+
 // WithAutoMemoryStore injects the knowledge store the auto-memory mirror
 // persists through. nil leaves the local filesystem default; cloud runners
 // pass the Mongo store, which is what makes MEMORY.md survive the pod.
@@ -856,18 +871,20 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCompress:         wf.Compress,
 		compressEnvDefault: os.Getenv(rewrite.ModeEnv),
 
-		wfAutoMemory:         wf.AutoMemory,
-		autoMemoryEnvDefault: os.Getenv(automemory.ModeEnv),
-		wfPermission:         wf.Permission,
-		wfPermAllow:          wf.PermissionAllow,
-		wfPermAsk:            wf.PermissionAsk,
-		wfPermDeny:           wf.PermissionDeny,
-		permEnvDefault:       os.Getenv("ITERION_PERMISSION"),
-		wfCompaction:         wf.Compaction,
-		wfCapabilities:       wf.Capabilities,
-		wfSkills:             wf.Skills,
-		wfMCP:                wf.MCP,
-		botID:                wf.Name,
+		wfAutoMemory:             wf.AutoMemory,
+		autoMemoryEnvDefault:     os.Getenv(automemory.ModeEnv),
+		wfAmbientContext:         wf.AmbientContext,
+		ambientContextEnvDefault: os.Getenv(ambient.PolicyEnv),
+		wfPermission:             wf.Permission,
+		wfPermAllow:              wf.PermissionAllow,
+		wfPermAsk:                wf.PermissionAsk,
+		wfPermDeny:               wf.PermissionDeny,
+		permEnvDefault:           os.Getenv("ITERION_PERMISSION"),
+		wfCompaction:             wf.Compaction,
+		wfCapabilities:           wf.Capabilities,
+		wfSkills:                 wf.Skills,
+		wfMCP:                    wf.MCP,
+		botID:                    wf.Name,
 		routeCooldowns: routeCooldownLedger{
 			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),
 		},
@@ -881,6 +898,10 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 
 	if e.backendRegistry == nil {
 		e.backendRegistry = delegate.NewRegistry()
+	}
+	if ambient.InvalidEnv(e.ambientContextEnvDefault) && e.logger != nil {
+		e.logger.Warn("%s=%q is not one of %s: ignored, nodes fall back to their DSL or the workspace default",
+			ambient.PolicyEnv, e.ambientContextEnvDefault, strings.Join(ambient.Values, ", "))
 	}
 
 	return e

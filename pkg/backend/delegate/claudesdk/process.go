@@ -168,7 +168,9 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 		args = append(args, "--add-dir", dir)
 	}
 
-	if len(cfg.SettingSources) > 0 {
+	// nil leaves the CLI default (every source); an empty, non-nil list loads
+	// none and must still be emitted, as `--setting-sources ""`.
+	if cfg.SettingSources != nil {
 		srcs := make([]string, len(cfg.SettingSources))
 		for i, s := range cfg.SettingSources {
 			srcs[i] = string(s)

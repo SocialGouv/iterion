@@ -18,7 +18,7 @@ import (
 // mode) without modifying claudesdk's spawn pipeline.
 //
 // Implementations MUST honour cwd and env on the returned cmd in a
-// way the inner process actually sees them — for sandbox drivers,
+// way the inner process actually sees them â for sandbox drivers,
 // that means passing them as `--workdir` / `--env` flags to the
 // container runtime, not as Go-level cmd.Dir/cmd.Env (which would
 // only configure the outer `docker exec` driver process).
@@ -31,7 +31,7 @@ import (
 // through a container runtime MUST keep stdin forwarded (e.g.
 // `docker exec --interactive`) when this is true, otherwise the
 // runtime closes the child's stdin and the CLI exits cleanly with
-// no result message — the failure mode that motivated this flag.
+// no result message â the failure mode that motivated this flag.
 // false means one-shot Prompt() mode (prompt is a CLI argument,
 // stdin will be /dev/null).
 type CommandBuilder func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd
@@ -130,7 +130,7 @@ type config struct {
 }
 
 // errorf reports an internal SDK error through the configured log hook,
-// falling back to iterion's central logger when none is set — never a
+// falling back to iterion's central logger when none is set â never a
 // silent no-op. iterion always wires WithLogf (see
 // ClaudeCodeBackend.buildTransportOptions), so the fallback only serves
 // a caller that constructed the transport directly; it still honours
@@ -179,7 +179,7 @@ func WithEnv(key, value string) Option {
 }
 
 // WithCommandBuilder replaces the SDK's default exec.CommandContext
-// call with a caller-supplied constructor — the integration point for
+// call with a caller-supplied constructor â the integration point for
 // sandbox routing. See [CommandBuilder] for the contract.
 //
 // When unset, the SDK uses the historical host-execution path
@@ -317,9 +317,18 @@ func WithThinking(cfg ThinkingConfig) Option {
 	return func(c *config) { c.thinking = &cfg }
 }
 
-// WithSettingSources controls which settings sources to load.
+// WithSettingSources controls which settings sources to load. Called with no
+// source it leaves the CLI's default in place, which loads EVERY source; use
+// WithNoSettingSources to load none.
 func WithSettingSources(sources ...SettingSource) Option {
 	return func(c *config) { c.settingSources = sources }
+}
+
+// WithNoSettingSources loads no settings source at all: it emits
+// `--setting-sources ""`. Omitting the flag is not the same thing — the CLI
+// then loads every source, `local` included.
+func WithNoSettingSources() Option {
+	return func(c *config) { c.settingSources = []SettingSource{} }
 }
 
 // WithSettingsJSON passes an inline settings object the CLI merges on top of

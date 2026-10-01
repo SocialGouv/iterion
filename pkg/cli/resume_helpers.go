@@ -187,6 +187,7 @@ func buildResumeExecutor(
 		SandboxTiersKnown: true,
 		RunFallback:       []ir.Fallback{runFallback},
 		AutoMemory:        opts.AutoMemory,
+		AmbientContext:    opts.AmbientContext,
 		// Same resolution the studio resume path uses, so the two surfaces
 		// key a bot's memory identically.
 		BotID:          runview.BotIDForRun(r),

@@ -356,6 +356,14 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}}
 	}
 
+	// The ambient-context policy (ADR-119): the instruction files the node
+	// inherits, rendered by claw-code-go's own loader. Appended before the
+	// memory blocks, whose cache_control re-mark covers the last block — this
+	// one included, and it is as stable as they are.
+	if ctx := clawAmbientSystemContext(task); ctx != "" {
+		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: ctx})
+	}
+
 	// User message.
 	userText := task.UserPrompt
 

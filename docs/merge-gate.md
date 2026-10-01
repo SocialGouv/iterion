@@ -177,7 +177,8 @@ whole surrounding package). Skipping claude_code's own context-file
 injection is a further, larger lever this pass did NOT take — it would
 need a per-node `setting_sources:` DSL field (today `ITERION_CLAUDE_CODE_SETTING_SOURCES`
 is engine-wide only), a genuinely new capability, filed as a follow-up
-rather than bundled into this preset.
+rather than bundled into this preset. **Shipped since as `ambient_context:`
+(ADR-119)**: `ambient_context: none` on a review node is that lever.
 
 **The model-per-tier mechanism.** A node's `model:` (and `reasoning_effort:`)
 field resolves ONLY `${ENV_VAR:-default}` from the process environment,

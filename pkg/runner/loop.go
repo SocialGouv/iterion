@@ -3032,6 +3032,9 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// environment, so an operator's `--auto-memory off` on a bot whose
 		// DSL says `on` would run with memory on — the knob failing open.
 		AutoMemory: msg.AutoMemory,
+		// Same failure direction for the ambient context: dropping it would hand
+		// the run the workflow's policy instead of the operator's explicit one.
+		AmbientContext: msg.AmbientContext,
 		// Keep this as the ExecutorSpec's run-level override: folding it into
 		// wf.Permission would let a node-level `off` beat an operator `deny`.
 		Permission: msg.Permission,

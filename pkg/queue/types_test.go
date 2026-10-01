@@ -249,8 +249,11 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// amputated payload (a broken plugin.yaml is invisible to Enabled()) as
 	// the whole declaration and prunes a still-enabled plugin's launch-pass
 	// mirrors on the first resume.
-	if SchemaVersion != 20 {
-		t.Errorf("SchemaVersion = %d, want 20 (bump intentionally)", SchemaVersion)
+	// v=21 carries the ambient-context policy (ADR-119): dropped, a stale
+	// runner hands a run declared or launched with `none` the operator's whole
+	// setup.
+	if SchemaVersion != 21 {
+		t.Errorf("SchemaVersion = %d, want 21 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
