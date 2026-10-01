@@ -402,3 +402,33 @@ func TestValkeyCrossReplica_ForgeOAuthStartedOnACompletesOnB(t *testing.T) {
 		t.Fatalf("the replay created a second connection: %d", len(conns))
 	}
 }
+
+// A publish grant and a settle mark written on one replica are read on the
+// other: the sweep runs on whichever replica holds the lease, and the event
+// path on whichever received the outcome — a mark or a grant flag kept per pod
+// would be re-read, or a cut-back decided against a share it cannot see.
+func TestValkeyCrossReplica_GrantFlagsAndSettleMarksAreShared(t *testing.T) {
+	r := newTwoReplicas(t)
+	if _, ok := r.a.gateSettles.(*valkeyGateSettleStore); !ok {
+		t.Fatalf("replica a did not select the Valkey settle-mark store: %T", r.a.gateSettles)
+	}
+	if _, ok := r.a.forgePublishTokens.(*valkeyForgePublishTokenStore); !ok {
+		t.Fatalf("replica a did not select the Valkey publish-grant store: %T", r.a.forgePublishTokens)
+	}
+	mark := gateSettlement{Reason: gateSettledMerged, SHA: "deadbeef", Episode: 1727700000123}
+	r.a.gateSettles.settle("run-x", mark, time.Hour)
+	got, err := r.b.gateSettles.settled(context.Background(), []string{"run-x"})
+	if err != nil || got["run-x"] != mark {
+		t.Errorf("replica b read %+v (err %v) for the mark replica a wrote, want %+v", got, err, mark)
+	}
+
+	if err := r.a.forgePublishTokens.Register("tok-x", ForgePublishGrant{TeamID: "t", ConnectionID: "c", Repo: "o/r"}); err != nil {
+		t.Fatal(err)
+	}
+	if cutBack, found, err := r.a.shareGrant("tok-x"); err != nil || !found || cutBack {
+		t.Fatalf("share on replica a = cutBack %v, found %v, %v", cutBack, found, err)
+	}
+	if cut, err := r.b.cutBack("tok-x", time.Hour); err != nil || cut {
+		t.Errorf("replica b cut back a grant replica a had shared (cut %v, err %v)", cut, err)
+	}
+}

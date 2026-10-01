@@ -37,6 +37,8 @@ func newForgePublishTestServer(t *testing.T) (*Server, *fakeReviewClient) {
 	s := New(Config{}, iterlog.New(iterlog.LevelError, nil))
 	s.forgeConnections = forge.NewMemoryConnectionStore()
 	s.forgePublishTokens = NewForgePublishTokenRegistry()
+	s.gateSettles = newMemoryGateSettleStore(nil) // wired with the grants, as New does
+	s.gateSweep = defaultGateSweepSettings()      // not whatever ITERION_GATE_SWEEP_* the shell exports
 	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
 		ID: "conn1", TenantID: "team1", Provider: forge.ProviderGitHub,
 	}); err != nil {

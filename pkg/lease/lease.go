@@ -24,9 +24,9 @@ import (
 	"time"
 )
 
-// ErrLost reports that the lease belongs to another owner: a release that
-// arrived after the lease moved on. It tells of an overrun, so callers log it
-// rather than treat it as a success.
+// ErrLost reports that the caller does not hold the lease — another owner
+// does: a holder that overran its TTL, or a release sent after the lease moved
+// on. Callers log it rather than treat it as a success.
 var ErrLost = errors.New("lease: held by another owner")
 
 // Store persists named leases. Both twins (MemoryStore, MongoStore) honour the

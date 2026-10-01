@@ -168,6 +168,9 @@ var botVarsInfraPrefixes = []string{
 	// registry, lifecycle and logs.
 	"ITERION_RUNNER_", "ITERION_BOARD_", "ITERION_ALERTS_", "ITERION_INSTANCES_",
 	"ITERION_SHUTDOWN_", "ITERION_LOG_",
+	// The merge-gate sweep's cadence: the server's net under the lossy
+	// outcome event, and what it spends of the forge's request budget.
+	"ITERION_GATE_SWEEP_",
 	// Endpoints and identities presented outside: the metrics listener,
 	// the CLI's remote instance, the forge app, web push, scan shards.
 	"ITERION_PROMETHEUS_", "ITERION_REMOTE_", "ITERION_FORGE_GITHUB_APP_",

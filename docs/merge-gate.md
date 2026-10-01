@@ -1021,6 +1021,81 @@ sweep spent that hour. The count is of attempts as the forge client sends them
 included — so it is close to the budget spent, not identical: a token mint is
 counted and spends no REST budget.
 
+The sweep's cadence — interval, lookback, deep-pass frequency — is the
+operator's to set without a release (`ITERION_GATE_SWEEP_*`,
+[environment-variables.md](environment-variables.md#merge-gate-server)); the
+horizon is not, being the grant's. A value that would open a gap between two
+windows keeps its default and warns. However long the interval, the lease stays
+paced by the default minute at most — a dead holder is replaced within minutes
+— and a new term's first pass runs at once. A deep pass reads at most 2 000
+runs; a window holding more is walked over the following passes, each beside
+its fast pass, until it is exhausted — never left for the next deep pass to
+resume, which a spaced-out deep cadence would turn into runs no deep pass
+reaches. Only a page that fails twice in a row parks the walk until the next
+deep pass, so a broken page is not re-read at every tick.
+
+### A settled run is not offered again
+
+Election makes the sweep's cost one replica's; what that replica spends is
+the next question, and most of it went on runs with nothing left to repair.
+Over the eight-day window of one busy repo, 95 % of the gating runs sat on a
+pull request already merged or closed, and each was read again every minute
+for an hour and on every deep pass for the whole horizon — some 440–880 forge
+reads per run from the one sweeping replica, against a dozen for the run's own
+work.
+
+So when the reconciler finds a run **settled**, it writes the fact down, and
+the sweep reads those marks — one round-trip per page, before either lane is
+offered anything ([ADR-118](adr/118-merge-gate-settle-marks-and-verdict-attribution.md)):
+
+| The reconciler found | Mark | Holds |
+|---|---|---|
+| the pull request merged | `merged` | the rest of the horizon |
+| a real verdict on the head the run reviewed | `verdict_success` / `verdict_failure` | the rest of the horizon |
+| the run names no reviewed revision | `unpinned` | the rest of the horizon |
+| the pull request closed, unmerged — the run stopped on the close included | `closed` | 6 h, then re-read — it can reopen |
+| the head moved past the reviewed revision | `head_moved` | 6 h, then re-read — a force-push can bring it back |
+
+A mark is bound to the run's terminal **episode** (its `updated_at`): a resumed
+run that ends again is looked at again. A `verdict_failure` run is still
+offered to the [auto-fix lane](#autofix) — a red verdict is that
+lane's trigger — and to that lane only. The re-read of a reversible mark is
+what repairs a pull request reopened on the same head: the reopen launches no
+fresh review (its delivery shares the original launch's per-head key), so the
+dead run's own claim waits for it — up to 6 h, where the deep pass used to
+answer within 30 min. The marks live beside the publish grants (Valkey when
+the deployment has it, memory otherwise): their use ends with the grant's, and
+a mark that is lost, or a store that cannot answer, costs a re-read — the
+sweep then offers every run, and says so once.
+
+**The run's own verdict needs no forge read at all.** The publish endpoint
+that posts it records it on the run's grant (`verdict`: head, check, state), so
+the reconciler knows on the event path that the verdict this run owed is on
+the forge, and settles it there: a run settled green costs the sweep nothing
+past the minute it ended. A red one stays offered to the auto-fix lane, which
+reads its pull request until it launches a fix — on every pass, for the
+horizon, when the lane refuses it (a fork's pull request). The record names the grant, not the run, so it is
+trusted only on a grant no second run publishes with; on a **shared** one — a
+launch that pinned the token, a fork — the reconciler reads the forge as
+before.
+
+That record is also what the grant's **cut-back** needed. A gating run keeps
+its forge-write grant for the horizon, in case a repair must speak for it;
+once nothing will post with it, the grant drops to the ordinary post-run
+grace: after the run's own green verdict, after its own red verdict when the
+repo's auto-fix lane is off, and when the reconciler finds the pull request
+merged — which it reads only for a run not yet settled on a verdict. A red
+verdict with the lane on keeps the grant — the lane reads it to launch a
+fixer — and so does a run settled on a verdict found only on the forge; a
+later merge does not shorten either. The grant reaper's ordinary grace, at
+the end of a run that gates nothing, is the same cut-back. A shared grant, or
+one whose run is not over, is never cut back: a shared grant keeps its TTL, or
+the gate grace once a gating run that names its revision ends. The share and the cut-back are one decision on the grant: a pinned
+launch on a grant already cut back is refused (launch without the token to
+mint a fresh one), and a fork of one — or of a grant already gone — is warned
+about in the server log. The status's target URL stays the review, where
+reviewers land: ownership is read from the record, never from the check.
+
 Finally, when a repair genuinely declines to act, **it says so**. Every branch
 past "this run held a publish grant and died" now logs the reason it is posting
 nothing (`forge gate: run … held a grant on … but posts nothing: …`). Those

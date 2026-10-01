@@ -224,9 +224,10 @@ func (c *campaign) renew(termCtx context.Context, stop context.CancelFunc, deadl
 // stepDownAt is when a holder must stop if the call it sent at sent is the
 // last one it can prove: TTL/6 before the expiry the store records for that
 // call. The stores keep instants to the millisecond, so that expiry can come
-// up to a millisecond before sent+TTL — which matters for short leases — and
-// is computed here exactly as they compute it. The result keeps sent's
-// monotonic reading, so the timer is immune to wall-clock steps.
+// before sent+TTL — by up to a millisecond for a TTL of whole milliseconds, up
+// to two otherwise — which matters for short leases; it is computed here
+// exactly as they compute it. The result keeps sent's monotonic reading, so
+// the timer is immune to wall-clock steps.
 func (c *campaign) stepDownAt(sent time.Time) time.Time {
 	expires := stamp(stamp(sent).Add(c.spec.TTL))
 	return sent.Add(expires.Sub(sent.UTC()) - c.spec.TTL/6)

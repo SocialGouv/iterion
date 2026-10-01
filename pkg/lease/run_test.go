@@ -578,10 +578,15 @@ func TestRun_ARetryShorterThanTheStoresAnswerStillElects(t *testing.T) {
 }
 
 // stepDownAt must fall TTL/6 before the expiry the store actually records —
-// which, kept to the millisecond, can be almost a millisecond short of
+// which, kept to the millisecond, can be up to two milliseconds short of
 // sent+TTL. Counted from sent+TTL instead, a short lease would step down after
-// its successor could start.
+// its successor could start. And it keeps the monotonic reading of the instant
+// it was given, so a wall-clock step cannot move the holder's deadline.
 func TestStepDownAt_KeepsTheMarginToTheRecordedExpiry(t *testing.T) {
+	c := &campaign{spec: Spec{Name: "sweeper", Owner: "a", TTL: time.Minute}}
+	if got := c.stepDownAt(time.Now()); !strings.Contains(got.String(), " m=") {
+		t.Errorf("stepDownAt dropped the monotonic reading of the send instant: %s", got)
+	}
 	for _, ttl := range []time.Duration{
 		3 * time.Millisecond, 3*time.Millisecond + 700*time.Microsecond,
 		time.Second, time.Second + 300*time.Microsecond, 3 * time.Minute,
