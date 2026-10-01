@@ -117,18 +117,13 @@ func TestEverySpawnRunsWithThePinnedEnvironment(t *testing.T) {
 	}
 }
 
-// flagSettings parses the value of the `--settings` flag on a recorded argv
-// line (compact JSON, no spaces), or returns nil when the flag is absent.
-func flagSettings(t *testing.T, argv string) map[string]json.RawMessage {
+// flagSettings parses the flag settings object a spawn read from the file its
+// `--settings` flag names (spawnRecord.settings).
+func flagSettings(t *testing.T, content string) map[string]json.RawMessage {
 	t.Helper()
-	f := strings.Fields(argv)
-	i := slices.Index(f, "--settings")
-	if i < 0 || i+1 >= len(f) {
-		return nil
-	}
 	var out map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(f[i+1]), &out); err != nil {
-		t.Fatalf("--settings is not a JSON object (%s): %v", f[i+1], err)
+	if err := json.Unmarshal([]byte(content), &out); err != nil {
+		t.Fatalf("the --settings file is not a JSON object (%s): %v", content, err)
 	}
 	return out
 }
@@ -160,7 +155,8 @@ func TestEverySpawnPinsTheEnvironmentInTheFlagSettingsLayer(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			argv := spawnArgv(t, row.task)
+			rec := spawnRecorded(t, row.task)
+			argv := rec.argv
 			if len(argv) < 2 {
 				t.Fatalf("expected the Session spawn and at least one formatting pass, got %d spawn(s)", len(argv))
 			}
@@ -172,7 +168,7 @@ func TestEverySpawnPinsTheEnvironmentInTheFlagSettingsLayer(t *testing.T) {
 				if n := strings.Count(a, "--settings "); n != 1 {
 					t.Fatalf("spawn #%d carries %d --settings flag(s), want exactly one: %s", i+1, n, a)
 				}
-				settings := flagSettings(t, a)
+				settings := flagSettings(t, rec.settings[i])
 				var env map[string]string
 				_ = json.Unmarshal(settings["env"], &env)
 				if env[backgroundTasksOffEnv] != "1" {

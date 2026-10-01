@@ -1204,7 +1204,66 @@ There are four: the switch, the node's auto-memory decision
   operator's user settings could switch background work back on. They could
   also turn auto-memory back on, against the operator's personal
   `~/.claude/projects/<cwd>/memory/`. The flag layer comes after them; only
-  managed policy settings come later.
+  managed policy settings come later. The CLI applies those `env` blocks
+  again whenever a settings file changes during the session.
+
+**Routing is pinned too.** The same `env` blocks can set the variables that
+decide where the CLI sends its requests, and over which channel. A target
+repository's committed `.claude/settings.json` setting `ANTHROPIC_BASE_URL`
+would otherwise send every request of the run, with its API key or
+subscription token, to an endpoint the repository chose. Every spawn (the
+session, the structured-output pass, on the host and in a sandbox) therefore
+pins each variable of `ClaudeCodeRoutingEnv` in the flag layer:
+
+- the API endpoints (`ANTHROPIC_BASE_URL`, the Bedrock, Bedrock Mantle, Vertex,
+  Foundry, AWS and Google Cloud base URLs, `ANTHROPIC_FOUNDRY_RESOURCE`,
+  `CLAUDE_CODE_API_BASE_URL`), the provider switches (`CLAUDE_CODE_USE_*`) and
+  the companions the CLI groups with them (`CLAUDE_CODE_SKIP_*_AUTH`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL`);
+- the proxies, `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` under
+  both spellings;
+- the TLS trust: `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`,
+  `CLAUDE_CODE_CERT_STORE`.
+
+Each is pinned at the value the spawn's own environment holds, or `""` when
+it holds none: the CLI reads an empty routing variable as unset, and the empty
+value still outranks one a settings file sets. A proxy pair the spawn spells
+one way only is pinned to that value under both spellings, since the CLI's
+readers disagree on which spelling wins. The pinned values also reach the
+agent's own commands, like the rest of the CLI's environment: there, a
+routing variable the spawn left unset is set and empty. Most tools (curl,
+git, Node, Python's `urllib`) read an empty proxy or CA variable as unset.
+The Python Anthropic SDK does not: it takes an empty `ANTHROPIC_BASE_URL` as
+its base URL.
+
+The flag settings object travels as a file, never on argv, because a routing
+value can carry a credential: a proxy URL's userinfo, the sandbox egress
+proxy's token, a gateway header. On the host it is a 0600 file in a private
+temporary directory, removed when the pass ends. In a sandbox, the spawn
+writes it inside the container from the environment the CLI runs with there:
+the egress proxy and its CA are set when the container starts, and the host
+never sees them. The CLI keeps the content it read at startup, so a later
+write to the file does not move the pin, and it refuses to start when the file
+is missing.
+
+What the pin does not cover:
+
+- Credentials. They stay in the process environment and are never written to
+  the settings object. A settings file can still replace the key the CLI
+  sends, but only towards the pinned endpoint.
+- Settings that run commands (`hooks`, `apiKeyHelper` and the other auth or
+  header helpers): the pin only concerns the `env` block.
+- The cloud SDK variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`, metadata
+  endpoints). They only take effect once a provider switch selects that
+  cloud. They stay unpinned because the pinned `env` also reaches the agent's
+  own commands, and those SDKs read a set-but-empty variable differently from
+  an unset one.
+- `ANTHROPIC_UNIX_SOCKET`: the CLI already drops it from every settings source.
+- Managed policy settings, which outrank the flag layer by design.
+
+`ITERION_CLAUDE_CODE_SETTING_SOURCES=none` does not turn this off, and does not
+turn settings off either: it omits `--setting-sources`, and the CLI then loads
+every source, `local` included.
 
 Why this switch, and not a softer lever. With background work enabled, the
 CLI (2.1.280) runs an agent in the background:

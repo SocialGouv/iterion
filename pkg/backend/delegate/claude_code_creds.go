@@ -94,10 +94,13 @@ func isForfaitSuppressed(env map[string]string) bool {
 // settings.json and the target repo's project CLAUDE.md / .claude/settings.json
 // so the agent honours the same conventions native Claude Code would — a core
 // part of closing the adaptivity gap. Override via
-// ITERION_CLAUDE_CODE_SETTING_SOURCES (comma-separated user/project/local);
-// "" or "none" disables it, restoring the CLI's headless no-settings default.
-// "local" is omitted from the default: .claude/settings.local.json is
-// machine-specific and may carry absolute paths that don't resolve in a sandbox.
+// ITERION_CLAUDE_CODE_SETTING_SOURCES (comma-separated user/project/local).
+// "" or "none" omits the flag, and the CLI then loads its own default: every
+// source, user, project and local alike. That widens what the target
+// repository's settings reach rather than narrowing it; the routing pin holds
+// either way (claudeRoutingPin). "local" is omitted from the default:
+// .claude/settings.local.json is machine-specific and may carry absolute paths
+// that don't resolve in a sandbox.
 func settingSourcesFromEnv() []claudesdk.SettingSource {
 	raw, ok := os.LookupEnv("ITERION_CLAUDE_CODE_SETTING_SOURCES")
 	if !ok {
