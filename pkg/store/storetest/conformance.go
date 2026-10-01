@@ -520,15 +520,28 @@ func testQueuedFlipRevert(t *testing.T, s store.RunStore) {
 	}
 	flipOf := func(t *testing.T, runID string, from store.RunStatus) store.QueuedFlip {
 		t.Helper()
-		// A marker other than the store's clock: a store that stamps its
-		// own time instead of the flip's is seen, whatever its precision.
-		f, ok, err := fl.FlipToQueued(ctx, runID, from, time.Now().Add(-1500*time.Millisecond))
+		// The instant asked for is another time than the store's clock, and
+		// the run already carries a marker: the flip stamps exactly the
+		// rule's answer — its instant, unless the attempt it replaces
+		// occupies a later millisecond.
+		before, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(-1500 * time.Millisecond)
+		f, ok, err := fl.FlipToQueued(ctx, runID, from, at)
 		if err != nil || !ok {
 			t.Fatalf("flip from %s = (%t, %v)", from, ok, err)
 		}
+		want := store.QueuedFlipAt(at)
+		if before.QueuedAt != nil {
+			if next := before.QueuedAt.Truncate(time.Millisecond).Add(time.Millisecond); next.After(want) {
+				want = next
+			}
+		}
 		r, err := s.LoadRun(ctx, runID)
-		if err != nil || r.Status != store.RunStatusQueued || r.QueuedAt == nil || !r.QueuedAt.Equal(f.At) || !f.At.Equal(store.QueuedFlipAt(f.At)) {
-			t.Fatalf("after the flip: %v (%v), want queued at exactly the flip's marker %v", r, err, f.At)
+		if err != nil || r.Status != store.RunStatusQueued || r.QueuedAt == nil || !r.QueuedAt.Equal(f.At) || !f.At.Equal(want) {
+			t.Fatalf("after the flip: %v (%v), want queued at exactly the rule's marker %v", r, err, want)
 		}
 		return f
 	}
@@ -635,6 +648,49 @@ func testQueuedFlipRevert(t *testing.T, s store.RunStore) {
 		}
 		if changed, err := fl.RevertQueuedFlip(ctx, runID, f, "refused"); err != nil || changed {
 			t.Fatalf("revert of a claimed run = (%t, %v), want (false, nil)", changed, err)
+		}
+	})
+
+	t.Run("two flips inside one millisecond", func(t *testing.T) {
+		const runID = "run-flip-same-ms"
+		parked(t, runID)
+		// Both flips ask for the same millisecond. B's flip lands while the
+		// run is A's attempt, so its marker is A's plus the millisecond A
+		// occupies: two distinct attempts, and A's revert — whose match is
+		// A's marker — cannot land on B's.
+		at := time.Now().Add(-time.Second)
+		a, ok, err := fl.FlipToQueued(ctx, runID, store.RunStatusFailedResumable, at)
+		if err != nil || !ok {
+			t.Fatalf("A's flip = (%t, %v)", ok, err)
+		}
+		// A's attempt is cancelled; B's resume flips the same requested
+		// instant back.
+		if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, "operator", []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+			t.Fatalf("cancel: %v %v", ok, err)
+		}
+		b, ok, err := fl.FlipToQueued(ctx, runID, store.RunStatusCancelled, at)
+		if err != nil || !ok {
+			t.Fatalf("B's flip = (%t, %v)", ok, err)
+		}
+		if !b.At.After(a.At) {
+			t.Fatalf("two flips inside one millisecond share the marker %v: the first revert's match is the second's attempt", a.At)
+		}
+		if r, err := s.LoadRun(ctx, runID); err != nil || r.QueuedAt == nil || !r.QueuedAt.Equal(b.At) {
+			t.Fatalf("after B's flip: %v (%v), want queued at %v", r, err, b.At)
+		}
+		if changed, err := fl.RevertQueuedFlip(ctx, runID, a, "stale"); err != nil || changed {
+			t.Fatalf("A's revert at B's attempt = (%t, %v), want (false, nil)", changed, err)
+		}
+		if changed, err := fl.RevertQueuedFlip(ctx, runID, b, "queue resume: B refused"); err != nil || !changed {
+			t.Fatalf("B's revert = (%t, %v), want (true, nil)", changed, err)
+		}
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The cancellation carried A's marker, and it goes back with it.
+		if r.Status != store.RunStatusCancelled || r.QueuedAt == nil || !r.QueuedAt.Equal(a.At) {
+			t.Fatalf("after B's revert: status %s queued_at %v, want what B replaced — the cancellation at A's marker %v", r.Status, r.QueuedAt, a.At)
 		}
 	})
 }

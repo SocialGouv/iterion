@@ -421,13 +421,39 @@ type QueuedFlipPrior struct {
 // it, so a revert's match on it is exact.
 func QueuedFlipAt(t time.Time) time.Time { return t.UTC().Truncate(time.Millisecond) }
 
+// NextQueuedAt is the marker a newly queued attempt takes: its flip's
+// instant, but never at or before the attempt it replaces — the first
+// millisecond a run's prior marker occupies is that attempt's, and a
+// revert's match on its own marker can then never match a later flip's.
+// The marker keeps QueuedFlipAt's precision; prior is the marker being
+// replaced, nil when the run has none.
+func NextQueuedAt(at time.Time, prior *time.Time) time.Time {
+	m := QueuedFlipAt(at)
+	if prior != nil {
+		if next := prior.Truncate(time.Millisecond).Add(time.Millisecond); next.After(m) {
+			m = next
+		}
+	}
+	return m
+}
+
+// PublishAt is a message's published_at for an attempt whose marker is
+// marker: now, but never before the marker — the attempt's own delivery
+// must not read as superseded by the very attempt whose publication it is.
+func PublishAt(now, marker time.Time) time.Time {
+	if marker.After(now) {
+		return marker
+	}
+	return now
+}
+
 // QueuedFlipper flips a run to queued for a resume, and undoes that flip —
 // that one only — when the resume is refused before its publication.
 type QueuedFlipper interface {
 	// FlipToQueued moves the run from `from` to queued, its attempt marker
-	// stamped at QueuedFlipAt(at), and returns what the run was before, read
-	// in the same atomic operation. changed=false when the run is not
-	// `from`.
+	// stamped at NextQueuedAt(at, the marker it replaces), and returns what
+	// the run was before, read in the same atomic operation. changed=false
+	// when the run is not `from`.
 	FlipToQueued(ctx context.Context, id string, from RunStatus, at time.Time) (flip QueuedFlip, changed bool, err error)
 	// RevertQueuedFlip puts flip.Prior back — only while the run is still
 	// queued with flip.At as its marker: a run claimed, cancelled, or queued

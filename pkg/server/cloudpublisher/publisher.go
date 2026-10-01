@@ -2688,7 +2688,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
+		PublishedAtRFC:  store.PublishAt(time.Now().UTC(), *r.QueuedAt).Format(time.RFC3339Nano),
 		TenantID:        tenantID,
 		OrgID:           orgID,
 		OwnerID:         ownerID,
@@ -3097,9 +3097,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// A THIS-RESUME override is also persisted to the run doc below so
 		// a subsequent auto-retry keeps the raised cap rather than
 		// reverting to the launch ask that already killed the run.
-		Budget:         wire,
-		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+		Budget:        wire,
+		BackendConfig: queue.BackendConfig{Default: queue.BackendClaw},
+		// Never before the attempt's own marker: this delivery is that
+		// attempt's, and must not read as superseded by it.
+		PublishedAtRFC: store.PublishAt(time.Now().UTC(), flip.At).Format(time.RFC3339Nano),
 		// The fallback chain is replayed from the doc for the same reason:
 		// the auto-retry that follows a usage-window park is exactly the
 		// publication that must still carry the rescue chain.

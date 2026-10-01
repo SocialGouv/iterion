@@ -676,13 +676,14 @@ func (s *FilesystemRunStore) FlipToQueued(_ context.Context, id string, from Run
 	if r.Status != from {
 		return QueuedFlip{}, false, nil
 	}
-	flip := QueuedFlip{At: at, Prior: QueuedFlipPrior{
+	marker := NextQueuedAt(at, r.QueuedAt)
+	flip := QueuedFlip{At: marker, Prior: QueuedFlipPrior{
 		Status: r.Status, QueuedAt: cloneTimePtr(r.QueuedAt), Error: r.Error, FailureCode: r.FailureCode,
 		EndReason: r.EndReason, OutcomeSeq: r.OutcomeSeq, ContinuationState: r.ContinuationState, FinishedAt: cloneTimePtr(r.FinishedAt),
 		WorkflowSource: r.WorkflowSource, WorkflowSources: slices.Clone(r.WorkflowSources), WorkflowHash: r.WorkflowHash,
 	}}
 	transitionRunStatus(r, RunStatusQueued, "", RunOutcomeMeta{})
-	r.QueuedAt = &at
+	r.QueuedAt = &marker
 	if err := s.writeRun(r); err != nil {
 		return QueuedFlip{}, false, err
 	}
@@ -860,9 +861,10 @@ func transitionRunStatus(r *Run, status RunStatus, runErr string, meta RunOutcom
 	case RunStatusQueued:
 		// Every queue publication is a distinct attempt. Refresh the marker
 		// before publishing so a stale delivery can be rejected by identity,
-		// not merely by the shared `queued` status.
-		t := r.UpdatedAt
-		r.QueuedAt = &t
+		// not merely by the shared `queued` status — and never to a marker
+		// the attempt it replaces already carried (NextQueuedAt).
+		m := NextQueuedAt(r.UpdatedAt, r.QueuedAt)
+		r.QueuedAt = &m
 		r.FinishedAt = nil
 	case RunStatusRunning, RunStatusPausedWaitingHuman:
 		// Resume paths (failed_resumable/cancelled → running) must clear

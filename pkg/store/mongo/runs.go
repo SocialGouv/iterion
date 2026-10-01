@@ -1198,8 +1198,9 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		set["finished_at"] = now
 	case status == store.RunStatusQueued:
 		// Every queue publication is a distinct attempt (rejected by
-		// identity, not merely by the shared `queued` status).
-		set["queued_at"] = now
+		// identity, not merely by the shared `queued` status) — the marker
+		// never lands at or before the attempt it replaces.
+		set["queued_at"] = queuedAtMarkerExpr(now)
 		set["finished_at"] = "$$REMOVE"
 	case status == store.RunStatusRunning:
 		// Resume must clear FinishedAt or the elapsed-time ticker
@@ -1246,6 +1247,18 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 // statusTransitionPipeline wraps the $set stage as the update pipeline.
 func statusTransitionPipeline(set bson.M) mongo.Pipeline {
 	return mongo.Pipeline{{{Key: "$set", Value: set}}}
+}
+
+// queuedAtMarkerExpr is a queued attempt's marker, as the server computes
+// it: the instant asked for, but never at or before the marker the document
+// already carries — store.NextQueuedAt is the rule's wording, the pipeline
+// its Mongo encoding (dates carry the millisecond the rule keeps).
+func queuedAtMarkerExpr(at time.Time) bson.M {
+	return bson.M{"$max": bson.A{
+		at,
+		// $add's integer operand counts milliseconds on a date.
+		bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$queued_at", time.Time{}}}, 1}},
+	}}
 }
 
 func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
@@ -1495,7 +1508,7 @@ func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatu
 	}
 	at = store.QueuedFlipAt(at)
 	set := statusTransitionSet(store.RunStatusQueued, "", store.RunOutcomeMeta{}, time.Now().UTC())
-	set["queued_at"] = at
+	set["queued_at"] = queuedAtMarkerExpr(at)
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from}))
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.Before).
@@ -1510,7 +1523,9 @@ func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatu
 	if err != nil {
 		return store.QueuedFlip{}, false, fmt.Errorf("store/mongo: flip %s to queued: %w", id, err)
 	}
-	return store.QueuedFlip{At: at, Prior: store.QueuedFlipPrior(before)}, true, nil
+	// The stored marker is what the pipeline computed from the prior read in
+	// the same update.
+	return store.QueuedFlip{At: store.NextQueuedAt(at, before.QueuedAt), Prior: store.QueuedFlipPrior(before)}, true, nil
 }
 
 // RevertQueuedFlip puts back what a resume's flip replaced, while the run is
