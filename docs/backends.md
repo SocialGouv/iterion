@@ -210,13 +210,14 @@ The citations, per cell that is not self-evident from the table:
   pre-capability behaviour. The other backends have no workspace-command
   convention; a `/name` prompt reaches them as written.
 
-  On `claude_code` a workspace command resolves with `--setting-sources`
-  omitted entirely, and stops resolving under a list that names only `user`
-  — measured both ways. So the flag does not *enable* project commands, it
-  *scopes* them: iterion always passes it and its default is `user,project`
-  (`ITERION_CLAUDE_CODE_SETTING_SOURCES`), which keeps the project scope
-  that carries them and additionally gives a `claude_code` node the
-  operator's own `~/.claude/commands/` — a `claw` node never sees those.
+  On `claude_code` a workspace command resolves under the `project` scope
+  and stops resolving under a list that names only `user` — measured both
+  ways. So the flag does not *enable* project commands, it *scopes* them:
+  iterion always passes it, and the ambient-context policy (above) decides
+  which scopes accompany it. `workspace`, the default, keeps the project
+  scope that carries them; the operator's own `~/.claude/commands/` need
+  `all` — which also closes the old asymmetry where a `claude_code` node
+  saw them and a `claw` node never did (#1716).
 
 - **claw, five proven cells.** Structured output:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its
@@ -317,6 +318,59 @@ The open parity gaps, in one list: codex/kimi/grok/opencode MCP
 servers; kimi/grok/opencode session resume/fork (silent, unguarded); pi's print-mode
 runtime refusals without diagnostic codes; and every `unknown` cell,
 which is one live e2e away from proven.
+
+## Ambient context (ADR-119) — what a node inherits besides its prompt
+
+`ambient_context: none | workspace | operator | all` — on an agent/judge node
+or the workflow, with a run override (`--ambient-context`, launch
+`ambient_context`) and `ITERION_AMBIENT_CONTEXT` above the DSL. Default
+`workspace`. Two origins:
+
+- **workspace** — the repository's instruction files, from the working
+  directory up to the repository root, never above it: `CLAUDE.md`,
+  `.claude/rules/`, `AGENTS.md` … as each backend names them. The
+  repository's settings, skills, commands and hooks are NOT governed here:
+  they carry the engine's own mirrored skills and plugin contributions.
+- **operator** — the operator's personal agent setup (`~/.claude` or
+  `$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, pi's agent directory) and the
+  instruction files above the repository root. For a worktree nested in its
+  own main checkout, the main checkout counts as the repository.
+
+| backend | `none` | `workspace` (default) | `operator` | `all` |
+|---|---|---|---|---|
+| `claude_code` | `project` + every memory file excluded | `project` + the memory files above the root excluded | `user,project` + the repository's memory excluded | `user,project` |
+| `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on | the walk above the root + the user scope | everything |
+| `pi` | `--no-context-files` | `--no-context-files` + iterion supplies the allowed files, rendered in pi's own shape | the same, operator files | pi's native loading |
+| `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without its `AGENTS.md` | the same home | `project_doc_max_bytes=0` | unchanged |
+| `opencode`, `kimi`, `grok` | not enforced (C185 on an explicit value) | | | |
+
+Measured on Claude Code CLI 2.1.282 and codex-cli 0.156.1, each cell checked
+against the real tool with planted markers and an invalid key (no cost):
+
+- **Project memory walks up to `/`, not to the repository root.** With the
+  workspace under `$HOME`, `--setting-sources project` alone still loads
+  `~/.claude/CLAUDE.md` and `~/.claude/rules` — `~/.claude/` is an
+  ancestor's `.claude/`. Dropping the `user` scope does not keep the
+  operator out; iterion therefore also excludes the memory files of every
+  directory above the root (`CLAUDE.md`, `CLAUDE.local.md`,
+  `.claude/CLAUDE.md`, `.claude/rules/**` — never `.claude/**` whole, since
+  session worktrees live under a main checkout's `.claude/worktrees/`).
+- `claudeMdExcludes` is CONCATENATED across settings layers: the engine's
+  exclusions never remove one a repository or an operator set themselves.
+- A run worktree nested in the repository also loads the primary checkout's
+  `CLAUDE.md` through that walk — the policy removes the double-load.
+- The `project` scope always loads on `claude_code`: the engine's mirrored
+  skills and plugin contributions are only discovered under it
+  (`pkg/runtime/plugin_skills.go`).
+- Workspace `@imports` are confined: Claude Code does not follow an import
+  outside the repository in headless mode, and claw-code-go's loader (used
+  by `claw`) enforces the same for the workspace scope, symlinks included —
+  a pull request's `CLAUDE.md` cannot read `@/proc/self/environ` or
+  `@~/.ssh/id_rsa` into the prompt.
+
+The structured-output pass of a `claude_code` node follows its policy too;
+before ADR-119 it passed no `--setting-sources` at all, and so loaded every
+scope, `local` included.
 
 ## TL;DR
 
@@ -1696,8 +1750,13 @@ workflow that depends on those tools.**
 
 #### Behaviour worth knowing
 
-- **`AGENTS.md` is read alongside `CLAUDE.md`, and it is the dominant
-  per-call cost.** pi walks up from the working directory and injects both.
+- **Context files are the dominant per-call cost.** Per directory pi loads
+  the FIRST existing file among `AGENTS.override.md`, `AGENTS.md`,
+  `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` — one file per directory, not both
+  (0.84.3, `resource-loader.js`) — walking up from the working directory to
+  `/`, plus the agent dir's own file. The ambient-context policy (above)
+  scopes this: every value but `all` turns pi's own loading off and has
+  iterion supply the allowed files, rendered exactly as pi renders its own.
   Two consequences:
   - If your repo carries an `AGENTS.md` meant for a different agent, it
     reaches pi nodes too.

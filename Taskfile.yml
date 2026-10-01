@@ -176,6 +176,16 @@ tasks:
     cmds:
       - go test -tags live -count=1 -run '^$' ./...
 
+  test:clilive:
+    desc: Free real-CLI proofs of the ADR-119 ambient context, against the installed claude and codex CLIs (each skips when absent). Needs a route to api.anthropic.com / api.openai.com; a deliberately invalid key fails once the CLI has assembled its context, so nothing is spent.
+    cmds:
+      - go test -tags clilive -count=1 -run TestCLILive -v ./pkg/backend/delegate/...
+
+  test:clilive:compile:
+    desc: Compile every -tags=clilive test without running anything, so the real-CLI proofs cannot bit-rot unseen
+    cmds:
+      - go test -tags clilive -count=1 -run '^$' ./...
+
   test:live:status:
     desc: Answer "do the live e2e still pass?" without spending — reads e2e/testdata/live/ledger.json + Taskfile.yml and prints every test:live target with its last verdict or `never`, sorted by staleness. No credential, no network. See #1422.
     cmds:

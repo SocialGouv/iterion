@@ -349,6 +349,7 @@ agent reviewer:
   tool_max_steps: 10
   max_tokens: 12000
   reasoning_effort: high
+  ambient_context: none   ## none|workspace|operator|all (default workspace, ADR-119)
   timeout: "20m"
   readonly: true
   publish: review_artifact
@@ -367,6 +368,19 @@ Important property groups:
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
 | Backend-specific | `full_access` and `images` are honored by the Codex backend; other backends ignore them. |
 | Persistent context | `memory` and `cursors`. |
+
+`ambient_context: none | workspace | operator | all` picks what the node
+inherits from its surroundings besides its prompt (ADR-119): the
+repository's instruction files (`workspace`, the default — `CLAUDE.md`,
+`.claude/rules/`, `AGENTS.md` …), the operator's personal agent setup and
+the files above the repository root (`operator`), both (`all`) or nothing
+(`none`). Declared on the node or the workflow, with a run override
+(`--ambient-context`) and `ITERION_AMBIENT_CONTEXT` below it. Enforced on
+`claude_code`, `claw`, `codex` and `pi`; an explicit value on another
+backend warns (C185). An invalid value is a compile error (C184). Review
+bots that judge a checkout they do not control usually want `none`. See
+[backends.md](backends.md#ambient-context-adr-119--what-a-node-inherits-besides-its-prompt) and
+[ADR-119](adr/119-ambient-context-policy.md).
 
 `readonly: true` forces delegated agents into a read-only sandbox and classifies the node as non-mutating for parallel workspace safety. `full_access: true` is a high-authority Codex-only opt-in; `readonly` wins if both are present.
 
@@ -935,6 +949,7 @@ workflow review:
   default_backend: "claude_code"
   worktree: auto
   compress: on
+  ambient_context: none
   permission: ask
   allow: ["Read(*)", "Grep(*)"]
   ask: ["Bash(git push:*)"]

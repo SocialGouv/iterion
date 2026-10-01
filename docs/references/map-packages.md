@@ -51,6 +51,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/auth/oidc` | owns the SSO connectors: Google, GitHub, and a generic OIDC discovery-based provider. | `Connector`, `StateStore` |
 | `pkg/auth/orgsso` | owns the per-tenant (per-org) SSO provider configuration: the rows an iterion org admin self-serves to enable login via their own Keycloak (a… | `DomainStore`, `Store` |
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` |
+| `pkg/backend/ambient` | iterion's switch for what an agent node inherits from its surroundings besides its prompt (ADR-119). | — |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — |
 | `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` |
