@@ -57,7 +57,6 @@ interactive sessions).
   that would grow this file belongs in the tree.
 
 ## Philosophy — [long form](docs/philosophy.md), read it before arguing with a rule
->>>>>>> c82f07200 (docs(agents): interactive sessions change files in a dedicated worktree)
 
 1. **Maximum power, no artificial limit.** A bound with no override is a
    defect; a load-bearing limit keeps a greppable escape hatch; warn (C1xx)

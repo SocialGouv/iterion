@@ -139,6 +139,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/runbooks.md`](../agents/runbooks.md) | Operational runbook index — capture what a session cost you to discover | The discovery entry point for "how do I configure / operate / debug X on | — |
 | [`docs/agents/security-selfaudit.md`](../agents/security-selfaudit.md) | Security self-audit — running iterion's own security bots on iterion | How this repo audits itself: the scanner toolchain, the sec sandbox image, the | — |
 | [`docs/agents/testing.md`](../agents/testing.md) | Testing patterns — the helpers, and the traps that ejected PRs | How tests are written here, and the four failure modes that cost real merge-queue | — |
+| [`docs/agents/worktrees.md`](../agents/worktrees.md) | Worktrees — where an interactive session changes files | Where an interactive session makes its changes: a dedicated worktree per task, | — |
 | [`docs/architecture.md`](../architecture.md) | Architecture | Iterion is organized around one compiled workflow and runtime model with | — |
 | [`docs/assistant-dock.md`](../assistant-dock.md) | The assistant dock | The studio's assistant is reachable from **every** authenticated route, | — |
 | [`docs/asymptote-bench.md`](../asymptote-bench.md) | 📈 Asymptote benchmark | `iterion bench asymptote` measures the **inter-session quality stabilisation curve** of a workflow: rerun the same task in N independent… | — |

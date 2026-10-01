@@ -1,9 +1,10 @@
 # Worktrees — where an interactive session changes files
 
-**Read it when** you are about to change anything in this repository — an
-edit, a commit, a branch — from an interactive session. The rule itself is in
-[AGENTS.md](../../AGENTS.md); this page is the mechanics and the traps.
-An iterion bot run is out of scope: the engine owns its workspace.
+Where an interactive session makes its changes: a dedicated worktree per task,
+never the shared primary checkout. The rule itself is in
+[AGENTS.md](../../AGENTS.md). This page is the mechanics, and the git traps
+measured on this repo. An iterion bot run is out of scope: the engine owns its
+workspace.
 
 Several agent sessions (Claude Code, Codex, pi …) and the operator share one
 machine and one primary checkout. That checkout belongs to the operator and
