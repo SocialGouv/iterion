@@ -218,34 +218,57 @@ application would refuse it for the wrong reason, and the reference would record
 
 - **`json` is any JSON value, and its PRESENCE selects the encoding**: `{}`, `[]`, `null`,
   `false`, `0` and `""` are each a body. It leaves as a browser's `JSON.stringify` sends it —
-  `Content-Type: application/json`, the declared key order, no whitespace, UTF-8 — byte-identical
-  on every replay. One request carries `json` or `fields`, never both; `fields` keeps the form
-  encodings (urlencoded, multipart when a field is a file).
+  `Content-Type: application/json`, the declared key order, no whitespace, UTF-8, numbers as
+  ECMAScript writes them (`10.0` → `10`, `1e2` → `100`, `5e-7` → `5e-7`, `-0.0` → `0`) —
+  byte-identical on every replay. One exception, on purpose: an integer goes out exactly as
+  declared, where a browser would round one beyond 2^53. What has no JSON bytes is refused: NaN,
+  an infinity, a lone surrogate. One request carries `json` or `fields`, never both; `fields` is
+  an object (`null` reads as absent) and keeps the form encodings (urlencoded, multipart when a
+  field is a file).
 - **JSON on the `http` surface** is for a POST that only queries (a search API): the surface
   says the request changes nothing, so no `restore` follows it. Anything that stores is a `write`.
-- **The token.** `csrf_field` names it and turns its lookup on. Before every non-GET request of
-  the entry — the `http` surface included — the harness GETs `csrf_from` (default: the entry's
-  `path`) in the same session, redirects followed, and takes the token from the first source
-  that carries one, in this FIXED order: `<input name=csrf_field>` (its `value`), `<meta
-  name=csrf_field>` (its `content`), then the cookie named by `csrf_cookie` in the session's jar.
-  Each attribute is read from the one tag carrying that name, whatever the attribute order or
-  quoting. A GET never carries a token and never fetches the page.
+- **The token.** `csrf_field` names it and turns its lookup on. Before every request of the
+  entry whose method changes something — the `http` surface included; GET, HEAD, OPTIONS and
+  TRACE never carry a token nor fetch the page — the harness GETs `csrf_from` in the same session,
+  redirects followed, and takes the token from the first source that carries one, in this FIXED
+  order: `<input name=csrf_field>` (its `value`), `<meta name=csrf_field>` (its `content`), then
+  the cookie named by `csrf_cookie`. Each attribute is read from the one tag carrying that name,
+  whatever the attribute order or quoting; of two same-named attributes the first counts, as in
+  a browser. The cookie is the one the request itself carries: of two sharing the name, the one
+  with the most specific path.
+- **`csrf_from`** is an absolute path (`/...`, no whitespace or control character); it defaults
+  to the entry's `path`. A JSON request with `csrf_field` must declare it: the JSON route itself
+  rarely renders a token, and its GET typically answers 405. A token page that cannot be reached
+  at all is refused by name.
 - **Where it travels.** In a header when one is declared — the name a `<meta
   name=csrf_header_meta>` renders when the page renders it, else `csrf_header` — and otherwise
-  as the form field `csrf_field`. A token found whose header has no name is refused.
+  as the form field `csrf_field`. A token found whose header has no name is refused, and so is a
+  token header, declared or rendered, that names one the harness writes or defaults
+  (`Content-Type`, `Content-Length`, `Cookie`, `Host`, `Transfer-Encoding`, `Connection`,
+  `Accept`, `User-Agent`).
 - **No token found: the request goes without one**, never with an empty header. A baseline may
-  predate the protection its target adds, and the net must capture both.
-- **Read once per entry.** Steps share the entry's read; a step declaring its own `csrf_from`
-  re-reads before itself. A step inherits `method`, `path`, the token declarations and `headers`
-  from its entry and may override each; its body (`fields` or `json`) is its own.
+  predate the protection its target adds, and the net must capture both. But a wrong
+  `csrf_from` — a 404, the 405 of a JSON route's GET — looks exactly the same, so every declared
+  token not found is PUBLISHED: `token_not_found`, a list of `{entry, step, page, status}` in the
+  gate and record reports (with a notice), read from the captures of the unmutated application.
+  An empty list is the only reading where every declared token was sent.
+- **Read once per entry.** Steps share the entry's read of the page: its `<input>` or `<meta>`
+  token is the one the page rendered before the first step, while the cookie is read again for
+  every request. An application that issues a new token after each write needs the step that
+  follows to declare its own `csrf_from`, which re-reads before itself. A step inherits `method`,
+  `path`, the token declarations and `headers` from its entry and may override each; its body
+  (`fields` or `json`) is its own.
 - **`headers`** adds request headers to the entry's requests (not to the token page, not to the
   readback): `Accept-Language`, `X-Requested-With`, an `Accept` that replaces the default `*/*`.
-  It never names `Content-Type`, `Content-Length`, `Cookie`, `Host`, `Transfer-Encoding` or the
-  token's header — the harness writes those.
+  Names are header tokens, unique ignoring case, values Latin-1 without CR, LF or NUL. It never
+  names `Content-Type`, `Content-Length`, `Cookie`, `Host`, `Transfer-Encoding`, `Connection` or
+  the token's header — the harness writes those.
 
 Refused by name before anything boots, and again before an entry's first byte: `json` with
-`fields` on one request, or on a GET or HEAD; `json` with `csrf_field` and no header declared (a
-JSON body cannot carry a form field); `csrf_header`, `csrf_header_meta` or `csrf_cookie` without
-`csrf_field`; `csrf_cookie` with no header declared; `steps` that are not a list of objects. A
-persona `login` keeps the form — a login declaring `json`, a token key other than `csrf_field`
-or `headers` is refused too.
+`fields` on one request, or on a GET or HEAD (however the method is spelled); `json` with
+`csrf_field` and no header or no `csrf_from` declared; `csrf_header`, `csrf_header_meta` or
+`csrf_cookie` without `csrf_field`; `csrf_cookie` with no header declared; a token key that is
+not a non-empty string; `fields` that are not an object; `steps` that are not a list of
+objects. A persona `login` keeps the form — a login declaring `json`, a token key other than
+`csrf_field` or `headers` is refused — and an `a11y`, `canvas` or `asset` entry, whose lane never
+sends the entry's own request, refuses `json`, the token keys and `headers` the same way.
