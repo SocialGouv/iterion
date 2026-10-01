@@ -13,7 +13,7 @@ import (
 // It exists so that adding a second conversational bot costs a bundle and
 // not a studio release. Before it, `studio/src/lib/whats-next/firstClassBots.ts`
 // hard-coded the single whats-next entry, with its own TODO saying so; a bot
-// id baked into the product is also the thing CLAUDE.md's "the ENGINE stays
+// id baked into the product is also the thing docs/agents/bots/engine-bot-agnostic.md's "the ENGINE stays
 // bot-agnostic" rule forbids, one layer up.
 //
 // What it can express is bounded on purpose: everything the studio needs to

@@ -20,7 +20,7 @@ The split is deliberate:
   (see [Overriding](#overriding-a-finding)).
 
 This mirrors the repo's standing doctrine: **gates stay deterministic**
-(see [agents/bot-authoring.md](agents/bot-authoring.md) → "Improvement loops
+(see [agents/bots/bot-authoring.md](agents/bots/bot-authoring.md) → "Improvement loops
 must converge"). The reviews
 themselves stay non-blocking advice (`forge.NewReview` never
 approves/requests-changes); the entire gate lives in the separate commit
@@ -541,7 +541,7 @@ bot.
 > enabled here from 2026-08-28 and is turned off for cost — a fixer campaign
 > re-runs the full build+test per pass on a shared credential. Nothing below
 > changed as a *feature*; only this repo's choice did. Re-arming procedure:
-> [agents/review-and-merge.md](agents/review-and-merge.md#billy-is-paused).
+> [agents/workflow/billy.md#billy-is-paused](agents/workflow/billy.md#billy-is-paused).
 
 By default nothing happens when the gate goes red: the findings are on the pull
 request and the developer decides — fix them, argue one, or hand the work over
@@ -633,7 +633,7 @@ re-derives it from three scattered sections. This is that place
   review` and a fixer's `consumes: kind: review_ledger` are what let Billy
   start from Revi's findings and answer them back, with neither manifest
   naming the other bot — the generic mechanism documented in
-  [agents/bot-authoring.md](agents/bot-authoring.md)'s "The ENGINE stays
+  [agents/bots/bot-authoring.md](agents/bots/bot-authoring.md)'s "The ENGINE stays
   bot-agnostic" section and exercised end to end in
   [revi-billy-loop.md](revi-billy-loop.md#what-the-command-seeds).
   Adding a second reviewer or a second fixer is a bundle, never an engine
@@ -685,7 +685,7 @@ re-derives it from three scattered sections. This is that place
    repo's call**, not this page's. On iterion itself the answer is
    currently *exception* — findings are the developer's to fix through
    the local review loop
-   ([agents/review-and-merge.md](agents/review-and-merge.md)); the fixer's
+   ([agents/workflow/review-and-merge.md](agents/workflow/review-and-merge.md)); the fixer's
    mechanics and the conditions for re-arming it stay in
    [revi-billy-loop.md](revi-billy-loop.md).
 3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes the `/billy`

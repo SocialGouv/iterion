@@ -14,7 +14,8 @@ import (
 // productised team under bots/ plus the remaining single-file bots under
 // examples/) are general-purpose tools that must run on ANY target
 // repository, in any language, with no knowledge of iterion's own
-// layout baked in. See "Catalog bots are repo-agnostic" in CLAUDE.md.
+// layout baked in. See "Catalog bots are repo-agnostic" in
+// docs/agents/bots/universality.md.
 //
 // This test greps every catalog bot's typed var-default string
 // literals for iterion *target-repo* facts. It guards the most
@@ -129,7 +130,7 @@ func TestCatalogBotsAreRepoAgnostic(t *testing.T) {
 					continue
 				}
 				t.Errorf(
-					"%s: var %q default %q hardcodes iterion target-repo pattern %q — catalog bots must be repo-agnostic (see CLAUDE.md \"Catalog bots are repo-agnostic\"). Default to a language/layout-agnostic value and make the iterion-specific scope a per-run --var override.",
+					"%s: var %q default %q hardcodes iterion target-repo pattern %q — catalog bots must be repo-agnostic (see docs/agents/bots/universality.md \"Catalog bots are repo-agnostic\"). Default to a language/layout-agnostic value and make the iterion-specific scope a per-run --var override.",
 					botPath, varName, value, pat,
 				)
 			}
@@ -165,8 +166,9 @@ func TestCatalogBotsDoNotDeclareWorkspaceAuthoringFiles(t *testing.T) {
 // stackPattern is a high-signal indicator that a catalog bot hardcodes
 // language/ecosystem logic in its DSL instead of delegating it to skills.
 // These strings essentially never appear in prompt prose, so a whole-file
-// line scan is reliable without block-aware parsing. See CLAUDE.md
-// "Universal code bots — stack knowledge lives in skills".
+// line scan is reliable without block-aware parsing. See
+// docs/agents/bots/universality.md "Universal code bots — stack knowledge
+// lives in skills".
 type stackPattern struct {
 	re   *regexp.Regexp
 	what string
@@ -186,7 +188,7 @@ var stackPatterns = []stackPattern{
 	// Per-LANGUAGE semgrep packs (p/golang, p/python, …) enumerate a stack in
 	// the DSL and belong in skills. p/default — Semgrep's universal
 	// cross-language pack — is the always-on generic floor (the metrics-off
-	// equivalent of --config=auto, which CLAUDE.md's "always-on generic floor"
+	// equivalent of --config=auto, which universality.md's "always-on generic floor"
 	// explicitly allows: `--config=auto --metrics=off` is rejected by semgrep,
 	// so the floor uses p/default instead). So match the language packs, not
 	// p/default (nor non-language packs like p/ci, p/secrets).
@@ -306,7 +308,7 @@ func TestCatalogBotsAreStackAgnostic(t *testing.T) {
 					continue
 				}
 				t.Errorf(
-					"%s:%d hardcodes stack-specific logic: %s\n    %s\n  Move it into the bot's skills and dispatch via an adaptive agent + deterministic gate (see CLAUDE.md \"Universal code bots\").",
+					"%s:%d hardcodes stack-specific logic: %s\n    %s\n  Move it into the bot's skills and dispatch via an adaptive agent + deterministic gate (see docs/agents/bots/universality.md \"Universal code bots\").",
 					botPath, i+1, p.what, strings.TrimSpace(line),
 				)
 			}

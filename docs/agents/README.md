@@ -6,27 +6,26 @@ the root every session loads (Claude Code through
 [CLAUDE.md](../../CLAUDE.md)); these pages are read **on demand**, and product
 references stay in [`docs/`](../README.md) proper.
 
-| Page | Read it when |
+Seven domains, each an index of one-line-per-leaf:
+
+| Domain | Read it when |
 |---|---|
-| [worktrees.md](worktrees.md) | Before changing a file from an interactive session: the worktree default, the in-a-worktree test, the store commands, the git traps. |
-| [review-and-merge.md](review-and-merge.md) | Opening, merging or unblocking a PR: queue, Revi gate, parked gate, Billy, releases. |
-| [adversarial-review-loop.md](adversarial-review-loop.md) | Before any push: why the round is required, its budget, who pays, the trailers. |
-| [engine-map.md](engine-map.md) | Which package owns a behaviour, and its invariants. |
-| [dsl-and-runtime.md](dsl-and-runtime.md) | Writing or debugging a `.bot`, or touching the compiler/runtime. |
-| [backends-and-execution.md](backends-and-execution.md) | Wrong model, lost tools, a node "dumber" than its harness; sandbox, plugins, supervisors. |
-| [automation-surfaces.md](automation-surfaces.md) | Something launched a run and you need to know what. |
-| [bot-authoring.md](bot-authoring.md) | Writing or amending a catalog bot; keeping the engine bot-agnostic. |
-| [testing.md](testing.md) | Adding a test, choosing the proof layer, a test leaking into the operator's checkout. |
-| [dogfood.md](dogfood.md) | Launching a catalog bot against this repo for real. |
-| [security-selfaudit.md](security-selfaudit.md) | Running the security bots on iterion itself. |
-| [runbooks.md](runbooks.md) | "How do I configure / operate / debug X" — the operational index. |
-| [graphify.md](graphify.md) | A semantic "how does X work" question for the knowledge graph. |
-| [../repo-map-and-graph.md](../repo-map-and-graph.md) | "Where is…", "what uses…", "what breaks if…" — the deterministic map. |
-| [../state-of-the-art.md](../state-of-the-art.md) | How *proven* a surface is. |
+| [workflow/](workflow/README.md) | How work reaches `main`: the review loop, the gate, releases, dogfood. |
+| [engine/](engine/README.md) | Which package owns a behaviour; the invariants; the DSL and runtime. |
+| [backends/](backends/README.md) | Who runs the prompt: selection, fallbacks, parity, plugins, sandbox, dials. |
+| [bots/](bots/README.md) | Writing or amending a catalog bot; keeping the engine bot-agnostic. |
+| [testing/](testing/README.md) | Adding a test, choosing the proof layer, a leaking test. |
+| [ops/](ops/README.md) | "How do I configure / operate / debug X" — runbooks, security self-audit. |
+| [orientation/](orientation/README.md) | Finding your way: the knowledge graph, the deterministic map. |
+
+Two pages live one level up, still on-demand:
+[repo-map-and-graph.md](../repo-map-and-graph.md) (where/impact/path — or just
+`iterion map`) and [state-of-the-art.md](../state-of-the-art.md) (how proven a
+surface is).
 
 ## Adding to the tree
 
 A discovery that cost real time lands here: the content in its page (or a new
-`docs/` runbook indexed from [runbooks.md](runbooks.md)), one line in that
-page's index, at most a line in AGENTS.md. `pkg/repomap/agenttree_test.go`
+`docs/` runbook indexed from [ops/runbooks.md](ops/runbooks.md)), one line in
+that page's index, at most a line in AGENTS.md. `pkg/repomap/agenttree_test.go`
 enforces the byte budgets and fails on a page its index does not link.

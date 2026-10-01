@@ -59,7 +59,7 @@
 ## untracked files (`git add -A -- ':/' {{run.tree_noise}}`) so NEW test files actually land; the
 ## deterministic gate then re-checks the committed tree AND its diff.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): the target + the repo define the work; the
 ## test-type knowledge lives in skills (test-coverage / test-types /
 ## verify-tests). The gate's new-test detection uses universal
@@ -82,7 +82,7 @@ dsl: 2
 vars:
   ## ${PROJECT_DIR} resolves to the run worktree under worktree: auto
   ## (do NOT override with a literal repo root — that aims agents at the
-  ## main checkout; see CLAUDE.md dogfood note).
+  ## main checkout; see docs/agents dogfood).
   workspace_dir: string = "${PROJECT_DIR}"
   ## What to add coverage for: a path, package, area, or free
   ## description. UNIVERSAL DEFAULT: empty = Testy picks the

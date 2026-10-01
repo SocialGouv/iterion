@@ -30,6 +30,11 @@ var agentTreeBudgets = []agentTreeBudget{
 	{"AGENTS.md", 6144},
 	{"CLAUDE.md", 1536},
 	{"docs/agents/**/README.md", 2560},
+	// One-line-per-field cheat sheet; the per-node reference lives in
+	// docs/dsl.md and this leaf is the cross-cutting doctrine that page
+	// does not carry (precedences, the gate diagnostics, roster rules).
+	{"docs/agents/engine/dsl-quick-reference.md", 10752},
+	{"docs/agents/**/*.md", 10240},
 }
 
 type agentTreeBudget struct {

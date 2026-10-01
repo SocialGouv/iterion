@@ -61,7 +61,7 @@
 ## commits each slice in stride, so an interrupted / budget-capped run
 ## has banked every committed slice (git is the state).
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): `scope` is an OPEN comma list (adding a new
 ## family = a skill file + a scope token, zero DSL edits), no language /
 ## package-manager literal and no iterion-specific target path appears

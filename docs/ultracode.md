@@ -51,7 +51,7 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    `claude-opus-4-8` emits diagnostic **C089** (a warning, not an error): the
    orchestration half won't be reliable and the node runs as plain `xhigh`.
 
-Adaptive thinking is enabled automatically for Opus 4.8 by the claw backend
+Adaptive thinking comes from the claw backend's model profile — adaptive across the Opus 4.8/Claude 5 lines, required on `claude-opus-5-5`
 (`thinking: {type: "adaptive"}`), so ultracode gets extended thinking without
 extra configuration.
 

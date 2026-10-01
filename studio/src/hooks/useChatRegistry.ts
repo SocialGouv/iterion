@@ -3,7 +3,7 @@
 // The const it replaces named one bot; this asks the server which bots
 // declare a `chat:` block. Adding a second conversational bot is therefore a
 // manifest edit — the acceptance criterion of issue #333 and the studio-side
-// half of CLAUDE.md's "the engine stays bot-agnostic".
+// half of docs/agents/bots/engine-bot-agnostic.md.
 
 import { useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";

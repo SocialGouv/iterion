@@ -5,8 +5,8 @@ description: How to push the current run's branch and open ONE pull request (mer
 
 <!-- DIVERGED copy — this file carries docs-refresh's own amend-mode
      delta on top of the skill the other bundles byte-share (iterion has
-     no skill-sharing primitive; see CLAUDE.md "If a skill ends up
-     duplicated across multiple bundles"). Do NOT blind-sync it from the
+     no skill-sharing primitive; see docs/agents/bots/skills.md ("Skills live with
+     their bundle — across multiple bundles")). Do NOT blind-sync it from the
      shared copies (app-dev / branch-improve-loop / feature-dev /
      instrument / whole-improve-loop) — port shared fixes by hand and
      keep the delta. -->

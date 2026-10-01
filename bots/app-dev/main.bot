@@ -55,7 +55,7 @@
 ## could no longer fund parks it resumable (INTERVIEW_BUDGET_STARVED —
 ## `iterion resume --max-cost-usd` re-asks the operator and continues).
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): the app prompt + SPEC.md define the work;
 ## stack knowledge (scaffolders, non-interactive flags, walking-skeleton
 ## discipline) lives in skills/greenfield-bootstrap.md, never in this

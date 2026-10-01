@@ -94,7 +94,7 @@
 ## doc alignment is real, landed work). `iterion validate` reports NO
 ## undeclared cycle — this is the only declared loop.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): universal doc_globs defaults, no language /
 ## ecosystem / layout literal anywhere in vars, commands or schemas;
 ## the stack knowledge lives in the bundled skills; the hint

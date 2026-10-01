@@ -72,7 +72,7 @@
 ## resolves — but the campaign's contract is commit-in-stride, so an
 ## uncommitted tree at gate time is already a smell the log surfaces.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): no language, no layout, no runner is named
 ## in this DSL. How to enumerate features, find the repo's own e2e
 ## harness and write real e2e tests lives in skills
@@ -86,7 +86,7 @@ dsl: 2
 vars:
   ## ${PROJECT_DIR} resolves to the run worktree under worktree: auto
   ## (do NOT override with a literal repo root — that aims agents at the
-  ## main checkout; see CLAUDE.md dogfood note).
+  ## main checkout; see docs/agents dogfood).
   workspace_dir: string = "${PROJECT_DIR}"
   ## Scope: a feature family, an area, or a free description of WHICH
   ## slice of the application to cover this run. UNIVERSAL DEFAULT:

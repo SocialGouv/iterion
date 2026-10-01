@@ -6,18 +6,17 @@ freshness decides what capabilities the agent actually gets, and the bilan that
 makes the run survive the gitignored artifacts.
 
 **Dogfood first, when it fits.** Before implementing by hand, ask whether a
-catalog bot can do the work and propose launching it — regularly, never as an
-imposition. A dogfood run is visible in the operator's studio, actively
-monitored and closed by a bilan, and every friction it surfaces becomes an
-improvement of the bot.
+catalog bot can do the work and propose launching it — regularly, never
+imposed. A run is visible in the operator's studio, monitored, closed by a
+bilan; every friction it surfaces improves the bot.
 
 ### Live dogfood runs MUST be visible in the operator's studio
 
 When you test or dogfood a catalog bot with a real run, launch it into the
-store the operator's running `iterion studio` reads. `iterion run` anchors its
-store on the **working directory**, so from a workspace whose `.iterion` is
-already a managed store (it has `runs/`, `dispatcher/` or `.iterion-store`) the
-run lands in `<workspace>/.iterion` and the studio sees it.
+store the operator's running `iterion studio` reads: `iterion run` anchors its
+store on the **working directory**, so from a workspace whose `.iterion` is a
+managed store (`runs/`, `dispatcher/` or `.iterion-store`) the run lands in
+`<workspace>/.iterion` and the studio sees it.
 
 The caveat is a workspace with no managed `.iterion` yet: the run then goes to
 `~/.iterion/projects/<workdir-key>/`, which the operator's studio (bound to
@@ -26,16 +25,15 @@ such file or directory` 404 in the studio's run/diffs panel. When in doubt
 **pass the primary checkout's store explicitly** — from a linked worktree too,
 since sessions work in one ([worktrees.md](worktrees.md)):
 `--store-dir "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.iterion"`.
-And **never** use a
-throwaway `--store-dir /tmp/...`. A run the operator can't watch in the UI does
-not count as validated.
+And **never** a throwaway `--store-dir /tmp/...`: a run the operator can't
+watch does not count as validated.
 
 Contain side-effects with per-run **flags**, not by hiding the run in a
 separate store:
-- board writes → `--var post_to_board=false` (or the bot's equivalent),
+- board writes → `--var post_to_board=false` (or equivalent),
 - worktree/branch changes → `--merge-into none` (commits land on a storage
   branch only, never the operator's checked-out branch),
-- report/scratch output → a scratch `report_path` (e.g. under `/tmp`).
+- report/scratch output → a scratch `report_path`.
 - **`worktree: auto` bots: don't pass `--var workspace_dir=$(pwd)`** — omit it
   so it defaults to `${PROJECT_DIR}`, which the engine resolves to the worktree
   (the clean, fully-mounted tree). A literal repo-root override aims agents at
@@ -44,19 +42,14 @@ separate store:
   auto-remaps a repo-root override back to the worktree (with a warning), but
   omitting it is cleaner.
 - **Sandboxed dogfood fixtures must NOT live under `/tmp/claude-<uid>/`**
-  (the Claude Code scratchpad, e.g. `/tmp/claude-1000/...`). Docker creates
-  the bind target's missing parent dirs root-owned inside the container,
-  which shadows the in-container Claude CLI's own temp root
-  (`/tmp/claude-$UID`) — claude then hangs silently before its first stdout
-  byte, so every claude_code attempt dies on the 90s cold-phase timeout
-  (surgically isolated 2026-07-07 while validating native:221edac8: the
-  same fixture at `/tmp/probe-fixture` boots in 3s, at
-  `/tmp/claude-1000/<x>` it hangs). Clone fixtures to a neutral path
-  (e.g. `/tmp/iterion-probe-<x>/`) before a sandboxed run.
+  (the Claude Code scratchpad): Docker creates the bind target's missing
+  parents root-owned, shadowing the container's own `/tmp/claude-$UID`, and
+  claude hangs before its first stdout byte until the 90s cold-phase timeout
+  (measured 2026-07-07: same fixture boots in 3s at a neutral path). Clone
+  fixtures to a neutral path first.
 
-The same applies to a dedicated server instance you spin up from a worktree to
-exercise modified engine code: bind it to the operator's store dir (or tell
-the operator the port) so the runs are observable.
+A dedicated server instance spun up from a worktree binds to the operator's
+store dir (or announces its port), so the runs stay observable.
 
 **Do NOT dogfood a code-editing bot on the live tree under `task studio:dev`.**
 The dev backend runs under `watchexec -r -e go -w cmd -w pkg -w vendor`. Because
@@ -82,7 +75,7 @@ on host runs (`--sandbox none` and every cloud run whose runner pod is the
 isolation boundary): a per-run shim directory holding one `iterion`
 symlink to the engine binary is prepended to PATH — never the binary's
 whole directory, which also holds node/go/git/devbox the bot's devbox
-pins — via [pkg/runtime/devbox_host.go](../../pkg/runtime/devbox_host.go)'s
+pins — via [pkg/runtime/devbox_host.go](../../../pkg/runtime/devbox_host.go)'s
 `provisionHostDevbox`, so a bot's shell tools (a `tool` node's `command:`,
 claw's `diagnostic_shell`, a `claude_code` Bash call) resolve `iterion` to
 THIS engine — not to whatever `iterion` sits earlier on the operator's
@@ -104,32 +97,17 @@ binary** or export `ITERION_BIN=<fresh binary>` for the studio process —
 otherwise the gap reads as an agent/bot bug when it's a stale binary.
 
 **The installed binary must be built STATIC (`CGO_ENABLED=0`)** — it is
-bind-mounted into sandbox containers (`addClawBinaryMount` → `/usr/local/bin/iterion`)
-so the in-container `iterion __claw-runner` can run. devbox's default is
-`CGO_ENABLED=1`, so a plain `devbox run -- go build` produces a binary
-**dynamically linked against nix glibc**; it runs on the host but fails inside a
-container with `exec: /usr/local/bin/iterion: no such file or directory` (the nix
-ld-linux loader isn't there). Always refresh the install from a static build:
-`CGO_ENABLED=0 devbox run -- go build -o ./iterion ./cmd/iterion && sudo cp
-./iterion /usr/bin/iterion` (or `devbox run -- task build`, which already pins
-`CGO_ENABLED=0`). The production sandbox images can also ship their own static
-iterion on PATH, which sidesteps the host-mount entirely.
+bind-mounted into sandbox containers, and devbox's default build is dynamically
+linked against nix glibc: it runs on the host but dies in-container with
+`exec: /usr/local/bin/iterion: no such file or directory`. `task build` pins
+`CGO_ENABLED=0`; refresh the install from a static build. In dev,
+`task studio:dev` builds and pins a fresh static binary for you — the manual
+refresh is only for non-dev setups or a stale system install.
 
-**In dev, `task studio:dev` now handles this for you** — `studio:dev:backend`
-builds a static `./iterion` (`CGO_ENABLED=0`) and runs *that* (with `ITERION_BIN`
-pinned to it) instead of `go run`, so every watchexec restart hands the delegated
-subprocesses a fresh, static, matching binary with **no `sudo cp`**. The manual
-install refresh above is only for non-dev setups (plain `iterion studio` /
-`server` / `dispatch`) or a stale system install.
-
-**Binary-freshness gotcha:** the full typed `remote` surface is recent — an
-older installed binary may expose only `api/login/logout/status/openapi/routes`
-(the `remote api` escape hatch still reaches everything). If subcommands are
-missing, refresh the install from a static build (see the binary-freshness note
-above). Smoke-test claude_code auth on a cloud runner (e.g. a
-Claude-subscription **forfait** via `CLAUDE_CODE_OAUTH_TOKEN`) with a one-node
-`backend: "claude_code"` bot: `system/init … model=claude-opus-5` in the run
-log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
+**Forfait smoke test:** a one-node `backend: "claude_code"` bot on a
+Claude-subscription forfait shows `system/init … model=claude-opus-5` in the
+run log with `0 tokens` billed — that confirms the OAuth-forfait path, not a
+metered API key.
 
 ### This repo's own `.mcp.json` does not reach a sandboxed claw node
 
@@ -149,7 +127,7 @@ pi, which start the servers inside the container; declare the node's
 tools (`tools: [mcp.engine.…]`) is refused at execution rather than degraded,
 so the run fails loudly instead of thinking less — prefer that over hoping.
 Origins and the full table: [sandbox.md § MCP servers under a
-sandbox](../sandbox.md#mcp-servers-under-a-sandbox).
+sandbox](../../sandbox.md#mcp-servers-under-a-sandbox).
 
 ### Every dogfood run gets a bilan in `docs/bot-runs/<bot>.md`
 
@@ -176,15 +154,11 @@ engine bugs the run surfaced. Append newest-first, one section per run:
 Cite the run-id; the full chronological report is reconstructable any time with
 `iterion report --run-id <id> --output /tmp/<bot>-<id>.md`. Cross-bot lessons
 (Goodhart, façade, asymptote) still go in
-[docs/workflow_authoring_pitfalls.md](../workflow_authoring_pitfalls.md), not
+[docs/workflow_authoring_pitfalls.md](../../workflow_authoring_pitfalls.md), not
 the per-bot file. The bilan is **one of three knowledge channels — keep them
 distinct**: workspace memory (`~/.iterion/projects/.../memory/`, per-operator,
-gitignored — [docs/memory-and-knowledge.md](../memory-and-knowledge.md)) is
+gitignored — [docs/memory-and-knowledge.md](../../memory-and-knowledge.md)) is
 session scratch; **board issues** are open tasks; **bilans** are the durable,
 committed, PR-reviewable record. Index + template:
-[docs/bot-runs/README.md](../bot-runs/README.md).
-
-The ARC Actions-runner image has a separate version and build pipeline; see
-[ci/arc-runner/README.md](../../ci/arc-runner/README.md) for the C/race smoke check,
-immutable publication and the activation proofs required before job routing.
+[docs/bot-runs/README.md](../../bot-runs/README.md).
 

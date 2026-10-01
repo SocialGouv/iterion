@@ -3,7 +3,7 @@
 How this repo audits itself: the scanner toolchain, the sec sandbox image, the
 recurring schedule, and the standing baseline of what has already been
 resolved. The bots themselves are documented in
-[../security-bots.md](../security-bots.md); this page is the self-host case.
+[../security-bots.md](../../security-bots.md); this page is the self-host case.
 
 ## Security
 
@@ -22,20 +22,21 @@ the sec image produces a zero-finding façade — now caught, not silent:
 `sec-audit-source`'s deterministic `scan_health` gate hard-fails the run
 when the always-on generic scanners (gitleaks/trivy/semgrep-auto)
 produced no output, and banners partial coverage gaps in the report (see
-[sec_audit_scan_health_test.go](../../e2e/sec_audit_scan_health_test.go)). CI publishes it
+[sec_audit_scan_health_test.go](../../../e2e/sec_audit_scan_health_test.go)). CI publishes it
 in two halves: the tool-only `iterion-sandbox-sec-base` builds in
-[.github/workflows/sandbox-images.yml](../../.github/workflows/sandbox-images.yml)
+[.github/workflows/sandbox-images.yml](../../../.github/workflows/sandbox-images.yml)
 (only when `sandbox/**` changes), and the published
 `iterion-sandbox-sec:edge` is finalized — current iterion binary stamped
 onto that base — on every push to `main` by
-[.github/workflows/image.yml](../../.github/workflows/image.yml) via
-[_finalize.yml](../../.github/workflows/_finalize.yml) (and at `:vX.Y.Z` on
-release tags). For a local-only loop, build it yourself and `docker tag`
+[.github/workflows/image.yml](../../../.github/workflows/image.yml) via
+[_finalize.yml](../../../.github/workflows/_finalize.yml) (and at `:vX.Y.Z`
+on release tags); [sandbox-images.yml](../../../.github/workflows/sandbox-images.yml)
+rebuilds the tool base only when `sandbox/**` changes. For a local-only loop, build it yourself and `docker tag`
 it to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`.
 
 **Recurring audit.** The weekly schedule (sec-audit-source Mon 02:00
 UTC, sec-audit-deps Mon 03:00 UTC) is wired through
-[`iterion schedule`](../scheduling.md) — a host-crontab integration
+[`iterion schedule`](../../scheduling.md) — a host-crontab integration
 that needs **no resident daemon** (the host's own cron is the trigger).
 Register and install it with:
 
@@ -68,7 +69,7 @@ logs land in `~/.iterion/logs/schedule-<name>.log`. Of the three original
 blockers, the context-overflow ones are fixed —
 `sec-audit-source`'s `detect_tech`/`triage` overflow is bounded by the
 deterministic `cap_findings` node (see
-[sec_audit_cap_findings_test.go](../../e2e/sec_audit_cap_findings_test.go)).
+[sec_audit_cap_findings_test.go](../../../e2e/sec_audit_cap_findings_test.go)).
 The remaining gate before flipping the schedule on for real is **(2) the
 sec image published in CI** (the sandbox-images.yml `base-sec` job + the
 per-push finalize above); until that first push lands, install the
@@ -85,7 +86,7 @@ The 2026-05-31 self-audit surfaced 6 high-severity gosec taint findings
 `pkg/server/runs_files.go` + a few internal paths); **all were resolved in
 `c9e18195`** — the strict-mode SSRF gate (public-unicast
 pinning, metadata/loopback/link-local blocks, DNS-rebinding-proof, no
-redirect-follow), since extracted to [`pkg/secure/httpdial`](../../pkg/secure/httpdial/httpdial.go)'s
+redirect-follow), since extracted to [`pkg/secure/httpdial`](../../../pkg/secure/httpdial/httpdial.go)'s
 `ResolvePublicHost` (the single source of truth, now also backing completion
 webhooks and OIDC SSO), and `safePathWithin` symlink-aware containment for run-file
 read/write, with regression tests in `runs_preview_test.go` /
