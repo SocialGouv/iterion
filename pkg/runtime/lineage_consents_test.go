@@ -55,12 +55,17 @@ func TestAlsoNamingSourceChange_aGivenForceIsKept(t *testing.T) {
 		e := &Engine{workflowHash: "sha256:edited", forceResume: forced}
 		err := e.alsoNamingSourceChange(r, sharedLineage{copyBased: true, scratchContainerLocal: true}.refusalFor(r, forced, false))
 		var rt *RuntimeError
-		if !errors.As(err, &rt) || !rt.AlsoNeedsForce {
+		if !errors.As(err, &rt) || !strings.Contains(rt.Message, "the workflow source has also changed") {
 			t.Fatalf("forced=%v: %v, want a refusal naming the source change", forced, err)
 		}
 		keep, add := strings.Contains(rt.Hint, "keep --force"), strings.Contains(rt.Hint, "add --force")
 		if forced && (!keep || add) || !forced && !add {
 			t.Fatalf("forced=%v: hint %q", forced, rt.Hint)
+		}
+		// A resume given --force does not need it besides: the surfaces say
+		// "also needs --force" only to one that was not.
+		if RemedyOf(err).AlsoNeedsForce == forced {
+			t.Fatalf("forced=%v: also_needs_force=%v, want %v", forced, RemedyOf(err).AlsoNeedsForce, !forced)
 		}
 	}
 }

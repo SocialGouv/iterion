@@ -87,24 +87,28 @@ func TestAPIError_saysWhatTheServerSaid(t *testing.T) {
 // TestRemoteRunsResume_namesTheConsentAScratchRefusalNeeds: `iterion remote
 // runs resume`, against the real server handler, prints the scratch's
 // refusal with the consent that clears it, and that --force is needed too
-// when the source changed.
+// when the source changed — unless the operator gave it, who is told to
+// keep it instead.
 func TestRemoteRunsResume_namesTheConsentAScratchRefusalNeeds(t *testing.T) {
 	t.Setenv("ITERION_RUNS_DETACHED", "0")
+	staleBank := []store.Event{
+		{Type: store.EventSandboxScratchBanked, Data: map[string]any{"banked": true, "bytes": 42}},
+		{Type: store.EventRunResumed},
+		{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": true, "bytes": 42}},
+		{Type: store.EventNodeFinished, NodeID: "work", Data: map[string]any{"_in_sandbox": true, "_on_cycle": false}},
+	}
 	for _, tc := range []struct {
 		name      string
 		edited    bool
+		force     bool
 		needForce bool
 		evs       []store.Event
 	}{
-		{"a scratch its teardown could not bank", false, false, []store.Event{
+		{"a scratch its teardown could not bank", false, false, false, []store.Event{
 			{Type: store.EventSandboxScratchBanked, Data: map[string]any{"banked": false, "empty": false, "reason": "the scratch compresses past the 256 MiB cap"}},
 		}},
-		{"a stale bank under an edited source", true, true, []store.Event{
-			{Type: store.EventSandboxScratchBanked, Data: map[string]any{"banked": true, "bytes": 42}},
-			{Type: store.EventRunResumed},
-			{Type: store.EventSandboxScratchRestored, Data: map[string]any{"restored": true, "bytes": 42}},
-			{Type: store.EventNodeFinished, NodeID: "work", Data: map[string]any{"_in_sandbox": true, "_on_cycle": false}},
-		}},
+		{"a stale bank under an edited source", true, false, true, staleBank},
+		{"a stale bank under an edited source, resumed with --force", true, true, false, staleBank},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workDir := t.TempDir()
@@ -159,7 +163,7 @@ func TestRemoteRunsResume_namesTheConsentAScratchRefusalNeeds(t *testing.T) {
 				}
 			}
 			c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: hs.URL})
-			err = cli.RemoteRunsResume(ctx, c, &cli.Printer{W: io.Discard}, runID, cli.RemoteRunsResumeOptions{})
+			err = cli.RemoteRunsResume(ctx, c, &cli.Printer{W: io.Discard}, runID, cli.RemoteRunsResumeOptions{Force: tc.force})
 			var apiErr *cli.APIError
 			if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest {
 				t.Fatalf("want the server's 400 refusal, got %v", err)
@@ -170,6 +174,9 @@ func TestRemoteRunsResume_namesTheConsentAScratchRefusalNeeds(t *testing.T) {
 			}
 			if got := strings.Contains(msg, "also needs --force"); got != tc.needForce {
 				t.Errorf("says --force is needed too = %v, want %v: %s", got, tc.needForce, msg)
+			}
+			if tc.force && !strings.Contains(msg, "keep --force") {
+				t.Errorf("a forced resume is not told to keep --force: %s", msg)
 			}
 		})
 	}

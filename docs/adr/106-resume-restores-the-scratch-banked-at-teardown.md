@@ -185,13 +185,22 @@ pods the same way.
   before the run was last queued is superseded — only a publication queues
   a run: the runner drops it on admission, whatever the run's status, and
   again once it holds the lock; the engine refuses it before anything of its
-  resume (`ErrResumeSuperseded`), and again if it loses a move out of
-  queued (the claim, an answered gate's replay) to a newer attempt; the
-  runner acks that refusal and writes nothing on the run. Not covered: a
+  resume (`ErrResumeSuperseded`), and again if it loses its claim to a
+  newer attempt; the runner acks that refusal and writes nothing on the run.
+  A delivery claims its run before its pause path writes anything — the
+  answers, a gate's artifact, its node's finish, a branch's consumed answer
+  — and claims it from the very status it read: every refusal of the path
+  is read first, so a refused delivery leaves the run queued for the
+  runner to put back where it came from, an outrun one leaves nothing on
+  the newer attempt's run, and the run never reads paused while a delivery
+  works on it, where a plain resume could queue a newer attempt under its
+  writes. An in-process resume keeps the path's order: its writes, then
+  its claim. Not covered: a
   newer attempt queued during a delivery's preparation, which the runner's
   own writes of that delivery (a DLQ park, a usage-cap park) still reach. Over HTTP the refusal answers `error_code:
   scratch_not_portable` with its hint, and `also_needs_force` when it names
-  a change `--force` accepts. Every other record of it — the run's error,
+  a change `--force` accepts and the resume was not given `--force` — one
+  that was is told to keep it. Every other record of it — the run's error,
   `run_failed`, `run_retry_skipped` — reads the same hint from the refusal
   (`runtime.RemedyOf`): a generic `--force` advice there sent the operator
   round again, each turn a claim and a pod.

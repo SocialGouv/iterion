@@ -65,7 +65,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
-	t.Run("QueuedAttemptMove", func(t *testing.T) { testQueuedAttemptMove(t, factory(t)) })
+	t.Run("QueuedAttemptClaim", func(t *testing.T) { testQueuedAttemptClaim(t, factory(t)) })
 	t.Run("QueuedFlipRevert", func(t *testing.T) { testQueuedFlipRevert(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
@@ -548,63 +548,55 @@ func testQueuedFlipRevert(t *testing.T, s store.RunStore) {
 	}
 }
 
-// testQueuedAttemptMove: a queued run is moved out of queued — claimed, or put
-// back on its gate's pause — for the attempt a delivery names and no other: a
-// delivery published before the run was queued again does not move the newer
-// attempt; the attempt's own delivery does, once. No other target is a move.
-func testQueuedAttemptMove(t *testing.T, s store.RunStore) {
+// testQueuedAttemptClaim: a queued run is claimed for the attempt a delivery
+// names and no other: a delivery published before the run was queued again
+// does not claim the newer attempt; the attempt's own delivery does, once.
+func testQueuedAttemptClaim(t *testing.T, s store.RunStore) {
 	t.Helper()
-	mover := store.AsQueuedAttemptMover(s)
-	if mover == nil {
-		t.Skip("backend does not implement QueuedAttemptMover")
+	claimer := store.AsQueuedAttemptClaimer(s)
+	if claimer == nil {
+		t.Skip("backend does not implement QueuedAttemptClaimer")
 	}
-	for _, to := range []store.RunStatus{store.RunStatusRunning, store.RunStatusPausedWaitingHuman} {
-		t.Run(string(to), func(t *testing.T) {
-			ctx := testCtx()
-			runID := "run-queued-move-" + string(to)
-			if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
-				t.Fatalf("CreateRun: %v", err)
-			}
-			if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "boom"); err != nil {
-				t.Fatalf("UpdateRunStatus: %v", err)
-			}
-			if _, err := mover.MoveQueuedRunIfAttempt(ctx, runID, to, time.Time{}); err == nil {
-				t.Fatal("a move without published_at: want an error")
-			}
-			if _, err := mover.MoveQueuedRunIfAttempt(ctx, runID, store.RunStatusFailedResumable, time.Now().Add(time.Hour)); err == nil {
-				t.Fatal("a move to failed_resumable: want an error, it is neither a claim nor a replayed pause")
-			}
-			changed, err := mover.MoveQueuedRunIfAttempt(ctx, runID, to, time.Now().Add(time.Hour))
-			if err != nil || changed {
-				t.Fatalf("move of a run not queued = (%t, %v), want (false, nil)", changed, err)
-			}
-			changed, err = s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable})
-			if err != nil || !changed {
-				t.Fatalf("queued flip = (%t, %v), want (true, nil)", changed, err)
-			}
-			r, err := s.LoadRun(ctx, runID)
-			if err != nil || r.QueuedAt == nil {
-				t.Fatalf("LoadRun queued marker = (%v, %v), want non-nil", r, err)
-			}
-			changed, err = mover.MoveQueuedRunIfAttempt(ctx, runID, to, r.QueuedAt.Add(-time.Second))
-			if err != nil || changed {
-				t.Fatalf("move by a delivery published before the attempt = (%t, %v), want (false, nil)", changed, err)
-			}
-			if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != store.RunStatusQueued {
-				t.Fatalf("after the stale move: %v (%v), want still queued", got.Status, err)
-			}
-			changed, err = mover.MoveQueuedRunIfAttempt(ctx, runID, to, r.QueuedAt.Add(time.Second))
-			if err != nil || !changed {
-				t.Fatalf("move by the attempt's delivery = (%t, %v), want (true, nil)", changed, err)
-			}
-			if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != to {
-				t.Fatalf("after the move: %v (%v), want %s", got.Status, err, to)
-			}
-			changed, err = mover.MoveQueuedRunIfAttempt(ctx, runID, to, r.QueuedAt.Add(time.Second))
-			if err != nil || changed {
-				t.Fatalf("a second move of the same attempt = (%t, %v), want (false, nil)", changed, err)
-			}
-		})
+	ctx := testCtx()
+	const runID = "run-queued-claim"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "boom"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	if _, err := claimer.ClaimQueuedRunIfAttempt(ctx, runID, time.Time{}); err == nil {
+		t.Fatal("a claim without published_at: want an error")
+	}
+	changed, err := claimer.ClaimQueuedRunIfAttempt(ctx, runID, time.Now().Add(time.Hour))
+	if err != nil || changed {
+		t.Fatalf("claim of a run not queued = (%t, %v), want (false, nil)", changed, err)
+	}
+	changed, err = s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("queued flip = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.QueuedAt == nil {
+		t.Fatalf("LoadRun queued marker = (%v, %v), want non-nil", r, err)
+	}
+	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(-time.Second))
+	if err != nil || changed {
+		t.Fatalf("claim by a delivery published before the attempt = (%t, %v), want (false, nil)", changed, err)
+	}
+	if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != store.RunStatusQueued {
+		t.Fatalf("after the stale claim: %v (%v), want still queued", got.Status, err)
+	}
+	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
+	if err != nil || !changed {
+		t.Fatalf("claim by the attempt's delivery = (%t, %v), want (true, nil)", changed, err)
+	}
+	if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != store.RunStatusRunning {
+		t.Fatalf("after the claim: %v (%v), want running", got.Status, err)
+	}
+	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
+	if err != nil || changed {
+		t.Fatalf("a second claim of the same attempt = (%t, %v), want (false, nil)", changed, err)
 	}
 }
 

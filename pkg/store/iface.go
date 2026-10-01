@@ -404,23 +404,21 @@ func AsQueuedFlipReverter(s RunStore) QueuedFlipReverter {
 	return capability[QueuedFlipReverter](s)
 }
 
-// QueuedAttemptMover moves a queued run out of queued for one delivery's
-// attempt.
-type QueuedAttemptMover interface {
-	// MoveQueuedRunIfAttempt moves a queued run to `to` — running (a
-	// resume's claim) or paused_waiting_human (an answered gate replayed
-	// through its pause) — only when its current QueuedAt is not newer than
-	// the delivery's PublishedAt: the same attempt identity, in the same
-	// atomic operation, as ReleaseQueuedRunIfAttempt. A run queued again
-	// after the delivery was published is the newer delivery's, with its
-	// own parameters.
-	MoveQueuedRunIfAttempt(ctx context.Context, id string, to RunStatus, publishedAt time.Time) (changed bool, err error)
+// QueuedAttemptClaimer claims a queued run for one delivery's attempt.
+type QueuedAttemptClaimer interface {
+	// ClaimQueuedRunIfAttempt moves a queued run to running — a resume's
+	// claim — only when its current QueuedAt is not newer than the
+	// delivery's PublishedAt: the same attempt identity, in the same atomic
+	// operation, as ReleaseQueuedRunIfAttempt. A run queued again after the
+	// delivery was published is the newer delivery's, with its own
+	// parameters.
+	ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishedAt time.Time) (changed bool, err error)
 }
 
-// AsQueuedAttemptMover returns the move capability, or nil for a store that
-// has none.
-func AsQueuedAttemptMover(s RunStore) QueuedAttemptMover {
-	return capability[QueuedAttemptMover](s)
+// AsQueuedAttemptClaimer returns the claim capability, or nil for a store
+// that has none.
+func AsQueuedAttemptClaimer(s RunStore) QueuedAttemptClaimer {
+	return capability[QueuedAttemptClaimer](s)
 }
 
 // PIDStore is an optional interface implemented only by

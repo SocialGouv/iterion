@@ -1934,7 +1934,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	if !isNakAction(outcome.action) {
 		released = r.releaseRefusedResume(msg, err, logger)
 	}
-	if outcomeSideEffectsFire(err, outcome.action) && released != store.RunStatusCancelled && !released.IsPaused() {
+	if releasedOutcomeFires(err, outcome.action, released) {
 		fireOutcome()
 	}
 	// The continuation promote: only the RUNNER knows whether a Nak
@@ -2213,6 +2213,14 @@ func (r *Runner) verdictFromStatuses(msg *queue.RunMessage) (from []store.RunSta
 // TestClassifyExecResult.
 func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
 	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !errors.Is(execErr, runtime.ErrResumeSuperseded) && !isNakAction(action)
+}
+
+// releasedOutcomeFires is outcomeSideEffectsFire once the release of a
+// refused resume is known (releaseRefusedResume): a run put back to its
+// pause is waiting again, and one put back to its cancel stays cancelled —
+// neither is an outcome to announce.
+func releasedOutcomeFires(execErr error, action deliveryAction, released store.RunStatus) bool {
+	return outcomeSideEffectsFire(execErr, action) && released != store.RunStatusCancelled && !released.IsPaused()
 }
 
 // startProcessSpan builds the runner-side OTel root span for this

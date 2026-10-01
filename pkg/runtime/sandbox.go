@@ -2230,7 +2230,7 @@ func (l sharedLineage) refusalFor(r *store.Run, force, accept bool) error {
 			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child accepting the scratch's loss (--accept-scratch-loss) to run it without the parent's scratch, where what it writes never reaches the parent's",
 		}
 		if needForce {
-			return withForceableChange(refusal, "and its parent's sandbox was copy-based: resumed on its own it would also start a fresh copy of the workspace, whose later commits do not reach the parent's tree", "that divergence needs --force too")
+			return withForceableChange(refusal, "and its parent's sandbox was copy-based: resumed on its own it would also start a fresh copy of the workspace, whose later commits do not reach the parent's tree", "that divergence needs --force too", true)
 		}
 		if l.copyBased {
 			// --force was given for the divergence, and still needs giving.

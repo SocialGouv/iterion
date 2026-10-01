@@ -261,7 +261,6 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/store/mongo/route_decisions.go :: Failed+FailedResumable+Finished":                                                            {[]string{"ListRoutableRuns"}, "the router's sweep set: deliberately NARROWER than IsTerminal — a cancelled run is an operator's stop and is never routed (design property, pinned by the router's cancelled fixture)"},
 	"pkg/store/store_route_decisions.go :: Failed+FailedResumable+Finished":                                                            {[]string{"ListRoutableRuns"}, "FS twin of the router's sweep set (same reason)"},
 	"pkg/store/mongo/runs.go :: Queued+Running":                                                                                        {[]string{"CountActiveRunsByTenant", "SaveRun"}, "CountsAgainstLaunchLimit twins inside $in filters (a bson expression cannot call a predicate): the launch-limit count, and SaveRun's routing-policy first-write window"},
-	"pkg/store/storetest/conformance.go :: PausedWaitingHuman+Running":                                                                 {[]string{"testQueuedAttemptMove"}, "the conformance test exercises each target the attempt-aware move accepts (IsQueuedAttemptMoveTarget)"},
 	"pkg/store/storetest/conformance.go :: Cancelled+Failed+FailedResumable+Finished+PausedOperator+PausedWaitingHuman+Queued+Running": {[]string{"testTombstoneRefusesWriters"}, "tombstone canary passes every status to prove no CAS writes on a deleted run"},
 
 	// -- pkg/runview.
