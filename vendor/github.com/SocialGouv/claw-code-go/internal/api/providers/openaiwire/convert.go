@@ -168,3 +168,24 @@ func NormalizedParameters(schema api.InputSchema) (json.RawMessage, error) {
 	}
 	return json.RawMessage(params), nil
 }
+
+// ConvertToolChoice maps our ToolChoice to the chat-completions
+// tool_choice field: "auto" / "any" / "none" become "auto" / "required" /
+// "none", and "tool" becomes {"type":"function","function":{"name":…}}.
+// A nil or unknown choice yields nil, which leaves the field out.
+func ConvertToolChoice(tc *api.ToolChoice) any {
+	if tc == nil {
+		return nil
+	}
+	switch tc.Type {
+	case "tool":
+		return map[string]any{"type": "function", "function": map[string]any{"name": tc.Name}}
+	case "any":
+		return "required"
+	case "auto":
+		return "auto"
+	case "none":
+		return "none"
+	}
+	return nil
+}

@@ -57,6 +57,9 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodIAM }
 // Bedrock. cfg.BaseURL is ignored because the SDK builds the endpoint from
 // the resolved region.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
+	if err := api.RefuseOpenAIOnlyOptions("bedrock", cfg); err != nil {
+		return nil, err
+	}
 	model := normalizeModelID(cfg.Model)
 	if model == "" {
 		return nil, fmt.Errorf("bedrock provider: cfg.Model is required (e.g. anthropic.claude-sonnet-4-20250514-v1:0)")

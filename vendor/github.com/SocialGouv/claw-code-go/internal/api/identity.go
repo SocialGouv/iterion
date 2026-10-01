@@ -113,6 +113,26 @@ func ResolveIdentity(explicitUA, fallbackUA string, explicitExtra map[string]str
 	return Identity{UserAgent: ua, ExtraHeaders: extra}, nil
 }
 
+// ResolveExplicitIdentity is ResolveIdentity without the environment: the
+// User-Agent is explicitUA, else fallbackUA, and the extra headers are
+// exactly explicitExtra. CLAW_USER_AGENT and ANTHROPIC_CUSTOM_HEADERS are
+// not read — they are the operator's, and may carry secrets meant for the
+// operator's own endpoints only.
+func ResolveExplicitIdentity(explicitUA, fallbackUA string, explicitExtra map[string]string) Identity {
+	ua := explicitUA
+	if ua == "" {
+		ua = fallbackUA
+	}
+	var extra map[string]string
+	if len(explicitExtra) > 0 {
+		extra = make(map[string]string, len(explicitExtra))
+		for name, value := range explicitExtra {
+			extra[name] = value
+		}
+	}
+	return Identity{UserAgent: ua, ExtraHeaders: extra}
+}
+
 // Apply sets the User-Agent and then the extra headers on h. It must run
 // after all default headers so that extra headers — like Claude Code's
 // ANTHROPIC_CUSTOM_HEADERS — can override any of them.

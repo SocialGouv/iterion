@@ -1,6 +1,11 @@
 package api
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+)
 
 // AuthMethod describes how a provider authenticates.
 type AuthMethod string
@@ -77,6 +82,72 @@ type ProviderConfig struct {
 	// semantics as Claude Code's ANTHROPIC_CUSTOM_HEADERS environment
 	// variable, which is merged underneath these (explicit wins).
 	ExtraHeaders map[string]string
+
+	// NoAmbientHeaders ignores the process environment's identity overrides
+	// (ANTHROPIC_CUSTOM_HEADERS, CLAW_USER_AGENT): only UserAgent and
+	// ExtraHeaders above reach the wire. For endpoints chosen by someone
+	// other than the operator, where ambient headers may carry secrets.
+	// Honoured by the OpenAI provider.
+	NoAmbientHeaders bool
+
+	// HTTPClient, when set, carries every request of the OpenAI provider
+	// instead of its default clients — the hook an embedder uses to apply
+	// its own egress policy (dial guard, redirect refusal, proxy choice).
+	// Nil keeps the defaults.
+	HTTPClient *http.Client
+
+	// OpenAIWireAPI selects the OpenAI endpoint family. Empty keeps the
+	// automatic dispatch on every host (Responses for GPT-6 and for
+	// reasoning effort with tools, chat completions otherwise).
+	// OpenAIWireChat forces /v1/chat/completions — for OpenAI-compatible
+	// gateways that serve no /v1/responses — and cannot be combined with
+	// the ChatGPT forfait, whose backend has no chat endpoint.
+	// OpenAIWireResponses forces the Responses API.
+	OpenAIWireAPI string
+
+	// OpenAIStreamUsage requests stream_options.include_usage on chat
+	// completions whatever the host; api.openai.com always gets it. An
+	// OpenAI-compatible gateway reports token usage only when asked.
+	OpenAIStreamUsage bool
+
+	// OpenAIModelVerbatim sends the model id exactly as given: no routing
+	// prefix stripped ("openai/", "qwen/", …) and no substitution of a
+	// "claude…" id by the default OpenAI model. A gateway's model ids are
+	// its own namespace.
+	OpenAIModelVerbatim bool
+}
+
+// OpenAI endpoint families accepted by ProviderConfig.OpenAIWireAPI.
+const (
+	OpenAIWireChat      = "chat"
+	OpenAIWireResponses = "responses"
+)
+
+// RefuseOpenAIOnlyOptions returns an error when cfg sets an option that only
+// the OpenAI provider honours. A caller relying on one of them — an
+// egress-policy client, a no-ambient-headers guarantee — learns that it did
+// not apply, instead of silently getting the provider's defaults.
+func RefuseOpenAIOnlyOptions(provider string, cfg ProviderConfig) error {
+	var set []string
+	if cfg.NoAmbientHeaders {
+		set = append(set, "NoAmbientHeaders")
+	}
+	if cfg.HTTPClient != nil {
+		set = append(set, "HTTPClient")
+	}
+	if cfg.OpenAIWireAPI != "" {
+		set = append(set, "OpenAIWireAPI")
+	}
+	if cfg.OpenAIStreamUsage {
+		set = append(set, "OpenAIStreamUsage")
+	}
+	if cfg.OpenAIModelVerbatim {
+		set = append(set, "OpenAIModelVerbatim")
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s provider: %s is honoured only by the OpenAI provider", provider, strings.Join(set, ", "))
 }
 
 // APIClient is the interface all provider clients must implement.

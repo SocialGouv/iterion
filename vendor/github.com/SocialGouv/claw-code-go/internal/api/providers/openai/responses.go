@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -235,7 +234,7 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody := readErrorBody(resp.Body)
 		bodyStr := string(errBody)
 		return nil, &api.APIError{
 			Provider:   "openai",
@@ -254,11 +253,11 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 // ----- Request conversion ---------------------------------------------------
 
 func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiResponsesRequest, error) {
-	model := c.Model
-	if req.Model != "" && !strings.HasPrefix(req.Model, "claude") {
-		model = req.Model
-	}
+	model := c.requestModel(req)
 	wireModel := stripRoutingPrefix(model)
+	if c.ModelVerbatim {
+		wireModel = model
+	}
 
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
@@ -412,8 +411,8 @@ func convertToolsToResponses(tools []api.Tool) ([]oaiResponsesTool, error) {
 }
 
 // convertToolChoiceToResponses adapts our ToolChoice to the responses-API
-// shape. "auto" / "any" / "tool" map to "auto" / "required" / a typed
-// {type:"function", name:...} object respectively.
+// shape. "auto" / "any" / "none" / "tool" map to "auto" / "required" /
+// "none" / a typed {type:"function", name:...} object respectively.
 func convertToolChoiceToResponses(tc *api.ToolChoice) any {
 	if tc == nil {
 		return nil
@@ -425,6 +424,8 @@ func convertToolChoiceToResponses(tc *api.ToolChoice) any {
 		return "required"
 	case "auto":
 		return "auto"
+	case "none":
+		return "none"
 	}
 	return nil
 }
