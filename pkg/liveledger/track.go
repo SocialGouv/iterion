@@ -202,7 +202,7 @@ func findModuleRoot() (string, bool) {
 // The ledger writer does not fail on a missing git — the row is still
 // useful without a ref.
 func currentRef() string {
-	cmd := exec.Command("git", "rev-parse", "--short=12", "HEAD")
+	cmd := exec.Command("git", git.NoRunHooks("rev-parse", "--short=12", "HEAD")...)
 	cmd.Env = git.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {

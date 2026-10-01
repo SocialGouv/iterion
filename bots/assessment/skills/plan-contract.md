@@ -257,7 +257,11 @@ The gate checks the record EXISTS; it does not read its content. That is
 deliberate and it is the same division as everywhere else in this file: the
 mechanical layer proves an artefact was produced and committed, the reviewer
 judges what it says, and the behavioural net remains the only party that can
-prove the sweep missed nothing it watches. A sweep record that says "class not
+prove the sweep missed nothing it watches. "Committed" is checked, not
+assumed: the gate's commands read the working tree, so after the last one the
+verifier also requires the record as a non-empty file in the commit `done` is
+written on. A record left uncommitted, ignored by a `.gitignore`, or removed
+by a commit and put back on disk fails the gate by name. A sweep record that says "class not
 instantiated in this stack, because X" is a legitimate record; an absent one is
 a lot that skipped a due diligence its own contract named.
 

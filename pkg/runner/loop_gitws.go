@@ -585,6 +585,9 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 //
 // It is the ONE place this package builds a git subprocess, so the
 // guarantees below hold for every git command the runner runs.
+// NoRunHooks: the per-run clone is the run's tree, its hooks directory and
+// its config the run's to write; a hook there would run inside the bank's
+// push, after every verdict the run's bots took, free to refuse it.
 // NoAutoMaintenance is what makes the return of this function the END of
 // the command: a `git fetch` otherwise detaches `git maintenance run
 // --auto`, which closes its descriptors — the very thing CombinedOutput
@@ -599,7 +602,7 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(args...)...)
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(gitlib.NoRunHooks(args...)...)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

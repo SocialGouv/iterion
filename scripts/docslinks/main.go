@@ -212,7 +212,7 @@ func splitList(s string) []string {
 }
 
 func git(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", gitlib.NoRunHooks(args...)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,7 +69,10 @@ var contractPaths = []string{
 // every path the landing carries there: HEAD's tree, the index, the files
 // `git add` would take — what a commit of the working tree would take: the
 // working tree as git would store it (w), the index entries (i), the index
-// flags (t), the `filter` attribute (f), in lot_verify's own format.
+// flags (t), the `filter` attribute (f). In lot_verify's own format: the
+// table's files by name, the rest as a count and the digest of its states,
+// computed by the same canonical JSON as the producer's (python's json with
+// sorted keys, compact separators, ASCII escapes) — names here are UTF-8.
 func judgedNow(t *testing.T, ws string) (string, string) {
 	t.Helper()
 	state := map[string]map[string]string{}
@@ -125,11 +129,31 @@ func judgedNow(t *testing.T, ws string) (string, string) {
 		case !fi.Mode().IsRegular():
 			st["w"] = "other"
 		default:
-			st["w"] = "file:" + gittest.Run(t, ws, "hash-object", "--path="+rel, "--", full)
+			st["w"] = "file:" + gittest.Run(t, ws, "hash-object", "-w", "--path="+rel, "--", full)
 		}
 		state[rel] = st
 	}
-	tree, err := json.Marshal(state)
+	table, rest := map[string]map[string]string{}, map[string]map[string]string{}
+	for rel, st := range state {
+		if slices.Contains(contractPaths, rel) {
+			table[rel] = st
+		} else {
+			rest[rel] = st
+		}
+	}
+	raw, err := json.Marshal(rest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := exec.Command("python3", "-c", "import hashlib,json,sys\n"+
+		"d=json.load(sys.stdin)\n"+
+		"sys.stdout.write(hashlib.sha256(json.dumps(d,sort_keys=True,separators=(',',':')).encode()).hexdigest())")
+	digest.Stdin = strings.NewReader(string(raw))
+	sum, err := digest.Output()
+	if err != nil {
+		t.Fatalf("digest of the rest of the directory: %v", err)
+	}
+	tree, err := json.Marshal(map[string]any{"table": table, "rest": map[string]any{"count": len(rest), "digest": string(sum)}})
 	if err != nil {
 		t.Fatal(err)
 	}

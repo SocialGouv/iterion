@@ -698,6 +698,7 @@ tool plan_read:
 ## it is the one an agent under pressure is tempted to solve first.
 tool lot_verify:
   script: |
+    import hashlib
     import json
     import os
     import shlex
@@ -1099,6 +1100,37 @@ tool lot_verify:
             git_fail("read", rel, blob)
         return ("symlink" if mode == "120000" else "file"), sha, blob.stdout
 
+    # Paths git cannot store under their conversion attributes, with the
+    # named cause — filled by every hashing of the working tree, read and
+    # cleared by judge_landing.
+    unhashable = {}
+
+    def cannot_store(rel, err):
+        """True, with the cause recorded, when git cannot hash rel because of
+        how it is told to convert it — the file reads fine as raw bytes, the
+        conversion fails (a `working-tree-encoding` the file does not satisfy,
+        a clean filter that fails). What git would store cannot be judged,
+        and the worker can act on it. A file git cannot read at all is not
+        this: the caller refuses it as unreadable."""
+        raw = git_bytes("hash-object", "--no-filters", "--", os.path.join(ws, rel))
+        if raw.returncode != 0:
+            return False
+        attrs = subprocess.run(["git", "-C", ws, "check-attr", "-z", "filter",
+                                "working-tree-encoding", "text", "eol", "--", rel],
+                               capture_output=True, timeout=60)
+        parts = attrs.stdout.split(b"\0") if attrs.returncode == 0 else []
+        named = ["`%s=%s`" % (parts[i + 1].decode(), parts[i + 2].decode("utf-8", "replace"))
+                 for i in range(0, len(parts) - 2, 3)
+                 if parts[i + 2] not in (b"unspecified", b"unset")]
+        said = next((l.strip() for l in err.decode("utf-8", "replace").splitlines()
+                     if l.strip() and not l.startswith("hint:")), "")
+        under = ("its conversion attribute%s %s" % ("s" if len(named) > 1 else "", ", ".join(named))
+                 if named else "the repository's conversion settings (core.autocrlf, core.safecrlf)")
+        unhashable[rel] = ("git cannot store it under %s (%s) — what git would store cannot be "
+                           "judged: write the file as the conversion expects, or drop it"
+                           % (under, said[:200]))
+        return True
+
     def in_tree(rel):
         """The same answers for the working tree. What is judged is the blob
         `git add` would store — the path's filters and end-of-line rules
@@ -1117,6 +1149,8 @@ tool lot_verify:
             return "other", None, None
         h = git_bytes("hash-object", "-w", "--path=" + rel, "--", full)
         if h.returncode != 0:
+            if cannot_store(rel, h.stderr):
+                return "unhashable", None, None
             git_fail("hash", rel, h)
         sha = h.stdout.decode().strip()
         blob = git_bytes("cat-file", "blob", sha)
@@ -1166,6 +1200,8 @@ tool lot_verify:
         for, as causes; empty when nothing a lot may not write moved."""
         b_kind, b_sha, b_raw = at_base(rel)
         t_kind, t_sha, t_raw = read(rel)
+        if t_kind == "unhashable":
+            return []  # named once, by judge_landing, with the attribute
         if b_kind == t_kind and (b_kind == "absent"
                                  or (b_kind == "file" and b_sha == t_sha)
                                  or (b_kind == "symlink" and b_raw == t_raw)):
@@ -1347,28 +1383,38 @@ tool lot_verify:
                 state[p]["w"] = "other"
             else:
                 regular.append(p)
-        # One path per line on `--stdin-paths`: a name holding a newline is
-        # hashed on its own. Names are bytes to git, so they are passed as
-        # bytes — a name that is not UTF-8 is judged like any other.
-        batch = [p for p in regular if "\n" not in p]
+        # Hashed as a commit stores, `-w`: without it, a conversion git
+        # cannot apply (an encoding the file does not satisfy, a failing
+        # clean filter) prints an error, exits 0 and hashes the raw bytes —
+        # what no commit would store. Names are bytes to git, passed as
+        # bytes: a name that is not UTF-8 is judged like any other.
+        # `--stdin-paths` reads lines, and a line loses a trailing CR: a name
+        # holding a newline or ending in CR is hashed on its own — batched,
+        # `x.md<CR>` would be answered by its twin `x.md`. A batch that does
+        # not answer one hash per path is hashed path by path, so the path
+        # that stopped it is the one named.
+        alone = [p for p in regular if "\n" in p or p.endswith("\r")]
+        batch = [p for p in regular if not ("\n" in p or p.endswith("\r"))]
         if batch:
-            h = subprocess.run(["git", "-C", ws, "hash-object", "--stdin-paths"],
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--stdin-paths"],
                                input=b"".join(os.fsencode(p) + b"\n" for p in batch),
                                capture_output=True, timeout=120)
             shas = h.stdout.decode().split()
-            if h.returncode != 0 or len(shas) != len(batch):
-                unreadable("cannot hash the contract's paths as git would store them: %s"
-                           % h.stderr.decode("utf-8", "replace")[-300:])
-            for p, sha in zip(batch, shas):
-                state[p]["w"] = "file:" + sha
-        for p in regular:
-            if "\n" in p:
-                h = subprocess.run(["git", "-C", ws, "hash-object", "--path=" + p, "--",
-                                    os.path.join(ws, p)], capture_output=True, timeout=120)
-                if h.returncode != 0:
-                    unreadable("cannot hash %r as git would store it: %s"
-                               % (p, h.stderr.decode("utf-8", "replace")[-300:]))
+            if h.returncode == 0 and len(shas) == len(batch):
+                for p, sha in zip(batch, shas):
+                    state[p]["w"] = "file:" + sha
+            else:
+                alone = regular
+        for p in alone:
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--path=" + p, "--",
+                                os.path.join(ws, p)], capture_output=True, timeout=120)
+            if h.returncode == 0:
                 state[p]["w"] = "file:" + h.stdout.decode().strip()
+            elif cannot_store(p, h.stderr):
+                state[p]["w"] = "unhashable"
+            else:
+                unreadable("cannot hash %r as git would store it: %s"
+                           % (p, h.stderr.decode("utf-8", "replace")[-300:]))
         return state
 
     def contract_index_clean(state):
@@ -1410,6 +1456,8 @@ tool lot_verify:
                                                        "%s:%s" % (mode, sha)),
             }
             for label, (now, want) in seen.items():
+                if now == "unhashable":
+                    continue  # named once, by judge_landing, with the attribute
                 if now != want:
                     causes.append("%s: %s%s" % (rel, "DELETED" if now == "absent" else
                                   "changed — beside the plan, a file the base holds is the owner's "
@@ -1433,6 +1481,7 @@ tool lot_verify:
         if rev.returncode != 0:
             git_fail("read HEAD for", plan_file, rev)
         head = rev.stdout.decode().strip()
+        unhashable.clear()
         for rel in TABLE:
             kind = at_base(rel)[0]
             if kind in ("symlink", "other"):
@@ -1474,7 +1523,74 @@ tool lot_verify:
         # frozen files. The lot's own records may go through a filter (an LFS
         # capture), as what it may write freely it may also store so.
         rewrites += contract_index_clean({p: state[p] for p in TABLE + list(frozen)})
-        return done_in, rewrites, head, state
+        rewrites += ["%s: %s" % (rel, why) for rel, why in sorted(unhashable.items())]
+        return done_in, rewrites, head, state, head_tree
+
+    def record_predicates():
+        """The gate commands that ARE the predicate over a record in the
+        contract's directory — `test -s <path>` or `[ -s <path> ]`, the whole
+        command as the shell splits it: {path: command}. A command that
+        carries the predicate among other words decides something else."""
+        found = {}
+        for cmd in gate_cmds if contract_dir else []:
+            try:
+                words = shlex.split(cmd)
+            except ValueError:
+                continue
+            if len(words) == 3 and words[:2] == ["test", "-s"]:
+                path = words[2]
+            elif len(words) == 4 and words[:2] == ["[", "-s"] and words[3] == "]":
+                path = words[2]
+            else:
+                continue
+            rel = os.path.normpath(os.path.relpath(path, ws) if os.path.isabs(path) else path)
+            if rel.startswith(contract_dir + "/"):
+                found[rel] = cmd.strip()
+        return found
+
+    def records_unlanded(head, head_tree):
+        """The gate's record predicates held on the working tree the commands
+        read — and `done` is written on what lands. A record the commit does
+        not carry as a non-empty file is the predicate holding on nothing that
+        lands: left uncommitted, ignored, or put back on disk after a commit
+        removed it."""
+        causes = []
+        for rel, cmd in sorted(record_predicates().items()):
+            entry = head_tree.get(rel)
+            if entry is None and any(p.startswith(rel + "/") for p in head_tree):
+                continue  # a directory the commit carries files under
+            if entry is None:
+                why = "the record is in no commit"
+                # check-ignore takes no pathspec magic: not through git_bytes.
+                ignored = subprocess.run(["git", "-C", ws, "check-ignore", "-q", "--", rel],
+                                         capture_output=True, timeout=60)
+                if ignored.returncode == 0:
+                    why += ", and git ignores it (add it with `git add -f`, or fix the ignore rule)"
+                elif ignored.returncode != 1:
+                    why += ", and git cannot say whether it ignores it (%s)" % (
+                        ignored.stderr.decode("utf-8", "replace").strip()[-200:])
+            elif not entry[0].startswith("100"):
+                why = "the commit carries it as %s, not as a file" % (
+                    "a symlink" if entry[0] == "120000" else "mode " + entry[0])
+            else:
+                size = git_bytes("cat-file", "-s", entry[1])
+                if size.returncode != 0:
+                    git_fail("size", rel, size)
+                if size.stdout.decode().strip() != "0":
+                    continue
+                why = "the commit carries it empty"
+            causes.append("%s: the gate's predicate `%s` holds on the working tree, but %s at HEAD "
+                          "%s — `done` is written on what lands: commit the record" % (rel, cmd, why, head[:12]))
+        return causes
+
+    def verdict_tree(state):
+        """What mark_done holds the landing to: the table's files one by one,
+        the rest of the directory as its count and a digest of its states —
+        a verdict that does not grow with the lot's captures."""
+        rest = {p: s for p, s in state.items() if p not in TABLE}
+        canon = json.dumps(rest, sort_keys=True, separators=(",", ":"))
+        return {"table": {p: state[p] for p in TABLE},
+                "rest": {"count": len(rest), "digest": hashlib.sha256(canon.encode()).hexdigest()}}
 
     def record_landing(done_in, rewrites, when):
         """The two refusals a landing can carry, written into the verdict.
@@ -1510,7 +1626,7 @@ tool lot_verify:
                    lot_id, lot_id))
         return report["done_self_written"] or bool(rewrites)
 
-    done_in, rewritten, _, _ = judge_landing()
+    done_in, rewritten, _, _, _ = judge_landing()
     if record_landing(done_in, rewritten, "Before any gate command"):
         # Never a clean stop either, even under a lot the worker declared
         # blocked: `stop` would end the run with the rewrite landed. Cleared
@@ -2051,9 +2167,17 @@ tool lot_verify:
     #    it in the working tree for the engine to bank. The verdict carries
     #    the HEAD and the working tree it judged; mark_done commits the gate's
     #    word on exactly those, or refuses.
-    done_in, rewritten, judged_head, judged_tree = judge_landing()
+    done_in, rewritten, judged_head, judged_tree, judged_head_tree = judge_landing()
     report["contract_head"] = judged_head
-    report["contract_tree"] = json.dumps(judged_tree, sort_keys=True)
+    report["contract_tree"] = json.dumps(verdict_tree(judged_tree), sort_keys=True)
+    # 4b. The gate's predicate over a record in the contract's directory is
+    #     judged on what lands: the commands read the working tree, and on a
+    #     cloud run HEAD alone is the landing.
+    if report["gate_passed"]:
+        unlanded = records_unlanded(judged_head, judged_head_tree)
+        if unlanded:
+            report["gate_passed"] = False
+            problems.extend(unlanded)
     if record_landing(done_in, rewritten, "After the gate commands") and not (
             report["gate_timed_out"] or report["oracle_not_run"] or report["extension_forged"]):
         # The typed fails read block_reason for their message: a wall, a
@@ -2083,6 +2207,7 @@ tool lot_verify:
 ## that died before reporting it, is recognised and not made twice.
 tool mark_done:
   script: |
+    import hashlib
     import json
     import os
     import re
@@ -2219,14 +2344,20 @@ tool mark_done:
     # the contract's directory on the working tree, the index and HEAD after
     # the last gate command; between that verdict and this node nothing of the
     # graph runs — a HEAD, a file, an index entry or an attribute that moved
-    # since, and a path of the directory the verdict did not list, are not
-    # what the verdict answered for.
+    # since, and a path of the directory that appeared or went, are not what
+    # the verdict answered for. The verdict names the table's files one by
+    # one, and holds the rest of the directory as its count and a digest of
+    # its states.
     try:
-        judged = json.loads(judged_tree) if judged_tree else None
+        verdict = json.loads(judged_tree) if judged_tree else None
     except ValueError:
-        judged = None
+        verdict = None
+    judged = verdict.get("table") if isinstance(verdict, dict) else None
+    rest = verdict.get("rest") if isinstance(verdict, dict) else None
     if not judged_head or not isinstance(judged, dict) or not judged \
-            or not all(isinstance(k, str) and isinstance(v, dict) for k, v in judged.items()):
+            or not all(isinstance(k, str) and isinstance(v, dict) for k, v in judged.items()) \
+            or not isinstance(rest, dict) or type(rest.get("count")) is not int \
+            or not isinstance(rest.get("digest"), str):
         refuse("no verdict to answer for: mark_done commits the gate's word on the "
                "HEAD and the landing state lot_verify judged, and it was handed neither "
                "(judged_head=%r, judged_tree=%r). Nothing committed." % (judged_head, judged_tree[:200]))
@@ -2299,28 +2430,38 @@ tool mark_done:
                 state[p]["w"] = "other"
             else:
                 regular.append(p)
-        # One path per line on `--stdin-paths`: a name holding a newline is
-        # hashed on its own. Names are bytes to git, so they are passed as
-        # bytes — a name that is not UTF-8 is judged like any other.
-        batch = [p for p in regular if "\n" not in p]
+        # Hashed as lot_verify hashed it: `-w`, names as bytes, a name holding
+        # a newline or ending in CR on its own, and path by path when the
+        # batch does not answer one hash per path — so the path that stopped
+        # it is the one named, with the conversion attributes it carries.
+        alone = [p for p in regular if "\n" in p or p.endswith("\r")]
+        batch = [p for p in regular if not ("\n" in p or p.endswith("\r"))]
         if batch:
-            h = subprocess.run(["git", "-C", ws, "hash-object", "--stdin-paths"],
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--stdin-paths"],
                                input=b"".join(os.fsencode(p) + b"\n" for p in batch),
                                capture_output=True, timeout=120)
             shas = h.stdout.decode().split()
-            if h.returncode != 0 or len(shas) != len(batch):
-                refuse("cannot hash the contract's paths as git would store them: %s"
-                       % h.stderr.decode("utf-8", "replace")[-300:])
-            for p, sha in zip(batch, shas):
-                state[p]["w"] = "file:" + sha
-        for p in regular:
-            if "\n" in p:
-                h = subprocess.run(["git", "-C", ws, "hash-object", "--path=" + p, "--",
-                                    os.path.join(ws, p)], capture_output=True, timeout=120)
-                if h.returncode != 0:
-                    refuse("cannot hash %r as git would store it: %s"
-                           % (p, h.stderr.decode("utf-8", "replace")[-300:]))
-                state[p]["w"] = "file:" + h.stdout.decode().strip()
+            if h.returncode == 0 and len(shas) == len(batch):
+                for p, sha in zip(batch, shas):
+                    state[p]["w"] = "file:" + sha
+            else:
+                alone = regular
+        for p in alone:
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--path=" + p, "--",
+                                os.path.join(ws, p)], capture_output=True, timeout=120)
+            if h.returncode != 0:
+                attrs = subprocess.run(["git", "-C", ws, "check-attr", "-z", "filter",
+                                        "working-tree-encoding", "text", "eol", "--", p],
+                                       capture_output=True, timeout=60)
+                parts = attrs.stdout.split(b"\0") if attrs.returncode == 0 else []
+                named = ["`%s=%s`" % (parts[i + 1].decode(), parts[i + 2].decode("utf-8", "replace"))
+                         for i in range(0, len(parts) - 2, 3)
+                         if parts[i + 2] not in (b"unspecified", b"unset")]
+                refuse("the landing moved since the verdict: git cannot store %r as it would be "
+                       "committed%s: %s. Nothing committed."
+                       % (p, " under its conversion attribute(s) " + ", ".join(named) if named else "",
+                          h.stderr.decode("utf-8", "replace").strip()[-300:]))
+            state[p]["w"] = "file:" + h.stdout.decode().strip()
         return state
 
     def landing_paths():
@@ -2363,8 +2504,14 @@ tool mark_done:
                                                      or (k == "i" and have == own_i))):
                 continue
             moved.append("%s %s (judged %s, now %s)" % (rel, WHERE[k], want, have))
-    moved += ["%s appeared under the contract's directory" % rel
-              for rel in sorted(landing_paths() - set(judged))]
+    beyond = sorted(landing_paths() - set(judged))
+    now_beyond = landing_state(beyond)
+    digest = hashlib.sha256(json.dumps(now_beyond, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if len(beyond) != rest["count"] or digest != rest["digest"]:
+        moved.append("the rest of the contract's directory (%d path(s) judged, %d now%s)" % (
+            rest["count"], len(beyond),
+            ": the same count, another state — a file, an index entry, a flag or an attribute"
+            if len(beyond) == rest["count"] else ": a path appeared or went"))
     if moved:
         refuse("the landing moved since the verdict: %s. The gate's word lands only on "
                "what its verdict judged — relaunch the lot to judge it again. Nothing "

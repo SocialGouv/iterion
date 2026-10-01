@@ -49,13 +49,19 @@ const gitCmdTimeout = 60 * time.Second
 // here is the package's own timeout over context.Background(), so the
 // run's cancellation must not abort a commit that is already writing.
 //
+// No repository hook runs, and no program the repository's config names to
+// watch the tree (gitlib.NoRunHooks): every command here runs in the
+// operator's checkout or a run's worktree, whose hooks directory and config a
+// run shares and can write — the landing of a run on the operator's branch
+// included.
+//
 // Returns the CancelFunc alongside the command; callers must `defer
 // cancel()` immediately (releases the timeout timer once the command
 // completes — the process itself is killed by the context on timeout
 // regardless of whether cancel is ever called).
 func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoRunHooks(args...)...)
 	// Strip what would override the repository this command names for itself.
 	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
 	proc.DetachProcessGroup(cmd)
@@ -66,26 +72,13 @@ func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
 // (`-F -`), never as an argv element. Linux caps one argument at 128 KiB
 // (MAX_ARG_STRLEN), so `-m <msg>` fails with "argument list too long" as soon
 // as a message aggregates a run's report — which is exactly the size a
-// converged campaign's squash reaches. Every commit whose message is built
-// from run content or supplied by an operator goes through here. Returns
-// git's combined output alongside the error, for the caller's diagnostics.
+// converged campaign's squash reaches. Every commit the engine makes goes
+// through here — the wip bank, the salvage commit, the squash that lands a
+// run, the resolution of a conflicted one — and, through gitCmd, runs no
+// hook. Returns git's combined output alongside the error, for the caller's
+// diagnostics.
 func gitCommitMessage(dir, message string) (string, error) {
 	cmd, cancel := gitCmd("-C", dir, "commit", "-F", "-")
-	defer cancel()
-	cmd.Stdin = strings.NewReader(message)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
-// gitCommitRunOutput is gitCommitMessage for the commit the ENGINE makes of a
-// run's own output in the run's tree: no repository hook runs. The hooks live
-// in a directory the run can write, so a hook there is the run's code executed
-// inside the landing gesture — after every verdict the run's bots took — free
-// to rewrite what is banked, or to refuse the commit and strand it. --no-verify
-// leaves prepare-commit-msg and post-commit running, and post-commit can commit
-// again on top of the bank: the hooks directory itself is pointed at nothing.
-func gitCommitRunOutput(dir, message string) (string, error) {
-	cmd, cancel := gitCmd("-C", dir, "-c", "core.hooksPath="+os.DevNull, "commit", "--no-verify", "-F", "-")
 	defer cancel()
 	cmd.Stdin = strings.NewReader(message)
 	out, err := cmd.CombinedOutput()
@@ -516,7 +509,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				logger.Warn("runtime: finalize: wip bank cannot %v — preserving worktree at %s", err, wc.wtPath)
 			}
 			res.PreserveWorktree = true
-		} else if out, err := gitCommitRunOutput(wc.wtPath, msg); err != nil {
+		} else if out, err := gitCommitMessage(wc.wtPath, msg); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank commit failed: %v (output: %s) — preserving worktree at %s", err, strings.TrimSpace(out), wc.wtPath)
 			}

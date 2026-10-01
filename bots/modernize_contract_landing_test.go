@@ -368,7 +368,8 @@ func TestModernizeMarkDoneCommitsOnlyWhatWasJudged(t *testing.T) {
 		got := landLot(t, ws, base, "true", func() {
 			writeContract(t, ws, ".modernize/L0-report.md", "# L0, rewritten after the verdict\n")
 		})
-		if got.marked || !got.refused || !strings.Contains(got.notice, ".modernize/L0-report.md") {
+		if got.marked || !got.refused || !strings.Contains(got.notice, "the rest of the contract's directory (") ||
+			!strings.Contains(got.notice, "another state") {
 			t.Fatalf("mark_done committed over a record the verdict never judged: marked=%v refused=%v notice=%q", got.marked, got.refused, got.notice)
 		}
 	})
@@ -377,7 +378,7 @@ func TestModernizeMarkDoneCommitsOnlyWhatWasJudged(t *testing.T) {
 		got := landLot(t, ws, base, "true", func() {
 			writeContract(t, ws, ".modernize/sweeps/L22.md", "# sweep L22, written after the verdict\n")
 		})
-		if got.marked || !got.refused || !strings.Contains(got.notice, ".modernize/sweeps/L22.md appeared") {
+		if got.marked || !got.refused || !strings.Contains(got.notice, "a path appeared or went") {
 			t.Fatalf("mark_done committed over a record that appeared after the verdict: marked=%v refused=%v notice=%q", got.marked, got.refused, got.notice)
 		}
 	})

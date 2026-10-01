@@ -113,3 +113,109 @@ func itoa(n int) string {
 	}
 	return string(b)
 }
+
+// runHooksExempt names the files whose git subprocesses may run the
+// repository's hooks, and why. Every other git subprocess built anywhere in
+// the tree runs under NoRunHooks.
+var runHooksExempt = map[string]string{
+	// The studio's authoring commits FOR the user, in the user's own
+	// checkout: the user's hooks are the user's, and run.
+	"pkg/server/assistant_authoring.go":     "the user's own commits",
+	"pkg/server/assistant_authoring_git.go": "the user's own commits",
+	"pkg/server/assistant_dependencies.go":  "the user's own commits",
+	// The test fixture's git: it plants the hooks the suites prove iterion
+	// does not run.
+	"internal/gittest/gittest.go": "the test fixture",
+}
+
+// TestEveryGitCallerRunsNoRepositoryHook sweeps the tree for git subprocesses
+// that run the repository's hooks. A run writes its repository's hooks
+// directory and config — a worktree shares them with the operator's checkout —
+// so a hook there is the run's code, executed inside whichever iterion gesture
+// git runs it in: the landing of a run on the operator's branch rewritten from
+// inside its own commit, the bank's push refused, a fork's checkout altered.
+// A rule applied site by site leaves the next site open, so the property is
+// checked mechanically: a call site is satisfied when NoRunHooks builds its
+// argv, inside the call itself.
+func TestEveryGitCallerRunsNoRepositoryHook(t *testing.T) {
+	root := filepath.Join("..", "..")
+	skipNames := map[string]bool{"vendor": true, "studio": true, "node_modules": true, "testdata": true}
+	var offenders []string
+	sites := 0
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if skipNames[name] || (strings.HasPrefix(name, ".") && path != root) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel := filepath.ToSlash(strings.TrimPrefix(path, root+string(filepath.Separator)))
+		if _, ok := runHooksExempt[rel]; ok {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		body := string(src)
+		for _, loc := range gitExec.FindAllStringIndex(body, -1) {
+			lineStart := strings.LastIndex(body[:loc[0]], "\n") + 1
+			if strings.Contains(body[lineStart:loc[0]], "//") {
+				continue
+			}
+			sites++
+			open := loc[0] + strings.Index(body[loc[0]:], "(")
+			if strings.Contains(body[loc[0]:callEnd(body, open)], "NoRunHooks(") {
+				continue
+			}
+			line := 1 + strings.Count(body[:loc[0]], "\n")
+			offenders = append(offenders, rel+":"+itoa(line)+"  "+strings.TrimSpace(body[loc[0]:min(loc[1]+40, len(body))]))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if sites == 0 {
+		t.Fatal("the sweep found no git subprocess at all: it is looking in the wrong place")
+	}
+	if len(offenders) > 0 {
+		t.Errorf("git subprocess(es) that run the repository's hooks — a run writes its repository's hooks directory and config, so each of these executes the run's code inside an iterion gesture.\nBuild the argv with git.NoRunHooks(...), or name the file in runHooksExempt with the reason its hooks are the user's:\n  %s",
+			strings.Join(offenders, "\n  "))
+	}
+}
+
+// callEnd returns the index just past the `)` that closes the call whose `(`
+// is at open, string and rune literals skipped.
+func callEnd(body string, open int) int {
+	depth := 0
+	for i := open; i < len(body); i++ {
+		switch body[i] {
+		case '"', '\'':
+			q := body[i]
+			for i++; i < len(body) && body[i] != q; i++ {
+				if body[i] == '\\' {
+					i++
+				}
+			}
+		case '`':
+			for i++; i < len(body) && body[i] != '`'; i++ {
+			}
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(body)
+}
