@@ -190,7 +190,7 @@ boundary is a POSTURE the LLM adopts, and the phrase is what tells the
 LLM the posture applies here.
 
 The rule is catalog-wide, not this bot's: the doctrine lives in
-`docs/agents/bot-authoring.md` ("Prompts that can act carry the
+`docs/agents/bots/untrusted-input.md` ("Prompts that can act carry the
 UNTRUSTED INPUT BOUNDARY") and
 `bots/catalog_untrusted_input_boundary_test.go` walks the compiled IR of
 every catalog bot and reddens on any acting prompt without the phrase.

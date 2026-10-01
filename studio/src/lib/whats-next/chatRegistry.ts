@@ -3,7 +3,7 @@
 // This file replaces the const `FIRST_CLASS_BOTS` map, whose own comment
 // asked for exactly this ("promote this registry to a manifest-driven
 // discovery … and replace the const with a fetch"). A bot id baked into the
-// product is the studio-side twin of the rule CLAUDE.md states for the
+// product is the studio-side twin of the rule docs/agents/bots/engine-bot-agnostic.md states for the
 // engine: adding a second conversational bot must cost a bundle, not a
 // release.
 //

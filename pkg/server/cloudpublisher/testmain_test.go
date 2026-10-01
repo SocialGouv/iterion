@@ -16,7 +16,7 @@ import (
 // deploy-target.md on a developer machine has reddened
 // TestSubmitLaunch_BrokenPluginSourceIsSkippedNotFatal, whose assertion is
 // exactly "no contribution named deploy.md rides the message". Same class as
-// the isolation traps docs/agents/testing.md names.
+// the isolation traps docs/agents/testing/testing.md names.
 //
 // Setting it once at TestMain is a chokepoint — a per-test t.Setenv would
 // need to land on every SubmitLaunch/SubmitResume/resolveContributionsFor

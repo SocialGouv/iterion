@@ -560,7 +560,10 @@ pinned to the running iterion version:
 | **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go (+ `g`), Python 3, pnpm, fnm, direnv, gh, yq (mikefarah), kubectl, helm, k9s              |
 
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
-Snapshot/dev binaries pull the `:edge` tag.
+Snapshot/dev binaries pull the `:edge` tag. The published images can also
+ship a **static** `iterion` on their own PATH, which sidesteps the
+host-binary bind-mount entirely (`CGO_ENABLED=0`; a nix-dynamic build dies
+in-container — see [the dogfood note](agents/workflow/dogfood.md)).
 
 **Why two variants?** The slim image is small enough to pull on
 demand and supports the common workflow (the agent calls `devbox install`

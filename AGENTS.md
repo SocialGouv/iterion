@@ -12,25 +12,24 @@ interactive sessions).
 
 ## Find before you read
 
-- **Exact** — where is X, who implements Y, what breaks if Z changes, A→B,
-  which bot or skill: `iterion map find|neighbours|impact|path`, or the
+- **Exact** — where is X, who implements Y, what breaks if Z changes, A→B:
+  `iterion map find|neighbours|impact|path`, or the
   `local_map_*` tools of the iterion MCP server (`engine` in this repo's
   `.mcp.json`); committed indexes in [`docs/references/`](docs/references/map-packages.md).
 - **Semantic** — how does X work, which docs explain this code: graphify when
   `graphify-out/` exists (MCP `query_graph`, CLI `graphify query "<q>"`) —
-  operator-local, so check its commit against HEAD ([graph](docs/agents/graphify.md)).
-- Then read the few files they name.
+  operator-local, so check its commit against HEAD ([graph](docs/agents/orientation/graphify.md)).
 
 ## Setup and the gate you owe
 
-- Tooling comes from devbox, never the host: `devbox run -- task <name>` (or
-  direnv); `task` lists every command ([development](docs/development.md)).
+- Tooling comes from devbox, never the host: `devbox run -- task <name>`
+  (direnv works); `task` lists every command ([development](docs/development.md)).
   CLI map: [cli-reference](docs/cli-reference.md), [cloud-cli](docs/cloud-cli.md).
 - `task check` — lint and the free deterministic layer (tests, goldens, studio,
   pi extension, brand, DSL and map checks) — is owed by every session; CI also
   runs `race`, `vendor-check` and `mongo-conformance`. The `live` layer costs
-  real LLM money and no CI job runs it: use it only when a real model alone can
-  prove the change, and say which target and what it cost ([proof discipline](docs/agents/testing.md#the-proof-discipline)).
+  real LLM money and no CI job runs it: only when a real model alone can prove
+  the change — and say which target and what it cost ([proof discipline](docs/agents/testing/testing.md#the-proof-discipline)).
 
 ## Non-negotiables
 
@@ -38,23 +37,23 @@ interactive sessions).
   green. Run a local adversarial round on the diff before every push: the
   findings decide the next round, the diff size caps the budget, you fix the
   findings (by hand or through another round), and commits that ship reviewed
-  work carry `Adversarial-Rounds:` / `Adversarial-Model:` trailers ([the loop](docs/agents/adversarial-review-loop.md),
-  [merge and gate](docs/agents/review-and-merge.md)).
-- **Do not comment `/billy`** — the fixer is paused on this repo
-  ([why, and the re-arm](docs/agents/review-and-merge.md#billy-is-paused)).
+  work carry `Adversarial-Rounds:` / `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md),
+  [merge and gate](docs/agents/workflow/review-and-merge.md)).
+- **Do not comment `/billy`** — the fixer is paused here
+  ([why, and the re-arm](docs/agents/workflow/billy.md#billy-is-paused)).
 - **Never hand-edit `CHANGELOG.md`.** Bump `claw-code-go` only with
-  `scripts/bump-claw.sh`; it is first-party — improve it in its `.works/`
-  worktree when a seam crosses it, then bump.
+  `scripts/bump-claw.sh`; first-party — improve it in its `.works/` worktree
+  when a seam crosses it, then bump.
 - **`.bot` traps.** A tool node's `command:` runs under `bash -c`; a `script:`
   with `language: sh` runs `sh`, so keep it POSIX ([pitfalls](docs/workflow_authoring_pitfalls.md#shell-portability-for-tool-nodes)).
   A literal `{{` in a template is `{{"{{"}}` ([delimiters](docs/dsl.md#literal-template-delimiters)).
-- **Conventions.** Tests: the standard `testing` package. CLI: Cobra, one file
-  per command in `cmd/iterion/`, output through `Printer` (`pkg/cli/output.go`).
-  Logs: `pkg/log`. Error tracking and tracing: extend `pkg/errtrack`, never a
-  second tracker. Run state lives in `.iterion/`.
-- **Pay discoveries back.** Time spent finding out how something works lands in
-  the tree: the content in its page, one line in that page's index. A paragraph
-  that would grow this file belongs in the tree.
+- **Conventions.** Tests: the standard `testing` package. CLI: Cobra (one file
+  per command, `cmd/iterion/`), output through `Printer`. Logs: `pkg/log`.
+  Errors and tracing: extend `pkg/errtrack`, never a second tracker. Run state
+  lives in `.iterion/`.
+- **Pay discoveries back.** A discovery lands in the tree: content in its
+  page, one line in its index. A paragraph that would grow this file belongs
+  there.
 
 ## Philosophy — [long form](docs/philosophy.md), read it before arguing with a rule
 
@@ -74,8 +73,8 @@ interactive sessions).
 5. **Views are additive** — read models over execution and git, never a
    second source of truth.
 
-**Backend parity:** `claw` ↔ `claude_code` are interchangeable on a node; a
-capability wired for one is wired, or typed-refused, for the other.
+**Backend parity:** `claw` ↔ `claude_code` are interchangeable; a capability
+wired for one is wired, or typed-refused, for the other.
 
 ## Work tracking — interactive sessions
 
@@ -85,18 +84,19 @@ as a sub-issue **and** through the `Epic` field ([mechanics](docs/board-epics.md
 
 - **A — plan.** Start from the 🎯 Epics view, triage the Inbox, make statuses
   true, pick the session's ticket and **claim** it (In progress + a timestamped
-  "claimed" comment naming the session). Never touch a ticket another session
-  claimed without the operator's arbitration. Work found mid-session becomes an
-  issue under an epic.
+  "claimed" comment naming the session). Never touch another session's claim
+  without the operator's arbitration. Mid-session work becomes an issue under
+  an epic.
 - **B — dev.** First ask whether a catalog bot can do it and propose that
-  ([dogfood](docs/agents/dogfood.md)), never impose it; otherwise code
-  directly — in a dedicated worktree, never the shared primary checkout
-  ([worktrees](docs/agents/worktrees.md); bot runs are out of scope: the
-  engine owns their workspace).
+  ([dogfood](docs/agents/workflow/dogfood.md)), never impose it; otherwise
+  code directly — in a dedicated worktree, never the shared primary checkout
+  ([worktrees](docs/agents/workflow/worktrees.md); bot runs are out of
+  scope: the engine owns their workspace). 4d654a0dc (wip(agents): slice 2 - the domain tree)
 - **C — close.** Link the evidence (PR, commit, bilan), update the status and
   release the claim: Done, or Planned with a state-of-work comment. An In
   progress ticket nobody holds is a board bug — fix it.
 
 ## The tree
 
-[docs/agents/](docs/agents/README.md) — one line per page, with when to read it.
+[docs/agents/](docs/agents/README.md) — seven domains (workflow, engine,
+backends, bots, testing, ops, orientation), one index line per page.

@@ -4,9 +4,9 @@ The four trigger families and the spine they converge on: the dispatcher's
 tracker poll, inbound forge webhooks, the event-driven `trigger` spine, and
 the board capabilities a bot declares to write back.
 
-Full references: [../dispatcher.md](../dispatcher.md),
-[../webhooks.md](../webhooks.md),
-[../adr/046-event-driven-runs-trigger-spine.md](../adr/046-event-driven-runs-trigger-spine.md).
+Full references: [../dispatcher.md](../../dispatcher.md),
+[../webhooks.md](../../webhooks.md),
+[../adr/046-event-driven-runs-trigger-spine.md](../../adr/046-event-driven-runs-trigger-spine.md).
 
 ## Surfaces
 
@@ -21,15 +21,15 @@ and lifecycle hooks (`after_create`, `before_run`, `after_run`,
 
 The dispatcher uses an **actor pattern** — a single goroutine owns all
 mutable state; outside callers send typed commands on a channel. The
-architecture is fully documented in [docs/dispatcher.md](../dispatcher.md);
+architecture is fully documented in [docs/dispatcher.md](../../dispatcher.md);
 the native tracker (the default, locally-owned kanban) is documented
-in [docs/native-tracker.md](../native-tracker.md).
+in [docs/native-tracker.md](../../native-tracker.md).
 
-Key files: [pkg/dispatcher/dispatcher.go](../../pkg/dispatcher/dispatcher.go) (actor +
-public API), [pkg/dispatcher/loop.go](../../pkg/dispatcher/loop.go) (polling + dispatch),
-[pkg/dispatcher/tracker/tracker.go](../../pkg/dispatcher/tracker/tracker.go) (the
-`Tracker` interface), [pkg/dispatcher/native/store.go](../../pkg/dispatcher/native/store.go)
-(the JSON kanban store), [pkg/cli/dispatch.go](../../pkg/cli/dispatch.go) (daemon
+Key files: [pkg/dispatcher/dispatcher.go](../../../pkg/dispatcher/dispatcher.go) (actor +
+public API), [pkg/dispatcher/loop.go](../../../pkg/dispatcher/loop.go) (polling + dispatch),
+[pkg/dispatcher/tracker/tracker.go](../../../pkg/dispatcher/tracker/tracker.go) (the
+`Tracker` interface), [pkg/dispatcher/native/store.go](../../../pkg/dispatcher/native/store.go)
+(the JSON kanban store), [pkg/cli/dispatch.go](../../../pkg/cli/dispatch.go) (daemon
 wiring including the embedded SPA).
 
 The studio's SPA exposes two new routes when the corresponding server
@@ -47,10 +47,10 @@ GitHub PR, Forgejo/Gitea PR, and a generic JSON trigger. Per-org
 idempotent delivery audit, and the per-org launch gate (run quota /
 cost cap / concurrency — `pkg/orgusage` + `pkg/server/launch_gate.go`)
 all sit in front of the launch. Key files:
-[pkg/webhooks/](../../pkg/webhooks/) (spine + per-provider parsers),
-[pkg/server/webhooks_common.go](../../pkg/server/webhooks_common.go) (shared
-admission→idempotency→launch tail). Reference: [docs/webhooks.md](../webhooks.md);
-platform overview: [Iterion Cloud overview](../cloud-overview.md).
+[pkg/webhooks/](../../../pkg/webhooks) (spine + per-provider parsers),
+[pkg/server/webhooks_common.go](../../../pkg/server/webhooks_common.go) (shared
+admission→idempotency→launch tail). Reference: [docs/webhooks.md](../../webhooks.md);
+platform overview: [Iterion Cloud overview](../../cloud-overview.md).
 
 ### Event-driven trigger spine (`pkg/trigger` + `pkg/eventbus`)
 
@@ -89,7 +89,7 @@ ship on the spine** (each = a source adapter publishing a
   triage" swaps the labels. The same author gate protects the webhook
   `AutoImplementOnOpen` zero-touch lane. **Cloud parity**: the mongo
   board has its own spine half
-  ([pkg/server/trigger_cloud.go](../../pkg/server/trigger_cloud.go)) — a
+  ([pkg/server/trigger_cloud.go](../../../pkg/server/trigger_cloud.go)) — a
   `board_events` poll-tail whose per-tenant CAS cursor elects one
   publishing replica, feeding the same evaluator over the NATS bus with
   an ATOMIC label consume (`boardmongo.ConsumeLabels`), so
@@ -103,7 +103,7 @@ ship on the spine** (each = a source adapter publishing a
   web-notifications work); a direct-mode subscription chains the next
   bot (`Actor` = upstream bot id), and the `usernotify` dispatcher
   consumes `run.paused`+terminals for browser push notifications
-  ([docs/notifications.md](../notifications.md)).
+  ([docs/notifications.md](../../notifications.md)).
 - **scheduled** — `trigger.Scheduler` ticks schedule-kind subscriptions
   on their `Cron` (local tenant ""; cloud keeps cloudsched's CAS
   ticker).
@@ -113,13 +113,13 @@ ship on the spine** (each = a source adapter publishing a
   stays the sole authority).
 
 Direct launches go through `serviceLauncher` over `runview.Service.Launch`.
-Wired in [pkg/server/trigger_coordinator.go](../../pkg/server/trigger_coordinator.go)
+Wired in [pkg/server/trigger_coordinator.go](../../../pkg/server/trigger_coordinator.go)
 (both `iterion studio` and `iterion dispatch`); REST CRUD at
 `/api/v1/triggers` (gated by `server_info.triggers_enabled`). The forge
 *cutover* (spine becomes the forge launcher, inline retired), custom
 ingress, the studio Automations view, forge-derived provisioning, and
 dispatcher `EngineRunner` convergence are staged follow-ons. Reference:
-[docs/adr/046-event-driven-runs-trigger-spine.md](../adr/046-event-driven-runs-trigger-spine.md).
+[docs/adr/046-event-driven-runs-trigger-spine.md](../../adr/046-event-driven-runs-trigger-spine.md).
 
 ### Bot board access (capabilities)
 
@@ -138,11 +138,11 @@ opens the matching tools transparently based on the backend:
   `mcp.iterion_board.*` via `pkg/backend/tool/claw_board_tools.go`.
 
 All three paths route through the same
-[pkg/dispatcher/native/boardops](../../pkg/dispatcher/native/boardops/ops.go)
+[pkg/dispatcher/native/boardops](../../../pkg/dispatcher/native/boardops/ops.go)
 package, so validation and event semantics are identical. Capability
 diagnostics are `C080` (unknown cap, warning) and `C081` (malformed,
 error). The bot catalog Nexie reads
-([bots/whats-next/skills/iterion-bot-catalog.md](../../bots/whats-next/skills/iterion-bot-catalog.md))
+([bots/whats-next/skills/iterion-bot-catalog.md](../../../bots/whats-next/skills/iterion-bot-catalog.md))
 is **generated** from each bot's `manifest.yaml` (persona table +
 per-bot cards with description / triggers / vars / `when_to_use`,
 enabled bots only) spliced into a hand-authored
@@ -156,5 +156,5 @@ bot-metadata save (server); refresh the committed copy by hand with
 `iterion bots regen-catalog`. A workspace overlay
 (`.iterion/bot-overrides.yaml`, gitignored) can hide/show a bot
 per-workspace without editing its manifest. See
-[pkg/botregistry/catalog.go](../../pkg/botregistry/catalog.go).
+[pkg/botregistry/catalog.go](../../../pkg/botregistry/catalog.go).
 

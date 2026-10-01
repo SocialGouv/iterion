@@ -2,7 +2,7 @@
 
 Where an interactive session makes its changes: a dedicated worktree per task,
 never the shared primary checkout. The rule itself is in
-[AGENTS.md](../../AGENTS.md). This page is the mechanics, and the git traps
+[AGENTS.md](../../../AGENTS.md). This page is the mechanics, and the git traps
 measured on this repo. An iterion bot run is out of scope: the engine owns its
 workspace.
 

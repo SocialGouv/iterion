@@ -12,7 +12,7 @@ truth.
 | Question | Tool |
 |---|---|
 | How does X work, which docs explain this code, what is central | graphify |
-| Where is X, who implements Y, what breaks if Z changes, path A→B, anything about bots or `.bot` files | the deterministic map — [repo-map-and-graph.md](../repo-map-and-graph.md) |
+| Where is X, who implements Y, what breaks if Z changes, path A→B, anything about bots or `.bot` files | the deterministic map — [repo-map-and-graph.md](../../repo-map-and-graph.md) |
 
 ## Querying it
 
@@ -70,7 +70,7 @@ configured LLM API — review `.graphifyignore` before widening it.
 ## Known limits
 
 - `.bot`/`.skill` files — this repo's central artifact — are not parsed by
-  graphify; the deterministic map and [dsl-and-runtime.md](dsl-and-runtime.md)
+  graphify; the deterministic map and [dsl-and-runtime.md](../engine/dsl-and-runtime.md)
   are the reference there.
 - Community names come from an LLM labelling pass (`graphify label .`): treat
   them as hints, not ground truth.

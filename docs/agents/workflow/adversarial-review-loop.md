@@ -1,13 +1,13 @@
 # The local adversarial round — what iterion requires, and who pays for it
 
 **The protocol itself lives in
-[`skills/adversarial-review-loop/SKILL.md`](../../skills/adversarial-review-loop/SKILL.md)**:
+[`skills/adversarial-review-loop/SKILL.md`](../../../skills/adversarial-review-loop/SKILL.md)**:
 scoping a round, the seven things the subagent prompt must carry, verifying the
 fix harder than the finding, the two blocking conditions (class, mutation), the
 three exits from a loop that stopped converging, the upstream plan review, and
 the journal/retro discipline that keeps it honest. It is written to be portable
 — iterion publishes it as an agent skill, and it is installable in any
-repository ([docs/skill.md](../skill.md)).
+repository ([docs/skill.md](../../skill.md)).
 
 This page carries what is true **here**: that the round is required, how many
 rounds you are authorized to spend, who pays for them, and where the loop meets
@@ -31,8 +31,8 @@ The round before the push is the last one, not the only one.
    surface): a plan review by a model of **another family**, its feedback
    integrated with an explicit adopted / adjusted / dismissed disposition. The
    automated embodiment of the same idea lives in this repo:
-   `plan_review` in [bots/feature-dev/main.bot](../../bots/feature-dev/main.bot),
-   resolved by [`pkg/reviewtopology`](../../pkg/reviewtopology) (ADR-052) —
+   `plan_review` in [bots/feature-dev/main.bot](../../../bots/feature-dev/main.bot),
+   resolved by [`pkg/reviewtopology`](../../../pkg/reviewtopology) (ADR-052) —
    which also fails *loudly* when only one model family is credentialed,
    rather than shipping an unreviewed plan in silence.
 2. **While the diff grows**: a round per coherent slice, so a defect is
@@ -118,7 +118,7 @@ cycles is a good trade for every other contributor.
 It is the same economics that put the fixer campaign on pause: `/billy`'s
 verify gate re-runs the full build+test (~10 min a pass) on that shared
 credential, so `auto_fix_on_gate_failure` is **off** here — see
-[the pause and its re-arm procedure](review-and-merge.md#billy-is-paused).
+[the pause and its re-arm procedure](billy.md#billy-is-paused).
 **Findings are the developer's to fix**, by hand or through another local
 round.
 
