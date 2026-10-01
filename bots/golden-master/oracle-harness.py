@@ -4933,6 +4933,19 @@ def _selftest():
         if got != want:
             failures.append("%s\n    attendu : %r\n    obtenu  : %r" % (name, want, got))
 
+    # The operator's environment was POPPED at dispatch, before _selftest ran.
+    # Asserted here, where the doubles live: a variable that leaks back in
+    # reaches the seal machinery and the fixtures. Only the hermeticity rows
+    # of the Go test set these — on a bare run the assertion is vacuous, and
+    # the row for the sealed directory is what keeps it honest.
+    check("the operator's environment does not reach the doubles",
+          [os.environ.get(k) for k in ("GM_CONFIG", "GM_SEAL_COMMITTED",
+                                       "GM_SEALED_DIR", "GM_MUTATION_FLOOR",
+                                       "GM_MUTANTS", "GM_RECORD_IDS",
+                                       "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                                       "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")],
+          [None] * 10)
+
     def fixture_git(repo, *args):
         # A failed add/commit/reset used to be ignored: the verdict then read
         # an old tree and acted[0] hid Git's diagnostic behind an IndexError
