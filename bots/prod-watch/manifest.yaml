@@ -1,7 +1,15 @@
 name: prod-watch
 display_name: Argus
 icon: 👁️
-version: 0.1.0
+version: 0.2.0
+## 0.2.0 — the Sentry lane (#1702): the org-scoped issue lists of one
+## project and environment — NEW issues (first processed since the
+## cursor), REGRESSED / ESCALATING ones dated by their activity (tracked
+## or not), the alerted ones by id (sightings, "resolved in Sentry") —
+## through the same redaction scan, lifecycle and delivery; a silent
+## bootstrap per lane identity; alerts cut by the cap stay pending; issue
+## text never persisted; one clickable link per Sentry alert. No event
+## body is read (the analysis slice will).
 ## 0.1.0 — first slice: the deterministic, zero-LLM watch tick (Loki +
 ## Prometheus through the Grafana proxy, the app's own health probes, the
 ## redaction scan, the incident lifecycle, webhook delivery, git-backed
@@ -23,6 +31,12 @@ description: |
     healthy | breached | no_data | error — an absent metric is never read
     as a healthy one.
   - The application's own health URLs.
+  - Sentry's issues for one project and environment, through the org-scoped
+    API: issues first processed since the cursor (NEW), regressed or
+    escalating ones dated by their own activity (posted whether tracked or
+    not), the alerted ones read back by id (sightings, resolution). A
+    silent bootstrap per lane identity; issue text is scrubbed like a log
+    line and never persisted; no event body is fetched.
   - A redaction scan that is the ONLY reader of the raw lines: secrets,
     JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
     (Luhn), emails and phone numbers are replaced before anything is
@@ -32,18 +46,19 @@ description: |
     reminder / not-observed, source-health staleness, a per-tick cap
     with an explicit overflow, and a dead lane that never counts as an
     absence of observation.
-  - Deterministic delivery to Mattermost/Slack incoming webhooks with
+  - Deterministic delivery to Mattermost incoming webhooks with
     per-sink severity thresholds and required/optional sinks; the state
     advances only after delivery (at-least-once, never a silent loss).
 
   Universal by design: no host, namespace, metric name, language or
   channel is baked in — everything comes from the workspace config
-  (prod-watch.json) plus the `webhooks` and `grafana_token` secrets.
+  (prod-watch.json) plus the `webhooks`, `grafana_token` and
+  `sentry_token` secrets.
   Requires python3 (stdlib only) on the execution host.
 when_to_use: |
   Use to watch ONE production (or production-like) deployment of an
-  application from its logs (Loki), metrics (Prometheus) and health
-  endpoints, with deterministic alerting to chat and a git-backed
+  application from its logs (Loki), metrics (Prometheus), Sentry issues
+  and health endpoints, with deterministic alerting to chat and a git-backed
   incident state — the "is prod healthy, and what just changed" tick.
   Requires the target workspace (an ops repo) to carry a prod-watch.json
   (see skills/argus-config.md) and a Grafana service-account token. Not a

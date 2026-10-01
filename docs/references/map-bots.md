@@ -30,7 +30,7 @@ The bundles under `bots/`, then the skills they carry.
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 0.2.2 |
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.5.1 |
-| `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (a scheduled tick, zero LLM in this slice — the compiled workflow contains no agent or… | 0.1.0 |
+| `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (a scheduled tick, zero LLM in this slice — the compiled workflow contains no agent or… | 0.2.0 |
 | `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.5.0 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.5 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
@@ -146,7 +146,7 @@ The pair a model sees before it decides to open the file.
 | `modernize` | `plan-contract` | The .modernize/plan.yaml contract — its fields, why the programme is a committed file rather than something re-derived from git… |
 | `modernize` | `upgrade-archetypes` | The behaviour-drift classes every MAJOR crossing ships — a stack-agnostic sweep grammar. |
 | `prod-watch` | `argus-config` | prod-watch (Argus) workspace configuration — the prod-watch.json format (app, release, grafana, loki, prometheus, probes,… |
-| `prod-watch` | `signals-and-queries` | prod-watch (Argus) signal lanes — the Loki window and cursor contract, what the redaction scan derives (templates, leak… |
+| `prod-watch` | `signals-and-queries` | prod-watch (Argus) signal lanes — the Loki window and cursor contract, the Sentry lists and what posts when, what the redaction… |
 | `product-docs` | `blocs-gitbook` | Default GitBook block vocabulary for published functional pages — which blocks are allowed, what each one means to the reader,… |
 | `product-docs` | `forge-mr-create` | How to push the current run's branch and open ONE pull request (merge request on GitLab) on GitHub (gh), GitLab (glab) or… |
 | `product-docs` | `glossaire-produit` | How to build and maintain the per-product glossary page — which terms earn an entry, how each entry is written and grounded in… |
