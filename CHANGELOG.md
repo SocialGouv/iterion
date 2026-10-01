@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.219.0](https://github.com/SocialGouv/iterion/compare/v3.218.6...v3.219.0) (2026-10-01)
+
+### Features
+
+* **bots:** prod-watch Sentry lane — new, regressed and escalating issues through the deterministic chassis ([#1702](https://github.com/SocialGouv/iterion/issues/1702)) ([#1986](https://github.com/SocialGouv/iterion/issues/1986)) ([8ab89a7](https://github.com/SocialGouv/iterion/commit/8ab89a71482027d0028afce7a053d868c0b631a8)), references [#1698](https://github.com/SocialGouv/iterion/issues/1698) [#1704](https://github.com/SocialGouv/iterion/issues/1704)
+
+    <details><summary>why</summary>
+
+    The Sentry lane of Argus (bots/prod-watch, #1702): one project and environment of a Sentry instance watched through the same deterministic, zero-LLM chassis as the Loki / Prometheus / probe lanes — redaction before anything is derived, the incident lifecycle, webhook delivery, git-backed state. Config-disabled by default (`sentry` absent or null).
+
+    </details>
+
 ## [3.218.6](https://github.com/SocialGouv/iterion/compare/v3.218.5...v3.218.6) (2026-09-30)
 
 ### Bug Fixes
