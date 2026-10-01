@@ -513,31 +513,51 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 		refuseZAI bool
 		// teamZAIRefused seeds the team's own z.ai key, refused.
 		teamZAIRefused bool
+		// orgForfait seeds an ORG-tier Claude forfait with its window closed:
+		// the tier every run-wide answer must see.
+		orgForfaitClosed bool
+		// teamForfaitClosed seeds the TEAM's own Claude forfait, window
+		// closed, with no org tier: the ticket's first scenario.
+		teamForfaitClosed bool
 	}{
-		{"auto open", false, platformcfg.FacadeAuto, "open", "", false, false},
-		{"auto open zai-pinned", false, platformcfg.FacadeAuto, "open", "zai", false, false},
-		{"auto closed", false, platformcfg.FacadeAuto, "closed", "", false, false},
-		{"always closed", false, platformcfg.FacadeAlways, "closed", "", false, false},
-		{"never closed", false, platformcfg.FacadeNever, "closed", "", false, false},
-		{"keys_first auto", true, platformcfg.FacadeAuto, "open", "", false, false},
-		{"keys_first always", true, platformcfg.FacadeAlways, "open", "", false, false},
-		{"auto no forfait", false, platformcfg.FacadeAuto, "none", "", false, false},
-		{"never no forfait zai-pinned", false, platformcfg.FacadeNever, "none", "zai", false, false},
+		{"auto open", false, platformcfg.FacadeAuto, "open", "", false, false, false, false},
+		{"auto open zai-pinned", false, platformcfg.FacadeAuto, "open", "zai", false, false, false, false},
+		{"auto closed", false, platformcfg.FacadeAuto, "closed", "", false, false, false, false},
+		{"always closed", false, platformcfg.FacadeAlways, "closed", "", false, false, false, false},
+		{"never closed", false, platformcfg.FacadeNever, "closed", "", false, false, false, false},
+		{"keys_first auto", true, platformcfg.FacadeAuto, "open", "", false, false, false, false},
+		{"keys_first always", true, platformcfg.FacadeAlways, "open", "", false, false, false, false},
+		{"auto no forfait", false, platformcfg.FacadeAuto, "none", "", false, false, false, false},
+		{"never no forfait zai-pinned", false, platformcfg.FacadeNever, "none", "zai", false, false, false, false},
 		// The restore visits a refused, pinned z.ai key before the closed
 		// forfait under keys first: the policy keeps it off the default there.
-		{"keys_first auto closed zai-pinned refused", true, platformcfg.FacadeAuto, "closed", "zai", true, false},
+		{"keys_first auto closed zai-pinned refused", true, platformcfg.FacadeAuto, "closed", "zai", true, false, false, false},
 		// Forfaits first, the refused z.ai key comes back after the forfait
 		// took the family — route-only, for the routes that name zai.
-		{"auto closed zai-pinned refused", false, platformcfg.FacadeAuto, "closed", "zai", true, false},
+		{"auto closed zai-pinned refused", false, platformcfg.FacadeAuto, "closed", "zai", true, false, false, false},
 		// The team's own refused z.ai key waits behind the platform's key sealed
 		// for the routes naming zai: the closed forfait refills the family.
-		{"auto closed zai-pinned, team key refused", false, platformcfg.FacadeAuto, "closed", "zai", false, true},
+		{"auto closed zai-pinned, team key refused", false, platformcfg.FacadeAuto, "closed", "zai", false, true, false, false},
 		// Nothing refills it and every route names zai: no route reads the
 		// default, so the team's key stays out.
-		{"never no forfait zai-pinned, team key refused", false, platformcfg.FacadeNever, "none", "zai", false, true},
+		{"never no forfait zai-pinned, team key refused", false, platformcfg.FacadeNever, "none", "zai", false, true, false, false},
 		// A route reads the default: the team's key is the last park point,
 		// over the platform's route key.
-		{"never no forfait zai-pinned beside a default reader, team key refused", false, platformcfg.FacadeNever, "none", "zai+default", false, true},
+		{"never no forfait zai-pinned beside a default reader, team key refused", false, platformcfg.FacadeNever, "none", "zai+default", false, true, false, false},
+		// `auto` spans the run: the org tier holds a Claude forfait whose
+		// window is closed, so the PLATFORM tier's z.ai key stays off the
+		// default — the org forfait is restored and the run parks on it, on
+		// every tier, instead of a claude id being answered GLM in silence.
+		{"auto, org closed forfait: the run parks", false, platformcfg.FacadeAuto, "none", "", false, false, true, false},
+		// `tier` is the per-tier rule: the platform tier holds no native
+		// credential of its own and falls through to its z.ai key.
+		{"tier, org closed forfait: the platform key falls through", false, platformcfg.FacadeTier, "none", "", false, false, true, false},
+		// The ticket's own scenario, WITHOUT an org tier: the team's own
+		// Claude forfait is closed. `auto` asks the run — the team's
+		// credential is the run's — and the platform's z.ai key stays off the
+		// default; `tier` asks the platform tier alone, which falls through.
+		{"auto, team closed forfait: the run parks", false, platformcfg.FacadeAuto, "none", "", false, false, false, true},
+		{"tier, team closed forfait: the platform key falls through", false, platformcfg.FacadeTier, "none", "", false, false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
@@ -573,11 +593,34 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{KeysFirst: &kf, FacadeDefault: &fd}, nil),
 			}
 			const team = "team1"
+			orgID := ""
+			if tc.teamForfaitClosed {
+				// The same owner the spec below carries.
+				seedOAuth(t, oauth, sealer, "webhook:private", "sk-ant-team-forfait")
+				if err := st.Record(context.Background(), usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(team), seededFP("webhook:private")), usagecap.Reading{
+					Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
+					ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+				}); err != nil {
+					t.Fatalf("record team window: %v", err)
+				}
+			}
+			if tc.orgForfaitClosed {
+				orgID = "org-1998"
+				seedOAuth(t, oauth, sealer, secrets.OrgTierOwnerKey(orgID), "sk-ant-org-forfait")
+				if err := st.Record(context.Background(), usagecap.Key(delegate.BackendClaudeCode, usagecap.OrgScope(orgID), seededFP(secrets.OrgTierOwnerKey(orgID))), usagecap.Reading{
+					Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
+					ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+				}); err != nil {
+					t.Fatalf("record org window: %v", err)
+				}
+				p.identity = &fakeTeamResolver{orgs: map[string]string{team: orgID}, orgDocs: map[string]identity.Org{orgID: {ID: orgID, CredentialAudience: identity.CredentialAudience{Teams: []string{team}}}}}
+			}
 			wf := wfPinning(tc.pin)
 			if pin, beside := strings.CutSuffix(tc.pin, "+default"); beside {
 				wf = wfPinningBesideDefault(pin)
 			}
-			spec := previewSpec(team, "webhook:private")
+			specOwner := "webhook:private"
+			spec := previewSpec(team, specOwner)
 
 			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, wf)
 			if err != nil {
@@ -585,11 +628,12 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 			}
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(t.Context(), team)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", "", team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", orgID, team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var live []string
+			zaiDefault := false
 			if res.secretsRef != "" {
 				record, err := rs.Get(ctx, res.secretsRef)
 				if err != nil {
@@ -604,6 +648,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 					live = append(live, "platform:route_only:"+string(provider))
 				}
 				sort.Strings(live)
+				zaiDefault = bundle.APIKeys[secrets.ProviderZAI] != ""
 			}
 			var shown []string
 			for _, c := range preview.Candidates {
@@ -614,11 +659,28 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 					shown = append(shown, c.Tier+":route_only:"+c.Provider)
 					continue
 				}
-				shown = append(shown, c.Tier+":"+c.Source+":"+c.Provider)
+				tier := c.Tier
+				if tier == "user" {
+					// The sealed bundle carries no user-source flag: the
+					// owner's own forfait reads back as the team's, which is
+					// the only name the bundle has for it.
+					tier = "team"
+				}
+				shown = append(shown, tier+":"+c.Source+":"+c.Provider)
 			}
 			sort.Strings(shown)
 			if !reflect.DeepEqual(shown, live) {
 				t.Fatalf("preview=%v live=%v", shown, live)
+			}
+
+			// The channel under test, said explicitly: under `auto` a closed
+			// Claude forfait on ANY tier of the run — the org's or the team's
+			// own — keeps the platform's z.ai key off the default; under
+			// `tier` the platform falls through to it.
+			if tc.orgForfaitClosed || tc.teamForfaitClosed {
+				if tc.facade == platformcfg.FacadeAuto && zaiDefault {
+					t.Fatalf("auto kept the org's closed forfait between the platform z.ai key and the default: %v", live)
+				}
 			}
 		})
 	}

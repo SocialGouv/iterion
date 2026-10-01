@@ -628,11 +628,15 @@ type PlatformCredentials struct {
 	// FacadeDefault says whether a facade key (z.ai, Moonshot — another
 	// vendor behind the anthropic wire, answering a claude id with its own
 	// model) may become that wire's DEFAULT credential in a shared tier:
-	// "auto" (only in a tier holding no Anthropic-native credential — a
-	// Claude forfait, open or closed, or an anthropic key), "never"
-	// (pinned-only: it funds the routes that name its provider and nothing
-	// else), "always" (whenever the family is free, a closed forfait
-	// falling through to it). nil = the env default, else "auto".
+	// "auto" (no tier of the run may serve it by default while ANY tier of
+	// the run holds an Anthropic-native credential — a Claude forfait, open
+	// or closed, or an anthropic key: the run parks on the forfait instead
+	// of a claude id being answered GLM in silence), "tier" (per tier: only
+	// the tier that itself holds no native credential falls through to it —
+	// capacity over label), "never" (pinned-only: it funds the routes that
+	// name its provider and nothing else), "always" (whenever the family is
+	// free, a closed forfait falling through to it). nil = the env default,
+	// else "auto".
 	FacadeDefault *string `bson:"facade_default,omitempty" json:"facade_default"`
 
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -652,12 +656,13 @@ type FacadePolicy string
 
 const (
 	FacadeAuto   FacadePolicy = "auto"
+	FacadeTier   FacadePolicy = "tier"
 	FacadeNever  FacadePolicy = "never"
 	FacadeAlways FacadePolicy = "always"
 )
 
 func (f FacadePolicy) valid() bool {
-	return f == FacadeAuto || f == FacadeNever || f == FacadeAlways
+	return f == FacadeAuto || f == FacadeTier || f == FacadeNever || f == FacadeAlways
 }
 
 // PrefersKeys reports whether the shared tiers fill API keys before forfaits
@@ -694,7 +699,7 @@ func ValidateEnv() error {
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv(EnvFacadeDefault)); v != "" && !FacadePolicy(strings.ToLower(v)).valid() {
-		return fmt.Errorf("platformcfg: %s=%q — want auto, never or always", EnvFacadeDefault, v)
+		return fmt.Errorf("platformcfg: %s=%q — want auto, tier, never or always", EnvFacadeDefault, v)
 	}
 	return nil
 }
@@ -729,7 +734,7 @@ func (p *PlatformCredentials) Allows(orgID, teamID string) bool {
 // LLM call — a fleet-wide outage expressed as a config typo.
 func (p PlatformCredentials) Validate() error {
 	if p.FacadeDefault != nil && !FacadePolicy(*p.FacadeDefault).valid() {
-		return fmt.Errorf("platformcfg: facade_default %q — want auto, never or always", *p.FacadeDefault)
+		return fmt.Errorf("platformcfg: facade_default %q — want auto, tier, never or always", *p.FacadeDefault)
 	}
 	if p.Enforce == nil || !*p.Enforce {
 		return nil

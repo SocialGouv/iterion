@@ -659,10 +659,12 @@ to ITERION_PLATFORM_KEYS_FIRST.
 
 --facade-default says whether a facade key (z.ai, Moonshot: another vendor
 answering a claude id with its own model) may become the anthropic wire's
-DEFAULT in a shared tier: auto (the default) only in a tier holding no
-Anthropic-native credential, never (it funds only the routes that name its
-provider), always (whenever the family is free — a closed forfait falls
-through to it); "" clears the override back to ITERION_PLATFORM_FACADE_DEFAULT.
+DEFAULT in a shared tier: auto (the default) on no tier of the run while ANY
+tier holds an Anthropic-native credential — the run parks on it; tier: per
+tier, the tier holding no native credential falls through to it; never (it
+funds only the routes that name its provider), always (whenever the family is
+free — a closed forfait falls through to it); "" clears the override back to
+ITERION_PLATFORM_FACADE_DEFAULT.
 The GET shows the stored values and the effective ones.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
@@ -704,14 +706,14 @@ The GET shows the stored values and the effective ones.`,
 		}
 		if cmd.Flags().Changed("facade-default") {
 			switch v := strings.ToLower(strings.TrimSpace(remotePlatformCredFacade)); v {
-			case "", "auto", "never", "always":
+			case "", "auto", "tier", "never", "always":
 				body["facade_default"] = v
 			default:
-				return fmt.Errorf("--facade-default wants auto|never|always (or \"\" to clear), got %q", remotePlatformCredFacade)
+				return fmt.Errorf("--facade-default wants auto|tier|never|always (or \"\" to clear), got %q", remotePlatformCredFacade)
 			}
 		}
 		if len(body) == 0 {
-			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b] [--keys-first true|false] [--facade-default auto|never|always]")
+			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b] [--keys-first true|false] [--facade-default auto|tier|never|always]")
 		}
 		raw, err := json.Marshal(body)
 		if err != nil {
@@ -912,7 +914,7 @@ func init() {
 
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredEnforce, "enforce", "", "true|false — gate who may draw on the platform credentials")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredKeys, "keys-first", "", "true|false — shared tiers fill API keys before forfaits on one wire family (\"\" clears it back to the env default)")
-	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredFacade, "facade-default", "", "auto|never|always — whether a z.ai/Moonshot key may be the anthropic wire's default in a shared tier (\"\" clears)")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredFacade, "facade-default", "", "auto|tier|never|always — whether a z.ai/Moonshot key may be the anthropic wire's default in a shared tier (auto: not while ANY tier of the run holds a Claude credential; tier: per tier) (\"\" clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredTeams, "teams", "", "Comma-separated team ids admitted (empty string clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredOrgs, "orgs", "", "Comma-separated org ids whose every team is admitted (empty string clears)")
 

@@ -485,3 +485,36 @@ func TestAdminPlatformCredentials_FacadeDefaultIsValidatedAndClearsToTheEnv(t *t
 		t.Fatalf("effective after clear = %q, want the env default back", got)
 	}
 }
+
+// `tier` rides the same route as the other values: stored, reported as the
+// effective one, and refused in an unknown spelling.
+func TestAdminPlatformCredentials_FacadeDefaultTier(t *testing.T) {
+	t.Setenv(platformcfg.EnvFacadeDefault, "")
+	st := platformcfg.NewMemoryStore[platformcfg.PlatformCredentials]()
+	s := New(Config{SkipProjectRegistration: true, PlatformCredentialsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/platform-credentials", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutPlatformCredentials(w, r)
+		return w
+	}
+	if w := put(`{"facade_default":"tier"}`); w.Code != http.StatusOK {
+		t.Fatalf("set tier = %d: %s", w.Code, w.Body.String())
+	}
+	r := httptest.NewRequest("GET", "/api/admin/settings/platform-credentials", nil).WithContext(admin)
+	w := httptest.NewRecorder()
+	s.handleAdminGetPlatformCredentials(w, r)
+	var view struct {
+		FacadeDefaultEffective string `json:"facade_default_effective"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.FacadeDefaultEffective != "tier" {
+		t.Fatalf("effective = %q, want tier", view.FacadeDefaultEffective)
+	}
+	if w := put(`{"facade_default":"per_tier"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("set per_tier = %d, want 400", w.Code)
+	}
+}

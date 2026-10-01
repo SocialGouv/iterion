@@ -43,12 +43,22 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// The live resolution's own policy snapshot and tier probes (read-only
 	// store reads, like every other stage here).
 	x.policy = p.sharedTierPolicyFor(ctx)
+	tenantOwners := []string{spec.OwnerID}
+	if spec.Context.TeamID != "" {
+		tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(spec.Context.TeamID))
+	}
 	x.natives = map[string]*tierNative{
-		"platform": p.newTierNative(ctx, "platform", secrets.PlatformOwnerKey, secrets.PlatformTenantID, previewBotID),
+		"tenant":   p.newTierNative(ctx, "tenant", spec.Context.TeamID, previewBotID, tenantOwners...),
+		"platform": p.newTierNative(ctx, "platform", secrets.PlatformTenantID, previewBotID, secrets.PlatformOwnerKey),
 	}
 	if x.orgID != "" {
-		x.natives["org"] = p.newTierNative(ctx, "org", secrets.OrgTierOwnerKey(x.orgID), secrets.OrgTierTenantID(x.orgID), previewBotID)
+		x.natives["org"] = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(x.orgID), previewBotID, secrets.OrgTierOwnerKey(x.orgID))
 	}
+	// Same answer as the live fill: `auto` asks the RUN — the team's own
+	// credentials, the org tier's and the platform tier's — so the preview
+	// cannot promise a facade default the fill will refuse, or refuse one it
+	// will serve.
+	x.policy.runNative = orNative(orNative(x.natives["tenant"], x.natives["org"]), x.natives["platform"])
 	wants, routes := wantsFor(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback))
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
