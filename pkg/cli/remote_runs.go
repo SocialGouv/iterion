@@ -580,15 +580,15 @@ func followRemoteRun(ctx context.Context, c *RemoteClient, p *Printer, id string
 }
 
 func printRemoteEvent(p *Printer, e remoteEvent) {
-	node := e.NodeID
+	node := terminalText(e.NodeID, 200)
 	if node != "" {
 		node = " " + node
 	}
 	// A failure's words are its error (run_failed, run_retry_skipped), and
-	// what to do about it its hint.
+	// what to do about it its hint; a blank message says nothing.
 	detail := ""
 	for _, key := range []string{"message", "error"} {
-		if msg, ok := e.Data[key].(string); ok && msg != "" {
+		if msg, ok := e.Data[key].(string); ok && strings.TrimSpace(msg) != "" {
 			detail = " — " + firstLine([]byte(msg))
 			break
 		}
@@ -596,7 +596,7 @@ func printRemoteEvent(p *Printer, e remoteEvent) {
 	if hint, ok := e.Data["hint"].(string); ok && strings.TrimSpace(hint) != "" {
 		detail += " — hint: " + clipField(strings.TrimSpace(hint))
 	}
-	p.Line("%s  %-22s%s%s", e.Timestamp.Format("15:04:05"), e.Type, node, detail)
+	p.Line("%s  %-22s%s%s", e.Timestamp.Format("15:04:05"), terminalText(e.Type, 100), node, detail)
 }
 
 // RemoteRunsRaw streams a raw endpoint (log, workflow source) to output.

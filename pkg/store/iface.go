@@ -386,6 +386,24 @@ func AsQueuedResumeReleaser(s RunStore) QueuedResumeReleaser {
 	return capability[QueuedResumeReleaser](s)
 }
 
+// QueuedFlipReverter undoes a resume's own flip to queued when the resume is
+// refused before its publication.
+type QueuedFlipReverter interface {
+	// RevertQueuedRun moves a queued run back to `to` — the status a resume
+	// flipped it from — with the failure it carried AND the attempt marker
+	// it had before the flip (queuedAt, nil for none): only a publication
+	// makes a queue attempt, so a delivery of the previous attempt still in
+	// flight must not read as superseded by a flip nothing published.
+	// Guarded on queued, like the flip it undoes.
+	RevertQueuedRun(ctx context.Context, id string, to RunStatus, runErr string, code FailureCode, queuedAt *time.Time) (changed bool, err error)
+}
+
+// AsQueuedFlipReverter returns the revert capability, or nil for a store
+// that has none.
+func AsQueuedFlipReverter(s RunStore) QueuedFlipReverter {
+	return capability[QueuedFlipReverter](s)
+}
+
 // QueuedAttemptMover moves a queued run out of queued for one delivery's
 // attempt.
 type QueuedAttemptMover interface {

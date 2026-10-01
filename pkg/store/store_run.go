@@ -656,6 +656,35 @@ func (s *FilesystemRunStore) ReleaseQueuedRunIfAttempt(_ context.Context, id str
 	return s.transitionQueuedAttempt(id, to, runErr, publishedAt, meta)
 }
 
+var _ QueuedFlipReverter = (*FilesystemRunStore)(nil)
+
+// RevertQueuedRun undoes a resume's flip to queued, attempt marker included
+// — see QueuedFlipReverter.
+func (s *FilesystemRunStore) RevertQueuedRun(_ context.Context, id string, to RunStatus, runErr string, code FailureCode, queuedAt *time.Time) (bool, error) {
+	if !to.CanOperatorResume() {
+		return false, fmt.Errorf("store: revert queued run %s to %q: not a status a resume comes from", id, to)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	if !r.Status.IsQueued() {
+		return false, nil
+	}
+	r.QueuedAt = nil
+	if queuedAt != nil {
+		t := *queuedAt
+		r.QueuedAt = &t
+	}
+	if err := s.applyStatusTransition(r, to, runErr, code); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 var _ QueuedAttemptMover = (*FilesystemRunStore)(nil)
 
 // MoveQueuedRunIfAttempt moves the queued attempt publishedAt names — see

@@ -2926,8 +2926,18 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		}
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rollbackCancel()
-		rolledBack, rbErr := p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
-			[]store.RunStatus{store.RunStatusQueued})
+		// The flip refreshed the attempt marker; nothing was published, so
+		// the previous attempt's marker goes back too — a delivery of that
+		// attempt still in flight is not superseded by a flip.
+		var rolledBack bool
+		var rbErr error
+		if rv := store.AsQueuedFlipReverter(p.store); rv != nil {
+			rolledBack, rbErr = rv.RevertQueuedRun(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode, prior.QueuedAt)
+		} else {
+			p.logger.Warn("cloudpublisher: rollback %s: this store cannot restore the attempt marker — a delivery of the previous attempt still in flight will read as superseded", spec.RunID)
+			rolledBack, rbErr = p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
+				[]store.RunStatus{store.RunStatusQueued})
+		}
 		if rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 		}

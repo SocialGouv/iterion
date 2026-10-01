@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,13 @@ import (
 // namesSourceChange reports whether a refusal also names a source change.
 func namesSourceChange(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "the workflow source has also changed")
+}
+
+// keepsTheGivenForce: a refusal shown to an operator who gave --force names
+// the source change as accepted by it — never asks for the flag again.
+func keepsTheGivenForce(err error) bool {
+	var rt *runtime.RuntimeError
+	return errors.As(err, &rt) && strings.Contains(rt.Hint, "keep --force") && !strings.Contains(rt.Hint, "add --force")
 }
 
 // sharedDependency writes a bundle that exports the workflow "child" and
@@ -147,11 +155,11 @@ func TestResume_aSharedDependencyChangeComesAfterTheLossItWouldWaive(t *testing.
 				}
 			}
 			if tc.loss != "" {
-				if err := svc.PreflightResume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true}); !scratchRefused(err) {
-					t.Fatalf("a preflight forced for the change alone: %v, want the %s's loss still refused", err, tc.loss)
+				if err := svc.PreflightResume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true}); !scratchRefused(err) || !keepsTheGivenForce(err) {
+					t.Fatalf("a preflight forced for the change alone: %v, want the %s's loss still refused, the --force already given kept", err, tc.loss)
 				}
-				if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true}); !scratchRefused(err) || publisher.resumeCalls != 0 {
-					t.Fatalf("a resume forced for the change alone: %v, published %d, want the %s's loss still refused", err, publisher.resumeCalls, tc.loss)
+				if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true}); !scratchRefused(err) || !keepsTheGivenForce(err) || publisher.resumeCalls != 0 {
+					t.Fatalf("a resume forced for the change alone: %v, published %d, want the %s's loss still refused, the --force already given kept", err, publisher.resumeCalls, tc.loss)
 				}
 			}
 			if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: child, Force: true, AcceptScratchLoss: true}); err != nil || publisher.resumeCalls != 1 {

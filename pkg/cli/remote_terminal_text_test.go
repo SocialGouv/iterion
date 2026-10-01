@@ -8,12 +8,15 @@ import (
 	"unicode"
 )
 
-// rawControl reports the first control or bidi-override rune s would send
-// to a terminal as is.
+// rawControl reports the first rune of s, line by line, that a terminal would
+// not show as printed text — judged by unicode.IsPrint, not by the escaping
+// rule under test, so a rune both forget still reddens.
 func rawControl(s string) (rune, bool) {
-	for _, r := range s {
-		if unicode.IsControl(r) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
-			return r, true
+	for _, line := range strings.Split(strings.TrimSuffix(s, "\n"), "\n") {
+		for _, r := range line {
+			if !unicode.IsPrint(r) {
+				return r, true
+			}
 		}
 	}
 	return 0, false
@@ -57,5 +60,43 @@ func TestAPIError_sendsNoControlCharacterToTheTerminal(t *testing.T) {
 	printRemoteEvent(p, remoteEvent{Type: "run_failed", Timestamp: time.Unix(0, 0), Data: map[string]any{"error": "boom " + osc52, "hint": "retry" + osc52}})
 	if r, raw := rawControl(out.String()); raw && r != '\n' {
 		t.Fatalf("an event's error or hint sends %U raw to the terminal: %q", r, out.String())
+	}
+}
+
+// TestTerminalText_formatAndSeparatorCharactersAreInert: the characters that
+// reorder or break what a terminal shows without being controls — line and
+// paragraph separators, bidi marks, the Arabic letter mark, tag characters —
+// are escaped too.
+func TestTerminalText_formatAndSeparatorCharactersAreInert(t *testing.T) {
+	for _, r := range []rune{0x2028, 0x2029, 0x200e, 0x200f, 0x061c, 0xe0041, 0x2066} {
+		got := terminalText("a"+string(r)+"b", 100)
+		if bad, raw := rawControl(got); raw {
+			t.Fatalf("terminalText(%U) sends %U raw: %q", r, bad, got)
+		}
+	}
+}
+
+// TestPrinter_relayedValuesAreInert: a run's error and name reach the
+// operator through KV and Table — a node's error carries what the run's
+// processes wrote — so their values are shown inert; a blank event message
+// does not hide the event's error.
+func TestPrinter_relayedValuesAreInert(t *testing.T) {
+	hostile := "boom\x1b]52;c;cGF5bG9hZA==\a\nHTTP 200 OK: resumed \u202eevil\u2028"
+	out := &bytes.Buffer{}
+	p := &Printer{W: out, Format: OutputHuman}
+	p.KV("Error", hostile)
+	p.Table([]string{"ID", "NAME"}, [][]string{{"r1", hostile}})
+	if r, raw := rawControl(out.String()); raw {
+		t.Fatalf("KV / Table send %U raw to the terminal: %q", r, out.String())
+	}
+	out.Reset()
+	printRemoteEvent(p, remoteEvent{Type: "node_failed" + hostile, NodeID: "work" + hostile, Timestamp: time.Unix(0, 0)})
+	if r, raw := rawControl(out.String()); raw {
+		t.Fatalf("an event's type or node sends %U raw to the terminal: %q", r, out.String())
+	}
+	out.Reset()
+	printRemoteEvent(p, remoteEvent{Type: "run_failed", Timestamp: time.Unix(0, 0), Data: map[string]any{"message": "  ", "error": "the real cause"}})
+	if !strings.Contains(out.String(), "the real cause") {
+		t.Fatalf("a blank message hid the event's error: %q", out.String())
 	}
 }

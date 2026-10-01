@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -148,6 +149,11 @@ func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMes
 // parked, not redelivered.
 func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, execErr error, interim bool) {
 	if r.cfg.CredPool == nil || usage == nil {
+		return
+	}
+	if errors.Is(execErr, runtime.ErrResumeSuperseded) {
+		// The run's open lease is the newer attempt's: this delivery ran
+		// nothing, and its report would close that lease under it.
 		return
 	}
 	costUSD, in, out, aggregate := usage.RunTotals()

@@ -1468,6 +1468,26 @@ func (s *Store) ReleaseQueuedRunIfAttempt(ctx context.Context, id string, to sto
 	return s.transitionQueuedAttempt(ctx, id, to, runErr, publishedAt, meta)
 }
 
+var _ store.QueuedFlipReverter = (*Store)(nil)
+
+// RevertQueuedRun undoes a resume's flip to queued, attempt marker included
+// — see store.QueuedFlipReverter. Status and queued_at land in one update.
+func (s *Store) RevertQueuedRun(ctx context.Context, id string, to store.RunStatus, runErr string, code store.FailureCode, queuedAt *time.Time) (bool, error) {
+	if !to.CanOperatorResume() {
+		return false, fmt.Errorf("store/mongo: revert queued run %s to %q: not a status a resume comes from", id, to)
+	}
+	set := statusTransitionSet(to, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC())
+	// A nil marker writes null: no attempt, as a run never queued — every
+	// reader of queued_at treats null as absent.
+	set["queued_at"] = queuedAt
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": store.RunStatusQueued}))
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(statusTransitionPipeline(set)))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: revert queued run %s: %w", id, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 var _ store.QueuedAttemptMover = (*Store)(nil)
 
 // MoveQueuedRunIfAttempt moves the queued attempt publishedAt names — see

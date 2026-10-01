@@ -2294,11 +2294,11 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // redelivered — is decided above, after this returns.
 //
 // engineReturned, when non-nil, is called the moment the engine returns,
-// with what it returned: what follows — the git snapshot, the bank, the
-// upload, the deferred records — is the runner's post-engine work, which the
-// lease covers within postEngineCeiling when a resume can wait on the run
-// (leaseHold).
-func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter, engineReturned func(error)) (execErr error) {
+// with whether a resume can wait on the run (awaitedAfterEngine): what
+// follows — the git snapshot, the bank, the upload, the deferred records — is
+// the runner's post-engine work, which the lease covers within
+// postEngineCeiling when one can (leaseHold).
+func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter, engineReturned func(awaited bool)) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -2807,7 +2807,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		}
 	}
 	if engineReturned != nil {
-		engineReturned(runErr)
+		engineReturned(r.awaitedAfterEngine(ctx, msg.RunID, runErr))
 	}
 	if runErr == nil {
 		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)
@@ -2875,6 +2875,24 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		r.deleteRunSecrets(msg)
 	}
 	return runErr
+}
+
+// awaitedAfterEngine reports whether a resume can wait on a run its engine
+// just returned: one that returned an error (a park, an interruption, a
+// death), and one it left paused without an error (a review dialogue
+// re-paused for its next reply). Only a run the store reads finished is
+// waited on by nobody; a run that cannot be read is held as a park is.
+func (r *Runner) awaitedAfterEngine(ctx context.Context, runID string, runErr error) bool {
+	if runErr != nil {
+		return true
+	}
+	loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	run, err := r.cfg.Store.LoadRun(loadCtx, runID)
+	if err != nil || run == nil {
+		return true
+	}
+	return !run.Status.IsFinalSuccess()
 }
 
 // retryCircuitResetTimeout bounds the retry circuit's reset — the run's read,

@@ -490,9 +490,12 @@ func resumeSourceRefusal(r *store.Run, hash string, b *bundle.Bundle, identityEr
 // alsoNamingSourceChange is a scratch or lineage refusal that also names
 // the source check's refusal when there is one, as the engine's does: the
 // operator sees every consent the resume needs before giving any.
-func alsoNamingSourceChange(refusal, sourceRefusal error) error {
+func alsoNamingSourceChange(refusal, sourceRefusal error, forced bool) error {
 	if sourceRefusal == nil {
 		return refusal
+	}
+	if forced {
+		return runtime.WithSourceChangeForced(refusal)
 	}
 	return runtime.WithSourceChange(refusal)
 }
@@ -543,10 +546,10 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	hash := pfSources.Hash
 	sourceErr, legacy := resumeSourceRefusal(r, hash, pfBundle, identityErr)
 	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
-		return alsoNamingSourceChange(err, sourceErr)
+		return alsoNamingSourceChange(err, sourceErr, spec.Force)
 	}
 	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force, spec.AcceptScratchLoss); err != nil {
-		return alsoNamingSourceChange(err, sourceErr)
+		return alsoNamingSourceChange(err, sourceErr, spec.Force)
 	}
 	if sourceErr != nil && !spec.Force {
 		return s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
@@ -687,10 +690,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	hash := cs.Hash
 	sourceErr, legacy := resumeSourceRefusal(r, hash, resumeBundle, identityErr)
 	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
-		return nil, alsoNamingSourceChange(err, sourceErr)
+		return nil, alsoNamingSourceChange(err, sourceErr, spec.Force)
 	}
 	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force, spec.AcceptScratchLoss); err != nil {
-		return nil, alsoNamingSourceChange(err, sourceErr)
+		return nil, alsoNamingSourceChange(err, sourceErr, spec.Force)
 	}
 	if sourceErr != nil && !spec.Force {
 		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
@@ -846,6 +849,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		launchExtras{
 			acceptScratchLoss: spec.AcceptScratchLoss,
 			onResumeAdmitted:  claim.admit,
+			onResumeClaimed:   claim.claim,
 			onOutcome:         claim.end,
 			loopBudgetGuard:   spec.LoopBudgetGuard, supervisors: spec.Supervisors,
 			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
@@ -874,7 +878,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			if err := validateResumable(r2, spec.Answers, spec.Automatic); err != nil {
 				return err
 			}
-			return eng.ResumeWithHostInputs(ctx, spec.RunID, spec.Answers, spec.HostInputs)
+			err = eng.ResumeWithHostInputs(ctx, spec.RunID, spec.Answers, spec.HostInputs)
+			if err != nil && !claim.isClaimed() {
+				// Said where the run is read too: past the grace its caller
+				// was answered "started", and only this line tells it
+				// otherwise.
+				runLogger.Error("resume of run %s refused before it claimed the run: %s", spec.RunID, runtime.OperatorMessage(err))
+			}
+			return err
 		})
 	if err != nil {
 		return nil, err
@@ -882,50 +893,73 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	return claim.await(parent, res)
 }
 
-// resumeClaim holds an in-process resume's caller until its engine is past
-// its refusals, or ends before. A refusal the engine makes then — the
-// scratch's, which the surface leaves to it while the run's latest
-// execution may still be banking; a lineage; a status that moved under the
-// lock — is the caller's error, as the surface's own refusals are, instead
-// of a resume reported started while the run did not move. What follows the
-// refusals (the workspace's resources, the claim) is waited for by nobody:
-// another run's node in the same directory can hold it for as long as it
-// runs.
+// resumeRefusalGrace bounds how long an in-process resume's caller waits,
+// once its engine is past its own refusals, for the claim or a refusal of
+// the resume's path — an await gate's unanswered questions, a node the
+// workflow lost. They come within milliseconds unless the engine first
+// waits for the workspace's resources, which another run's node in the same
+// directory can hold for as long as it runs.
+const resumeRefusalGrace = time.Second
+
+// resumeClaim holds an in-process resume's caller until its engine claims
+// the run or ends before, so a refusal the engine makes before its claim is
+// the caller's error, as the surface's own refusals are. Past the engine's
+// own refusals (the admission) the hold lasts at most resumeRefusalGrace: a
+// claim behind another run's node is not waited for, and a refusal that
+// comes after the caller was answered is said in the run's log.
 type resumeClaim struct {
-	once     sync.Once
-	admitted chan struct{}
-	ended    chan struct{}
-	outcome  error // written by end, before ended closes
+	admitOnce, claimOnce sync.Once
+	admitted, claimed    chan struct{}
+	ended                chan struct{}
+	outcome              error // written by end, before ended closes
 }
 
 func newResumeClaim() *resumeClaim {
-	return &resumeClaim{admitted: make(chan struct{}), ended: make(chan struct{})}
+	return &resumeClaim{admitted: make(chan struct{}), claimed: make(chan struct{}), ended: make(chan struct{})}
 }
 
-func (c *resumeClaim) admit() { c.once.Do(func() { close(c.admitted) }) }
+func (c *resumeClaim) admit() { c.admitOnce.Do(func() { close(c.admitted) }) }
+
+func (c *resumeClaim) claim() { c.claimOnce.Do(func() { close(c.claimed) }) }
+
+func (c *resumeClaim) isClaimed() bool {
+	select {
+	case <-c.claimed:
+		return true
+	default:
+		return false
+	}
+}
 
 func (c *resumeClaim) end(err error) {
 	c.outcome = err
 	close(c.ended)
 }
 
-// await returns res once the engine is past its refusals, and the run's
-// error when it ended before. An admission wins over an end seen with it: a
-// resume past its refusals that then failed is the run's outcome, not a
-// refusal. A caller that goes away first gets the resume as started: it
-// goes on.
+// await returns res once the engine claimed the run, the run's error when it
+// ended before its claim, and res when the grace after the admission runs
+// out first. A claim wins over an end seen with it: a resume that started,
+// then failed, is the run's outcome, not a refusal. A caller that goes away
+// first gets the resume as started: it goes on.
 func (c *resumeClaim) await(ctx context.Context, res *LaunchResult) (*LaunchResult, error) {
-	select {
-	case <-c.admitted:
-		return res, nil
-	case <-ctx.Done():
-		return res, nil
-	case <-c.ended:
+	admitted := c.admitted
+	var grace <-chan time.Time
+	for ended := false; !ended; {
+		select {
+		case <-c.claimed:
+			return res, nil
+		case <-ctx.Done():
+			return res, nil
+		case <-grace:
+			return res, nil
+		case <-admitted:
+			grace, admitted = time.After(resumeRefusalGrace), nil
+		case <-c.ended:
+			ended = true
+		}
 	}
-	select {
-	case <-c.admitted:
+	if c.isClaimed() {
 		return res, nil
-	default:
 	}
 	if c.outcome != nil {
 		return nil, c.outcome
@@ -1178,6 +1212,9 @@ func (s *Service) spawnRun(
 	if ex.onResumeAdmitted != nil {
 		opts = append(opts, runtime.WithOnResumeAdmitted(ex.onResumeAdmitted))
 	}
+	if ex.onResumeClaimed != nil {
+		opts = append(opts, runtime.WithOnResumeClaimed(ex.onResumeClaimed))
+	}
 	if promote != nil {
 		opts = append(opts, runtime.WithAttachmentPromote(promote))
 	}
@@ -1379,6 +1416,9 @@ type launchExtras struct {
 	// onResumeAdmitted is called once, when a resume's engine is past its
 	// refusals (runtime.WithOnResumeAdmitted).
 	onResumeAdmitted func()
+	// onResumeClaimed is called once, when a resume's engine claims the run
+	// (runtime.WithOnResumeClaimed).
+	onResumeClaimed func()
 	// observers mirrors LaunchSpec.ExtraObservers: fired on every
 	// engine-level event via runtime.WithEventObserver (the backend-hook
 	// half rides ExecutorSpec.EventObservers). Together they feed the

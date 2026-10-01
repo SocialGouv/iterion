@@ -361,7 +361,7 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid seq")
 		return
 	}
-	view, _, err := s.queue.PeekDLQ(r.Context(), seq)
+	view, payload, err := s.queue.PeekDLQ(r.Context(), seq)
 	if err != nil {
 		httpError(w, http.StatusNotFound, "dlq replay: %v", err)
 		return
@@ -380,6 +380,18 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	case run.Status == store.RunStatusCancelled:
 		httpError(w, http.StatusConflict, "dlq replay: run %s is cancelled — a runner drops the redelivery on admission (the cancel wins over the message); resume the run explicitly instead, which re-queues it", view.RunID)
 		return
+	}
+	// A message published before the run was last queued belongs to an
+	// attempt that is over: a runner drops it on admission, whatever the
+	// run's status — so "replayed" would be answered and nothing would run.
+	var envelope struct {
+		PublishedAt string `json:"published_at"`
+	}
+	if json.Unmarshal(payload, &envelope) == nil && run.QueuedAt != nil {
+		if published, perr := time.Parse(time.RFC3339Nano, envelope.PublishedAt); perr == nil && run.QueuedAt.After(published) {
+			httpError(w, http.StatusConflict, "dlq replay: run %s was queued again at %s, after this message was published (%s) — a runner drops it on admission; resume the run instead", view.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), envelope.PublishedAt)
+			return
+		}
 	}
 	runID, err := s.queue.RepublishDLQ(r.Context(), seq)
 	if err != nil && runID == "" {

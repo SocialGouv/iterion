@@ -60,7 +60,7 @@ func (p *Printer) Header(title string) {
 
 // KV prints a key-value pair with aligned formatting.
 func (p *Printer) KV(key, value string) {
-	p.Line("  %-16s %s", key+":", value)
+	p.Line("  %-16s %s", key+":", terminalText(value, 2000))
 }
 
 // Table prints rows with column headers.
@@ -69,6 +69,16 @@ func (p *Printer) Table(headers []string, rows [][]string) {
 		p.Line("  (none)")
 		return
 	}
+	// Cells carry what a server relays: made inert for the terminal, on a
+	// copy — the caller's rows are its own.
+	inert := make([][]string, len(rows))
+	for i, row := range rows {
+		inert[i] = make([]string, len(row))
+		for j, cell := range row {
+			inert[i][j] = terminalText(cell, 300)
+		}
+	}
+	rows = inert
 
 	// Compute column widths.
 	widths := make([]int, len(headers))

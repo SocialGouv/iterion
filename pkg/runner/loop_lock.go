@@ -107,12 +107,11 @@ func (r *Runner) executeHoldingLease(runCtx context.Context, runCancel context.C
 // leaseHold is a run's lease held by its heartbeat.
 type leaseHold struct {
 	// engineReturned hands the hold over from the engine to the runner's own
-	// post-engine steps, given what the engine returned. A run a resume can
-	// wait on — its engine returned an error: a park, an interruption, a
-	// death — is then held at most postEngineCeiling, cancelled or not; a
-	// run that finished is waited on by nobody, and its steps (the bank that
-	// makes it landable first) run to their own budgets. Idempotent.
-	engineReturned func(runErr error)
+	// post-engine steps. A run a resume can wait on (awaitedAfterEngine) is
+	// then held at most postEngineCeiling, cancelled or not; a run that
+	// finished is waited on by nobody, and its steps (the bank that makes it
+	// landable first) run to their own budgets. Idempotent.
+	engineReturned func(awaited bool)
 	// stop ends the hold and waits for the heartbeat to exit. Idempotent.
 	stop func()
 }
@@ -147,10 +146,10 @@ func (r *Runner) startLeaseHeartbeat(runCtx context.Context, runCancel context.C
 		})
 	})
 	var once sync.Once
-	engineReturned := func(runErr error) {
+	engineReturned := func(awaited bool) {
 		once.Do(func() {
 			close(returned)
-			if runErr == nil {
+			if !awaited {
 				return
 			}
 			errtrack.Go("runner.postEngineCeiling", func() {

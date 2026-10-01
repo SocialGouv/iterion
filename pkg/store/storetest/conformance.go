@@ -66,6 +66,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
 	t.Run("QueuedAttemptMove", func(t *testing.T) { testQueuedAttemptMove(t, factory(t)) })
+	t.Run("QueuedFlipRevert", func(t *testing.T) { testQueuedFlipRevert(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
@@ -484,6 +485,66 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	// the round-trip or the resumed pass's cost is silently discarded.
 	if branch.CostUSD != 1.25 {
 		t.Fatalf("branch cost after round-trip = %v, want 1.25", branch.CostUSD)
+	}
+}
+
+// testQueuedFlipRevert: a resume refused before its publication puts the run
+// back where it was, attempt marker included — the previous attempt's marker,
+// or none — so only a publication ever leaves a queued_at behind.
+func testQueuedFlipRevert(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rv := store.AsQueuedFlipReverter(s)
+	if rv == nil {
+		t.Skip("backend does not implement QueuedFlipReverter")
+	}
+	ctx := testCtx()
+	const runID = "run-queued-revert"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "boom"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	if _, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusRunning, "x", "", nil); err == nil {
+		t.Fatal("a revert to running: want an error, running is not a status a resume comes from")
+	}
+	if changed, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusFailedResumable, "x", "", nil); err != nil || changed {
+		t.Fatalf("revert of a run not queued = (%t, %v), want (false, nil)", changed, err)
+	}
+	flip := func() time.Time {
+		t.Helper()
+		if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable}); err != nil || !ok {
+			t.Fatalf("queued flip = (%t, %v)", ok, err)
+		}
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil || r.QueuedAt == nil {
+			t.Fatalf("after the flip: queued_at %v (%v)", r, err)
+		}
+		return *r.QueuedAt
+	}
+	// A first attempt refused before its publication: back to no marker.
+	flip()
+	if changed, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusFailedResumable, "refused", store.FailureDLQParked, nil); err != nil || !changed {
+		t.Fatalf("revert = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.Status != store.RunStatusFailedResumable || r.QueuedAt != nil || r.Error != "refused" || r.FailureCode != store.FailureDLQParked {
+		t.Fatalf("after the revert: status %s queued_at %v error %q code %q (%v), want failed_resumable, no marker, the prior failure", r.Status, r.QueuedAt, r.Error, r.FailureCode, err)
+	}
+	// A later attempt refused: back to the previous attempt's marker.
+	previous := flip()
+	if ok, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusFailedResumable, "died", []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+		t.Fatalf("out of queued: %v %v", ok, err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	if newer := flip(); !newer.After(previous) {
+		t.Fatalf("precondition: the second flip's marker %v is not after %v", newer, previous)
+	}
+	if changed, err := rv.RevertQueuedRun(ctx, runID, store.RunStatusFailedResumable, "refused", "", &previous); err != nil || !changed {
+		t.Fatalf("revert = (%t, %v), want (true, nil)", changed, err)
+	}
+	if r, err = s.LoadRun(ctx, runID); err != nil || r.QueuedAt == nil || !r.QueuedAt.Equal(previous) {
+		t.Fatalf("after the revert: queued_at %v (%v), want the previous attempt's %v", r.QueuedAt, err, previous)
 	}
 }
 

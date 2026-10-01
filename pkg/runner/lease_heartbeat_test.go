@@ -10,6 +10,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // countingLease is a run lock whose refreshes are counted, and fail with
@@ -129,7 +130,7 @@ func TestLeaseHeartbeat_anEngineReturnWithoutCancellationStartsTheCeiling(t *tes
 		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
 		defer hold.stop()
 		time.Sleep(30 * time.Second)
-		hold.engineReturned(runtime.ErrRunPaused)
+		hold.engineReturned(true)
 		time.Sleep(postEngineCeiling - time.Minute)
 		synctest.Wait()
 		beforeCeiling := lease.count()
@@ -167,7 +168,7 @@ func TestLeaseHeartbeat_theEngineReturnHandsTheHoldToThePostEngineCeiling(t *tes
 		defer hold.stop()
 		runCancel(runtime.ErrRunInterrupted)
 		time.Sleep(engineUnwindCeiling - time.Minute)
-		hold.engineReturned(runtime.ErrRunInterrupted)
+		hold.engineReturned(true)
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
 		pastUnwind := lease.count()
@@ -201,7 +202,7 @@ func TestLeaseHeartbeat_aFinishedRunKeepsItsLeaseThroughItsPostEngineSteps(t *te
 		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
 		defer hold.stop()
 		time.Sleep(30 * time.Second)
-		hold.engineReturned(nil)
+		hold.engineReturned(false)
 		time.Sleep(postEngineCeiling + time.Minute)
 		synctest.Wait()
 		pastCeiling := lease.count()
@@ -214,4 +215,38 @@ func TestLeaseHeartbeat_aFinishedRunKeepsItsLeaseThroughItsPostEngineSteps(t *te
 			t.Fatalf("a finished run's context was cancelled (%v) past the post-engine ceiling: its bank would stop", cause)
 		}
 	})
+}
+
+// TestAwaitedAfterEngine_isWhatTheStoreSays: a resume can wait on a run its
+// engine returned with an error, and on one it left paused without an error
+// (a review dialogue re-paused for its next reply); only a run the store
+// reads finished is waited on by nobody. A run that cannot be read is held
+// as a park is.
+func TestAwaitedAfterEngine_isWhatTheStoreSays(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	for _, status := range []store.RunStatus{store.RunStatusFinished, store.RunStatusPausedWaitingHuman} {
+		if err := st.SaveRun(ctx, &store.Run{ID: "run-" + string(status), TenantID: "team-1", OwnerID: "u1", Status: status}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	for _, tc := range []struct {
+		name   string
+		runID  string
+		runErr error
+		want   bool
+	}{
+		{"an error", "run-" + string(store.RunStatusFinished), runtime.ErrRunPaused, true},
+		{"finished", "run-" + string(store.RunStatusFinished), nil, false},
+		{"re-paused without an error", "run-" + string(store.RunStatusPausedWaitingHuman), nil, true},
+		{"unreadable", "run-absent", nil, true},
+	} {
+		if got := r.awaitedAfterEngine(ctx, tc.runID, tc.runErr); got != tc.want {
+			t.Errorf("%s: awaitedAfterEngine = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }

@@ -73,6 +73,17 @@ func (q *fakeDLQQueue) park(seq uint64, runID, reason string) {
 	}
 }
 
+// parkPublished parks a message carrying its publication time, the field a
+// runner tells a stale delivery by.
+func (q *fakeDLQQueue) parkPublished(seq uint64, runID, reason string, published time.Time) {
+	q.park(seq, runID, reason)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	m := q.parked[seq]
+	m.payload = json.RawMessage(fmt.Sprintf(`{"run_id":%q,"schema_version":6,"published_at":%q}`, runID, published.UTC().Format(time.RFC3339Nano)))
+	q.parked[seq] = m
+}
+
 func (q *fakeDLQQueue) ListDLQ(_ context.Context, cursorSeq uint64, limit int) ([]natsq.DLQMessage, uint64, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -573,5 +584,30 @@ func TestDLQAdmin_ReplayWithAnUnreadableStoreFailsClosed(t *testing.T) {
 	}
 	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {
 		t.Fatalf("a refused replay must leave the message parked: republished=%v remaining=%d", republished, remaining)
+	}
+}
+
+// A message published before its run was last queued belongs to an attempt
+// that is over: a runner drops it on admission, whatever the run's status.
+// Its replay is refused when the operator acts; a message of the current
+// attempt is replayed.
+func TestDLQAdmin_ReplayOfASupersededMessageIsRefused(t *testing.T) {
+	w := newDLQAdminServer(t)
+	w.seedRun(t, "run-requeued", store.RunStatusQueued)
+	run, err := w.runs.LoadRun(context.Background(), "run-requeued")
+	if err != nil || run.QueuedAt == nil {
+		t.Fatalf("precondition: a queued run with its marker, got %v (%v)", run, err)
+	}
+	w.q.parkPublished(25, "run-requeued", "max deliver exhausted", run.QueuedAt.Add(-time.Hour))
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/25/replay", w.admin)
+	if code != http.StatusConflict || !strings.Contains(string(body), "queued again") {
+		t.Fatalf("replay of a superseded message: status=%d body=%s, want 409 naming the newer attempt", code, body)
+	}
+	if republished, _, _ := w.q.snapshot(); len(republished) != 0 {
+		t.Fatalf("a refused replay republished %v", republished)
+	}
+	w.q.parkPublished(26, "run-requeued", "max deliver exhausted", run.QueuedAt.Add(time.Second))
+	if code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/26/replay", w.admin); code != http.StatusOK {
+		t.Fatalf("replay of the current attempt's message: status=%d body=%s, want 200", code, body)
 	}
 }

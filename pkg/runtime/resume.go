@@ -268,6 +268,13 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		// pre-first-node failure (e.g. a runner-side clone-prep error) left
 		// no checkpoint at all.
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
+			// The pause path records the answers, writes the gate's artifact
+			// and finishes its node before it claims: it leaves queued first,
+			// back to the pause, for this delivery's attempt only — a newer
+			// attempt queued since keeps its gate unanswered.
+			if err := e.leaveQueuedForThePause(ctx, r); err != nil {
+				return err
+			}
 			return e.resumeFromPauseWithHostInputs(ctx, r, answers, hostInputs, preparedArtifacts)
 		}
 		if e.gateReplayAllowed() {
@@ -358,7 +365,16 @@ func (e *Engine) alsoNamingSourceChange(r *store.Run, refusal error) error {
 	if workflowErr, bundleErr, _ := e.sourceChange(r); workflowErr == nil && bundleErr == nil {
 		return refusal
 	}
+	if e.forceResume {
+		return WithSourceChangeForced(refusal)
+	}
 	return WithSourceChange(refusal)
+}
+
+// WithSourceChangeForced is WithSourceChange for a resume already given
+// --force: the change is accepted, and the flag must be kept.
+func WithSourceChangeForced(refusal error) error {
+	return withForceableChange(refusal, "the workflow source has also changed since the run started", "the source changed too: keep --force, which accepts it")
 }
 
 // WithSourceChange adds to a scratch or lineage refusal that the workflow
@@ -3596,6 +3612,23 @@ func (e *Engine) replayAnsweredGate(ctx context.Context, r *store.Run, replayAns
 	}
 	r.Status = store.RunStatusPausedWaitingHuman
 	return e.resumeFromPauseWithHostInputs(ctx, r, replayAnswers, hostInputs, preparedArtifacts)
+}
+
+// leaveQueuedForThePause moves a queued run back to its gate's pause before
+// the pause path writes anything (flipToReplayedPause), refused
+// ErrResumeSuperseded when a newer attempt was queued since.
+func (e *Engine) leaveQueuedForThePause(ctx context.Context, r *store.Run) error {
+	flipCtx, flipCancel := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
+	changed, err := e.flipToReplayedPause(flipCtx, r)
+	flipCancel()
+	if err != nil {
+		return fmt.Errorf("runtime: flip %s back to its pause: %w", r.ID, err)
+	}
+	if !changed {
+		return e.lostQueuedMove(ctx, r.ID, fmt.Errorf("runtime: run %q changed status before its pause was resumed; refusing duplicate resume", r.ID))
+	}
+	r.Status = store.RunStatusPausedWaitingHuman
+	return nil
 }
 
 // flipToReplayedPause puts the run back on its gate's pause for the replay:

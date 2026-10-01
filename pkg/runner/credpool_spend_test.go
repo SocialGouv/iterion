@@ -315,3 +315,30 @@ func TestRecordPoolSpend_ordinaryFailureLeavesTheDonorAlone(t *testing.T) {
 		t.Errorf("auth failures = %d — a bot failing on its own logic blamed the donor's credential", p.ConsecutiveAuthFailures)
 	}
 }
+
+// TestRecordPoolSpend_aSupersededDeliveryLeavesTheNewerAttemptsLease: the
+// run's open lease belongs to the attempt the run was queued for since —
+// a superseded delivery ran nothing, and reporting would close that lease
+// under the newer attempt, and charge the donor nothing it spent.
+func TestRecordPoolSpend_aSupersededDeliveryLeavesTheNewerAttemptsLease(t *testing.T) {
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10, MaxConcurrentRuns: 1})
+	ctx := context.Background()
+	superseded := fmt.Errorf("%w: run run-1 was queued at T2, this delivery was published at T1", runtime.ErrResumeSuperseded)
+
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usageWith(1.5, 900), superseded, false)
+
+	hist, err := h.leases.ListByDonor(ctx, "donor", 10)
+	if err != nil || len(hist) != 1 {
+		t.Fatalf("donor history = (%d, %v), want 1 lease", len(hist), err)
+	}
+	if hist[0].Closed {
+		t.Fatal("a superseded delivery closed the run's lease, which is the newer attempt's")
+	}
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 0 {
+		t.Fatalf("donor charged %v by a delivery that ran nothing", day.CostUSD)
+	}
+}

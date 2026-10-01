@@ -103,9 +103,10 @@ func clipField(s string) string {
 // terminalText is text a server relayed — a node's error carries the output
 // of processes the run executed — made inert for a terminal, then bounded to
 // limit runes: every control character (C0, DEL, C1: an escape sequence, a
-// bell, a carriage return or newline that forges a line) and every bidi
-// override (which reorders what is shown) is written as its escape, never
-// sent raw.
+// bell, a carriage return or newline that forges a line) and every format or
+// separator character (bidi overrides and marks, which reorder what is
+// shown; line and paragraph separators; tag characters) is written as its
+// escape, never sent raw.
 func terminalText(s string, limit int) string {
 	var b strings.Builder
 	n := 0
@@ -120,7 +121,7 @@ func terminalText(s string, limit int) string {
 			b.WriteString(`\ufffd`)
 		case unicode.IsControl(r):
 			fmt.Fprintf(&b, `\x%02x`, r)
-		case (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
+		case unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp):
 			fmt.Fprintf(&b, `\u%04x`, r)
 		default:
 			b.WriteRune(r)

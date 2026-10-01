@@ -44,3 +44,23 @@ func TestRefusalFor_aLineageNamesEveryConsentItStillNeeds(t *testing.T) {
 		t.Fatalf("both consents given: %v, want no refusal", err)
 	}
 }
+
+// TestAlsoNamingSourceChange_aGivenForceIsKept: a lineage refusal that also
+// names a changed source tells the operator who already gave --force to keep
+// it — never to add a flag already given — and tells the one who did not to
+// add it.
+func TestAlsoNamingSourceChange_aGivenForceIsKept(t *testing.T) {
+	r := &store.Run{ID: "child", ParentRunID: "parent", WorkflowHash: "sha256:launch"}
+	for _, forced := range []bool{true, false} {
+		e := &Engine{workflowHash: "sha256:edited", forceResume: forced}
+		err := e.alsoNamingSourceChange(r, sharedLineage{copyBased: true, scratchContainerLocal: true}.refusalFor(r, forced, false))
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || !rt.AlsoNeedsForce {
+			t.Fatalf("forced=%v: %v, want a refusal naming the source change", forced, err)
+		}
+		keep, add := strings.Contains(rt.Hint, "keep --force"), strings.Contains(rt.Hint, "add --force")
+		if forced && (!keep || add) || !forced && !add {
+			t.Fatalf("forced=%v: hint %q", forced, rt.Hint)
+		}
+	}
+}
