@@ -8,6 +8,7 @@ references stay in [`docs/`](../README.md) proper.
 
 | Page | Read it when |
 |---|---|
+| [worktrees.md](worktrees.md) | You are about to change a file from an interactive session. Starting or continuing a task in a worktree, the "am I already in one?" test, devbox and `iterion` store commands from a worktree, and the git traps measured here (held branches, `prune`, removal). |
 | [review-and-merge.md](review-and-merge.md) | Opening, merging or unblocking a PR: queue, Revi gate, parked gate, Billy, releases. |
 | [adversarial-review-loop.md](adversarial-review-loop.md) | Before any push: why the round is required, its budget, who pays, the trailers. |
 | [engine-map.md](engine-map.md) | Which package owns a behaviour, and its invariants. |
@@ -22,6 +23,7 @@ references stay in [`docs/`](../README.md) proper.
 | [graphify.md](graphify.md) | A semantic "how does X work" question for the knowledge graph. |
 | [../repo-map-and-graph.md](../repo-map-and-graph.md) | "Where is…", "what uses…", "what breaks if…" — the deterministic map. |
 | [../state-of-the-art.md](../state-of-the-art.md) | How *proven* a surface is. |
+>>>>>>> c82f07200 (docs(agents): interactive sessions change files in a dedicated worktree)
 
 ## Adding to the tree
 

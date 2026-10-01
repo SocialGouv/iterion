@@ -23,7 +23,10 @@ The caveat is a workspace with no managed `.iterion` yet: the run then goes to
 `~/.iterion/projects/<workdir-key>/`, which the operator's studio (bound to
 `<workspace>/.iterion`) cannot see, producing a `run not found … run.json: no
 such file or directory` 404 in the studio's run/diffs panel. When in doubt
-**pass `--store-dir "$PWD/.iterion"` explicitly**. And **never** use a
+**pass the primary checkout's store explicitly** — from a linked worktree too,
+since sessions work in one ([worktrees.md](worktrees.md)):
+`--store-dir "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.iterion"`.
+And **never** use a
 throwaway `--store-dir /tmp/...`. A run the operator can't watch in the UI does
 not count as validated.
 

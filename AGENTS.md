@@ -57,6 +57,7 @@ interactive sessions).
   that would grow this file belongs in the tree.
 
 ## Philosophy — [long form](docs/philosophy.md), read it before arguing with a rule
+>>>>>>> c82f07200 (docs(agents): interactive sessions change files in a dedicated worktree)
 
 1. **Maximum power, no artificial limit.** A bound with no override is a
    defect; a load-bearing limit keeps a greppable escape hatch; warn (C1xx)
@@ -89,7 +90,10 @@ as a sub-issue **and** through the `Epic` field ([mechanics](docs/board-epics.md
   claimed without the operator's arbitration. Work found mid-session becomes an
   issue under an epic.
 - **B — dev.** First ask whether a catalog bot can do it and propose that
-  ([dogfood](docs/agents/dogfood.md)), never impose it; otherwise code directly.
+  ([dogfood](docs/agents/dogfood.md)), never impose it; otherwise code
+  directly — in a dedicated worktree, never the shared primary checkout
+  ([worktrees](docs/agents/worktrees.md); bot runs are out of scope: the
+  engine owns their workspace).
 - **C — close.** Link the evidence (PR, commit, bilan), update the status and
   release the claim: Done, or Planned with a state-of-work comment. An In
   progress ticket nobody holds is a board bug — fix it.
