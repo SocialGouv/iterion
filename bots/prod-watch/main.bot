@@ -303,6 +303,7 @@ schema decide_input:
   signals_file: string
   prom_results: json
   http_results: json
+  loki: json
   loki_ok: bool
   loki_truncated: bool
   loki_errors: json
@@ -803,14 +804,14 @@ tool plan:
         for f in ('backlog', 'closed_said'):
             if rec.get(f) is not None and not isinstance(rec[f], bool):
                 refuse_state(where + '.' + f, rec[f], 'a boolean')
-        for f in ('tracked_read_gen', 'transition_checked_gen', 'admitted_gen', 'alone_until_gen', 'transition_seen_gen'):
+        for f in ('tracked_read_gen', 'transition_checked_gen', 'admitted_gen', 'alone_until_gen', 'transition_seen_gen', 'read_gen'):
             if rec.get(f) is not None and not is_int(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an integer')
         ## decide stamps the generation it writes: a later one, or a window past
         ## any the cap can compute, would protect a record (or freeze its turn)
         ## for ever.
         gen_now = int(state.get('generation') or 0)
-        for f in ('tracked_read_gen', 'transition_checked_gen', 'admitted_gen', 'transition_seen_gen'):
+        for f in ('tracked_read_gen', 'transition_checked_gen', 'admitted_gen', 'transition_seen_gen', 'read_gen'):
             if is_int(rec.get(f)) and rec[f] > gen_now:
                 refuse_state(where + '.' + f, rec[f], 'a generation no later than the state generation ' + str(gen_now))
         if is_int(rec.get('alone_until_gen')) and rec['alone_until_gen'] > gen_now + 10 ** 9:
@@ -924,9 +925,23 @@ tool plan:
                          'band': list(band), 'band_base_ns': str(band_base),
                          'overlap_from_ns': str(prev_bound), 'history_to_ns': str(history_to),
                          'overlap_ns': str(overlap_s * 10 ** 9)}
+    ## The Loki incident store's cap (0: none) — log lines carry user input
+    ## and template() mints one template per distinct value, each a record
+    ## retention would otherwise keep for forget_after_days.
+    l_max_records = loki.get('max_records')
+    if l_max_records is None:
+        l_max_records = 5000
+    if isinstance(l_max_records, bool) or not isinstance(l_max_records, int) or not 0 <= l_max_records <= 10 ** 9:
+        raise SystemExit('prod-watch: config.loki.max_records must be an integer in [0, 1000000000], got ' + repr(l_max_records)[:40])
+    l_read_ticks = loki.get('read_protect_ticks')
+    if l_read_ticks is None:
+        l_read_ticks = 3
+    if isinstance(l_read_ticks, bool) or not isinstance(l_read_ticks, int) or not 1 <= l_read_ticks <= 10 ** 6:
+        raise SystemExit('prod-watch: config.loki.read_protect_ticks must be an integer in [1, 1000000], got ' + repr(l_read_ticks)[:40])
     loki_plan = {'queries': queries, 'windows': windows, 'max_lines': max_lines,
                  'page_size': max(1, int(loki['page_size'] if loki.get('page_size') is not None else 1000)),
-                 'stream_labels': loki.get('stream_labels') or ['namespace', 'container', 'pod', 'app', 'job']}
+                 'stream_labels': loki.get('stream_labels') or ['namespace', 'container', 'pod', 'app', 'job'],
+                 'max_records': l_max_records, 'read_protect_ticks': l_read_ticks}
 
     ## ── sentry cursor + the incidents' index ───────────────────────
     ## decide writes cursors.sentry whole — {identity, armed_at, since, at}
@@ -3151,6 +3166,7 @@ tool decide:
     loki_truncated = bool({{input.loki_truncated}})
     loki_errors = {{input.loki_errors}} or []
     loki_per_query = {{input.loki_per_query}} or {}
+    loki_cfg = {{input.loki}} or {}
     prom_ok = bool({{input.prom_ok}})
     prom_errors = {{input.prom_errors}} or []
     sentry_cfg = {{input.sentry}} or {}
@@ -3658,6 +3674,13 @@ tool decide:
                     'title_arg': c['title_arg'], 'detail_key': c['detail_key'], 'fields': c['fields'],
                     'last_seen': now_iso, 'count': int((prev or {}).get('count') or 0) + int(c['tick_count'] or 0),
                     'quiet_noted': False})
+        if c['kind'] == 'loki':
+            ## A LIVE template was read: the store's cut spares it. History
+            ## lines are not a read — their template ages like retention says.
+            if int(c['tick_count'] or 0) > 0:
+                rec['read_gen'] = state['generation']
+            if rec.get('admitted_gen') is None:
+                rec['admitted_gen'] = state['generation']
         rec.setdefault('first_seen', now_iso)
         rec.setdefault('last_notified', None)
         rec.setdefault('alerted', False)
@@ -3777,12 +3800,12 @@ tool decide:
     ## what it cut and why the rest stayed; the report is said below. The
     ## Loki lane's templates are the next lane on this seam.
     cut_report = {}
-    def cut_lane(lane, kind, cap, kept_by, order_key, announce, why):
+    def cut_lane(lane, kind, cap, kept_by, order_key, why, announce=None):
         mine = [(fp, rec) for fp, rec in incidents.items() if rec.get('kind') == kind]
         cut, announced = 0, set()
         if cap > 0 and len(mine) > cap:
             for fp, rec in sorted((kv for kv in mine if not kept_by(*kv)), key=lambda kv: order_key(*kv))[:len(mine) - cap]:
-                a = announce(fp, rec)
+                a = announce(fp, rec) if announce else None
                 if a is None:
                     del incidents[fp]
                     cut += 1
@@ -3836,10 +3859,33 @@ tool decide:
     cut_lane('sentry', 'sentry', int(sentry_cfg.get('max_records') or 0) if s_on else 0, s_kept_by,
              lambda fp, rec: (s_int_field(rec.get('admitted_gen')) if s_int_field(rec.get('admitted_gen')) is not None else -1,
                               1 if rec.get('alerted') else 0, fp),
-             s_announce,
              {'read': 'read in the last ' + str(s_read_gens) + ' ticks', 'owed': 'owed a pending alert',
               'alone': 'posted alone within their window', 'announced': 'announced this tick before their cut',
-              'watched': 'watched regressions a bootstrap cannot announce'})
+              'watched': 'watched regressions a bootstrap cannot announce'},
+             s_announce)
+    ## The Loki lane: log templates are minted by whoever writes the logs (a
+    ## path, an id — one template per distinct value). Same store rules: live
+    ## reads protect, a pending alert is owed, a fact posted alone opens its
+    ## window; a template out of the lists for the read window goes, and one
+    ## read again live posts NEW again (said).
+    l_read_gens = int(loki_cfg.get('read_protect_ticks') or 3)
+    l_window = max(1, (int(loki_cfg.get('max_records') or 0) or 5000) // (2 * max(1, min(max_per_lane, max_alerts))))
+    def l_kept_by(fp, rec):
+        gen = state['generation']
+        read = s_int_field(rec.get('read_gen'))
+        if read is not None and gen - read < l_read_gens:
+            return 'read'
+        if rec.get('pending') == 'new':
+            return 'owed'
+        until = s_int_field(rec.get('alone_until_gen'))
+        if until is not None and gen < until:
+            return 'alone'
+        return ''
+    cut_lane('loki', 'loki', int(loki_cfg.get('max_records') or 0) if lanes.get('loki') else 0, l_kept_by,
+             lambda fp, rec: (s_int_field(rec.get('admitted_gen')) if s_int_field(rec.get('admitted_gen')) is not None else -1,
+                              1 if rec.get('alerted') else 0, fp),
+             {'read': 'read in the last ' + str(l_read_gens) + ' ticks', 'owed': 'owed a pending alert',
+              'alone': 'posted alone within their window'})
     ## Cut counts carried until a note says them, by lane.
     carried_cut = state.get('records_cut') if isinstance(state.get('records_cut'), dict) else {}
     cut_totals = {lane: int(carried_cut.get(lane) or 0) + int((cut_report.get(lane) or {}).get('cut') or 0)
@@ -3920,7 +3966,7 @@ tool decide:
                        'forgotten by retention (forget_after_days) — counted, not named'))
     for lane in sorted(cut_totals):
         if cut_totals[lane]:
-            pieces.append(('records cut: ' + lane, lane + ': ' + str(cut_totals[lane]) + ' record(s) cut past max_records — a cut issue loses its '
+            pieces.append(('records cut: ' + lane, lane + ': ' + str(cut_totals[lane]) + ' record(s) cut past max_records — a cut incident loses its '
                            'follow-ups (reminder, escalation, reopening, idle and closing notes, leak detection, a second regression the lane had '
                            'already dated), and one read again is said again'))
     for lane, rep in sorted(cut_report.items()):
@@ -4158,10 +4204,10 @@ tool decide:
         else:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
-            if a['kind'] == 'sentry' and not a.get('member') and a['state'] in FACTS and s_int_field(rec.get('alone_until_gen')) is None:
+            if a['kind'] in ('sentry', 'loki') and not a.get('member') and a['state'] in FACTS and s_int_field(rec.get('alone_until_gen')) is None:
                 ## Its first fact posted alone opens the window the store's cut
                 ## spares it for — once: no later post, real or minted, moves it.
-                rec['alone_until_gen'] = state['generation'] + s_window
+                rec['alone_until_gen'] = state['generation'] + (s_window if a['kind'] == 'sentry' else l_window)
             ## Posted again (a transition, a pending alert): its closing note
             ## is owed again, and the idle clock restarts — a transition
             ## posted without an event here must not read idle next tick.
@@ -4979,6 +5025,7 @@ workflow prod_watch:
     signals_file: "{{outputs.leak_scan.signals_file}}",
     prom_results: "{{outputs.poll_prom.results}}",
     http_results: "{{outputs.probe_http.results}}",
+    loki: "{{outputs.plan.loki}}",
     loki_ok: "{{outputs.poll_loki.ok}}",
     loki_truncated: "{{outputs.poll_loki.truncated}}",
     loki_errors: "{{outputs.poll_loki.errors}}",

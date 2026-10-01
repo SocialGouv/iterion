@@ -347,6 +347,7 @@ func TestProdWatch_SentryFloodCannotHoldTheCapAgainstAnotherLane(t *testing.T) {
 	in["sentry"] = map[string]any{"enabled": true, "bootstrap": false, "armed_at": "2026-09-29T09:00:00+00:00", "overlap_minutes": 60,
 		"severity": map[string]any{"fatal": "high"}, "max_severity": "high", "link_prefix": "https://s.example/organizations/o/issues/",
 		"identity": map[string]any{"base_url": "https://s.example", "org": "o", "project": "p", "environment": "preprod"}}
+	in["loki"] = map[string]any{}
 	in["sentry_walk"] = map[string]any{"answered": true, "new_complete": true, "transition_complete": true, "tracked_complete": true, "as_of": "2026-09-29T10:00:00+00:00"}
 	in["sentry_issues"] = 25
 	in["lanes"] = map[string]any{"loki": true, "prometheus": false, "probes": false, "sentry": true}

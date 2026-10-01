@@ -51,6 +51,11 @@ func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map
 	merged := map[string]any{}
 	partial := false
 	for k := range pwSentryOff {
+		// `loki` is a Loki key: passing it must not suppress the Sentry
+		// defaults (the Loki-only tests pass loki but not sentry).
+		if k == "loki" {
+			continue
+		}
 		if _, set := inputs[k]; set {
 			partial = true
 		}
@@ -116,6 +121,13 @@ func runPyWhole(t *testing.T, dir, script string) (map[string]any, string, error
 	c.Stdout = &stdout
 	c.Stderr = &stderr
 	runErr := c.Run()
+	if runErr != nil {
+		keep := filepath.Join("/tmp/claude-1000/pyfail", fmt.Sprint(time.Now().UnixNano()))
+		_ = os.MkdirAll(keep, 0o755)
+		_ = os.WriteFile(filepath.Join(keep, "tool.py"), []byte(script), 0o644)
+		_ = os.WriteFile(filepath.Join(keep, "stderr.txt"), []byte(stderr.String()), 0o644)
+		t.Logf("failed python kept at %s", keep)
+	}
 	out := map[string]any{}
 	if s := strings.TrimSpace(stdout.String()); s != "" {
 		if err := json.Unmarshal([]byte(s), &out); err != nil && runErr == nil {
@@ -482,6 +494,7 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"sentry_file": sentry["raw_file"], "sentry_issues": sentry["issues"], "app": plan["app"], "scratch_dir": h.scratch})
 	decide := run("decide", map[string]any{
 		"signals_file": leak["signals_file"], "prom_results": prom["results"], "http_results": probe["results"],
+		"loki":    plan["loki"],
 		"loki_ok": loki["ok"], "loki_truncated": loki["truncated"], "loki_errors": loki["errors"], "loki_per_query": loki["per_query"],
 		"prom_ok": prom["ok"], "prom_errors": prom["errors"], "release": rel["release"], "release_known": rel["release_known"],
 		"sentry": plan["sentry"], "sentry_ok": sentry["ok"], "sentry_truncated": sentry["truncated"], "sentry_errors": sentry["errors"],
@@ -3012,7 +3025,7 @@ func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 		"poll_sentry":     {"sentry": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
 		"probe_http":      {"probes": true, "timeout_secs": true, "allow_private": true},
 		"leak_scan":       {"raw_file": true, "per_query": true, "sentry_file": true, "sentry_issues": true, "app": true, "scratch_dir": true},
-		"decide": {"signals_file": true, "prom_results": true, "http_results": true, "loki_ok": true, "loki_truncated": true,
+		"decide": {"signals_file": true, "prom_results": true, "http_results": true, "loki": true, "loki_ok": true, "loki_truncated": true,
 			"loki_errors": true, "loki_per_query": true, "prom_ok": true, "prom_errors": true, "release": true, "release_known": true,
 			"sentry": true, "sentry_ok": true, "sentry_truncated": true, "sentry_errors": true, "sentry_walk": true, "sentry_issues": true,
 			"lanes": true, "app": true, "workspace": true, "state_dir": true, "scratch_dir": true, "renotify_hours": true,
@@ -3090,6 +3103,7 @@ func pwDecide(t *testing.T, wf *ir.Workflow, h *pwHarness, signals map[string]an
 	}
 	in := map[string]any{
 		"signals_file": sig, "prom_results": []any{}, "http_results": []any{}, "loki_ok": true, "loki_truncated": false,
+		"loki":        map[string]any{"max_records": 0},
 		"loki_errors": []any{}, "loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}}, "prom_ok": true, "prom_errors": []any{},
 		"release": "", "release_known": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": true},
 		"app": map[string]any{"name": "demo"}, "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,

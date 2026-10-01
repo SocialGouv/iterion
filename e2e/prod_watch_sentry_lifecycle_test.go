@@ -373,7 +373,7 @@ func TestProdWatch_SentryLaneThatNeverAnsweredIsNotHealthy(t *testing.T) {
 		}
 		_, stderr, err := pwDecide(t, wf, h, map[string]any{}, nil, map[string]any{"signals_file": leak["signals_file"],
 			"lanes": plan["lanes"], "sentry": plan["sentry"], "sentry_ok": s["ok"], "sentry_truncated": s["truncated"],
-			"sentry_errors": s["errors"], "sentry_walk": s["walk"], "sentry_issues": s["issues"], "loki_per_query": map[string]any{}})
+			"loki": map[string]any{}, "sentry_errors": s["errors"], "sentry_walk": s["walk"], "sentry_issues": s["issues"], "loki_per_query": map[string]any{}})
 		if err == nil || !strings.Contains(stderr, "deadline") {
 			t.Fatalf("a Sentry-only tick cut by the deadline was not refused naming why: err=%v %s", err, stderr)
 		}
