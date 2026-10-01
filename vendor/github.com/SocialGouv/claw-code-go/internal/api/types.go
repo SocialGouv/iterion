@@ -383,6 +383,34 @@ type UsageDelta struct {
 	OutputTokensDetails struct {
 		ThinkingTokens int `json:"thinking_tokens"`
 	} `json:"output_tokens_details"`
+	// Reported is true when the provider reported its usage for the call:
+	// a usage object naming at least one counter, whose value — zero
+	// included — is then measured (a counter it left out reads 0). False
+	// means the counters are no such account: the provider sent no usage
+	// (not asked for it, ignored the request, or the stream ended before
+	// it), so a consumer metering spend must not book them as a measured
+	// zero. On an EventError it is true only when the failure frame itself
+	// carried the usage; otherwise the counters are at most a lower bound —
+	// on the OpenAI chat wire, what the stream had reported before failing;
+	// none for an Anthropic-shape stream, whose input count rides
+	// message_start (StreamEvent.InputTokens) and earlier message_delta
+	// usage the consumer has already seen.
+	Reported bool `json:"reported,omitempty"`
+}
+
+// DecodeUsageDelta decodes an Anthropic-shape usage object (message_delta's
+// "usage"). The counters are Reported when the object carries one of them
+// as a number; an object without any, or a value that does not decode, is
+// no account of the call.
+func DecodeUsageDelta(raw json.RawMessage) UsageDelta {
+	var u UsageDelta
+	_ = json.Unmarshal(raw, &u)
+	var present struct {
+		OutputTokens *int `json:"output_tokens"`
+		InputTokens  *int `json:"input_tokens"`
+	}
+	u.Reported = json.Unmarshal(raw, &present) == nil && (present.OutputTokens != nil || present.InputTokens != nil)
+	return u
 }
 
 // ContentBlockInfo holds info about a starting content block.

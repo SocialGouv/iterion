@@ -251,7 +251,7 @@ func decodeAnthropicJSON(data []byte) (*api.StreamEvent, error) {
 	}
 
 	if usageRaw, ok := raw["usage"]; ok {
-		_ = json.Unmarshal(usageRaw, &event.Usage)
+		event.Usage = api.DecodeUsageDelta(usageRaw)
 	}
 
 	if msgRaw, ok := raw["message"]; ok {

@@ -59,6 +59,7 @@ func TestClassifyStreamEventError_OpenAIProviderCodes(t *testing.T) {
 		{"chat not-found type", "openai stream error: No such thing (type=not_found_error, code=x)", false, false, ""},
 		{"chat billing type", "openai stream error: Pay first (type=billing_error, code=x)", false, false, ""},
 		{"chat quota type alone", "openai stream error: Over quota (type=insufficient_quota)", false, false, ""},
+		{"chat validator refusal", "openai stream error: Input validation error: inputs too long (type=validation)", false, false, ""},
 		{"chat content filter under a neutral type", "openai stream error: Blocked (type=server_error, code=content_filter)", false, false, ""},
 		{"chat bad key under a neutral type", "openai stream error: Bad key (type=server_error, code=invalid_api_key)", false, false, ""},
 		{"chat unknown model under a neutral type", "openai stream error: No model (type=server_error, code=model_not_found)", false, false, ""},

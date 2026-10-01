@@ -80,16 +80,41 @@ type Chunk struct {
 	// endpoint may send after the 200 status line — as an OpenAI error
 	// object or, on some gateways, as a bare string.
 	Error json.RawMessage `json:"error,omitempty"`
+	// ErrorType is the kind a bare-string error frame names beside it
+	// (Hugging Face TGI: `{"error":"…","error_type":"validation"}`).
+	ErrorType LooseString `json:"error_type,omitempty"`
+}
+
+// LooseString decodes a field endpoints type loosely: a JSON string is
+// itself, null is empty, and any other value keeps its JSON text — an odd
+// value (a numeric code, an object) never fails the decode of the frame it
+// rides on, which would drop the frame.
+type LooseString string
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (s *LooseString) UnmarshalJSON(b []byte) error {
+	var text string
+	if json.Unmarshal(b, &text) == nil { // a string, or null: empty
+		*s = LooseString(text)
+		return nil
+	}
+	*s = LooseString(strings.TrimSpace(string(b)))
+	return nil
 }
 
 // ErrorMessage returns the failure a chunk carries, if any. An empty value —
 // null, false, "", 0, {}, [] or an object whose fields are all empty —
 // carries none. Otherwise the message is the error object's message (with
-// its type and code when present), the bare string, or the raw value,
-// capped at httputil.BodyTruncateForLog: the endpoint may not be the
+// its type and code when present), the bare string (with the error_type
+// beside it), or the raw value — bounded: the endpoint may not be the
 // operator's, and the text travels on into errors and logs.
 func (c Chunk) ErrorMessage() (string, bool) {
-	return errorFrameMessage(c.Error)
+	msg, ok := errorFrameMessage(c.Error)
+	var text string
+	if ok && c.ErrorType != "" && json.Unmarshal(c.Error, &text) == nil {
+		msg += " (type=" + httputil.TruncateBody(string(c.ErrorType), httputil.FieldTruncateForLog) + ")"
+	}
+	return msg, ok
 }
 
 func errorFrameMessage(raw json.RawMessage) (string, bool) {
@@ -101,7 +126,7 @@ func errorFrameMessage(raw json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(raw, &value); err == nil && isEmptyJSONValue(value) {
 		return "", false
 	}
-	return httputil.TruncateBody(describeErrorFrame(raw), httputil.BodyTruncateForLog), true
+	return describeErrorFrame(raw), true
 }
 
 // isEmptyJSONValue reports whether a decoded JSON value carries nothing.
@@ -128,10 +153,14 @@ func isEmptyJSONValue(v any) bool {
 	return false
 }
 
+// describeErrorFrame renders an error value, bounded: the message of an
+// error object is cut at httputil.BodyTruncateForLog before its type and code
+// are appended, each cut at httputil.FieldTruncateForLog, so a long message
+// never costs the caller the verdict and no field unbounds the whole.
 func describeErrorFrame(raw []byte) string {
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
-		return text
+		return httputil.TruncateBody(text, httputil.BodyTruncateForLog)
 	}
 	var obj struct {
 		Message string          `json:"message"`
@@ -139,18 +168,18 @@ func describeErrorFrame(raw []byte) string {
 		Code    json.RawMessage `json:"code"`
 	}
 	if err := json.Unmarshal(raw, &obj); err != nil || (obj.Message == "" && obj.Type == "") {
-		return string(raw)
+		return httputil.TruncateBody(string(raw), httputil.BodyTruncateForLog)
 	}
-	msg := obj.Message
+	msg := httputil.TruncateBody(obj.Message, httputil.BodyTruncateForLog)
 	if msg == "" {
 		msg = "error frame with no message"
 	}
 	var detail []string
 	if obj.Type != "" {
-		detail = append(detail, "type="+obj.Type)
+		detail = append(detail, "type="+httputil.TruncateBody(obj.Type, httputil.FieldTruncateForLog))
 	}
 	if code := strings.Trim(string(bytes.TrimSpace(obj.Code)), `"`); code != "" && code != "null" {
-		detail = append(detail, "code="+code)
+		detail = append(detail, "code="+httputil.TruncateBody(code, httputil.FieldTruncateForLog))
 	}
 	if len(detail) > 0 {
 		msg += " (" + strings.Join(detail, ", ") + ")"
@@ -168,10 +197,22 @@ func ErrorEventMessage(data string) string {
 		Message json.RawMessage `json:"message"`
 	}
 	if err := json.Unmarshal([]byte(data), &frame); err == nil {
-		for _, raw := range []json.RawMessage{frame.Error, frame.Detail, frame.Message} {
+		for _, raw := range []json.RawMessage{frame.Error, frame.Detail} {
 			if msg, ok := errorFrameMessage(raw); ok {
 				return msg
 			}
+		}
+		// A frame that is itself the error object carries its message at the
+		// top level, its type and code beside it. One naming no message
+		// keeps its raw text below: whatever key holds the provider's words.
+		var top struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(data), &top) == nil && top.Message != "" {
+			return describeErrorFrame([]byte(data))
+		}
+		if msg, ok := errorFrameMessage(frame.Message); ok {
+			return msg
 		}
 	}
 	if strings.TrimSpace(data) == "" {
@@ -237,6 +278,32 @@ type FunctionDelta struct {
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	// counted records that the decoded object named a counter.
+	counted bool
+}
+
+// Counted reports whether the usage object named a token counter. Some
+// endpoints send an empty or partial object ({} or only total_tokens) on
+// chunks that report nothing; that is no account of the call.
+func (u *Usage) Counted() bool { return u != nil && u.counted }
+
+// UnmarshalJSON decodes the counters and records whether any was present.
+func (u *Usage) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*u = Usage{counted: raw.PromptTokens != nil || raw.CompletionTokens != nil}
+	if raw.PromptTokens != nil {
+		u.PromptTokens = *raw.PromptTokens
+	}
+	if raw.CompletionTokens != nil {
+		u.CompletionTokens = *raw.CompletionTokens
+	}
+	return nil
 }
 
 // StrPtr is the trivial helper that returns a pointer to s. It exists so
