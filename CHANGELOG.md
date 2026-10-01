@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.219.4](https://github.com/SocialGouv/iterion/compare/v3.219.3...v3.219.4) (2026-10-01)
+
+### Bug Fixes
+
+* **security:** a run's forge publish grant stays on the server, and a Layer-0 secret resolves nowhere ([#1997](https://github.com/SocialGouv/iterion/issues/1997)) ([#2053](https://github.com/SocialGouv/iterion/issues/2053)) ([f082ca8](https://github.com/SocialGouv/iterion/commit/f082ca8c578ed6f43a339a929f59e5a527079b8b))
+
+    <details><summary>why</summary>
+
+    The server mints a short-lived forge publish grant per run so a review bot posts through the server's live forge client instead of a workspace token. That grant rode the run's launch vars as a plain value: it was readable on the run's read surfaces, it reached the records of every descendant run, and a workflow could turn it back into plaintext by declaring a secret over the var. Three changes, each with its own guarantee.
+
+    </details>
+
 ## [3.219.3](https://github.com/SocialGouv/iterion/compare/v3.219.2...v3.219.3) (2026-10-01)
 
 ### Bug Fixes
