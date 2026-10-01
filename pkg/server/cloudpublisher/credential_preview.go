@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -40,25 +41,32 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// happened, so there is no frozen set to replay — it answers for the
 	// program as it reads NOW, which is what the operator is about to run.
 	x.pinned = pinnedProviderSet(derivePinnedProviders(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback)))
+	// Same predicate as the live fill (#2038): an env-funded run acquires no
+	// LLM credential, so the preview shows no candidate and reads no tier.
+	envFunded := wf != nil && model.EffectiveProviders(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback), knownPoolProviders).OnlyEnvFunded()
 	// The live resolution's own policy snapshot and tier probes (read-only
 	// store reads, like every other stage here).
 	x.policy = p.sharedTierPolicyFor(ctx)
-	tenantOwners := []string{spec.OwnerID}
-	if spec.Context.TeamID != "" {
-		tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(spec.Context.TeamID))
+	if envFunded {
+		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
+	} else {
+		tenantOwners := []string{spec.OwnerID}
+		if spec.Context.TeamID != "" {
+			tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(spec.Context.TeamID))
+		}
+		x.natives = map[string]*tierNative{
+			"tenant":   p.newTierNative(ctx, "tenant", spec.Context.TeamID, previewBotID, tenantOwners...),
+			"platform": p.newTierNative(ctx, "platform", secrets.PlatformTenantID, previewBotID, secrets.PlatformOwnerKey),
+		}
+		if x.orgID != "" {
+			x.natives["org"] = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(x.orgID), previewBotID, secrets.OrgTierOwnerKey(x.orgID))
+		}
+		// Same answer as the live fill: `auto` asks the RUN — the team's own
+		// credentials, the org tier's and the platform tier's — so the preview
+		// cannot promise a facade default the fill will refuse, or refuse one it
+		// will serve.
+		x.policy.runNative = orNative(orNative(x.natives["tenant"], x.natives["org"]), x.natives["platform"])
 	}
-	x.natives = map[string]*tierNative{
-		"tenant":   p.newTierNative(ctx, "tenant", spec.Context.TeamID, previewBotID, tenantOwners...),
-		"platform": p.newTierNative(ctx, "platform", secrets.PlatformTenantID, previewBotID, secrets.PlatformOwnerKey),
-	}
-	if x.orgID != "" {
-		x.natives["org"] = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(x.orgID), previewBotID, secrets.OrgTierOwnerKey(x.orgID))
-	}
-	// Same answer as the live fill: `auto` asks the RUN — the team's own
-	// credentials, the org tier's and the platform tier's — so the preview
-	// cannot promise a facade default the fill will refuse, or refuse one it
-	// will serve.
-	x.policy.runNative = orNative(orNative(x.natives["tenant"], x.natives["org"]), x.natives["platform"])
 	wants, routes := wantsFor(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback))
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
@@ -66,7 +74,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	if !routes.NarrowSafe {
 		x.out.Warnings = append(x.out.Warnings, "Some model routes are unresolved; the live resolver uses the full pool preference order.")
 	}
-	err := walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func(tier credentialTier, active bool) error {
+	var err error
+	if envFunded {
+		// Nothing to walk: no stage acquires anything for this run.
+	} else if err = walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func(tier credentialTier, active bool) error {
 		switch tier {
 		case credentialTierBYOK:
 			if err := x.apiStage("", spec.Context.TeamID, spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), previewBotID, spec.Launch.KeyOverrides, false, true); err != nil {
@@ -219,8 +230,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			}
 		}
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return runview.CredentialPreview{}, err
 	}
 	wires := map[string][]string{}
