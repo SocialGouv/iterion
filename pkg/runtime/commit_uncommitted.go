@@ -76,7 +76,9 @@ func CommitUncommittedAndFinalize(
 	if err := runGitInDir(r.WorkDir, commitStageArgs(r.WorkDir)...); err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: git add: %w", err)
 	}
-	if out, err := gitCommitMessage(r.WorkDir, message); err != nil {
+	// The run's own tree: its hooks are the run's to write, so none runs
+	// inside this commit — the same rule as the wip bank.
+	if out, err := gitCommitRunOutput(r.WorkDir, message); err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: git commit: %w (output: %s)", err, strings.TrimSpace(out))
 	}
 	if logger != nil {

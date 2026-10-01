@@ -75,10 +75,10 @@ interrupted after such a write relaunches as a green no-op. Measured: four
 `finished` runs in 24 h that crossed no gate, every one a relaunch from a
 banked branch carrying a completion nobody had proven.
 
-The contract is more than the plan, and all of it is read-only inside a lot.
-`lot_verify` compares the plan and the files its owner keeps beside it —
-`outcomes.json`, `brief.yaml`, `ARBITRAGE.md`, `defects-ledger.json` — with the
-run's base, deny by default, before any gate command runs:
+The contract is the plan's whole directory, and all of it is read-only inside
+a lot. `lot_verify` compares the plan, the files its owner keeps beside it —
+`outcomes.json`, `brief.yaml`, `ARBITRAGE.md`, `defects-ledger.json` — and
+every other file the base holds there with the run's base, deny by default:
 
 | a lot may write | nothing else |
 |---|---|
@@ -86,6 +86,10 @@ run's base, deny by default, before any gate command runs:
 | a NEW lot, as a proposal | the outcomes, the brief, the arbitration doctrine |
 | a NEW register entry, for a defect it found | every other register entry, a removal, the register's header |
 | the register entries its lot declares in `remediates:` (read at the base) | |
+| its own records: a file named with its id (`<lot>-report.md`, `sweeps/<lot>.md`), or one the base does not hold | every other file the base holds beside the plan: the owner's, the earlier lots' records |
+
+An index flag (`skip-worktree`, `assume-unchanged`) or a `filter` attribute on
+a contract path is refused outright: a commit would store what no tree shows.
 
 Anything else is refused with one named cause per file —
 `.modernize/outcomes.json: outcomes[engine-target].check changed` — and goes
@@ -93,8 +97,8 @@ back to the worker like a self-written `done`.
 
 The contract is judged on what lands, not only on the tree the gate starts
 from: before the exit gate runs and again after its last command (the gate's
-commands are the lot's own code), on the working tree as git would store it and
-on what is committed. `mark_done` then writes `done` only on the HEAD and the
+commands are the lot's own code), on the working tree as git would store it,
+on the index and on what is committed. `mark_done` then writes `done` only on the HEAD and the
 working tree that verdict judged — a commit or an edit that arrived since is
 refused, never committed under the gate's subject
 ([ADR-107](../../docs/adr/107-a-lots-contract-is-a-directory-judged-on-what-lands.md)).

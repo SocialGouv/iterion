@@ -89,8 +89,8 @@ convergence to whoever relaunched it.
 
 ## The contract is read-only inside a lot — every file of it
 
-The contract is not one file. It is the plan and the files its owner keeps
-BESIDE it, in the plan's directory:
+The contract is not one file. It is the plan's DIRECTORY: the plan, the files
+its owner keeps beside it, and the records the earlier lots left there.
 
 | file | what it holds | what a lot may write in it |
 |---|---|---|
@@ -99,17 +99,33 @@ BESIDE it, in the plan's directory:
 | `brief.yaml` | goals, decisions, permitted and forbidden changes | nothing |
 | `ARBITRAGE.md` | how a blocked divergence is judged | nothing |
 | `defects-ledger.json` | the defects register | a NEW entry, for a defect it found; the entries its lot `remediates` |
+| any other file the base holds there | the owner's files, the earlier lots' reports, sweeps and probes | nothing — byte-frozen |
+| a file named with the lot's id | its own records: `<lot>-report.md`, `<lot>-probe.py`, `sweeps/<lot>.md`, `<lot>-captures/…` | anything: create, update, remove |
+| a file the base does not hold | a record the lot creates | anything |
 
-`lot_verify` compares each of them with the run's base before it runs a single
+A name is the lot's own when it carries the lot's id followed by `-`, `.` or
+`_` (or is the id itself), at any depth: lot `L1` owns `L1-report.md` and
+`sweeps/L1.md`, never `L10-report.md`. Name what you write beside the plan with
+your lot's id, and leave the others' records as they are: they are the
+programme's history, and a lot that rewrites another lot's report rewrites what
+was found.
+
+`lot_verify` compares the directory with the run's base before it runs a single
 gate command, and again after the last one — a gate command is the lot's own
 code — and refuses a lot that changed anything else, one named cause per file
-(`.modernize/outcomes.json: outcomes[engine-target].check changed`). Both trees
-that land are judged: the working tree as git would store it, and what is
-committed; `mark_done` writes `done` only on what that verdict judged. It is
-deny by default: a field nobody thought to list is protected like the ones
-somebody did, because a check that names what it protects leaves the next
-field open. A file created, deleted, swapped for a symlink or given a duplicate
-key is a rewrite too; a reformatting that parses to the same document is not.
+(`.modernize/outcomes.json: outcomes[engine-target].check changed`). Three
+trees are judged, because a landing is made of them: the working tree as git
+would store it, the index (what a commit stores for an entry `git add` leaves
+alone), and what is committed; `mark_done` writes `done` only on what that
+verdict judged. Two things that would let a commit store something no tree
+shows are refused outright on a contract path: an index flag
+(`skip-worktree`, `assume-unchanged`) and a `filter` attribute — a clean filter
+is code, and what it stores cannot be judged. It is deny by default: a field
+nobody thought to list is protected like the ones somebody did, because a check
+that names what it protects leaves the next field open. A file created,
+deleted, swapped for a symlink or given a duplicate key is a rewrite too; a
+reformatting that parses to the same document is not. The table's files and
+the plan must be regular files: what a link points at is not judged.
 
 The reason is the one behind `done`: the party a contract binds is not the
 party that writes it. An outcome whose `check` becomes `true` converges the

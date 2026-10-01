@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-09-30
-- **Applies to**: `bots/modernize` (Morphy) — `lot_verify`, `lot_gate`, `mark_done`; the `plan-contract` skill it shares with `bots/assessment`
+- **Applies to**: `bots/modernize` (Morphy) — `plan_read`, `lot_verify`, `lot_gate`, `mark_done`; the `plan-contract` skill it shares with `bots/assessment`; the engine's wip bank (`pkg/runtime`, `finalizeWorktree`)
 - **Neighbours**: [ADR-104](104-product-docs-route-table-resolved-once-at-the-run-base.md) (a verdict read from a commit, not from what the judged agent wrote)
 
 ## Context
@@ -43,6 +43,22 @@ own finalize and deferred merge:
 | a rewrite committed, then the file restored in the working tree | converged; `mark_done` committed `done` over the rewrite. The wip bank of the restore is what a squash landed |
 | the same, with the restore marked `assume-unchanged` | converged; no wip bank, and the rewrite was auto-merged under `done` |
 
+A review of a first implementation, which judged the working tree and HEAD,
+measured five more ways a rewrite reached the landing under `done`:
+
+- a rewrite staged in the **index** under `skip-worktree` or
+  `assume-unchanged`, with the file on disk and HEAD both clean: `git add -A`
+  leaves the entry alone, and the engine's own bank committed it;
+- a **clean filter** keyed on `GIT_NO_REPLACE_OBJECTS`: the judge, which
+  exports it, read the owner's bytes; the bank, which does not, stored the
+  rewrite;
+- a **pre-commit hook** that rewrote a contract file inside the bank's own
+  commit;
+- a worker commit storing the plan as a **symlink** (mode 120000) whose target
+  is the plan's flipped text, taken for `mark_done`'s own earlier commit;
+- an owner file beside the plan under **another name** than the five, judged by
+  nothing.
+
 ## Options
 
 - **(a) A list of forbidden edits per file.** A list protects what it names,
@@ -62,11 +78,12 @@ own finalize and deferred merge:
 
 (D).
 
-- **The contract is the plan's directory:** `plan.yaml`, `outcomes.json`,
-  `brief.yaml`, `ARBITRAGE.md` and `defects-ledger.json`. One table in
-  `lot_verify` lists each file, how it parses, and what a lot may write in it.
-- **Deny by default.** Each file is compared with the run's base as a parsed
-  document:
+- **The contract is the plan's directory.** One table in `lot_verify` names
+  five files, how each parses and what a lot may write in it: `plan.yaml`,
+  `outcomes.json`, `brief.yaml`, `ARBITRAGE.md`, `defects-ledger.json`. Every
+  other path the base holds in that directory is judged too, byte for byte.
+- **Deny by default.** The table's files are compared with the run's base as
+  parsed documents:
   - the owner files take no write;
   - the plan takes the running lot's own status, and new lots, which are
     proposals;
@@ -76,11 +93,34 @@ own finalize and deferred merge:
 
   A removal, a duplicated id, a changed header, a symlink, a created or deleted
   owner file, or a duplicate key is a rewrite. A reformatting that parses to
-  the same document is not.
-- **Judged on what lands.** Two trees are judged:
+  the same document is not. A table file that is not a regular file at the
+  base, and a plan that is not a regular file at all, is a contract that
+  cannot be read: what a link points at is not judged.
+- **What a lot may write beside the plan.** Only its own records:
+  - any path one of whose names carries the running lot's id as a prefix:
+    `<lot>-report.md`, `<lot>-probe.py`, `sweeps/<lot>.md`, all of
+    `<lot>-captures/`. Created, updated or removed. The prefix ends at `-`,
+    `.` or `_`, so lot `L1` does not own `L10-report.md`;
+  - any path the base does not hold, whatever its name: a record the lot
+    creates.
+
+  Everything else the base holds there — the owner's files, and the earlier
+  lots' records — is byte-frozen. A file the owner wants protected is
+  protected from the first run whose base carries it.
+- **Judged on what lands.** Three trees are judged:
   - the working tree, as git would store it: `hash-object --path`, with the
-    path's filters and line endings applied, and the index's flags ignored;
+    path's line-ending and encoding conversions applied;
+  - the index, which a commit stores for an entry `git add` leaves alone
+    (skip-worktree, assume-unchanged, a stat it trusts);
   - HEAD's committed tree.
+
+  Two things a commit can store without either tree showing it are refused
+  outright on a contract path, because they cannot be judged:
+  - an index flag (skip-worktree, assume-unchanged);
+  - a `filter` attribute. A clean filter is code of the judged party's
+    choosing, run each time the path is stored, and it can answer the judge
+    and the landing differently: the judge exports `GIT_NO_REPLACE_OBJECTS`,
+    the engine's bank does not.
 
   History is read as committed (`GIT_NO_REPLACE_OBJECTS`).
 - **Judged twice:**
@@ -92,10 +132,23 @@ own finalize and deferred merge:
   `lot_gate`'s `converged` and `stop` both carry the contract as a term, so a
   refused verdict neither lands nor ends the run.
 - **`mark_done` commits only what was judged.** The verdict carries the HEAD it
-  judged and the fingerprints of the working tree. `mark_done` refuses a HEAD
-  or a file that moved since then. Two exceptions keep a re-execution after a
-  crash idempotent, and both are exact: its own line in the plan, and its own
-  commit on the judged HEAD.
+  judged and, for every judged path, what a commit of the working tree would
+  take: the working tree as git would store it, the index entries and flags,
+  the `filter` attribute. `mark_done` refuses any of them that moved since.
+  Its own work is recognised exactly, so a re-execution after a crash stays
+  idempotent:
+  - its line in the plan: the plan the verdict judged in the working tree
+    (proposals left uncommitted included), with the one line flipped;
+  - its index entry for that plan;
+  - its own commit on the judged HEAD: one parent, the judged HEAD, and one
+    change, the plan at its base mode carrying the blob it commits. A commit
+    storing the same bytes at another mode (a symlink whose target is the
+    plan's text) is not its own.
+- **The engine's bank runs no hook.** The wip bank commits a run's own output
+  in the run's tree, and the hooks directory is one the run can write. The
+  bank's commit points `core.hooksPath` at nothing: `--no-verify` alone leaves
+  `prepare-commit-msg` and `post-commit` running, and a `post-commit` hook can
+  commit again on top of the bank.
 - **One implementation.** Tool scripts share no code in the DSL: includes are
   for prompts only. So the comparison lives once, in `lot_verify`, and
   `mark_done` checks identity with the verdict rather than re-judging the
@@ -113,12 +166,29 @@ own finalize and deferred merge:
 - What a lot writes on an entry it remediates is not interpreted, because the
   register's vocabulary belongs to the programme. The lot's exit gate is where
   the required disposition is checked. A new entry may carry any disposition.
-- Accepted limits:
+- Accepted limits, measured:
+  - **What happens after `mark_done` is not judged by any node.** `mark_done`
+    is the last node; the run's landing is made after it, by the engine.
+    - On a **cloud run** the store has no working tree, so `finalizeWorktree`
+      never runs: the runner banks and pushes **HEAD itself**. Its bank checks
+      that the export is intact, not where HEAD stands relative to the commit
+      `mark_done` reported. A process the lot left running can wait for the
+      gate's commit subject and commit on top of it: the banked head carries
+      the rewrite, above `done`, and no verdict of the run says so.
+    - On a **local run** the engine banks the working tree as a wip commit on
+      top of HEAD. Its merge status is `skipped`, which the merge endpoint
+      claims like any other, and the run record does not say the head was
+      banked. A write after `mark_done` rides that bank.
+
+    No bot can close this. It needs the engine to refuse or flag a head that
+    moved past the commit the terminal node reported. Until it does, a pilot
+    merges a run only after re-judging the contract on the banked head.
   - The scripts an outcome's `check` runs (`ci/*`) are product files that lots
     legitimately write. They are not part of the contract.
-  - A process a lot leaves running can still write after `mark_done`, before
-    the engine banks the working tree. The banked head is then mergeable
-    through the merge endpoint. Closing that belongs to the engine's finalize,
-    not to a bot.
+  - A plan at the repository's root has no directory of its own: only the
+    table's five files are the contract then.
   - The contract's files are found beside the plan. A brief kept elsewhere is
     not judged.
+  - A supervising bot's own state kept under the plan's directory (a campaign
+    journal) is frozen like any file the base holds there. A path it has not
+    created yet is one a lot may create.

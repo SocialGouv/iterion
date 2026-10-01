@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -63,30 +64,56 @@ var contractPaths = []string{
 }
 
 // judgedNow is the verdict lot_verify would hand mark_done for this tree:
-// HEAD, and one fingerprint per contract file — the blob `git add` would
-// store, a symlink's target, or its absence.
+// HEAD, and per contract file what a commit of the working tree would take —
+// the working tree as git would store it (w), the index entries (i), the index
+// flags (t), the `filter` attribute (f) — in lot_verify's own format.
 func judgedNow(t *testing.T, ws string) (string, string) {
 	t.Helper()
-	fp := map[string]string{}
+	state := map[string]map[string]string{}
+	idx, tags := map[string][]string{}, map[string][]string{}
+	for _, e := range strings.Split(gittest.Run(t, ws, "ls-files", "-s", "-z", "--", ".modernize/"), "\x00") {
+		meta, path, ok := strings.Cut(e, "\t")
+		if ok {
+			idx[path] = append(idx[path], strings.Join(strings.Fields(meta), ":"))
+		}
+	}
+	for _, e := range strings.Split(gittest.Run(t, ws, "ls-files", "-v", "-z", "--", ".modernize/"), "\x00") {
+		if len(e) > 2 {
+			tags[e[2:]] = append(tags[e[2:]], e[:1])
+		}
+	}
 	for _, rel := range contractPaths {
+		st := map[string]string{"w": "absent", "i": "absent", "t": "-", "f": "unspecified"}
+		if e := idx[rel]; len(e) > 0 {
+			sort.Strings(e)
+			st["i"] = strings.Join(e, ",")
+		}
+		if tg := tags[rel]; len(tg) > 0 {
+			sort.Strings(tg)
+			st["t"] = strings.Join(tg, ",")
+		}
+		attr := strings.Split(gittest.Run(t, ws, "check-attr", "-z", "filter", "--", rel), "\x00")
+		if len(attr) >= 3 {
+			st["f"] = attr[2]
+		}
 		full := filepath.Join(ws, rel)
 		fi, err := os.Lstat(full)
 		switch {
 		case err != nil:
-			fp[rel] = "absent"
 		case fi.Mode()&os.ModeSymlink != 0:
 			target, rerr := os.Readlink(full)
 			if rerr != nil {
 				t.Fatal(rerr)
 			}
-			fp[rel] = "symlink:" + target
+			st["w"] = "symlink:" + target
 		case !fi.Mode().IsRegular():
-			fp[rel] = "other"
+			st["w"] = "other"
 		default:
-			fp[rel] = "file:" + gittest.Run(t, ws, "hash-object", "--path="+rel, "--", full)
+			st["w"] = "file:" + gittest.Run(t, ws, "hash-object", "--path="+rel, "--", full)
 		}
+		state[rel] = st
 	}
-	tree, err := json.Marshal(fp)
+	tree, err := json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
 	}
