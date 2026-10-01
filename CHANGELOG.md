@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.219.3](https://github.com/SocialGouv/iterion/compare/v3.219.2...v3.219.3) (2026-10-01)
+
+### Bug Fixes
+
+* **model:** one routing identity from spec to wire, meter and ledger ([#2028](https://github.com/SocialGouv/iterion/issues/2028)) ([#2065](https://github.com/SocialGouv/iterion/issues/2065)) ([a3613d8](https://github.com/SocialGouv/iterion/commit/a3613d87b6f167675041d00fec392295987e86d0))
+
+    <details><summary>why</summary>
+
+    A model spec is `provider/model`, and its prefix was stripped twice: once by iterion's callers, again inside claw's OpenAI provider. A model id with its own slash lost part of it on the wire. The meter had the mirror problem: it re-derived a route from whatever id the backend reported, so pi on OpenRouter, which reports "anthropic/claude-sonnet-4.5", was charged to the Anthropic credential.
+
+    </details>
+
 ## [3.219.2](https://github.com/SocialGouv/iterion/compare/v3.219.1...v3.219.2) (2026-10-01)
 
 ### Bug Fixes
