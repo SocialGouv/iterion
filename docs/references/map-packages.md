@@ -61,6 +61,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` |
 | `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` |
+| `pkg/backend/modelroute` | the one reading of a model spec: which provider routes it, which id goes on the wire, and which id names its capabilities. | — |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — |
 | `pkg/backend/permissionhook` | adapts third-party CLI PreToolUse payloads to iterion's shared permission.Policy evaluator. | — |

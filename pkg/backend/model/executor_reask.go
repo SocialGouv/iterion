@@ -225,6 +225,7 @@ func reaskMarginalCost(first, reask delegate.Result, sameSession bool) float64 {
 func (e *ClawExecutor) emitReaskOutcome(nodeID, backendName, declaredModel string, reask schemaReask, first, result delegate.Result, err error, sameSession bool) {
 	di := delegateInfoFromResult(firstNonEmpty(result.BackendName, backendName), result)
 	di.DeclaredModel = declaredModel
+	di.RouteModel = reask.task.Model
 	di.Attempt = 2
 	di.Reask = reask.mode
 	di.CostUSD = reaskMarginalCost(first, result, sameSession)

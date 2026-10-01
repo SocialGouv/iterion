@@ -35,6 +35,14 @@ type DelegateInfo struct {
 	// fallback, env override (ANTHROPIC_MODEL), or proxy rewrote it.
 	// Empty when the backend does not report it.
 	EffectiveModel string
+	// RouteModel is the model spec of the chain element that served the
+	// node — on a skip, of the last one that spent (else the last that
+	// executed); on a failure, of the last one that executed; on a schema
+	// re-ask, of the element re-asked: the route its spend belongs to,
+	// which a backend's report cannot name — a CLI reports the id it
+	// called, OpenRouter's "anthropic/claude-sonnet-4.5" included. Empty
+	// when no element ran.
+	RouteModel string
 	// ContextWindow is the effective model's context window in tokens.
 	// Zero when unknown.
 	ContextWindow int
@@ -90,11 +98,12 @@ type DelegateInfo struct {
 	// record a $0 sample.
 	CostUSD float64
 	// Skipped marks a node completed by an `action: skip` terminal route:
-	// NOTHING served it. BackendName then names the LAST route that
-	// actually EXECUTED and spent (chainOutcome.BackendName = lastBackend;
+	// NOTHING served it. BackendName, RouteModel and Fingerprint then name
+	// the last route whose attempt spent — else the last that executed;
 	// the node's requested backend only when no route executed at all, in
-	// which case the spend is zero) — deliberately, because the runner's
-	// cost accumulator keys its claw double-count exclusion on that name.
+	// which case the spend is zero — deliberately, because the runner's
+	// cost accumulator keys its claw double-count exclusion on that name
+	// and the credential ledger its slot on the route and fingerprint.
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool

@@ -316,3 +316,16 @@ func TestExecute_recoveryPassSeesTheRenewedToken(t *testing.T) {
 		t.Fatalf("auth evidence filed for a rotated token: %+v", *got)
 	}
 }
+
+// A session that ends without a result message still names the credential
+// it ran on: the spend a failed stream carries is booked on it. Red when the
+// stream-error result drops the session fingerprint.
+func TestExecute_aStreamErrorKeepsTheSessionFingerprint(t *testing.T) {
+	res, _, _, err := runRotating(t, Task{}, map[int][]byte{1: nil})
+	if err == nil {
+		t.Fatal("a session that ended without a result succeeded")
+	}
+	if res.SessionFingerprint == "" {
+		t.Errorf("the stream-error result names no session fingerprint (err %v)", err)
+	}
+}

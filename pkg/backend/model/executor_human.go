@@ -8,6 +8,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -57,8 +58,8 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	// Reasoning effort (dynamic override from input, then static node property).
 	// Coerce against the model's supported matrix so a recipe asking for "max"
 	// on an OpenAI model is silently clamped rather than rejected at the API.
-	if _, modelID, perr := ParseModelSpec(modelSpec); perr == nil {
-		if effort := coerceEffortForModel(e.effortForNode(node, "", input), modelID); effort != "" {
+	if _, _, perr := ParseModelSpec(modelSpec); perr == nil {
+		if effort := coerceEffortForModel(e.effortForNode(node, "", input), modelroute.Parse(modelSpec).CapabilityID()); effort != "" {
 			genOpts.ProviderOptions = providerOptsForNode(effort)
 		}
 	}

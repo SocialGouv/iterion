@@ -51,6 +51,7 @@ import (
 // relayedLLMRequest is the wire form of LLMRequestInfo.
 type relayedLLMRequest struct {
 	Model           string    `json:"model"`
+	WireModel       string    `json:"wire_model,omitempty"`
 	MessageCount    int       `json:"message_count"`
 	ToolCount       int       `json:"tool_count"`
 	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
