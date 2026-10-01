@@ -71,10 +71,11 @@ type previewEffectiveKnob struct {
 }
 
 type previewEffectiveSettings struct {
-	Compress   previewEffectiveKnob `json:"compress"`
-	AutoMemory previewEffectiveKnob `json:"auto_memory"`
-	Permission previewEffectiveKnob `json:"permission"`
-	Backend    previewEffectiveKnob `json:"backend"`
+	Compress       previewEffectiveKnob `json:"compress"`
+	AutoMemory     previewEffectiveKnob `json:"auto_memory"`
+	AmbientContext previewEffectiveKnob `json:"ambient_context"`
+	Permission     previewEffectiveKnob `json:"permission"`
+	Backend        previewEffectiveKnob `json:"backend"`
 }
 
 // Token envelopes are intentionally generous — the goal is to flag

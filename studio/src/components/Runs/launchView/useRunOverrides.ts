@@ -78,6 +78,10 @@ export function useRunOverrides(
   // auto-memory (MEMORY.md) override for this run ("" inherits the
   // workflow/node `auto_memory:` DSL then ITERION_AUTO_MEMORY; default off).
   const [autoMemoryOverride, setAutoMemoryOverride] = useState<string>("");
+  // ambient-context override for this run ("" inherits the workflow/node
+  // `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT; default workspace,
+  // ADR-119).
+  const [ambientContextOverride, setAmbientContextOverride] = useState<string>("");
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
@@ -168,7 +172,9 @@ export function useRunOverrides(
     backendOverride,
     setBackendOverride,
     compressOverride,
+    ambientContextOverride,
     autoMemoryOverride,
+    setAmbientContextOverride,
     setAutoMemoryOverride,
     setCompressOverride,
     permissionOverride,

@@ -175,6 +175,10 @@ type ExecutorSpec struct {
 	// "off"), highest-priority input to automemory.Resolve (above node/workflow
 	// DSL and ITERION_AUTO_MEMORY). See docs/memory-and-knowledge.md.
 	AutoMemory string
+	// AmbientContext is the run-level ambient-context override ("", "none",
+	// "workspace", "operator", "all"), highest-priority input to
+	// ambient.ResolveSourced (ADR-119).
+	AmbientContext string
 
 	// UsageGuard enforces the operator's subscription usage cap
 	// (pkg/usagecap) for this run. The cloud runner injects one backed by
@@ -453,6 +457,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithSecretGuard(guard),
 		model.WithCompressOverride(spec.Compress),
 		model.WithAutoMemoryOverride(spec.AutoMemory),
+		model.WithAmbientContextOverride(spec.AmbientContext),
 		// The auto-memory mirror persists through the SAME store as the
 		// `memory:` block, so a cloud runner's Mongo store is what carries
 		// MEMORY.md past the pod's ephemeral disk. nil keeps the local

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
@@ -89,6 +90,7 @@ type IOTask struct {
 	Memory                 *MemorySpec           `json:"memory,omitempty"`
 	AutoMemoryDir          string                `json:"auto_memory_dir,omitempty"`
 	AutoMemoryPrompt       string                `json:"auto_memory_prompt,omitempty"`
+	AmbientContext         string                `json:"ambient_context,omitempty"`
 	CompressMode           string                `json:"compress_mode,omitempty"`
 	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
 }
@@ -189,6 +191,7 @@ func ToIOTask(t Task) IOTask {
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
+		AmbientContext:         t.AmbientContext.String(),
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 	}
@@ -247,6 +250,7 @@ func FromIOTask(t IOTask) Task {
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
+		AmbientContext:         ambientFromIO(t.AmbientContext),
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 	}
@@ -290,4 +294,11 @@ func FromIOResult(r IOResult) Result {
 		PendingConversation: r.PendingConversation,
 		PendingToolUseID:    r.PendingToolUseID,
 	}
+}
+
+// ambientFromIO decodes the wire spelling of an ambient-context policy. An
+// empty or unknown value, from a host older than the field, is the default.
+func ambientFromIO(s string) ambient.Policy {
+	p, _ := ambient.Parse(s)
+	return p
 }

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -624,6 +625,14 @@ type Task struct {
 	// stays free of that per-backend knowledge and simply appends whatever it
 	// was handed.
 	AutoMemoryPrompt string
+
+	// AmbientContext is the node's resolved ambient-context policy (ADR-119):
+	// which of the workspace's instruction files and the operator's setup the
+	// backend lets the agent inherit besides its prompt. The executor resolves
+	// the precedence chain; every backend translates the value into its own
+	// mechanism. The zero value is ambient.Workspace, the default, so a task
+	// built outside the executor still gets the default.
+	AmbientContext ambient.Policy
 
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the

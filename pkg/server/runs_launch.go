@@ -120,6 +120,10 @@ type launchRunRequest struct {
 	// ("on"|"off"). Empty inherits the workflow/node auto_memory: DSL then
 	// ITERION_AUTO_MEMORY. See docs/memory-and-knowledge.md.
 	AutoMemory string `json:"auto_memory,omitempty"`
+	// AmbientContext is the run-level ambient-context override ("none" |
+	// "workspace" | "operator" | "all", ADR-119). Empty inherits the
+	// workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT.
+	AmbientContext string `json:"ambient_context,omitempty"`
 	// LoopBudgetGuard is the run-level override for the loop back-edge
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
@@ -626,6 +630,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Backend:            req.Backend,
 		Compress:           req.Compress,
 		AutoMemory:         req.AutoMemory,
+		AmbientContext:     req.AmbientContext,
 		LoopBudgetGuard:    req.LoopBudgetGuard,
 		Supervisors:        req.Supervisors,
 		Permission:         req.Permission,

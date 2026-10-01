@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -103,6 +104,11 @@ type RunOptions struct {
 	// ("", "on", "off"). "" inherits the workflow/node `auto_memory:` DSL
 	// then ITERION_AUTO_MEMORY; the default is off.
 	AutoMemory string
+	// AmbientContext is the run-level ambient-context override ("", "none",
+	// "workspace", "operator", "all"; ADR-119). "" inherits the workflow/node
+	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT; the default is
+	// workspace.
+	AmbientContext string
 	// LoopBudgetGuard is the run-level override for the back-edge
 	// affordability guard ("", "on", "off"). "" inherits the workflow's
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
@@ -197,6 +203,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	if err := automemory.ValidateMode(opts.AutoMemory); err != nil {
 		return UserInputError(fmt.Errorf("--auto-memory: %w", err))
+	}
+	if err := ambient.Validate(opts.AmbientContext); err != nil {
+		return UserInputError(fmt.Errorf("--ambient-context: %w", err))
 	}
 
 	if err := runtime.ValidateRepoDevboxMode(opts.RepoDevbox); err != nil {
@@ -596,6 +605,7 @@ func buildRunExecutor(
 		EventObservers: hookObservers,
 		Compress:       opts.Compress,
 		AutoMemory:     opts.AutoMemory,
+		AmbientContext: opts.AmbientContext,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.
