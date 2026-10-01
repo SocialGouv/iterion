@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.220.0](https://github.com/SocialGouv/iterion/compare/v3.219.5...v3.220.0) (2026-10-01)
+
+### Features
+
+* **cloud:** SeaweedFS as the object store of the dev stack, its S3 bench, ADR-107; the store fixes the prod cutover surfaced ([#1943](https://github.com/SocialGouv/iterion/issues/1943)) ([#2089](https://github.com/SocialGouv/iterion/issues/2089)) ([32ff141](https://github.com/SocialGouv/iterion/commit/32ff141f92ce5446f20da5d3ef9a2b16124a139e))
+
+    <details><summary>why</summary>
+
+    MinIO no longer distributes its community edition (quay.io 401, the Docker Hub repository gone, dl.min.io 410, the repository archived), so `task cloud:up` could no longer pull its image. Production moves to SeaweedFS (SocialGouv/infra-apps, #1943); the dev stack follows it.
+
+    </details>
+
+### Bug Fixes
+
+* **dsl:** a broken inline list keeps the property after it; the root cut refuses the filesystem root loudly ([#2074](https://github.com/SocialGouv/iterion/issues/2074)) ([fc16f4b](https://github.com/SocialGouv/iterion/commit/fc16f4b1e5d06189f477dec60d0cc22f6b765fb9)), closes [#1630](https://github.com/SocialGouv/iterion/issues/1630) [#2047](https://github.com/SocialGouv/iterion/issues/2047)
+
+    <details><summary>why</summary>
+
+    A bracket list broken across lines whose closer dedents (the YAML-habit shape: `tools: [bash,\n]`) used to hand the DEDENT to the enclosing block, closing it; the orphan `]` errored at top level and the next property was reparsed there and lost. parseBracketElems now resyncs on the line-end give-up arm: scan ahead (PeekAt only), skip junk continuation at a deeper column, land on the sibling property at the list's own column. Two verified bail shapes keep main's recovery byte-identical where…
+
+    </details>
+* **runtime,treenoise:** the .claude-symlink refusal covers the plugin and single-skill mirrors too; doc the remedy ([#2068](https://github.com/SocialGouv/iterion/issues/2068)) ([881bf63](https://github.com/SocialGouv/iterion/commit/881bf637329e6c4e6725072a27f1ba66197d9ba7)), closes [#2044](https://github.com/SocialGouv/iterion/issues/2044) [#2045](https://github.com/SocialGouv/iterion/issues/2045) [2060/#2061](https://github.com/SocialGouv/iterion/issues/2061), references [#1569](https://github.com/SocialGouv/iterion/issues/1569) [#2060](https://github.com/SocialGouv/iterion/issues/2060) [#2061](https://github.com/SocialGouv/iterion/issues/2061)
+
+    <details><summary>why</summary>
+
+    #1569 added refuseAClaudeSymlink for the run-start bundle mirror, but three sibling writers could still write through a workspace .claude symlink (a link planted mid-run, caught only at the next start/resume):
+
+    </details>
+
 ## [3.219.5](https://github.com/SocialGouv/iterion/compare/v3.219.4...v3.219.5) (2026-10-01)
 
 ### Bug Fixes
