@@ -66,3 +66,32 @@ func TestCompileForLaunchNamesAMissingIncludeWithoutTheHostRoot(t *testing.T) {
 		t.Errorf("the error discloses the server's directory layout: %v", err)
 	}
 }
+
+// The stored-bundle refusal — `open stored bot bundle: %w` when the
+// snapshot's own manifest does not decode — names the snapshot's
+// directory, which the unit's root never covers (the launch's file path
+// lies elsewhere: the materialized inline copy under the store). It is
+// the one refusal only the bundleDir root cut reaches; dropping that root
+// turns this witness red.
+func TestCompileForLaunchNamesAStoredBundleThatDoesNotOpenWithoutTheHostRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte("workflow x:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("schema_version: 99\nname: [broken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The launch's file path: the materialized inline source, nowhere
+	// near the snapshot.
+	materialized := filepath.Join(t.TempDir(), "92b6803b1f32-main.bot")
+	_, _, _, err := compileForLaunch(materialized, "workflow x:\n  entry: done\n", dir)
+	if err == nil {
+		t.Fatal("the fixture no longer arms the case: the corrupt snapshot opened")
+	}
+	if !strings.Contains(err.Error(), "manifest") {
+		t.Errorf("the error does not name the manifest: %v", err)
+	}
+	if strings.Contains(err.Error(), dir) {
+		t.Errorf("the error discloses the snapshot's absolute path: %v", err)
+	}
+}

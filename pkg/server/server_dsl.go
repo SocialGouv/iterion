@@ -314,7 +314,10 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 				// leave useAutoValidation's stale diagnostics on screen. The
 				// document is validated alone, and the response SAYS so
 				// (C222, below); the CLI refuses this same state outright.
-				unopenable = oerr
+				// The warning rides the 200 body, so the hint error gets the
+				// root cut its refusal siblings already had (#1970) — it is
+				// only .Error()'d below, the re-wrap loses nothing.
+				unopenable = errors.New(unit.RelTextRoot(filepath.Dir(abs), oerr.Error()))
 			case b != nil:
 				// A prompts merge that genuinely fails stays an error: the
 				// bundle opened, so its prompts/*.md are in scope. The merge's
