@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/deeplink"
@@ -231,8 +232,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		if via == gateTriggerEvent {
 			s.noticeGateDLQParked(ctx, run)
 		}
-	} else if run.Status == store.RunStatusFailedResumable &&
-		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+	} else if runAwaitsArmedRetry(run) {
 		// A resumable failure is only "not dead" when something will
 		// actually resume it. The runner arms a durable retry for
 		// usage-window failures (persisted BEFORE the outcome event fires
@@ -312,6 +312,23 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if !s.runOwnsGrant(run, grant, "gate reconcile") {
 		return nil
 	}
+	// A verdict whose post the forge refused for a while waits on the grant
+	// for the moment the forge named, or a backoff (deferGateVerdict). Until
+	// then the run's silence is answered with nothing — no forge read, no
+	// synthetic failure, no relaunch: the budget a read would spend may be the
+	// one exhausted, and the silence is not a death. Once due, the deferral is
+	// replayed by its own terms, before anything the run's inputs decide.
+	if d := grant.Deferred; d != nil {
+		if s.gateNow().Before(d.RetryAt) {
+			if s.logger != nil {
+				s.logger.Debug("forge gate: run %s's verdict waits to be posted until %s", runID, d.RetryAt.UTC().Format(time.RFC3339))
+			}
+			return nil
+		}
+		if s.replayGateDeferral(ctx, run, token, grant, d) {
+			return nil
+		}
+	}
 
 	// Holding a grant is NOT owing a verdict. The server mints one for any bot
 	// launched with a pr_url — the brancher, the docs amender, the implementer
@@ -364,7 +381,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// only while no other run publishes with the grant: on a shared one it may
 	// be the other run's verdict, posted before this run claimed the head —
 	// the forge decides.
-	if v := grant.Verdict; v != nil && !grant.Shared && strings.EqualFold(v.SHA, reviewed) && strings.EqualFold(v.Context, gateCtx) {
+	if v := grant.Verdict; v != nil && verdictAnswersRun(run, grant, v.SHA, v.Context) {
 		s.settleOwnVerdict(ctx, run, token, grant, v)
 		return nil
 	}

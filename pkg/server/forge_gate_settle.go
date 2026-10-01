@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,10 @@ const (
 	gateSettledVerdictSuccess = "verdict_success"
 	gateSettledVerdictFailure = "verdict_failure"
 	gateSettledUnpinned       = "unpinned"
+	// gateSettledSuperseded: the run's deferred verdict met a newer decision
+	// on the check it owes — that one's answer, posted or waiting to be, is
+	// the head's.
+	gateSettledSuperseded = "superseded"
 )
 
 // gateSettleRecheck is how long a reversible settlement holds before the sweep
@@ -137,11 +142,23 @@ func (s *Server) autofixMayReadGrant(ctx context.Context, grant ForgePublishGran
 	return integration.AutoFixOnGateFailure
 }
 
+// verdictAnswersRun reports whether a verdict a grant carries — recorded by
+// the endpoint, or just posted from its deferral — is the one this run owes:
+// on the revision it reviewed and the check its repo pins. The endpoint knows
+// the grant, not the run, so it is this run's only while no other run
+// publishes with the grant: on a shared one it may be the other run's.
+func verdictAnswersRun(run *store.Run, grant ForgePublishGrant, sha, check string) bool {
+	reviewed := runInputString(run, "head_sha")
+	return !grant.Shared && runOwesGateVerdict(run) && reviewed != "" &&
+		strings.EqualFold(sha, reviewed) && strings.EqualFold(check, runInputString(run, gateContextVar))
+}
+
 // cutBackGrant brings a run's grant down to the ordinary post-run grace once
 // nothing will post with it again — unless the run is not over (resumed after
-// the sweep listed it), or a second run shares the grant (cutBack).
+// the sweep listed it, or parked on an armed retry), or a second run shares
+// the grant (cutBack).
 func (s *Server) cutBackGrant(run *store.Run, token string) {
-	if run == nil || !run.Status.IsTerminal() || s.forgePublishTokens == nil {
+	if !runIsOver(run) || s.forgePublishTokens == nil {
 		return
 	}
 	if _, err := s.cutBack(token, s.postRunGrace()); err != nil && s.logger != nil {
@@ -163,8 +180,8 @@ func (s *Server) cutBack(token string, grace time.Duration) (bool, error) {
 	cut := false
 	_, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
 		cut = false // the update may run again on a contended write
-		if g.Shared {
-			return
+		if g.Shared || g.Deferred != nil {
+			return // a second run publishes with it, or a deferred verdict still needs it
 		}
 		g.CutBack = true
 		cut = true

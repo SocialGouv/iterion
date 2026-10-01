@@ -386,6 +386,42 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
+	// The claim row learns its run only once the launch returns, so a second
+	// offer racing the first finds a duplicate naming NO run: a relaunch
+	// still launching, not a death — until the row is old enough that the
+	// launch died on the way.
+	for _, tc := range []struct {
+		name      string
+		age       time.Duration
+		wantCards int
+	}{
+		{"a relaunch still launching does not escalate", time.Minute, 0},
+		{"a claim that never named its run escalates once it is old", acceptedLaunchWindow + time.Minute, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := build(t, nil)
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: "d-launching", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
+				Status: webhooks.StatusAccepted, ReceivedAt: time.Now().UTC().Add(-tc.age),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			w.gc.statuses = []forge.CommitStatus{{
+				Context: gateNm, State: forge.CommitStateFailure,
+				Description: gateInterruptedDescription,
+			}}
+			runID := seedDeadRun(t, w.s)
+			_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+			cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cards) != tc.wantCards {
+				t.Fatalf("board cards = %d, want %d (claim row %s old, no run named yet)", len(cards), tc.wantCards, tc.age)
+			}
+		})
+	}
+
 	t.Run("a real red verdict is left alone entirely", func(t *testing.T) {
 		w := build(t, nil)
 		// Vetty's own red verdict — the review HAPPENED. Nothing to reconcile,

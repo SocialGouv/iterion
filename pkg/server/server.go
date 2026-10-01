@@ -510,6 +510,10 @@ type Server struct {
 	// edge of a read-failure episode, so the sweep reports it once.
 	gateSettles           gateSettleStore
 	gateSettleReadFailing atomic.Bool
+	// gateDecisions orders the verdicts posted on one head (forge_gate_
+	// decisions.go): a late replay never overwrites a newer verdict. Wired
+	// with forgePublishTokens, on the same backend.
+	gateDecisions gateDecisionStore
 
 	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
 	gateReconcileCancel func(context.Context)
@@ -847,9 +851,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if s.redis != nil {
 			s.forgePublishTokens = newValkeyForgePublishTokenStore(s.redis.Redis(), s.logger)
 			s.gateSettles = newValkeyGateSettleStore(s.redis.Redis(), s.logger)
+			s.gateDecisions = newValkeyGateDecisionStore(s.redis.Redis())
 		} else {
 			s.forgePublishTokens = NewForgePublishTokenRegistry()
 			s.gateSettles = newMemoryGateSettleStore(s.logger)
+			s.gateDecisions = newMemoryGateDecisionStore(s.logger)
 		}
 	}
 	// Auth rate limiter — eagerly built so the lazy `if s.authLimiter == nil`

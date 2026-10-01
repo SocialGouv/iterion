@@ -179,6 +179,12 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	if !s.runOwnsGrant(run, grant, "gate auto-fix") {
 		return nil
 	}
+	// A verdict waiting to be posted (deferGateVerdict) means the budget every
+	// read below would spend may be exhausted, and the head does not show this
+	// run's verdict yet: nothing to read until then.
+	if d := grant.Deferred; d != nil && s.gateNow().Before(d.RetryAt) {
+		return nil
+	}
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		return nil
