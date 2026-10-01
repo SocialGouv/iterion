@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.221.0](https://github.com/SocialGouv/iterion/compare/v3.220.2...v3.221.0) (2026-10-01)
+
+### Features
+
+* **backends:** ambient_context — what a node inherits besides its prompt, per policy, on every backend (ADR-119) ([#2101](https://github.com/SocialGouv/iterion/issues/2101)) ([788f3d7](https://github.com/SocialGouv/iterion/commit/788f3d74fd5650388f8ed3fb1cfd689ec97a0fb1))
+
+    <details><summary>why</summary>
+
+    ambient_context: none | workspace | operator | all — on an agent/judge node or the workflow, resolved run override > node > workflow > ITERION_AMBIENT_CONTEXT > workspace (ADR-119). The zero value is the default, and a resolved policy rides every delegate.Task.
+
+    </details>
+* **credentials:** facade_default auto spans the run's tiers; tier keeps the per-tier rule ([#1998](https://github.com/SocialGouv/iterion/issues/1998)) ([#2096](https://github.com/SocialGouv/iterion/issues/2096)) ([35f80c6](https://github.com/SocialGouv/iterion/commit/35f80c621b063e6307eb34ec6ef3fe50be3b3f29)), references [#1956](https://github.com/SocialGouv/iterion/issues/1956) [#1956](https://github.com/SocialGouv/iterion/issues/1956)
+
+    <details><summary>why</summary>
+
+    After #1956, `facade_default: auto` decided per tier: a team whose own Claude forfait was closed, or an org's, fell through to a later tier's z.ai key whenever that tier held no Claude credential — and the team's unpinned claude nodes were served GLM in silence under the claude label. `auto` now answers for the RUN: a Claude-native credential held by ANY tier of the run, in any window state (sealed, or skipped because closed), keeps every tier's facade key off the wire's default, and the run…
+
+    </details>
+
 ## [3.220.2](https://github.com/SocialGouv/iterion/compare/v3.220.1...v3.220.2) (2026-10-01)
 
 ### Bug Fixes
