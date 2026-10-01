@@ -381,6 +381,7 @@ func TestBotsListFollowsProjectSwitch(t *testing.T) {
 		// No Bots.Paths: the catalog derives from the current WorkDir.
 	}, iterlog.New(iterlog.LevelError, nil))
 	srv.handler = srv.mux
+	shutdownOnCleanup(t, srv)
 
 	listNames := func() []string {
 		t.Helper()
@@ -435,6 +436,7 @@ func TestBotsListExplicitPathsPinnedAcrossSwitch(t *testing.T) {
 		Bots:        BotsConfig{Paths: []string{pinned}},
 	}, iterlog.New(iterlog.LevelError, nil))
 	srv.handler = srv.mux
+	shutdownOnCleanup(t, srv)
 
 	if err := srv.swapWorkDir(context.Background(), dirB); err != nil {
 		t.Fatalf("swapWorkDir: %v", err)

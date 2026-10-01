@@ -116,6 +116,27 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   `pkg/cli`) fails the suite naming the test behind any entry left behind,
   and reclaims it **by recorded path** — never `git worktree prune`, which
   would also drop an operator's checkout on an unmounted volume.
+- **A test never touches the operator's iterion home.** Under `go test`,
+  `store.IterionHome()` never resolves to `~/.iterion`: without
+  `ITERION_HOME` it is a directory the test process created. A package whose
+  tests reach the iterion home — run stores, installed plugins, the global
+  runs view, the cross-store proxy — wraps its `TestMain` in
+  `hometest.Isolate` ([`internal/hometest`](../../internal/hometest/hometest.go)),
+  which points `ITERION_HOME` at a directory it removes at exit and fails the
+  suite when one is left behind (#2016: 130 966 test run stores had piled up
+  in `~/.iterion/projects`). Readers of the home resolve it through
+  `store.IterionHome()` like the writers do, never `$HOME/.iterion` by hand;
+  a test of the no-home paths calls
+  `store.ResolveIterionHomeAsInProductionForTests`. One deliberate exception:
+  the `live` e2e tests keep their run store in `~/.iterion` so the studio
+  shows them (`ITERION_TEST_STORE_DIR=workspace` isolates them). A server a
+  test starts and moves to another project (`swapWorkDir`) is shut down in
+  `t.Cleanup` (`shutdownOnCleanup` in `pkg/server`): its assistant sweep
+  otherwise re-creates the removed per-project store every 10 s. Likewise an
+  engine built without `WithWorkDir` works in a throw-away directory that
+  only `Run` and `ResumeWithHostInputs` release — a helper that returns
+  before the run is done never removes it, and `pkg/runtime`'s `TestMain`
+  fails the suite on one left behind.
 - Table-driven subtests with standard `testing` package
 - `task test:live` — runs E2E with real Claude/Codex CLIs (requires API keys)
 - **Mongo conformance locally** — the `mongo-conformance` CI job is reproducible with one `mongo:8.0` replica-set container on port 27018 (`--ulimit nofile=131072:131072`, member advertised as `localhost:27018`); recipe + the two traps in [docs/development.md](../development.md#running-the-mongo-conformance-harness-locally). A store-twin or conformance-row change is unverified until it ran there

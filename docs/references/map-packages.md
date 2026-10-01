@@ -33,6 +33,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/floorsalign` | realigns the syntax-floor pins at the release cut. | — |
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — |
+| `internal/hometest` | keeps a test binary off the operator's iterion home. | — |
 | `internal/httpx` | provides the shared JSON request/response helpers used by iterion's HTTP handlers. | — |
 | `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — |
 | `internal/pricingtest` | isolates a test binary from the host's live model prices. | — |

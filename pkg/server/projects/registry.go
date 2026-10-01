@@ -67,6 +67,17 @@ var (
 	cachedPath string
 )
 
+// ConfigDir is the user config dir iterion keeps its desktop state in —
+// under `go test`, a directory of the test process (store.TestProcessDir),
+// never the operator's: tests that register projects rewrote the desktop
+// app's current project.
+func ConfigDir() (string, error) {
+	if dir, ok := store.TestProcessDir(); ok {
+		return filepath.Join(dir, "config"), nil
+	}
+	return os.UserConfigDir()
+}
+
 // Path returns the canonical on-disk location, creating the parent
 // directory if missing. Mirrors cmd/iterion-desktop/config.go:configPath
 // so both apps target the same file.
@@ -76,7 +87,7 @@ func Path() (string, error) {
 	if cachedPath != "" {
 		return cachedPath, nil
 	}
-	dir, err := os.UserConfigDir()
+	dir, err := ConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("user config dir: %w", err)
 	}

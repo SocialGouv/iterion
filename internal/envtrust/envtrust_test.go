@@ -193,3 +193,32 @@ func TestOnlyNamesAShellCouldExportCrossToAChild(t *testing.T) {
 		})
 	}
 }
+
+// The planted set follows the platform's variable naming. On Windows a name is
+// the same variable in any case — `iterion_home` from a `.env` sets
+// ITERION_HOME — so it is recorded, exported and found under the upper-case
+// spelling, from a marker in any case too; elsewhere the case is part of the
+// name.
+func TestPlantedFollowsThePlatformsVariableNaming(t *testing.T) {
+	t.Setenv(EnvPlantedNames, "")
+	UseGOOSForTest(t, "windows")
+	MarkPlanted("iterion_home")
+	if !Planted("ITERION_HOME") || !Planted("Iterion_Home") {
+		t.Fatal("on Windows a name planted in lower case must read as planted in any case")
+	}
+	if got := os.Getenv(EnvPlantedNames); got != "ITERION_HOME" {
+		t.Fatalf("the marker carries %q; want the upper-case name a child looks up", got)
+	}
+	t.Setenv(EnvPlantedNames, "iterion_home")
+	ResetForTest()
+	if !Planted("ITERION_HOME") {
+		t.Fatal("on Windows a marker naming the variable in lower case must still mark it planted")
+	}
+
+	t.Setenv(EnvPlantedNames, "")
+	UseGOOSForTest(t, "linux")
+	MarkPlanted("iterion_home")
+	if Planted("ITERION_HOME") {
+		t.Fatal("on Linux the case is part of the name: ITERION_HOME was never planted")
+	}
+}

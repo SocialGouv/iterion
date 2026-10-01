@@ -42,6 +42,9 @@ func TestAProjectDotenvCannotManufactureAnOperatorPlugin(t *testing.T) {
 	t.Cleanup(envtrust.ResetForTest)
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	t.Setenv("HOME", operatorHome)
+	// Resolve the homes as the operator's binary does: under `go test` the
+	// home tier is otherwise the test process's own.
+	store.ResolveIterionHomeAsInProductionForTests(t)
 	// t.Setenv restores what it sets; os.Unsetenv does not, and the loader
 	// below PLANTS the variable for the rest of the test binary — pointing at
 	// a directory t.TempDir's cleanup then deletes. Restore it by hand.
@@ -194,5 +197,64 @@ func TestADotenvKeyCarryingTheSeparatorIsRefused(t *testing.T) {
 	// …and the well-formed line on the next row still applies.
 	if os.Getenv("ITERION_TEST_PLAIN") != "kept" {
 		t.Error("one malformed key must not cost the rest of the file")
+	}
+}
+
+// On Windows a variable is the same whatever the case of its name, so a `.env`
+// key is judged by the variable it really sets: the provenance marker is
+// refused in lower case too, and a lower-case key reads as planted under the
+// upper-case name — else `iterion_home=…` planted ITERION_HOME unseen.
+func TestADotenvKeyIsJudgedByTheVariableItSetsOnWindows(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, ".env"),
+		[]byte("iterion_dotenv_planted=ITERION_HOME\niterion_test_lower=planted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	envtrust.UseGOOSForTest(t, "windows")
+	restoreEnv(t, "iterion_dotenv_planted")
+	restoreEnv(t, "iterion_test_lower")
+
+	t.Chdir(repo)
+	loadDotEnvFromCwd()
+
+	if v, ok := os.LookupEnv("iterion_dotenv_planted"); ok {
+		t.Errorf("the provenance marker spelt in lower case was set to %q; a .env must never write it", v)
+	}
+	if !envtrust.Planted("ITERION_TEST_LOWER") {
+		t.Error("a key planted in lower case must read as planted under the upper-case name Windows sets")
+	}
+}
+
+// A key no shell could export is refused — the comma's class. Outside ASCII it
+// matters on Windows: how Windows folds a non-ASCII letter is no rule
+// envtrust.CanonicalName can mirror, and `ıTERION_HOME` folded to ITERION_HOME
+// there marked the operator's own home as planted, stripping its authority,
+// while setting a variable nothing reads.
+func TestADotenvKeyNoShellCouldExportIsRefused(t *testing.T) {
+	keys := []string{"ıTERION_HOME", "ITERION_PLUGINſ_ENABLE"}
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, ".env"),
+		[]byte(keys[0]+"=x\n"+keys[1]+"=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	envtrust.UseGOOSForTest(t, "windows")
+	for _, key := range keys {
+		restoreEnv(t, key)
+	}
+
+	t.Chdir(repo)
+	loadDotEnvFromCwd()
+
+	for _, name := range []string{"ITERION_HOME", "ITERION_PLUGINS_ENABLE"} {
+		if envtrust.Planted(name) {
+			t.Errorf("a .env key outside ASCII marked the operator's own %s as planted", name)
+		}
+	}
+	for _, key := range keys {
+		if v, ok := os.LookupEnv(key); ok {
+			t.Errorf("the key %q no shell could export was set to %q; it must be refused", key, v)
+		}
 	}
 }
