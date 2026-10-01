@@ -253,7 +253,7 @@ func (s *flipOnLoad) LoadRun(ctx context.Context, id string) (*store.Run, error)
 			} else {
 				from := r.Status
 				if from == store.RunStatusRunning {
-					if ok, err := s.RunStore.UpdateRunOutcome(ctx, id, store.RunStatusFailedResumable, "promoted", store.RunOutcomeMeta{}, []store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
+					if ok, err := s.UpdateRunOutcome(ctx, id, store.RunStatusFailedResumable, "promoted", store.RunOutcomeMeta{}, []store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
 						s.t.Errorf("park before the newer flip: %v %v", ok, err)
 					}
 					from = store.RunStatusFailedResumable

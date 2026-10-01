@@ -532,7 +532,7 @@ func (s *cfMoveAwayAtTheClaim) Unwrap() store.RunStore { return s.RunStore }
 func (s *cfMoveAwayAtTheClaim) ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishedAt time.Time) (bool, error) {
 	if id == s.runID {
 		s.once.Do(func() {
-			s.moved, _ = s.RunStore.UpdateRunStatusIf(ctx, id, s.to, "", []store.RunStatus{store.RunStatusQueued})
+			s.moved, _ = s.UpdateRunStatusIf(ctx, id, s.to, "", []store.RunStatus{store.RunStatusQueued})
 		})
 	}
 	return store.AsQueuedAttemptClaimer(s.RunStore).ClaimQueuedRunIfAttempt(ctx, id, publishedAt)

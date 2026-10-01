@@ -1598,25 +1598,6 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 	return artifactVersions, nil
 }
 
-// claimForResume atomically claims a run for resume via a compare-and-set
-// on the run status, consumes the pause pointer, then emits run_resumed
-// (no data). Returns a clear error when the CAS rejects the transition —
-// typically a second concurrent resume racing the first, which we refuse
-// rather than spawn a duplicate execution clobbering run.json. The single
-// choke point for BOTH human-pause resume paths (single-shot answers and
-// the review gate) — a claim without the consumption reopens the
-// stale-pointer window on that path alone. Every claim accepts `queued`
-// besides the statuses it names: the cloud publisher flips the run to
-// queued before the message reaches a runner, and Resume's queued case
-// routes it here on the pending interaction evidence; the CAS still
-// serializes concurrent claims. The failed-resumable path claims via
-// claimForFailureResume because it carries resume-data on the emit (its
-// checkpoint holds no pause pointer: failure boundaries never set one,
-// and a pause's pointer was consumed by the resume that used it).
-func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Checkpoint, allowed ...store.RunStatus) error {
-	return e.claimForResumeWithData(ctx, r, cp, nil, allowed...)
-}
-
 // claimsFirst reports that the pause path claims the run before it writes
 // anything: a delivery's resume (WithQueuedAttempt), and any queued run.
 // Every write of the path — the answers, the gate's artifact, its node's
@@ -1636,17 +1617,29 @@ func (e *Engine) claimsFirst(r *store.Run) bool {
 // moved to since; after its writes, from paused_waiting_human.
 func (e *Engine) claimPause(ctx context.Context, r *store.Run, cp *store.Checkpoint, data map[string]any) error {
 	if e.claimsFirst(r) {
-		return e.claimForResumeWithData(ctx, r, cp, data, r.Status)
+		return e.claimForResume(ctx, r, cp, data, r.Status)
 	}
-	return e.claimForResumeWithData(ctx, r, cp, data, store.RunStatusPausedWaitingHuman)
+	return e.claimForResume(ctx, r, cp, data, store.RunStatusPausedWaitingHuman)
 }
 
-// claimForResumeWithData is claimForResume carrying a run_resumed payload
-// — the recovery-pause resume stamps {resumed_from, restart_node,
-// recovery_code} the way the failure path stamps {resumed_from,
-// restart_node}, so the trace names the retry. nil data keeps the plain
-// human-pause shape.
-func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *store.Checkpoint, data map[string]any, allowed ...store.RunStatus) error {
+// claimForResume atomically claims a run for resume via a compare-and-set
+// on the run status, consumes the pause pointer, then emits run_resumed
+// carrying data — the recovery-pause resume stamps {resumed_from,
+// restart_node, recovery_code} the way the failure path stamps
+// {resumed_from, restart_node}, so the trace names the retry; nil data
+// keeps the plain human-pause shape. Returns a clear error when the CAS
+// rejects the transition — typically a second concurrent resume racing the
+// first, which we refuse rather than spawn a duplicate execution clobbering
+// run.json. Through claimPause, the single choke point for BOTH human-pause
+// resume paths (single-shot answers and the review gate) — a claim without
+// the consumption reopens the stale-pointer window on that path alone.
+// Every claim accepts `queued` besides the statuses it names: the cloud
+// publisher flips the run to queued before the message reaches a runner;
+// the CAS still serializes concurrent claims. The failed-resumable path
+// claims via claimForFailureResume because it carries resume-data on the
+// emit (its checkpoint holds no pause pointer: failure boundaries never set
+// one, and a pause's pointer was consumed by the resume that used it).
+func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Checkpoint, data map[string]any, allowed ...store.RunStatus) error {
 	if e.expectedResumeStatus != "" {
 		if e.expectedResumeStatus == store.RunStatusCancelled {
 			return fmt.Errorf("runtime: durable resume refuses cancelled run %q", r.ID)

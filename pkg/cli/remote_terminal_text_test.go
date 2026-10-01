@@ -85,19 +85,29 @@ func TestTerminalText_formatAndSeparatorCharactersAreInert(t *testing.T) {
 
 // TestPrinter_relayedValuesAreInert: a run's error and name reach the
 // operator through KV and Table — a node's error carries what the run's
-// processes wrote — so their values are shown inert; a blank event message
-// does not hide the event's error.
+// processes wrote — so their values are shown inert, each on its own line
+// (the Printer keeps the line feeds it writes: a field escapes its own); a
+// blank event message does not hide the event's error.
 func TestPrinter_relayedValuesAreInert(t *testing.T) {
 	hostile := "boom\x1b]52;c;cGF5bG9hZA==\a\nHTTP 200 OK: resumed \u202eevil\u2028"
 	out := &bytes.Buffer{}
 	p := &Printer{W: out, Format: OutputHuman}
 	p.KV("Error", hostile)
+	if n := strings.Count(out.String(), "\n"); n != 1 {
+		t.Fatalf("KV writes its value over %d lines — a relayed newline forges one: %q", n, out.String())
+	}
 	p.Table([]string{"ID", "NAME"}, [][]string{{"r1", hostile}})
+	if n := strings.Count(out.String(), "\n"); n != 1+3 {
+		t.Fatalf("Table writes one row over %d lines — a relayed newline forges one: %q", n-1-2, out.String())
+	}
 	if r, raw := rawControl(out.String()); raw {
 		t.Fatalf("KV / Table send %U raw to the terminal: %q", r, out.String())
 	}
 	out.Reset()
 	printRemoteEvent(p, remoteEvent{Type: "node_failed" + hostile, NodeID: "work" + hostile, Timestamp: time.Unix(0, 0)})
+	if n := strings.Count(out.String(), "\n"); n != 1 {
+		t.Fatalf("an event writes %d lines — a relayed newline forges one: %q", n, out.String())
+	}
 	if r, raw := rawControl(out.String()); raw {
 		t.Fatalf("an event's type or node sends %U raw to the terminal: %q", r, out.String())
 	}
