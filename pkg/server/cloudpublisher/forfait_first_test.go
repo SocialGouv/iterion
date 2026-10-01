@@ -466,6 +466,14 @@ func TestSharedTier_facadePolicyTruthTable(t *testing.T) {
 		{"auto, no forfait: a z.ai-only tier keeps serving", false, platformcfg.FacadeAuto, "none", false, false, true, false},
 		{"never, no forfait, zai pinned: sealed on a free family", false, platformcfg.FacadeNever, "none", true, false, false, true},
 		{"never, no forfait, nothing pinned: nothing sealed", false, platformcfg.FacadeNever, "none", false, false, false, false},
+		// `tier` is the per-tier rule: a tier holding a native credential —
+		// open or closed — keeps its own facade key off the default, and a
+		// tier holding none falls through. It answers for THIS tier only,
+		// whatever another tier holds.
+		{"tier, forfait open", false, platformcfg.FacadeTier, "open", false, true, false, false},
+		{"tier, forfait open, zai pinned", false, platformcfg.FacadeTier, "open", true, true, false, true},
+		{"tier, forfait closed: park on it", false, platformcfg.FacadeTier, "closed", false, true, false, false},
+		{"tier, no forfait: falls through", false, platformcfg.FacadeTier, "none", false, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
@@ -898,5 +906,99 @@ func TestRestore_aReaderOfAnotherSlotDoesNotBringTheTenantsKeyBack(t *testing.T)
 	}
 	if b.APIKeys[secrets.ProviderMoonshot] != "" {
 		t.Error("the tenant's refused Moonshot key came back for a claw route that never reads it")
+	}
+}
+
+// `auto` spans the run (#1998): the org tier holds a Claude forfait whose
+// window is closed — held, whatever its window — so the platform tier's z.ai
+// key serves no default route and the run parks on the forfait the restore
+// brings back. `tier` is the rule it replaces: the platform tier, holding no
+// native credential of its own, falls through to its facade key.
+func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		facade       platformcfg.FacadePolicy
+		whoseForfait string // "org" | "team"
+		wantZAIDef   bool
+		wantForfait  bool // the closed forfait is restored onto the bundle
+	}{
+		{"auto: the run parks on the org forfait", platformcfg.FacadeAuto, "org", false, true},
+		{"tier: the platform key falls through", platformcfg.FacadeTier, "org", true, false},
+		// The ticket's own scenario: a TEAM holding a closed Claude forfait
+		// and no org tier at all. The team's credential is the run's: the
+		// platform's z.ai key stays off the default on every tier.
+		{"auto: the run parks on the team's own forfait", platformcfg.FacadeAuto, "team", false, true},
+		{"tier: the team's forfait is not the platform tier's", platformcfg.FacadeTier, "team", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			if err != nil {
+				t.Fatalf("sealer: %v", err)
+			}
+			keys := secrets.NewMemoryApiKeyStore()
+			seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform")
+			oauth := secrets.NewMemoryOAuthStore()
+			st := usagecap.NewMemStore()
+			orgID := ""
+			forfaitOwner := ""
+			switch tc.whoseForfait {
+			case "org":
+				orgID = "org-1998"
+				forfaitOwner = secrets.OrgTierOwnerKey(orgID)
+			case "team":
+				forfaitOwner = "webhook:cfg-1"
+			}
+			seedOAuth(t, oauth, sealer, forfaitOwner, "sk-ant-forfait")
+			windowScope := usagecap.TenantScope("team1")
+			if orgID != "" {
+				windowScope = usagecap.OrgScope(orgID)
+			}
+			if err := st.Record(context.Background(), usagecap.Key(delegate.BackendClaudeCode, windowScope, seededFP(forfaitOwner)), usagecap.Reading{
+				Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
+				ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+			}); err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			fd := string(tc.facade)
+			p := &Publisher{
+				apiKeys: keys, oauthForfait: oauth, runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
+				logger: testLogger(), usageCaps: st,
+				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
+			}
+			if orgID != "" {
+				p.identity = &fakeTeamResolver{orgs: map[string]string{"team1": orgID}, orgDocs: map[string]identity.Org{orgID: {ID: orgID, CredentialAudience: identity.CredentialAudience{Teams: []string{"team1"}}}}}
+			}
+			rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
+			ctx := store.WithTenant(context.Background(), "team1")
+			res, err := p.resolveAndSealCredentials(ctx, "run-1998", orgID, "team1", "webhook:cfg-1", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
+			if err != nil {
+				t.Fatalf("resolveAndSealCredentials: %v", err)
+			}
+			if res.secretsRef == "" {
+				t.Fatal("nothing was sealed: the test proves nothing")
+			}
+			rec, err := rs.Get(ctx, res.secretsRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := secrets.OpenRunBundle(sealer, "run-1998", rec.SealedBundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := b.APIKeys[secrets.ProviderZAI] != ""; got != tc.wantZAIDef {
+				t.Errorf("z.ai key as the wire's default = %v, want %v", got, tc.wantZAIDef)
+			}
+			if _, pinned := b.PinnedAPIKeys[secrets.ProviderZAI]; pinned {
+				t.Error("nothing pins zai here: it must be simply off the default")
+			}
+			if got, want := len(b.OAuthCredentials["claude_code"]) != 0, tc.wantForfait; got != want {
+				t.Errorf("the org's closed forfait restored = %v, want %v", got, want)
+			}
+			if tc.wantForfait && tc.whoseForfait == "org" {
+				if got := b.OrgSourced["claude_code"]; !got {
+					t.Error("the restored forfait is not org-sourced")
+				}
+			}
+		})
 	}
 }

@@ -355,3 +355,36 @@ func TestValidateEnv_RefusesWhatTheKnobsCannotRead(t *testing.T) {
 		}
 	}
 }
+
+// `tier` is the per-tier rule #1956 first shipped, kept as the opt-out when
+// `auto` became run-wide: every reader accepts it, and a boot or a record
+// carrying an unknown value still refuses.
+func TestFacadePolicy_TierIsEverywhereAValue(t *testing.T) {
+	t.Setenv(EnvFacadeDefault, "")
+	if got := (*PlatformCredentials)(nil).Facade(); got != FacadeAuto {
+		t.Fatalf("the built-in default = %q, want auto", got)
+	}
+	t.Setenv(EnvFacadeDefault, "Tier")
+	if err := ValidateEnv(); err != nil {
+		t.Fatalf("ValidateEnv(tier): %v", err)
+	}
+	if got := (*PlatformCredentials)(nil).Facade(); got != FacadeTier {
+		t.Errorf("Facade() with the env at Tier = %q, want tier", got)
+	}
+	stored := "tier"
+	rec := &PlatformCredentials{FacadeDefault: &stored}
+	if got := rec.Facade(); got != FacadeTier {
+		t.Errorf("Facade() with the record at tier = %q, want tier (the record wins)", got)
+	}
+	if err := rec.Validate(); err != nil {
+		t.Errorf("Validate(tier): %v", err)
+	}
+	t.Setenv(EnvFacadeDefault, "sometimes")
+	if err := ValidateEnv(); err == nil {
+		t.Error("an unknown facade value was accepted")
+	}
+	bad := "sometimes"
+	if err := (&PlatformCredentials{FacadeDefault: &bad}).Validate(); err == nil {
+		t.Error("a record with an unknown facade value was accepted")
+	}
+}

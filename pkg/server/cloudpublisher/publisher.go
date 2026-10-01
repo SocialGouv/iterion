@@ -499,11 +499,22 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// policy's `auto` asks each tier whether it holds an Anthropic-native
 	// credential, lazily — a tier the question never reaches costs no read.
 	policy := p.sharedTierPolicyFor(ctx)
-	platformNative := p.newTierNative(ctx, "platform", secrets.PlatformOwnerKey, secrets.PlatformTenantID, audienceBotID)
+	tenantOwners := []string{ownerID}
+	if tenantID != "" {
+		tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
+	}
+	tenantNative := p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
+	platformNative := p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
 	var orgNative *tierNative
 	if orgID != "" {
-		orgNative = p.newTierNative(ctx, "org", secrets.OrgTierOwnerKey(orgID), secrets.OrgTierTenantID(orgID), audienceBotID)
+		orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
 	}
+	// `auto` is the RUN's question, not a tier's (#1998): a native credential
+	// ANY tier holds — the team's own forfait or key, the org tier's, the
+	// platform tier's — keeps every tier's facade key off the wire's default.
+	// The composite is asked through the policy value the fill, the restore
+	// and the platform stage all receive.
+	policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
 	// Deferred, not called after the walk: a walk that returns an error exits
 	// before any trailing statement, and a launch that fails while a key was
 	// withheld is exactly when the reason matters most. Said once, whichever
