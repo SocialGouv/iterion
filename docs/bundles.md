@@ -414,6 +414,18 @@ The bundle was produced by a newer iterion. Either upgrade your iterion
 install or downgrade the bundle (set `schema_version: 1` in
 `manifest.yaml`).
 
+**`runtime/bundle: <workDir>/.claude is a symlink to <target> — the run-start mirror would write through it …`**
+The repository keeps its agent assets elsewhere and links `.claude` to
+them — a legitimate monorepo pattern, but one a run cannot start against:
+the skills mirror would write through the link into the target, a path no
+tree-noise entry names (the dir-only `**/.claude/` rule never matches a
+symlink), so the wip bank would stage the mirrored files as the run's own
+work. The run refuses at mirror time and names the link and its target
+(#1569). Remedy: replace the symlink with a real directory — move
+the shared assets into `.claude/` itself, or copy them there — and commit
+that. The plugin-contribution mirrors skip with a warning on the same
+shape instead of failing; only the run-start bundle mirror refuses.
+
 **`bundle skill "X" shadowed by existing workspace entry`**
 A skill with the same name already exists at `<workDir>/.claude/skills/`.
 The workspace copy wins — rename either to disambiguate.

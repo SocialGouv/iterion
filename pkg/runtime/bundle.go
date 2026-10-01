@@ -165,7 +165,10 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 //
 // No-op when the bundle is nil, has no SkillsDir, or the skill name
 // doesn't resolve to a file/dir under SkillsDir. Returns an error
-// only when the copy/marker write itself fails — a missing skill
+// when <workDir>/.claude is a symlink (the same typed refusal as the
+// run-start mirror, #1569 — the attach path runs INSIDE a run, after
+// the run-start guard passed, and the checkout may have changed since)
+// or when the copy/marker write itself fails — a missing skill
 // silently no-ops (the agent simply sees the text message without
 // the skill loaded; the studio surfaces the discrepancy via the
 // catalog endpoint).
@@ -186,6 +189,14 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 			return nil
 		}
 		return fmt.Errorf("runtime/bundle: stat skill %s: %w", srcPath, err)
+	}
+	// Refuse BEFORE the first write, like the run-start mirror: a `.claude`
+	// that is a symlink routes the copy through to the link's target, a
+	// path no tree-noise entry names (#1569). Checked here, not at run
+	// start only, because the attach path runs mid-run and the workspace
+	// is a checkout of an untrusted repository.
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		return err
 	}
 	dest := filepath.Join(workDir, ".claude", "skills")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
