@@ -114,7 +114,7 @@ func (s *Server) canonicalizeTeamPathValue(r *http.Request) bool {
 	// sentinel), so it defers to the handler, which surfaces the store
 	// failure — refusing here would 404 a REAL team "unknown team"
 	// mid-incident and misdirect the response.
-	return !(errors.Is(err, identity.ErrNotFound) && errors.Is(serr, identity.ErrNotFound))
+	return !errors.Is(err, identity.ErrNotFound) || !errors.Is(serr, identity.ErrNotFound)
 }
 
 // teamIDRoutePattern reports whether a registered route pattern is a team
