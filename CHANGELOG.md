@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.219.5](https://github.com/SocialGouv/iterion/compare/v3.219.4...v3.219.5) (2026-10-01)
+
+### Bug Fixes
+
+* **sandbox:** authority comes only from the iterion home the operator chose ([#2063](https://github.com/SocialGouv/iterion/issues/2063)) ([#2073](https://github.com/SocialGouv/iterion/issues/2073)) ([60c1bc5](https://github.com/SocialGouv/iterion/commit/60c1bc5d1676f69080594bc28de29642efc6a810)), references [#2008](https://github.com/SocialGouv/iterion/issues/2008) [#2041](https://github.com/SocialGouv/iterion/issues/2041)
+
+    <details><summary>why</summary>
+
+    Follow-up of #2008 and #2041. Three places still let a location the operator did not choose carry the operator's authority, and the review found two more of the same class.
+
+    </details>
+
 ## [3.219.4](https://github.com/SocialGouv/iterion/compare/v3.219.3...v3.219.4) (2026-10-01)
 
 ### Bug Fixes
