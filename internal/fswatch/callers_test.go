@@ -69,7 +69,7 @@ var anchorDirs = []string{"pkg", "cmd", "internal", "bots", "e2e", "third_party"
 // below are for.
 func TestEveryFsnotifyWatcherConstructorGoesThroughFswatch(t *testing.T) {
 	allowed := map[string]string{
-		"internal/fswatch/watcher.go": "the wrapper itself: it calls fsnotify and turns a refused CONSTRUCTION into the evidence every other site then gets for free (a refused w.Add is still raw everywhere — #1554)",
+		"internal/fswatch/watcher.go": "the wrapper itself: it calls fsnotify and turns a refused CONSTRUCTION into the evidence every other site then gets for free. This inventory pins constructors ONLY: it cannot see a method call on a variable receiver without type resolution, so a raw w.Add( joins no class here — the six Add sites were routed through fswatch.Add by hand (#1554), not by this test",
 	}
 	root := filepath.Join("..", "..")
 	skipNames := map[string]bool{"vendor": true, "node_modules": true}

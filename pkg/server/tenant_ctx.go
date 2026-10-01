@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -70,23 +72,49 @@ func teamTenantCtx(ctx context.Context, teamID string) context.Context {
 // is the authority); an unresolvable spelling is left as is, so an unknown
 // team keeps its old 403/404 semantics. Non-team routes keep their {id} —
 // a run id that happens to equal a team slug is nobody's team.
-func (s *Server) canonicalizeTeamPathValue(r *http.Request) {
+//
+// The return reports whether the route's {id} names a team at all: false
+// ONLY for a team route whose spelling resolves to NOTHING (neither an id
+// nor a slug) — the ghost a MUTATING route must refuse (#2046, see
+// requireAuth) rather than let a super-admin key rows by, invisible to
+// every UUID reader. true for non-team routes and a nil auth store, which
+// have no ghost to refuse.
+//
+// An OUTAGE is not an absence: only a clean ErrNotFound from BOTH lookups
+// makes the spelling a ghost (the backends map not-found alone onto the
+// sentinel — any other error is a store failure). Refusing on a failed
+// read would 404 a REAL team "unknown team" mid-incident and misdirect
+// the response; deferring lets the handler surface the outage instead.
+func (s *Server) canonicalizeTeamPathValue(r *http.Request) bool {
 	raw := r.PathValue("id")
 	if raw == "" || !teamIDRoutePattern(r.Pattern) {
-		return
+		return true
 	}
 	st := s.authStore()
 	if st == nil {
-		return
+		return true
 	}
-	if _, err := st.GetTeam(r.Context(), raw); err == nil {
-		return
+	_, err := st.GetTeam(r.Context(), raw)
+	if err == nil {
+		return true
 	}
-	t, err := st.GetTeamBySlug(r.Context(), raw)
-	if err != nil {
-		return
+	// The slug lookup runs on ANY GetTeam error, as #2043 always did: a
+	// Mongo failover (id read timed out, retry lands on the new primary)
+	// still canonicalizes, instead of leaving the raw slug to key a
+	// mutating call's rows — the #1931 split the ghost refusal could not
+	// name. The error gate below governs the ghost verdict, never this
+	// fallthrough.
+	t, serr := st.GetTeamBySlug(r.Context(), raw)
+	if serr == nil {
+		r.SetPathValue("id", t.ID)
+		return true
 	}
-	r.SetPathValue("id", t.ID)
+	// A ghost is a clean not-found from BOTH lookups; an OUTAGE on either
+	// side is not an absence (the backends map not-found alone onto the
+	// sentinel), so it defers to the handler, which surfaces the store
+	// failure — refusing here would 404 a REAL team "unknown team"
+	// mid-incident and misdirect the response.
+	return !errors.Is(err, identity.ErrNotFound) || !errors.Is(serr, identity.ErrNotFound)
 }
 
 // teamIDRoutePattern reports whether a registered route pattern is a team

@@ -20,9 +20,10 @@ import (
 var newFSWatcher atomic.Pointer[func() (*fsnotify.Watcher, error)]
 
 // fsWatcherCtor returns fswatch's constructor — whose refusal carries the
-// resource evidence store.go logs — unless a test installed one. It covers
-// inotify_init only: w.Add's refusal below still reaches that same log line
-// raw (#1554).
+// resource evidence store.go logs — unless a test installed one. The Add
+// below goes through fswatch.Add for the same evidence: a spent
+// max_user_watches budget is reported by inotify_add_watch, not by the
+// constructor's inotify_init1 (#1554).
 func fsWatcherCtor() func() (*fsnotify.Watcher, error) {
 	if f := newFSWatcher.Load(); f != nil {
 		return *f
@@ -73,7 +74,7 @@ func startIndexWatcher(s *Store) (*indexWatcher, error) {
 		return nil, err
 	}
 	issuesPath := filepath.Join(s.root, issuesDir)
-	if err := w.Add(issuesPath); err != nil {
+	if err := fswatch.Add(w, issuesPath); err != nil {
 		_ = w.Close()
 		// Missing directory shouldn't be fatal: NewStore already
 		// ensured it exists, but a hostile filesystem (read-only
