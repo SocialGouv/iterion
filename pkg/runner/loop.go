@@ -162,6 +162,10 @@ type preconditionOutcome struct {
 	level        logLevel
 	logFmt       string
 	logArgs      []any
+	// onLastDelivery replaces this disposition on the delivery's last
+	// permitted attempt (lastDeliveryDisposition): a re-offer there would
+	// re-offer nothing.
+	onLastDelivery *preconditionOutcome
 }
 
 // execOutcome describes the result of classifying engine.Run's
@@ -430,13 +434,22 @@ func supersededAttempt(msg *queue.RunMessage, run *store.Run) (preconditionOutco
 	return supersededOutcome(msg, run), true
 }
 
-// supersededOutcome is the drop of a delivery its run was queued past.
+// supersededOutcome is the disposition of a delivery its run was queued
+// past: dropped — unless the run is still queued, that newer attempt not
+// claimed yet. A resume flips the run to queued before its publication and
+// is refused if the publication fails, putting the previous attempt's marker
+// back (RevertQueuedFlip): this delivery is then the run's current one
+// again, and an ack is forever. While the run is queued the delivery is
+// re-offered after supersededQueuedNakDelay — the newer attempt's own
+// delivery claims the run meanwhile, or its flip is reverted — except on its
+// last permitted attempt, where it is dropped as ever. Never parked on the
+// DLQ: a park would write on the newer attempt's run.
 func supersededOutcome(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
 	kind := "launch"
 	if msg.Resume != nil {
 		kind = "resume"
 	}
-	return preconditionOutcome{
+	drop := preconditionOutcome{
 		finalStatus: "stale_attempt",
 		op:          "ack-stale-attempt",
 		action:      actionAck,
@@ -444,6 +457,82 @@ func supersededOutcome(msg *queue.RunMessage, run *store.Run) preconditionOutcom
 		logFmt:      "runner: run %s was queued again at %s, after this %s message was published (%s) — dropping the stale delivery (the newer attempt carries its own)",
 		logArgs:     []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), kind, msg.PublishedAtRFC},
 	}
+	if !run.Status.IsQueued() {
+		return drop
+	}
+	return preconditionOutcome{
+		finalStatus:    "stale_attempt_unclaimed",
+		op:             "nak-stale-attempt-unclaimed",
+		action:         actionNakDelayed,
+		delay:          supersededQueuedNakDelay,
+		level:          logWarn,
+		logFmt:         "runner: run %s was queued again at %s, after this %s message was published (%s), and nobody has claimed that attempt yet — re-offering this delivery in %s rather than dropping it: a resume refused before its publication puts this attempt back",
+		logArgs:        []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), kind, msg.PublishedAtRFC, supersededQueuedNakDelay},
+		onLastDelivery: &drop,
+	}
+}
+
+// supersededQueuedNakDelay spaces the re-offers of a delivery its run was
+// queued past while that newer attempt is unclaimed (supersededOutcome). It
+// outlasts a resume's window between its flip to queued and its publication
+// or its rollback — the publish retries (cloudpublisher's
+// defaultPublishRetryDelays, a few seconds) then a rollback write bounded at
+// ten — so the re-offered delivery reads the run settled. A var so a test
+// can shrink it.
+var supersededQueuedNakDelay = 30 * time.Second
+
+// lastDeliveryDisposition is out on the delivery's attempt delivered: the
+// disposition it names for the last permitted attempt (onLastDelivery) when
+// this is that attempt — JetStream re-offers nothing past it.
+func (r *Runner) lastDeliveryDisposition(out preconditionOutcome, delivered int) preconditionOutcome {
+	if out.onLastDelivery == nil {
+		return out
+	}
+	if max := r.maxDeliver(); max > 0 && delivered >= max {
+		return *out.onLastDelivery
+	}
+	return out
+}
+
+// supersededAfterEngine is the disposition of a delivery its engine refused
+// as superseded (runtime.ErrResumeSuperseded), on the run as it reads now:
+// still queued past it, re-offered as supersededOutcome says; no longer
+// superseded — that newer flip was reverted — re-offered too, to run as the
+// current attempt; claimed or settled past it, dropped. A run that cannot be
+// read is re-offered: the next attempt reads it again.
+func (r *Runner) supersededAfterEngine(msg *queue.RunMessage, engineErr error) preconditionOutcome {
+	loadCtx, cancel := context.WithTimeout(store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID), 5*time.Second)
+	defer cancel()
+	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
+	drop := preconditionOutcome{
+		finalStatus: "superseded",
+		op:          "ack-superseded",
+		action:      actionAck,
+		level:       logWarn,
+		logFmt:      "runner: run %s: this resume was superseded by a newer one — dropping it (%v)",
+		logArgs:     []any{msg.RunID, engineErr},
+	}
+	reoffer := func(why string, args ...any) preconditionOutcome {
+		return preconditionOutcome{
+			finalStatus:    "superseded_unclaimed",
+			op:             "nak-superseded-unclaimed",
+			action:         actionNakDelayed,
+			delay:          supersededQueuedNakDelay,
+			level:          logWarn,
+			logFmt:         "runner: run %s: this resume was superseded (%v), but " + why + " — re-offering it in %s rather than dropping it",
+			logArgs:        append(append([]any{msg.RunID, engineErr}, args...), supersededQueuedNakDelay),
+			onLastDelivery: &drop,
+		}
+	}
+	switch {
+	case err != nil || run == nil:
+		return reoffer("the run cannot be read to tell whether that attempt is settled (%v)", err)
+	case !queue.Superseded(msg, run):
+		return reoffer("the newer attempt's flip was reverted since: this attempt is the run's current one")
+	case run.Status.IsQueued():
+		return reoffer("nobody has claimed the newer attempt yet: a resume refused before its publication puts this attempt back")
+	}
+	return drop
 }
 
 // supersededUnderLock re-reads the run once its lock is held and applies
@@ -1793,7 +1882,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// Cooperative cancel check: if the server flipped the run to
 	// cancelled before we picked it up (T-32 cancel-queued path),
 	// ack the JetStream delivery without doing any work.
-	pre := r.resolveDeliveryPreconditions(msg)
+	pre := r.lastDeliveryDisposition(r.resolveDeliveryPreconditions(msg), delivery.NumDelivered())
 	preFmt, preArgs := withDeliveryAttempt(pre.logFmt, pre.logArgs, delivery.NumDelivered(), delivery.StreamSeq())
 	logAt(logger, pre.level, preFmt, preArgs...)
 	if !pre.proceed {
@@ -1827,6 +1916,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}()
 
 	if stale, ok := r.supersededUnderLock(msg, logger); ok {
+		stale = r.lastDeliveryDisposition(stale, delivery.NumDelivered())
 		logAt(logger, stale.level, stale.logFmt, stale.logArgs...)
 		finalStatus = stale.finalStatus
 		dispatchPrecondition(logger, delivery, stale, msg.RunID)
@@ -1838,7 +1928,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// unwinding — decided under the lock, never before it. A deferred
 	// answer releases the lock on the way out.
 	if pre.preRun.Status == store.RunStatusRunning {
-		adopt := r.adoptRunningUnderLock(msg, pre.preRun, delivery, time.Now().UTC())
+		adopt := r.lastDeliveryDisposition(r.adoptRunningUnderLock(msg, pre.preRun, delivery, time.Now().UTC()), delivery.NumDelivered())
 		logAt(logger, adopt.level, adopt.logFmt, adopt.logArgs...)
 		if !adopt.proceed {
 			finalStatus = adopt.finalStatus
@@ -1856,6 +1946,17 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// landing after the Ack/Nak would log a spurious already-acked error.
 	var usage *metricsEmitter
 	err := r.executeHoldingLease(runCtx, runCancel, msg, pre.preRun, lock, delivery, &usage)
+
+	// A resume the engine found superseded: nothing of this delivery
+	// happened, and nothing of it is reported, released, parked, promoted or
+	// announced — only its disposition, on the run as it reads now.
+	if errors.Is(err, runtime.ErrResumeSuperseded) {
+		out := r.lastDeliveryDisposition(r.supersededAfterEngine(msg, err), delivery.NumDelivered())
+		logAt(logger, out.level, out.logFmt, out.logArgs...)
+		finalStatus = out.finalStatus
+		dispatchPrecondition(logger, delivery, out, msg.RunID)
+		return
+	}
 
 	// Run-outcome side effects (completion webhook + run.<outcome> event →
 	// push notifications, chained triggers) fire ONLY when this delivery

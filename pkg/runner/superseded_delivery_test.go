@@ -36,17 +36,18 @@ func TestDispositionForStatus_aDeliveryPublishedBeforeTheRunWasQueuedAgainIsStal
 				}
 				later := published.Add(time.Minute)
 				out := dispositionForStatus(msg(published.Format(time.RFC3339Nano)), &store.Run{ID: "run-stale", Status: status, QueuedAt: &later})
-				if out.proceed || out.op != "ack-stale-attempt" || out.action != actionAck {
-					t.Fatalf("a delivery published before the run was queued again: %+v, want ack-stale-attempt", out)
+				assertStaleDisposition(t, status, out)
+				stale := func(o preconditionOutcome) bool {
+					return o.op == "ack-stale-attempt" || o.op == "nak-stale-attempt-unclaimed"
 				}
 				earlier := published.Add(-time.Minute)
-				if out := dispositionForStatus(msg(published.Format(time.RFC3339Nano)), &store.Run{ID: "run-stale", Status: status, QueuedAt: &earlier}); out.op == "ack-stale-attempt" {
+				if out := dispositionForStatus(msg(published.Format(time.RFC3339Nano)), &store.Run{ID: "run-stale", Status: status, QueuedAt: &earlier}); stale(out) {
 					t.Fatalf("the delivery of the current attempt taken as stale: %+v", out)
 				}
-				if out := dispositionForStatus(msg(published.Format(time.RFC3339Nano)), &store.Run{ID: "run-stale", Status: status}); out.op == "ack-stale-attempt" {
+				if out := dispositionForStatus(msg(published.Format(time.RFC3339Nano)), &store.Run{ID: "run-stale", Status: status}); stale(out) {
 					t.Fatalf("a doc without a queued_at taken as stale: %+v", out)
 				}
-				if out := dispositionForStatus(msg("yesterday"), &store.Run{ID: "run-stale", Status: status, QueuedAt: &later}); out.op == "ack-stale-attempt" {
+				if out := dispositionForStatus(msg("yesterday"), &store.Run{ID: "run-stale", Status: status, QueuedAt: &later}); stale(out) {
 					t.Fatalf("a publication time that cannot be read taken as stale: %+v", out)
 				}
 			})
@@ -78,10 +79,32 @@ func TestSupersededUnderLock_readsTheRunAsItIsNow(t *testing.T) {
 			r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 			msg := &queue.RunMessage{RunID: runID, TenantID: "team-1", OwnerID: "u1", PublishedAtRFC: published.Format(time.RFC3339Nano), Resume: &queue.ResumeSpec{}}
 			out, stale := r.supersededUnderLock(msg, iterlog.Nop())
-			if stale != tc.stale || (stale && out.op != "ack-stale-attempt") {
+			if stale != tc.stale {
 				t.Fatalf("under the lock: stale=%v %+v, want stale=%v", stale, out, tc.stale)
 			}
+			if stale {
+				assertStaleDisposition(t, store.RunStatusQueued, out)
+			}
 		})
+	}
+}
+
+// assertStaleDisposition: a delivery its run (status) was queued past is
+// dropped — re-offered instead while the run is still queued, its newer
+// attempt unclaimed, and dropped on its last permitted attempt.
+func assertStaleDisposition(t *testing.T, status store.RunStatus, out preconditionOutcome) {
+	t.Helper()
+	if status != store.RunStatusQueued {
+		if out.proceed || out.op != "ack-stale-attempt" || out.action != actionAck {
+			t.Fatalf("a delivery published before the run was queued again (now %s): %+v, want ack-stale-attempt", status, out)
+		}
+		return
+	}
+	if out.proceed || out.op != "nak-stale-attempt-unclaimed" || out.action != actionNakDelayed || out.delay != supersededQueuedNakDelay {
+		t.Fatalf("a delivery published before the run was queued again, that attempt unclaimed: %+v, want it re-offered", out)
+	}
+	if last := out.onLastDelivery; last == nil || last.op != "ack-stale-attempt" || last.action != actionAck {
+		t.Fatalf("on its last permitted attempt: %+v, want ack-stale-attempt", last)
 	}
 }
 

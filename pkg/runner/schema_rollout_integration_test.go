@@ -510,8 +510,10 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			if run.Status != store.RunStatusFailedResumable {
 				t.Fatalf("run status = %q, want %q", run.Status, store.RunStatusFailedResumable)
 			}
-			if !strings.Contains(run.Error, "schema version") || !strings.Contains(run.Error, "/api/admin/dlq") {
-				t.Fatalf("run error %q must name the mismatch AND the replay path", run.Error)
+			// A replay of the parked copy is dropped on admission (the park
+			// writes DLQ_PARKED): the remedy the run names is its resume.
+			if !strings.Contains(run.Error, "schema version") || !strings.Contains(run.Error, "resume this run") || strings.Contains(run.Error, "replay via") {
+				t.Fatalf("run error %q must name the mismatch AND the resume that recovers the run", run.Error)
 			}
 			select {
 			case got := <-completionCh:
@@ -560,8 +562,8 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			}
 
 			if dir.v > queue.SchemaVersion {
-				// Forward recovery: once the fleet speaks the newer schema,
-				// replay publishes the exact bytes for that fleet to consume.
+				// The DLQ re-publishes the exact bytes (the replay endpoint
+				// refuses a DLQ_PARKED run's copy; the mechanics stay).
 				if _, err := conn.RepublishDLQ(ctx, view.Seq); err != nil {
 					t.Fatalf("replay: %v", err)
 				}

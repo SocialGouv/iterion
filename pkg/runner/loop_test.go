@@ -817,12 +817,10 @@ func TestResolveDeliveryPreconditions_StaleLaunchOnRequeuedRun(t *testing.T) {
 		if out.proceed {
 			t.Fatalf("the stale delivery proceeded (as a resume) — the run's own resume message is already in flight, so this one must be dropped: %+v", out)
 		}
-		if out.action != actionAck {
-			t.Errorf("action = %v, want actionAck (a stale delivery is dropped, not redelivered)", out.action)
-		}
-		if out.finalStatus != "stale_attempt" {
-			t.Errorf("finalStatus = %q, want stale_attempt", out.finalStatus)
-		}
+		// The run is still queued for the newer attempt, unclaimed: the
+		// stale delivery is re-offered — never run — until that attempt is
+		// claimed, and dropped on its last permitted attempt.
+		assertStaleDisposition(t, store.RunStatusQueued, out)
 	})
 
 	t.Run("the attempt's own resume message proceeds", func(t *testing.T) {
