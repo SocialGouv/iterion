@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.219.1](https://github.com/SocialGouv/iterion/compare/v3.219.0...v3.219.1) (2026-10-01)
+
+### Bug Fixes
+
+* **bots:** gates that cannot lie — vetty refusals, Revi gate pin, Endy skipped-suite ([#2009](https://github.com/SocialGouv/iterion/issues/2009)) ([f407a66](https://github.com/SocialGouv/iterion/commit/f407a666aa1e6ace6b6229acdd51c11ad057de6f)), references [#1633](https://github.com/SocialGouv/iterion/issues/1633) [#1635](https://github.com/SocialGouv/iterion/issues/1635) [#1636](https://github.com/SocialGouv/iterion/issues/1636) [#1711](https://github.com/SocialGouv/iterion/issues/1711) [#1598](https://github.com/SocialGouv/iterion/issues/1598)
+
+    <details><summary>why</summary>
+
+    #1633's scenario end to end: pass 1 arms, the forge moves the PR into the merge queue (autoMergeRequest goes null), a later pass holds. The refusal path already stands the queue entry down (0dc863906), but no witness drove that exact path — the existing dequeue case reaches it through the unaudited-head refusal, not the verdict refusal the ticket describes. This pins it: hold + queued PR -> dequeuePullRequest on the wire, and the reason says the PR was removed from the merge queue.
+
+    </details>
+* **runtime,worktreepool:** .claude symlink refused at mirror time; one -z porcelain parser ([#2027](https://github.com/SocialGouv/iterion/issues/2027)) ([a05cfba](https://github.com/SocialGouv/iterion/commit/a05cfbab0dbf8291ce2271b6830e752d95a6967d)), references [#1569](https://github.com/SocialGouv/iterion/issues/1569) [#1569](https://github.com/SocialGouv/iterion/issues/1569) [#1577](https://github.com/SocialGouv/iterion/issues/1577)
+
+    <details><summary>why</summary>
+
+    A workspace whose .claude is a symlink to another top-level directory had the run-start mirror write THROUGH the link: the files landed under the link's target, a path no tree-noise entry names, and the wip bank staged them as the run's work. The mirror now stops before the first write with a typed claudeSymlinkError naming the link, the resolved target and the remedy. The pre-existing pin that ACCEPTED an in-workspace link is flipped to pin the refusal (refs #1569, candidates weighed in the…
+
+    </details>
+* **server:** team {id} canonicalized to UUID at route resolution; no host path in launch/validate/example bodies ([#2043](https://github.com/SocialGouv/iterion/issues/2043)) ([81d9887](https://github.com/SocialGouv/iterion/commit/81d9887b69585ab10bc00cae95991ed132deceac)), references [#1970](https://github.com/SocialGouv/iterion/issues/1970) [#1970](https://github.com/SocialGouv/iterion/issues/1970) [#1931](https://github.com/SocialGouv/iterion/issues/1931) [#1931](https://github.com/SocialGouv/iterion/issues/1931) [#1970](https://github.com/SocialGouv/iterion/issues/1970) [#1970](https://github.com/SocialGouv/iterion/issues/1970) [#1970](https://github.com/SocialGouv/iterion/issues/1970) [#1970](https://github.com/SocialGouv/iterion/issues/1970) [#1931](https://github.com/SocialGouv/iterion/issues/1931) [#1931](https://github.com/SocialGouv/iterion/issues/1931) [#1970](https://github.com/SocialGouv/iterion/issues/1970)
+
+    <details><summary>why</summary>
+
+    Follow-up of #1934: the under-root absolute-path cut now covers the remaining client-visible surfaces — compileForLaunch refusals (parse, missing include, bundle prompts, MCP prepare), marshalIRFromSpec (launch and resume), serveDiskExample's flat include error, and handleValidate's bundle-prompts 422. The cut lives in pkg/dsl/unit (RelDiagnostics/RelError/RelText/RelName); pkg/server's relUnitDiagnostics delegates to it, one rule for every boundary.
+
+    </details>
+
 ## [3.219.0](https://github.com/SocialGouv/iterion/compare/v3.218.6...v3.219.0) (2026-10-01)
 
 ### Features
