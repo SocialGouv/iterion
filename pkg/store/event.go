@@ -548,6 +548,11 @@ const (
 	//   - source: precedence label (CLI > workflow > env > default)
 	//   - mounts: []string of "host_path:container_path" pairs (only
 	//     paths actually mounted are listed; skipped ones are absent)
+	//   - iterion_home_not_mounted: the iterion home left out because it is
+	//     not the one the operator chose (a project `.env` set it, or it is
+	//     the shared <tmp> fallback); absent when it was mounted
+	//   - home_not_mounted: the home dir a project `.env` set, under which
+	//     nothing was mounted; absent when the operator's own
 	EventSandboxHostStateMounted EventType = "sandbox_host_state_mounted"
 	// EventSandboxUserRemap fires when the docker driver injects
 	// `--user $(id -u):$(id -g)` because host_state=auto requires

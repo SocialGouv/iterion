@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -1323,19 +1324,26 @@ func parseUserUID(user string) (int, bool) {
 }
 
 // resolveHostHomeDir returns the host user's home directory, normalised
-// to an absolute path. Empty string when the host has no usable HOME
-// (CI containers without HOME, distroless, etc.) — callers treat that
-// as "host_state cannot fire, skip silently".
-func resolveHostHomeDir() string {
+// to an absolute path. Empty when the host has no usable HOME (CI
+// containers without HOME, distroless, etc.), and empty with planted=true
+// when a project `.env` set it — the caller binds nothing under it and
+// says why.
+func resolveHostHomeDir() (dir string, planted bool) {
+	// A home dir a project `.env` set is not the operator's: the state under
+	// it — ~/.claude, ~/.codex, ~/.gitconfig, the caches — would be the
+	// repository's choice of what the sandbox binds read-write.
+	if envtrust.Planted(store.HomeEnvName()) {
+		return "", true
+	}
 	h, err := os.UserHomeDir()
 	if err != nil || h == "" {
-		return ""
+		return "", false
 	}
 	abs, err := filepath.Abs(h)
 	if err != nil {
-		return h
+		return h, false
 	}
-	return abs
+	return abs, false
 }
 
 // fromIRSpec converts the IR-level SandboxSpec to the runtime-level

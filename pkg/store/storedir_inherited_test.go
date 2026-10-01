@@ -50,6 +50,38 @@ func TestTheInheritedHomeFailsClosedWhenNothingOperatorsNamesIt(t *testing.T) {
 	}
 }
 
+// Without a home dir the writers fall back to <tmp>/iterion-data — a location
+// any local user can create before the operator does — so the operator named
+// no home there: the authority question answers none, whether TMPDIR was
+// inherited or not, and a plugin installed in that fallback carries no
+// authority.
+func TestTheSharedFallbackIsNoHomeTheOperatorChose(t *testing.T) {
+	base := t.TempDir()
+	for _, mode := range homeResolutionModes {
+		for _, tc := range []struct {
+			name string
+			tmp  string
+		}{
+			{"TMPDIR inherited", filepath.Join(base, "tmp")},
+			{"no TMPDIR", ""},
+		} {
+			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
+				envtrust.ResetForTest()
+				t.Cleanup(envtrust.ResetForTest)
+				t.Setenv(envtrust.EnvPlantedNames, "")
+				t.Setenv("ITERION_HOME", "")
+				t.Setenv(homeEnvName(), "")
+				t.Setenv("TMPDIR", tc.tmp)
+				mode.resolve(t)
+
+				if got := InheritedIterionDataDir(); got != "" {
+					t.Errorf("with no home dir the operator chose no home; got %q, which the plugin registry would trust", got)
+				}
+			})
+		}
+	}
+}
+
 // And the mirror: the tiers must AGREE for an operator who planted nothing,
 // or their own installed plugins lose their authority for no reason. A tier
 // present in one function and missing from the other is how that happens —
@@ -70,8 +102,6 @@ func TestTheTwoHomeResolutionsAgreeWhenNothingWasPlanted(t *testing.T) {
 			{name: "ITERION_HOME set", env: map[string]string{"ITERION_HOME": filepath.Join(base, "explicit"), "HOME": user}},
 			{name: "only HOME set", env: map[string]string{"ITERION_HOME": "", "HOME": user}},
 			{name: "trailing separator", env: map[string]string{"ITERION_HOME": filepath.Join(base, "slash") + string(filepath.Separator), "HOME": user}},
-			{name: "only TMPDIR set", env: map[string]string{"ITERION_HOME": "", "HOME": "", "TMPDIR": filepath.Join(base, "tmp")}},
-			{name: "no TMPDIR either", env: map[string]string{"ITERION_HOME": "", "HOME": "", "TMPDIR": ""}},
 			{name: "relative ITERION_HOME", env: map[string]string{"ITERION_HOME": "rel-home", "HOME": user}},
 			{name: "relative HOME", env: map[string]string{"ITERION_HOME": "", "HOME": "rel-user"}},
 			{name: "the operator's inherited ITERION_HOME", env: map[string]string{"ITERION_HOME": "/operator/real/iterion-home", "HOME": user}, operatorsOwn: true},
