@@ -35,11 +35,15 @@ version: 0.6.0
 ## own commit only at the plan's base mode. plan_read refuses a plan that is
 ## not a regular file. A gate command that is a record's predicate (`test -s`
 ## over a path in the directory) holds only if the record is a non-empty file
-## in the commit `done` is written on. A conversion git cannot apply to a
-## contract path is refused by name, with the attribute. The verdict names the
-## table's files and holds the rest of the directory as a count and a digest.
-## No git command iterion runs executes a repository hook — the landing of a
-## run on the operator's branch included. ADR-107.
+## in the tree that lands — under the path the commit really carries it,
+## through the committed links of its way, in HEAD and in the tree the bank
+## builds. A conversion git cannot apply to a contract path is refused by
+## name, with the attribute. The verdict names the table's files and holds
+## the rest of the directory as a count and a digest. A conflicted landing is
+## re-judged against the verdict before it commits. No git command iterion
+## runs executes a repository hook — the landing of a run on the operator's
+## branch included — and the bank pushes LFS objects ahead of itself or
+## refuses by name. ADR-107.
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,

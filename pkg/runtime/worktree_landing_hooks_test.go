@@ -20,6 +20,11 @@ import (
 
 const landingPlan = "version: 1\nlots:\n  - id: L1\n    status: todo\n"
 
+// The verdict the conflict tests answer to: its table names the fixture's
+// plan, whose bytes the merge carries unchanged (checkStagedAgainstVerdict
+// reads only the table's paths).
+const judgedVerdict = `{"table":{".modernize/plan.yaml":{"w":"file:x","i":"x","t":"H","f":"unspecified"}},"rest":{"count":0,"digest":"x"}}`
+
 // landingFixture is an operator's repository and a run whose worktree
 // committed its work and then the gate's `done`: what the verdict judged is
 // the run's head.
@@ -202,7 +207,8 @@ func TestFinalizeConflictMerge_RunsNoRepositoryHook(t *testing.T) {
 			if err := StageResolvedFile(dir, "file.txt", resolved); err != nil {
 				t.Fatalf("staging the resolution: %v", err)
 			}
-			sha, err := FinalizeConflictMerge(dir, "resolved squash")
+			judged := gittest.Run(t, dir, "rev-parse", "HEAD")
+			sha, err := FinalizeConflictMerge(dir, "resolved squash", &LandingVerdict{JudgedHead: judged, JudgedTree: judgedVerdict})
 			if err != nil {
 				t.Fatalf("the resolved landing did not go through: %v", err)
 			}

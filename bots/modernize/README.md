@@ -113,8 +113,14 @@ The verdict names the table's five files and holds the rest of the directory
 as a count and a digest, so it does not grow with a lot's captures. A gate
 command that is a record's predicate (`test -s .modernize/sweeps/<lot>.md`)
 is judged on what lands too: the record must be a non-empty file in the
-commit `done` is written on. And no git command iterion runs executes the
-repository's hooks — the landing of a run on the operator's branch included.
+commit `done` is written on, under the path that commit really carries it
+(through the committed links of its way), and in the tree the engine's bank
+builds from the working tree. A conflicted landing is re-judged against the
+verdict before it commits. The bank pushes Git LFS objects ahead of itself,
+or refuses by name. And no git command iterion runs executes the repository's
+hooks — the landing of a run on the operator's branch included — so a
+Gerrit-booking target (which needs a `commit-msg` hook to add its Change-Id)
+is landed by hand.
 
 ## Running
 

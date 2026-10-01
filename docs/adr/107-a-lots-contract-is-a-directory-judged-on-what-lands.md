@@ -71,7 +71,35 @@ path the base did not hold. Measured on it:
 - lot `L1` did the same with no file named for `L22`: `sweeps` linked to a
   directory of its own holding `L22.md`.
 
-A third review measured three more:
+A third review measured three more; a fourth, five:
+
+- the gestures that LAND a run — the squash commit and the fast-forward, at
+  finalize or through `POST /merge`, and the commit of a resolved conflict —
+  ran the repository's hooks. A `pre-commit` hook planted through the run's
+  worktree rewrote the plan inside the landing commit; `merge_status` read
+  `merged`, and the rewrite reached the operator's branch under `done`;
+- a lot was marked `done` while the sweep record its own gate asserts
+  (`test -s .modernize/sweeps/L1.md`) was in no commit: left uncommitted,
+  ignored by a root `.gitignore`, or removed by a commit and put back on disk.
+  The gate's commands read the working tree;
+- the verdict grew with the directory: 2,000 captures gave a 279 kB
+  `contract_tree`, carried on every pass.
+
+The fourth review measured:
+
+- the predicate demanded its record at the literal path in HEAD, so a base
+  that ships `sweeps` as a link to the owner's records directory — frozen,
+  as the limit above says — made every lot behind it unable to converge;
+- the predicate held on the working tree, the index and HEAD, and the record
+  still did not land: committed, then dropped from the index behind a root
+  `.gitignore`, it was absent from the tree the engine's wip bank commits;
+- the hookless bank push pushed Git LFS pointers and never their objects:
+  git-lfs uploads them from the pre-push hook (measured with git-lfs 3.4.1;
+  exit 0, and a fresh clone of the banked branch fails its checkout);
+- a conflicted landing committed whatever the resolver staged — the
+  contract's own plan included — with no re-judgement;
+- the checkpoint and the workspace seeding still ran git as shell strings,
+  with the run's hooks on.
 
 - the gestures that LAND a run — the squash commit and the fast-forward, at
   finalize or through `POST /merge`, and the commit of a resolved conflict —
@@ -183,11 +211,20 @@ A third review measured three more:
 - **The gate's record predicate is judged on what lands.** A gate command that
   IS the predicate over a record in the contract's directory — `test -s
   <path>` or `[ -s <path> ]`, the whole command — holds on the working tree
-  the commands read. After the last command, `lot_verify` also requires the
-  record as a non-empty file in HEAD, the commit `done` is written on (and,
-  on a cloud run, the whole landing). Otherwise the gate fails by name, and
-  says when git ignores the record. A record an earlier attempt committed and
-  this one refreshed on disk lands.
+  the commands read. After the last command, `lot_verify` requires the record
+  as a non-empty file in the tree that LANDS:
+  - at the path the commit really carries it — the committed links of the
+    path are followed, so a base that ships `sweeps` as a link, and the lot's
+    own links, are recorded behind, as the base dictates;
+  - in HEAD, the commit `done` is written on;
+  - in the tree the engine's bank would commit — the index as its staging
+    rebuilds it from the working tree, the tree noise excluded. A record the
+    index has dropped behind a root `.gitignore` is in no landing.
+
+  Otherwise the gate fails by name, and says when git ignores the record. A
+  record an earlier attempt committed and this one refreshed on disk lands.
+  A record committed as a link resolves to the file the commit carries; a
+  directory where the record's name goes is not a file.
 - **`mark_done` commits only what was judged.** For the table's files and
   every path the landing carries in the directory (HEAD's tree, the index,
   the files `git add` takes), the verdict records what a commit of the working
@@ -228,7 +265,28 @@ A third review measured three more:
   `post-commit`, `post-merge` and `reference-transaction` running. A test
   sweeps the tree for every git subprocess and fails on one that does not.
   The studio's authoring is the one named exception: it commits for the user,
-  in the user's own checkout.
+  in the user's own checkout. The gestures that run git as shell strings —
+  the checkpoint's add, push and ls-remote inside the pod, the dispatcher's
+  workspace seeding — carry the same options in their command lines, and the
+  bot's own writes (`mark_done`'s ref update and index entry) run hookless
+  too: the gate's word is not the run's to refuse, and the checkpoint is the
+  net that preserves the run's work against the run.
+- **A conflicted landing is re-judged.** The commit that lands a resolved
+  conflict carries whatever the resolver staged — the contract's own plan
+  included. Before it commits, the staged resolution is compared with the
+  stored verdict: every contract file that verdict names must carry the bytes
+  it judged. A resolution that rewrites the contract is refused by name —
+  take the run's version, or land by hand. The owner changes the contract
+  between runs, by hand, never inside a run's landing. Only the table's
+  files are re-judged: the rest of the directory has no per-path record to
+  compare with.
+- **The bank pushes LFS objects first.** The bank's push runs no hook, and
+  git-lfs uploads its objects from the pre-push hook: hookless, the push
+  carries the pointers and never the objects. When the clone has an LFS
+  filter configured and the tree tracks paths through it, the bank pushes
+  the objects explicitly first (`git lfs push`, the bank's refspec only);
+  when that upload fails, the bank is refused by name, never a silent
+  pointer push.
 - **One implementation.** Tool scripts share no code in the DSL: includes are
   for prompts only. So the comparison lives once, in `lot_verify`, and
   `mark_done` checks identity with the verdict rather than re-judging the
@@ -281,12 +339,27 @@ A third review measured three more:
   - A link the base holds beside the plan is frozen as a link. What it points
     at is not judged: records kept through it live outside the contract.
   - Only hooks and `core.fsmonitor` are switched off. Other programs a
-    repository's config can name still run in iterion's git: a merge driver,
-    a smudge filter on checkout, `core.sshCommand`. Measured: a run set a
-    merge driver in the shared repository and declared it for `*.yaml` in
-    `.git/info/attributes`. When the operator's branch had moved on the plan,
-    the squash that landed the run called that driver, and the driver wrote
-    the landed plan. Closing that class means landing from a checkout whose
-    config the run never wrote.
+    repository's or the operator's git config can name still run in iterion's
+    git: a merge driver, a smudge filter on checkout, `core.sshCommand`, and
+    — on a host run, where iterion commits in the operator's own checkout —
+    the program `commit.gpgsign`/`gpg.program` names to sign. A run that
+    writes the shared repository's config can name any of these; the
+    operator's own signing setup runs on every landing whether the run wrote
+    anything or not. Measured: a run set a merge driver in the shared
+    repository and declared it for `*.yaml` in `.git/info/attributes`. When
+    the operator's branch had moved on the plan, the squash that landed the
+    run called that driver, and the driver wrote the landed plan. Closing
+    that class means landing from a checkout whose config the run never
+    wrote.
   - The studio's authoring commits run the user's hooks. A run in the same
     repository can plant one there.
+  - No `commit-msg` hook runs on a landing, so no Change-Id is added: a
+    Gerrit-booking target cannot receive iterion's landings. There is no
+    hooks path a run cannot write, so running the hook honestly is not
+    possible; a Gerrit target is landed by hand.
+  - A conflicted landing re-judges the table's files only. The rest of the
+    contract's directory has no per-path record in the verdict; a resolution
+    that rewrites another lot's record there is the owner's act, as between
+    runs.
+  - A name carries a lot's id as bytes do: case matters. `l1-report.md` is
+    no record of lot `L1`'s, and `L1` owns nothing that `l1` does.

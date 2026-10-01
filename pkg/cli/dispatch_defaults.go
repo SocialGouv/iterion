@@ -116,6 +116,40 @@ func extractDefaultBots(storeDir string) (string, int, error) {
 	return botsDir, assigneeDirs, nil
 }
 
+// workspaceSeedScript is the after_create hook that seeds a fresh issue
+// workspace from the host repository: a detached `git worktree add` when the
+// project is one, a recursive copy otherwise. The worktree add runs with the
+// host repository's hooks off — its hooks directory and config are a run's
+// to write, and the seeding is the dispatcher's gesture, not the run's.
+func workspaceSeedScript(projectDir string) string {
+	return fmt.Sprintf(`set -e
+PROJECT_DIR=%q
+# If the workspace already has content (e.g. a previous failed
+# attempt populated it before crashing), don't re-seed — let the
+# operator clean up manually rather than silently overwrite.
+if [ "$(ls -A "$ITERION_WORKSPACE" 2>/dev/null | head -c1)" != "" ]; then
+  echo "workspace $ITERION_WORKSPACE non-empty — skipping seed"
+  exit 0
+fi
+# Prefer a git worktree (cheap, shares object store with the host
+# repo, isolates branches). Fall back to a recursive copy when
+# PROJECT_DIR is not a git repository so out-of-tree projects
+# still work.
+if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  # Use detached HEAD so two parallel issues don't fight over the
+  # same branch name. Bots that need a branch can create one with
+  # workflow-level worktree: auto on top. The hooks directory and
+  # config of the host repository are a run's to write: none runs
+  # while the workspace is seeded from it.
+  git -C "$PROJECT_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false worktree add --detach "$ITERION_WORKSPACE" HEAD
+  echo "seeded git worktree from $PROJECT_DIR@HEAD"
+else
+  cp -a "$PROJECT_DIR/." "$ITERION_WORKSPACE/"
+  echo "seeded copy from $PROJECT_DIR"
+fi
+`, projectDir)
+}
+
 // BuildDefaultConfig returns the in-memory dispatcher configuration
 // used by `iterion dispatch` when invoked without a YAML argument:
 // native tracker, HTTP on [defaultDispatchPort], polling every 30 s,
@@ -168,30 +202,7 @@ func BuildDefaultConfig(storeDir, projectDir string) (*dispatcher.Config, error)
 		// so the bot's workspace_dir input lands on a real
 		// checkout matching the host state at dispatch time.
 		hooks.AfterCreate = &dispatcher.Hook{
-			Script: fmt.Sprintf(`set -e
-PROJECT_DIR=%q
-# If the workspace already has content (e.g. a previous failed
-# attempt populated it before crashing), don't re-seed — let the
-# operator clean up manually rather than silently overwrite.
-if [ "$(ls -A "$ITERION_WORKSPACE" 2>/dev/null | head -c1)" != "" ]; then
-  echo "workspace $ITERION_WORKSPACE non-empty — skipping seed"
-  exit 0
-fi
-# Prefer a git worktree (cheap, shares object store with the host
-# repo, isolates branches). Fall back to a recursive copy when
-# PROJECT_DIR is not a git repository so out-of-tree projects
-# still work.
-if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-  # Use detached HEAD so two parallel issues don't fight over the
-  # same branch name. Bots that need a branch can create one with
-  # workflow-level worktree: auto on top.
-  git -C "$PROJECT_DIR" worktree add --detach "$ITERION_WORKSPACE" HEAD
-  echo "seeded git worktree from $PROJECT_DIR@HEAD"
-else
-  cp -a "$PROJECT_DIR/." "$ITERION_WORKSPACE/"
-  echo "seeded copy from $PROJECT_DIR"
-fi
-`, projectDir),
+			Script:    workspaceSeedScript(projectDir),
 			TimeoutMS: 120_000,
 		}
 		// No destructive before_remove default: after removing an owned,
