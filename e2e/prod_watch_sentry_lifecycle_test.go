@@ -577,8 +577,8 @@ func TestProdWatch_SentryLeakCutByTheCapIsReEmitted(t *testing.T) {
 
 // TestProdWatch_SentryCatchUpFloorBoundsTransitions: a transition dated before
 // the catch-up floor is history, not news — whether the lane was off for days
-// (its cursor and its arming far behind) or a lowered level floor admits
-// issues the lane never knew.
+// (its cursor and its arming far behind) or the regressions are of issues the
+// lane never knew, below the level floor (which decides only what posts NEW).
 func TestProdWatch_SentryCatchUpFloorBoundsTransitions(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -609,7 +609,7 @@ func TestProdWatch_SentryCatchUpFloorBoundsTransitions(t *testing.T) {
 			t.Fatalf("the history was not recorded: the next tick posted %v", got)
 		}
 	})
-	t.Run("a lowered level floor", func(t *testing.T) {
+	t.Run("regressions below the level floor", func(t *testing.T) {
 		t.Parallel()
 		h := newPWHarness(t)
 		h.writeConfig(t, sentryOnly(h, nil))
@@ -624,12 +624,12 @@ func TestProdWatch_SentryCatchUpFloorBoundsTransitions(t *testing.T) {
 		h.sentry.put(&pwSentryIssue{ID: "56", ShortID: strp("P-56"), Title: "w", Level: "warning", Substatus: strp("regressed"),
 			FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now.Add(-time.Minute),
 			Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(-time.Hour)}}})
-		if got := sentryAlerts(sentryTick(t, h, wf)); len(got) != 0 {
-			t.Fatalf("setup: warnings below min_level error posted: %v", got)
+		o := sentryTick(t, h, wf)
+		if got := sentryAlerts(o); !eqStrings(got, []string{"regressed:P-56:low"}) {
+			t.Fatalf("warnings under min_level error: want only the regression of the last hour, got %v", got)
 		}
-		h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["min_level"] = "warning" }))
-		if got := sentryAlerts(sentryTick(t, h, wf)); !eqStrings(got, []string{"regressed:P-56:low"}) {
-			t.Fatalf("lowering min_level: want only the regression of the last hour, got %v", got)
+		if r := sentryNoteReasons(o); !strings.Contains(r, "P-55 regressed or escalated at") {
+			t.Fatalf("the regression dated before the catch-up floor is history, named in the note: %q", r)
 		}
 	})
 }
@@ -1270,8 +1270,8 @@ func TestProdWatch_SentryEscalationCutByTheCapIsPending(t *testing.T) {
 // TestProdWatch_SentryHistoryAfterTheArmingIsSaid: a regression dated after
 // the arming that the catch-up floor still makes history (the lane first
 // watched it past max_catchup_hours: the activity lookup failing, the check
-// cap going to newer ones) is named in the coverage note, never dropped
-// silently.
+// cap going to regressions watched before it) is named in the coverage note,
+// never dropped silently.
 func TestProdWatch_SentryHistoryAfterTheArmingIsSaid(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -1308,26 +1308,28 @@ func TestProdWatch_SentryHistoryAfterTheArmingIsSaid(t *testing.T) {
 				"record %v, channel:\n%s", sentryAlerts(o), sentryIncident(t, h, "7")["transition_at"], strings.Join(h.bodies()[n:], "\n"))
 		}
 	})
-	t.Run("the check cap going to newer regressions", func(t *testing.T) {
+	t.Run("the check cap going to regressions watched before it", func(t *testing.T) {
 		t.Parallel()
 		h := newPWHarness(t)
 		h.writeConfig(t, sentryOnly(h, func(s map[string]any) { s["max_transition_checks"] = 1 }))
 		sentryTick(t, h, wf)
 		arm30h(t, h)
 		now := time.Now()
+		for k := 0; k < 3; k++ { // watched first: the one check a tick dates them before P-7, the longest watched first
+			id := fmt.Sprint(20 + k)
+			h.sentry.put(&pwSentryIssue{ID: id, ShortID: strp("P-" + id), Title: "r", Substatus: strp("regressed"),
+				FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now.Add(-time.Minute),
+				Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(-time.Minute)}}})
+		}
+		sentryTick(t, h, wf)
 		h.sentry.put(&pwSentryIssue{ID: "7", ShortID: strp("P-7"), Title: "r", Substatus: strp("regressed"),
 			FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: now.Add(-2 * time.Hour),
 			Acts: []pwSentryAct{{Type: "set_regression", At: now.Add(-25 * time.Hour)}}})
-		for k := 0; k < 3; k++ { // one newer regression per tick takes the only check
-			id := fmt.Sprint(20 + k)
-			ts := time.Now()
-			h.sentry.put(&pwSentryIssue{ID: id, ShortID: strp("P-" + id), Title: "r", Substatus: strp("regressed"),
-				FirstProcessed: now.Add(-30 * 24 * time.Hour), LastSeen: ts, Acts: []pwSentryAct{{Type: "set_regression", At: ts}}})
-			sentryTick(t, h, wf)
-		}
+		sentryTick(t, h, wf)
+		sentryTick(t, h, wf)
 		for _, c := range h.sentry.callsTo("activities") {
 			if strings.Contains(c.Path, "/issues/7/") {
-				t.Fatalf("setup: P-7 was checked during the inflow")
+				t.Fatalf("setup: P-7 was checked while regressions watched before it waited")
 			}
 		}
 		n := len(h.bodies())

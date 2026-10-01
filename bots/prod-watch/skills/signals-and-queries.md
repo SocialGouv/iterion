@@ -230,7 +230,14 @@ error, never read as "no event"):
   regression arrives as an issue the lane may never have tracked; it is
   dated by its own activity (`set_regression` / `set_escalating`), at
   most `max_transition_checks` lookups a tick: the ones never checked
-  first (one the cap leaves is a loss — partial coverage), then the
+  first (one the cap leaves is a loss — partial coverage) — among them
+  the one the lane has watched longest, at or above `min_level` before
+  below it, then the freshest: low-level noise, or junk the store's cut
+  sent back unknown, never holds every check against a regression
+  watched for ticks (a long-standing pool of watched junk delays a fresh
+  regression's dating by the pool over the check cap — its first
+  announcement is safe: it is announced, undated, before its record is
+  ever cut) —, then the
   re-checks — of dated ones, and of ones a check left undated (an issue
   unresolved through the API reads REGRESSED with a `set_unresolved`
   only) — least recently checked first (in state generations, never by
@@ -242,8 +249,8 @@ error, never read as "no event"):
   project-wide, so a second regression can come from another environment.
   A transition dated before the arming (minus the overlap) or before the
   catch-up floor (now − `max_catchup_hours`) is recorded as history: a
-  lane off for days, or a lowered level floor admitting issues it never
-  knew, posts no old regression as news. The floor spares a transition
+  lane off for days, or regressions of issues it never knew (or no longer
+  holds), post no old regression as news. The floor spares a transition
   the armed lane watched in the list from within `max_catchup_hours` of
   it with its date still unknown (undated, or a re-check deferred or
   failed — a closure the lane never read included); the watch ends when
@@ -251,8 +258,12 @@ error, never read as "no event"):
   every transition alert says when it happened (`dated …`). One dated
   after the arming that the floor still makes history is named in the
   coverage note, after the lane's losses — carried until a note says it;
-  past 100 names the oldest are counted, not named. The level floor does
-  not apply to an issue the lane already knows.
+  past 100 names the oldest are counted, not named. The level floor
+  (`min_level`) does not apply to this list: it decides what posts as
+  NEW, and Sentry rewrites an issue's level with every event — a floor
+  here would drop the regression of an issue the lane does not hold
+  (never read, forgotten by retention, cut from the store) once one event
+  came lower.
 - **tracked** — the alerted (or pending) issues by id — open, being
   reprocessed, archived (Sentry reopens an archived issue as ongoing) or
   resolved (unresolved by hand — the issue page's button, a bulk action —
@@ -400,7 +411,18 @@ lets anyone create issues — a flood pushes the lists into their caps
 (partial coverage, named) and its issues into one note of a kind a tick
 (inside one rank each alert kind — a Sentry issue, a Sentry leak, a log
 template, a log leak, a probe — takes its turn under the cap, so a
-flood never holds it against another). Issue text anyone can write never pings nor links: every value
+flood never holds it against another). The Sentry records stay near
+`max_records`: past it the records nothing protects are cut, oldest
+admission first — protected while one of the last `read_protect_ticks`
+ticks read them, while this tick plans to read them by id, while a
+pending alert is owed, and for a window after their first fact posted
+alone (a closing note is a follow-up: cut, and said). A flood decides
+which real incidents it folds (a `fatal` flood takes the per-lane
+singles), so a folded real incident keeps its follow-ups for a few
+ticks, one posted alone for its window. Its first announcement is never
+lost: a regression the lane watched but never dated nor announced is
+announced — undated — before its record goes; a later regression still
+posts (the level floor is NEW's only); and every cut is said. Issue text anyone can write never pings nor links: every value
 a message quotes — title, culprit, any lane's field, a sample — renders
 as inline code, where Mattermost parses neither mentions nor links —
 flattened to one line first, U+2424 included (Mattermost's markdown

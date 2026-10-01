@@ -611,6 +611,11 @@ tool plan:
         s_max_tracked = s_int('max_tracked', 200, 0, 1000)
         s_deadline = s_int('deadline_secs', 120, 10, 600)
         s_catchup = s_int('max_catchup_hours', 24, 1, 720)
+        ## The incident store's cap (0: none) — anyone holding a public DSN
+        ## mints issues, and each would otherwise stay until retention — and
+        ## how many generations a read keeps a record from its cut.
+        s_max_records = s_int('max_records', 5000, 0, 10 ** 9)
+        s_read_ticks = s_int('read_protect_ticks', 3, 1, 10 ** 6)
         if s_overlap >= s_catchup * 60:
             raise SystemExit('prod-watch: config.sentry.overlap_minutes (' + str(s_overlap) + ') must be below max_catchup_hours x 60 (' +
                              str(s_catchup * 60) + '): the overlap re-reads what the catch-up floor would otherwise call a gap')
@@ -628,7 +633,7 @@ tool plan:
         sentry = {'enabled': True, 'base_url': s_base, 'org': sentry_cfg['org'], 'project': sentry_cfg['project'],
                   'environment': s_env or '', 'min_level': s_min, 'overlap_minutes': s_overlap, 'max_issues': s_max_issues,
                   'max_transition_checks': s_max_checks, 'max_tracked': s_max_tracked, 'deadline_secs': s_deadline,
-                  'max_catchup_hours': s_catchup,
+                  'max_catchup_hours': s_catchup, 'max_records': s_max_records, 'read_protect_ticks': s_read_ticks,
                   'severity': s_sev, 'max_severity': s_max_sev,
                   'identity': {'base_url': s_base, 'org': sentry_cfg['org'], 'project': sentry_cfg['project'],
                                'environment': s_env or ''},
@@ -707,6 +712,7 @@ tool plan:
         'sentry_reopened': 'open again in Sentry',
         'sentry_open': 'open in Sentry',
         'sentry_dated': 'dated {date}',
+        'sentry_undated': 'undated — in the list since {date}',
         'sentry_leak': 'personal data or secret detected in Sentry issue text',
         'sentry_leak_detail': 'class {class} in {count} issue(s): {sources}',
         'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
@@ -797,9 +803,20 @@ tool plan:
         for f in ('backlog', 'closed_said'):
             if rec.get(f) is not None and not isinstance(rec[f], bool):
                 refuse_state(where + '.' + f, rec[f], 'a boolean')
-        for f in ('tracked_read_gen', 'transition_checked_gen'):
+        for f in ('tracked_read_gen', 'transition_checked_gen', 'admitted_gen', 'alone_until_gen', 'transition_seen_gen'):
             if rec.get(f) is not None and not is_int(rec[f]):
                 refuse_state(where + '.' + f, rec[f], 'an integer')
+        ## decide stamps the generation it writes: a later one, or a window past
+        ## any the cap can compute, would protect a record (or freeze its turn)
+        ## for ever.
+        gen_now = int(state.get('generation') or 0)
+        for f in ('tracked_read_gen', 'transition_checked_gen', 'admitted_gen', 'transition_seen_gen'):
+            if is_int(rec.get(f)) and rec[f] > gen_now:
+                refuse_state(where + '.' + f, rec[f], 'a generation no later than the state generation ' + str(gen_now))
+        if is_int(rec.get('alone_until_gen')) and rec['alone_until_gen'] > gen_now + 10 ** 9:
+            refuse_state(where + '.alone_until_gen', rec['alone_until_gen'], 'a generation within 10**9 of the state generation')
+        if rec.get('kind') == 'sentry' and not re.fullmatch(r'sentry:[0-9]{1,20}', ifp):
+            refuse_state(where, ifp, "a Sentry incident keyed 'sentry:<issue id>'")
     for src, hrec in (state.get('health') or {}).items():
         if not isinstance(hrec, dict):
             refuse_state('health[' + repr(src)[:40] + ']', hrec, 'an object')
@@ -937,6 +954,12 @@ tool plan:
     dropped = state.get('sentry_history_dropped')
     if dropped is not None and not (is_int(dropped) and dropped >= 0):
         refuse_state('sentry_history_dropped', dropped, 'a count')
+    rcut = state.get('records_cut')
+    if rcut is not None and (not isinstance(rcut, dict) or
+                             not all(isinstance(k, str) and is_int(v) and v >= 0 for k, v in rcut.items())):
+        refuse_state('records_cut', rcut, 'an object of counts by lane')
+    if state.get('watched_forgotten') is not None and not (is_int(state.get('watched_forgotten')) and state['watched_forgotten'] >= 0):
+        refuse_state('watched_forgotten', state.get('watched_forgotten'), 'a count')
     if sentry['enabled']:
         ## The identity key decide stamps on the state on every tick the lane
         ## is on — armed or not — so a switch during a bootstrap that never
@@ -981,7 +1004,8 @@ tool plan:
                 if rec.get('kind') != 'sentry' or not re.fullmatch(r'[0-9]{1,20}', sid):
                     continue
                 known[sid] = {'transition_at': rec.get('transition_at'), 'last_seen': rec.get('sentry_last_seen'),
-                              'checked_at': rec.get('transition_checked_at'), 'checked_gen': served(rec.get('transition_checked_gen'))}
+                              'checked_at': rec.get('transition_checked_at'), 'checked_gen': served(rec.get('transition_checked_gen')),
+                              'watch': rec.get('transition_seen_at'), 'watch_gen': served(rec.get('transition_seen_gen'))}
                 ## Tracked by id: what is pending, and what was alerted and can
                 ## still change by itself — open; archived (Sentry reopens it as
                 ## ongoing); resolved (unresolved by hand — the issue page's
@@ -2136,10 +2160,12 @@ tool poll_sentry:
             stats['malformed'] += 1
             return
         level = word(i.get('level'))
-        ## min_level decides what the lane starts tracking; an issue already
-        ## known stays observed whatever its latest event's level says (its
-        ## regression included).
-        if source != 'tracked' and i['id'] not in known and LEVELS.get(level, 1) < min_rank:
+        ## min_level decides what posts as NEW, nothing else: a regression or
+        ## an escalation is read whatever the level — Sentry rewrites an
+        ## issue's level with every event, so a floor on the transition list
+        ## would drop the regression of an issue the lane does not hold (never
+        ## read, forgotten, or cut from the store) once one event came lower.
+        if source == 'new' and i['id'] not in known and LEVELS.get(level, 1) < min_rank:
             stats['filtered'] += 1
             return
         rec = records.get(i['id'])
@@ -2312,6 +2338,14 @@ tool poll_sentry:
                 r['transition_at'] = k.get('transition_at')
                 rechecks.append(r)
         undated.sort(key=lambda r: (r['last_seen'] or '', r['id']), reverse=True)
+        ## Among equals, an issue at or above min_level before one below it,
+        ## and the longest watched first (a watch nothing can start earlier):
+        ## fresher regressions below the floor, or junk the store's cut sent
+        ## back unknown, never hold every check against a regression the lane
+        ## has watched for ticks.
+        undated.sort(key=lambda r: LEVELS.get(r.get('level'), 1) < min_rank)
+        undated.sort(key=lambda r: (0, (known.get(r['id']) or {}).get('watch_gen') if (known.get(r['id']) or {}).get('watch_gen') is not None else 10 ** 9)
+                     if (known.get(r['id']) or {}).get('watch') else (1, 0))
         ## A lookup that failed (a 5xx, a timeout, a malformed answer) was a
         ## turn too: the tried go behind the never tried, least recently tried
         ## first — an issue whose lookup keeps failing never holds a slot.
@@ -3142,6 +3176,11 @@ tool decide:
     max_per_lane = int({{input.max_alerts_per_lane}})
     if max_per_lane < 0:
         raise SystemExit('prod-watch: max_alerts_per_lane must be 0 or more, got ' + str(max_per_lane))
+    ## How many state generations a Sentry record posted alone outlives the
+    ## store's cut: at most min(per-lane, per-run cap) records are posted alone
+    ## a generation, so the protected ones fill at most half the cap — the
+    ## default cap's while the cap is off, so turning it on later finds windows.
+    s_window = max(1, (int(sentry_cfg.get('max_records') or 0) or 5000) // (2 * max(1, min(max_per_lane, max_alerts))))
     msg_chars = int({{input.max_message_chars}})
     if msg_chars < 1500:
         ## A note's names take the message budget less 1000 characters, left
@@ -3326,7 +3365,8 @@ tool decide:
                 'evidence': {'link': rec.get('link'), 'short_id': short, 'status': rec.get('status') or ''},
                 'count': (it or {}).get('count') if (it or {}).get('count') is not None else int(rec.get('count') or 0),
                 'first_seen': rec.get('first_seen'), 'prev_severity': rec.get('severity') or '',
-                'transition_at': transition_at, 'log_title': short}
+                'transition_at': transition_at, 'log_title': short,
+                'watched_since': rec.get('watched_since')}
     def s_stamp_check(rec, it):
         ## A clean activity check dates the check; one tried and not clean (a
         ## date not taken, a lookup that failed) undates it — an issue with no
@@ -3344,7 +3384,7 @@ tool decide:
             rec = {'fp': fp, 'kind': 'sentry', 'sources': ['sentry'], 'first_seen': now_iso, 'last_seen': now_iso, 'count': 0,
                    'alerted': False, 'last_notified': None, 'quiet_noted': False, 'backlog': False, 'pending': None,
                    'pending_transition_at': None, 'transition_at': None, 'sentry_last_seen': None,
-                   'severity': s_sev(it.get('level') or ''), 'status': ''}
+                   'severity': s_sev(it.get('level') or ''), 'status': '', 'admitted_gen': state['generation']}
             incidents[fp] = rec
         short = s_label(it)
         rec.update({'title_key': 'sentry_issue', 'title_arg': short, 'detail_key': 'sentry_detail_short',
@@ -3369,6 +3409,12 @@ tool decide:
         s_state.pop('sentry', None)
         state.pop('sentry_history_unsaid', None)
         state.pop('sentry_history_dropped', None)
+        ## The old memory's cut goes with it; its note stamps too, or they would
+        ## silence the new identity's first cut for renotify_hours.
+        (state.get('records_cut') or {}).pop('sentry', None)
+        state.pop('watched_forgotten', None)
+        for c in ('records cut: sentry', 'records over: sentry', 'watched forgotten: sentry'):
+            (state.get('coverage_posted') or {}).pop(c, None)
     if s_on:
         state['sentry_identity'] = sentry_cfg.get('identity_key') or ''
         ## A lowered max_severity caps what the lane already recorded too —
@@ -3402,6 +3448,7 @@ tool decide:
         for sid, it in sorted(s_issues.items()):
             rec = s_record(it, 'sentry:' + sid)
             rec['backlog'] = True
+            rec['tracked_read_gen'] = state['generation']   # read: the store's cut spares it
             if it.get('transition_at'):
                 rec['transition_at'] = it['transition_at']
             elif it.get('in_transition') and it.get('transition_kind') in ('regressed', 'escalating'):
@@ -3459,7 +3506,12 @@ tool decide:
                 ## however late, the transition the lane watched happen is
                 ## news — the catch-up floor is for a lane that was off, or
                 ## an issue it never knew.
-                rec['transition_seen_at'] = rec.get('transition_seen_at') or now_iso
+                if not rec.get('transition_seen_at'):
+                    rec['transition_seen_at'] = now_iso
+                    ## The watch's age, in generations: a runner whose clock
+                    ## runs ahead must not write a watch that outranks every
+                    ## other one.
+                    rec['transition_seen_gen'] = state['generation']
             elif in_tr and not dated:
                 rec['transition_seen_at'] = None   # checked: the recorded date is the current one
             seen_tr = s_dt(rec.get('transition_seen_at'))
@@ -3668,11 +3720,26 @@ tool decide:
         ## as a pending Sentry issue, whose re-emission needs the lane too.
         lane_k = {'loki': 'loki', 'leak': 'loki', 'sentry_leak': 'sentry'}.get(rec.get('kind'))
         return bool(lane_k) and rec.get('pending') == 'new' and (s_on if lane_k == 'sentry' else bool(lanes.get(lane_k)))
+    def s_announceable(rec):
+        ## The EVENT a first announcement is owed for: watched in the
+        ## transition list, never cleanly checked — whether or not the record
+        ## was announced before (its earlier fact is not this one). A dated
+        ## record never carries a watch — the watch is set undated and lifted
+        ## when a date is found or the list is read whole without it — so the
+        ## history dated at the arming is never announced as news.
+        return (not rec.get('pending') and rec.get('transition_seen_at')
+                and rec.get('substatus') in ('regressed', 'escalating'))
+    s_forgotten = 0
     for fp, rec in list(incidents.items()):
         if fp in seen_fps or pending_lane_on(rec):
             continue
         gone_h = age_h(rec.get('last_seen') or rec.get('first_seen') or now_iso)
         if gone_h >= forget_d * 24:
+            if rec.get('kind') == 'sentry' and s_announceable(rec):
+                ## Retention forgetting a regression the lane never announced:
+                ## an extreme — the check cap held it off for forget_after_days
+                ## — counted, never silent.
+                s_forgotten += 1
             ## Retention, not a conclusion: an incident unseen for
             ## forget_after_days goes whatever the lane observed, or the
             ## state grows for ever behind a lane that never completes.
@@ -3700,6 +3767,83 @@ tool decide:
                            'title_key': rec.get('title_key'), 'title_arg': rec.get('title_arg'), 'detail_key': rec.get('detail_key'),
                            'fields': rec.get('fields') or {}, 'evidence': {}, 'count': rec.get('count'),
                            'first_seen': rec.get('first_seen'), 'prev_severity': rec.get('severity') or ''})
+
+    ## ── the store's cut, for a lane whose data mints incidents ─────
+    ## Anyone holding a public DSN creates Sentry issues by the hundred, each
+    ## a record that retention alone would keep for forget_after_days. Past a
+    ## lane's cap its unprotected records go, in the order the lane gives —
+    ## save one the lane still owes a first announcement: `announce` makes
+    ## that alert now, and the record goes at a later cut. Each lane reports
+    ## what it cut and why the rest stayed; the report is said below. The
+    ## Loki lane's templates are the next lane on this seam.
+    cut_report = {}
+    def cut_lane(lane, kind, cap, kept_by, order_key, announce, why):
+        mine = [(fp, rec) for fp, rec in incidents.items() if rec.get('kind') == kind]
+        cut, announced = 0, set()
+        if cap > 0 and len(mine) > cap:
+            for fp, rec in sorted((kv for kv in mine if not kept_by(*kv)), key=lambda kv: order_key(*kv))[:len(mine) - cap]:
+                a = announce(fp, rec)
+                if a is None:
+                    del incidents[fp]
+                    cut += 1
+                else:
+                    alerts.append(a)
+                    announced.add(fp)
+        left = [kept_by(fp, rec) or ('announced' if fp in announced else '') for fp, rec in incidents.items() if rec.get('kind') == kind]
+        cut_report[lane] = {'cap': cap, 'cut': cut, 'left': len(left), 'why': why,
+                            'over': {w: left.count(w) for w in sorted(set(left)) if w} if cap and len(left) > cap else {}}
+    def s_int_field(v):
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+    ## A Sentry record outlives the cut while one of the last
+    ## read_protect_ticks generations read it (3 by default: a blind tick
+    ## creates no record and evicts nothing it read lately), while this tick
+    ## plans to read it by id, while a pending alert is owed, and for its
+    ## window once a fact about it was posted alone. A closing note is a
+    ## follow-up: cut, and said, like the others. Legacy records (no
+    ## admission stamp) go first, backlog before alerted.
+    S_OWED = ('new', 'regressed', 'escalating', 'escalated', 'reopened')
+    s_read_gens = int(sentry_cfg.get('read_protect_ticks') or 3)
+    s_planned = set(x for x in (sentry_cfg.get('tracked_ids') or []) if isinstance(x, str))
+    def s_kept_by(fp, rec):
+        gen = state['generation']
+        read = s_int_field(rec.get('tracked_read_gen'))
+        if (read is not None and gen - read < s_read_gens) or fp.split(':', 1)[1] in s_planned:
+            return 'read'
+        if rec.get('pending') in S_OWED:
+            return 'owed'
+        until = s_int_field(rec.get('alone_until_gen'))
+        if until is not None and gen < until:
+            return 'alone'
+        if s_boot and s_announceable(rec):
+            ## A bootstrap posts nothing, so it cannot announce a watched
+            ## regression before cutting it: it keeps it (a bootstrap starts no
+            ## watch — these are records kept from before, a set that cannot grow).
+            return 'watched'
+        return ''
+    def s_announce(fp, rec):
+        ## Watched, and the lane owes its regression a first announcement:
+        ## cut silently, that regression would come back as a history line
+        ## once dated past the catch-up floor. It is announced now, undated
+        ## (in the list since the watch began), and recorded as dated at that
+        ## watch — the date found later is no news a second time.
+        if not s_announceable(rec):
+            return None
+        rec['watched_since'] = rec['transition_seen_at']
+        a = s_alert(fp, rec, rec['substatus'], None, rec.get('severity') or 'low')
+        rec['transition_at'] = rec['transition_seen_at']
+        rec['transition_seen_at'] = None
+        return a
+    cut_lane('sentry', 'sentry', int(sentry_cfg.get('max_records') or 0) if s_on else 0, s_kept_by,
+             lambda fp, rec: (s_int_field(rec.get('admitted_gen')) if s_int_field(rec.get('admitted_gen')) is not None else -1,
+                              1 if rec.get('alerted') else 0, fp),
+             s_announce,
+             {'read': 'read in the last ' + str(s_read_gens) + ' ticks', 'owed': 'owed a pending alert',
+              'alone': 'posted alone within their window', 'announced': 'announced this tick before their cut',
+              'watched': 'watched regressions a bootstrap cannot announce'})
+    ## Cut counts carried until a note says them, by lane.
+    carried_cut = state.get('records_cut') if isinstance(state.get('records_cut'), dict) else {}
+    cut_totals = {lane: int(carried_cut.get(lane) or 0) + int((cut_report.get(lane) or {}).get('cut') or 0)
+                  for lane in set(carried_cut) | set(cut_report)}
 
     ## ── source health + staleness ──────────────────────────────────
     def mark(source, ok, err=''):
@@ -3757,7 +3901,9 @@ tool decide:
     ## Past 100 names the oldest go, counted: a note says how many.
     s_dropped = int(state.get('sentry_history_dropped') or 0) + max(0, len(s_unsaid) - 100)
     s_unsaid = s_unsaid[-100:]
+    wf_total = s_forgotten + int(state.get('watched_forgotten') or 0)
     coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors or s_unsaid or s_dropped
+                             or any(cut_totals.values()) or wf_total
                              or (lanes.get('sentry') and (sentry_errors or sentry_truncated))) else 'full'
     gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
     truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
@@ -3766,6 +3912,21 @@ tool decide:
     ## The note's pieces, each with the component it says — the loss first:
     ## a gap, then the errors, then what is only behind.
     pieces = [('gap: ' + q, q + ': gap — the cursor fell out of the max window, the lines in between were skipped') for q in gapped]
+    ## A lane's cut is a loss, said beside the gaps; a store kept over its cap
+    ## says why every record left is protected; a regression retention forgot
+    ## before any announcement is counted.
+    if wf_total:
+        pieces.append(('watched forgotten: sentry', 'sentry: ' + str(wf_total) + ' watched regression(s) the lane never dated nor announced were '
+                       'forgotten by retention (forget_after_days) — counted, not named'))
+    for lane in sorted(cut_totals):
+        if cut_totals[lane]:
+            pieces.append(('records cut: ' + lane, lane + ': ' + str(cut_totals[lane]) + ' record(s) cut past max_records — a cut issue loses its '
+                           'follow-ups (reminder, escalation, reopening, idle and closing notes, leak detection, a second regression the lane had '
+                           'already dated), and one read again is said again'))
+    for lane, rep in sorted(cut_report.items()):
+        if rep['over']:
+            pieces.append(('records over: ' + lane, lane + ': ' + str(rep['left']) + ' records kept for max_records ' + str(rep['cap']) +
+                           ', every one protected: ' + ', '.join(str(n) + ' ' + rep['why'][w] for w, n in rep['over'].items())))
     pieces += [(c, text) for text, c in sorted(
         (str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160],
          lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160])
@@ -3829,6 +3990,16 @@ tool decide:
         state['sentry_history_dropped'] = s_dropped
     else:
         state.pop('sentry_history_dropped', None)
+    ## Carried until a note says it, like the history above.
+    rcut = {lane: n for lane, n in cut_totals.items() if n and ('records cut: ' + lane) not in said}
+    if rcut:
+        state['records_cut'] = rcut
+    else:
+        state.pop('records_cut', None)
+    if wf_total and 'watched forgotten: sentry' not in said:
+        state['watched_forgotten'] = wf_total
+    else:
+        state.pop('watched_forgotten', None)
 
     ## A NEW alert the cap cut on an earlier tick whose trigger does not
     ## recur by itself — a log template, a leak class (Loki or Sentry) — is
@@ -3974,7 +4145,7 @@ tool decide:
                 yield a
             for m in a.get('members') or []:
                 yield {'fingerprint': m['fp'], 'kind': a['kind'], 'state': a['state'], 'severity': m['severity'],
-                       'prev_severity': m.get('prev_severity') or '', 'transition_at': m.get('transition_at')}
+                       'prev_severity': m.get('prev_severity') or '', 'transition_at': m.get('transition_at'), 'member': True}
     for a in with_members(posted):
         rec = incidents.get(a['fingerprint'])
         if rec is None:
@@ -3987,6 +4158,10 @@ tool decide:
         else:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
+            if a['kind'] == 'sentry' and not a.get('member') and a['state'] in FACTS and s_int_field(rec.get('alone_until_gen')) is None:
+                ## Its first fact posted alone opens the window the store's cut
+                ## spares it for — once: no later post, real or minted, moves it.
+                rec['alone_until_gen'] = state['generation'] + s_window
             ## Posted again (a transition, a pending alert): its closing note
             ## is owed again, and the idle clock restarts — a transition
             ## posted without an event here must not read idle next tick.
@@ -4284,6 +4459,9 @@ tool notify:
                 fmt('count', n=count or 0)]
         if state in ('regressed', 'escalating') and a.get('transition_at'):
             meta.append(fmt('sentry_dated', date=str(a['transition_at'])[:16]))
+        elif state in ('regressed', 'escalating') and a.get('watched_since'):
+            ## Announced before its record left the store, its date unknown.
+            meta.append(fmt('sentry_undated', date=str(a['watched_since'])[:16]))
         if release:
             meta.append(lab(labels.get('release', 'release')) + ' ' + code(release, 60) +
                         ('' if release_known else ' (' + lab(labels.get('release_unverified', 'unverified'), 40) + ')'))
