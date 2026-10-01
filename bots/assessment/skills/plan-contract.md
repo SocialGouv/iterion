@@ -99,16 +99,24 @@ its owner keeps beside it, and the records the earlier lots left there.
 | `brief.yaml` | goals, decisions, permitted and forbidden changes | nothing |
 | `ARBITRAGE.md` | how a blocked divergence is judged | nothing |
 | `defects-ledger.json` | the defects register | a NEW entry, for a defect it found; the entries its lot `remediates` |
-| any other file the base holds there | the owner's files, the earlier lots' reports, sweeps and probes | nothing — byte-frozen |
-| a file named with the lot's id | its own records: `<lot>-report.md`, `<lot>-probe.py`, `sweeps/<lot>.md`, `<lot>-captures/…` | anything: create, update, remove |
-| a file the base does not hold | a record the lot creates | anything |
+| any other file the base holds there | the owner's files, the other lots' reports, sweeps and probes | nothing — byte-frozen |
+| a file named for the lot | its own records: `<lot>-report.md`, `<lot>-probe.py`, `sweeps/<lot>.md`, `<lot>-captures/…` | anything: create, update, remove |
+| a file the base does not hold, named for no other lot | a record the lot creates | anything |
+| a file the base does not hold, named for another lot | that lot's record, written ahead of it | nothing — refused |
 
-A name is the lot's own when it carries the lot's id followed by `-`, `.` or
-`_` (or is the id itself), at any depth: lot `L1` owns `L1-report.md` and
-`sweeps/L1.md`, never `L10-report.md`. Name what you write beside the plan with
-your lot's id, and leave the others' records as they are: they are the
-programme's history, and a lot that rewrites another lot's report rewrites what
-was found.
+A path is named for a lot when one of its names carries that lot's id: the id
+itself, or the id followed by `-`, `.` or `_`. The lots are the plan's at the
+base and the ones the lot adds as proposals. The outermost name carrying an id
+decides (all of `<lot>-captures/` is that lot's), and the longest id wins when
+several match: lot `L1` owns `L1-report.md` and `sweeps/L1.md`, never
+`L1-b-report.md` (lot `L1-b`'s) nor `L10-report.md`. Name what you write beside
+the plan with your lot's id, and leave the others' records as they are: they
+are the programme's history, and a lot that rewrites another lot's report
+rewrites what was found. A record written for another lot is refused too: a
+sweep record written ahead of its lot answers that lot's gate before it runs.
+So is a link you create under a name of no lot (a symbolic link, a nested
+repository): it stands for every path beneath it, another lot's records
+included. Under your lot's id, a link is yours.
 
 `lot_verify` compares the directory with the run's base before it runs a single
 gate command, and again after the last one — a gate command is the lot's own

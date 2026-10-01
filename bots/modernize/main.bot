@@ -115,11 +115,12 @@ prompt campaign_system:
      the earlier lots' records beside them — is the owner's. Yours to write
      there: your lot's status, a lot you ADD as a proposal, in the register a
      new entry for a defect you found or the fix of an entry your lot
-     `remediates`, and your own records — files you create, named with your
-     lot's id (`<lot>-report.md`). The verifier refuses any other change,
-     before the gate runs and again after it — in the working tree, the index
-     and what you commit alike, whatever wrote it, your gate's own scripts
-     included; a change the programme needs goes in your report.
+     `remediates`, and your own records — files named with your lot's id
+     (`<lot>-report.md`), or files you create that are named for no other lot
+     of the plan (a link, only under your lot's id). The verifier refuses any
+     other change, before the gate runs and again after it — in the working
+     tree, the index and what you commit alike, whatever wrote it, your gate's
+     own scripts included; a change the programme needs goes in your report.
 
   Commit as you go, so an interrupted run leaves landed work.
 
@@ -1218,14 +1219,23 @@ tool lot_verify:
 
     TABLE = [rel for rel, _, _ in CONTRACT]
 
-    def lots_own(rel):
-        """A record of the running lot: a path under the contract's directory
-        one of whose names carries the lot's id as a prefix — `<lot>-report.md`,
-        `<lot>-probe.py`, `sweeps/<lot>.md`, all of `<lot>-captures/`."""
-        for name in rel[len(contract_dir) + 1:].split("/"):
-            if name == lot_id or any(name.startswith(lot_id + c) for c in "-._"):
-                return True
-        return False
+    def lot_ids(lots):
+        """The ids a plan's lots carry."""
+        return {l.get("id") for l in lots if isinstance(l, dict)
+                and isinstance(l.get("id"), str) and l.get("id")}
+
+    def named_for(rel, ids):
+        """The lot a path under the contract's directory is named for, or None.
+        A name carries a lot's id when it is the id itself, or the id followed
+        by `-`, `.` or `_`. The outermost name carrying one decides — all of
+        `<lot>-captures/` is that lot's, `sweeps/<lot>.md` too — and the
+        longest id when several match: `L1-b-report.md` is L1-b's, never L1's,
+        and `L10-report.md` is no record of L1's."""
+        for name in rel[len(contract_dir) + 1:].rstrip("/").split("/"):
+            hits = [i for i in ids if name == i or any(name.startswith(i + c) for c in "-._")]
+            if hits:
+                return max(hits, key=len)
+        return None
 
     def tree_entries(rev):
         """{path: (mode, blob id)} for every path `rev` holds under the
@@ -1241,17 +1251,55 @@ tool lot_verify:
                 out[os.fsdecode(path)] = (mode, sha)
         return out
 
-    def beside_the_plan():
+    def beside_the_plan(base_tree, ids):
         """The contract's directory beyond the table: every path the base holds
-        there that is not the running lot's own record — the owner's files
-        and the earlier lots' records — {path: (mode, blob id) at the base}.
-        A path the lot creates, and every path carrying its id, are its own.
-        A plan at the repository's root has no directory of its own: only the
-        table is the contract then."""
+        there that is not named for the running lot — the owner's files and
+        the other lots' records — {path: (mode, blob id) at the base}."""
+        return {p: e for p, e in base_tree.items()
+                if p not in TABLE and named_for(p, ids) != lot_id}
+
+    def landing_paths(head_tree):
+        """Every path a landing can carry under the contract's directory:
+        HEAD's tree, the index, and the working tree's files `git add` takes
+        (untracked, not ignored). A plan at the repository's root has no
+        directory of its own: only the table is the contract then."""
         if not contract_dir:
-            return {}
-        return {p: e for p, e in tree_entries(base).items()
-                if p not in TABLE and not lots_own(p)}
+            return set()
+        ls = git_bytes("ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                       "--", contract_dir + "/")
+        if ls.returncode != 0:
+            git_fail("list", contract_dir, ls)
+        return set(head_tree) | {os.fsdecode(p) for p in ls.stdout.split(b"\0") if p}
+
+    def created_rewrites(created, ids, state, head, head_tree):
+        """A path the lot creates beside the plan is its own record unless it
+        is named for another lot: that lot's records are that lot's to write.
+        A sweep record written ahead of its lot would answer that lot's gate
+        before the lot has run. A link — symbolic, or to another repository —
+        stands for every path beneath it, another lot's record included
+        (`sweeps` linked to a directory holding `L22.md`), so a lot creates one
+        only under its own name."""
+        causes = []
+        for rel in sorted(created):
+            owner = named_for(rel, ids)
+            if owner == lot_id:
+                continue
+            st = state[rel]
+            where = [w for w, here in (
+                ("in the working tree", st["w"] != "absent"),
+                ("staged in the index", st["i"] != "absent"),
+                ("committed at HEAD %s" % head[:12], rel in head_tree)) if here]
+            modes = [e.split(":")[0] for e in st["i"].split(",")] if st["i"] != "absent" else []
+            modes += [head_tree[rel][0]] if rel in head_tree else []
+            if owner is not None:
+                causes.append("%s: created during lot %s, and named for lot %s (%s) — another "
+                              "lot's records are that lot's to write" % (rel, lot_id, owner, ", ".join(where)))
+            elif st["w"].startswith("symlink:") or st["w"] == "other" \
+                    or any(not m.startswith("100") for m in modes):
+                causes.append("%s: created during lot %s as a link (%s) — a link stands for every "
+                              "path beneath it, another lot's records included: a lot creates one "
+                              "only under its own id" % (rel, lot_id, ", ".join(where)))
+        return causes
 
     def landing_state(paths):
         """What a commit of the working tree would take for each path, as git
@@ -1299,16 +1347,28 @@ tool lot_verify:
                 state[p]["w"] = "other"
             else:
                 regular.append(p)
-        if regular:
+        # One path per line on `--stdin-paths`: a name holding a newline is
+        # hashed on its own. Names are bytes to git, so they are passed as
+        # bytes — a name that is not UTF-8 is judged like any other.
+        batch = [p for p in regular if "\n" not in p]
+        if batch:
             h = subprocess.run(["git", "-C", ws, "hash-object", "--stdin-paths"],
-                               input="".join(p + "\n" for p in regular).encode(),
+                               input=b"".join(os.fsencode(p) + b"\n" for p in batch),
                                capture_output=True, timeout=120)
             shas = h.stdout.decode().split()
-            if h.returncode != 0 or len(shas) != len(regular) or any("\n" in p for p in regular):
+            if h.returncode != 0 or len(shas) != len(batch):
                 unreadable("cannot hash the contract's paths as git would store them: %s"
                            % h.stderr.decode("utf-8", "replace")[-300:])
-            for p, sha in zip(regular, shas):
+            for p, sha in zip(batch, shas):
                 state[p]["w"] = "file:" + sha
+        for p in regular:
+            if "\n" in p:
+                h = subprocess.run(["git", "-C", ws, "hash-object", "--path=" + p, "--",
+                                    os.path.join(ws, p)], capture_output=True, timeout=120)
+                if h.returncode != 0:
+                    unreadable("cannot hash %r as git would store it: %s"
+                               % (p, h.stderr.decode("utf-8", "replace")[-300:]))
+                state[p]["w"] = "file:" + h.stdout.decode().strip()
         return state
 
     def contract_index_clean(state):
@@ -1338,7 +1398,7 @@ tool lot_verify:
         causes = []
         for rel, (mode, sha) in sorted(frozen.items()):
             if mode == "120000":
-                want_w = "symlink:" + at_base(rel)[2].decode("utf-8", "replace")
+                want_w = "symlink:" + os.fsdecode(at_base(rel)[2])
             elif mode.startswith("100"):
                 want_w = "file:" + sha
             else:
@@ -1362,9 +1422,13 @@ tool lot_verify:
         banks when it is left dirty — the index, which a commit stores for an
         entry `git add` leaves alone, and HEAD's committed tree, which mark_done
         commits under the gate's subject. The table's files are judged as
-        documents, the rest of the directory byte for byte. Returns where the
-        lot's own status reads `done`, the rewrites named per file, the HEAD
-        judged, and the landing state — what mark_done holds the landing to."""
+        documents, the rest of the directory by name: a path the base holds
+        there, byte for byte unless it is named for the running lot; a path
+        the lot creates, refused when it is named for another lot — of the
+        plan at the base, or one the landing adds. Returns where the lot's own
+        status reads `done`, the rewrites named per file, the HEAD judged, and
+        the landing state of every path of the directory — what mark_done
+        holds the landing to."""
         rev = git_bytes("rev-parse", "--verify", "HEAD")
         if rev.returncode != 0:
             git_fail("read HEAD for", plan_file, rev)
@@ -1374,13 +1438,13 @@ tool lot_verify:
             if kind in ("symlink", "other"):
                 unreadable("%s is %s at the run's base %s: the contract's files are regular "
                            "files, and what a link points at is not judged" % (rel, KIND[kind], base[:12]))
-        frozen = beside_the_plan()
-        state = landing_state(TABLE + list(frozen))
+        if not isinstance(base_lots, list) or not all(isinstance(l, dict) for l in base_lots):
+            unreadable("the contract at the base %s declares `lots` in an unreadable shape" % base[:12])
         tree = {rel: in_tree(rel) for rel in TABLE}
         views = (("", lambda rel: tree[rel]),
                  (" (staged in the index)", at_index),
                  (" (committed at HEAD %s)" % head[:12], lambda rel: at_rev(head, rel)))
-        rewrites, seen, done_in = [], set(), []
+        rewrites, seen, done_in, ids = [], set(), [], lot_ids(base_lots)
         for label, read in views:
             for rel, how, rule in CONTRACT:
                 for cause in file_rewrites(rel, how, rule, read):
@@ -1390,10 +1454,26 @@ tool lot_verify:
             kind, _, raw = read(plan_file)
             ok, doc = parse(raw, "yaml", False) if kind == "file" else (False, None)
             lots = doc.get("lots") if ok and isinstance(doc, dict) else None
-            if (lot_of(lots if isinstance(lots, list) else [], lot_id) or {}).get("status") == "done":
+            lots = lots if isinstance(lots, list) else []
+            # A lot the landing adds is a proposal, and its records are that
+            # lot's like an earlier lot's are. An id can only narrow what the
+            # running lot owns, so reading the landing's lots cannot widen its
+            # licence.
+            ids |= lot_ids(lots)
+            if (lot_of(lots, lot_id) or {}).get("status") == "done":
                 done_in.append(label.strip(" ()") or "the working tree")
-        rewrites += frozen_rewrites(frozen, state, head, tree_entries(head) if contract_dir else {})
-        rewrites += contract_index_clean(state)
+        head_tree = tree_entries(head) if contract_dir else {}
+        base_tree = tree_entries(base) if contract_dir else {}
+        frozen = beside_the_plan(base_tree, ids)
+        landed = landing_paths(head_tree)
+        state = landing_state(TABLE + list(frozen) + list(landed))
+        rewrites += frozen_rewrites(frozen, state, head, head_tree)
+        created = {p for p in landed if p not in base_tree and p not in TABLE}
+        rewrites += created_rewrites(created, ids, state, head, head_tree)
+        # Flags and filters are judged where the bytes are: the table and the
+        # frozen files. The lot's own records may go through a filter (an LFS
+        # capture), as what it may write freely it may also store so.
+        rewrites += contract_index_clean({p: state[p] for p in TABLE + list(frozen)})
         return done_in, rewrites, head, state
 
     def record_landing(done_in, rewrites, when):
@@ -1421,10 +1501,11 @@ tool lot_verify:
                 "judged. The lot's own writes: its status (`blocked`, never "
                 "`done`), a NEW lot added to the plan (a proposal), in the defects "
                 "register a NEW entry or an entry it remediates (remediates: %s), "
-                "and its own records beside the plan — a file it creates, or one "
-                "named with its id (`%s-report.md`, `sweeps/%s.md`). Everything else "
-                "is the owner's or an earlier lot's: revert those lines (nothing "
-                "else), and put the change you would make in your report."
+                "and its own records beside the plan — a file named with its id "
+                "(`%s-report.md`, `sweeps/%s.md`), or one it creates that is named "
+                "for no other lot of the plan. Everything else is the owner's or "
+                "another lot's: revert those lines (nothing else), and put the "
+                "change you would make in your report."
                 % (when, lot_id, "; ".join(rewrites)[:1500], ", ".join(sorted(remediates)) or "none",
                    lot_id, lot_id))
         return report["done_self_written"] or bool(rewrites)
@@ -2135,9 +2216,10 @@ tool mark_done:
         refuse("cannot read the contract at %s: %s" % (plan_path, e))
 
     # The gate's word lands only on what its verdict judged. lot_verify judged
-    # the contract on the working tree, the index and HEAD after the last gate
-    # command; between that verdict and this node nothing of the graph runs —
-    # a HEAD, a file, an index entry or an attribute that moved since is not
+    # the contract's directory on the working tree, the index and HEAD after
+    # the last gate command; between that verdict and this node nothing of the
+    # graph runs — a HEAD, a file, an index entry or an attribute that moved
+    # since, and a path of the directory the verdict did not list, are not
     # what the verdict answered for.
     try:
         judged = json.loads(judged_tree) if judged_tree else None
@@ -2217,17 +2299,45 @@ tool mark_done:
                 state[p]["w"] = "other"
             else:
                 regular.append(p)
-        if regular:
+        # One path per line on `--stdin-paths`: a name holding a newline is
+        # hashed on its own. Names are bytes to git, so they are passed as
+        # bytes — a name that is not UTF-8 is judged like any other.
+        batch = [p for p in regular if "\n" not in p]
+        if batch:
             h = subprocess.run(["git", "-C", ws, "hash-object", "--stdin-paths"],
-                               input="".join(p + "\n" for p in regular).encode(),
+                               input=b"".join(os.fsencode(p) + b"\n" for p in batch),
                                capture_output=True, timeout=120)
             shas = h.stdout.decode().split()
-            if h.returncode != 0 or len(shas) != len(regular) or any("\n" in p for p in regular):
+            if h.returncode != 0 or len(shas) != len(batch):
                 refuse("cannot hash the contract's paths as git would store them: %s"
                        % h.stderr.decode("utf-8", "replace")[-300:])
-            for p, sha in zip(regular, shas):
+            for p, sha in zip(batch, shas):
                 state[p]["w"] = "file:" + sha
+        for p in regular:
+            if "\n" in p:
+                h = subprocess.run(["git", "-C", ws, "hash-object", "--path=" + p, "--",
+                                    os.path.join(ws, p)], capture_output=True, timeout=120)
+                if h.returncode != 0:
+                    refuse("cannot hash %r as git would store it: %s"
+                           % (p, h.stderr.decode("utf-8", "replace")[-300:]))
+                state[p]["w"] = "file:" + h.stdout.decode().strip()
         return state
+
+    def landing_paths():
+        """lot_verify's enumeration of what a landing carries under the
+        contract's directory — HEAD's tree, the index, the files `git add`
+        takes — recomputed the same way: a path the verdict did not list has
+        appeared since it."""
+        contract_dir = os.path.dirname(plan_rel)
+        if not contract_dir:
+            return set()
+        lt = git_bytes("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", contract_dir + "/")
+        ls = git_bytes("ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                       "--", contract_dir + "/")
+        if lt.returncode != 0 or ls.returncode != 0:
+            refuse("cannot list what the landing carries under %s: %s"
+                   % (contract_dir, (lt.stderr + ls.stderr).decode("utf-8", "replace")[-300:]))
+        return {os.fsdecode(p) for p in (lt.stdout + ls.stdout).split(b"\0") if p}
 
     # This node's own work, which an attempt that died part-way may have left:
     # in the working tree, the judged plan with its line flipped — the plan the
@@ -2253,6 +2363,8 @@ tool mark_done:
                                                      or (k == "i" and have == own_i))):
                 continue
             moved.append("%s %s (judged %s, now %s)" % (rel, WHERE[k], want, have))
+    moved += ["%s appeared under the contract's directory" % rel
+              for rel in sorted(landing_paths() - set(judged))]
     if moved:
         refuse("the landing moved since the verdict: %s. The gate's word lands only on "
                "what its verdict judged — relaunch the lot to judge it again. Nothing "
