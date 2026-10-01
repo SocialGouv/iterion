@@ -1,0 +1,32 @@
+## Feature fixture: the OpenAI-compatible gateway served from the
+## deployment's environment (#2028). The node's model is a gateway route —
+## the id after the prefix goes to the wire verbatim — and the endpoint
+## comes from OPENAI_COMPATIBLE_BASE_URL / _API_KEY in the test's process
+## env. Vendor credentials are cleared by the test, so any call that
+## crosses to a vendor fails loudly instead of passing silently.
+
+schema gateway_answer:
+  answer: int
+
+prompt gw_prompt:
+  Use the bash tool to run exactly: expr 40 + 2 — always use the tool
+  for this, never compute it yourself. Then answer with the schema: the
+  sum in the answer field.
+
+agent gw:
+  model: "openai_compatible/${OPENAI_COMPATIBLE_TEST_MODEL:-gpt-oss-120b}"
+  output: gateway_answer
+  user: gw_prompt
+  tools: [bash]
+  tool_max_steps: 6
+  session: fresh
+
+workflow feat_gateway_inprocess:
+  entry: gw
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "10m"
+    max_tokens: 100000
+
+  gw -> done

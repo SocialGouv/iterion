@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -126,17 +127,101 @@ func SpecsFromWorkflow(wf *ir.Workflow, logger *iterlog.Logger) []Spec {
 			hint = providerHintFromWatched(wf, sup.Watches)
 		}
 		specs = append(specs, Spec{
-			Name:         sup.Name,
-			Model:        sup.Model,
-			ProviderHint: hint,
-			System:       system,
-			Watches:      sup.Watches,
-			Monitors:     monitors,
-			Cooldown:     sup.Cooldown,
-			MaxEvals:     sup.MaxEvals,
+			Name:           sup.Name,
+			Model:          sup.Model,
+			ProviderHint:   hint,
+			GatewayWatched: gatewayWatched(wf, sup.Watches),
+			System:         system,
+			Watches:        sup.Watches,
+			Monitors:       monitors,
+			Cooldown:       sup.Cooldown,
+			MaxEvals:       sup.MaxEvals,
 		})
 	}
 	return specs
+}
+
+// gatewayWatched reports whether any route this supervisor may observe can
+// be an OpenAI-compatible gateway route. It mirrors the walks that DISPATCH
+// routes — the same shapes validateGatewayRoutes warns on: an LLM node's
+// (agent OR judge) primary model, each `provider:` chain STEP (hint and
+// step-model), each `fallbacks:` entry, and an `mode: llm` router's model.
+// An unexpanded `{{…}}` COUNTS as gateway: the conservative side refuses
+// supervision that would otherwise silently pick a vendor default for a
+// gateway node's content.
+func gatewayWatched(wf *ir.Workflow, watches []string) bool {
+	ids := watches
+	if len(ids) == 0 {
+		for id := range wf.Nodes {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+	}
+	for _, id := range ids {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			continue
+		}
+		switch nn := node.(type) {
+		case ir.LLMNode:
+			f := nn.GetLLMFields()
+			if maybeGatewayRoute(f.Model) || providerChainNamesGateway(f.Provider) {
+				return true
+			}
+			for _, fb := range nn.GetFallbacks() {
+				if maybeGatewayRoute(fb.Model) || providerChainNamesGateway(fb.Provider) {
+					return true
+				}
+			}
+		case *ir.RouterNode:
+			if nn.RouterMode != ir.RouterLLM {
+				continue
+			}
+			if maybeGatewayRoute(nn.Model) || providerChainNamesGateway(nn.Provider) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// providerChainNamesGateway splits a `provider:` field the way the
+// executor's chain resolution does — env-expanded, then per step, each step
+// a hint or a `hint:model` — and judges every token.
+func providerChainNamesGateway(provider string) bool {
+	expanded := ir.ExpandEnvWithDefault(strings.TrimSpace(provider))
+	if strings.Contains(expanded, "{{") {
+		return true
+	}
+	for _, tok := range strings.Split(expanded, ",") {
+		hint, model, hasModel := ir.SplitProviderStep(strings.TrimSpace(tok))
+		if maybeGatewayRoute(hint) {
+			return true
+		}
+		if hasModel && maybeGatewayRoute(model) {
+			return true
+		}
+	}
+	return false
+}
+
+// maybeGatewayRoute expands one route string and reports whether it names
+// the gateway — or still holds a template, which expansion at launch cannot
+// resolve (see gatewayWatched).
+func maybeGatewayRoute(route string) bool {
+	expanded := ir.ExpandEnvWithDefault(strings.TrimSpace(route))
+	if strings.Contains(expanded, "{{") {
+		return true
+	}
+	// A bare "openai_compatible" (a `provider:` step, a fallback with no
+	// model) is the gateway prefix itself.
+	if expanded == modelroute.OpenAICompatible {
+		return true
+	}
+	if prov, _, found := strings.Cut(expanded, "/"); found {
+		return prov == modelroute.OpenAICompatible
+	}
+	return false
 }
 
 // providerHintFromWatched derives the provider family the watched nodes

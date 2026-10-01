@@ -80,6 +80,12 @@ type ProviderResolution struct {
 	// provider — a typo in `provider:`, a model prefix the pool never
 	// lends — so the caller can say WHICH pin made it widen. Sorted.
 	Unknown []string
+	// EnvFunded lists the gateway-served prefixes the walk read
+	// (openai_compatible/…) — spend from the deployment's environment, not
+	// from a credential. It does NOT force NarrowSafe false: the route
+	// acquires no credential, so narrowing to the named providers is exact
+	// (OnlyEnvFunded is the predicate the publisher spends). Sorted.
+	EnvFunded []string
 	// ForfaitFirst lists the providers of Providers whose EVERY route runs on
 	// a backend that spends the provider's forfait before a key pinned for
 	// the route (delegate.RegisterForfaitFirst). A positive list: a route on
@@ -247,6 +253,8 @@ type providerAccumulator struct {
 	known     map[string]bool
 	providers map[string]bool
 	unknown   map[string]bool
+	// envFunded collects the gateway-served prefixes (ProviderResolution.EnvFunded).
+	envFunded map[string]bool
 	// forfaitFirst[p] stays true while every route naming p ran on a
 	// backend declared forfait-first for p; backend is the route being read.
 	forfaitFirst map[string]bool
@@ -277,6 +285,9 @@ func (a *providerAccumulator) result() ProviderResolution {
 	for u := range a.unknown {
 		res.Unknown = append(res.Unknown, u)
 	}
+	for p := range a.envFunded {
+		res.EnvFunded = append(res.EnvFunded, p)
+	}
 	for p, ok := range a.forfaitFirst {
 		if ok {
 			res.ForfaitFirst = append(res.ForfaitFirst, p)
@@ -284,6 +295,7 @@ func (a *providerAccumulator) result() ProviderResolution {
 	}
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
+	sort.Strings(res.EnvFunded)
 	sort.Strings(res.ForfaitFirst)
 	return res
 }
@@ -511,11 +523,17 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 	if p := providerFromModelPrefix(mdl); p != "" {
 		if p == modelroute.OpenAICompatible {
 			// The gateway route: its credential is the runner's environment,
-			// so it names no bundle slot — recorded nowhere, and never a
-			// reason to widen. The RAW prefix alone says so: an
-			// env-templated model may expand to the gateway here and to a
-			// vendor on the runner, so it widens (envDeferred covers the
-			// empty expansion; this branch covers the resolved one).
+			// so it names no bundle slot, and it is never a reason to widen
+			// (narrowing to the named providers is exact — the route
+			// acquires no credential). Named in EnvFunded for the caller;
+			// it is what OnlyEnvFunded is true OF. An env-TEMPLATED model
+			// may expand to the gateway here and to a vendor on the runner,
+			// so it widens (envDeferred covers the empty expansion; this
+			// branch covers the resolved one).
+			if a.envFunded == nil {
+				a.envFunded = map[string]bool{}
+			}
+			a.envFunded[p] = true
 			if !rawGatewayPrefix(mdl) {
 				a.narrowSafe = false
 			}

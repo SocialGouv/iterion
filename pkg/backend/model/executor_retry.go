@@ -11,6 +11,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // ---------------------------------------------------------------------------
@@ -852,6 +854,18 @@ func (e *ClawExecutor) newElementBuilder(
 		}
 		// A GLM id on the anthropic wire is a z.ai model: see RouteProviderHint.
 		task.ProviderHint = RouteProviderHint(ctx, bn, task.ProviderHint, task.Model)
+		// Gateway routing is claw-only, from both directions, and the env it
+		// is served from must resolve — judged HERE, at build time, so a
+		// refused element walks the chain like any other unresolvable one
+		// instead of failing the node after dispatch (gateway_routing.go).
+		if err := refuseGatewayCrossing(bn, task.ProviderHint, task.Model); err != nil {
+			return "", nil, nil, fmt.Errorf("model: node %q: %w", nodeID, err)
+		}
+		if modelroute.Parse(task.Model).Gateway() {
+			if err := checkGatewayEnv(!secrets.LLMEndpointAllowPrivate()); err != nil {
+				return "", nil, nil, fmt.Errorf("model: node %q: %w", nodeID, err)
+			}
+		}
 		// Claw's named persistent slot stores provider-neutral history and
 		// its pause data was validated/sanitized by buildTask. Keep both on
 		// same-Claw fallback, including when the primary is on cooldown.

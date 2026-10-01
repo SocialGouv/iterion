@@ -79,11 +79,11 @@ func TestRoutingProvidersArePinnedToTheRegistry(t *testing.T) {
 	for p := range reg.providers {
 		got = append(got, p)
 	}
-	want := modelroute.RoutingProviders()
+	want := append(modelroute.RoutingProviders(), modelroute.OpenAICompatible)
 	sort.Strings(got)
 	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("registry factories %v, modelroute.RoutingProviders() %v — keep them the same set", got, want)
+		t.Fatalf("registry factories %v, modelroute routing providers + the gateway %v — keep them the same set", got, want)
 	}
 }
 

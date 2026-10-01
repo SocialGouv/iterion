@@ -71,6 +71,18 @@ const (
 	// fleet fails CLOSED with no protocol handshake.
 	EnvelopePermissionPolicy EnvelopeType = "permission_policy"
 
+	// EnvelopeGatewayV1: launcher → runner. Sent BEFORE the task envelope
+	// when the task names an OpenAI-compatible gateway model. An EMPTY
+	// capability marker by design — every gateway value travels in the
+	// forwarded env, never on this wire (a pre-task envelope is a logging
+	// surface). The fail-closed guarantee is the position, as for
+	// permission_policy: a runner binary too old to know the type fatals
+	// on "unexpected envelope before task" instead of running a gateway
+	// node against a registry with no gateway factory. The runner-side
+	// twin refuses the reverse: a gateway task that arrives WITHOUT the
+	// marker names the host/runner version skew.
+	EnvelopeGatewayV1 EnvelopeType = "gateway_v1"
+
 	// EnvelopeEvent: runner → launcher. Observability passthrough —
 	// the runner forwards events that should be appended to the run's
 	// events.jsonl. Data is [EventData].
@@ -80,6 +92,12 @@ const (
 	// runner exits after sending. Data is the [IOResult].
 	EnvelopeResult EnvelopeType = "result"
 )
+
+// NewGatewayV1Envelope is the gateway capability marker. No payload: the
+// envelope says "this runner must know the gateway factory", nothing else.
+func NewGatewayV1Envelope() Envelope {
+	return Envelope{Type: EnvelopeGatewayV1}
+}
 
 // Envelope is a single NDJSON line on the IPC channel. Type drives the
 // dispatch, ID correlates request/response pairs (tool_call/result,

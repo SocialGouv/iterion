@@ -201,6 +201,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_SessionContinuity_ReviewFix -timeout 3h ./e2e/...
 
+  test:live:openai-compatible:
+    desc: Run the OpenAI-compatible gateway live e2e test (requires OPENAI_COMPATIBLE_BASE_URL/_API_KEY; docker for the sandboxed half)
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_OpenAICompatible' -timeout 30m ./e2e/...
+
   test:live:kanban:
     desc: Run the kanban board plan/implement/review live e2e test (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
     cmds:

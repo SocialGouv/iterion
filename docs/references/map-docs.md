@@ -133,6 +133,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
 | [`docs/agents/backends/backend-selection.md`](../agents/backends/backend-selection.md) | Backend selection — the seven wired backends | Read it when a node runs on the wrong backend or you wire a new one. | — |
 | [`docs/agents/backends/fallbacks-and-parity.md`](../agents/backends/fallbacks-and-parity.md) | Fallbacks, schema re-ask and system-prompt parity | Read it when you write `fallbacks:`, hit C173/C176, a node acts "dumber" | — |
+| [`docs/agents/backends/gateway.md`](../agents/backends/gateway.md) | The OpenAI-compatible gateway | Serving `openai_compatible/<gateway model id>` from the deployment's | — |
 | [`docs/agents/backends/plugins-compression.md`](../agents/backends/plugins-compression.md) | Plugins — rewriters, MCP, skills, lifecycle; and `compress:` | Read it when command output is compressed (rtk) or a plugin changes what a | — |
 | [`docs/agents/backends/prompt-engineering-dials.md`](../agents/backends/prompt-engineering-dials.md) | Cursors, supervisors, ultracode | Read it when authoring `cursor:` / `supervisor:` blocks or | — |
 | [`docs/agents/backends/sandbox.md`](../agents/backends/sandbox.md) | Sandbox — what a node may touch | Read it when a `SANDBOX_*` failure appears or you change what a node may | — |

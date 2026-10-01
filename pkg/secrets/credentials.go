@@ -341,6 +341,15 @@ func ForbidSubscriptionOAuth() bool {
 	return strings.TrimSpace(os.Getenv("ITERION_FORBID_SUBSCRIPTION_OAUTH")) == "1"
 }
 
+// LLMEndpointAllowPrivate reports whether the operator lifted the
+// public-address requirement on LLM endpoints an env-served gateway may
+// dial — the escape hatch for a self-hosted gateway on private
+// infrastructure. Off, the dial (and the pre-flight validation) refuse a
+// private, loopback or metadata address.
+func LLMEndpointAllowPrivate() bool {
+	return strings.TrimSpace(os.Getenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE")) == "1"
+}
+
 // anthropicOAuthTokenPrefix is the shape Anthropic mints subscription OAuth
 // access tokens in, and the only reliable way to tell one apart from the other
 // things ANTHROPIC_AUTH_TOKEN legitimately carries.

@@ -575,6 +575,16 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 	}
 	var out []supervisorRoute
 	for i, spec := range supervise.SpecsFromWorkflow(wf, nil) {
+		// A gateway-watched supervisor with no pin and no env default
+		// resolves the VENDOR family here while its evaluator refuses every
+		// evaluation (supervise.ErrGatewayWatchNeedsPin): metering it under a
+		// hard cap could park the run for spend nothing will make. The two
+		// sites must agree that this supervisor spends nothing.
+		if spec.GatewayWatched &&
+			strings.TrimSpace(ir.ExpandEnvWithDefault(spec.Model)) == "" &&
+			ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL") == "" {
+			continue
+		}
 		resolved, err := supervise.ResolveModel(ctx, spec.Model, spec.ProviderHint)
 		if err != nil {
 			continue

@@ -142,7 +142,9 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 		return nil
 	}
 	if eval == nil {
-		eval = NewLLMEvaluator()
+		e := NewLLMEvaluator()
+		e.gatewayWatched = spec.GatewayWatched
+		eval = e
 	}
 	var cursorStore store.RunStore
 	if p, ok := inj.(WatcherProgressStoreProvider); ok {

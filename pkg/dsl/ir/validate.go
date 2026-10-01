@@ -49,6 +49,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateEmptyToolsEnforced(w)
 	c.validateSkillRefs(w)
 	c.validateProviders(w)
+	c.validateGatewayRoutes(w)
 	c.validateCommand(w)
 	c.validateFallbacks(w)
 	c.validateCursorInvocations(w)
