@@ -48,7 +48,7 @@ func (s *Store) Subscribe(fn func(Event)) (func(), error) {
 	// Watch the root directory, not the file itself: events.jsonl may
 	// not exist yet (no transition recorded), and a directory watch
 	// catches both its creation and subsequent appends.
-	if err := w.Add(s.root); err != nil {
+	if err := fswatch.Add(w, s.root); err != nil {
 		_ = w.Close()
 		return nil, err
 	}

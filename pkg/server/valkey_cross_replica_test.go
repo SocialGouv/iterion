@@ -71,8 +71,9 @@ func newTwoReplicas(t *testing.T) *twoReplicas {
 		t.Fatalf("signer: %v", err)
 	}
 	// One identity store + one session store: replicas share Mongo in cloud.
+	idStore := identity.NewMemoryStore()
 	svc, err := auth.NewService(auth.Config{
-		Store:      identity.NewMemoryStore(),
+		Store:      idStore,
 		Sessions:   auth.NewMemorySessionStore(),
 		Signer:     signer,
 		SignupMode: auth.SignupOpen,
@@ -80,6 +81,13 @@ func newTwoReplicas(t *testing.T) *twoReplicas {
 	})
 	if err != nil {
 		t.Fatalf("auth service: %v", err)
+	}
+	// team-1 must EXIST: a mutating /api/teams/{id}/… route whose {id}
+	// resolves to no team is refused at route resolution (#2046).
+	if _, err := idStore.CreateTeam(context.Background(), identity.Team{
+		ID: "team-1", Name: "team-1", Slug: "team-1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team-1: %v", err)
 	}
 	sealKey := make([]byte, 32)
 	if _, err := rand.Read(sealKey); err != nil {
