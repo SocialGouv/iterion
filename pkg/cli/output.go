@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // OutputFormat controls how results are rendered.
@@ -58,9 +59,10 @@ func (p *Printer) Header(title string) {
 	p.Line("── %s ──", title)
 }
 
-// KV prints a key-value pair with aligned formatting.
+// KV prints a key-value pair with aligned formatting. A value bounded for
+// the terminal keeps the remedy a run's error ends on (store.ClipRunError).
 func (p *Printer) KV(key, value string) {
-	p.Line("  %-16s %s", key+":", terminalText(value, 2000))
+	p.Line("  %-16s %s", key+":", terminalText(store.ClipRunError(value, 2000), 2000))
 }
 
 // Table prints rows with column headers.

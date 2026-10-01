@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // remoteRunSummary mirrors runview.RunSummary's CLI-visible fields.
@@ -594,7 +595,7 @@ func printRemoteEvent(p *Printer, e remoteEvent) {
 		}
 	}
 	if hint, ok := e.Data["hint"].(string); ok && strings.TrimSpace(hint) != "" {
-		detail += " — hint: " + clipField(strings.TrimSpace(hint))
+		detail += store.RunErrorHintSeparator + clipField(strings.TrimSpace(hint))
 	}
 	p.Line("%s  %-22s%s%s", e.Timestamp.Format("15:04:05"), terminalText(e.Type, 100), node, detail)
 }

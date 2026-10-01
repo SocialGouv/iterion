@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -148,5 +150,32 @@ func TestAssistantContextReferencesDeduplicatesNativeTask(t *testing.T) {
 	)
 	if len(got) != 1 || got[0] != "card/native:d5fc94b2-ca40-4cb5-9056-ea02fb8dfdaf" {
 		t.Fatalf("references = %#v", got)
+	}
+}
+
+// TestResolveAssistantRun_aLongErrorKeepsItsRemedy: the assistant reads a
+// run's error bounded, and keeps the remedy it ends on.
+func TestResolveAssistantRun_aLongErrorKeepsItsRemedy(t *testing.T) {
+	ctx := context.Background()
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := rs.CreateRun(ctx, "run-long-error", "workflow", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remedy := store.RunErrorHintSeparator + "resume it accepting the scratch's loss (--accept-scratch-loss)"
+	run.Status = store.RunStatusFailedResumable
+	run.Error = strings.Repeat("tar: scratch/pack.idx: Cannot open: Permission denied ", 100) + remedy
+	if err := rs.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveAssistantReference(ctx, "run/"+run.ID, rs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Run == nil || !strings.HasSuffix(got.Run.Error, "…"+remedy) || utf8.RuneCountInString(got.Run.Error) > assistantContextMaxError {
+		t.Fatalf("the assistant reads the run's error unbounded or without its remedy: %#v", got.Run)
 	}
 }

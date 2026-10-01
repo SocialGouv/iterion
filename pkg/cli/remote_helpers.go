@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/server"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // APIError is a non-2xx response from the remote instance. Body is the raw
@@ -88,7 +89,7 @@ func describeErrorBody(body []byte) string {
 		s += " (" + strings.Join(facts, "; ") + ")"
 	}
 	if hint := strings.TrimSpace(b.Hint); hint != "" {
-		s += " — hint: " + clipField(hint)
+		s += store.RunErrorHintSeparator + clipField(hint)
 	}
 	return s
 }

@@ -221,7 +221,7 @@ func callRunGet(ctx context.Context, rs store.RunStore, raw json.RawMessage) (js
 		Status:       run.Status,
 		WorkflowName: truncate(run.WorkflowName, 240),
 		Resumable:    run.Status.IsResumable(),
-		Error:        truncate(run.Error, 4000),
+		Error:        store.ClipRunError(run.Error, 4000),
 		CreatedAt:    run.CreatedAt,
 		UpdatedAt:    run.UpdatedAt,
 	}
@@ -429,7 +429,7 @@ func callRunsList(ctx context.Context, rs store.RunStore, raw json.RawMessage) (
 			WorkflowName: truncate(run.WorkflowName, 240),
 			CreatedAt:    run.CreatedAt,
 			UpdatedAt:    run.UpdatedAt,
-			Error:        truncate(run.Error, 1200),
+			Error:        store.ClipRunError(run.Error, 1200),
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })

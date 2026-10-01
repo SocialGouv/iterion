@@ -164,12 +164,13 @@ func CodeRemedy(code ErrorCode) Remedy {
 }
 
 // Annotate is text, a record's rendering of the failure, followed by the
-// hint: a run document keeps a single error string.
+// hint: a run document keeps a single error string, which a reader that
+// bounds it clips on the failure's text (store.ClipRunError).
 func (r Remedy) Annotate(text string) string {
 	if r.Hint == "" {
 		return text
 	}
-	return text + " — hint: " + r.Hint
+	return text + store.RunErrorHintSeparator + r.Hint
 }
 
 // Record puts the remedy in an event's data under the keys the HTTP refusal

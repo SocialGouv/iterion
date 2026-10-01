@@ -15,6 +15,7 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -1406,4 +1407,165 @@ func TestResume_aBankTheSandboxRefusesIsRefusedByName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResume_aLongSandboxRefusalKeepsItsRemedy: the sandbox's tar refuses
+// the bank with a long output — an error per member, or text whose bound
+// falls inside a character. The run's error keeps the end of that output
+// (where the refusal is), bounded and on a character boundary, and the
+// consent that clears it after it: a reader that bounds a line — the remote
+// CLI's `runs get` — still shows the remedy.
+func TestResume_aLongSandboxRefusalKeepsItsRemedy(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local")
+	for _, tc := range []struct {
+		name, tar string
+		check     func(t *testing.T, refusal string)
+	}{
+		{"sixty refusals", "i=0\nwhile [ $i -lt 60 ]; do echo \"tar: scratch/cache/objects/pack-$i.idx: Cannot open: Permission denied\" >&2; i=$((i+1)); done\n",
+			func(t *testing.T, refusal string) {
+				if strings.Contains(refusal, "pack-0.idx") || !strings.Contains(refusal, "pack-59.idx") {
+					t.Fatalf("the refusal embeds the tar output whole or loses its end: %d bytes", len(refusal))
+				}
+			}},
+		// 600 three-byte characters then 14 bytes: the bound's first byte
+		// is the second of a character.
+		{"a bound inside a character", "i=0\nwhile [ $i -lt 600 ]; do printf '\xe3\x81\x82' >&2; i=$((i+1)); done\nprintf '!\\n' >&2\n",
+			func(t *testing.T, refusal string) {
+				if !utf8.ValidString(refusal) || !strings.Contains(refusal, "\u3042!") {
+					t.Fatalf("the refusal cuts the tar output inside a character: %q", refusal[max(0, len(refusal)-1100):])
+				}
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(bin, "tar"), []byte("#!/bin/sh\n"+tc.tar+"exit 2\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-long-refusal"
+			d := &podDriver{root: t.TempDir()}
+			x := newStubExecutor()
+			x.on("measure", func(map[string]any) (map[string]any, error) {
+				if err := os.MkdirAll(d.scratch(), 0o755); err != nil {
+					return nil, err
+				}
+				return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
+			})
+			if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+				t.Fatalf("Run: want ErrRunPaused, got %v", err)
+			}
+			refusing := refusingSandboxDriver{podDriver: d, failingTar: bin}
+			err := New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+				"docker": func() (sandbox.Driver, error) { return refusing, nil },
+			})).Resume(ctx, runID, map[string]any{"ok": true})
+			var rt *RuntimeError
+			if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
+				t.Fatalf("resume = %v, want the sandbox's refusal", err)
+			}
+			tc.check(t, err.Error())
+			run, lerr := s.LoadRun(ctx, runID)
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			if n := utf8.RuneCountInString(run.Error); n > 2000 || !strings.Contains(run.Error, "--accept-scratch-loss") || strings.ContainsRune(run.Error, utf8.RuneError) {
+				t.Fatalf("the run's error (%d runes) loses its remedy past a reader's bound, or a character: %q", n, run.Error)
+			}
+		})
+	}
+}
+
+// noisyRun is a sandbox of its own whose named step fails with output: the
+// listing, the quiesce (partial, or another exit), the resume of the
+// stopped processes, the archive, or the restore. Signals never run.
+type noisyRun struct {
+	*podRun
+	step, output string
+}
+
+func (r *noisyRun) ProcessIsolated() bool { return true }
+
+func (r *noisyRun) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	cmd := strings.Join(argv, " ")
+	step := ""
+	switch {
+	case strings.Contains(cmd, "kill -STOP -1"):
+		step = "quiesce"
+	case strings.Contains(cmd, "kill "):
+		step = "resume"
+	case strings.Contains(cmd, "find "):
+		step = "list"
+	case strings.Contains(cmd, "-czf"):
+		step = "archive"
+	case strings.Contains(cmd, "-xzf"):
+		step = "restore"
+	}
+	if step == "" || !strings.HasPrefix(r.step, step) {
+		if strings.Contains(cmd, "kill ") {
+			return sandbox.ExecResult{}, nil
+		}
+		return r.podRun.Exec(ctx, argv, opts)
+	}
+	exit := 2
+	switch r.step {
+	case "quiesce partial":
+		exit = scratchQuiescePartial
+	case "restore":
+		exit = 1
+	}
+	if opts.Stderr != nil {
+		_, _ = io.WriteString(opts.Stderr, r.output)
+		return sandbox.ExecResult{ExitCode: exit}, nil
+	}
+	return sandbox.ExecResult{ExitCode: exit, Stderr: []byte(r.output)}, nil
+}
+
+// TestBankScratch_aLongProcessOutputIsBoundedToItsEnd: every process the
+// scratch bank runs in the sandbox — the listing, the quiesce, the resume of
+// the stopped processes, the archive, the restore — can fail with a long
+// output; what the bank records of it keeps its end, bounded.
+func TestBankScratch_aLongProcessOutputIsBoundedToItsEnd(t *testing.T) {
+	var out strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&out, "tar: scratch/pack-%02d.idx: Cannot open: Permission denied\n", i)
+	}
+	bounded := func(t *testing.T, got string) {
+		t.Helper()
+		if !strings.Contains(got, "pack-59.idx") || strings.Contains(got, "pack-00.idx") || len(got) > processOutputTailBytes+200 {
+			t.Fatalf("the record embeds the output whole or loses its end (%d bytes): %q", len(got), got)
+		}
+	}
+	for _, tc := range []struct {
+		step  string
+		field func(scratchBanked) string
+	}{
+		{"list", func(b scratchBanked) string { return b.reason }},
+		{"quiesce partial", func(b scratchBanked) string { return b.unquiesced }},
+		{"quiesce", func(b scratchBanked) string { return b.unquiesced }},
+		{"resume", func(b scratchBanked) string { return b.resumeFailed }},
+		{"archive", func(b scratchBanked) string { return b.reason }},
+	} {
+		t.Run(tc.step, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "state.db"), []byte("pages"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s := tmpStore(t)
+			ctx := context.Background()
+			const runID = "run-scratch-noisy"
+			if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+				t.Fatal(err)
+			}
+			run := &noisyRun{podRun: &podRun{scratch: dir}, step: tc.step, output: out.String()}
+			bounded(t, tc.field(bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), runID, scratchBankMaxBytes)))
+		})
+	}
+	t.Run("restore", func(t *testing.T) {
+		run := &noisyRun{podRun: &podRun{scratch: t.TempDir()}, step: "restore", output: out.String()}
+		err := restoreScratch(context.Background(), run, sandboxScratchContainerPath, strings.NewReader(""))
+		if err == nil || errors.Is(err, errSandboxRefusesBank) {
+			t.Fatalf("restore = %v, want the transport's failure", err)
+		}
+		bounded(t, err.Error())
+	})
 }

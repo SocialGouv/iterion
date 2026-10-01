@@ -316,7 +316,7 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 		return scratchBanked{unknown: true, retry: true, reason: "the scratch could not be listed: " + err.Error()}
 	}
 	if res.ExitCode != 0 {
-		return scratchBanked{unknown: true, retry: true, reason: fmt.Sprintf("listing the scratch exited %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))}
+		return scratchBanked{unknown: true, retry: true, reason: fmt.Sprintf("listing the scratch exited %d: %s", res.ExitCode, tailString(string(res.Stderr), processOutputTailBytes))}
 	}
 	if len(bytes.TrimSpace(res.Stdout)) == 0 {
 		if bs == nil {
@@ -351,9 +351,9 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 			unquiesced = "the sandbox's processes could not be stopped: " + err.Error()
 		case q.ExitCode == 0:
 		case q.ExitCode == scratchQuiescePartial:
-			unquiesced = "some of the sandbox's processes could not be stopped: " + strings.TrimSpace(string(q.Stderr))
+			unquiesced = "some of the sandbox's processes could not be stopped: " + tailString(string(q.Stderr), processOutputTailBytes)
 		default:
-			unquiesced = fmt.Sprintf("stopping the sandbox's processes exited %d: %s", q.ExitCode, strings.TrimSpace(string(q.Stderr)))
+			unquiesced = fmt.Sprintf("stopping the sandbox's processes exited %d: %s", q.ExitCode, tailString(string(q.Stderr), processOutputTailBytes))
 		}
 		if err != nil || q.ExitCode != scratchQuiesceRefused {
 			// Whatever the script got to before it ended, the processes it
@@ -369,7 +369,7 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 				case err != nil:
 					resumeFailed = "the stopped processes could not be resumed: " + err.Error()
 				case r.ExitCode != 0:
-					resumeFailed = fmt.Sprintf("resuming the stopped processes exited %d: %s", r.ExitCode, strings.TrimSpace(string(r.Stderr)))
+					resumeFailed = fmt.Sprintf("resuming the stopped processes exited %d: %s", r.ExitCode, tailString(string(r.Stderr), processOutputTailBytes))
 				}
 			})
 			defer resume()
@@ -444,7 +444,7 @@ func bankScratch(ctx context.Context, run sandbox.Run, dir string, bs store.Scra
 	case err != nil:
 		return scratchBanked{retry: true, reason: "the scratch could not be archived: " + err.Error()}
 	default:
-		return scratchBanked{retry: true, reason: fmt.Sprintf("tar exited %d archiving the scratch: %s", res.ExitCode, strings.TrimSpace(stderr.String()))}
+		return scratchBanked{retry: true, reason: fmt.Sprintf("tar exited %d archiving the scratch: %s", res.ExitCode, tailString(stderr.String(), processOutputTailBytes))}
 	}
 	// The upload is tried again on the same archive: the store's blip is
 	// not a reason to archive the scratch again.
@@ -1069,7 +1069,7 @@ func restoreScratch(ctx context.Context, run sandbox.Run, dir string, body io.Re
 	case 0:
 		return nil
 	case scratchRestoreRefused:
-		return fmt.Errorf("%w: %s", errSandboxRefusesBank, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%w: %s", errSandboxRefusesBank, tailString(stderr.String(), processOutputTailBytes))
 	}
-	return fmt.Errorf("the restore exited %d: %s", res.ExitCode, strings.TrimSpace(stderr.String()))
+	return fmt.Errorf("the restore exited %d: %s", res.ExitCode, tailString(stderr.String(), processOutputTailBytes))
 }

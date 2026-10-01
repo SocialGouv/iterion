@@ -2,10 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 	"unicode"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // rawControl reports the first rune of s, line by line, that a terminal would
@@ -98,5 +105,40 @@ func TestPrinter_relayedValuesAreInert(t *testing.T) {
 	printRemoteEvent(p, remoteEvent{Type: "run_failed", Timestamp: time.Unix(0, 0), Data: map[string]any{"message": "  ", "error": "the real cause"}})
 	if !strings.Contains(out.String(), "the real cause") {
 		t.Fatalf("a blank message hid the event's error: %q", out.String())
+	}
+}
+
+// TestRemoteRunsGet_aLongErrorKeepsItsRemedy: a run's error ends on its
+// remedy — a scratch refusal names the consent that clears it — after a
+// failure whose text embeds a process's output. `remote runs get` bounds the
+// line on the failure's text: the remedy is shown whole, and inert.
+func TestRemoteRunsGet_aLongErrorKeepsItsRemedy(t *testing.T) {
+	var failure strings.Builder
+	failure.WriteString("sandbox start: the sandbox's tar refuses the bank:")
+	for i := range 60 {
+		fmt.Fprintf(&failure, " tar: scratch/pack-%03d.idx: Cannot open: Permission denied\n", i)
+	}
+	runError := failure.String() + store.RunErrorHintSeparator + "relaunch the run fresh; or resume it accepting the scratch's loss (--accept-scratch-loss)\x1b[2J"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"run": map[string]any{"id": "r1", "status": "failed_resumable", "error": runError}})
+	}))
+	defer srv.Close()
+	var out bytes.Buffer
+	c := &RemoteClient{cfg: RemoteConfig{BaseURL: srv.URL, Token: "tok"}, http: srv.Client()}
+	if err := RemoteRunsGet(context.Background(), c, &Printer{W: &out}, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "Error:") {
+			line = l
+		}
+	}
+	remedy := "…" + store.RunErrorHintSeparator + `relaunch the run fresh; or resume it accepting the scratch's loss (--accept-scratch-loss)\x1b[2J`
+	if !strings.HasSuffix(line, remedy) || !strings.Contains(line, "pack-000") || strings.Contains(line, "pack-059") {
+		t.Fatalf("`runs get` does not clip the failure and show the remedy whole: ...%q", line[max(0, len(line)-300):])
+	}
+	if r, raw := rawControl(line); raw {
+		t.Fatalf("`runs get` sends %U raw to the terminal", r)
 	}
 }
