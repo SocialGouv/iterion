@@ -1,4 +1,4 @@
-# ADR-119 — One canonical instruction root, with its size gated
+# ADR-120 — One canonical instruction root, with its size gated
 
 - Status: accepted
 - Date: 2026-10-01
