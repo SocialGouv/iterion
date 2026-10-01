@@ -35,9 +35,19 @@ import (
 // spawn saw for the variables every spawn pins, each bracketed so an empty
 // value still shows: "bg=[1] mem=[1] bdef=[405000] bmax=[810000]", with
 // "<unset>" for an absent one.
+//
+// When $SETTINGS_LOG is set it also records, one line per spawn, the content
+// of the file its --settings flag names — the flag settings object as the CLI
+// reads it — or a "<no settings file: …>" marker.
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
 if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" >> "$ENV_LOG"; fi
+if [ -n "$SETTINGS_LOG" ]; then
+	settings=; prev=
+	for a in "$@"; do if [ "$prev" = --settings ]; then settings=$a; fi; prev=$a; done
+	if [ -n "$settings" ] && [ -f "$settings" ]; then tr '\n' ' ' < "$settings" >> "$SETTINGS_LOG"; else printf '<no settings file: %s>' "$settings" >> "$SETTINGS_LOG"; fi
+	printf '\n' >> "$SETTINGS_LOG"
+fi
 case "$*" in *--input-format*)
 	while read -r line; do
 		case "$line" in *'"type":"user"'*) break ;; esac
@@ -59,6 +69,20 @@ func spawnArgv(t *testing.T, task Task) []string {
 // variables the spawned process saw, keyed bg/mem/bdef/bmax.
 func spawnArgvEnv(t *testing.T, task Task) (argv []string, pinned []map[string]string) {
 	t.Helper()
+	rec := spawnRecorded(t, task)
+	return rec.argv, rec.pinned
+}
+
+// spawnRecord is what the stand-in CLI recorded for each spawn of one Execute,
+// in spawn order.
+type spawnRecord struct {
+	argv     []string
+	pinned   []map[string]string
+	settings []string // the content of the file --settings names
+}
+
+func spawnRecorded(t *testing.T, task Task) spawnRecord {
+	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "claude")
 	if err := os.WriteFile(script, []byte(fakeClaudeArgv), 0o755); err != nil {
@@ -68,6 +92,8 @@ func spawnArgvEnv(t *testing.T, task Task) (argv []string, pinned []map[string]s
 	t.Setenv("ARGV_LOG", log)
 	envLog := filepath.Join(dir, "env.log")
 	t.Setenv("ENV_LOG", envLog)
+	settingsLog := filepath.Join(dir, "settings.log")
+	t.Setenv("SETTINGS_LOG", settingsLog)
 
 	task.Command = script
 	task.WorkDir = dir
@@ -93,7 +119,8 @@ func spawnArgvEnv(t *testing.T, task Task) (argv []string, pinned []map[string]s
 		execErr, res.FormattingPassUsed, strings.Join(lines, "\n"))
 	mu.Unlock()
 
-	argv = readSpawnLog(t, log)
+	var rec spawnRecord
+	rec.argv = readSpawnLog(t, log)
 	for _, line := range readSpawnLog(t, envLog) {
 		vars := map[string]string{}
 		for _, field := range strings.Fields(line) {
@@ -101,12 +128,14 @@ func spawnArgvEnv(t *testing.T, task Task) (argv []string, pinned []map[string]s
 				vars[name] = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
 			}
 		}
-		pinned = append(pinned, vars)
+		rec.pinned = append(rec.pinned, vars)
 	}
-	if len(pinned) != len(argv) {
-		t.Fatalf("the stand-in recorded %d argv line(s) and %d env line(s)", len(argv), len(pinned))
+	rec.settings = readSpawnLog(t, settingsLog)
+	if len(rec.pinned) != len(rec.argv) || len(rec.settings) != len(rec.argv) {
+		t.Fatalf("the stand-in recorded %d argv line(s), %d env line(s) and %d settings line(s)",
+			len(rec.argv), len(rec.pinned), len(rec.settings))
 	}
-	return argv, pinned
+	return rec
 }
 
 func readSpawnLog(t *testing.T, path string) []string {

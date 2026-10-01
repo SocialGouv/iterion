@@ -456,13 +456,17 @@ func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID
 // closure-capturing hooks — stderr/ask_user/secret/board/inbox — stay in
 // Execute).
 //
-// The second return value is non-nil only for sandboxed tasks: a
-// best-effort cleanup that terminates the in-container claude process
-// recorded by the command wrapper (native:221edac8). Execute must defer
-// it so aborted sessions cannot leak the subprocess.
+// The second return value is the spawn's cleanup, never nil: it removes the
+// flag settings file the spawn reads (claudeSettingsFiles on the host, its
+// in-container copy in a sandbox) and, for a sandboxed task, terminates the
+// in-container claude process recorded by the command wrapper
+// (native:221edac8). Execute must defer it so aborted sessions leak neither.
 func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option, func()) {
 	var opts []claudesdk.Option
-	var sandboxCleanup func()
+	var cleanup func()
+	// The flag settings object perTaskSpawnOpts hands the spawn below. The
+	// builder finds it on argv and moves it, routing pin added, into a file.
+	_, flagSettings := claudeSpawnPins(task)
 
 	// Route the SDK's internal error diagnostics (control-protocol
 	// delivery failures and the like) to the backend logger.
@@ -571,7 +575,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		// wrapper writes its PID to a pidfile then exec's claude (same
 		// PID, same fds); Execute defers killSandboxDelegate.
 		mark := sandboxDelegateMark(task)
-		sandboxCleanup = killSandboxDelegate(run, mark, b.Logger)
+		cleanup = killSandboxDelegate(run, mark, b.Logger, sandboxSettingsFile(mark))
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			// Surface the resolved CLI invocation so failures like
@@ -581,25 +585,34 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 			// methods are nil-safe — no guard needed.)
 			b.Logger.Info("claude-code: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
+			// The routing pin is computed inside the container, from the
+			// environment the CLI runs with (claudeSandboxArgv).
+			argv, err := claudeSandboxArgv(mark, path, args, flagSettings)
+			if err != nil {
+				return claudeFailedCmd(ctx, path, err)
+			}
 			// KeepStdinOpen mirrors the SDK's OpenStdin flag so the docker
 			// driver adds `--interactive` to docker exec. Without this,
 			// Session-mode (NDJSON over stdin) silently fails: the SDK
 			// later wires cmd.StdinPipe() but docker has already closed
 			// stdin on the child, claude reads EOF, and exits 0 with no
 			// output — matching the cli_exit_code=0 silent-failure path.
-			return run.Command(ctx, wrapSandboxDelegateArgv(mark, append([]string{path}, args...)), sandbox.ExecOpts{
+			return run.Command(ctx, wrapSandboxDelegateArgv(mark, argv), sandbox.ExecOpts{
 				WorkDir:       cwd,
 				Env:           env,
 				KeepStdinOpen: openStdin,
 			})
 		}))
 	} else {
-		// Host path: install a builder solely to (a) surface the resolved
-		// claude invocation — the default spawn is opaque, so a silent
+		// Host path: install a builder to (a) surface the resolved claude
+		// invocation — the default spawn is opaque, so a silent
 		// "0 tokens / formatting-pass-fallback" structured-output failure can't
-		// be traced to the concrete command + per-task env overrides — and
-		// (b) keep the env identical to the SDK default (os.Environ() + the
-		// per-task entries via hostSpawnEnv), so this is behaviour-neutral.
+		// be traced to the concrete command + per-task env overrides — (b) keep
+		// the env identical to the SDK default (os.Environ() + the per-task
+		// entries via hostSpawnEnv), and (c) pin the routing variables at the
+		// values that env holds (claudeSettingsFiles.pinHost).
+		files := &claudeSettingsFiles{}
+		cleanup = func() { files.remove(b.Logger) }
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			keys := make([]string, 0, len(env))
@@ -607,13 +620,14 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
-			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
-				redactedArgvPreview(path, args), cwd, openStdin, keys)
 			cmd := exec.CommandContext(ctx, path, args...)
 			if cwd != "" {
 				cmd.Dir = cwd
 			}
 			cmd.Env = hostSpawnEnv(env)
+			files.pinHost(cmd, flagSettings)
+			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
+				redactedArgvPreview(path, cmd.Args[1:]), cwd, openStdin, keys)
 			return cmd
 		}))
 	}
@@ -627,7 +641,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 			task.NodeID, task.Iteration, key)
 	}
 
-	return opts, sandboxCleanup
+	return opts, cleanup
 }
 
 // claudeCodeThinkingDisplay resolves the --thinking-display value passed
@@ -690,13 +704,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		})
 	}()
 
-	opts, sandboxCleanup := b.buildTransportOptions(task)
-	// Terminate the in-container claude on every exit path — clean,
-	// aborted, or panicking. Idempotent: after a clean CLI exit the
-	// recorded PID is gone and the kill script no-ops (native:221edac8).
-	if sandboxCleanup != nil {
-		defer sandboxCleanup()
-	}
+	opts, spawnCleanup := b.buildTransportOptions(task)
+	// Remove the flag settings file and terminate the in-container claude on
+	// every exit path — clean, aborted, or panicking. Idempotent: after a
+	// clean CLI exit the recorded PID is gone and the kill script no-ops
+	// (native:221edac8).
+	defer spawnCleanup()
 	// Allowed-tools registration is deferred to a single call near the end
 	// of this function. WithAllowedTools APPENDS to the SDK's slice, so
 	// registering the base set here and again below (combined with MCP
@@ -1815,16 +1828,30 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		}
 	}
 
+	// The flag settings object perTaskSpawnOpts hands the spawn below. The
+	// builder finds it on argv and moves it, routing pin added, into a file.
+	_, flagSettings := claudeSpawnPins(task)
 	if task.Sandbox != nil {
 		// When sandboxed, route the CLI subprocess through the sandbox driver so
 		// it resumes the session inside the container (where the session file
 		// lives) rather than spawning a host claude that can't see it.
 		run := task.Sandbox
+		// The settings file this spawn writes in the container stays until
+		// the run's sandbox is torn down: it holds the static pins and values
+		// of the container's own environment, nothing a process there cannot
+		// already read, and removing it would cost an exec per pass.
+		mark := sandboxDelegateMark(task) + "-fmt"
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
-			cmd := run.Command(ctx, append([]string{path}, args...), sandbox.ExecOpts{
+			// The routing pin is computed inside the container, from the
+			// environment the CLI runs with (claudeSandboxArgv).
+			argv, err := claudeSandboxArgv(mark, path, args, flagSettings)
+			if err != nil {
+				return claudeFailedCmd(ctx, path, err)
+			}
+			cmd := run.Command(ctx, argv, sandbox.ExecOpts{
 				WorkDir:       cwd,
 				Env:           env,
 				KeepStdinOpen: openStdin,
@@ -1834,11 +1861,14 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		}))
 	} else {
 		// Host-side fallback: the SDK normally constructs its own
-		// exec.CommandContext, so we install a builder solely to capture
-		// the cmd reference. exec.CommandContext kills the subprocess
-		// when ctx fires; the explicit Kill() in killAll is the
+		// exec.CommandContext, so we install a builder to capture the cmd
+		// reference and to pin the routing variables at the values its env
+		// holds (claudeSettingsFiles.pinHost). exec.CommandContext kills the
+		// subprocess when ctx fires; the explicit Kill() in killAll is the
 		// belt-and-braces hedge for the case where ctx propagation is
 		// what's stuck.
+		files := &claudeSettingsFiles{}
+		defer files.remove(b.Logger)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			cmd := exec.CommandContext(ctx, path, args...)
@@ -1851,6 +1881,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			// inherited env (CLAUDE_CODE_EFFORT_LEVEL is always present, so the
 			// strip always fired). Per-task entries stay last so they still win.
 			cmd.Env = hostSpawnEnv(env)
+			files.pinHost(cmd, flagSettings)
 			captureCmd(cmd)
 			return cmd
 		}))

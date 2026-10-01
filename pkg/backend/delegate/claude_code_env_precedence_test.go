@@ -104,7 +104,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 					if formatting {
 						_, _, err = b.formatOutput(ctx, task, "env-test")
 					} else {
-						opts, _ := b.buildTransportOptions(task)
+						opts, cleanup := b.buildTransportOptions(task)
+						defer cleanup()
 						opts, fingerprint, _, err = b.setupCredsAndSession(ctx, task, opts)
 						if err == nil {
 							_, err = claudesdk.Prompt(ctx, "record env", opts...)
