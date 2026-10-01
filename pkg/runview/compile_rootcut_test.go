@@ -1,10 +1,13 @@
 package runview
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
 // brokenUnit writes a bot in two files — main.bot importing lib/nodes.bot —
@@ -24,6 +27,29 @@ func brokenUnit(t *testing.T, fragment string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// TestRelLaunchErrorNamesTheRefusedRootCut: a unit rooted at the filesystem
+// root gets no root cut (#2047), and the launch path serves error TEXTS —
+// never the diagnostics list the E048 warning rides — so relLaunchError
+// names the refusal in the body that keeps the absolute names, with the
+// refusal's chain intact.
+func TestRelLaunchErrorNamesTheRefusedRootCut(t *testing.T) {
+	u := &unit.Unit{Root: "/", Main: "main.bot"}
+	sentinel := errors.New("parse error: /main.bot:2:3: error [E002]: expected ] to close the list")
+	err := relLaunchError("", "", u, sentinel)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("the refusal's chain was broken: %v", err)
+	}
+	if !strings.Contains(err.Error(), "/main.bot") {
+		t.Errorf("the name the cut cannot rewrite is gone: %v", err)
+	}
+	if !strings.Contains(err.Error(), "filesystem root") {
+		t.Errorf("the refused cut is not named: %v", err)
+	}
+	if got := relLaunchError("", "", u, nil); got != nil {
+		t.Errorf("a clean launch carries no note: %v", got)
+	}
 }
 
 // TestCompileForLaunchNamesABrokenFragmentWithoutTheHostRoot: the compile

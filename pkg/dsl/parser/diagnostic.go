@@ -47,6 +47,7 @@ const (
 	DiagBadImportPath    DiagCode = "E045" // an import path that is not a quoted, relative, slash-separated `.bot` path into lib/
 	DiagImportUnreadable DiagCode = "E046" // an imported fragment that cannot be read: missing, or beyond what the unit may read
 	DiagImportCycle      DiagCode = "E047" // a fragment that imports itself, through however many files
+	DiagFilesystemRoot   DiagCode = "E048" // the unit's root is the filesystem's own root: the client-boundary root cut is refused, not trusted
 
 	// Author-document errors (the YAML twin of a .bot, pkg/dsl/author)
 	DiagAuthorDocument      DiagCode = "E050" // the YAML document itself is refused: not exactly one document, an anchor, an alias, a merge key or an explicit tag, a duplicate or non-string key, too deep or too large
@@ -85,6 +86,7 @@ var hints = map[DiagCode]string{
 	DiagBadImportPath:       "Write `import \"lib/<name>.bot\"`: a quoted, relative, slash-separated path to a `.bot` fragment under the bot's `lib/` directory, one import per line.",
 	DiagImportUnreadable:    "Create the fragment under the bot's `lib/` directory, or fix the path; a symlink, an absolute path or a path leaving the bot's directory is never read.",
 	DiagImportCycle:         "A fragment may not import a file that imports it back: move the shared declarations into a third fragment both import.",
+	DiagFilesystemRoot:      "Load the bot from a directory, not the filesystem root: a unit rooted at `/` puts the whole filesystem inside the unit, and no name cut is safe there.",
 	DiagAuthorDocument:      "Write one plain YAML document: no `---` document separator, no anchor (`&a`) or alias (`*a`), no `<<` merge key, no explicit `!!tag`, every key once per mapping and written as a plain word.",
 	DiagAuthorValue:         "Give the value the shape the property's form takes (docs/references/author-schema.md, § Values): a string, an integer as digits, `true`/`false`, a list as `[a, b]`, a block as an indented mapping. A number is written as the .bot writes one — digits, no leading 0, no exponent, no `.inf`, no sign where a number is taken (where the value is always text — a `with` value, a parameter — its `-` is its own) — and a text YAML would read as a number or a bool is quoted.",
 	DiagAuthorHeader:        "Add `dsl: 2` (or `dsl: 1`) at the top of the document: the syntax profile the .bot is written in. The author document never guesses one.",
