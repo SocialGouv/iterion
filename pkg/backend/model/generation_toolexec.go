@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
 )
 
@@ -252,7 +253,13 @@ func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, 
 
 	execInput := json.RawMessage(tu.PartialJSON)
 	if materialize != nil {
-		execInput = json.RawMessage(materialize(tu.PartialJSON))
+		// In the string values, never the text: a secret carrying a quote
+		// must not rewrite the input around it.
+		materialized, merr := secretguard.MaterializeJSON(execInput, materialize)
+		if merr != nil {
+			return "", merr
+		}
+		execInput = materialized
 	}
 	start := time.Now()
 	output, err := gt.Execute(ctx, execInput)

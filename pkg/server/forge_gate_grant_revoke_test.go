@@ -210,7 +210,7 @@ func TestTheShareAndTheCutBackAreExclusive(t *testing.T) {
 					t.Error("a cut-back grant was marked shared")
 				}
 				s.cfg.PublicURL = "https://iterion.test"
-				_, err = s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr",
+				_, _, err = s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr",
 					map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-gate"}, nil, store.RunTrustDefault)
 				if !errors.Is(err, errForgePublishGrantUnavailable) {
 					t.Errorf("a launch pinning a cut-back grant was accepted (err=%v) — its verdict would be unpostable after the grace", err)
@@ -553,7 +553,7 @@ func TestTheReaperKeepsASharedGrantForItsOtherRun(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
 			s, _ := gateReconcileFixture(t, gatingInputs(), gc)
-			if _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr",
+			if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr",
 				map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-gate"}, nil, store.RunTrustDefault); err != nil {
 				t.Fatalf("pinned launch: %v", err)
 			}
@@ -589,7 +589,7 @@ func TestAGrantTheReaperRetiredCannotBeShared(t *testing.T) {
 	if g := mustGrant(t, s, "tok-plain"); !g.CutBack || time.Until(g.ExpiresAt) > s.postRunGrace()+time.Minute {
 		t.Fatalf("the reaper left the ordinary grant %+v living %s, want it cut back to %s", g, time.Until(g.ExpiresAt).Round(time.Minute), s.postRunGrace())
 	}
-	_, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr",
+	_, _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr",
 		map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-plain"}, nil, store.RunTrustDefault)
 	if !errors.Is(err, errForgePublishGrantUnavailable) {
 		t.Errorf("a launch pinning a grant the reaper retired was accepted (err=%v)", err)

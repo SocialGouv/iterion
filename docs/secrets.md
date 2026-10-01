@@ -40,6 +40,13 @@ sink, before persistence:
   `node_finished` output via the engine's `SecretScrubber`),
 - run.log block bodies, tool sidecar blobs, turn-snapshot conversations.
 
+Values iterion only scrubs — the run's provider keys, the process's own
+secret-named environment, and credentials a server mints for a run (the forge
+publish grant) — are **redact-only**: their placeholder resolves nowhere, so
+no agent, command or egress request can turn it back into the value, and it is
+passed through unchanged. Only the secrets a workflow declares (Layer 1)
+materialize.
+
 **Deliberately NOT redacted:** persisted **artifacts** and the resume
 **checkpoint**. These are load-bearing — they feed `{{outputs.X}}` /
 `{{artifacts.X}}` and are re-read on resume; redacting them would corrupt

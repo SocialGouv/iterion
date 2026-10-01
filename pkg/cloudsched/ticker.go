@@ -2,6 +2,7 @@ package cloudsched
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -82,6 +83,13 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 				if t.Audit != nil {
 					t.Audit(rec)
 				}
+				// A guard that could not RUN stops the schedule producing
+				// runs, which its operator reads on the schedule itself
+				// (last_error), not in the audit trail. A guard that ran and
+				// said "nothing to do" is the schedule working: it raises
+				// nothing. Either way the verdict replaces the previous one,
+				// so a schedule that recovers is no longer marked unhealthy.
+				t.recordGateVerdict(ctx, sb, rec, now)
 				t.warn("gate skipped %s (%s): %s", sb.ID, sb.BotID, rec.Reason)
 				continue
 			}
@@ -118,6 +126,30 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 	return fired, nil
 }
 
+// recordGateVerdict persists on the schedule's own health field what the gate
+// decided: a guard that failed to EXECUTE — refused by the deployment, or
+// unable to spawn — produces no run and no launch verdict, so without this
+// the schedule reads as healthy while nothing fires; and a guard that ran
+// clears it again. A skipped overlap says nothing: the schedule is busy, not
+// unhealthy.
+func (t *Ticker) recordGateVerdict(ctx context.Context, sb ScheduledBot, rec schedgate.TickRecord, now time.Time) {
+	switch rec.Decision {
+	case schedgate.TickGuardError:
+		msg := strings.TrimSpace(rec.Reason)
+		if msg == "" {
+			msg = string(rec.Decision)
+		}
+		t.markLaunchError(ctx, sb, msg, now)
+	case schedgate.TickGuardBlocked:
+		// The guard RAN and said "nothing to do": the schedule is working,
+		// whatever the previous verdict was — a refused guard, a launch the
+		// org gate denied. The history stays in the audit trail; this field
+		// answers "is it working now?", and a stale error here reads as a
+		// schedule that stopped, which is the opposite of what happened.
+		t.markLaunchError(ctx, sb, "", now)
+	}
+}
+
 // recordLaunchVerdict persists on the schedule itself what became of the tick
 // that just consumed its slot: a refusal — an org launch-gate denial above all
 // — raises last_error, and the next tick that launches clears it. Written only
@@ -129,11 +161,19 @@ func (t *Ticker) recordLaunchVerdict(ctx context.Context, sb ScheduledBot, launc
 	if launchErr != nil {
 		msg = launchErr.Error()
 	}
+	t.markLaunchError(ctx, sb, msg, now)
+}
+
+// markLaunchError writes msg as the schedule's health, only when it CHANGES:
+// a schedule refused for a week costs one write, not one per minute. A failed
+// write is logged, never fatal — the slot is already consumed and the audit
+// row still carries the reason.
+func (t *Ticker) markLaunchError(ctx context.Context, sb ScheduledBot, msg string, now time.Time) {
 	if msg == sb.LastError {
 		return
 	}
 	if err := t.Store.MarkLaunchError(ctx, sb.ID, msg, now); err != nil {
-		t.warn("recording the launch verdict of %s: %v", sb.ID, err)
+		t.warn("recording the verdict of %s: %v", sb.ID, err)
 	}
 }
 

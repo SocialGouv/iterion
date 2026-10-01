@@ -146,6 +146,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// and nothing starts an MCP server before that point.
 			SandboxTiersKnown: false,
 			RunID:             childRunID,
+			ParentRunID:       req.ParentRunID,
 			Logger:            runLogger,
 			StoreDir:          s.storeDir,
 			Inbox:             s.inboxBinder(),

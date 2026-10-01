@@ -50,8 +50,9 @@ func (o BudgetOverrides) IsZero() bool {
 // duration (which would look like the override had no effect).
 func (o BudgetOverrides) Validate() error {
 	if o.MaxDuration != "" {
-		if _, err := time.ParseDuration(ExpandEnvWithDefault(o.MaxDuration)); err != nil {
-			return fmt.Errorf("max_duration %q: %w (use a Go duration like 30m, 2h, 90m)", o.MaxDuration, err)
+		expanded := ExpandEnvWithDefault(o.MaxDuration)
+		if _, err := time.ParseDuration(expanded); err != nil {
+			return fmt.Errorf("max_duration %q: %s (use a Go duration like 30m, 2h, 90m)", o.MaxDuration, DurationParseReason(o.MaxDuration, expanded, err))
 		}
 	}
 	return nil

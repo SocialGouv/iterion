@@ -33,6 +33,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -490,6 +491,70 @@ func withoutSegment(name, seg string) string {
 
 // botVarNameOK is the name gate: ITERION_-prefixed upper snake case, no
 // credential-shaped words, no infra namespace.
+// EnvCloudEnvPassthrough lists, comma-separated, the credential-shaped names
+// workflow text may still read from a cloud process's environment.
+const EnvCloudEnvPassthrough = "ITERION_CLOUD_ENV_PASSTHROUGH"
+
+// CloudProcessEnvPolicy is the process-env policy of a cloud server or runner
+// (ir.SetProcessEnvPolicy): workflow text — a `${NAME}` in a .bot, a launch
+// value, a tool command — reads no credential-shaped name from the process
+// environment, which holds the platform's credentials, not the tenant's. The
+// names ITERION_CLOUD_ENV_PASSTHROUGH lists are the explicit escape hatch of a
+// deployment whose tenants are its operators. Read once, at boot.
+func CloudProcessEnvPolicy() func(name string) bool {
+	pass := map[string]bool{}
+	for _, n := range strings.Split(os.Getenv(EnvCloudEnvPassthrough), ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			pass[n] = true
+		}
+	}
+	return func(name string) bool {
+		if pass[name] {
+			return true
+		}
+		// The scrub (config.ScrubPlatformSecrets) is what removes these from
+		// the process; refusing them here too means a future entry point that
+		// installs the policy and forgets the scrub still refuses them, and
+		// the names whose SHAPE says nothing — a connection URL carrying its
+		// own credentials — are covered by the list that knows them.
+		return !platformSecretName[name] && !CredentialShapedName(name)
+	}
+}
+
+// platformSecretName indexes config.PlatformSecretEnv.
+var platformSecretName = func() map[string]bool {
+	m := make(map[string]bool, len(config.PlatformSecretEnv))
+	for _, n := range config.PlatformSecretEnv {
+		m[n] = true
+	}
+	return m
+}()
+
+// CredentialShapedName reports whether an environment variable name reads as a
+// credential: whatever the engine redacts as secret (store.IsSecretEnvName:
+// TOKEN, KEY, SECRET, PASSWORD, CREDENTIAL, AUTH anywhere — read without an
+// AUTHOR segment, a shipped bot's knob), a PRIVATE part, or a credential word
+// too short or too common to match inside a name (PAT in PATH) as a whole
+// segment. A webhook URL carries its own bearer, a header block carries
+// whatever authenticates the call it rides on, and a proxy URL carries its own
+// userinfo. Case-insensitive.
+func CredentialShapedName(name string) bool {
+	name = strings.ToUpper(name)
+	if store.IsSecretEnvName(withoutSegment(name, "AUTHOR")) || strings.Contains(name, "PRIVATE") {
+		return true
+	}
+	for _, segment := range strings.Split(name, "_") {
+		switch segment {
+		case "PAT", "PATS", "BEARER", "BEARERS", "PASS", "PASSWD", "PASSPHRASE", "PASSCODE",
+			"PASSFILE", "USERPASS", "HTPASSWD", "PW", "PWD", "CRED", "CREDS", "COOKIE", "COOKIES",
+			"JWT", "JWTS", "PEM", "PEMS", "NETRC", "OTP", "OTPS", "TOTP", "HOTP", "HMAC", "HMACS",
+			"SIGNATURE", "SESSIONID", "DSN", "WEBHOOK", "HEADER", "HEADERS", "PROXY":
+			return true
+		}
+	}
+	return false
+}
+
 func botVarNameOK(name string) bool {
 	if !strings.HasPrefix(name, "ITERION_") || len(name) <= len("ITERION_") {
 		return false
@@ -499,23 +564,8 @@ func botVarNameOK(name string) bool {
 			return false
 		}
 	}
-	// Whatever the engine redacts as secret (store.IsSecretEnvName: TOKEN,
-	// KEY, SECRET, PASSWORD, CREDENTIAL, AUTH anywhere) is no bot var — one
-	// definition, read without an AUTHOR segment, a shipped bot's knob.
-	if store.IsSecretEnvName(withoutSegment(name, "AUTHOR")) || strings.Contains(name, "PRIVATE") {
+	if CredentialShapedName(name) {
 		return false
-	}
-	// Credential words too short, or too common, to match inside a name
-	// (PAT in PATH): matched as whole segments. A webhook URL carries its
-	// own bearer.
-	for _, segment := range strings.Split(name, "_") {
-		switch segment {
-		case "PAT", "PATS", "BEARER", "BEARERS", "PASS", "PASSWD", "PASSPHRASE", "PASSCODE",
-			"PASSFILE", "USERPASS", "HTPASSWD", "PW", "PWD", "CRED", "CREDS", "COOKIE", "COOKIES",
-			"JWT", "JWTS", "PEM", "PEMS", "NETRC", "OTP", "OTPS", "TOTP", "HOTP", "HMAC", "HMACS",
-			"SIGNATURE", "SESSIONID", "DSN", "WEBHOOK":
-			return false
-		}
 	}
 	if botVarsInfraExact[name] {
 		return false

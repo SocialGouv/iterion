@@ -209,6 +209,32 @@ default and warns in the server log, naming the variable:
 | `ITERION_GATE_SWEEP_INTERVAL` | Time between two passes (Go duration). The sweeper's lease is paced by it, capped at the default: its TTL is three intervals, three minutes at most, so a long interval does not delay the failover. A new term's first pass runs at once. | `1m` |
 | `ITERION_GATE_SWEEP_LOOKBACK` | How far back an ordinary pass reaches (Go duration). The ordinary publish grant outlives it by 30 minutes. | `1h` |
 | `ITERION_GATE_SWEEP_DEEP_EVERY` | Passes between two deep ones, which reach the whole 8-day horizon. | `30` |
+## Platform environment isolation (cloud)
+
+A cloud server or runner keeps its own credentials out of what the workflows
+it executes can read. Once booted, it removes them from its process
+environment — `ITERION_SECRETS_KEY`, `ITERION_JWT_SECRET`, the Mongo, NATS,
+Redis and S3 credentials, the SMTP password, the forge GitHub App key and
+client secret, the OIDC client secrets, the VAPID private key, the bootstrap
+admin password, the completion webhook secret, the alerts webhook URL, the
+SMTP username, the bootstrap admin address, the error-tracker DSN and the OTLP
+header blocks — and marks itself non-dumpable, so a child process cannot read
+its boot environment from `/proc` either. The tracker and the OTLP exporter
+read their configuration while booting, well before the scrub. Provider keys
+stay: runs spend them.
+
+Workflow text — a `${NAME}` in a `.bot`, a launch value, a tool command, a
+node's `backend:`/`model:`/`provider:` — reads no credential-shaped name from
+a cloud process's environment (the definition the bot-vars settings use:
+TOKEN, KEY, SECRET, PASSWORD, CREDENTIAL, AUTH, PRIVATE, a `HEADER(S)` or
+`PROXY` segment and the like), nor any name the scrub removes: in the DSL such
+a reference reads as unset, and a tool command's `${NAME}` is left as written,
+for the command's own shell. Local runs are unaffected.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_CLOUD_ENV_PASSTHROUGH` | Comma-separated credential-shaped names that workflow text may still read from a cloud process's environment — for a deployment whose teams are its operators. | unset |
+| `ITERION_CLOUD_SCHEDULE_GUARDS` | `allow` lets a cloud schedule or trigger carry a `guard:`, which the server runs as a shell command in its own pod. Otherwise the field is refused at write (422) and a guard stored earlier does not run: its tick is recorded `guard_error` and the reason is raised on the schedule's own `last_error`. | unset |
 
 ## See also
 

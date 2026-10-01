@@ -240,6 +240,19 @@ launch, in the entry's `workdir`, with `ITERION_SCHEDULE` /
   audit — deliberately distinct from `guard_blocked`, so "the guard
   said no" never masks "the guard is broken".
 
+On a **cloud** deployment the guard would run in the server pod, on behalf of
+whoever manages the team's schedules: a cloud server refuses `guard:` (422)
+unless the deployment sets `ITERION_CLOUD_SCHEDULE_GUARDS=allow`, and a guard
+stored before does not run — its tick is recorded `guard_error`, with the
+reason, and that reason is raised on the schedule's own `last_error`, so a
+schedule that stopped producing runs says why where its operator reads it
+(`iterion remote schedules list`) rather than only in the audit trail; a later
+tick whose guard actually runs clears it again. The same refusal covers a
+trigger subscription's `guard:` — in both cases it is about a guard the
+request *sets*, so a stored one stays editable and the trigger can be
+disabled. See
+[environment-variables.md](environment-variables.md#platform-environment-isolation-cloud).
+
 Example — only run the fixer when ready-labeled issues exist, and pass
 them in:
 

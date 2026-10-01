@@ -3012,7 +3012,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		Workflow: wf,
 		Vars:     vars,
 		Store:    usage,
-		RunID:    msg.RunID,
+		// usage wraps the run store and loads no records: a resume message
+		// carries no launch vars, and the guard reads the grant from here.
+		Runs:        r.cfg.Store,
+		RunID:       msg.RunID,
+		ParentRunID: msg.ParentRunID,
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
 		// this seam — the declared-supervisor hub rides it.
 		EventObservers: hookObservers,

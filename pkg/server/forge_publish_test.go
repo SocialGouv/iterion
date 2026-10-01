@@ -243,7 +243,7 @@ func TestInjectForgePublishVars(t *testing.T) {
 
 	// No pr_url → untouched.
 	vars := map[string]string{"base_ref": "main"}
-	out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustDefault)
+	out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("no pr_url: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestInjectForgePublishVars(t *testing.T) {
 
 	// pr_url on the connection's host → grant minted + vars injected.
 	vars = map[string]string{"pr_url": "https://github.com/o/r/pull/42"}
-	out, err = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustDefault)
+	out, _, err = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestInjectForgePublishVars(t *testing.T) {
 	}
 
 	// Another team without a matching connection → untouched.
-	out, err = s.injectForgePublishVars(context.Background(), "team2", "", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42"}, nil, store.RunTrustDefault)
+	out, _, err = s.injectForgePublishVars(context.Background(), "team2", "", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42"}, nil, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("no matching team connection: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestInjectForgePublishVars(t *testing.T) {
 	}
 
 	// A PR on a host no connection covers → untouched.
-	out, err = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", map[string]string{"pr_url": "https://gitlab.example/g/p/-/merge_requests/1"}, nil, store.RunTrustDefault)
+	out, _, err = s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", map[string]string{"pr_url": "https://gitlab.example/g/p/-/merge_requests/1"}, nil, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("host mismatch: %v", err)
 	}

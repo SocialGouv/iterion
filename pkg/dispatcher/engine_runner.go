@@ -316,9 +316,12 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		SandboxTiersKnown: true,
 		Inbox:             &model.StoreInboxBinder{Store: s},
 		RunID:             spec.RunID,
-		Logger:            runLogger,
-		StoreDir:          spec.StoreDir,
-		WorkDir:           spec.WorkspacePath,
+		// The run's record does not exist yet when its executor is built, so
+		// a credential the dispatch carries is known here only from the vars.
+		Vars:     stringifyVars(spec.Vars),
+		Logger:   runLogger,
+		StoreDir: spec.StoreDir,
+		WorkDir:  spec.WorkspacePath,
 		// The dispatcher runs a bot per ticket, so it has a real identity to
 		// key bot-scoped memory on. Empty for a standalone `.bot`, where the
 		// executor falls back to the workflow name — the same rule every other

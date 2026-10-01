@@ -2,14 +2,15 @@ package delegate
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
@@ -362,25 +363,24 @@ func installMaterializeSecretsHook(task Task, opts []claudesdk.Option) []claudes
 		return opts
 	}
 	return append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
-		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
-			if len(in.ToolInput) == 0 {
-				return claudesdk.HookOutput{}, nil
-			}
-			raw, err := json.Marshal(in.ToolInput)
-			if err != nil {
-				return claudesdk.HookOutput{}, nil
-			}
-			swapped := materialize(string(raw))
-			if swapped == string(raw) {
-				return claudesdk.HookOutput{}, nil // no placeholder present
-			}
-			var updated map[string]any
-			if err := json.Unmarshal([]byte(swapped), &updated); err != nil {
-				return claudesdk.HookOutput{}, nil
-			}
-			return claudesdk.HookOutput{Decision: "allow", UpdatedInput: updated}, nil
-		},
+		Handler: materializeToolInput(materialize),
 	}))
+}
+
+// materializeToolInput is the PreToolUse handler of installMaterializeSecretsHook.
+// It materializes in the input's string values, never in its JSON text: a
+// secret carrying a quote must not rewrite the input around it.
+func materializeToolInput(materialize func(string) string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+	return func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+		if len(in.ToolInput) == 0 {
+			return claudesdk.HookOutput{}, nil
+		}
+		updated, _ := secretguard.MaterializeValue(in.ToolInput, materialize).(map[string]any)
+		if reflect.DeepEqual(updated, in.ToolInput) {
+			return claudesdk.HookOutput{}, nil // no placeholder present
+		}
+		return claudesdk.HookOutput{Decision: "allow", UpdatedInput: updated}, nil
+	}
 }
 
 // installRewriteHook adds a PreToolUse hook on the Bash tool that rewrites

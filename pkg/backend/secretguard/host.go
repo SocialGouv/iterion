@@ -13,7 +13,7 @@ func (g *Guard) MaterializeForHost(s, host string) string {
 	}
 	host = canonicalHostname(host)
 	for _, sec := range g.secrets {
-		if !hostAllowed(sec.Hosts, host) {
+		if sec.RedactOnly || !hostAllowed(sec.Hosts, host) {
 			continue
 		}
 		if strings.Contains(s, sec.Placeholder) {
@@ -41,11 +41,11 @@ func (g *Guard) ExfiltratesTo(s, host string) bool {
 		return false
 	}
 	host = canonicalHostname(host)
-	for _, sec := range g.secrets {
+	for i, sec := range g.secrets {
 		if hostAllowed(sec.Hosts, host) {
 			continue // this destination is approved for this secret
 		}
-		for _, enc := range g.encodingsByName[sec.Name] {
+		for _, enc := range g.encodings[i] {
 			if strings.Contains(s, enc) {
 				return true
 			}

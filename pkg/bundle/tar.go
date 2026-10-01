@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/safepath"
 )
 
 // defaultMaxBundleBytes is the upper bound on the total uncompressed
@@ -215,17 +217,8 @@ func (lim *extractLimits) writeFile(name string, mode os.FileMode, declaredSize 
 // guardName checks an archive entry name for the simple bans (absolute
 // paths, "..", non-portable separators) before any filesystem operation.
 func guardName(name string) error {
-	clean := filepath.ToSlash(filepath.Clean(name))
-	if clean == "" || clean == "." {
-		return nil
-	}
-	if strings.HasPrefix(clean, "/") {
-		return fmt.Errorf("bundle: absolute path not allowed: %s", name)
-	}
-	for _, part := range strings.Split(clean, "/") {
-		if part == ".." {
-			return fmt.Errorf("bundle: path traversal not allowed: %s", name)
-		}
+	if err := safepath.GuardName(name); err != nil {
+		return fmt.Errorf("bundle: %w", err)
 	}
 	return nil
 }
@@ -280,69 +273,16 @@ func collectContentHash(dir string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// safeJoin joins root and rel, then verifies the result stays under
-// root. Defends against symlink-free traversal: an entry named
-// `./foo/../../etc/passwd` would clean to `../etc/passwd` and escape
-// even without symlinks.
-//
-// Also walks every existing component of the resolved path and
-// rejects the entry if any intermediate component is a symlink that
-// resolves outside root. Without that check a pre-existing
-// `dest/foo → /etc` lets an entry `foo/bar.txt` land outside root
-// even though the lexical join stays inside (the OS follows the
-// symlink at open time).
+// safeJoin joins root and rel and verifies the result stays under root —
+// lexically, and through every existing component of the path. The shared
+// rules live in internal/safepath: a bundle and a sandbox export read names
+// chosen by someone else, and one copy of that reasoning is enough.
 func safeJoin(root, rel string) (string, error) {
-	joined := filepath.Join(root, filepath.FromSlash(rel))
-	abs, err := filepath.Abs(joined)
+	abs, err := safepath.Join(root, rel)
 	if err != nil {
-		return "", fmt.Errorf("bundle: resolve %s: %w", rel, err)
-	}
-	if abs != root && !strings.HasPrefix(abs, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("bundle: entry escapes bundle root: %s", rel)
-	}
-	if err := assertNoEscapingSymlink(root, abs); err != nil {
-		return "", err
+		return "", fmt.Errorf("bundle: %w", err)
 	}
 	return abs, nil
-}
-
-// assertNoEscapingSymlink walks every existing prefix of abs (root..abs)
-// and refuses the path if a component is a symlink whose resolved
-// target escapes root. New (not-yet-created) suffix components are
-// ignored — they cannot be symlinks since they don't exist.
-func assertNoEscapingSymlink(root, abs string) error {
-	if !strings.HasPrefix(abs, root) {
-		return fmt.Errorf("bundle: internal: abs %s outside root %s", abs, root)
-	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil {
-		return fmt.Errorf("bundle: rel %s: %w", abs, err)
-	}
-	cur := root
-	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-		if part == "" || part == "." {
-			continue
-		}
-		cur = filepath.Join(cur, part)
-		info, err := os.Lstat(cur)
-		if os.IsNotExist(err) {
-			return nil // remaining suffix doesn't exist yet
-		}
-		if err != nil {
-			return fmt.Errorf("bundle: stat %s: %w", cur, err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		resolved, err := filepath.EvalSymlinks(cur)
-		if err != nil {
-			return fmt.Errorf("bundle: eval symlink %s: %w", cur, err)
-		}
-		if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
-			return fmt.Errorf("bundle: refusing entry: component %s is a symlink escaping bundle root", cur)
-		}
-	}
-	return nil
 }
 
 // fileMode masks the supplied mode to the subset we permit on disk.

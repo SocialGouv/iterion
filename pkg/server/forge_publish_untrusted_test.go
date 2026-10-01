@@ -28,7 +28,7 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 	t.Run("a trusted launch is minted a grant", func(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"
-		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustDefault)
+		out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("injectForgePublishVars = %v, want nil", err)
 		}
@@ -44,7 +44,7 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 	t.Run("a fork-trust launch loses the grant and still launches", func(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"
-		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustFork)
+		out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustFork)
 		if err != nil {
 			t.Fatalf("injectForgePublishVars = %v, want nil — erroring here refuses every fork-lane review (pr_url is always set by reviewPRVars), which closes the path the lane exists to serve", err)
 		}
@@ -60,7 +60,7 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 	t.Run("an unrecognised trust loses the grant too", func(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"
-		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrust("vendored"))
+		out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrust("vendored"))
 		if err != nil {
 			t.Fatalf("injectForgePublishVars = %v, want nil", err)
 		}
@@ -76,7 +76,7 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"
 		vars := map[string]string{"base_ref": "main", forgePublishVarToken: "pinned-grant-token"}
-		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustFork)
+		out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustFork)
 		if err != nil {
 			t.Fatalf("injectForgePublishVars = %v, want nil — nothing was going to be minted, so an untrusted launch with no PR still launches", err)
 		}
@@ -90,7 +90,7 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 	t.Run("every var the mint writes is withdrawn", func(t *testing.T) {
 		s, _ := newForgePublishTestServer(t)
 		s.cfg.PublicURL = "https://iterion.example"
-		minted, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustDefault)
+		minted, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", prVars(), nil, store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("trusted mint = %v, want nil", err)
 		}
@@ -109,7 +109,7 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		for _, k := range mintedKeys {
 			carried[k] = minted[k]
 		}
-		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", carried, nil, store.RunTrustFork)
+		out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", carried, nil, store.RunTrustFork)
 		if err != nil {
 			t.Fatalf("injectForgePublishVars = %v, want nil", err)
 		}
@@ -131,7 +131,7 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		vars[forgePublishVarToken] = "pinned-by-the-caller"
 		vars[forgePublishVarURL] = "https://iterion.example/api/v1/forge/publish-review"
 		vars[forgePublishVarPRState] = "https://iterion.example/api/v1/forge/pull-request"
-		out, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustFork)
+		out, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "review-pr", vars, nil, store.RunTrustFork)
 		if err != nil {
 			t.Fatalf("injectForgePublishVars = %v, want nil", err)
 		}

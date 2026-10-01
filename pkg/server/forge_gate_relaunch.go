@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -236,9 +237,10 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	// PR facts, the operator's pinned gate_context/arm_automerge, the bot's
 	// own vars. Only the per-run publish grant is dropped: the launch tail
 	// mints a fresh one (and would overwrite a stale copy anyway).
+	grantVars := forgePublishVars()
 	vars := make(map[string]string, len(d.run.Inputs)+1)
 	for k, v := range d.run.Inputs {
-		if k == forgePublishVarToken || k == forgePublishVarURL || k == forgePublishVarPRState {
+		if slices.Contains(grantVars[:], k) {
 			continue
 		}
 		if sv, ok := v.(string); ok {

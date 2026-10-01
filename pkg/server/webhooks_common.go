@@ -1346,7 +1346,7 @@ func (s *Server) launchWebhookTarget(
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r, t.Trust)
+	vars, minted, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r, t.Trust)
 	if verr != nil {
 		// Two refusals reach here: a launch pinning another team's publish
 		// grant (errForgePublishGrantTenant) — the run would carry a
@@ -1398,6 +1398,7 @@ func (s *Server) launchWebhookTarget(
 		// stays StatusLaunchError and stays RETRYABLE either way.
 		if !runview.RunMayHaveStarted(lerr) {
 			adm.rollback(s.logger)
+			s.revokeUnlaunchedGrant(minted)
 		}
 		out.Status = webhooks.StatusLaunchError
 		out.Error = fmt.Sprintf("launch failed: %v", lerr)

@@ -350,7 +350,7 @@ func TestAPinnedGrantIsMarkedSharedOrRefused(t *testing.T) {
 	s.cfg.PublicURL = "https://iterion.test"
 	registerPublishToken(t, s, "tok-pinned", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
 	vars := map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-pinned"}
-	if _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr", vars, nil, store.RunTrustDefault); err != nil {
+	if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr", vars, nil, store.RunTrustDefault); err != nil {
 		t.Fatalf("pinned launch: %v", err)
 	}
 	if g, ok := s.forgePublishTokens.lookup("tok-pinned"); !ok || !g.Shared {
@@ -359,7 +359,7 @@ func TestAPinnedGrantIsMarkedSharedOrRefused(t *testing.T) {
 
 	out := &lockedBuffer{}
 	s.logger = iterlog.New(iterlog.LevelWarn, out)
-	if _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-gone"}, nil, store.RunTrustDefault); err != nil {
+	if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-gone"}, nil, store.RunTrustDefault); err != nil {
 		t.Fatalf("pinned launch on a grant that is gone: %v", err)
 	}
 	if !strings.Contains(out.String(), "expired or revoked") {
@@ -367,7 +367,7 @@ func TestAPinnedGrantIsMarkedSharedOrRefused(t *testing.T) {
 	}
 
 	s.forgePublishTokens = failingGrantUpdateStore{ForgePublishTokenStore: s.forgePublishTokens}
-	_, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-pinned"}, nil, store.RunTrustDefault)
+	_, _, err := s.injectForgePublishVars(context.Background(), "team1", "conn1", "review-pr", map[string]string{"pr_url": "https://github.com/o/r/pull/42", forgePublishVarToken: "tok-pinned"}, nil, store.RunTrustDefault)
 	if !errors.Is(err, errForgePublishGrantUnavailable) {
 		t.Fatalf("a pinned grant that cannot be marked shared launched anyway (err=%v)", err)
 	}

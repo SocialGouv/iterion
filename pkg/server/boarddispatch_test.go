@@ -862,7 +862,7 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		"gate_severity": "medium", // pinned on the launch — must survive
 		"gate_context":  "",       // cleared field: absent, not a decision
 	}
-	out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	out, _, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
 	if err != nil {
 		t.Fatalf("applyPRLaunchContext: %v", err)
 	}
@@ -893,7 +893,7 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	out, _, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://github.com/o/r/pull/7"}, nil)
 	if err != nil {
 		t.Fatalf("applyPRLaunchContext: %v", err)
@@ -907,7 +907,7 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 
 	// Same slug on another forge is a different repo: no policy, no grant —
 	// and no connection to prove anything through, so no refusal either.
-	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+	out, _, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
 		map[string]string{"pr_url": "https://gitlab.example/o/r/-/merge_requests/7"}, nil)
 	if err != nil {
 		t.Fatalf("a host no connection covers has no pair to guard: %v", err)
@@ -919,7 +919,7 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Error("grant minted for a repo on a host no connection covers")
 	}
 
-	out, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	out, _, err = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
 	if err != nil {
 		t.Fatalf("no pr_url: %v", err)
 	}
@@ -2827,7 +2827,7 @@ func TestApplyPRLaunchContextForkGuard(t *testing.T) {
 
 	t.Run("a fork PR is refused with the webhook lanes' wording", func(t *testing.T) {
 		s := prLaunchGuardFixture(t, &fakeGateClient{headSHA: "abc", headRepo: "someone/r"})
-		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		out, _, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
 		if !errors.Is(err, errPRLaunchForkGuard) {
 			t.Fatalf("a fork PR must be refused by the fork guard, got err=%v", err)
 		}
@@ -2841,7 +2841,7 @@ func TestApplyPRLaunchContextForkGuard(t *testing.T) {
 
 	t.Run("an unnamed head repo is refused too — same-repo is proven, never assumed", func(t *testing.T) {
 		s := prLaunchGuardFixture(t, &fakeGateClient{headSHA: "abc", noHeadRepo: true})
-		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		out, _, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
 		if !errors.Is(err, errPRLaunchForkGuard) {
 			t.Fatalf("an unverifiable head repo must be refused by the fork guard, got err=%v", err)
 		}
@@ -2855,7 +2855,7 @@ func TestApplyPRLaunchContextForkGuard(t *testing.T) {
 
 	t.Run("a PR the forge cannot resolve is refused, not launched blind", func(t *testing.T) {
 		s := prLaunchGuardFixture(t, &fakeGateClient{getErr: errors.New("502 from the forge")})
-		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		out, _, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
 		if err == nil || !strings.Contains(err.Error(), "502 from the forge") {
 			t.Fatalf("a resolution failure must surface as the refusal, got err=%v", err)
 		}
@@ -2869,7 +2869,7 @@ func TestApplyPRLaunchContextForkGuard(t *testing.T) {
 
 	t.Run("a same-repo PR is admitted, case-insensitively, and granted", func(t *testing.T) {
 		s := prLaunchGuardFixture(t, &fakeGateClient{headSHA: "abc", headRepo: "O/R"})
-		out, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
+		out, _, err := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"pr_url": prURL}, nil)
 		if err != nil {
 			t.Fatalf("a same-repo PR must be admitted: %v", err)
 		}

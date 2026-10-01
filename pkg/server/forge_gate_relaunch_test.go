@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -645,6 +646,48 @@ func TestGateRelaunch(t *testing.T) {
 		})
 		if *w.launched != 0 {
 			t.Fatal("relaunched with an empty HeadRepoFullName — deleted-fork payloads must fail closed")
+		}
+	})
+
+	// The relaunch replays the dead run's inputs minus EVERY var the grant
+	// path mints, not only the token. A tail that mints nothing — no public
+	// URL, as here — is where a carried var survives: an endpoint of the dead
+	// run's grant would reach the new run with no grant behind it.
+	t.Run("the relaunch carries none of the dead run's grant vars", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.cfg.PublicURL = ""
+		inputs := maps.Clone(deadInputs)
+		for _, k := range forgePublishVars() {
+			inputs[k] = "https://stale.example/" + k
+		}
+		run, err := w.s.cfg.Store.CreateRun(context.Background(), "run-dead-grant", "dep_update_guard", inputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = botID
+		run.Status = store.RunStatusFailedResumable
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.relaunchDeadGateRun(context.Background(), deadGateRun{
+			run:   run,
+			grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo, Bot: botID},
+			conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+			repo:  repo, number: 7,
+			pr:      forge.PullRef{HeadSHA: head, SourceBranch: "feat/x", TargetBranch: "main", HeadRepoFullName: repo},
+			gateCtx: gateNm, prURL: prURL,
+		})
+		if *w.launched != 1 {
+			t.Fatalf("launched %d runs, want the dead run's one relaunch", *w.launched)
+		}
+		vars := *w.lastVars
+		for _, k := range forgePublishVars() {
+			if v, ok := vars[k]; ok {
+				t.Errorf("the relaunch carries the dead run's %s = %q", k, v)
+			}
+		}
+		if vars["pr_url"] != prURL || vars["arm_automerge"] != "true" {
+			t.Errorf("the relaunch dropped the dead run's own launch vars: %v", vars)
 		}
 	})
 }

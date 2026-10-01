@@ -119,6 +119,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// child's engine, so the child workflow's block decides.
 			SandboxTiersKnown: true,
 			RunID:             childRunID,
+			ParentRunID:       req.ParentRunID,
 			Logger:            logger,
 			StoreDir:          storeDir,
 			WorkDir:           childWorkDir,

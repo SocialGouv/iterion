@@ -87,14 +87,15 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		// run/env (e.g. a longer max_duration for remediation on a large
 		// repo) without editing the .bot — the budget block, unlike the
 		// effort/model fields, was not previously env-resolved.
-		parsed, err := time.ParseDuration(ir.ExpandEnvWithDefault(b.MaxDuration))
+		expanded := ir.ExpandEnvWithDefault(b.MaxDuration)
+		parsed, err := time.ParseDuration(expanded)
 		if err == nil {
 			maxDur = parsed
 		} else if logger != nil {
 			// An unparseable max_duration must not silently ship a run
 			// with NO time budget — a "2h3Om" typo would otherwise
 			// disable the cap without a trace.
-			logger.Warn("budget: max_duration %q does not parse (%v) — the duration cap is NOT ENFORCED for this run", b.MaxDuration, err)
+			logger.Warn("budget: max_duration %q does not parse (%s) — the duration cap is NOT ENFORCED for this run", b.MaxDuration, ir.DurationParseReason(b.MaxDuration, expanded, err))
 		}
 	}
 
