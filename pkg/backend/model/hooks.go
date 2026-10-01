@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -340,6 +341,9 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 		"model":         info.Model,
 		"message_count": info.MessageCount,
 		"tool_count":    info.ToolCount,
+	}
+	if info.WireModel != "" {
+		data["wire_model"] = info.WireModel
 	}
 	if info.ReasoningEffort != "" {
 		data["reasoning_effort"] = info.ReasoningEffort
@@ -982,6 +986,9 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.EffectiveModel != "" {
 		data["effective_model"] = info.EffectiveModel
 	}
+	if info.RouteModel != "" {
+		data["route_model"] = info.RouteModel
+	}
 	if info.ContextWindow > 0 {
 		data["context_window"] = info.ContextWindow
 	}
@@ -993,11 +1000,25 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	}
 }
 
+// sameServedModel reports whether a backend's effective model is the one
+// the node declared. Vendor ids compare as snapshot aliases
+// (delegate.SameModelID: "claude-opus-4-5" serves "anthropic/claude-opus-4-5"),
+// but a gateway id is opaque — "openai_compatible/team-a/m" and
+// "openai_compatible/team-b/m" are different models — so a gateway route on
+// either side compares exactly, by route or by wire id.
+func sameServedModel(declared, effective string) bool {
+	d, e := modelroute.Parse(declared), modelroute.Parse(effective)
+	if d.Gateway() || e.Gateway() {
+		return declared == effective || (d.Gateway() && !e.Gateway() && effective == d.Wire)
+	}
+	return delegate.SameModelID(declared, effective)
+}
+
 func (h *storeHooks) emitModelDrift(nodeID string, info DelegateInfo) {
 	if info.DeclaredModel == "" || info.EffectiveModel == "" {
 		return
 	}
-	if delegate.SameModelID(info.DeclaredModel, info.EffectiveModel) {
+	if sameServedModel(info.DeclaredModel, info.EffectiveModel) {
 		return
 	}
 	key := nodeID + "\x00" + info.DeclaredModel + "\x00" + info.EffectiveModel

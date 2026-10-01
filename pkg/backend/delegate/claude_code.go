@@ -832,7 +832,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	}
 
 	if streamErr != nil {
-		return b.buildStreamErrorResult(rm, sessMeta, streamErr, readStderr(), duration, task)
+		res, err := b.buildStreamErrorResult(rm, sessMeta, streamErr, readStderr(), duration, task)
+		res.SessionFingerprint = currentFingerprint
+		return res, err
 	}
 	// The CLI carried the call to its own ResultMessage: the turn ran to
 	// its end. Everything below judges that result's CONTENT — a rendered

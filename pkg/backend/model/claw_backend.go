@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -319,19 +320,17 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
 
-	// Strip the "provider/" prefix so the request body carries the bare
-	// model ID. Provider routing is already done at this point (via
-	// Resolve), and provider APIs (Anthropic, OpenAI) don't recognize the
-	// prefixed form in the JSON body — Anthropic returns 404, OpenAI may
-	// silently coerce or also reject depending on the model.
-	_, modelID, err := ParseModelSpec(task.Model)
-	if err != nil {
+	// The spec must name a provider; the prefix itself comes off in
+	// buildRequest (wireModelID), exactly once — stripping it here too cut a
+	// model id that holds slashes of its own ("meta-llama/…") short.
+	if _, _, err := ParseModelSpec(task.Model); err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
+	route := modelroute.Parse(task.Model)
 
 	// Build GenerationOptions.
 	opts := GenerationOptions{
-		Model:                 modelID,
+		Model:                 task.Model,
 		MaxTokens:             task.MaxTokens,
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
@@ -342,7 +341,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// supported matrix — claw-code-go does NOT clamp on its own, so a
 	// recipe asking for "max" on an OpenAI model would otherwise reach
 	// the API with an unsupported value and bounce as 400.
-	if effort := coerceEffortForModel(task.ReasoningEffort, modelID); effort != "" {
+	if effort := coerceEffortForModel(task.ReasoningEffort, route.CapabilityID()); effort != "" {
 		opts.ProviderOptions = providerOptsForNode(effort)
 	}
 
@@ -900,6 +899,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if b.hooks.OnLLMRequest != nil {
 			b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
 				Model:        task.Model,
+				WireModel:    wireModelIfDistinct(task.Model),
 				MessageCount: len(nudged.Messages),
 				Timestamp:    time.Now(),
 			})
@@ -978,6 +978,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if b.hooks.OnLLMRequest != nil {
 		b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
 			Model:        task.Model,
+			WireModel:    wireModelIfDistinct(task.Model),
 			MessageCount: len(recoveryOpts.Messages),
 			Timestamp:    time.Now(),
 		})

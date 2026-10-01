@@ -242,7 +242,7 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 	}
 
 	opts := model.GenerationOptions{
-		Model:          model.ProviderlessModelID(e.modelSpec),
+		Model:          e.modelSpec,
 		System:         buildSystemPrompt(in.Spec),
 		Messages:       []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: buildUserPrompt(in)}}}},
 		ExplicitSchema: json.RawMessage(decisionSchema),

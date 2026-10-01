@@ -10,6 +10,7 @@ import (
 	apikit "github.com/SocialGouv/claw-code-go/pkg/apikit"
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -232,7 +233,10 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 
 	switch backend {
 	case "claude_code", "claw":
-		supported, def := apikit.EffortCapabilities(model)
+		// The registry knows vendor ids, never a routing prefix: a node's
+		// spec ("anthropic/claude-opus-5-5") is looked up on its capability
+		// id, the id claw clamps the node's effort on.
+		supported, def := apikit.EffortCapabilities(modelroute.Parse(model).CapabilityID())
 		// Surface the "ultracode" mode (xhigh + workflow-orchestration
 		// prerogative) only on the models that carry its orchestration half
 		// (Opus 4.8, the Claude 5 family) — the same predicate the compiler's

@@ -13,7 +13,10 @@ import (
 
 // LLMRequestInfo describes an LLM request, passed to the OnLLMRequest hook.
 type LLMRequestInfo struct {
+	// Model is the routing spec; WireModel the id the request carried when
+	// it differs from Model ("" for a bare spec).
 	Model           string
+	WireModel       string
 	MessageCount    int
 	ToolCount       int
 	ReasoningEffort string
@@ -250,6 +253,7 @@ func (i LLMTurnCaptureInfo) MarshalConversation() json.RawMessage {
 func toLLMRequestInfo(info RequestInfo) LLMRequestInfo {
 	return LLMRequestInfo{
 		Model:           info.Model,
+		WireModel:       info.WireModel,
 		MessageCount:    info.MessageCount,
 		ToolCount:       info.ToolCount,
 		ReasoningEffort: info.ReasoningEffort,

@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/apikit"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
 // ---------------------------------------------------------------------------
@@ -177,8 +178,25 @@ func forcedInitialToolChoice(opts GenerationOptions, toolCallsSoFar int) *api.To
 	return nil
 }
 
+// requiresAdaptiveThinking reads the vendor's adaptive-thinking profile on
+// the route's capability id. A vendor route behind an OpenAI-compatible host
+// may carry the vendor's own namespace in its id
+// ("openai/anthropic/claude-opus-5-5"), so the id's last segment is asked
+// too: a false positive only trades a forced tool_choice for the
+// nudge-and-check, which stays fail-closed. A gateway route never borrows a
+// vendor's profile.
 func requiresAdaptiveThinking(model string) bool {
-	return apikit.AnthropicProfile(wireModelID(model)).RequiresAdaptiveThinking
+	id := modelroute.Parse(model).CapabilityID()
+	if id == "" {
+		return false
+	}
+	if apikit.AnthropicProfile(id).RequiresAdaptiveThinking {
+		return true
+	}
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		return apikit.AnthropicProfile(id[i+1:]).RequiresAdaptiveThinking
+	}
+	return false
 }
 
 // buildStepResult shapes one aggregated model response into the StepResult

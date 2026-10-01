@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -1289,6 +1290,11 @@ func ModelSupportsUltracode(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" || IsEnvSubstitutedEffort(m) {
 		return true
+	}
+	if modelroute.Parse(m).Gateway() {
+		// A gateway's model ids are its own namespace: an alias spelled
+		// like a Claude model is no evidence of one.
+		return false
 	}
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]

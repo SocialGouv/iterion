@@ -193,9 +193,15 @@ func (r *Registry) registerDefaults() {
 		// above). When set, it also disables the ChatGPT-OAuth path so
 		// we don't send masquerading codex_cli_rs headers to a third
 		// party.
+		// OpenAIModelVerbatim on every client of claw's OpenAI provider (here,
+		// the keyed twin, xAI and the ctx forfait): the request already carries
+		// the wire id iterion computed — the routing prefix came off once, in
+		// wireModelID — so claw strips no further prefix ("openai/qwen/q" stays
+		// "qwen/q") and never swaps a "claude…" id for another model.
 		cfg := api.ProviderConfig{
-			Model:   modelID,
-			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+			Model:               modelID,
+			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
+			OpenAIModelVerbatim: true,
 		}
 		// Resolution: an explicit OPENAI_API_KEY wins by default — it's
 		// the standard surface for both CI and BYOK setups, and treating
@@ -235,9 +241,10 @@ func (r *Registry) registerDefaults() {
 	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(withClientIdentity(api.ProviderConfig{
-			APIKey:  apiKey,
-			Model:   modelID,
-			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+			APIKey:              apiKey,
+			Model:               modelID,
+			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
+			OpenAIModelVerbatim: true,
 		}))
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
@@ -277,17 +284,19 @@ func (r *Registry) registerDefaults() {
 	r.providers["xai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(withClientIdentity(api.ProviderConfig{
-			APIKey:  os.Getenv("XAI_API_KEY"),
-			Model:   modelID,
-			BaseURL: xaiBaseURL(),
+			APIKey:              os.Getenv("XAI_API_KEY"),
+			Model:               modelID,
+			BaseURL:             xaiBaseURL(),
+			OpenAIModelVerbatim: true,
 		}))
 	}
 	r.providersWithKey["xai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(withClientIdentity(api.ProviderConfig{
-			APIKey:  apiKey,
-			Model:   modelID,
-			BaseURL: xaiBaseURL(),
+			APIKey:              apiKey,
+			Model:               modelID,
+			BaseURL:             xaiBaseURL(),
+			OpenAIModelVerbatim: true,
 		}))
 	}
 	// Moonshot — the Kimi family through Moonshot's Anthropic-compatible
@@ -767,10 +776,16 @@ func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (ap
 	if !ok {
 		return nil, false, nil
 	}
-	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL")}
-	applyCodexOAuth(&cfg, view)
-	client, cerr := openaiprovider.New().NewClient(withClientIdentity(cfg))
+	client, cerr := openaiprovider.New().NewClient(withClientIdentity(openAIForfaitConfig(modelID, view)))
 	return client, true, cerr
+}
+
+// openAIForfaitConfig is the ChatGPT-forfait client's configuration: the
+// request's model sent verbatim, like every client of claw's OpenAI provider.
+func openAIForfaitConfig(modelID string, view secrets.CodexCredentialsView) api.ProviderConfig {
+	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL"), OpenAIModelVerbatim: true}
+	applyCodexOAuth(&cfg, view)
+	return cfg
 }
 
 // anthropicFromCtxForfait builds an Anthropic client from the tenant's
