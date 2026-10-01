@@ -236,7 +236,13 @@ func (e *Engine) fanOutAwaitAnswers(ctx context.Context, runID, nodeID string, r
 	}
 
 	// Every referenced question must now be answered — resuming with
-	// unanswered questions would hand the agent a partial payload.
+	// unanswered questions would hand the agent a partial payload. This
+	// re-check reads after the claim: a pending question written between
+	// the pre-claim refusal and here would refuse a run already claimed
+	// running. No production writer does — an ask records its question
+	// before its pause, which the pre-claim refusal read; should one
+	// appear, the runner's release puts the run back to its pause with the
+	// refusal, and the next delivery's pre-claim refusal recovers it.
 	pending, err := store.ListPendingAsyncInteractions(ctx, e.store, runID, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: re-check pending async interactions: %w", err)

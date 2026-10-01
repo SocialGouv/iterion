@@ -407,6 +407,13 @@ func dlqReplayRefusal(drop queue.Drop, run *store.Run, msg *queue.RunMessage, se
 	discard := fmt.Sprintf("then discard the message (DELETE /api/admin/dlq/%d)", seq)
 	switch drop {
 	case queue.DropSupersededAttempt:
+		if run.Status.IsQueued() {
+			// Inside a refused resume's window (the flip stands) a resume
+			// cannot be acted on: the run's own newer delivery claims it,
+			// or the refused resume's rollback puts the previous attempt
+			// back and this copy is its live redelivery again.
+			return fmt.Sprintf("run %s is queued for a newer attempt (queued again at %s, after this message was published at %s) — the run's own newer delivery claims it, or the refused resume reverts; nothing to do here, the copy stays", run.ID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC)
+		}
 		return fmt.Sprintf("run %s was queued again at %s, after this message was published (%s) — a runner drops it on admission; resume the run instead, %s", run.ID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC, discard)
 	case queue.DropExplicitResumeRequired:
 		return fmt.Sprintf("run %s was rewound and waits for an explicit resume — a runner drops a replayed launch on admission; resume the run instead, %s", run.ID, discard)

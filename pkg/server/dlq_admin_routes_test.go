@@ -603,12 +603,45 @@ func TestDLQAdmin_ReplayOfASupersededMessageIsRefused(t *testing.T) {
 	if code != http.StatusConflict || !strings.Contains(string(body), "queued again") {
 		t.Fatalf("replay of a superseded message: status=%d body=%s, want 409 naming the newer attempt", code, body)
 	}
+	// The run IS queued: a resume cannot be acted on, and the remedy says
+	// so instead of naming one.
+	if !strings.Contains(string(body), "nothing to do here") {
+		t.Fatalf("the queued refusal's remedy = %s, want the queued arm — a resume the run's state cannot take", body)
+	}
 	if republished, _, _ := w.q.snapshot(); len(republished) != 0 {
 		t.Fatalf("a refused replay republished %v", republished)
 	}
 	w.q.parkPublished(26, "run-requeued", "max deliver exhausted", run.QueuedAt.Add(time.Second))
 	if code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/26/replay", w.admin); code != http.StatusOK {
 		t.Fatalf("replay of the current attempt's message: status=%d body=%s, want 200", code, body)
+	}
+}
+
+// TestDLQAdmin_ReplayInsideARefusedFlipsWindowNamesTheQueuedArm: while a
+// refused resume's flip stands, the run is queued and the 409's remedy is
+// the queued arm — nothing to do here, the copy stays — and once the flip
+// is reverted the same copy replays, as the runner's admission admits it.
+func TestDLQAdmin_ReplayInsideARefusedFlipsWindowNamesTheQueuedArm(t *testing.T) {
+	w := newDLQAdminServer(t)
+	ctx := context.Background()
+	w.seedRun(t, "run-flip-window", store.RunStatusFailedResumable)
+	flip, ok, err := store.AsQueuedFlipper(w.runs).FlipToQueued(ctx, "run-flip-window", store.RunStatusFailedResumable, time.Now())
+	if err != nil || !ok {
+		t.Fatalf("flip: %v %v", ok, err)
+	}
+	w.q.parkPublished(31, "run-flip-window", "max deliver exhausted", flip.At.Add(-time.Second))
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/31/replay", w.admin)
+	if code != http.StatusConflict || !strings.Contains(string(body), "nothing to do here") {
+		t.Fatalf("inside the flip window: status=%d body=%s, want 409 with the queued arm", code, body)
+	}
+	if republished, _, _ := w.q.snapshot(); len(republished) != 0 {
+		t.Fatalf("a refused replay republished %v", republished)
+	}
+	if ok, err := store.AsQueuedFlipper(w.runs).RevertQueuedFlip(ctx, "run-flip-window", flip, "queue resume: refused"); err != nil || !ok {
+		t.Fatalf("revert: %v %v", ok, err)
+	}
+	if code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/31/replay", w.admin); code != http.StatusOK {
+		t.Fatalf("after the revert: status=%d body=%s, want 200 — the copy is the attempt's live redelivery again", code, body)
 	}
 }
 

@@ -13,9 +13,10 @@ const RunErrorHintSeparator = " — hint: "
 // ClipRunError bounds a run's Error to limit runes, markers included, for a
 // reader that shows it in a bounded space: the clip falls on the failure's
 // text, marked "…", and the remedy after the last RunErrorHintSeparator is
-// kept whole. A remedy longer than half the bound is clipped in turn, so
-// that it still leaves the failure room. A value without a remedy is
-// clipped at its end.
+// kept whole whenever it fits the limit at all — the failure keeps the
+// rest. Only a remedy that cannot fit even alone is clipped in turn, and
+// then the failure keeps half. A value without a remedy is clipped at its
+// end.
 func ClipRunError(s string, limit int) string {
 	n := utf8.RuneCountInString(s)
 	if n <= limit {
@@ -27,8 +28,11 @@ func ClipRunError(s string, limit int) string {
 	}
 	head, remedy := s[:i], s[i:]
 	r := utf8.RuneCountInString(remedy)
-	keep := min(max(limit-r, limit/2), n-r)
-	return clipRunes(head, keep) + clipRunes(remedy, limit-keep)
+	keep := limit - r
+	if r > limit {
+		keep = limit / 2
+	}
+	return clipRunes(head, min(keep, n-r)) + clipRunes(remedy, limit-min(keep, n-r))
 }
 
 // clipRunes is s cut to at most n runes, its last one "…" when s is cut.

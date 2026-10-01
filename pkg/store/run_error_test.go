@@ -36,3 +36,40 @@ func TestClipRunError(t *testing.T) {
 		})
 	}
 }
+
+// TestClipRunError_keepsARemedyThatFitsTheLimitWhole: a remedy is kept
+// whole whenever it fits the limit at all — past half the bound too, the
+// failure keeping what is left. Only a remedy that cannot fit even alone
+// is clipped in turn, and then the failure keeps half.
+func TestClipRunError_keepsARemedyThatFitsTheLimitWhole(t *testing.T) {
+	const limit = 2000
+	for _, tc := range []struct {
+		name       string
+		headRunes  int
+		hintRunes  int
+		whole      bool
+	}{
+		{"a small hint", 1900, 100, true},
+		{"a hint just over half the bound", 600, 1500, true},
+		{"a hint just under half the bound", 1049, 1050, true},
+		{"a hint at half the bound", 1000, 1000, true},
+		{"a hint the limit cannot hold", 3000, 2100, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remedy := RunErrorHintSeparator + strings.Repeat("h", tc.hintRunes)
+			got := ClipRunError(strings.Repeat("a", tc.headRunes)+remedy, limit)
+			if tc.whole && !strings.HasSuffix(got, remedy) {
+				t.Fatalf("a remedy of %d runes fits the limit %d but was cut: lost tail %q", utf8.RuneCountInString(remedy), limit, got[max(0, len(got)-60):])
+			}
+			if !tc.whole && strings.HasSuffix(got, remedy) {
+				t.Fatalf("a remedy of %d runes cannot fit the limit %d but was kept whole", tc.hintRunes, limit)
+			}
+			if n := utf8.RuneCountInString(got); n > limit {
+				t.Fatalf("the clip gives %d runes, want at most %d", n, limit)
+			}
+			if !strings.HasPrefix(got, "a") {
+				t.Fatalf("the clip does not keep the failure's start: %q", got[:40])
+			}
+		})
+	}
+}
