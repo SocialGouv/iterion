@@ -38,6 +38,12 @@ const hostCookiePrefix = "__Host-"
 // runs once that gate has matched.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A team route's {id} is the team's UUID from here on, whichever
+		// spelling the caller used (#1931) — before ANY reader below (the
+		// authz checks, teamPathTenantCtx, the stores) sees the raw value.
+		// A no-op before routing (the authMiddleware wrap): no path values
+		// are set yet, and the per-route wrap re-runs it after the mux has.
+		s.canonicalizeTeamPathValue(r)
 		if s.cfg.DisableAuth {
 			// Dev mode: synthesize a super-admin identity so handlers
 			// behave as if the request was authenticated. Never use

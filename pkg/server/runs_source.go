@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/bots"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -283,7 +285,11 @@ func (s *Server) launchBundleDirFor(filePath string) (string, error) {
 	}
 	b, err := runview.ResolveBundleFromFilePath(abs)
 	if err != nil {
-		return "", err
+		// The refusal is answered to the client verbatim (422 "bundle:
+		// %v"): the entrypoint subject and the manifest's parse error name
+		// files under the bundle's directory, which is the server's
+		// layout, not the client's — the #1934 root cut (#1970).
+		return "", errors.New(unit.RelTextRoot(filepath.Dir(abs), err.Error()))
 	}
 	if b == nil {
 		return "", nil

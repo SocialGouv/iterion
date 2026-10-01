@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -48,4 +49,54 @@ func teamTenantCtx(ctx context.Context, teamID string) context.Context {
 		return ctx
 	}
 	return store.WithTenant(ctx, teamID)
+}
+
+// canonicalizeTeamPathValue rewrites the {id} path value of a
+// /api/teams/{id}/… route to the team's UUID when the caller spelled its
+// SLUG — the ONE place the two spellings are reconciled (#1931). The
+// routes accept both spellings (canManageTeam passes a super-admin either
+// way, and the CLI passes --team verbatim), but every team-scoped row was
+// keyed by the RAW path value — the binding's tenant_id, the secret's
+// scope_team, the ctx tenant the stores stamp on write and filter on read
+// — so a row written via the slug was invisible to every reader resolving
+// under the UUID: the publisher at launch found 0 binding and ran the bot
+// WITHOUT its credential, and a cross-spelling PATCH failed the misleading
+// "not a team-scoped secret in this org" 400. Canonical here, at route
+// resolution, and every handler downstream — teamPathTenantCtx's stamp,
+// the ScopeTeamID == teamID comparisons, the tenant_id filters — is
+// spelling-insensitive by construction, with no per-reader guard.
+//
+// A spelling that IS a team id wins over a slug of the same text (the id
+// is the authority); an unresolvable spelling is left as is, so an unknown
+// team keeps its old 403/404 semantics. Non-team routes keep their {id} —
+// a run id that happens to equal a team slug is nobody's team.
+func (s *Server) canonicalizeTeamPathValue(r *http.Request) {
+	raw := r.PathValue("id")
+	if raw == "" || !teamIDRoutePattern(r.Pattern) {
+		return
+	}
+	st := s.authStore()
+	if st == nil {
+		return
+	}
+	if _, err := st.GetTeam(r.Context(), raw); err == nil {
+		return
+	}
+	t, err := st.GetTeamBySlug(r.Context(), raw)
+	if err != nil {
+		return
+	}
+	r.SetPathValue("id", t.ID)
+}
+
+// teamIDRoutePattern reports whether a registered route pattern is a team
+// route — /api/teams/{id} itself or anything under it: the patterns whose
+// {id} wildcard names a team. /api/orgs/{id}, /api/runs/{id} and every
+// other id wildcard stay out of the class (patternWildcardAt's note on the
+// run-id side is the same rule, seen from the other route family).
+func teamIDRoutePattern(pattern string) bool {
+	if i := strings.Index(pattern, " "); i >= 0 && !strings.HasPrefix(pattern, "/") {
+		pattern = pattern[i+1:]
+	}
+	return pattern == "/api/teams/{id}" || strings.HasPrefix(pattern, "/api/teams/{id}/")
 }

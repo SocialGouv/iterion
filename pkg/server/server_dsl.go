@@ -314,12 +314,17 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 				// leave useAutoValidation's stale diagnostics on screen. The
 				// document is validated alone, and the response SAYS so
 				// (C222, below); the CLI refuses this same state outright.
-				unopenable = oerr
+				// The warning rides the 200 body, so the hint error gets the
+				// root cut its refusal siblings already had (#1970) — it is
+				// only .Error()'d below, the re-wrap loses nothing.
+				unopenable = errors.New(unit.RelTextRoot(filepath.Dir(abs), oerr.Error()))
 			case b != nil:
 				// A prompts merge that genuinely fails stays an error: the
-				// bundle opened, so its prompts/*.md are in scope.
+				// bundle opened, so its prompts/*.md are in scope. The merge's
+				// read errors name the bundle's directory, absolute — the 422
+				// is the client's, the directory is the server's (#1970).
 				if merr := runview.MergeBundlePrompts(f, b); merr != nil {
-					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
+					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %s", unit.RelTextRoot(b.Dir, merr.Error()))
 					return
 				}
 			default:
@@ -739,7 +744,10 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 	}
 	flat, err := flatProgram(name, u.Merged)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "%v", err)
+		// The include-inlining refusal rides no diagnostic: it names the
+		// resolved path, absolute for a disk-loaded unit, so the error
+		// itself gets the root cut (#1934's rule, on this path: #1970).
+		httpError(w, http.StatusInternalServerError, "%v", u.RelError(err))
 		return
 	}
 	writeExample(w, name, flat, "", "")
