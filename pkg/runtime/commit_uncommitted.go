@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/treenoise"
@@ -57,7 +58,7 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: commit message is required")
 	}
 
-	porcelain, err := runGit(r.WorkDir, "status", "--porcelain")
+	porcelain, err := runGit(r.WorkDir, "status", "--porcelain", "-z")
 	if err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w (output: %s)", err, strings.TrimSpace(porcelain))
 	}
@@ -202,81 +203,29 @@ func commitWorkPaths(porcelain string) []string {
 	return out
 }
 
-// porcelainPaths normalizes `git status --porcelain` output into the paths
-// it reports: rename arrows cut to the destination, outer quotes stripped.
+// porcelainPaths normalizes `git status --porcelain -z` output into the
+// paths it reports. The NUL-terminated form is the only porcelain this
+// package reads: a rename carries destination and source as two fields
+// (destination first), so a source literally named `x -> y.md` can no
+// longer be cut at the wrong " -> ", and no path arrives C-quoted. The one
+// record-walker is gitlib.ParseStatusPorcelainZ, shared with worktreepool
+// (#1577).
 func porcelainPaths(porcelain string) []string {
-	var out []string
-	for _, line := range strings.Split(porcelain, "\n") {
-		if len(line) < 4 {
-			continue
+	records, err := gitlib.ParseStatusPorcelainZ(porcelain)
+	if err != nil {
+		// An unparseable status must never read as a clean tree: hand the
+		// probes the raw output as one opaque path, which no noise entry
+		// matches, so every caller takes its "dirty" branch.
+		if porcelain == "" {
+			return nil
 		}
-		path := line[3:]
-		if i := strings.Index(path, " -> "); i >= 0 {
-			path = path[i+4:]
-		}
-		path = unquoteGitPath(strings.TrimSpace(path))
-		if path != "" {
-			out = append(out, path)
-		}
+		return []string{porcelain}
+	}
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		out = append(out, rec.Path)
 	}
 	return out
-}
-
-// unquoteGitPath decodes a path git printed in its C-quoted form — the
-// `"…"` that core.quotePath (on by default) wraps around a name holding a
-// byte outside printable ASCII, a quote, a backslash or a control
-// character: the outer quotes go, and the escapes inside are decoded — \a
-// \b \f \n \r \t \v \\ \" and up to three octal digits for a raw byte —
-// so the result is the path's actual bytes, the form every other git
-// output (`-z`, the index, the file system) carries. A path git did not
-// quote is returned as is.
-func unquoteGitPath(p string) string {
-	if len(p) < 2 || p[0] != '"' || p[len(p)-1] != '"' {
-		return p
-	}
-	s := p[1 : len(p)-1]
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != '\\' || i+1 >= len(s) {
-			b.WriteByte(c)
-			continue
-		}
-		i++
-		switch e := s[i]; e {
-		case 'a':
-			b.WriteByte('\a')
-		case 'b':
-			b.WriteByte('\b')
-		case 'f':
-			b.WriteByte('\f')
-		case 'n':
-			b.WriteByte('\n')
-		case 'r':
-			b.WriteByte('\r')
-		case 't':
-			b.WriteByte('\t')
-		case 'v':
-			b.WriteByte('\v')
-		case '\\', '"':
-			b.WriteByte(e)
-		default:
-			if e < '0' || e > '7' {
-				b.WriteByte('\\')
-				b.WriteByte(e)
-				continue
-			}
-			v, n := 0, 0
-			for n < 3 && i+n < len(s) && s[i+n] >= '0' && s[i+n] <= '7' {
-				v = v*8 + int(s[i+n]-'0')
-				n++
-			}
-			b.WriteByte(byte(v))
-			i += n - 1
-		}
-	}
-	return b.String()
 }
 
 // runOutputPaths returns the porcelain entries that stand for work the RUN
@@ -331,8 +280,8 @@ func noisePaths(porcelain string) []string {
 // the bank (stagingExclusions, its floor) while the classification still
 // calls it noise (#1571); the operator reading the storage branch is told
 // what was set aside, never the opposite of what happened. Both sides are
-// the paths' actual bytes: `-z` prints them raw, and porcelainPaths decodes
-// the C-quoted form the porcelain wraps around an unusual name.
+// the paths' raw bytes: `-z` prints them as the index and the file system
+// carry them.
 func wipSetAside(dir, porcelain string) ([]string, error) {
 	staged, err := runGit(dir, "diff", "--cached", "--name-only", "-z")
 	if err != nil {

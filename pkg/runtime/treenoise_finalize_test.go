@@ -19,21 +19,26 @@ import (
 // predicate must match the exact name as well as the prefix — otherwise a
 // worktree "dirty" with noise alone sends finalize into an empty commit and
 // a PreserveWorktree warning.
+//
+// The fixtures are the `-z` porcelain the production probes read (#1577):
+// NUL-separated records, paths raw, a rename's destination the first field.
 func TestRunOutputPathsLeaveTheTreeNoiseOut(t *testing.T) {
 	porcelain := strings.Join([]string{
-		" M docs/adr/0009-record.md",            // real work, tracked modification
-		"?? .claude/settings.json",              // the engine's mirror
-		"?? .claude",                            // a top-level FILE named .claude (F6)
-		" M devbox.lock",                        // the drift every devbox run writes
-		"?? devbox.json",                        // NOT noise: a dependency bot's deliverable
-		"?? .claudeish",                         // a sibling that merely starts alike
-		"R  old.md -> docs/new.md",              // a rename: the destination decides
-		`?? "docs/caf\303\251 note.md"`,         // C-quoted by core.quotePath: decoded to its bytes
-		`?? ".claude/caf\303\251.md"`,           // the same quoting on a mirror file: still noise
-		`R  "a b.md" -> "docs/na\303\257ve.md"`, // quoted rename: the decoded destination decides
-	}, "\n")
+		" M docs/adr/0009-record.md",    // real work, tracked modification
+		"?? .claude/settings.json",      // the engine's mirror
+		"?? .claude",                    // a top-level FILE named .claude (F6)
+		" M devbox.lock",                // the drift every devbox run writes
+		"?? devbox.json",                // NOT noise: a dependency bot's deliverable
+		"?? .claudeish",                 // a sibling that merely starts alike
+		"R  docs/new.md\x00old.md",      // a rename: the destination decides, source a second field
+		"?? docs/café note.md",          // non-ASCII and a space: raw bytes under -z
+		"?? .claude/café.md",            // the same on a mirror file: still noise
+		"R  docs/naïve.md\x00a b.md",    // rename with a spaced source: the destination decides
+		"R  z.md\x00x -> y.md",          // #1577: a source holding an arrow is not cut at it
+		"R  z2.md\x00x -> .claude/e.md", // #1577: …nor is its destination read as the mirror
+	}, "\x00") + "\x00"
 	got := runOutputPaths(porcelain)
-	want := []string{"docs/adr/0009-record.md", "devbox.json", ".claudeish", "docs/new.md", "docs/café note.md", "docs/naïve.md"}
+	want := []string{"docs/adr/0009-record.md", "devbox.json", ".claudeish", "docs/new.md", "docs/café note.md", "docs/naïve.md", "z.md", "z2.md"}
 	if len(got) != len(want) {
 		t.Fatalf("runOutputPaths = %q, want %q", got, want)
 	}
@@ -50,10 +55,7 @@ func TestRunOutputPathsLeaveTheTreeNoiseOut(t *testing.T) {
 // the lock is derivable from devbox.json, and banking it would pin a half-
 // written resolution into a wip commit nothing ever merges.
 func TestRunOutputPathsKeepTheDeliverableAndDropItsLock(t *testing.T) {
-	porcelain := strings.Join([]string{
-		" M devbox.json",
-		" M devbox.lock",
-	}, "\n")
+	porcelain := " M devbox.json\x00 M devbox.lock\x00"
 	got := runOutputPaths(porcelain)
 	if len(got) != 1 || got[0] != "devbox.json" {
 		t.Fatalf("runOutputPaths = %q, want [devbox.json] — the deliverable is banked, the lock travels with it unbanked", got)
@@ -405,11 +407,12 @@ func TestFinalizeWorktree_WipBankNamesOnlyTheNoiseItSetAside(t *testing.T) {
 }
 
 // The guarantee behind the set-aside list, held on names git QUOTES in its
-// porcelain (core.quotePath: a non-ASCII byte, a quote, a backslash): what
-// the log names as set aside is exactly the noise the banked commit does
-// not carry. The porcelain's C-quoted form and the raw bytes `-z` and the
-// commit carry must decode to the same path, or a file that rode the bank
-// is reported as set aside — the inversion the list exists to prevent.
+// human-readable porcelain (core.quotePath: a non-ASCII byte, a quote, a
+// backslash): what the log names as set aside is exactly the noise the
+// banked commit does not carry. The probe and the index are both read with
+// `-z` (#1577), where every path is printed raw — the two sides cannot
+// drift on a decoding, or a file that rode the bank would be reported as
+// set aside — the inversion the list exists to prevent.
 func TestFinalizeWorktree_WipBankSetAsideIsExactlyWhatItDidNotCarry(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
@@ -430,14 +433,14 @@ func TestFinalizeWorktree_WipBankSetAsideIsExactlyWhatItDidNotCarry(t *testing.T
 	}
 	writeFile(t, filepath.Join(wt, "devbox.lock"), "plugin_version: 0.0.5\n")
 	writeFile(t, filepath.Join(wt, "réel.md"), "the pass's work\n")
-	// Read through the production helper: gittest.Run trims the output,
-	// and a trimmed porcelain loses its first line's status column.
-	porcelain, err := runGit(wt, "status", "--porcelain")
+	// Read through the production helper and the production form: gittest.Run
+	// trims the output, which a `-z` record stream does not survive.
+	porcelain, err := runGit(wt, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(porcelain, `"`) {
-		t.Fatalf("the fixture must make git quote a path, porcelain:\n%s", porcelain)
+	if !strings.Contains(porcelain, "café accent.md") {
+		t.Fatalf("the fixture must carry a non-ASCII path in its raw bytes, porcelain:\n%q", porcelain)
 	}
 
 	var logBuf bytes.Buffer
