@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.219.2](https://github.com/SocialGouv/iterion/compare/v3.219.1...v3.219.2) (2026-10-01)
+
+### Bug Fixes
+
+* **delegate:** pin claude_code request routing in the flag settings layer ([#2059](https://github.com/SocialGouv/iterion/issues/2059)) ([94ff16b](https://github.com/SocialGouv/iterion/commit/94ff16b33c6651ecc679f2ad18b9209bf9c42d46))
+
+    <details><summary>why</summary>
+
+    The Claude Code CLI copies the env block of every settings source it loads over its own environment, at startup and again whenever a settings file changes. claude_code spawns load the project scope from the task's workdir, which is the target repository, so the repository's committed .claude/settings.json could set the variables that route the CLI's requests (the API endpoint, a proxy, a provider switch, a CA) and point the run's requests, and the API key or subscription token they carry, at…
+
+    </details>
+* **merge-gate:** forget settled gating runs, record the verdict on its grant ([#2002](https://github.com/SocialGouv/iterion/issues/2002)) ([#2056](https://github.com/SocialGouv/iterion/issues/2056)) ([4b9f215](https://github.com/SocialGouv/iterion/commit/4b9f215de2562fde4a36e90a0a196f9b15028e09)), references [#2034](https://github.com/SocialGouv/iterion/issues/2034)
+
+    <details><summary>why</summary>
+
+    Lot 2 of #2002. With the sweep elected (lot 1, #2034), what the one sweeping replica still spends goes on runs with nothing left to repair: over one busy repo's eight-day window, 95 % of the gating runs sat on a merged or closed pull request, re-read every minute for an hour and on every deep pass for 192 h — 440–880 forge reads per run. Measured in prod after lot 1: the elected sweeper alone sent 1 130 and 1 618 REST requests in the hours ending 2026-10-01T07:00Z and 08:00Z, of the fleet's ~1…
+
+    </details>
+* **test:** the Go suite stops leaking into the operator's machine ([#2016](https://github.com/SocialGouv/iterion/issues/2016)) ([#2041](https://github.com/SocialGouv/iterion/issues/2041)) ([c985084](https://github.com/SocialGouv/iterion/commit/c9850847651dcdd83a2198193a91a302b4a41b9a))
+
+    <details><summary>why</summary>
+
+    Measured on one developer machine: 130 966 test run stores in ~/.iterion/projects, a throw-away engine workdir per test (10 970 in three days), a 126 MB e2e binary per run, the desktop project registry rewritten by 49 tests, claude CLI backups written into package directories.
+
+    </details>
+
 ## [3.219.1](https://github.com/SocialGouv/iterion/compare/v3.219.0...v3.219.1) (2026-10-01)
 
 ### Bug Fixes
