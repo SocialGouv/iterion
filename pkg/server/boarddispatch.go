@@ -1850,7 +1850,11 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// passes the fork guard at CLAIM time: a head repo can vanish between
 	// carding and claiming. A proven fork or invalid grant is terminal;
 	// inability to resolve the PR context is a retryable pre-launch failure.
-	lc.Vars, err = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
+	var minted mintedGrant
+	lc.Vars, err = s.withoutCardGrant(tenant, lc.Vars)
+	if err == nil {
+		lc.Vars, minted, err = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
+	}
 	if err != nil {
 		if errors.Is(err, errPRLaunchForkGuard) || errors.Is(err, errForgePublishGrantTenant) {
 			return fmt.Errorf("card %s: %w", iss.ID, err)
@@ -1890,6 +1894,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// run that never started consumes no monthly slot.
 	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}))
 	if deny != nil {
+		s.revokeUnlaunchedGrant(minted)
 		return &launchRefusal{cardID: iss.ID, cause: deny.err()}
 	}
 	res, err := s.runs.Launch(ctx, spec)
@@ -1901,6 +1906,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		// proven not to have started hands the slot back.
 		if !runview.RunMayHaveStarted(err) {
 			adm.rollback(s.logger)
+			s.revokeUnlaunchedGrant(minted)
 		}
 		return &launchRefusal{cardID: iss.ID, cause: err}
 	}

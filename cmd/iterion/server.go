@@ -370,6 +370,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
+	// Workflow text never reads a credential-shaped name from this process's
+	// environment: it holds the platform's credentials, not the tenant's.
+	ir.SetProcessEnvPolicy(platformcfg.CloudProcessEnvPolicy())
 	// One fetcher for both halves of the plugin-source contract: the
 	// publisher materialises a team's sources at launch, the server verifies
 	// a source the same way at registration.
@@ -743,6 +746,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ShutdownDelay: cfg.Server.ShutdownDelay,
 	}, logger)
 
+	// Every boot reader of the deployment's own credentials is done: none of
+	// them stays in the environment the rest of the process, its workflows
+	// and their children see.
+	if err := iterconfig.ScrubPlatformSecrets(); err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
 	return runServerLoop(rootCtx, srv, mreg, cfg.Metrics.Port, cfg.Server.ShutdownTeardown, logger)
 }
 

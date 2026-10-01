@@ -8,10 +8,12 @@
 //     stream) before they are persisted.
 //   - Layer 1 (placeholders): an agent only ever sees a Placeholder;
 //     Materialize swaps it for the real value at the moment iterion
-//     executes a tool or shell command.
+//     executes a tool or shell command. Only a materialisable secret's
+//     placeholder resolves; a RedactOnly value is scrubbed and never
+//     handed back.
 //   - Layer 2 (egress DLP): ContainsSecret gates outbound traffic so a
 //     real secret value cannot leave toward a non-approved host, and
-//     Materialize performs the placeholder→secret swap at the proxy.
+//     MaterializeForHost performs the placeholder→secret swap at the proxy.
 //
 // Detection is two-tier. Known secret values (the run's resolved
 // credentials plus declared ${secret.X} values) are matched
@@ -47,6 +49,13 @@ import (
 // registered for redaction and egress DLP. Hosts, when set, are the only
 // egress destinations the secret may be materialised toward (Layer 2
 // scoping); empty means "no host restriction".
+//
+// RedactOnly marks a value iterion scrubs but never hands back: its
+// placeholder materialises nowhere — not in agent tool input, a shell
+// command, a script, nor egress traffic. Placeholders are deterministic
+// (__ITERION_SECRET_<name>__), so a model that writes one would otherwise
+// fetch the value; only a secret the workflow declares for its agents to
+// use is materialisable.
 type Secret struct {
 	Name        string
 	Value       string
@@ -54,6 +63,7 @@ type Secret struct {
 	FilePath    string
 	Env         string
 	Hosts       []string
+	RedactOnly  bool
 }
 
 type FileSecretHint struct {
@@ -126,8 +136,8 @@ type Guard struct {
 	placeholderValue   map[string]string // placeholder → raw value (Materialize)
 	filePathByName     map[string]string // secret name → mounted file path
 	fileHints          []FileSecretHint
-	fileValueByName    map[string]string   // secret name → file plaintext (host materialisation)
-	encodingsByName    map[string][]string // secret name → its value encodings (egress DLP)
+	fileValueByName    map[string]string // secret name → file plaintext (host materialisation)
+	encodings          [][]string        // per entry of secrets: its value encodings (egress DLP)
 	det                *detector.Detector
 	cfg                Config
 }
@@ -143,6 +153,23 @@ func defaultPlaceholder(name string) string {
 		clean = "value"
 	}
 	return "__ITERION_SECRET_" + clean + "__"
+}
+
+// placeholderOf is a secret's placeholder before collision handling: the one
+// it names, or the one its name gives it.
+func placeholderOf(s Secret) string {
+	if s.Placeholder != "" {
+		return s.Placeholder
+	}
+	return defaultPlaceholder(s.Name)
+}
+
+// redactOnlyPlaceholder distinguishes the placeholder of a value that
+// resolves nowhere from the identically-named one that resolves. It keeps the
+// __ITERION_SECRET_…__ shape every downstream scrubber already recognises
+// (pkg/errtrack, pkg/knowledge).
+func redactOnlyPlaceholder(ph string) string {
+	return strings.TrimSuffix(ph, "__") + "_redacted__"
 }
 
 // New builds a Guard for the given secrets. Secrets whose value is
@@ -164,20 +191,31 @@ func New(secrets []Secret, cfg Config) *Guard {
 		literalPlaceholder: make(map[string]string),
 		placeholderValue:   make(map[string]string),
 		filePathByName:     make(map[string]string),
-		encodingsByName:    make(map[string][]string),
 		cfg:                cfg,
 	}
 	if cfg.Heuristic {
 		g.det = detector.New()
 	}
 
+	// A workflow is free to DECLARE a secret under a name a RedactOnly value
+	// already carries (`forge_publish_token`, `env_<X>`, `provider_key_<n>`).
+	// Their placeholders must stay distinct: "a RedactOnly placeholder
+	// resolves nowhere" is the guarantee, and a shared one would hand an
+	// agent reading it back the other credential — silently, since both are
+	// secrets it is otherwise entitled to.
+	resolvable := map[string]bool{}
 	for _, s := range secrets {
-		ph := s.Placeholder
-		if ph == "" {
-			ph = defaultPlaceholder(s.Name)
+		if !s.RedactOnly && len([]rune(s.Value)) >= cfg.MinLen {
+			resolvable[placeholderOf(s)] = true
+		}
+	}
+	for _, s := range secrets {
+		ph := placeholderOf(s)
+		if s.RedactOnly && resolvable[ph] {
+			ph = redactOnlyPlaceholder(ph)
 		}
 		s.Placeholder = ph
-		if s.FilePath != "" {
+		if s.FilePath != "" && !s.RedactOnly {
 			g.filePathByName[s.Name] = s.FilePath
 			g.fileHints = append(g.fileHints, FileSecretHint{Name: s.Name, Path: s.FilePath, Env: s.Env})
 			// Keep the plaintext for host materialisation, even for values
@@ -195,13 +233,19 @@ func New(secrets []Secret, cfg Config) *Guard {
 			continue
 		}
 		g.secrets = append(g.secrets, s)
-		g.placeholderValue[ph] = s.Value
+		if !s.RedactOnly {
+			g.placeholderValue[ph] = s.Value
+		}
 		encs := encodingsOf(s.Value)
-		g.encodingsByName[s.Name] = encs
+		g.encodings = append(g.encodings, encs)
 		for _, enc := range encs {
 			// First registration wins so a value shared by two names
-			// keeps a stable placeholder.
-			if _, ok := g.literalPlaceholder[enc]; !ok {
+			// keeps a stable placeholder — except that a materialisable
+			// secret takes the value over from a RedactOnly one: the
+			// placeholder an agent reads back must be one that resolves.
+			prev, ok := g.literalPlaceholder[enc]
+			_, prevResolves := g.placeholderValue[prev]
+			if !ok || (!prevResolves && !s.RedactOnly) {
 				g.literalPlaceholder[enc] = ph
 			}
 		}
@@ -238,6 +282,12 @@ func (g *Guard) buildMatcher() {
 // HasKnownSecrets reports whether any known value is registered.
 func (g *Guard) HasKnownSecrets() bool {
 	return g != nil && g.matcher != nil
+}
+
+// Materializes reports whether any registered placeholder resolves to a value
+// — a secret that is not RedactOnly.
+func (g *Guard) Materializes() bool {
+	return g != nil && len(g.placeholderValue) > 0
 }
 
 // Secrets returns the registered secrets (with defaulted placeholders).

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"time"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -19,7 +21,9 @@ import (
 // Returns nil for a nil budget so a run without a budget: block persists
 // no cap and the studio Overview degrades to bare stats. MaxDuration is
 // resolved through ExpandEnvWithDefault so a "${DUR:-30m}" source persists
-// as the concrete "30m" the frontend parses.
+// as the concrete "30m" the frontend parses — and only a duration: an
+// expansion that yields anything else persists the source as written, never
+// the environment value it read.
 func SnapshotBudgetForPersist(b *ir.Budget) *store.RunBudget {
 	if b == nil {
 		return nil
@@ -29,9 +33,17 @@ func SnapshotBudgetForPersist(b *ir.Budget) *store.RunBudget {
 		MaxTokens:           b.MaxTokens,
 		WarnTokens:          b.WarnTokens,
 		MaxIterations:       b.MaxIterations,
-		MaxDuration:         ir.ExpandEnvWithDefault(b.MaxDuration),
+		MaxDuration:         persistedDuration(b.MaxDuration),
 		MaxParallelBranches: b.MaxParallelBranches,
 	}
+}
+
+func persistedDuration(raw string) string {
+	expanded := ir.ExpandEnvWithDefault(raw)
+	if _, err := time.ParseDuration(expanded); err != nil {
+		return raw
+	}
+	return expanded
 }
 
 // BudgetOverridesFromRun lifts the budget ask persisted on a run doc

@@ -1265,6 +1265,9 @@ func lookupToolEnv(name string) (string, bool) {
 			return v, true
 		}
 	}
+	if !ir.ProcessEnvReadable(name) {
+		return "", false
+	}
 	return os.LookupEnv(name)
 }
 

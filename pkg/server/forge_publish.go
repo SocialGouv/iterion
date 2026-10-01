@@ -1007,13 +1007,12 @@ func hostOfURL(raw string) string {
 // Launch-time grant minting + var injection
 // ---------------------------------------------------------------------------
 
-// forgePublishVars is the COMPLETE set of launch vars the grant path mints.
-// It exists so the mint and the withdrawal below read the same list: the
-// withdrawal was first written as three literal deletes against a mint of
-// four, and the fourth (the delivery-preflight endpoint) survived on a
-// refused launch. A set named once cannot drift from itself.
+// forgePublishVars is the COMPLETE set of launch vars the grant path mints —
+// store.ServerMintedLaunchVars, the one list the mint, the withdrawal below and
+// every client write path (store.DropServerMintedVars) read, so none can drift
+// from another.
 func forgePublishVars() [4]string {
-	return [4]string{forgePublishVarURL, forgePublishVarToken, forgePublishVarPRState, forgePublishVarPreflight}
+	return store.ServerMintedLaunchVars
 }
 
 // forgePublishVarURL / forgePublishVarToken are the launch vars the server
@@ -1023,10 +1022,10 @@ func forgePublishVars() [4]string {
 // and authenticated by the SAME token: a delivery tail asks it whether the
 // pull request is still open before it pushes onto its branch.
 const (
-	forgePublishVarURL       = "forge_publish_url"
-	forgePublishVarToken     = "forge_publish_token"
-	forgePublishVarPRState   = "forge_pr_state_url"
-	forgePublishVarPreflight = "forge_delivery_preflight_url"
+	forgePublishVarURL       = store.ForgePublishURLVar
+	forgePublishVarToken     = store.ForgePublishTokenVar
+	forgePublishVarPRState   = store.ForgePRStateURLVar
+	forgePublishVarPreflight = store.ForgeDeliveryPreflightURLVar
 )
 
 // injectForgePublishVars mints a per-run forge-publish grant and injects the
@@ -1058,7 +1057,7 @@ const (
 // error rather than a silent "no endpoint bound": the whole point of the
 // lane that sets it is that its output never reaches the forge, and a
 // capability that goes missing quietly is one nobody notices coming back.
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request, trust store.RunTrust) (map[string]string, error) {
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request, trust store.RunTrust) (map[string]string, mintedGrant, error) {
 	prURL := strings.TrimSpace(vars["pr_url"])
 	// Ahead of ALL THREE early returns — the unwired-server one just below,
 	// the no-pr_url one, and the caller-pin one. A check placed after any of
@@ -1098,67 +1097,69 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 				"bot":    strings.TrimSpace(botID),
 			})
 		}
-		return vars, nil
+		return vars, "", nil
 	}
+	dropMaskedGrant(vars)
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
-		return vars, nil
+		return vars, "", nil
 	}
 	if prURL == "" {
-		return vars, nil
+		return vars, "", nil
 	}
 	if pinned := strings.TrimSpace(vars[forgePublishVarToken]); pinned != "" {
 		if grant, ok := s.forgePublishTokens.lookup(pinned); ok &&
 			!strings.EqualFold(strings.TrimSpace(grant.TeamID), strings.TrimSpace(teamID)) {
-			return vars, fmt.Errorf("%w: the launch pins a forge publish grant minted for team %q, but this launch belongs to team %q",
+			return vars, "", fmt.Errorf("%w: the launch pins a forge publish grant minted for team %q, but this launch belongs to team %q",
 				errForgePublishGrantTenant, grant.TeamID, teamID)
 		}
-		// The caller pinned its own grant — don't overwrite. Mark it shared:
-		// two runs now publish with one grant, and neither run's verdict nor
-		// its end may cut it back (shareGrant). A grant that cannot be marked,
-		// or that was already cut back to its post-run grace, is refused like
-		// one that cannot be minted: this run's verdict would be unpostable
-		// once the short grace ran out. A grant that is not found is honoured
-		// and warned about instead — the in-memory registry forgets every
-		// grant on a restart, so "not found" may be a stale token, and a run
-		// that cannot publish beats a launch that fails. A launch without the
-		// pin mints its own grant.
+		// The caller pinned its own grant — don't overwrite, and this launch
+		// minted nothing: a token it merely found is not its to revoke. Mark
+		// it shared: two runs now publish with one grant, and neither run's
+		// verdict nor its end may cut it back (shareGrant). A grant that
+		// cannot be marked, or that was already cut back to its post-run
+		// grace, is refused like one that cannot be minted: this run's verdict
+		// would be unpostable once the short grace ran out. A grant that is
+		// not found is honoured and warned about instead — the in-memory
+		// registry forgets every grant on a restart, so "not found" may be a
+		// stale token, and a run that cannot publish beats a launch that
+		// fails. A launch without the pin mints its own grant.
 		cutBack, found, err := s.shareGrant(pinned)
 		switch {
 		case err != nil:
-			return vars, fmt.Errorf("%w: marking the pinned grant shared: %w", errForgePublishGrantUnavailable, err)
+			return vars, "", fmt.Errorf("%w: marking the pinned grant shared: %w", errForgePublishGrantUnavailable, err)
 		case cutBack:
-			return vars, fmt.Errorf("%w: the pinned grant was cut back to its post-run grace — launch without %s to mint a fresh one",
+			return vars, "", fmt.Errorf("%w: the pinned grant was cut back to its post-run grace — launch without %s to mint a fresh one",
 				errForgePublishGrantUnavailable, forgePublishVarToken)
 		case !found && s.logger != nil:
 			s.logger.Warn("forge publish: a launch pins a publish grant that is expired or revoked — its publish will be refused; launch without %s to mint a fresh one",
 				forgePublishVarToken)
 		}
-		return vars, nil
+		return vars, "", nil
 	}
 	base := s.publicBaseURL(r)
 	if base == "" {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: no public base URL (set PublicURL); deterministic review publishing disabled for this launch")
 		}
-		return vars, nil
+		return vars, "", nil
 	}
 	host, repo, _, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %v; deterministic review publishing disabled for this launch", err)
 		}
-		return vars, nil
+		return vars, "", nil
 	}
 	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
 	if !ok {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: no team %s connection covers %s/%s; deterministic review publishing disabled for this launch", teamID, host, repo)
 		}
-		return vars, nil
+		return vars, "", nil
 	}
 	token := newBoardMCPToken()
 	if token == "" {
-		return vars, nil
+		return vars, "", nil
 	}
 	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo}); err != nil {
 		// A launch that reaches here has a connection covering the PR: it is
@@ -1172,7 +1173,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		if s.logger != nil {
 			s.logger.Error("forge publish: %v; refusing the launch on %s/%s rather than starting a run that cannot publish its verdict", err, host, repo)
 		}
-		return vars, fmt.Errorf("%w: %s/%s: %w", errForgePublishGrantUnavailable, host, repo, err)
+		return vars, "", fmt.Errorf("%w: %s/%s: %w", errForgePublishGrantUnavailable, host, repo, err)
 	}
 	if vars == nil {
 		vars = map[string]string{}
@@ -1181,7 +1182,64 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
 	vars[forgePublishVarPreflight] = base + "/api/v1/forge/delivery-preflight"
 	vars[forgePublishVarToken] = token
-	return vars, nil
+	return vars, mintedGrant(token), nil
+}
+
+// dropMaskedGrant deletes from vars a server-minted secret var whose value is
+// the mask a read surface showed: a client re-sending the inputs it was shown
+// pins no grant, and no launch may store the mask as its token.
+func dropMaskedGrant(vars map[string]string) {
+	for _, name := range store.ServerMintedSecretVars {
+		if strings.TrimSpace(vars[name]) == store.RedactedLaunchVar {
+			delete(vars, name)
+		}
+	}
+}
+
+// mintedGrant is the token THIS launch minted, empty when it minted none. It
+// travels out of the mint instead of being reconstructed by comparing the
+// launch vars before and after: every other token in those vars — an
+// operator's pin, one a repo's launch policy fills in, one a board card
+// carried — belongs to someone else, and a launch that fails must not end it.
+type mintedGrant string
+
+// revokeUnlaunchedGrant revokes the grant this launch minted, once the launch
+// is known to have started no run: nothing holds the token, and an orphan
+// grant would occupy the registry until its TTL.
+func (s *Server) revokeUnlaunchedGrant(minted mintedGrant) {
+	tok := strings.TrimSpace(string(minted))
+	if tok == "" || s == nil || s.forgePublishTokens == nil {
+		return
+	}
+	s.forgePublishTokens.Revoke(tok)
+}
+
+// withoutCardGrant is a board card's bot_args made ready to launch. A publish
+// grant is minted per launch and never rides a card (applyPRLaunchContext), so
+// the token a card carries — the mask a view showed, a grant that expired, an
+// earlier grant of the card's own team — is dropped and the launch mints its
+// own. A live grant of ANOTHER team is refused instead
+// (errForgePublishGrantTenant): a crossing to answer, never a token to launder
+// into a fresh grant. A server with no grant registry mints none, so a token
+// there was pinned by its operator and only the mask is dropped. vars is never
+// mutated.
+func (s *Server) withoutCardGrant(teamID string, vars map[string]string) (map[string]string, error) {
+	tok := strings.TrimSpace(vars[forgePublishVarToken])
+	switch {
+	case s == nil || s.forgePublishTokens == nil:
+		return vars, nil
+	case tok == "" || tok == store.RedactedLaunchVar:
+		// Including the ENDPOINTS: they are minted with the token and name
+		// where it is spent, so a card that carries them without a live
+		// grant would aim this launch's own grant at the card's URL.
+		return store.DropServerMintedVars(vars), nil
+	}
+	if grant, ok := s.forgePublishTokens.lookup(tok); ok &&
+		!strings.EqualFold(strings.TrimSpace(grant.TeamID), strings.TrimSpace(teamID)) {
+		return vars, fmt.Errorf("%w: the card carries a forge publish grant minted for team %q, but it launches for team %q",
+			errForgePublishGrantTenant, grant.TeamID, teamID)
+	}
+	return store.DropServerMintedVars(vars), nil
 }
 
 // applyPRLaunchContext gives a launch that targets a pull request the two
@@ -1212,10 +1270,10 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 // is the same (<base>.CloneURL + the PR's head branch), so a PR whose head
 // is not proven to live in the base repo is refused here too — the returned
 // error carries the refusal, and the caller launches nothing.
-func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
+func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, mintedGrant, error) {
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
-		return vars, nil
+		return vars, "", nil
 	}
 	if host, repo, number, err := forge.ParsePullURL(prURL); err == nil {
 		if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
@@ -1227,7 +1285,7 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 		}
 		conn, proven, err := s.prLaunchForkGuard(ctx, teamID, preferredConnID, prURL, host, repo, number)
 		if err != nil {
-			return vars, err
+			return vars, "", err
 		}
 		if proven {
 			// The grant is minted on the connection the PR was proven

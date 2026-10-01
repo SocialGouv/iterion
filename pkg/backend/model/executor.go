@@ -644,10 +644,11 @@ func (e *ClawExecutor) ScrubOutput(output map[string]any) map[string]any {
 }
 
 // secretMaterializer returns the placeholder→value substitution used to
-// populate Task.MaterializeSecrets. Returns nil when no known secrets
-// are registered so backends skip the work entirely.
+// populate Task.MaterializeSecrets. Returns nil when no registered secret is
+// materialisable (secretguard.Guard.Materializes) so backends skip the work
+// entirely.
 func (e *ClawExecutor) secretMaterializer() func(string) string {
-	if e.secretGuard == nil || !e.secretGuard.HasKnownSecrets() {
+	if !e.secretGuard.Materializes() {
 		return nil
 	}
 	return e.secretGuard.Materialize

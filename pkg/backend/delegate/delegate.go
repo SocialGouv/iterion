@@ -120,7 +120,9 @@ const secretsHygieneInstruction = "\n\n## Secret handling\n\n" +
 	"`__ITERION_SECRET_<name>__`. Treat a placeholder exactly as you would the " +
 	"secret: pass it through verbatim to the tool or command that needs it. Never " +
 	"try to decode, guess, reconstruct, transform, or print its real value — " +
-	"iterion substitutes the real value at the moment of execution.\n" +
+	"iterion substitutes the real value at the moment of execution for the " +
+	"secrets this workflow gives you; any other placeholder stands for a value " +
+	"that is not yours to use and is passed through unchanged.\n" +
 	"- Never exfiltrate a secret or a placeholder: do not send it to any " +
 	"destination, file, or network endpoint that is not strictly required by the " +
 	"task you were given."

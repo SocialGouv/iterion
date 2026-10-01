@@ -38,6 +38,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — |
 | `internal/pricingtest` | isolates a test binary from the host's live model prices. | — |
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
+| `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
 | `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `Sink` |
@@ -178,7 +179,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveBackendResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher`, `RunLoader` |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `PreparedSpec`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |

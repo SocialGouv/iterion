@@ -1003,15 +1003,75 @@ func SetEnvOverlay(fn func(name string) (string, bool)) {
 // the write surface validates that namespace, and gating the read side
 // too means a corrupted or hand-edited settings document can never
 // inject $HOME, $PATH or a provider credential into an expansion.
+//
+// A name the process-env policy refuses (SetProcessEnvPolicy) resolves as
+// unset: on a cloud process, workflow text never reads the platform's
+// credentials. LookupOperatorEnv is the unrestricted read for text the
+// operator wrote.
 func LookupEnv(name string) string {
-	if strings.HasPrefix(name, "ITERION_") {
-		if fn := envOverlay.Load(); fn != nil {
-			if v, ok := (*fn)(name); ok && v != "" {
-				return v
-			}
-		}
+	if v, ok := lookupOverlay(name); ok {
+		return v
+	}
+	if !ProcessEnvReadable(name) {
+		return ""
 	}
 	return os.Getenv(name)
+}
+
+// LookupOperatorEnv is LookupEnv for text the operator wrote — a plugin's
+// MCP server, the deployment's own settings: the process-env policy is about
+// workflow text and does not reach the operator's configuration.
+func LookupOperatorEnv(name string) string {
+	if v, ok := lookupOverlay(name); ok {
+		return v
+	}
+	return os.Getenv(name)
+}
+
+func lookupOverlay(name string) (string, bool) {
+	if !strings.HasPrefix(name, "ITERION_") {
+		return "", false
+	}
+	if fn := envOverlay.Load(); fn != nil {
+		if v, ok := (*fn)(name); ok && v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// DurationParseReason is why a duration field does not parse, safe to show to
+// whoever reads the message: the parser's own error quotes its input, and
+// when `${…}` expansion produced that input it may be any value of the
+// process environment.
+func DurationParseReason(raw, expanded string, err error) string {
+	if raw == expanded {
+		return err.Error()
+	}
+	return "its ${…} references expand to a value that is not a duration"
+}
+
+// envPolicy says which names workflow text may read from the process
+// environment: a `${NAME}` in a .bot, a launch value, a tool command. Nil —
+// the default, a local operator's own environment — reads every name. A
+// cloud process installs one at boot: its environment holds the platform's
+// credentials, not the tenant's.
+var envPolicy atomic.Pointer[func(name string) bool]
+
+// SetProcessEnvPolicy installs envPolicy. Nil restores "every name".
+func SetProcessEnvPolicy(fn func(name string) bool) {
+	if fn == nil {
+		envPolicy.Store(nil)
+		return
+	}
+	envPolicy.Store(&fn)
+}
+
+// ProcessEnvReadable reports whether workflow text may read name from the
+// process environment.
+func ProcessEnvReadable(name string) bool {
+	fn := envPolicy.Load()
+	return fn == nil || (*fn)(name)
 }
 
 // lookupEnv keeps the package-internal call sites on the short name.
@@ -1269,7 +1329,7 @@ func (c *compiler) validateNodeTimeout(w *Workflow) {
 		d, err := time.ParseDuration(expanded)
 		if err != nil {
 			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
-				"node %q has an invalid timeout %q: %v", node.NodeID(), raw, err)
+				"node %q has an invalid timeout %q: %s", node.NodeID(), raw, DurationParseReason(raw, expanded, err))
 			continue
 		}
 		if d <= 0 {

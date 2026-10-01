@@ -352,6 +352,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	dropMaskedGrant(req.Vars)
 	runSource, err := validateLaunchRunSource(req.RunSource)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid run_source: %v", err)
@@ -569,7 +570,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
 	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		vars, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		vars, minted, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
 		if err != nil {
 			// One table for the whole class (prLaunchContextStatus): an
 			// inadmissible request answers 422, the server's own grant
@@ -581,6 +582,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Vars = vars
+		defer func() {
+			if !runMayExist {
+				s.revokeUnlaunchedGrant(minted)
+			}
+		}()
 	}
 
 	// Detach lifecycle from the HTTP request context so a client

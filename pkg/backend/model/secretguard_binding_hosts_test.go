@@ -54,7 +54,7 @@ func TestBuildSecretGuard_BindingHostsNarrowEgress(t *testing.T) {
 		Generic:      map[string]string{"forge_token": val},
 		GenericHosts: map[string][]string{"forge_token": {"gitlab.com"}},
 	})
-	g := BuildSecretGuard(ctx, wf, nil)
+	g := BuildSecretGuard(ctx, wf, nil, nil)
 	if g == nil {
 		t.Fatal("guard is nil; a known secret should yield a guard")
 	}
@@ -82,7 +82,7 @@ func TestBuildSecretGuard_DisjointHostsDenyAll(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		GenericHosts: map[string][]string{"forge_token": {"gitlab.com"}},
 	})
-	g := BuildSecretGuard(ctx, wf, nil)
+	g := BuildSecretGuard(ctx, wf, nil, nil)
 	if g == nil {
 		t.Fatal("guard is nil; a known secret should yield a guard")
 	}
