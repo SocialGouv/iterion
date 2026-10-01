@@ -8,6 +8,7 @@ references stay in [`docs/`](../README.md) proper.
 
 | Page | Read it when |
 |---|---|
+| [worktrees.md](worktrees.md) | Before changing a file from an interactive session: the worktree default, the in-a-worktree test, the store commands, the git traps. |
 | [review-and-merge.md](review-and-merge.md) | Opening, merging or unblocking a PR: queue, Revi gate, parked gate, Billy, releases. |
 | [adversarial-review-loop.md](adversarial-review-loop.md) | Before any push: why the round is required, its budget, who pays, the trailers. |
 | [engine-map.md](engine-map.md) | Which package owns a behaviour, and its invariants. |

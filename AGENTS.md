@@ -89,7 +89,10 @@ as a sub-issue **and** through the `Epic` field ([mechanics](docs/board-epics.md
   claimed without the operator's arbitration. Work found mid-session becomes an
   issue under an epic.
 - **B — dev.** First ask whether a catalog bot can do it and propose that
-  ([dogfood](docs/agents/dogfood.md)), never impose it; otherwise code directly.
+  ([dogfood](docs/agents/dogfood.md)), never impose it; otherwise code
+  directly — in a dedicated worktree, never the shared primary checkout
+  ([worktrees](docs/agents/worktrees.md); bot runs are out of scope: the
+  engine owns their workspace).
 - **C — close.** Link the evidence (PR, commit, bilan), update the status and
   release the claim: Done, or Planned with a state-of-work comment. An In
   progress ticket nobody holds is a board bug — fix it.
