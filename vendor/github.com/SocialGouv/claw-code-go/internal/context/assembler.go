@@ -22,8 +22,8 @@ type AssembleOptions struct {
 	// worktree, a container) otherwise fingerprints to a fresh, empty
 	// directory every run.
 	AutoMemoryDir string
-	// Memory configures CLAUDE.md discovery (walk-up, imports, size cap)
-	// when ProjectInstructions is enabled.
+	// Memory configures CLAUDE.md discovery (walk-up, imports, size cap and
+	// which scopes are read) when ProjectInstructions is enabled.
 	Memory MemoryOptions
 }
 
@@ -46,8 +46,25 @@ type Assembler struct {
 
 	mu            sync.Mutex
 	memCache      string
+	memKey        memoryCacheKey   // what memCache was built for
+	memLoaded     bool             // memCache holds a load (memKey is meaningful)
 	memMtimes     map[string]int64 // files actually read on the last load (incl. imports)
 	memCandidates map[string]int64 // discovery candidates present on the last check
+}
+
+// memoryCacheKey is everything the memory section is a function of besides the
+// files on disk: where it is built for and how it is scoped. The file state is
+// tracked by mtime; this is the rest. It is compared whole, so a MemoryOptions
+// field added later is in the key without anyone remembering to put it there —
+// and one that cannot be compared (a slice, a map) stops this compiling rather
+// than silently dropping out of it.
+//
+// The mtime check alone cannot tell two scopes apart: the same files can carry
+// different labels (HOME is an ancestor of workDir, so ~/.claude/CLAUDE.md is
+// the user's file under one scope and an ancestor's under another).
+type memoryCacheKey struct {
+	workDir string
+	memory  MemoryOptions
 }
 
 // NewAssembler creates an Assembler for the given working directory with all
@@ -101,20 +118,23 @@ func (a *Assembler) Assemble() string {
 	return strings.Join(sections, "\n\n")
 }
 
-// loadMemory returns cached CLAUDE.md content, re-reading only when files
-// change. Revalidation is two-part: re-stat the discovery candidates (notices
-// created/deleted memory files) and the files actually read on the last load
-// (notices edited roots AND imports).
+// loadMemory returns cached CLAUDE.md content, re-reading only when it can have
+// changed. The cache is valid for one memoryCacheKey — the work directory and
+// the memory options — and revalidated in two parts: re-stat the discovery
+// candidates (notices created/deleted memory files) and the files actually
+// read on the last load (notices edited roots AND imports).
 func (a *Assembler) loadMemory() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	key := memoryCacheKey{workDir: a.WorkDir, memory: a.opts.Memory}
 	candidates := MemoryCandidateMtimes(a.WorkDir, a.opts.Memory)
-	if mtimesEqual(candidates, a.memCandidates) && mtimesEqual(currentMtimes(a.memMtimes), a.memMtimes) {
+	if a.memLoaded && key == a.memKey &&
+		mtimesEqual(candidates, a.memCandidates) && mtimesEqual(currentMtimes(a.memMtimes), a.memMtimes) {
 		return a.memCache
 	}
 	a.memCache, a.memMtimes = LoadMemory(a.WorkDir, a.opts.Memory)
-	a.memCandidates = candidates
+	a.memCandidates, a.memKey, a.memLoaded = candidates, key, true
 	return a.memCache
 }
 
