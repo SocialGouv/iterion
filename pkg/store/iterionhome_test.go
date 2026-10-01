@@ -168,6 +168,31 @@ func TestTheProductionResolutionTakesNoTestBranch(t *testing.T) {
 		t.Fatalf("production, a planted %s: the inherited resolution named %q; want no home", homeEnvName(), got)
 	}
 
+	// HOME=/ is a home — /.iterion — for both resolutions: the inherited one
+	// joins the value rather than trimming it to nothing.
+	t.Setenv("ITERION_HOME", "")
+	t.Setenv(homeEnvName(), string(filepath.Separator))
+	rootHome := filepath.Join(string(filepath.Separator), StoreDirName)
+	envtrust.ResetForTest()
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	if got, err := resolveIterionHome(false, liveEnvironment); err != nil || got != rootHome {
+		t.Fatalf("production, HOME=/: resolveIterionHome = %q, %v; want %q", got, err, rootHome)
+	}
+	if got := inheritedIterionDataDir(false); got != rootHome {
+		t.Fatalf("production, HOME=/: inheritedIterionDataDir = %q; want %q", got, rootHome)
+	}
+
+	// No home dir at all: the writers' <tmp>/iterion-data fallback is shared,
+	// so the operator chose no home, whether TMPDIR was inherited or not.
+	t.Setenv("ITERION_HOME", "")
+	t.Setenv(homeEnvName(), "")
+	for _, tmp := range []string{t.TempDir(), ""} {
+		t.Setenv("TMPDIR", tmp)
+		if got := inheritedIterionDataDir(false); got != "" {
+			t.Fatalf("production, no home dir, TMPDIR=%q: inheritedIterionDataDir = %q; want none — the <tmp> fallback is shared", tmp, got)
+		}
+	}
+
 	if dir, ok := testProcessDir(false); ok || dir != "" {
 		t.Fatalf("production has no test process dir; testProcessDir = %q, %v", dir, ok)
 	}

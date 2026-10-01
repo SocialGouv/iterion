@@ -226,6 +226,20 @@ func TestResolveCrossStore_ContainmentBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Repository content under the home, in two shapes no store has: a run
+	// worktree whose runs/ is a symlink out of the home, and a merge clone
+	// carrying a committed run.json — whose file_path the workflow endpoint
+	// would open, wherever it points.
+	outsideRuns := mkdir(filepath.Join(t.TempDir(), "outside", "runs"))
+	worktreeSub := mkdir(filepath.Join(target, "projects", "-k", "worktrees", "r1", "sub"))
+	if err := os.Symlink(outsideRuns, filepath.Join(worktreeSub, "runs")); err != nil {
+		t.Fatal(err)
+	}
+	mergeClone := mkdir(filepath.Join(target, "projects", "-k", "merges", "r1"))
+	committedRun := mkdir(filepath.Join(mergeClone, "runs", "r1"))
+	if err := os.WriteFile(filepath.Join(committedRun, "run.json"), []byte(`{"id":"r1","file_path":"/etc/hostname"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, home := range []string{target, link} {
 		t.Setenv("ITERION_HOME", home)
@@ -236,6 +250,12 @@ func TestResolveCrossStore_ContainmentBranches(t *testing.T) {
 		}
 		if _, err := resolve(sibling); err == nil || !strings.Contains(err.Error(), "outside the iterion home") {
 			t.Fatalf("ITERION_HOME=%s: the prefix sibling %s: err = %v, want a refusal", home, sibling, err)
+		}
+		if root, err := resolve(worktreeSub); err == nil || !strings.Contains(err.Error(), "not a store of the iterion home") {
+			t.Fatalf("ITERION_HOME=%s: a run worktree's subdir %s = %q, %v; want a refusal — its runs/ leads out of the home", home, worktreeSub, root, err)
+		}
+		if root, err := resolve(mergeClone); err == nil || !strings.Contains(err.Error(), "not a store of the iterion home") {
+			t.Fatalf("ITERION_HOME=%s: a merge clone %s = %q, %v; want a refusal — its committed run.json is repository content", home, mergeClone, root, err)
 		}
 	}
 }

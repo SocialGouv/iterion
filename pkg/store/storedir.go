@@ -120,8 +120,8 @@ func GlobalIterionDataDir() string {
 	return filepath.Join(os.TempDir(), "iterion-data")
 }
 
-// InheritedIterionDataDir resolves the same data dir as
-// GlobalIterionDataDir, but strictly from the environment the process
+// InheritedIterionDataDir resolves the iterion home GlobalIterionDataDir
+// names when the operator chose it, strictly from the environment the process
 // INHERITED — never from a value a project `.env` filled in (see
 // internal/envtrust).
 //
@@ -131,13 +131,16 @@ func GlobalIterionDataDir() string {
 // operator's authority — today, whether an installed plugin's servers
 // may start on the launcher of a sandboxed run — use this one.
 //
-// Returns "" when the inherited environment names no home at all, which
-// no caller may read as "anywhere": it means "the operator said
-// nothing", and a trust decision on it fails closed.
+// Returns "" when the inherited environment names no home — ITERION_HOME
+// and the home dir unset or planted — which no caller may read as
+// "anywhere": it means "the operator said nothing", and a trust decision on
+// it fails closed. The <tmp>/iterion-data fallback GlobalIterionDataDir's
+// writers take without a home is never the answer: any local user can create
+// it before the operator does.
 //
 // Under `go test` it resolves as IterionHome does there: an ITERION_HOME
-// inherited from the operator is ignored, and the home and temp tiers name
-// the test process's own home — only where production would name one, so an
+// inherited from the operator is ignored, and the home tier names the test
+// process's own home — only where production would name one, so an
 // environment planted all through still names none. Under the production
 // hook a home the test does not own names none, as IterionHome refuses it.
 func InheritedIterionDataDir() string {
@@ -160,32 +163,25 @@ func inheritedIterionDataDir(underTest bool) string {
 	if dir := trimSeparators(env); dir != "" {
 		return absOrAsGiven(dir)
 	}
-	// The SAME tiers as GlobalIterionDataDir, read from the inherited
-	// environment. A tier missing here that is present there does not fail
-	// safe — it makes the operator's own home unrecognisable, so their own
-	// installed plugins quietly lose their authority. That is how the
-	// Windows case was wrong: os.UserHomeDir reads %USERPROFILE%, HOME is
-	// normally unset there, and every installed plugin became untrusted.
-	home := trimSeparators(envtrust.Inherited(homeEnvName()))
-	tmp := trimSeparators(envtrust.Inherited("TMPDIR"))
-	if underTest && !asInProduction && (home != "" || tmp != "" || os.Getenv("TMPDIR") == "") {
+	// The home tier of GlobalIterionDataDir, read from the inherited
+	// environment and through the same variable os.UserHomeDir reads. A tier
+	// read differently here makes the operator's own home unrecognisable, so
+	// their own installed plugins quietly lose their authority: os.UserHomeDir
+	// reads %USERPROFILE% on Windows, where HOME is normally unset.
+	// Joined, not trimmed: HOME=/ names /.iterion, as it does there.
+	home := envtrust.Inherited(homeEnvName())
+	if underTest && !asInProduction && home != "" {
 		return testIterionHome()
 	}
 	if home != "" {
 		return filepath.Join(absOrAsGiven(home), StoreDirName)
 	}
-	if tmp != "" {
-		return filepath.Join(tmp, "iterion-data")
-	}
-	if os.Getenv("TMPDIR") == "" {
-		// No TMPDIR at all: os.TempDir's answer is a compiled-in path no
-		// environment can move, so it is the operator's by construction.
-		return filepath.Join(os.TempDir(), "iterion-data")
-	}
 	return ""
 }
 
-// homeEnvName is the variable os.UserHomeDir consults on this platform.
+// HomeEnvName is the variable os.UserHomeDir consults on this platform.
+func HomeEnvName() string { return homeEnvName() }
+
 func homeEnvName() string {
 	switch runtime.GOOS {
 	case "windows":

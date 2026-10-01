@@ -791,8 +791,8 @@ type Task struct {
 	// the host and from inside the sandbox, and which is NOT part of the target
 	// repository's checkout — the host `~/.iterion` that host_state
 	// bind-mounted. Empty when there is none: host_state=none, the kubernetes
-	// driver, or a mount the auto-binder skipped because it overlapped the
-	// workspace.
+	// driver, a mount the auto-binder skipped because it overlapped the
+	// workspace, or an iterion home that is not the one the operator chose.
 	//
 	// A backend needing to write per-run state (a seeded credential, session
 	// transcripts) writes it HERE rather than under `<WorkDir>/.iterion`.
