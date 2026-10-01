@@ -59,6 +59,18 @@ measured five more ways a rewrite reached the landing under `done`:
 - an owner file beside the plan under **another name** than the five, judged by
   nothing.
 
+The first rule for the lot's own records looked at the running lot's id
+alone: a name starting with it and a separator was the lot's, and so was any
+path the base did not hold. Measured on it:
+
+- lot `L1` rewrote the record of an earlier lot `L1-b`, which its name
+  matched (`L1-b-report.md` starts with `L1-`);
+- lot `L1` created `sweeps/L22.md`, the record of a later lot. That lot's gate
+  checks the record exists (`test -s .modernize/sweeps/L22.md`), so it held
+  before `L22` had run;
+- lot `L1` did the same with no file named for `L22`: `sweeps` linked to a
+  directory of its own holding `L22.md`.
+
 ## Options
 
 - **(a) A list of forbidden edits per file.** A list protects what it names,
@@ -96,17 +108,33 @@ measured five more ways a rewrite reached the landing under `done`:
   the same document is not. A table file that is not a regular file at the
   base, and a plan that is not a regular file at all, is a contract that
   cannot be read: what a link points at is not judged.
-- **What a lot may write beside the plan.** Only its own records:
-  - any path one of whose names carries the running lot's id as a prefix:
-    `<lot>-report.md`, `<lot>-probe.py`, `sweeps/<lot>.md`, all of
-    `<lot>-captures/`. Created, updated or removed. The prefix ends at `-`,
-    `.` or `_`, so lot `L1` does not own `L10-report.md`;
-  - any path the base does not hold, whatever its name: a record the lot
-    creates.
+- **What a lot may write beside the plan.** Only its own records. A path
+  beside the plan is **named for** a lot when one of its names carries that
+  lot's id: the id itself, or the id followed by `-`, `.` or `_`.
+  - The lots are the plan's at the base, plus the lots the landing adds
+    (proposals). Reading the landing's lots cannot widen the running lot's
+    licence: an id only takes names away from it.
+  - The outermost name carrying an id decides: all of `<lot>-captures/` is
+    that lot's, and so is `sweeps/<lot>.md`.
+  - The longest id wins when several match: `L1-b-report.md` is `L1-b`'s,
+    never `L1`'s, and `L10-report.md` is never `L1`'s.
 
-  Everything else the base holds there — the owner's files, and the earlier
-  lots' records — is byte-frozen. A file the owner wants protected is
-  protected from the first run whose base carries it.
+  So the running lot may write:
+  - any path named for it: `<lot>-report.md`, `<lot>-probe.py`,
+    `sweeps/<lot>.md`, all of `<lot>-captures/`. Created, updated or removed;
+  - any path the base does not hold that is named for no other lot: a record
+    the lot creates.
+
+  A path the lot creates that is named for **another** lot is refused: that
+  lot's records are that lot's to write, and a sweep record written ahead of
+  its lot answers that lot's gate before the lot has run. So is a **link** the
+  lot creates under a name of no lot — symbolic, or to another repository: it
+  stands for every path beneath it, another lot's record included (`sweeps`
+  linked to a directory holding `L22.md`). Under its own id, a link is the
+  lot's: every path beneath it is named for the lot. Everything else the base
+  holds there — the owner's files, and the other lots' records — is
+  byte-frozen. A file the owner wants protected is protected from the first
+  run whose base carries it.
 - **Judged on what lands.** Three trees are judged:
   - the working tree, as git would store it: `hash-object --path`, with the
     path's line-ending and encoding conversions applied;
@@ -115,7 +143,8 @@ measured five more ways a rewrite reached the landing under `done`:
   - HEAD's committed tree.
 
   Two things a commit can store without either tree showing it are refused
-  outright on a contract path, because they cannot be judged:
+  outright on a contract path — a table file, or a file the base holds that is
+  not the running lot's — because they cannot be judged:
   - an index flag (skip-worktree, assume-unchanged);
   - a `filter` attribute. A clean filter is code of the judged party's
     choosing, run each time the path is stored, and it can answer the judge
@@ -132,9 +161,13 @@ measured five more ways a rewrite reached the landing under `done`:
   `lot_gate`'s `converged` and `stop` both carry the contract as a term, so a
   refused verdict neither lands nor ends the run.
 - **`mark_done` commits only what was judged.** The verdict carries the HEAD it
-  judged and, for every judged path, what a commit of the working tree would
-  take: the working tree as git would store it, the index entries and flags,
-  the `filter` attribute. `mark_done` refuses any of them that moved since.
+  judged and, for the table's files and every path the landing carries in the
+  directory (HEAD's tree, the index, the files `git add` takes), what a commit
+  of the working tree would take: the working tree as git would store it, the
+  index entries and flags, the `filter` attribute. `mark_done` refuses any of
+  them that moved since, and any path of the directory the verdict did not
+  list. It applies no rule of its own: it only compares the landing with the
+  verdict.
   Its own work is recognised exactly, so a re-execution after a crash stays
   idempotent:
   - its line in the plan: the plan the verdict judged in the working tree
@@ -192,3 +225,11 @@ measured five more ways a rewrite reached the landing under `done`:
   - A supervising bot's own state kept under the plan's directory (a campaign
     journal) is frozen like any file the base holds there. A path it has not
     created yet is one a lot may create.
+  - Names are matched against the plan's lot ids. A record named for an id no
+    lot carries is no lot's: a lot may create it, and it is frozen once it has
+    landed.
+  - An untracked file git ignores is not part of the landing. Neither bank
+    takes it: the local bank adds what `git add` takes, and a cloud run banks
+    HEAD.
+  - A link the base holds beside the plan is frozen as a link. What it points
+    at is not judged: records kept through it live outside the contract.

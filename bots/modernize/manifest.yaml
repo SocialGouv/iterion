@@ -21,13 +21,19 @@ version: 0.6.0
 ## the working tree the verdict judged, and recognises its own work on a
 ## re-execution. The contract is the plan's whole DIRECTORY: what the base
 ## holds beside the plan is byte-frozen, except the lot's own records (a name
-## carrying its id, or a file it creates). The index is judged as a third tree,
-## and an index flag or a `filter` attribute on a contract path is refused —
-## a commit would store what no tree shows. mark_done holds the landing (the
-## working tree, the index entries, their flags, the filter attribute) to the
-## verdict, and recognises its own commit only at the plan's base mode.
-## plan_read refuses a plan that is not a regular file. The engine's wip bank
-## runs no repository hook. ADR-107.
+## carrying its id, or a file it creates). A name belongs to the lot whose id
+## it carries, among the plan's lots and the ones the lot proposes: the
+## outermost such name decides and the longest id wins (`L1-b-report.md` is
+## never L1's); a file a lot creates for another lot is refused, and so is a
+## link it creates under a name of no lot (it stands for every path beneath
+## it, another lot's records included). The index is judged as a third
+## tree, and an index flag or a `filter` attribute on a contract path is
+## refused — a commit would store what no tree shows.
+## mark_done holds the landing (the working tree, the index entries, their
+## flags, the filter attribute) to the verdict, path by path over the whole
+## directory — a path the verdict did not list is refused — and recognises its
+## own commit only at the plan's base mode. plan_read refuses a plan that is
+## not a regular file. The engine's wip bank runs no repository hook. ADR-107.
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,

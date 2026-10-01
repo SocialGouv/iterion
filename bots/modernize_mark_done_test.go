@@ -64,12 +64,28 @@ var contractPaths = []string{
 }
 
 // judgedNow is the verdict lot_verify would hand mark_done for this tree:
-// HEAD, and per contract file what a commit of the working tree would take —
-// the working tree as git would store it (w), the index entries (i), the index
-// flags (t), the `filter` attribute (f) — in lot_verify's own format.
+// HEAD, and per path of the contract's directory — the table's files, and
+// every path the landing carries there: HEAD's tree, the index, the files
+// `git add` would take — what a commit of the working tree would take: the
+// working tree as git would store it (w), the index entries (i), the index
+// flags (t), the `filter` attribute (f), in lot_verify's own format.
 func judgedNow(t *testing.T, ws string) (string, string) {
 	t.Helper()
 	state := map[string]map[string]string{}
+	paths := map[string]bool{}
+	for _, rel := range contractPaths {
+		paths[rel] = true
+	}
+	for _, listing := range []string{
+		gittest.Run(t, ws, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ".modernize/"),
+		gittest.Run(t, ws, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".modernize/"),
+	} {
+		for _, rel := range strings.Split(listing, "\x00") {
+			if rel != "" {
+				paths[rel] = true
+			}
+		}
+	}
 	idx, tags := map[string][]string{}, map[string][]string{}
 	for _, e := range strings.Split(gittest.Run(t, ws, "ls-files", "-s", "-z", "--", ".modernize/"), "\x00") {
 		meta, path, ok := strings.Cut(e, "\t")
@@ -82,7 +98,7 @@ func judgedNow(t *testing.T, ws string) (string, string) {
 			tags[e[2:]] = append(tags[e[2:]], e[:1])
 		}
 	}
-	for _, rel := range contractPaths {
+	for rel := range paths {
 		st := map[string]string{"w": "absent", "i": "absent", "t": "-", "f": "unspecified"}
 		if e := idx[rel]; len(e) > 0 {
 			sort.Strings(e)

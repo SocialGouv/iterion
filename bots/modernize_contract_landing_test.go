@@ -275,16 +275,20 @@ func TestModernizeMarkDoneCommitsOnlyWhatWasJudged(t *testing.T) {
 		ws, base, _ := programmeRepo(t)
 		mark := toolScript(t, "modernize/main.bot", "mark_done")
 		res := modernizeMarkDoneJudged(t, mark, ws, "L1", base, "", "", 0)
-		if res.Marked || !res.Refused {
-			t.Fatalf("mark_done marked with no verdict to answer for: %+v", res)
+		if res.Marked || !res.Refused || !strings.Contains(res.Notice, "no verdict to answer for") {
+			t.Fatalf("mark_done marked with no verdict to answer for, or refused for another cause: %+v", res)
 		}
 	})
+	// The cause is asserted, not only the refusal: an empty tree also reads
+	// as every path of the directory having appeared, and that refusal would
+	// hide a guard that no longer holds — with the plan at the repository's
+	// root, nothing would refuse at all.
 	t.Run("a verdict without its judged tree", func(t *testing.T) {
 		ws, base, git := programmeRepo(t)
 		mark := toolScript(t, "modernize/main.bot", "mark_done")
 		res := modernizeMarkDoneJudged(t, mark, ws, "L1", base, git("rev-parse", "HEAD"), "", 0)
-		if res.Marked || !res.Refused {
-			t.Fatalf("mark_done marked with a HEAD and no working tree to answer for: %+v", res)
+		if res.Marked || !res.Refused || !strings.Contains(res.Notice, "no verdict to answer for") {
+			t.Fatalf("mark_done marked with a HEAD and no working tree to answer for, or refused for another cause: %+v", res)
 		}
 	})
 	t.Run("the plan edited after the verdict is not taken for the gate's own line", func(t *testing.T) {
@@ -366,6 +370,34 @@ func TestModernizeMarkDoneCommitsOnlyWhatWasJudged(t *testing.T) {
 		})
 		if got.marked || !got.refused || !strings.Contains(got.notice, ".modernize/L0-report.md") {
 			t.Fatalf("mark_done committed over a record the verdict never judged: marked=%v refused=%v notice=%q", got.marked, got.refused, got.notice)
+		}
+	})
+	t.Run("another lot's record appeared after the verdict", func(t *testing.T) {
+		ws, base, _ := programmeOfLots(t, "L22")
+		got := landLot(t, ws, base, "true", func() {
+			writeContract(t, ws, ".modernize/sweeps/L22.md", "# sweep L22, written after the verdict\n")
+		})
+		if got.marked || !got.refused || !strings.Contains(got.notice, ".modernize/sweeps/L22.md appeared") {
+			t.Fatalf("mark_done committed over a record that appeared after the verdict: marked=%v refused=%v notice=%q", got.marked, got.refused, got.notice)
+		}
+	})
+	t.Run("the lot's own record left uncommitted at the verdict: marked", func(t *testing.T) {
+		ws, base, _ := programmeOfLots(t, "L22")
+		writeContract(t, ws, ".modernize/L1-notes.md", "# what L1 noted\n")
+		got := landLot(t, ws, base, "true", nil)
+		if !got.marked || got.refused {
+			t.Fatalf("the lot's own record, judged by the verdict, stopped the gate's word: marked=%v refused=%v notice=%q contract_rewritten=%q",
+				got.marked, got.refused, got.notice, got.verdict.ContractRewrite)
+		}
+	})
+	t.Run("the lot's records under odd names, judged by the verdict: marked", func(t *testing.T) {
+		ws, base, _ := programmeOfLots(t, "L22")
+		writeContract(t, ws, ".modernize/L1-odd\nname.md", "# a name holding a newline\n")
+		writeContract(t, ws, ".modernize/L1-\xff.md", "# a name that is not UTF-8\n")
+		got := landLot(t, ws, base, "true", nil)
+		if !got.marked || got.refused {
+			t.Fatalf("records under odd names stopped the gate's word: marked=%v refused=%v notice=%q contract_rewritten=%q log=%s",
+				got.marked, got.refused, got.notice, got.verdict.ContractRewrite, got.verdict.LogTail)
 		}
 	})
 	t.Run("a worker's commit storing the plan as a symlink is not the gate's own", func(t *testing.T) {

@@ -86,7 +86,14 @@ every other file the base holds there with the run's base, deny by default:
 | a NEW lot, as a proposal | the outcomes, the brief, the arbitration doctrine |
 | a NEW register entry, for a defect it found | every other register entry, a removal, the register's header |
 | the register entries its lot declares in `remediates:` (read at the base) | |
-| its own records: a file named with its id (`<lot>-report.md`, `sweeps/<lot>.md`), or one the base does not hold | every other file the base holds beside the plan: the owner's, the earlier lots' records |
+| its own records: a file named for it (`<lot>-report.md`, `sweeps/<lot>.md`), or one the base does not hold that is named for no other lot | every other file the base holds beside the plan: the owner's, the other lots' records; a file it creates named for another lot |
+
+A path is named for the lot whose id one of its names carries (the id, or the
+id followed by `-`, `.` or `_`), among the plan's lots at the base and the ones
+the lot proposes; the outermost such name decides, and the longest id wins:
+`L1-b-report.md` is lot `L1-b`'s, never `L1`'s. A link a lot creates there
+(symbolic, or a nested repository) stands for every path beneath it, so it is
+refused unless it carries the lot's id.
 
 An index flag (`skip-worktree`, `assume-unchanged`) or a `filter` attribute on
 a contract path is refused outright: a commit would store what no tree shows.
