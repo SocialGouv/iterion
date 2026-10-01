@@ -793,7 +793,13 @@ func worktreeStatus(ctx context.Context, path string, countIgnored, excludeRunti
 		// bound needs them for safety; a second status doubled launch cost.
 		args = append(args, "--ignored=matching")
 	}
-	out, err := gitOutContext(ctx, path, args...)
+	// The raw variant, not gitOutContext: a worktree-side status (" M",
+	// " D") starts the output with a SPACE, and trimming it eats the first
+	// record's X column — the parser then reads "M " and a path missing its
+	// first byte, which no scaffold rule names, and iterion's own mirror
+	// bookkeeping turns into somebody's work (TestClean_IterionManaged-
+	// BookkeepingIsNeverWork).
+	out, err := gitOutContextRaw(ctx, path, args...)
 	if err != nil {
 		// Unreadable status is treated as dirty: the conservative reading
 		// of "we could not tell" is "there may be something here".
@@ -994,6 +1000,14 @@ func gitOut(dir string, args ...string) (string, error) {
 }
 
 func gitOutContext(parent context.Context, dir string, args ...string) (string, error) {
+	out, err := gitOutContextRaw(parent, dir, args...)
+	return strings.TrimSpace(out), err
+}
+
+// gitOutContextRaw is gitOutContext without the whitespace trim. The NUL
+// porcelain is positional — a record's X column may itself be a space — so
+// any consumer of `status --porcelain -z` must take the output verbatim.
+func gitOutContextRaw(parent context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, gitTimeout)
 	defer cancel()
 	// --no-optional-locks keeps read-only inspection read-only: `git
@@ -1024,7 +1038,7 @@ func gitOutContext(parent context.Context, dir string, args ...string) (string, 
 		return "", fmt.Errorf("git %s in %s: %w (stderr: %s)",
 			strings.Join(args, " "), dir, err, msg)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return string(out), nil
 }
 
 // loadRunStatuses reads only the runs that have worktrees in this pass.
