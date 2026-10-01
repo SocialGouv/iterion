@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -684,12 +685,20 @@ func (e *ClawExecutor) secretFileHints() []delegate.SecretFileHint {
 	return out
 }
 
-// MaterializeForHost / ExfiltratesTo / SecretsInspectActive let the
+// MaterializeForHost is MaterializeForHostWithin unbounded, for callers that
+// check whether a placeholder resolves rather than hold the result: the
+// proxy, which holds every substitution, uses the bounded call.
+func (e *ClawExecutor) MaterializeForHost(s, host string) string {
+	out, _ := e.MaterializeForHostWithin(s, host, math.MaxInt)
+	return out
+}
+
+// MaterializeForHostWithin / ExfiltratesTo / SecretsInspectActive let the
 // engine use the executor's guard as the egress rewriter for the
 // sandbox proxy's TLS-inspection mode (Layer 2), via a structural
 // interface — so the runtime needn't import pkg/backend/secretguard.
-func (e *ClawExecutor) MaterializeForHost(s, host string) string {
-	return e.secretGuard.MaterializeForHost(s, host)
+func (e *ClawExecutor) MaterializeForHostWithin(s, host string, limit int) (string, bool) {
+	return e.secretGuard.MaterializeForHostWithin(s, host, limit)
 }
 
 func (e *ClawExecutor) ExfiltratesTo(s, host string) bool {
