@@ -95,6 +95,14 @@ iterion remote runs merge "$id" --strategy squash
 (default every 2s, `--interval` to tune) — no WebSocket dependency, so
 it works through any proxy.
 
+What a server relays — a run's error, a title, a body without a table —
+is shown as text: a control character, an escape sequence or a bidi
+override is printed escaped (`\x1b`, `\u202e`), never sent to the
+terminal raw. `--json` passes the server's body as it is, for a machine;
+`runs log` and `runs workflow` print the bytes the run holds, as they are
+(a log keeps its colors). A long run error is clipped on its failure's
+text: the remedy it ends on (`— hint: …`) is kept whole.
+
 Attachments: `--attach name=./file` uploads via `POST /api/runs/uploads`
 and wires the returned id into the launch. `runs upload <path>` does
 the staging step alone and prints the upload id.

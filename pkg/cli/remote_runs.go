@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -600,7 +601,8 @@ func printRemoteEvent(p *Printer, e remoteEvent) {
 	p.Line("%s  %-22s%s%s", e.Timestamp.Format("15:04:05"), terminalText(e.Type, 100), node, detail)
 }
 
-// RemoteRunsRaw streams a raw endpoint (log, workflow source) to output.
+// RemoteRunsRaw streams a raw endpoint (log, workflow source) to output as
+// the server sent it (Printer.Raw): the operator asked for those bytes.
 func RemoteRunsRaw(ctx context.Context, c *RemoteClient, p *Printer, id, endpoint string) error {
 	code, body, err := c.API(ctx, "GET", "/api/runs/"+id+endpoint, nil)
 	if err != nil {
@@ -609,7 +611,7 @@ func RemoteRunsRaw(ctx context.Context, c *RemoteClient, p *Printer, id, endpoin
 	if code/100 != 2 {
 		return &APIError{Status: code, Method: "GET", Path: "/api/runs/" + id + endpoint, Body: string(body)}
 	}
-	p.Line("%s", strings.TrimRight(string(body), "\n"))
+	p.Raw(append(bytes.TrimRight(body, "\n"), '\n'))
 	return nil
 }
 

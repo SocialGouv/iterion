@@ -110,7 +110,9 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 	}
 	_ = json.Unmarshal(body, &me)
 	p, _ := cli.RemoteConfigPath()
-	fmt.Printf("Logged in to %s as %s\n(token saved to %s)\n", base, me.User.Email, p)
+	out := cli.NewPrinter(cli.OutputHuman)
+	out.Line("Logged in to %s as %s", base, me.User.Email)
+	out.Line("(token saved to %s)", p)
 	return nil
 }
 
@@ -214,7 +216,9 @@ var remoteStatusCmd = &cobra.Command{
 		if me.User.IsSuperAdmin {
 			role = " (super-admin)"
 		}
-		fmt.Printf("Instance: %s\nAccount:  %s%s\n", client.BaseURL(), me.User.Email, role)
+		out := cli.NewPrinter(cli.OutputHuman)
+		out.Line("Instance: %s", client.BaseURL())
+		out.Line("Account:  %s%s", me.User.Email, role)
 		return nil
 	},
 }

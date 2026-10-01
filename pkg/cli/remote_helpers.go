@@ -117,18 +117,39 @@ func terminalText(s string, limit int) string {
 			break
 		}
 		n++
-		switch {
-		case r == utf8.RuneError:
-			b.WriteString(`\ufffd`)
-		case unicode.IsControl(r):
-			fmt.Fprintf(&b, `\x%02x`, r)
-		case unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp):
-			fmt.Fprintf(&b, `\u%04x`, r)
-		default:
-			b.WriteRune(r)
-		}
+		writeInert(&b, r)
 	}
 	return b.String()
+}
+
+// inertText is s made inert for a terminal by terminalText's rule, unbounded,
+// its layout kept: line feeds and tabs are written as they are.
+func inertText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == '\t' {
+			b.WriteRune(r)
+			continue
+		}
+		writeInert(&b, r)
+	}
+	return b.String()
+}
+
+// writeInert writes r to b as a terminal shows it, escaped when a terminal
+// would act on it instead: a byte that is no character, a control character
+// (C0, DEL, C1), a format or separator character.
+func writeInert(b *strings.Builder, r rune) {
+	switch {
+	case r == utf8.RuneError:
+		b.WriteString(`\ufffd`)
+	case unicode.IsControl(r):
+		fmt.Fprintf(b, `\x%02x`, r)
+	case unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp):
+		fmt.Fprintf(b, `\u%04x`, r)
+	default:
+		b.WriteRune(r)
+	}
 }
 
 // Call performs an authenticated JSON request. A non-nil `in` is
