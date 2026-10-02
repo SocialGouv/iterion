@@ -834,7 +834,7 @@ func storedLandingVerdict(r *store.Run) *runtime.LandingVerdict {
 		head, _ := out["contract_head"].(string)
 		tree, _ := out["contract_tree"].(string)
 		if head != "" && tree != "" {
-			return &runtime.LandingVerdict{JudgedHead: head, JudgedTree: tree}
+			return &runtime.LandingVerdict{JudgedHead: head, JudgedTree: tree, LandingCommit: r.FinalCommit}
 		}
 	}
 	return nil

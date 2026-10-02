@@ -1597,11 +1597,33 @@ tool lot_verify:
         # exclusions its bank stages with ($ITERION_TREE_NOISE, the mirror and
         # the derivable noise): staging the bank's tree is an iterion gesture,
         # not the run's to ride or to refuse.
+        # The same exclusions the bank's own staging carries — and the same
+        # probe: git refuses an exclusion whose path is ignored (an untracked
+        # mirror behind a `.gitignore`), so the bank drops exactly that one
+        # and stages without it. An exclusion spelled where git would refuse
+        # makes the whole staging fail, and with it every lot.
         env = dict(os.environ, GIT_INDEX_FILE=scratch)
-        add = subprocess.run(["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
-                              "-c", "core.fsmonitor=false", "add", "-A", "--", ":/"]
-                             + shlex.split(os.environ.get("ITERION_TREE_NOISE", "")),
-                             env=env, capture_output=True, timeout=300)
+        add_args = ["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
+                    "-c", "core.fsmonitor=false", "add", "-A", "--", ":/"]
+        for spec in shlex.split(os.environ.get("ITERION_TREE_NOISE", "")):
+            rel = spec
+            for pre in (":(exclude,top)", "(exclude,top)"):
+                if rel.startswith(pre):
+                    rel = rel[len(pre):]
+                    break
+            try:
+                info = os.lstat(os.path.join(ws, rel))
+                probe = ["check-ignore", "-q"]
+                if os.path.isdir(os.path.join(ws, rel)):
+                    probe.append("--no-index")
+                probe += ["--", ":(top)" + rel]
+                if subprocess.run(["git", "-C", ws] + probe, capture_output=True,
+                                  timeout=60).returncode == 0:
+                    continue  # ignored: git would refuse the exclusion; it stages nothing anyway
+            except OSError:
+                pass
+            add_args.append(spec)
+        add = subprocess.run(add_args, env=env, capture_output=True, timeout=300)
         if add.returncode != 0:
             unreadable("cannot stage the working tree as the bank would (%s): %s"
                        % (plan_rel, add.stderr.decode("utf-8", "replace")[-300:]))
@@ -1674,7 +1696,11 @@ tool lot_verify:
                         git_fail("size", at, size)
                     if size.stdout.decode().strip() == "0":
                         why = "the commit carries it empty"
-                    elif resolve_in_tree(at, banked) is None:
+                    elif resolve_in_tree(at, banked) is None \
+                            and resolve_in_tree(rel, banked) is None:
+                        # Each tree is judged under the path IT carries the
+                        # record at: HEAD behind its committed link, the
+                        # landing at the path its index and working tree hold.
                         why = ("the commit carries it, but the landing does not: the index and the "
                                "working tree would not carry %s into the banked commit (left "
                                "uncommitted, ignored, or removed from the index)" % at)

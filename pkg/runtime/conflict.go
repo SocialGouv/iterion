@@ -320,13 +320,16 @@ func StageResolvedFile(repoRoot, path, content string) error {
 }
 
 // LandingVerdict is what a landing must still answer to: the HEAD the bot's
-// verdict judged, and the landing state it recorded (the verdict's own JSON).
-// Nil means the run's bot recorded no landing verdict — a workflow whose bot
-// keeps no contract — and there is nothing to re-judge: the landing commits
-// as before.
+// verdict judged, the landing state it recorded (the verdict's own JSON),
+// and the commit the gate's word landed on — the run's own `done` carries the
+// plan flipped, so the staged resolution is compared with THAT commit's
+// bytes, never with the pre-flip head. Nil means the run's bot recorded no
+// landing verdict — a workflow whose bot keeps no contract — and there is
+// nothing to re-judge: the landing commits as before.
 type LandingVerdict struct {
-	JudgedHead string
-	JudgedTree string
+	JudgedHead    string
+	JudgedTree    string
+	LandingCommit string
 }
 
 // checkStagedAgainstVerdict re-judges the staged resolution before it is
@@ -341,6 +344,10 @@ func checkStagedAgainstVerdict(repoRoot string, verdict *LandingVerdict) error {
 	}
 	if err := json.Unmarshal([]byte(verdict.JudgedTree), &parsed); err != nil || len(parsed.Table) == 0 {
 		return fmt.Errorf("the stored verdict carries no contract files to re-judge the resolution against — land by hand")
+	}
+	base := verdict.LandingCommit
+	if strings.TrimSpace(base) == "" {
+		base = verdict.JudgedHead
 	}
 	paths := make([]string, 0, len(parsed.Table))
 	for p := range parsed.Table {
@@ -368,11 +375,11 @@ func checkStagedAgainstVerdict(repoRoot string, verdict *LandingVerdict) error {
 			return fmt.Errorf("cannot read the staged entry of %s: %q", p, entries[0])
 		}
 		staged := fields[1]
-		at, cancelAt := gitCmd("-C", repoRoot, "ls-tree", "--no-abbrev", verdict.JudgedHead, "--", p)
+		at, cancelAt := gitCmd("-C", repoRoot, "ls-tree", "--no-abbrev", base, "--", p)
 		out, err = at.CombinedOutput()
 		cancelAt()
 		if err != nil {
-			return fmt.Errorf("cannot read %s at the judged HEAD %s: %v\noutput: %s", p, verdict.JudgedHead[:min(12, len(verdict.JudgedHead))], err, out)
+			return fmt.Errorf("cannot read %s at the landed commit %s: %v\noutput: %s", p, base[:min(12, len(base))], err, out)
 		}
 		judged := ""
 		for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -381,8 +388,8 @@ func checkStagedAgainstVerdict(repoRoot string, verdict *LandingVerdict) error {
 			}
 		}
 		if judged == "" {
-			return fmt.Errorf("the verdict's judged HEAD %s carries no %s to compare the resolution with — land by hand",
-				verdict.JudgedHead[:min(12, len(verdict.JudgedHead))], p)
+			return fmt.Errorf("the landed commit %s carries no %s to compare the resolution with — land by hand",
+				base[:min(12, len(base))], p)
 		}
 		if staged != judged {
 			return fmt.Errorf("the resolution of %s is not the contract the verdict judged (judged blob %s, staged %s): "+

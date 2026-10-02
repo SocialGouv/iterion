@@ -773,14 +773,17 @@ func (r *Runner) pushLFSObjects(ctx context.Context, msg *queue.RunMessage, work
 	if _, err := r.runGitOutEnv(ctx, workDir, "", nil, "config", "--get-regexp", `^filter\.lfs\.`); err != nil {
 		return "" // no LFS filter configured in this clone: nothing could be a pointer
 	}
-	listed, err := r.runGitOutEnv(ctx, workDir, "", nil, "ls-files")
+	// -z, raw: a quoted path (`core.quotePath`) would not be the path
+	// check-attr answers for, and a non-ASCII name would be missed —
+	// a silent pointer push again.
+	listed, err := r.runGitOutEnv(ctx, workDir, "", nil, "ls-files", "-z")
 	if err != nil {
 		return fmt.Sprintf("bank refused: cannot list the run's tree to check its Git LFS paths: %v: %s", err, listed)
 	}
 	var paths []string
-	for _, p := range strings.Split(strings.TrimSpace(listed), "\n") {
-		if strings.TrimSpace(p) != "" {
-			paths = append(paths, strings.TrimSpace(p))
+	for _, p := range strings.Split(listed, "\x00") {
+		if p != "" {
+			paths = append(paths, p)
 		}
 	}
 	lfsPath := ""
@@ -810,7 +813,9 @@ func (r *Runner) pushLFSObjects(ctx context.Context, msg *queue.RunMessage, work
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
 	}
-	if err := r.runGit(ctx, workDir, tok, "lfs", "push", "origin", head+":refs/heads/"+branch); err != nil {
+	// A bare sha: git-lfs cannot resolve a `<sha>:<refspec>` argument, and a
+	// push of that shape exits 0 having uploaded nothing.
+	if err := r.runGit(ctx, workDir, tok, "lfs", "push", "origin", head); err != nil {
 		return fmt.Sprintf("bank refused: the run's tree carries Git LFS paths (first: %s) and uploading their objects failed: %v — "+
 			"the bank's push runs no hook, so git-lfs never uploads from it; install git-lfs on the runner or land by hand", lfsPath, err)
 	}
