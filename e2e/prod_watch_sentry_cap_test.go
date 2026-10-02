@@ -544,6 +544,26 @@ func TestProdWatch_SentryCapRefusals(t *testing.T) {
 		}
 	})
 	for _, c := range []struct {
+		name string
+		v    any
+	}{
+		{"negative", -1}, {"bool", true}, {"float", 1.5}, {"a string", "5000"}, {"past its bound", 2_000_000_000},
+	} {
+		c := c
+		t.Run("loki.max_records "+c.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPWHarness(t)
+			h.writeConfig(t, func(cfg map[string]any) {
+				sentryOnly(h, nil)(cfg)
+				cfg["loki"] = map[string]any{"max_records": c.v}
+			})
+			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "plan").Script, nil, vars(h), nil))
+			if err == nil || !strings.Contains(stderr, "config.loki.max_records") {
+				t.Fatalf("want a refusal naming config.loki.max_records, got err=%v stderr=%s", err, stderr)
+			}
+		})
+	}
+	for _, c := range []struct {
 		name, want string
 		mod        func(st map[string]any)
 	}{
@@ -553,6 +573,7 @@ func TestProdWatch_SentryCapRefusals(t *testing.T) {
 		{"records_cut negative", "records_cut", func(st map[string]any) { st["records_cut"] = map[string]any{"sentry": -1} }},
 		{"records_cut float", "records_cut", func(st map[string]any) { st["records_cut"] = map[string]any{"sentry": 1.5} }},
 		{"a watch stamp past the state generation", ".transition_seen_gen", func(st map[string]any) { capRec(st)["transition_seen_gen"] = 1_000_000 }},
+		{"a loki read stamp past the state generation", ".read_gen", func(st map[string]any) { capRec(st)["read_gen"] = 1_000_000 }},
 		{"a read stamp past the state generation", ".tracked_read_gen", func(st map[string]any) { capRec(st)["tracked_read_gen"] = 1_000_000 }},
 		{"a check stamp past the state generation", ".transition_checked_gen", func(st map[string]any) { capRec(st)["transition_checked_gen"] = 1_000_000 }},
 		{"an admission past the state generation", ".admitted_gen", func(st map[string]any) { capRec(st)["admitted_gen"] = 1_000_000 }},
