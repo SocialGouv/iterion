@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/spf13/cobra"
 )
 
@@ -169,9 +170,13 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// scrubbing the engine applies before container start). Its event
 	// hooks relay what this loop observes to the launcher, which re-fires
 	// them through its own hooks — what makes a sandboxed claw node
-	// metered, auditable and forkable like an in-process one.
+	// metered, auditable and forkable like an in-process one. The logger
+	// carries the warnings EventHooks has no channel for (settings-hooks
+	// diagnostics, subscription-spend notices) to stderr, which the
+	// launcher captures into the node's error when the run fails.
 	registry := model.NewRegistry()
-	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicy{})
+	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicy{},
+		model.WithClawLogger(iterlog.NewFromEnv(stderr)))
 
 	start := time.Now()
 	result, err := backend.Execute(ctx, task)

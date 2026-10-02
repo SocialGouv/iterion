@@ -613,14 +613,21 @@ Semantics:
 
 ### Which backends honour the chain
 
-Only **`claude_code`** consumes the provider hint today, and it routes
+**`claude_code`** consumes the provider hint in full, and it routes
 within the **Anthropic-compatible family** (`anthropic` ↔ `zai` ↔ other
 facades) — i.e. the same model id served by a different credential lane.
 This is the validated path and the original `RESCUE_PROVIDER` use case.
 
 `claw` derives its provider from the `model:` prefix
-(`openai/…`, `anthropic/…`), and `codex` ignores the hint entirely. On
-those backends a multi-element chain is a **no-op**: the runtime uses
+(`openai/…`, `anthropic/…`), but honours a **single-value** hint on its
+anthropic provider: `provider: "anthropic"` forces Anthropic-direct at the
+credential-resolution chokepoint — the z.ai synthesis from `ZAI_API_KEY`,
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` are skipped, on the
+in-process path and inside the sandbox alike (#1718). A hint-pinned node
+with no Anthropic-direct credential reachable is refused by type
+(`model.ErrProviderHintUnfunded`) rather than silently spending a
+credential the hint excluded. `codex` ignores the hint entirely. On
+`claw` and `codex` a multi-element chain is a **no-op**: the runtime uses
 only the first provider, and the compiler emits a **C088** warning. For
 cross-provider failover under `claw` (e.g. Anthropic → OpenAI), vary the
 `model:` per node instead — a credential hint alone cannot switch the

@@ -397,8 +397,8 @@ The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
 CLI, and marketplace. Skills and MCP servers reach both `claude_code` and
 `claw`. Pi also consumes the resolved plugin skills through an explicit
 `--skill` directory in both transports, and the MCP catalog through its embedded
-RPC extension. The remaining work is claw-side discovery of named agents, and the hook
-events claw skips. Kimi, Grok, and Codex do not consume these
+RPC extension. The remaining work is claw-side discovery of named agents.
+Kimi, Grok, and Codex do not consume these
 plugin contribution surfaces:
 
 | Claude plugin type | iterion kind | parity note |
@@ -407,7 +407,7 @@ plugin contribution surfaces:
 | MCP servers        | `mcp_servers` ✅ shipped | `claude_code`, claw, and pi RPC consume the resolved MCP catalog |
 | slash commands     | `commands` ✅ shipped | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`, claw resolves the same files in-process (claw-code-go `pkg/api/commands`). A prompt opening with `/<name>` becomes that file's body on either backend — see the [capability matrix](backends.md#workspace-slash-commands) for the four measured differences — **frontmatter beyond `description:` is ignored on claw, so a command that narrows itself with `allowed-tools:` keeps the node's full tool set there — the runtime warns and names #1717**, plus workspace-only scope, one-based `$1`, and the unevaluated `` !`cmd` ``/`@path`/`$0` forms |
 | subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool + SubagentRunner but no named-agent file loader → claw-side follow-on |
-| hooks              | `hooks` ✅ shipped (claude_code) · partial (claw) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw re-reads the same file per node execution (`registerSettingsHooks`, `pkg/backend/model/settings_hooks.go`) and runs the **`command`**-type entries of `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `Stop` only — `prompt`-type entries and every other event (`UserPromptSubmit`, `SessionStart`, `PreCompact`, …) are skipped without a diagnostic, and a **sandboxed** claw node reads none at all → claw-side follow-on |
+| hooks              | `hooks` ✅ shipped (claude_code) · ✅ bridged (claw) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw bridges the same document (`registerSettingsHooks`, `pkg/backend/model/settings_hooks.go`) and runs the **`command`**-type entries of every event claw-code-go exports — `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `UserPromptSubmit` / `PreCompact` / `PostCompact` / `Stop` — on the in-process path AND the sandboxed one (the launcher ships the parsed document over the wire; the in-container runner registers it). Matcher semantics follow claude_code: a regex on the tool name for tool events, ignored (always fires) on `UserPromptSubmit`/`Stop`, and the compaction source on `PreCompact`/`PostCompact` — `"auto"` matches, `"manual"` never does (claw compacts only at the threshold). `UserPromptSubmit` fires once per operator prompt: the harness's nudge/recovery re-asks and resumed tool_result turns do not re-fire, and a blocked prompt fires no `Stop`. A hook payload is truncated at 100 KiB with an explicit marker (the kernel's per-arg limit would otherwise fail the exec — a silent fail-open on a screening hook). Two known edges, both deliberate: operator-chatbox messages injected mid-loop (the inbox drain) are NOT re-screened by `UserPromptSubmit` — only the node's own prompt is, a hook arming prompt-injection screening should know the channel exists; and a matcher left on `Stop`/`UserPromptSubmit` sees its hook ARMED where a strict regex reading would have killed it — the matcher is ignored (with a warning), never applied. `prompt`-type entries, events claw does not export (`SessionStart`, …), meaningless matchers and invalid regexes are all skipped **with a warning naming them**; a hook exiting non-zero (≠ 2), timing out or failing to exec is logged and continues; the forced context-overflow compaction fires no `PreCompact` by design |
 
 The principle: where claude_code has a native surface and claw does not (or they
 diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw
@@ -416,8 +416,8 @@ over with a claude_code-only adapter. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
 The `commands`, `agents`, and `hooks` manifest kinds are shipped today.
-`commands` reaches claw as well as claude_code; `hooks` reaches it partially
-(see the row above); named subagents stay claude_code-only.
+`commands` and `hooks` reach claw as well as claude_code (see the rows above);
+named subagents stay claude_code-only.
 
 ## Public skill libraries (shipped)
 

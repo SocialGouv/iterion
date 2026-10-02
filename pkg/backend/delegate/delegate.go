@@ -841,6 +841,15 @@ type Task struct {
 	// backend itself stays chain-unaware.
 	ProviderHint string
 
+	// SettingsHooks carries the raw "hooks" object of the workspace's
+	// .claude/settings.json across the sandbox boundary. The launcher reads
+	// the host file (which the container may not see at the same path when
+	// the workspace is not mounted at its host location) and ships the
+	// document on the wire; the in-container claw runner registers it
+	// instead of re-reading a path that may not exist. Nil outside the
+	// sandboxed claw path — an in-process backend reads the file itself.
+	SettingsHooks json.RawMessage
+
 	// Hooks lets the backend surface mid-execution events back to the
 	// engine without returning. Currently used by the claude_code
 	// delegate to emit `tool_started` and `tool_called` events as the

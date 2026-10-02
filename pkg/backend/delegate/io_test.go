@@ -40,6 +40,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		ForkSession:           true,
 		InteractionEnabled:    true,
 		ResumeAnswer:          "yes please",
+		SettingsHooks:         json.RawMessage(`{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}`),
 	}
 
 	ioTask := ToIOTask(original)
@@ -115,6 +116,9 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if got.ResumeAnswer != original.ResumeAnswer {
 		t.Errorf("ResumeAnswer = %q", got.ResumeAnswer)
+	}
+	if string(got.SettingsHooks) != string(original.SettingsHooks) {
+		t.Errorf("SettingsHooks = %s, want %s", got.SettingsHooks, original.SettingsHooks)
 	}
 	if got.Sandbox != nil {
 		t.Errorf("Sandbox should be nil after round-trip; runner is inside the sandbox")

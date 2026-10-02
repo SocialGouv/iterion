@@ -39,11 +39,13 @@ func KnownProviderList() string {
 	return strings.Join(names, ", ")
 }
 
-// hintIgnoringBackends are the backends that do NOT consume the per-node
-// provider hint today: claw derives its provider from the model-spec
-// prefix, codex ignores the hint entirely, and kimi, grok and opencode let
-// their CLI resolve its own credentials — the shared CLIAgentBackend never
-// reads Task.ProviderHint, so the hint has nowhere to land in their argv.
+// hintIgnoringBackends are the backends whose CHAIN semantics are a no-op:
+// claw derives its provider from the model-spec prefix (it honours only a
+// single-value `provider: "anthropic"` hint on the anthropic route —
+// #1718 — never a chain walk), codex ignores the hint entirely, and kimi,
+// grok and opencode let their CLI resolve its own credentials — the shared
+// CLIAgentBackend never reads Task.ProviderHint, so the hint has nowhere
+// to land in their argv.
 //
 // pi is here for the other reason C088 exists: it DOES fold the head hint
 // into its argv, but the diagnostic is about the CHAIN, and the runtime
