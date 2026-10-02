@@ -36,6 +36,7 @@ lots:
     crosses_major: false         # true -> the upgrade-archetypes sweep is due
     depends_on: []
     brief_targets: []            # the brief components this lot advances
+    remediates: []               # the defects-register entries this lot records as fixed
     intent: |
       What may change, and what may not. Read by the agent working the lot.
     exit_gate:
@@ -85,6 +86,61 @@ An explicit launch (`only_lot`) on a lot that cannot be carried out — already
 `lot_status`: done / blocked / absent / waiting / no_gate) and the run fails on
 it, never a green no-op: a `finished` run that crossed no gate reads as
 convergence to whoever relaunched it.
+
+## The contract is read-only inside a lot — every file of it
+
+The contract is not one file. It is the plan's DIRECTORY: the plan, the files
+its owner keeps beside it, and the records the earlier lots left there.
+
+| file | what it holds | what a lot may write in it |
+|---|---|---|
+| `plan.yaml` | the lots, their gates, their order | its own lot's `status` (`blocked` — `done` is the gate's); a NEW lot, as a proposal |
+| `outcomes.json` | what the programme owes, each `check` a verdict | nothing |
+| `brief.yaml` | goals, decisions, permitted and forbidden changes | nothing |
+| `ARBITRAGE.md` | how a blocked divergence is judged | nothing |
+| `defects-ledger.json` | the defects register | a NEW entry, for a defect it found; the entries its lot `remediates` |
+| any other file the base holds there | the owner's files, the other lots' reports, sweeps and probes | nothing — byte-frozen |
+| a file named for the lot | its own records: `<lot>-report.md`, `<lot>-probe.py`, `sweeps/<lot>.md`, `<lot>-captures/…` | anything: create, update, remove |
+| a file the base does not hold, named for no other lot | a record the lot creates | anything |
+| a file the base does not hold, named for another lot | that lot's record, written ahead of it | nothing — refused |
+
+A path is named for a lot when one of its names carries that lot's id: the id
+itself, or the id followed by `-`, `.` or `_`. The lots are the plan's at the
+base and the ones the lot adds as proposals. The outermost name carrying an id
+decides (all of `<lot>-captures/` is that lot's), and the longest id wins when
+several match: lot `L1` owns `L1-report.md` and `sweeps/L1.md`, never
+`L1-b-report.md` (lot `L1-b`'s) nor `L10-report.md`. Name what you write beside
+the plan with your lot's id, and leave the others' records as they are: they
+are the programme's history, and a lot that rewrites another lot's report
+rewrites what was found. A record written for another lot is refused too: a
+sweep record written ahead of its lot answers that lot's gate before it runs.
+So is a link you create under a name of no lot (a symbolic link, a nested
+repository): it stands for every path beneath it, another lot's records
+included. Under your lot's id, a link is yours.
+
+`lot_verify` compares the directory with the run's base before it runs a single
+gate command, and again after the last one — a gate command is the lot's own
+code — and refuses a lot that changed anything else, one named cause per file
+(`.modernize/outcomes.json: outcomes[engine-target].check changed`). Three
+trees are judged, because a landing is made of them: the working tree as git
+would store it, the index (what a commit stores for an entry `git add` leaves
+alone), and what is committed; `mark_done` writes `done` only on what that
+verdict judged. Two things that would let a commit store something no tree
+shows are refused outright on a contract path: an index flag
+(`skip-worktree`, `assume-unchanged`) and a `filter` attribute — a clean filter
+is code, and what it stores cannot be judged. It is deny by default: a field
+nobody thought to list is protected like the ones somebody did, because a check
+that names what it protects leaves the next field open. A file created,
+deleted, swapped for a symlink or given a duplicate key is a rewrite too; a
+reformatting that parses to the same document is not. The table's files and
+the plan must be regular files: what a link points at is not judged.
+
+The reason is the one behind `done`: the party a contract binds is not the
+party that writes it. An outcome whose `check` becomes `true` converges the
+programme on nothing; a goal renamed or a forbidden change struck from the
+brief, and the programme answers a mandate nobody gave. A change the programme
+needs is PROPOSED — a lot added, a paragraph in the lot's report — and its
+owner re-takes it.
 
 ## `exit_gate`
 
@@ -201,7 +257,13 @@ The gate checks the record EXISTS; it does not read its content. That is
 deliberate and it is the same division as everywhere else in this file: the
 mechanical layer proves an artefact was produced and committed, the reviewer
 judges what it says, and the behavioural net remains the only party that can
-prove the sweep missed nothing it watches. A sweep record that says "class not
+prove the sweep missed nothing it watches. "Committed" is checked, not
+assumed: the gate's commands read the working tree, so after the last one the
+verifier also requires the record as a non-empty file in the tree that lands
+— at the path the commit really carries it, through the committed links of
+its way, and in the tree the engine's bank would build from your working
+tree. A record left uncommitted, ignored by a `.gitignore`, or removed by a
+commit and put back on disk fails the gate by name. A sweep record that says "class not
 instantiated in this stack, because X" is a legitimate record; an absent one is
 a lot that skipped a due diligence its own contract named.
 
@@ -215,7 +277,8 @@ The assessment's whole-contract lint reads the brief beside the contract and
 requires three things of it — every decided target is carried by at least one
 lot, a target the brief takes across a major is carried by a lot with
 `crosses_major: true`, and a `brief_targets` entry names a component the brief
-declares. The execution bot ignores the field: it never sees a brief.
+declares. The execution bot does not read the field and never interprets the
+brief — it only refuses a lot that rewrites either.
 
 ## The shape of a lot block is part of the contract
 
@@ -336,9 +399,11 @@ CONJUNCTION TERM of programme convergence. They live in
   outcome answering no declared goal is an objective the drafter gave itself,
   and a programme converges on one exactly as convincingly as on an agreed
   one. Required by the assessment's whole-contract lint, which has the brief
-  in hand; the execution bot never sees a brief and cannot check it.
+  in hand; the execution bot does not interpret the brief and cannot check
+  it.
 - `check` runs on HEAD and exits 0 iff the outcome is MET. Like every gate,
-  it is a command, never a claim.
+  it is a command, never a claim — and it is the owner's, like the file that
+  holds it: a lot that changes it is refused.
 - `arbitration` is the ONLY other way an outcome closes: a written, dated
   decision by the programme's owner ("deferred to the cloud contract,
   2026-08-19, <who>") — never by the worker, never by silence.
@@ -371,12 +436,41 @@ audit pass, a sweep, a lot report):
 - **Default: remediate.** The defect becomes a remediation lot — the fix,
   its behaviour change through the re-baseline ledger (cause, act, verdict),
   and one entry in the programme's defects register: found where, fixed by
-  which commit, judged by which rite ids.
+  which commit, judged by which rite ids. The lot names the entries it
+  remediates (`remediates: [<id>, …]`), and its gate requires them recorded
+  as fixed.
 - **Exception: preserve, in writing.** Keeping a defect is a BUSINESS
   decision — recorded with its reason and its owner, never a silence and
   never the worker's call. "Faithful to baseline" alone is not a reason.
-- The defects register is a committed artefact, and "no defect unfixed and
-  unarbitrated" belongs in the programme's outcomes — same conjunction, same
-  refusal to converge around a named debt (and the same honesty clause as
-  above: the conjunction is executed by the campaign runner, not yet by this
-  bot's graph).
+- The defects register is a committed artefact — `defects-ledger.json`,
+  beside the plan — and "no defect unfixed and unarbitrated" belongs in the
+  programme's outcomes — same conjunction, same refusal to converge around a
+  named debt (and the same honesty clause as above: the conjunction is
+  executed by the campaign runner, not yet by this bot's graph).
+
+The register's shape is the programme's, with one requirement the execution
+bot reads: a JSON object whose entries are objects carrying a string `id`, in
+a list at its top level, under whatever key the programme names. A lot writes
+two things there, and `lot_verify` refuses any other change before it runs a
+gate command:
+
+- a NEW entry — a defect the lot found, whatever its disposition;
+- an entry its lot `remediates` — the fix recorded, its commit, its rite ids.
+  The list is read from the plan at the run's BASE, like the gate: a lot
+  cannot widen its own licence.
+
+Every other entry, every removal, a duplicated id, and the register's header
+(its doctrine, its vocabulary of dispositions) are the owner's. What a lot
+writes on the entries it remediates is not interpreted — the register's
+vocabulary is the programme's — so the lot's `exit_gate` is where the
+disposition it must reach is required. A lot may compose the register when the
+base carries none: every entry of it is then one the lot found.
+
+```yaml
+  - id: L9
+    title: "escape the search term before it reaches the query"
+    remediates: [D-12]         # recorded as fixed by this lot, nothing else
+    exit_gate:
+      - "…the commands that prove the fix"
+      - "…the command that requires D-12 recorded as fixed in the register"
+```

@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -44,12 +46,131 @@ func modernizeRepo(t *testing.T, planYAML string) (string, string, func(args ...
 	return ws, git("rev-parse", "HEAD"), git
 }
 
+// modernizeMarkDone runs mark_done as if lot_verify had just judged the tree
+// as it stands: the verdict it answers for is this HEAD and these files.
 func modernizeMarkDone(t *testing.T, script, ws, lotID, base string, wantExit int) modernizeMarkDoneOut {
+	t.Helper()
+	head, tree := judgedNow(t, ws)
+	return modernizeMarkDoneJudged(t, script, ws, lotID, base, head, tree, wantExit)
+}
+
+// contractPaths are the contract's files beside the default plan, in the
+// order lot_verify's table lists them.
+var contractPaths = []string{
+	".modernize/plan.yaml",
+	".modernize/outcomes.json",
+	".modernize/brief.yaml",
+	".modernize/ARBITRAGE.md",
+	".modernize/defects-ledger.json",
+}
+
+// judgedNow is the verdict lot_verify would hand mark_done for this tree:
+// HEAD, and per path of the contract's directory — the table's files, and
+// every path the landing carries there: HEAD's tree, the index, the files
+// `git add` would take — what a commit of the working tree would take: the
+// working tree as git would store it (w), the index entries (i), the index
+// flags (t), the `filter` attribute (f). In lot_verify's own format: the
+// table's files by name, the rest as a count and the digest of its states,
+// computed by the same canonical JSON as the producer's (python's json with
+// sorted keys, compact separators, ASCII escapes) — names here are UTF-8.
+func judgedNow(t *testing.T, ws string) (string, string) {
+	t.Helper()
+	state := map[string]map[string]string{}
+	paths := map[string]bool{}
+	for _, rel := range contractPaths {
+		paths[rel] = true
+	}
+	for _, listing := range []string{
+		gittest.Run(t, ws, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ".modernize/"),
+		gittest.Run(t, ws, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".modernize/"),
+	} {
+		for _, rel := range strings.Split(listing, "\x00") {
+			if rel != "" {
+				paths[rel] = true
+			}
+		}
+	}
+	idx, tags := map[string][]string{}, map[string][]string{}
+	for _, e := range strings.Split(gittest.Run(t, ws, "ls-files", "-s", "-z", "--", ".modernize/"), "\x00") {
+		meta, path, ok := strings.Cut(e, "\t")
+		if ok {
+			idx[path] = append(idx[path], strings.Join(strings.Fields(meta), ":"))
+		}
+	}
+	for _, e := range strings.Split(gittest.Run(t, ws, "ls-files", "-v", "-z", "--", ".modernize/"), "\x00") {
+		if len(e) > 2 {
+			tags[e[2:]] = append(tags[e[2:]], e[:1])
+		}
+	}
+	for rel := range paths {
+		st := map[string]string{"w": "absent", "i": "absent", "t": "-", "f": "unspecified"}
+		if e := idx[rel]; len(e) > 0 {
+			sort.Strings(e)
+			st["i"] = strings.Join(e, ",")
+		}
+		if tg := tags[rel]; len(tg) > 0 {
+			sort.Strings(tg)
+			st["t"] = strings.Join(tg, ",")
+		}
+		attr := strings.Split(gittest.Run(t, ws, "check-attr", "-z", "filter", "--", rel), "\x00")
+		if len(attr) >= 3 {
+			st["f"] = attr[2]
+		}
+		full := filepath.Join(ws, rel)
+		fi, err := os.Lstat(full)
+		switch {
+		case err != nil:
+		case fi.Mode()&os.ModeSymlink != 0:
+			target, rerr := os.Readlink(full)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			st["w"] = "symlink:" + target
+		case !fi.Mode().IsRegular():
+			st["w"] = "other"
+		default:
+			st["w"] = "file:" + gittest.Run(t, ws, "hash-object", "-w", "--path="+rel, "--", full)
+		}
+		state[rel] = st
+	}
+	table, rest := map[string]map[string]string{}, map[string]map[string]string{}
+	for rel, st := range state {
+		if slices.Contains(contractPaths, rel) {
+			table[rel] = st
+		} else {
+			rest[rel] = st
+		}
+	}
+	raw, err := json.Marshal(rest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := exec.Command("python3", "-c", "import hashlib,json,sys\n"+
+		"d=json.load(sys.stdin)\n"+
+		"sys.stdout.write(hashlib.sha256(json.dumps(d,sort_keys=True,separators=(',',':')).encode()).hexdigest())")
+	digest.Stdin = strings.NewReader(string(raw))
+	sum, err := digest.Output()
+	if err != nil {
+		t.Fatalf("digest of the rest of the directory: %v", err)
+	}
+	tree, err := json.Marshal(map[string]any{"table": table, "rest": map[string]any{"count": len(rest), "digest": string(sum)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gittest.Run(t, ws, "rev-parse", "HEAD"), string(tree)
+}
+
+// modernizeMarkDoneJudged runs mark_done fed the verdict the lot_gate edge
+// maps: the HEAD lot_verify judged and the fingerprints of the files it
+// judged in the working tree.
+func modernizeMarkDoneJudged(t *testing.T, script, ws, lotID, base, judgedHead, judgedTree string, wantExit int) modernizeMarkDoneOut {
 	t.Helper()
 	body := strings.ReplaceAll(script, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{input.plan_path}}", strconv.Quote(".modernize/plan.yaml"))
 	body = strings.ReplaceAll(body, "{{input.lot_id}}", strconv.Quote(lotID))
 	body = strings.ReplaceAll(body, "{{input.base_sha}}", strconv.Quote(base))
+	body = strings.ReplaceAll(body, "{{input.judged_head}}", strconv.Quote(judgedHead))
+	body = strings.ReplaceAll(body, "{{input.judged_tree}}", strconv.Quote(judgedTree))
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in mark_done near %q", body[i:min(i+40, len(body))])
 	}

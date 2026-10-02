@@ -85,7 +85,7 @@ prompt campaign_system:
   Read the bundled skills before acting: `modernize-lots` for what a lot is and
   how one goes wrong, `plan-contract` for the contract you are working from.
 
-  Four rules override any instinct to make the gate pass:
+  Five rules override any instinct to make the gate pass:
 
   1. Stay inside the lot. The lot's intent says what may change. A change that
      reaches beyond it is not initiative, it is an unreviewable diff — and the
@@ -110,6 +110,17 @@ prompt campaign_system:
      `status: blocked` — with the reason committed — when you must stop. A
      claim of failure cannot cheat toward green; a claim of completion can,
      and a run interrupted after one relaunches as a green no-op.
+  5. Never rewrite the contract. The plan's directory — the plan, the
+     outcomes, the brief, the arbitration doctrine, the defects register, and
+     the earlier lots' records beside them — is the owner's. Yours to write
+     there: your lot's status, a lot you ADD as a proposal, in the register a
+     new entry for a defect you found or the fix of an entry your lot
+     `remediates`, and your own records — files named with your lot's id
+     (`<lot>-report.md`), or files you create that are named for no other lot
+     of the plan (a link, only under your lot's id). The verifier refuses any
+     other change, before the gate runs and again after it — in the working
+     tree, the index and what you commit alike, whatever wrote it, your gate's
+     own scripts included; a change the programme needs goes in your report.
 
   Commit as you go, so an interrupted run leaves landed work.
 
@@ -240,10 +251,18 @@ schema lot_report:
   ## FULL stdout. The log tail keeps the last 4000 characters of stdout then
   ## stderr — a harness that logs progress pushes its own report out first.
   oracle_report: json
-  ## The contract was rewritten during the lot: an existing lot's normative
-  ## fields changed, a lot disappeared, or another lot's status moved. One
-  ## entry per rewrite. Refused before any gate command runs, like `done`.
+  ## The contract was rewritten during the lot: the plan, or a file its owner
+  ## keeps beside it (outcomes.json, brief.yaml, ARBITRAGE.md,
+  ## defects-ledger.json), changed beyond the three writes a lot owns — its
+  ## own status, an added lot, and in the register a new entry or one the lot
+  ## remediates. One entry per rewrite, `<file>: <what moved>`. Refused
+  ## before any gate command runs, like `done`.
   contract_rewritten: string[]
+  ## What the verdict judged after the last gate command: the HEAD, and the
+  ## working tree's contract files (JSON: file -> fingerprint). mark_done
+  ## commits the gate's word on exactly those, or refuses.
+  contract_head: string
+  contract_tree: string
   ## The contract could not be READ (CONTRACT_UNREADABLE): a failure to LOOK
   ## is never turned into a verdict over the lot — every conjunct stays false
   ## and lot_gate fails the run at once, no repair pass.
@@ -299,6 +318,10 @@ schema mark_input:
   lot_id: string
   plan_path: string
   base_sha: string
+  ## The verdict this node answers for: the HEAD lot_verify judged after the
+  ## last gate command, and the fingerprints of the working tree it judged.
+  judged_head: string
+  judged_tree: string
 
 ## What the gate wrote, and where. `marked` is false on the idempotent path
 ## (the contract already read `done`) — nothing was written, nothing committed.
@@ -407,6 +430,14 @@ tool plan_read:
         sys.stderr.write("modernize: %s\n" % notice)
         raise SystemExit(0)
 
+    # Absent is a legitimate no-op; present and not a regular file is not.
+    # A link — dangling or not — or a directory at the plan's path is a
+    # contract this node cannot read as one: read as "no contract", it would
+    # route a run that crossed no gate to `done`.
+    if os.path.islink(plan_path) or (os.path.lexists(plan_path) and not os.path.isfile(plan_path)):
+        refuse("CONTRACT_UNREADABLE: %s is not a regular file (%s) — the contract is "
+               "read as a file, and what a link points at is not judged."
+               % (plan_path, "a symlink" if os.path.islink(plan_path) else "not a file"))
     if not os.path.isfile(plan_path):
         emit("no programme contract at %s — nothing to carry out. Write one "
              "before running this bot: the plan is the contract, not an "
@@ -667,6 +698,7 @@ tool plan_read:
 ## it is the one an agent under pressure is tempted to solve first.
 tool lot_verify:
   script: |
+    import hashlib
     import json
     import os
     import shlex
@@ -678,6 +710,11 @@ tool lot_verify:
     ws = {{vars.workspace_dir}}
     base = {{input.base_sha}}
     refs_dir = {{input.refs_dir}}
+    # History is read as committed — by this node's reads and by the gate
+    # commands it runs alike. A replace ref (refs/replace/) is a local ref
+    # the worker can write, and git honours it on every read: the base's
+    # contract and references would answer with the forgery.
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
     # The net subbot's provenance: `null` (rendered for a node that has not
     # run) reads as "none reported", and is STILL handed to the harness —
     # presence, even empty, is what makes the certifier strict.
@@ -690,7 +727,7 @@ tool lot_verify:
               "gate_timed_out": False, "contract_unreadable": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
               "oracle_invalid": [], "oracle_not_run": False, "oracle_report": {}, "extension_pending": [], "extension_forged": False, "done_self_written": False,
-              "contract_rewritten": []}
+              "contract_rewritten": [], "contract_head": "", "contract_tree": ""}
     problems = []
 
     def emit():
@@ -770,11 +807,12 @@ tool lot_verify:
         return doc if isinstance(doc, dict) else {}
 
     def plan_lots(text, what):
-        return plan_doc(text, what).get("lots") or []
+        lots = plan_doc(text, what).get("lots") or []
+        return lots if isinstance(lots, list) else []
 
     def lot_of(lots, lot_id):
         for lot in lots or []:
-            if lot.get("id") == lot_id:
+            if isinstance(lot, dict) and lot.get("id") == lot_id:
                 return lot
         return None
 
@@ -834,67 +872,902 @@ tool lot_verify:
         emit()
         raise SystemExit(0)
 
-    # 0b. The contract is read-only inside a lot — and that is checked in git,
-    #     not asked nicely. Existing lots keep their normative fields (title,
-    #     intent, exit_gate, depends_on, rebaseline_allowed, crosses_major),
-    #     no lot disappears, and no OTHER lot's status moves; the worker may
-    #     flip its own status to `blocked` and may ADD lots — an addition is a
-    #     proposal the programme's owner re-takes at the handoff. A gate
-    #     loosened, an intent rewritten or a lot dropped mid-run is the
-    #     contract rewritten by the party it binds: refused here, before any
-    #     gate command runs, with the rewrites named.
+    # 0b. The CONTRACT is read-only inside a lot — every file of it, checked
+    #     in git, not asked nicely. The contract is the plan and the files its
+    #     owner writes BESIDE it: what the programme owes (outcomes.json —
+    #     each `check` is a verdict the campaign runs), what the owner decided
+    #     and permits (brief.yaml), how a blocked divergence is judged
+    #     (ARBITRAGE.md), and the defects register (defects-ledger.json).
+    #     The party they bind writes exactly three things in them:
+    #       - its own lot's `status` (`blocked`; `done` is refused above);
+    #       - a NEW lot in the plan — a proposal the owner re-takes at the
+    #         handoff;
+    #       - in the register, a NEW entry (a defect it found) and the entries
+    #         its lot `remediates`, as the plan at the BASE declares them.
+    #     Everything else — every field of every existing lot, the plan's
+    #     top-level keys (the wall, where the net lives: read from the next
+    #     run's base, which is this tree once landed), the owner's files,
+    #     every other register entry and the register's header — is refused
+    #     here, before any gate command runs, one named cause per file. Deny
+    #     by default: a field nobody listed is protected like the ones
+    #     somebody did, and a file created, deleted, swapped for a symlink or
+    #     given a duplicate key is a rewrite too. A reformatting that parses
+    #     to the same document is not.
+    lot_id = {{input.lot_id}}
+    MISSING = object()
+
     def gate_list(v):
         if isinstance(v, str):
             v = [v]
         if not isinstance(v, list):
             return v
         return [c.strip() for c in v if isinstance(c, str) and c.strip()]
-    if True:
-        head_ids = [l.get("id") for l in head_lots]
-        head_by = {l.get("id"): l for l in head_lots}
-        # The normative keys the contract carries OUTSIDE `lots` — the wall
-        # every lot gets and where the net lives — are read from the NEXT
-        # run's base, which is this tree once landed: one committed line would
-        # disarm the wall for the rest of the programme (review finding,
-        # executed: top-level gate_timeout_s 3600 -> 1 converged unrefused).
-        head_doc = plan_doc(head_text, "the working tree")
-        rewritten = []
-        for k in ("gate_timeout_s", "oracle"):
-            if base_doc.get(k) != head_doc.get(k):
-                rewritten.append("top-level %s moved from %r to %r" % (k, base_doc.get(k), head_doc.get(k)))
-        rewritten += ["duplicate lot id %s in the working tree" % i
-                     for i in sorted({i for i in head_ids if head_ids.count(i) > 1})]
-        for bl in base_lots:
-            hl = head_by.get(bl.get("id"))
+
+    def canon(v):
+        return json.dumps(v, sort_keys=True, ensure_ascii=False)
+
+    def same(a, b):
+        # Typed: `true` and `1` are one value to Python's ==, two in the file.
+        return canon(a) == canon(b)
+
+    def short(v):
+        s = canon(v)
+        return s if len(s) <= 160 else s[:157] + "..."
+
+    def id_entries(v):
+        """A list whose every item is an object carrying a non-empty string
+        `id` — the shape of every keyed collection of the contract (lots,
+        outcomes, goals, decisions, register entries). Empty counts."""
+        return isinstance(v, list) and all(
+            isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"] for e in v)
+
+    def by_id(entries):
+        groups = {}
+        for e in entries:
+            groups.setdefault(e["id"], []).append(e)
+        return groups
+
+    def name_changes(b, h, where=""):
+        """What moved between two documents that differ, named: a key by its
+        path, an entry of a keyed collection by its id. Never empty for two
+        documents that differ — an order-only move is named too."""
+        if isinstance(b, dict) and isinstance(h, dict):
+            names = []
+            for k in sorted(set(b) | set(h)):
+                path = "%s.%s" % (where, k) if where else k
+                if k not in b:
+                    names.append("%s added" % path)
+                elif k not in h:
+                    names.append("%s REMOVED" % path)
+                elif not same(b[k], h[k]):
+                    names += name_changes(b[k], h[k], path)
+            return names
+        if id_entries(b) and id_entries(h):
+            bg, hg = by_id(b), by_id(h)
+            names = []
+            for i in sorted(set(bg) | set(hg)):
+                path = "%s[%s]" % (where, i)
+                if i not in hg:
+                    names.append("%s REMOVED" % path)
+                elif i not in bg:
+                    names.append("%s added" % path)
+                elif len(bg[i]) == len(hg[i]) == 1:
+                    if not same(bg[i][0], hg[i][0]):
+                        names += name_changes(bg[i][0], hg[i][0], path)
+                elif not same(bg[i], hg[i]):
+                    names.append("%s changed (the id appears %d time(s) at the base, %d now)"
+                                 % (path, len(bg[i]), len(hg[i])))
+            return names or ["%s reordered" % (where or "the document")]
+        return ["%s changed" % (where or "the document")]
+
+    def plan_rewrites(b, h):
+        causes = []
+        for k in sorted((set(b) | set(h)) - {"lots"}):
+            if not same(b.get(k), h.get(k)):
+                causes.append("top-level %s moved from %s to %s" % (k, short(b.get(k)), short(h.get(k))))
+        b_lots, h_lots = b.get("lots") or [], h.get("lots") or []
+        if not isinstance(b_lots, list) or not all(isinstance(l, dict) for l in b_lots):
+            unreadable("the contract at the base %s declares `lots` in an unreadable shape" % base[:12])
+        if not isinstance(h_lots, list) or not all(isinstance(l, dict) for l in h_lots):
+            return causes + ["`lots` is no longer a list of lots"]
+        ids = [l.get("id") for l in h_lots]
+        causes += ["duplicate lot id %s in the working tree" % i
+                   for i in sorted({i for i in ids if isinstance(i, str) and ids.count(i) > 1})]
+        # plan_read refuses the WHOLE contract on a lot without a string id:
+        # an added lot carrying none is not a proposal, it is every later run
+        # refused.
+        causes += ["an added lot carries no string id (%s): the next run could not read the contract"
+                   % short(i) for i in ids if not (isinstance(i, str) and i)]
+        h_by = {l.get("id"): l for l in h_lots}
+        for bl in b_lots:
+            lid = bl.get("id")
+            hl = h_by.get(lid)
             if hl is None:
-                rewritten.append("lot %s was REMOVED" % bl.get("id"))
+                causes.append("lot %s was REMOVED" % lid)
                 continue
-            for k in ("title", "intent", "depends_on", "rebaseline_allowed", "crosses_major", "gate_timeout_s"):
-                if bl.get(k) != hl.get(k):
-                    rewritten.append("%s.%s changed" % (bl.get("id"), k))
-            if gate_list(bl.get("exit_gate")) != gate_list(hl.get("exit_gate")):
-                rewritten.append("%s.exit_gate changed" % bl.get("id"))
-            if bl.get("id") != {{input.lot_id}} and bl.get("status") != hl.get("status"):
-                rewritten.append("%s.status moved from %r to %r"
-                                 % (bl.get("id"), bl.get("status"), hl.get("status")))
-        if rewritten:
-            report["contract_rewritten"] = rewritten
-            # Never a clean stop either, even under a lot the worker declared
-            # blocked: `stop` would end the run with the rewrite landed
-            # (adversarial finding, executed). Cleared at the same one point
-            # as every other refusal; the worker gets it in fail_log.
-            report["block_reason"] = ""
+            for k in sorted(set(bl) | set(hl)):
+                if k == "status":
+                    if lid != lot_id and not same(bl.get(k), hl.get(k)):
+                        causes.append("%s.status moved from %s to %s" % (lid, short(bl.get(k)), short(hl.get(k))))
+                elif k == "exit_gate":
+                    if not same(gate_list(bl.get(k)), gate_list(hl.get(k))):
+                        causes.append("%s.exit_gate changed" % lid)
+                elif not same(bl.get(k), hl.get(k)):
+                    causes.append("%s.%s changed" % (lid, k))
+        return causes
+
+    def remediates_of(lot):
+        raw = (lot or {}).get("remediates")
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list) or not all(isinstance(i, str) and i.strip() for i in raw):
+            unreadable("remediates on lot %s is %s — a list of defects-register entry ids "
+                       "is the only shape this node reads" % (lot_id, short(raw)))
+        return {i.strip() for i in raw}
+    # Read at the BASE, like the wall: a lot cannot widen its own licence.
+    remediates = remediates_of(base_lot)
+
+    def register_rewrites(b, h):
+        """A lot records what it FOUND (a new entry) and what it FIXED (an
+        entry its lot remediates). Keeping, arbitrating or forgetting a
+        defect is the owner's call: every other entry, every removal and the
+        register's header (its doctrine, its vocabulary) are frozen. What the
+        lot writes on a remediated entry is judged by its own exit_gate."""
+        wrap = lambda d: d if isinstance(d, dict) else {"entries": d}
+        bw, hw = wrap(b), wrap(h)
+        causes = []
+        for k in sorted(set(bw) | set(hw)):
+            bv, hv = bw.get(k, MISSING), hw.get(k, MISSING)
+            if bv is MISSING:
+                causes.append("%s added — the register's header is the owner's" % k)
+            elif hv is MISSING:
+                causes.append("%s REMOVED" % k)
+            elif id_entries(bv) and id_entries(hv):
+                bg, hg = by_id(bv), by_id(hv)
+                for i in sorted(set(bg) | set(hg)):
+                    if i not in hg:
+                        causes.append("%s[%s] REMOVED — a registered defect never leaves the register inside a lot" % (k, i))
+                    elif len(hg[i]) > 1 and not same(bg.get(i), hg[i]):
+                        causes.append("%s[%s] appears %d times — an id is a key" % (k, i, len(hg[i])))
+                    elif i in bg and i not in remediates and not same(bg[i], hg[i]):
+                        moved = []
+                        if len(bg[i]) == len(hg[i]) == 1:
+                            be, he = bg[i][0], hg[i][0]
+                            moved = sorted(f for f in set(be) | set(he)
+                                           if f not in be or f not in he or not same(be[f], he[f]))
+                        causes.append("%s[%s] changed%s — lot %s does not remediate it"
+                                      % (k, i, " (%s)" % ", ".join(moved) if moved else "", lot_id))
+            elif not same(bv, hv):
+                causes.append("%s changed — %s" % (k, "it is no longer a list of entries carrying a string `id`"
+                                                   if id_entries(bv) else "the register's header is the owner's"))
+        return causes
+
+    def git_bytes(*args):
+        # --literal-pathspecs: plan_path is a launch var, and a pathspec
+        # would read `*` or `?` in it as a glob.
+        return subprocess.run(["git", "--literal-pathspecs", "-C", ws] + list(args),
+                              capture_output=True, timeout=60)
+
+    def git_fail(what, rel, p):
+        unreadable("cannot %s %s in git: %s"
+                   % (what, rel, p.stderr.decode("utf-8", "replace")[-300:]))
+
+    def at_rev(rev, rel):
+        """What commit `rev` holds at `rel`: (kind, blob id, bytes), kind one
+        of "absent", "file", "symlink" (bytes: its target), "other"."""
+        ls = git_bytes("ls-tree", "-z", rev, "--", rel)
+        if ls.returncode != 0:
+            git_fail("list", rel, ls)
+        entry = ls.stdout.split(b"\0")[0]
+        if not entry:
+            return "absent", None, None
+        mode, kind, sha = entry.split(b"\t", 1)[0].decode().split()
+        if kind != "blob":
+            return "other", None, None
+        blob = git_bytes("cat-file", "blob", sha)
+        if blob.returncode != 0:
+            git_fail("read", rel, blob)
+        return ("symlink" if mode == "120000" else "file"), sha, blob.stdout
+
+    base_reads = {}
+
+    def at_base(rel):
+        if rel not in base_reads:
+            base_reads[rel] = at_rev(base, rel)
+        return base_reads[rel]
+
+    def at_index(rel):
+        """What the index holds at `rel` — what a commit stores for an entry
+        `git add` leaves alone (skip-worktree, assume-unchanged, a stat it
+        trusts): the same answers, "other" for a conflict or a gitlink."""
+        ls = git_bytes("ls-files", "-s", "-z", "--", rel)
+        if ls.returncode != 0:
+            git_fail("list the index for", rel, ls)
+        entries = []
+        for e in ls.stdout.split(b"\0"):
+            meta, _, path = e.partition(b"\t")
+            if e and os.fsdecode(path) == rel:
+                entries.append(meta.decode().split())
+        if not entries:
+            return "absent", None, None
+        if len(entries) > 1 or entries[0][2] != "0" or entries[0][0] == "160000":
+            return "other", None, None
+        mode, sha, _ = entries[0]
+        blob = git_bytes("cat-file", "blob", sha)
+        if blob.returncode != 0:
+            git_fail("read", rel, blob)
+        return ("symlink" if mode == "120000" else "file"), sha, blob.stdout
+
+    # Paths git cannot store under their conversion attributes, with the
+    # named cause — filled by every hashing of the working tree, read and
+    # cleared by judge_landing.
+    unhashable = {}
+
+    def cannot_store(rel, err):
+        """True, with the cause recorded, when git cannot hash rel because of
+        how it is told to convert it — the file reads fine as raw bytes, the
+        conversion fails (a `working-tree-encoding` the file does not satisfy,
+        a clean filter that fails). What git would store cannot be judged,
+        and the worker can act on it. A file git cannot read at all is not
+        this: the caller refuses it as unreadable."""
+        raw = git_bytes("hash-object", "--no-filters", "--", os.path.join(ws, rel))
+        if raw.returncode != 0:
+            return False
+        attrs = subprocess.run(["git", "-C", ws, "check-attr", "-z", "filter",
+                                "working-tree-encoding", "text", "eol", "--", rel],
+                               capture_output=True, timeout=60)
+        parts = attrs.stdout.split(b"\0") if attrs.returncode == 0 else []
+        named = ["`%s=%s`" % (parts[i + 1].decode(), parts[i + 2].decode("utf-8", "replace"))
+                 for i in range(0, len(parts) - 2, 3)
+                 if parts[i + 2] not in (b"unspecified", b"unset")]
+        said = next((l.strip() for l in err.decode("utf-8", "replace").splitlines()
+                     if l.strip() and not l.startswith("hint:")), "")
+        under = ("its conversion attribute%s %s" % ("s" if len(named) > 1 else "", ", ".join(named))
+                 if named else "the repository's conversion settings (core.autocrlf, core.safecrlf)")
+        unhashable[rel] = ("git cannot store it under %s (%s) — what git would store cannot be "
+                           "judged: write the file as the conversion expects, or drop it"
+                           % (under, said[:200]))
+        return True
+
+    def in_tree(rel):
+        """The same answers for the working tree. What is judged is the blob
+        `git add` would store — the path's filters and end-of-line rules
+        applied — because that is what lands: a clean filter can store other
+        bytes than the file shows, and a CRLF checkout of an unchanged file
+        is not a rewrite. Never the index's word: an entry marked
+        assume-unchanged hides an edit from `git diff`. A path reached
+        through a symlinked directory is not the file git tracks: "other"."""
+        full = os.path.join(ws, rel)
+        if os.path.islink(full):
+            return "symlink", None, os.fsencode(os.readlink(full))
+        if not os.path.lexists(full):
+            return "absent", None, None
+        if os.path.realpath(full) != os.path.join(os.path.realpath(ws), rel) \
+                or not os.path.isfile(full):
+            return "other", None, None
+        h = git_bytes("hash-object", "-w", "--path=" + rel, "--", full)
+        if h.returncode != 0:
+            if cannot_store(rel, h.stderr):
+                return "unhashable", None, None
+            git_fail("hash", rel, h)
+        sha = h.stdout.decode().strip()
+        blob = git_bytes("cat-file", "blob", sha)
+        if blob.returncode != 0:
+            git_fail("read", rel, blob)
+        return "file", sha, blob.stdout
+
+    def no_dupes(pairs):
+        keys = [k for k, _ in pairs]
+        dup = sorted({k for k in keys if keys.count(k) > 1})
+        if dup:
+            raise ValueError("duplicate key %s" % ", ".join(dup))
+        return dict(pairs)
+
+    def parse(raw, how, strict):
+        """(True, document) or (False, why it does not parse). `strict`
+        refuses a duplicate key: two readers of one file may keep different
+        copies of it."""
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            return False, "not UTF-8: %s" % e
+        if how == "yaml":
+            import tempfile
+            yq = find_yq()  # found: the plan was read with it above
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as tf:
+                tf.write(text)
+                tmp = tf.name
+            try:
+                p = subprocess.run([yq, "-o=json", tmp], capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.SubprocessError) as e:
+                unreadable("cannot run yq on a contract file: %s" % e)
+            finally:
+                os.unlink(tmp)
+            if p.returncode != 0:
+                return False, (p.stderr or "").strip()[-300:]
+            text = p.stdout
+        try:
+            return True, json.loads(text, object_pairs_hook=no_dupes if strict else None)
+        except ValueError as e:
+            return False, str(e)[:300]
+
+    KIND = {"file": "a file", "symlink": "a symlink", "other": "not a regular file", "absent": "absent"}
+
+    def file_rewrites(rel, how, rule, read):
+        """What moved in `rel` between the base and the tree `read` answers
+        for, as causes; empty when nothing a lot may not write moved."""
+        b_kind, b_sha, b_raw = at_base(rel)
+        t_kind, t_sha, t_raw = read(rel)
+        if t_kind == "unhashable":
+            return []  # named once, by judge_landing, with the attribute
+        if b_kind == t_kind and (b_kind == "absent"
+                                 or (b_kind == "file" and b_sha == t_sha)
+                                 or (b_kind == "symlink" and b_raw == t_raw)):
+            return []
+        if b_kind == "absent" and t_kind == "file":
+            # A register the base does not carry is composed by the lot:
+            # every entry of it is one the lot found.
+            return [] if rule == "register" else ["created during the lot — it is the owner's to write"]
+        if t_kind == "absent":
+            return ["DELETED"]
+        if b_kind == t_kind == "symlink":
+            return ["the symlink's target moved"]
+        if b_kind != "file" or t_kind != "file":
+            return ["%s at the run's base, %s now" % (KIND[b_kind], KIND[t_kind])]
+        if how == "text":
+            return ["changed"]
+        # A duplicate key is refused only where the base carries none: the
+        # worker is not held to a standard the owner's own file does not meet.
+        strict = True
+        ok, b = parse(b_raw, how, True)
+        if not ok:
+            strict = False
+            ok, b = parse(b_raw, how, False)
+        if not ok:
+            return ["changed, and it does not parse at the run's base (%s): a change to a "
+                    "file this node cannot read is refused — revert it" % b]
+        ok, h = parse(t_raw, how, strict)
+        if not ok:
+            return ["changed, and it no longer parses (%s)" % h]
+        if rule == "plan":
+            if not isinstance(b, dict):
+                unreadable("the contract at the base %s is not a mapping" % base[:12])
+            if not isinstance(h, dict):
+                return ["the plan is no longer a mapping"]
+            return plan_rewrites(b, h)
+        if rule == "register":
+            return register_rewrites(b, h)
+        return [] if same(b, h) else name_changes(b, h)
+
+    # The contract's files, one line each: (the file, how it parses, what a
+    # lot may write in it). The owner's files live beside the plan.
+    plan_file = os.path.normpath(plan_rel)
+    contract_dir = os.path.dirname(plan_file)
+    CONTRACT = [(plan_file, "yaml", "plan")] + [
+        (os.path.join(contract_dir, name), how, rule) for name, how, rule in (
+            ("outcomes.json", "json", "owner"),
+            ("brief.yaml", "yaml", "owner"),
+            ("ARBITRAGE.md", "text", "owner"),
+            ("defects-ledger.json", "json", "register"),
+        )]
+
+    TABLE = [rel for rel, _, _ in CONTRACT]
+
+    def lot_ids(lots):
+        """The ids a plan's lots carry."""
+        return {l.get("id") for l in lots if isinstance(l, dict)
+                and isinstance(l.get("id"), str) and l.get("id")}
+
+    def named_for(rel, ids):
+        """The lot a path under the contract's directory is named for, or None.
+        A name carries a lot's id when it is the id itself, or the id followed
+        by `-`, `.` or `_`. The outermost name carrying one decides — all of
+        `<lot>-captures/` is that lot's, `sweeps/<lot>.md` too — and the
+        longest id when several match: `L1-b-report.md` is L1-b's, never L1's,
+        and `L10-report.md` is no record of L1's."""
+        for name in rel[len(contract_dir) + 1:].rstrip("/").split("/"):
+            hits = [i for i in ids if name == i or any(name.startswith(i + c) for c in "-._")]
+            if hits:
+                return max(hits, key=len)
+        return None
+
+    def tree_entries(rev):
+        """{path: (mode, blob id)} for every path `rev` holds under the
+        contract's directory."""
+        ls = git_bytes("ls-tree", "-r", "-z", rev, "--", contract_dir + "/")
+        if ls.returncode != 0:
+            git_fail("list", contract_dir, ls)
+        out = {}
+        for e in ls.stdout.split(b"\0"):
+            meta, _, path = e.partition(b"\t")
+            if e:
+                mode, _, sha = meta.decode().split()
+                out[os.fsdecode(path)] = (mode, sha)
+        return out
+
+    def beside_the_plan(base_tree, ids):
+        """The contract's directory beyond the table: every path the base holds
+        there that is not named for the running lot — the owner's files and
+        the other lots' records — {path: (mode, blob id) at the base}."""
+        return {p: e for p, e in base_tree.items()
+                if p not in TABLE and named_for(p, ids) != lot_id}
+
+    def landing_paths(head_tree):
+        """Every path a landing can carry under the contract's directory:
+        HEAD's tree, the index, and the working tree's files `git add` takes
+        (untracked, not ignored). A plan at the repository's root has no
+        directory of its own: only the table is the contract then."""
+        if not contract_dir:
+            return set()
+        ls = git_bytes("ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                       "--", contract_dir + "/")
+        if ls.returncode != 0:
+            git_fail("list", contract_dir, ls)
+        return set(head_tree) | {os.fsdecode(p) for p in ls.stdout.split(b"\0") if p}
+
+    def created_rewrites(created, ids, state, head, head_tree):
+        """A path the lot creates beside the plan is its own record unless it
+        is named for another lot: that lot's records are that lot's to write.
+        A sweep record written ahead of its lot would answer that lot's gate
+        before the lot has run. A link — symbolic, or to another repository —
+        stands for every path beneath it, another lot's record included
+        (`sweeps` linked to a directory holding `L22.md`), so a lot creates one
+        only under its own name."""
+        causes = []
+        for rel in sorted(created):
+            owner = named_for(rel, ids)
+            if owner == lot_id:
+                continue
+            st = state[rel]
+            where = [w for w, here in (
+                ("in the working tree", st["w"] != "absent"),
+                ("staged in the index", st["i"] != "absent"),
+                ("committed at HEAD %s" % head[:12], rel in head_tree)) if here]
+            modes = [e.split(":")[0] for e in st["i"].split(",")] if st["i"] != "absent" else []
+            modes += [head_tree[rel][0]] if rel in head_tree else []
+            if owner is not None:
+                causes.append("%s: created during lot %s, and named for lot %s (%s) — another "
+                              "lot's records are that lot's to write" % (rel, lot_id, owner, ", ".join(where)))
+            elif st["w"].startswith("symlink:") or st["w"] == "other" \
+                    or any(not m.startswith("100") for m in modes):
+                causes.append("%s: created during lot %s as a link (%s) — a link stands for every "
+                              "path beneath it, another lot's records included: a lot creates one "
+                              "only under its own id" % (rel, lot_id, ", ".join(where)))
+        return causes
+
+    def landing_state(paths):
+        """What a commit of the working tree would take for each path, as git
+        decides it: {"w": the working tree as git would store it, "i": the
+        index entries, "t": the index flags, "f": the `filter` attribute}.
+        mark_done recomputes the same and holds the landing to it."""
+        paths = sorted(set(paths))
+        if not paths:
+            return {}
+        state = {p: {"w": "absent", "i": "absent", "t": "-", "f": "unspecified"} for p in paths}
+        scope = [contract_dir + "/"] if contract_dir else paths
+        idx, tags = {}, {}
+        ls = git_bytes("ls-files", "-s", "-z", "--", *scope)
+        for e in ls.stdout.split(b"\0"):
+            meta, _, path = e.partition(b"\t")
+            if e:
+                idx.setdefault(os.fsdecode(path), []).append(":".join(meta.decode().split()))
+        lv = git_bytes("ls-files", "-v", "-z", "--", *scope)
+        for e in lv.stdout.split(b"\0"):
+            if e:
+                tags.setdefault(os.fsdecode(e[2:]), set()).add(e[:1].decode())
+        attrs = subprocess.run(["git", "-C", ws, "check-attr", "--stdin", "-z", "filter"],
+                               input=b"".join(os.fsencode(p) + b"\0" for p in paths),
+                               capture_output=True, timeout=60)
+        if ls.returncode != 0 or lv.returncode != 0 or attrs.returncode != 0:
+            unreadable("cannot read the index or the attributes of the contract's paths: %s"
+                       % (ls.stderr + lv.stderr + attrs.stderr).decode("utf-8", "replace")[-300:])
+        parts = attrs.stdout.split(b"\0")
+        for i in range(0, len(parts) - 2, 3):
+            path = os.fsdecode(parts[i])
+            if path in state:
+                state[path]["f"] = parts[i + 2].decode()
+        regular = []
+        for p in paths:
+            if p in idx:
+                state[p]["i"] = ",".join(sorted(idx[p]))
+            if p in tags:
+                state[p]["t"] = ",".join(sorted(tags[p]))
+            full = os.path.join(ws, p)
+            if os.path.islink(full):
+                state[p]["w"] = "symlink:" + os.readlink(full)
+            elif not os.path.lexists(full):
+                state[p]["w"] = "absent"
+            elif os.path.realpath(full) != os.path.join(os.path.realpath(ws), p) or not os.path.isfile(full):
+                state[p]["w"] = "other"
+            else:
+                regular.append(p)
+        # Hashed as a commit stores, `-w`: without it, a conversion git
+        # cannot apply (an encoding the file does not satisfy, a failing
+        # clean filter) prints an error, exits 0 and hashes the raw bytes —
+        # what no commit would store. Names are bytes to git, passed as
+        # bytes: a name that is not UTF-8 is judged like any other.
+        # `--stdin-paths` reads lines, and a line loses a trailing CR: a name
+        # holding a newline or ending in CR is hashed on its own — batched,
+        # `x.md<CR>` would be answered by its twin `x.md`. A batch that does
+        # not answer one hash per path is hashed path by path, so the path
+        # that stopped it is the one named.
+        alone = [p for p in regular if "\n" in p or p.endswith("\r")]
+        batch = [p for p in regular if not ("\n" in p or p.endswith("\r"))]
+        if batch:
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--stdin-paths"],
+                               input=b"".join(os.fsencode(p) + b"\n" for p in batch),
+                               capture_output=True, timeout=120)
+            shas = h.stdout.decode().split()
+            if h.returncode == 0 and len(shas) == len(batch):
+                for p, sha in zip(batch, shas):
+                    state[p]["w"] = "file:" + sha
+            else:
+                alone = regular
+        for p in alone:
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--path=" + p, "--",
+                                os.path.join(ws, p)], capture_output=True, timeout=120)
+            if h.returncode == 0:
+                state[p]["w"] = "file:" + h.stdout.decode().strip()
+            elif cannot_store(p, h.stderr):
+                state[p]["w"] = "unhashable"
+            else:
+                unreadable("cannot hash %r as git would store it: %s"
+                           % (p, h.stderr.decode("utf-8", "replace")[-300:]))
+        return state
+
+    def contract_index_clean(state):
+        """What a commit could store other than what the trees above say: an
+        index entry `git add` leaves alone, and a clean filter — code of the
+        judged party's choosing, run on the path when it is stored, free to
+        answer the judge and the landing differently. Neither can be judged,
+        so both are refused, by name."""
+        causes = []
+        for rel in sorted(state):
+            tags = state[rel]["t"]
+            if any(t == "S" or t == "s" for t in tags.split(",")):
+                causes.append("%s: flagged skip-worktree in the index (%s): a commit stores the "
+                              "index entry, never the file — clear the flag" % (rel, tags))
+            elif any(t.islower() for t in tags.split(",")):
+                causes.append("%s: flagged assume-unchanged in the index (%s): a commit stores "
+                              "the index entry, never the file — clear the flag" % (rel, tags))
+            if state[rel]["f"] not in ("unspecified", "unset"):
+                causes.append("%s: a `filter` attribute (%s) runs code on it whenever it is "
+                              "stored, and what a filter stores cannot be judged — drop the "
+                              "attribute" % (rel, state[rel]["f"]))
+        return causes
+
+    def frozen_rewrites(frozen, state, head, head_tree):
+        """The rest of the directory is byte-frozen, as git would store it: in
+        the working tree, the index and HEAD's tree alike."""
+        causes = []
+        for rel, (mode, sha) in sorted(frozen.items()):
+            if mode == "120000":
+                want_w = "symlink:" + os.fsdecode(at_base(rel)[2])
+            elif mode.startswith("100"):
+                want_w = "file:" + sha
+            else:
+                want_w = "other"
+            seen = {
+                "": (state[rel]["w"], want_w),
+                " (staged in the index)": (state[rel]["i"], "%s:%s:0" % (mode, sha)),
+                " (committed at HEAD %s)" % head[:12]: ("%s:%s" % head_tree[rel] if rel in head_tree else "absent",
+                                                       "%s:%s" % (mode, sha)),
+            }
+            for label, (now, want) in seen.items():
+                if now == "unhashable":
+                    continue  # named once, by judge_landing, with the attribute
+                if now != want:
+                    causes.append("%s: %s%s" % (rel, "DELETED" if now == "absent" else
+                                  "changed — beside the plan, a file the base holds is the owner's "
+                                  "or an earlier lot's record: byte-frozen", label))
+        return causes
+
+    def judge_landing():
+        """The contract judged on the three trees a landing is made of: the
+        working tree — what the gate commands run against, and what the engine
+        banks when it is left dirty — the index, which a commit stores for an
+        entry `git add` leaves alone, and HEAD's committed tree, which mark_done
+        commits under the gate's subject. The table's files are judged as
+        documents, the rest of the directory by name: a path the base holds
+        there, byte for byte unless it is named for the running lot; a path
+        the lot creates, refused when it is named for another lot — of the
+        plan at the base, or one the landing adds. Returns where the lot's own
+        status reads `done`, the rewrites named per file, the HEAD judged, and
+        the landing state of every path of the directory — what mark_done
+        holds the landing to."""
+        rev = git_bytes("rev-parse", "--verify", "HEAD")
+        if rev.returncode != 0:
+            git_fail("read HEAD for", plan_file, rev)
+        head = rev.stdout.decode().strip()
+        unhashable.clear()
+        for rel in TABLE:
+            kind = at_base(rel)[0]
+            if kind in ("symlink", "other"):
+                unreadable("%s is %s at the run's base %s: the contract's files are regular "
+                           "files, and what a link points at is not judged" % (rel, KIND[kind], base[:12]))
+        if not isinstance(base_lots, list) or not all(isinstance(l, dict) for l in base_lots):
+            unreadable("the contract at the base %s declares `lots` in an unreadable shape" % base[:12])
+        tree = {rel: in_tree(rel) for rel in TABLE}
+        views = (("", lambda rel: tree[rel]),
+                 (" (staged in the index)", at_index),
+                 (" (committed at HEAD %s)" % head[:12], lambda rel: at_rev(head, rel)))
+        rewrites, seen, done_in, ids = [], set(), [], lot_ids(base_lots)
+        for label, read in views:
+            for rel, how, rule in CONTRACT:
+                for cause in file_rewrites(rel, how, rule, read):
+                    if (rel, cause) not in seen:
+                        seen.add((rel, cause))
+                        rewrites.append("%s: %s%s" % (rel, cause, label))
+            kind, _, raw = read(plan_file)
+            ok, doc = parse(raw, "yaml", False) if kind == "file" else (False, None)
+            lots = doc.get("lots") if ok and isinstance(doc, dict) else None
+            lots = lots if isinstance(lots, list) else []
+            # A lot the landing adds is a proposal, and its records are that
+            # lot's like an earlier lot's are. An id can only narrow what the
+            # running lot owns, so reading the landing's lots cannot widen its
+            # licence.
+            ids |= lot_ids(lots)
+            if (lot_of(lots, lot_id) or {}).get("status") == "done":
+                done_in.append(label.strip(" ()") or "the working tree")
+        head_tree = tree_entries(head) if contract_dir else {}
+        base_tree = tree_entries(base) if contract_dir else {}
+        frozen = beside_the_plan(base_tree, ids)
+        landed = landing_paths(head_tree)
+        state = landing_state(TABLE + list(frozen) + list(landed))
+        rewrites += frozen_rewrites(frozen, state, head, head_tree)
+        created = {p for p in landed if p not in base_tree and p not in TABLE}
+        rewrites += created_rewrites(created, ids, state, head, head_tree)
+        # Flags and filters are judged where the bytes are: the table and the
+        # frozen files. The lot's own records may go through a filter (an LFS
+        # capture), as what it may write freely it may also store so.
+        rewrites += contract_index_clean({p: state[p] for p in TABLE + list(frozen)})
+        rewrites += ["%s: %s" % (rel, why) for rel, why in sorted(unhashable.items())]
+        return done_in, rewrites, head, state, head_tree
+
+    def tree_entries_full(rev):
+        """{path: (mode, blob id)} for EVERY path `rev` holds — the committed
+        links in a record's path may lead out of the contract's directory."""
+        ls = git_bytes("ls-tree", "-r", "-z", rev)
+        if ls.returncode != 0:
+            git_fail("list", rev, ls)
+        out = {}
+        for e in ls.stdout.split(b"\0"):
+            meta, _, path = e.partition(b"\t")
+            if e:
+                mode, _, sha = meta.decode().split()
+                out[os.fsdecode(path)] = (mode, sha)
+        return out
+
+    def resolve_in_tree(rel, tree, hops=0):
+        """The path the commit carries `rel` under, following the committed
+        symlinks in its way — the base may ship `sweeps` as a link, and the
+        lot records behind it, as the base dictates. None when the commit
+        carries nothing there, a link loops, or a directory step lands on a
+        file."""
+        cur = os.path.normpath(rel)
+        if cur == ".." or cur.startswith("../") or cur.startswith("/") or hops > 40:
+            return None
+        parts = cur.split("/")
+        prefix = ""
+        i = 0
+        while i < len(parts):
+            cand = parts[i] if not prefix else prefix + "/" + parts[i]
+            last = i == len(parts) - 1
+            entry = tree.get(cand)
+            if entry is None:
+                if last:
+                    return None
+                prefix = cand  # a directory: the tree holds its files
+                i += 1
+                continue
+            mode, sha = entry
+            if last and mode != "120000":
+                return cand
+            if mode != "120000":
+                return None  # a file where the record's path needs a directory
+            target = git_bytes("cat-file", "blob", sha).stdout.decode("utf-8", "replace")
+            nxt = target.lstrip("/") if target.startswith("/") else (
+                os.path.normpath(target) if not prefix else os.path.normpath(prefix + "/" + target))
+            # The walk restarts over the link's target PLUS whatever remained
+            # of the path after it — the target may hold links of its own.
+            rest = "/".join(parts[i + 1:])
+            return resolve_in_tree(nxt + ("/" + rest if rest else ""), tree, hops + 1)
+        return None
+
+    def banked_tree():
+        """The tree the engine's wip bank would commit here: the index as the
+        bank's staging rebuilds it from the working tree (the tree noise
+        excluded), staged into a scratch index of this node's own. On a cloud
+        run nothing banks; HEAD is pushed as the verdict's node left it — the
+        record is required in both trees, so a record the run's own tree
+        would drop from the landing fails wherever it lands."""
+        import shutil
+        import tempfile
+        real = git_bytes("rev-parse", "--git-path", "index")
+        if real.returncode != 0:
+            git_fail("locate the index for", plan_file, real)
+        idx_path = os.fsdecode(real.stdout.strip())
+        if not os.path.isabs(idx_path):
+            idx_path = os.path.join(ws, idx_path)
+        scratch = os.path.join(tempfile.mkdtemp(prefix="modernize-bank-"), "index")
+        shutil.copyfile(idx_path, scratch)
+        # The same options the engine's own git runs with, and the same
+        # exclusions its bank stages with ($ITERION_TREE_NOISE, the mirror and
+        # the derivable noise): staging the bank's tree is an iterion gesture,
+        # not the run's to ride or to refuse.
+        # The same exclusions the bank's own staging carries — and the same
+        # probe: git refuses an exclusion whose path is ignored (an untracked
+        # mirror behind a `.gitignore`), so the bank drops exactly that one
+        # and stages without it. An exclusion spelled where git would refuse
+        # makes the whole staging fail, and with it every lot.
+        env = dict(os.environ, GIT_INDEX_FILE=scratch)
+        add_args = ["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
+                    "-c", "core.fsmonitor=false", "add", "-A", "--", ":/"]
+        for spec in shlex.split(os.environ.get("ITERION_TREE_NOISE", "")):
+            rel = spec
+            for pre in (":(exclude,top)", "(exclude,top)"):
+                if rel.startswith(pre):
+                    rel = rel[len(pre):]
+                    break
+            # The probe asks the LITERAL path, as the engine's own staging
+            # probe does: a Prefix entry's pathspec ends in a wildcard, and
+            # git keys the add-refusal on the literal part — a file named
+            # exactly like the prefix trips the wildcard, not the pattern.
+            probe_rel = rel[:-1] if rel.endswith("*") else rel
+            try:
+                info = os.lstat(os.path.join(ws, probe_rel))
+                probe = ["check-ignore", "-q"]
+                if os.path.isdir(os.path.join(ws, probe_rel)):
+                    probe.append("--no-index")
+                probe += ["--", ":(top)" + probe_rel]
+                if subprocess.run(["git", "-C", ws] + probe, capture_output=True,
+                                  timeout=60).returncode == 0:
+                    continue  # ignored: git would refuse the exclusion; it stages nothing anyway
+            except OSError:
+                pass
+            add_args.append(spec)
+        add = subprocess.run(add_args, env=env, capture_output=True, timeout=300)
+        if add.returncode != 0:
+            unreadable("cannot stage the working tree as the bank would (%s): %s"
+                       % (plan_rel, add.stderr.decode("utf-8", "replace")[-300:]))
+        tree = subprocess.run(["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
+                               "-c", "core.fsmonitor=false", "write-tree"], env=env,
+                              capture_output=True, timeout=120)
+        if tree.returncode != 0:
+            unreadable("cannot write the tree the bank would commit (%s): %s"
+                       % (plan_rel, tree.stderr.decode("utf-8", "replace")[-300:]))
+        shutil.rmtree(os.path.dirname(scratch), ignore_errors=True)
+        return tree_entries_full(tree.stdout.decode().strip())
+
+    def record_predicates():
+        """The gate commands that ARE the predicate over a record in the
+        contract's directory — `test -s <path>` or `[ -s <path> ]`, the whole
+        command as the shell splits it: {path: command}. A command that
+        carries the predicate among other words decides something else."""
+        found = {}
+        for cmd in gate_cmds if contract_dir else []:
+            try:
+                words = shlex.split(cmd)
+            except ValueError:
+                continue
+            if len(words) == 3 and words[:2] == ["test", "-s"]:
+                path = words[2]
+            elif len(words) == 4 and words[:2] == ["[", "-s"] and words[3] == "]":
+                path = words[2]
+            else:
+                continue
+            rel = os.path.normpath(os.path.relpath(path, ws) if os.path.isabs(path) else path)
+            if rel.startswith(contract_dir + "/"):
+                found[rel] = cmd.strip()
+        return found
+
+    def records_unlanded(head, head_tree, banked):
+        """The gate's record predicates held on the working tree the commands
+        read — and `done` is written on what lands. The landing is HEAD (a
+        cloud run pushes it) and, on a run with a working tree, the commit the
+        engine's bank adds on top of it. A record must be in both, as a
+        non-empty file, under the path the commit really carries it — through
+        the committed links of its path. Left uncommitted, ignored, put back
+        on disk after a commit removed it, or carried as a directory, it is
+        the predicate holding on nothing that lands."""
+        causes = []
+        full = tree_entries_full(head)
+        for rel, cmd in sorted(record_predicates().items()):
+            at = resolve_in_tree(rel, full)
+            why = None
+            if at is None:
+                if any(p.startswith(rel + "/") for p in full):
+                    why = "the commit carries it as a directory, not as a file"
+                else:
+                    why = "the record is in no commit"
+                    # check-ignore takes no pathspec magic: not through git_bytes.
+                    # It reads the WORKING TREE: beyond a committed link of the
+                    # path it cannot answer, and the hint would only confuse —
+                    # so it is spoken only when git answers "ignored".
+                    ignored = subprocess.run(["git", "-C", ws, "check-ignore", "-q", "--", rel],
+                                             capture_output=True, timeout=60)
+                    if ignored.returncode == 0:
+                        why += ", and git ignores it (add it with `git add -f`, or fix the ignore rule)"
+            else:
+                mode, sha = full[at]
+                if mode != "100644" and mode != "100755":
+                    why = "the commit carries it as %s, not as a file" % (
+                        "a symlink" if mode == "120000" else "mode " + mode)
+                else:
+                    size = git_bytes("cat-file", "-s", sha)
+                    if size.returncode != 0:
+                        git_fail("size", at, size)
+                    if size.stdout.decode().strip() == "0":
+                        why = "the commit carries it empty"
+                    elif resolve_in_tree(at, banked) is None \
+                            and resolve_in_tree(rel, banked) is None:
+                        # Each tree is judged under the path IT carries the
+                        # record at: HEAD behind its committed link, the
+                        # landing at the path its index and working tree hold.
+                        why = ("the commit carries it, but the landing does not: the index and the "
+                               "working tree would not carry %s into the banked commit (left "
+                               "uncommitted, ignored, or removed from the index)" % at)
+            if why:
+                causes.append("%s: the gate's predicate `%s` holds on the working tree, but %s at HEAD "
+                              "%s — `done` is written on what lands: commit the record"
+                              % (rel, cmd, why, head[:12]))
+        return causes
+
+    def verdict_tree(state):
+        """What mark_done holds the landing to: the table's files one by one,
+        the rest of the directory as its count and a digest of its states —
+        a verdict that does not grow with the lot's captures."""
+        rest = {p: s for p, s in state.items() if p not in TABLE}
+        canon = json.dumps(rest, sort_keys=True, separators=(",", ":"))
+        return {"table": {p: state[p] for p in TABLE},
+                "rest": {"count": len(rest), "digest": hashlib.sha256(canon.encode()).hexdigest()}}
+
+    def record_landing(done_in, rewrites, when):
+        """The two refusals a landing can carry, written into the verdict.
+        True when either holds."""
+        if done_in and (base_lot or {}).get("status") != "done":
+            report["done_self_written"] = True
             problems.append(
-                "the contract was rewritten during lot %s (%s). The plan is "
-                "read-only inside a lot: existing lots keep their gates, intents "
-                "and dependencies, no lot disappears, no other lot's status "
-                "moves. Revert those lines (nothing else); ADD a lot if the "
-                "programme needs one, never reshape or drop the ones it has. "
-                "This verdict ran no command."
-                % ({{input.lot_id}}, "; ".join(rewritten)[:1500]))
-            report["log_tail"] = "\n".join(problems)[-6000:]
-            emit()
-            raise SystemExit(0)
+                "%s, lot %s reads `done` in %s while it was `%s` at base %s: the "
+                "worker wrote the verdict. `done` is the gate's word — a tool node "
+                "writes it after the gate has proven the lot. Revert that status "
+                "line (nothing else) and let the gate decide."
+                % (when, lot_id, " and ".join(done_in),
+                   (base_lot or {}).get("status") or "absent", base[:12]))
+        if rewrites:
+            report["contract_rewritten"] = rewrites
+            problems.append(
+                "%s, the contract was rewritten during lot %s (%s). The contract is "
+                "the plan's directory — plan.yaml, outcomes.json, brief.yaml, "
+                "ARBITRAGE.md, defects-ledger.json, and every other file the base "
+                "holds beside them — and it is read-only inside a lot, in the "
+                "working tree, the index and what is committed alike; a gate "
+                "command is the lot's own code, and an index flag or a `filter` on "
+                "a contract path is refused because what it stores cannot be "
+                "judged. The lot's own writes: its status (`blocked`, never "
+                "`done`), a NEW lot added to the plan (a proposal), in the defects "
+                "register a NEW entry or an entry it remediates (remediates: %s), "
+                "and its own records beside the plan — a file named with its id "
+                "(`%s-report.md`, `sweeps/%s.md`), or one it creates that is named "
+                "for no other lot of the plan. Everything else is the owner's or "
+                "another lot's: revert those lines (nothing else), and put the "
+                "change you would make in your report."
+                % (when, lot_id, "; ".join(rewrites)[:1500], ", ".join(sorted(remediates)) or "none",
+                   lot_id, lot_id))
+        return report["done_self_written"] or bool(rewrites)
+
+    done_in, rewritten, _, _, _ = judge_landing()
+    if record_landing(done_in, rewritten, "Before any gate command"):
+        # Never a clean stop either, even under a lot the worker declared
+        # blocked: `stop` would end the run with the rewrite landed. Cleared
+        # at the same one point as every other refusal; the worker gets it
+        # in fail_log. This verdict ran no command.
+        report["block_reason"] = ""
+        report["log_tail"] = "\n".join(problems)[-6000:]
+        emit()
+        raise SystemExit(0)
 
     def run(cmd, timeout=None):
         """(exit code, tail, full stdout). An expiry returns (None, tail, "") —
@@ -1420,6 +2293,30 @@ tool lot_verify:
                    or "no output")[:300])
             report["refs_untouched"] = False
 
+    # 4. What lands, judged again after every command this node ran. The
+    #    exit_gate commands are the lot's code and the net's harness ran after
+    #    the check above: either can rewrite the contract, commit it, or leave
+    #    it in the working tree for the engine to bank. The verdict carries
+    #    the HEAD and the working tree it judged; mark_done commits the gate's
+    #    word on exactly those, or refuses.
+    done_in, rewritten, judged_head, judged_tree, judged_head_tree = judge_landing()
+    report["contract_head"] = judged_head
+    report["contract_tree"] = json.dumps(verdict_tree(judged_tree), sort_keys=True)
+    # 4b. The gate's predicate over a record in the contract's directory is
+    #     judged on what lands: the commands read the working tree, and on a
+    #     cloud run HEAD alone is the landing.
+    if report["gate_passed"]:
+        unlanded = records_unlanded(judged_head, judged_head_tree, banked_tree())
+        if unlanded:
+            report["gate_passed"] = False
+            problems.extend(unlanded)
+    if record_landing(done_in, rewritten, "After the gate commands") and not (
+            report["gate_timed_out"] or report["oracle_not_run"] or report["extension_forged"]):
+        # The typed fails read block_reason for their message: a wall, a
+        # silent oracle or a forged act keep theirs. Anything else here is a
+        # worker-declared stop the refusal voids.
+        report["block_reason"] = ""
+
     report["log_tail"] = "\n".join(problems)[-6000:]
     emit()
 
@@ -1434,10 +2331,15 @@ tool lot_verify:
 ## the ONE line, verifies it changed nothing else, and commits it alone — so a
 ## landing has exactly one commit to check for "what did the programme accept",
 ## and a bank taken before the verdict can never carry a completion nobody
-## proved. Idempotent: a contract that already reads `done` is left as it is,
-## with nothing committed.
+## proved. It commits only on what that verdict judged: the HEAD lot_verify
+## judged after the last gate command, with the working tree it judged — a
+## commit or an edit that arrived since is refused, never committed under the
+## gate's subject. Idempotent: a contract that already reads `done` is left as
+## it is, and this node's own commit on the judged HEAD, left by an attempt
+## that died before reporting it, is recognised and not made twice.
 tool mark_done:
   script: |
+    import hashlib
     import json
     import os
     import re
@@ -1445,10 +2347,19 @@ tool mark_done:
     import subprocess
     import sys
 
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
     ws = {{vars.workspace_dir}}
-    plan_rel = {{input.plan_path}}
+    plan_rel = os.path.normpath({{input.plan_path}})
     lot_id = {{input.lot_id}}
     base = {{input.base_sha}}
+    # The verdict this node answers for: the HEAD lot_verify judged after the
+    # last gate command, and the working tree it judged (file -> fingerprint).
+    judged_head = ({{input.judged_head}} or "").strip()
+    judged_tree = ({{input.judged_tree}} or "").strip()
+    # The flip is applied to the contract as committed: a replace ref the
+    # worker wrote would hand this node a forged plan to commit under the
+    # gate's subject.
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
 
     out = {"marked": False, "commit": "", "notice": "", "refused": False}
 
@@ -1495,9 +2406,70 @@ tool mark_done:
         finally:
             os.unlink(tmp)
 
-    def git(*args):
-        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
-                              text=True, timeout=120)
+    def git(*args, **kw):
+        # No hook runs, and no program the repository's config names to watch
+        # the tree (the engine's own git runs the same): this node's writes —
+        # the ref update that lands the gate's word, the index entry that
+        # follows it — are not the run's to refuse or to ride.
+        return subprocess.run(["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
+                               "-c", "core.fsmonitor=false"] + list(args),
+                              capture_output=True, text=True, timeout=120, **kw)
+
+    # The one line, edited in place: locate the lot's block by its `- id:`
+    # line and the `status:` line at the item's key column. A structural
+    # rewrite of the file (yq -i) would reflow a contract humans read and
+    # diff; a line edit keeps the diff to the word that changed. Anchored on
+    # INDENTATION, not on the first line that looks right: the block ends at
+    # the next `- id:` at the SAME list level, so a `status:` or `- id:`
+    # written inside an `intent: |` block scalar (deeper) is text, not a key.
+    id_re = re.compile(r"^(\s*)-(\s+)id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
+
+    def status_line(lines, where, soft=False):
+        """(index, match) of the lot's status line in `lines`, or a refusal —
+        None instead when `soft`."""
+        start = m0 = None
+        for i, l in enumerate(lines):
+            m0 = id_re.match(l)
+            if m0:
+                start = i
+                break
+        if start is None:
+            if soft:
+                return None
+            refuse("lot %s: its `- id:` line was not found %s — the contract's "
+                   "shape is not one this node knows how to edit." % (lot_id, where))
+        dash_indent = len(m0.group(1))
+        key_col = dash_indent + 1 + len(m0.group(2))
+        same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
+        end = next((i for i in range(start + 1, len(lines)) if same_level.match(lines[i])), len(lines))
+        status_re = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % key_col)
+        hit = next((i for i in range(start, end) if status_re.match(lines[i])), None)
+        if hit is None and soft:
+            return None
+        if hit is None:
+            refuse("lot %s: no `status:` line inside its block %s — the contract's "
+                   "shape is not one this node knows how to edit." % (lot_id, where))
+        return hit, status_re.match(lines[hit])
+
+    def flipped(text, where):
+        """`text` with the lot's status line reading `done`, nothing else."""
+        lines = text.splitlines(keepends=True)
+        hit, m = status_line(lines, where)
+        lines[hit] = "%sstatus: done%s%s" % (m.group(1), m.group(2) or "", m.group(3) or "")
+        return "".join(lines)
+
+    def flipped_or_none(text):
+        """flipped(), or None where the lot's line cannot be located."""
+        lines = text.splitlines(keepends=True)
+        if status_line(lines, "", soft=True) is None:
+            return None
+        return flipped(text, "")
+
+    def blob_of(text):
+        h = git("hash-object", "--path=" + plan_rel, "--stdin", input=text)
+        if h.returncode != 0:
+            refuse("git hash-object failed: %s" % h.stderr[-300:])
+        return h.stdout.strip()
 
     plan_path = os.path.join(ws, plan_rel)
     try:
@@ -1505,17 +2477,203 @@ tool mark_done:
     except OSError as e:
         refuse("cannot read the contract at %s: %s" % (plan_path, e))
 
-    # Idempotence is judged at HEAD, never in the working tree: an attempt
-    # killed between the write and the commit leaves `done` on disk and
-    # nothing in git, and a re-execution that read the tree would skip the
-    # commit and let the run end green with the gate's word uncommitted.
-    head = git("show", "HEAD:%s" % plan_rel)
-    if head.returncode != 0:
-        refuse("the contract is not committed at HEAD (%s): %s" % (plan_rel, head.stderr[-300:]))
-    head_lots = lots_json_text(head.stdout, "at HEAD")
+    # The gate's word lands only on what its verdict judged. lot_verify judged
+    # the contract's directory on the working tree, the index and HEAD after
+    # the last gate command; between that verdict and this node nothing of the
+    # graph runs — a HEAD, a file, an index entry or an attribute that moved
+    # since, and a path of the directory that appeared or went, are not what
+    # the verdict answered for. The verdict names the table's files one by
+    # one, and holds the rest of the directory as its count and a digest of
+    # its states.
+    try:
+        verdict = json.loads(judged_tree) if judged_tree else None
+    except ValueError:
+        verdict = None
+    judged = verdict.get("table") if isinstance(verdict, dict) else None
+    rest = verdict.get("rest") if isinstance(verdict, dict) else None
+    if not judged_head or not isinstance(judged, dict) or not judged \
+            or not all(isinstance(k, str) and isinstance(v, dict) for k, v in judged.items()) \
+            or not isinstance(rest, dict) or type(rest.get("count")) is not int \
+            or not isinstance(rest.get("digest"), str):
+        refuse("no verdict to answer for: mark_done commits the gate's word on the "
+               "HEAD and the landing state lot_verify judged, and it was handed neither "
+               "(judged_head=%r, judged_tree=%r). Nothing committed." % (judged_head, judged_tree[:200]))
+    at_judged = git("show", "%s:%s" % (judged_head, plan_rel))
+    if at_judged.returncode != 0:
+        refuse("the contract is not committed at the judged HEAD %s (%s): %s"
+               % (judged_head[:12], plan_rel, at_judged.stderr[-300:]))
+    head_lots = lots_json_text(at_judged.stdout, "at HEAD")
     hidx = next((i for i, l in enumerate(head_lots) if l.get("id") == lot_id), None)
     if hidx is None:
         refuse("lot %s is not in the contract at HEAD — nothing to mark." % lot_id)
+    # What this node commits: the judged contract plus the one flipped line,
+    # at the plan's own mode.
+    committed_text = flipped(at_judged.stdout, "in the judged HEAD's contract")
+    plan_entry = git("ls-tree", judged_head, "--", plan_rel).stdout.split()
+    if len(plan_entry) < 3 or plan_entry[1] != "blob":
+        refuse("the contract at the judged HEAD %s is not a file (%s) — nothing committed."
+               % (judged_head[:12], " ".join(plan_entry) or "absent"))
+    plan_mode, judged_plan_blob = plan_entry[0], plan_entry[2]
+    committed_blob = git("hash-object", "--stdin", input=committed_text).stdout.strip()
+
+    def git_bytes(*args, **kw):
+        return subprocess.run(["git", "--literal-pathspecs", "-C", ws,
+                               "-c", "core.hooksPath=/dev/null",
+                               "-c", "core.fsmonitor=false"] + list(args),
+                              capture_output=True, timeout=120, **kw)
+
+    def landing_state(paths):
+        """lot_verify's reading of what a commit of the working tree would take
+        for each path — the working tree as git would store it, the index
+        entries, the index flags, the `filter` attribute — recomputed the same
+        way: this node holds the landing to the verdict, it does not re-judge
+        the contract. Any drift between the two readings refuses every landing,
+        loudly."""
+        paths = sorted(set(paths))
+        state = {p: {"w": "absent", "i": "absent", "t": "-", "f": "unspecified"} for p in paths}
+        contract_dir = os.path.dirname(plan_rel)
+        scope = [contract_dir + "/"] if contract_dir else paths
+        idx, tags = {}, {}
+        ls = git_bytes("ls-files", "-s", "-z", "--", *scope)
+        for e in ls.stdout.split(b"\0"):
+            meta, _, path = e.partition(b"\t")
+            if e:
+                idx.setdefault(os.fsdecode(path), []).append(":".join(meta.decode().split()))
+        lv = git_bytes("ls-files", "-v", "-z", "--", *scope)
+        for e in lv.stdout.split(b"\0"):
+            if e:
+                tags.setdefault(os.fsdecode(e[2:]), set()).add(e[:1].decode())
+        attrs = subprocess.run(["git", "-C", ws, "check-attr", "--stdin", "-z", "filter"],
+                               input=b"".join(os.fsencode(p) + b"\0" for p in paths),
+                               capture_output=True, timeout=60)
+        if ls.returncode != 0 or lv.returncode != 0 or attrs.returncode != 0:
+            refuse("cannot read the index or the attributes of the contract's paths: %s"
+                   % (ls.stderr + lv.stderr + attrs.stderr).decode("utf-8", "replace")[-300:])
+        parts = attrs.stdout.split(b"\0")
+        for i in range(0, len(parts) - 2, 3):
+            path = os.fsdecode(parts[i])
+            if path in state:
+                state[path]["f"] = parts[i + 2].decode()
+        regular = []
+        for p in paths:
+            if p in idx:
+                state[p]["i"] = ",".join(sorted(idx[p]))
+            if p in tags:
+                state[p]["t"] = ",".join(sorted(tags[p]))
+            full = os.path.join(ws, p)
+            if os.path.islink(full):
+                state[p]["w"] = "symlink:" + os.readlink(full)
+            elif not os.path.lexists(full):
+                state[p]["w"] = "absent"
+            elif os.path.realpath(full) != os.path.join(os.path.realpath(ws), p) or not os.path.isfile(full):
+                state[p]["w"] = "other"
+            else:
+                regular.append(p)
+        # Hashed as lot_verify hashed it: `-w`, names as bytes, a name holding
+        # a newline or ending in CR on its own, and path by path when the
+        # batch does not answer one hash per path — so the path that stopped
+        # it is the one named, with the conversion attributes it carries.
+        alone = [p for p in regular if "\n" in p or p.endswith("\r")]
+        batch = [p for p in regular if not ("\n" in p or p.endswith("\r"))]
+        if batch:
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--stdin-paths"],
+                               input=b"".join(os.fsencode(p) + b"\n" for p in batch),
+                               capture_output=True, timeout=120)
+            shas = h.stdout.decode().split()
+            if h.returncode == 0 and len(shas) == len(batch):
+                for p, sha in zip(batch, shas):
+                    state[p]["w"] = "file:" + sha
+            else:
+                alone = regular
+        for p in alone:
+            h = subprocess.run(["git", "-C", ws, "hash-object", "-w", "--path=" + p, "--",
+                                os.path.join(ws, p)], capture_output=True, timeout=120)
+            if h.returncode != 0:
+                attrs = subprocess.run(["git", "-C", ws, "check-attr", "-z", "filter",
+                                        "working-tree-encoding", "text", "eol", "--", p],
+                                       capture_output=True, timeout=60)
+                parts = attrs.stdout.split(b"\0") if attrs.returncode == 0 else []
+                named = ["`%s=%s`" % (parts[i + 1].decode(), parts[i + 2].decode("utf-8", "replace"))
+                         for i in range(0, len(parts) - 2, 3)
+                         if parts[i + 2] not in (b"unspecified", b"unset")]
+                refuse("the landing moved since the verdict: git cannot store %r as it would be "
+                       "committed%s: %s. Nothing committed."
+                       % (p, " under its conversion attribute(s) " + ", ".join(named) if named else "",
+                          h.stderr.decode("utf-8", "replace").strip()[-300:]))
+            state[p]["w"] = "file:" + h.stdout.decode().strip()
+        return state
+
+    def landing_paths():
+        """lot_verify's enumeration of what a landing carries under the
+        contract's directory — HEAD's tree, the index, the files `git add`
+        takes — recomputed the same way: a path the verdict did not list has
+        appeared since it."""
+        contract_dir = os.path.dirname(plan_rel)
+        if not contract_dir:
+            return set()
+        lt = git_bytes("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", contract_dir + "/")
+        ls = git_bytes("ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                       "--", contract_dir + "/")
+        if lt.returncode != 0 or ls.returncode != 0:
+            refuse("cannot list what the landing carries under %s: %s"
+                   % (contract_dir, (lt.stderr + ls.stderr).decode("utf-8", "replace")[-300:]))
+        return {os.fsdecode(p) for p in (lt.stdout + ls.stdout).split(b"\0") if p}
+
+    # This node's own work, which an attempt that died part-way may have left:
+    # in the working tree, the judged plan with its line flipped — the plan the
+    # verdict judged there, proposals the worker left uncommitted included —
+    # and in the index, the entry of the commit it made.
+    own_w = None
+    judged_w = (judged.get(plan_rel) or {}).get("w") or ""
+    if judged_w.startswith("file:"):
+        judged_plan = git("cat-file", "blob", judged_w[len("file:"):])
+        own_text = flipped_or_none(judged_plan.stdout) if judged_plan.returncode == 0 else None
+        if own_text is not None:
+            own_w = "file:" + blob_of(own_text)
+    own_i = "%s:%s:0" % (plan_mode, committed_blob)
+
+    WHERE = {"w": "in the working tree", "i": "in the index", "t": "in the index's flags",
+             "f": "in its `filter` attribute"}
+    now = landing_state(judged)
+    moved = []
+    for rel in sorted(judged):
+        for k in ("w", "i", "t", "f"):
+            want, have = judged[rel].get(k), now[rel].get(k)
+            if have == want or (rel == plan_rel and ((k == "w" and have == own_w)
+                                                     or (k == "i" and have == own_i))):
+                continue
+            moved.append("%s %s (judged %s, now %s)" % (rel, WHERE[k], want, have))
+    beyond = sorted(landing_paths() - set(judged))
+    now_beyond = landing_state(beyond)
+    digest = hashlib.sha256(json.dumps(now_beyond, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if len(beyond) != rest["count"] or digest != rest["digest"]:
+        moved.append("the rest of the contract's directory (%d path(s) judged, %d now%s)" % (
+            rest["count"], len(beyond),
+            ": the same count, another state — a file, an index entry, a flag or an attribute"
+            if len(beyond) == rest["count"] else ": a path appeared or went"))
+    if moved:
+        refuse("the landing moved since the verdict: %s. The gate's word lands only on "
+               "what its verdict judged — relaunch the lot to judge it again. Nothing "
+               "committed." % "; ".join(moved))
+
+    head_sha = git("rev-parse", "--verify", "HEAD").stdout.strip()
+    if head_sha != judged_head:
+        # One HEAD other than the judged one is this node's own: its commit on
+        # the judged HEAD, made by an attempt that died before reporting it —
+        # one parent, the judged HEAD, and one change, the plan at its own mode
+        # carrying the blob this node commits. Nothing else is its own.
+        parents = git("rev-list", "--parents", "-n", "1", head_sha).stdout.split()
+        raw = [l for l in git("-c", "core.quotePath=false", "diff-tree", "--raw", "--no-abbrev",
+                              "-r", "--no-commit-id", judged_head, head_sha).stdout.splitlines() if l]
+        own_change = ":%s %s %s %s M\t%s" % (plan_mode, plan_mode, judged_plan_blob, committed_blob, plan_rel)
+        if parents == [head_sha, judged_head] and raw == [own_change]:
+            finish("lot %s already marked `done` by the gate in %s on the judged HEAD "
+                   "%s — nothing written, nothing committed." % (lot_id, head_sha[:12], judged_head[:12]))
+        refuse("HEAD moved since the verdict: lot_verify judged %s after the last gate "
+               "command, and HEAD is %s. The gate's word lands only on the tree its "
+               "verdict judged — relaunch the lot to judge it again. Nothing committed."
+               % (judged_head[:12], head_sha[:12] or "unreadable"))
+
     if head_lots[hidx].get("status") == "done":
         finish("lot %s already reads `done` at HEAD — nothing written, nothing committed." % lot_id)
 
@@ -1525,41 +2683,11 @@ tool mark_done:
         refuse("lot %s is in the contract at HEAD but not in the working tree — "
                "the tree is not one this node writes into." % lot_id)
 
-    # The one line, edited in place: locate the lot's block by its `- id:` line
-    # and the first `status:` line inside it. A structural rewrite of the file
-    # (yq -i) would reflow a contract humans read and diff; a line edit keeps
-    # the diff to the word that changed. A tree that already reads `done` is
+    # The working tree gets the same line. A tree that already reads `done` is
     # an interrupted attempt: nothing to write, the commit is what is owed.
-    lines = text.splitlines(keepends=True)
-    already_written = before[idx].get("status") == "done"
-    # Anchored on INDENTATION, not on the first line that looks right: the
-    # block ends at the next `- id:` at the SAME list level, and the status
-    # line is the one at the item's key column — so a `status:` or `- id:`
-    # written inside an `intent: |` block scalar (deeper) is text, not a key.
-    id_re = re.compile(r"^(\s*)-(\s+)id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
-    start = m0 = None
-    for i, l in enumerate(lines):
-        m0 = id_re.match(l)
-        if m0:
-            start = i
-            break
-    if start is None:
-        refuse("lot %s: its `- id:` line was not found in %s — the contract's "
-               "shape is not one this node knows how to edit." % (lot_id, plan_rel))
-    dash_indent = len(m0.group(1))
-    key_col = dash_indent + 1 + len(m0.group(2))
-    same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
-    end = next((i for i in range(start + 1, len(lines)) if same_level.match(lines[i])), len(lines))
-    status_re = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % key_col)
-    hit = next((i for i in range(start, end) if status_re.match(lines[i])), None)
-    if hit is None:
-        refuse("lot %s: no `status:` line inside its block — the contract's "
-               "shape is not one this node knows how to edit." % lot_id)
-    if not already_written:
-        m = status_re.match(lines[hit])
-        lines[hit] = "%sstatus: done%s%s" % (m.group(1), m.group(2) or "", m.group(3) or "")
+    if before[idx].get("status") != "done":
         with open(plan_path, "w", encoding="utf-8") as f:
-            f.write("".join(lines))
+            f.write(flipped(text, "in %s" % plan_rel))
 
     # Verified, not trusted: the only difference between the two parses is this
     # lot's status. Anything else is a rewrite, and the write is undone.
@@ -1572,61 +2700,39 @@ tool mark_done:
         refuse("the status edit changed more than lot %s's status — reverted, "
                "the contract is not one this node knows how to edit." % lot_id)
 
-    # The committed content derives from HEAD's contract, not the working
-    # tree's: the same one-line flip applied to HEAD's text, so nothing the
-    # worker left uncommitted in the contract rides along under the gate's
-    # subject (review finding: an added lot, accepted by the verdict as a
-    # proposal, was swept into the gate's commit). Built with plumbing on a
-    # scratch index — no hook runs (a pre-commit that reformats would commit
-    # a contract other than the one just verified; one that rejects would
-    # fail a converged lot at its last node), and no other staged change is
-    # swept in either.
+    # The committed content derives from the judged HEAD's contract, not the
+    # working tree's: the same one-line flip applied to its text, so nothing
+    # the worker left uncommitted in the contract rides along under the gate's
+    # subject — an added lot the verdict accepts as a proposal stays the
+    # worker's. Built with plumbing on a scratch index — no hook runs (a
+    # pre-commit that reformats would commit a contract other than the one
+    # just verified; one that rejects would fail a converged lot at its last
+    # node), and no other staged change is swept in either.
     subject = "%s: done — gate, oracle and references green at %s" % (lot_id, base[:12])
-    hlines = head.stdout.splitlines(keepends=True)
-    hstart = next((i for i, l in enumerate(hlines) if id_re.match(l)), None)
-    if hstart is None:
-        refuse("lot %s: its `- id:` line was not found in HEAD's contract — nothing committed." % lot_id)
-    hm = id_re.match(hlines[hstart])
-    h_dash = len(hm.group(1))
-    h_col = h_dash + 1 + len(hm.group(2))
-    h_same = re.compile(r"^\s{%d}-\s+id:" % h_dash)
-    h_end = next((i for i in range(hstart + 1, len(hlines)) if h_same.match(hlines[i])), len(hlines))
-    h_status = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % h_col)
-    hhit = next((i for i in range(hstart, h_end) if h_status.match(hlines[i])), None)
-    if hhit is None:
-        refuse("lot %s: no `status:` line inside its block at HEAD — nothing committed." % lot_id)
-    hm2 = h_status.match(hlines[hhit])
-    hlines[hhit] = "%sstatus: done%s%s" % (hm2.group(1), hm2.group(2) or "", hm2.group(3) or "")
-    committed_text = "".join(hlines)
     expect_head = [dict(l) for l in head_lots]
     expect_head[hidx]["status"] = "done"
     if lots_json_text(committed_text, "to be committed") != expect_head:
         refuse("the status edit on HEAD's contract changed more than lot %s's status — nothing committed." % lot_id)
 
-    def plumb(args, **kw):
-        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
-                              text=True, timeout=120, **kw)
-
-    head_sha = git("rev-parse", "HEAD").stdout.strip()
-    ls = git("ls-tree", "HEAD", "--", plan_rel).stdout.split()
+    ls = git("ls-tree", head_sha, "--", plan_rel).stdout.split()
     mode = ls[0] if ls else "100644"
-    blob = plumb(["hash-object", "-w", "--stdin"], input=committed_text).stdout.strip()
+    blob = git("hash-object", "-w", "--stdin", input=committed_text).stdout.strip()
     if not blob:
         refuse("git hash-object failed — nothing committed.")
     import tempfile
     tmp_index = tempfile.mktemp(prefix="modernize-index-")
     env = dict(os.environ, GIT_INDEX_FILE=tmp_index)
     try:
-        if plumb(["read-tree", "HEAD"], env=env).returncode != 0:
-            refuse("git read-tree HEAD failed — nothing committed.")
-        if plumb(["update-index", "--cacheinfo", "%s,%s,%s" % (mode, blob, plan_rel)], env=env).returncode != 0:
+        if git("read-tree", head_sha, env=env).returncode != 0:
+            refuse("git read-tree %s failed — nothing committed." % head_sha[:12])
+        if git("update-index", "--cacheinfo", "%s,%s,%s" % (mode, blob, plan_rel), env=env).returncode != 0:
             refuse("git update-index failed — nothing committed.")
-        tree = plumb(["write-tree"], env=env).stdout.strip()
+        tree = git("write-tree", env=env).stdout.strip()
     finally:
         if os.path.exists(tmp_index):
             os.unlink(tmp_index)
-    c = plumb(["-c", "user.name=iterion-modernize", "-c", "user.email=modernize@iterion.local",
-               "commit-tree", tree, "-p", head_sha, "-m", subject])
+    c = git("-c", "user.name=iterion-modernize", "-c", "user.email=modernize@iterion.local",
+            "commit-tree", tree, "-p", head_sha, "-m", subject)
     if c.returncode != 0:
         refuse("committing the status failed: %s" % (c.stdout + c.stderr)[-600:])
     sha = c.stdout.strip()
@@ -1662,11 +2768,14 @@ compute work_gate:
 
 ## A pure CONJUNCTION, never an aggregate. Two of three green is not "mostly
 ## done" — it is a lot that built and lies, or one that behaves and cheated.
+## The contract is a term of its own: a verdict can find it rewritten AFTER
+## the gate commands went green, and a green gate over a rewritten contract
+## is not a lot that converged.
 compute lot_gate:
   output: gate_state
   expr:
-    converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
-    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
+    converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched && length(outputs.lot_verify.contract_rewritten) == 0 && !outputs.lot_verify.done_self_written"
+    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched && length(outputs.lot_verify.contract_rewritten) == 0 && !outputs.lot_verify.done_self_written) || outputs.lot_verify.lot_blocked"
     refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0 || outputs.lot_verify.extension_forged"
     ## Its own term, because it takes its own door: a refusal no pass can
     ## repair must not be paid for max_passes times (see the edge below).
@@ -1917,13 +3026,16 @@ workflow modernize:
   }
 
   ## Converged: the gate writes `done` — one line, one commit — then the run
-  ## ends. Declared blocked with a committed reason: the run ends as it is.
+  ## ends. The verdict travels with it: mark_done commits on the HEAD and the
+  ## working tree lot_verify judged, nothing that arrived since. Declared blocked with a committed reason: the run ends as it is.
   ## Both end the run; looping against a wall the agent has already described
   ## and proven costs money and produces nothing.
   lot_gate -> mark_done when converged with {
     lot_id: "{{outputs.work_gate.lot_id}}",
     plan_path: "{{vars.plan_path}}",
     base_sha: "{{outputs.work_gate.base_sha}}",
+    judged_head: "{{outputs.lot_verify.contract_head}}",
+    judged_tree: "{{outputs.lot_verify.contract_tree}}",
   }
 
   mark_done -> fail when refused

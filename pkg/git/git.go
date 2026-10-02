@@ -191,6 +191,28 @@ func NoAutoMaintenance(args ...string) []string {
 	return append(slices.Clone(autoMaintenanceOff), args...)
 }
 
+// runHooksOff is the config under which iterion runs git: no repository hook,
+// and no program the repository's config names to watch the tree.
+//
+// A run writes its repository: a worktree shares `.git/hooks` and
+// `.git/config` with the operator's checkout and with every other run there,
+// and a cloud run's clone is the run's own. A hook in that directory — or the
+// program `core.fsmonitor` names, which git runs whenever it refreshes the
+// index — is the run's code, executed inside iterion's own gestures: the
+// landing of a run on the operator's branch, the bank's push, a fork's
+// checkout. Run there, it is free to rewrite what lands after every verdict
+// the run's bots took, to commit again on top of it, or to refuse it.
+// `core.hooksPath` pointed at nothing disables every hook, `--no-verify`
+// only two of them.
+var runHooksOff = []string{"-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false"}
+
+// NoRunHooks returns args prefixed with the config above, for every git
+// command iterion runs. The studio's authoring is the one exception: it
+// commits for the user in the user's own checkout, under the user's hooks.
+func NoRunHooks(args ...string) []string {
+	return append(slices.Clone(runHooksOff), args...)
+}
+
 func gitEnv() []string {
 	return append(SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
 }
@@ -202,7 +224,7 @@ func gitEnv() []string {
 func run(dir string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", NoRunHooks(args...)...)
 	cmd.Dir = dir
 	cmd.Env = gitEnv()
 	var stderr strings.Builder

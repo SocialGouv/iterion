@@ -140,7 +140,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		cleanupCtx := context.WithoutCancel(ctx)
 		if child.Worktree && child.WorkDir != "" && child.RepoRoot != "" {
 			wtCtx, cancel := context.WithTimeout(cleanupCtx, 30*time.Second)
-			cmd := exec.CommandContext(wtCtx, "git", "-C", child.RepoRoot, "worktree", "remove", "--force", child.WorkDir)
+			cmd := exec.CommandContext(wtCtx, "git", gitlib.NoRunHooks("-C", child.RepoRoot, "worktree", "remove", "--force", child.WorkDir)...)
 			cmd.Env = gitlib.SanitizeEnv(os.Environ())
 			_, _ = cmd.CombinedOutput()
 			cancel()
@@ -405,7 +405,9 @@ func forkWorktree(parent *store.Run, spec ForkSpec, turn *store.TurnCheckpoint, 
 	// otherwise pin the request goroutine forever.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	wtCmd := exec.CommandContext(ctx, "git", "-C", parent.RepoRoot, "worktree", "add", newWtPath, target)
+	// The parent's repository is a run's: its post-checkout hook would run in
+	// the child's tree as it is checked out.
+	wtCmd := exec.CommandContext(ctx, "git", gitlib.NoRunHooks("-C", parent.RepoRoot, "worktree", "add", newWtPath, target)...)
 	// -C names the repository; an inherited GIT_DIR would override it.
 	wtCmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := wtCmd.CombinedOutput()

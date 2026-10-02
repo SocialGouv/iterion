@@ -283,6 +283,7 @@ func TestGitWorktreeCleanupSupportsLegacyPorcelain(t *testing.T) {
 	fakeGit := filepath.Join(fakeBin, "git")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
+while [ "$1" = "-c" ]; do shift 2; done
 if [ "$1" = "rev-parse" ] && [ "$2" = "--git-common-dir" ]; then
   printf '../common\n'
   exit 0
@@ -334,6 +335,12 @@ exit 2
 	}
 	if strings.Contains(logText, "--path-format") {
 		t.Errorf("legacy git received unsupported --path-format:\n%s", logText)
+	}
+	// The workspace is a run's tree: no git here runs its repository's hooks.
+	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
+		if !strings.HasPrefix(line, "-c core.hooksPath=/dev/null -c core.fsmonitor=false ") {
+			t.Errorf("git ran with the repository's hooks: %q", line)
+		}
 	}
 }
 

@@ -75,6 +75,53 @@ interrupted after such a write relaunches as a green no-op. Measured: four
 `finished` runs in 24 h that crossed no gate, every one a relaunch from a
 banked branch carrying a completion nobody had proven.
 
+The contract is the plan's whole directory, and all of it is read-only inside
+a lot. `lot_verify` compares the plan, the files its owner keeps beside it —
+`outcomes.json`, `brief.yaml`, `ARBITRAGE.md`, `defects-ledger.json` — and
+every other file the base holds there with the run's base, deny by default:
+
+| a lot may write | nothing else |
+|---|---|
+| its own `status` (`blocked`) | every field of every existing lot, the plan's top-level keys |
+| a NEW lot, as a proposal | the outcomes, the brief, the arbitration doctrine |
+| a NEW register entry, for a defect it found | every other register entry, a removal, the register's header |
+| the register entries its lot declares in `remediates:` (read at the base) | |
+| its own records: a file named for it (`<lot>-report.md`, `sweeps/<lot>.md`), or one the base does not hold that is named for no other lot | every other file the base holds beside the plan: the owner's, the other lots' records; a file it creates named for another lot |
+
+A path is named for the lot whose id one of its names carries (the id, or the
+id followed by `-`, `.` or `_`), among the plan's lots at the base and the ones
+the lot proposes; the outermost such name decides, and the longest id wins:
+`L1-b-report.md` is lot `L1-b`'s, never `L1`'s. A link a lot creates there
+(symbolic, or a nested repository) stands for every path beneath it, so it is
+refused unless it carries the lot's id.
+
+An index flag (`skip-worktree`, `assume-unchanged`) or a `filter` attribute on
+a contract path is refused outright: a commit would store what no tree shows.
+
+Anything else is refused with one named cause per file —
+`.modernize/outcomes.json: outcomes[engine-target].check changed` — and goes
+back to the worker like a self-written `done`.
+
+The contract is judged on what lands, not only on the tree the gate starts
+from: before the exit gate runs and again after its last command (the gate's
+commands are the lot's own code), on the working tree as git would store it,
+on the index and on what is committed. `mark_done` then writes `done` only on the HEAD and the
+working tree that verdict judged — a commit or an edit that arrived since is
+refused, never committed under the gate's subject
+([ADR-121](../../docs/adr/121-a-lots-contract-is-a-directory-judged-on-what-lands.md)).
+The verdict names the table's five files and holds the rest of the directory
+as a count and a digest, so it does not grow with a lot's captures. A gate
+command that is a record's predicate (`test -s .modernize/sweeps/<lot>.md`)
+is judged on what lands too: the record must be a non-empty file in the
+commit `done` is written on, under the path that commit really carries it
+(through the committed links of its way), and in the tree the engine's bank
+builds from the working tree. A conflicted landing is re-judged against the
+verdict before it commits. The bank pushes Git LFS objects ahead of itself,
+or refuses by name. And no git command iterion runs executes the repository's
+hooks — the landing of a run on the operator's branch included — so a
+Gerrit-booking target (which needs a `commit-msg` hook to add its Change-Id)
+is landed by hand.
+
 ## Running
 
 ```sh

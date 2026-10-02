@@ -1,7 +1,49 @@
 name: modernize
 display_name: Morphy
 icon: 🧱
-version: 0.5.1
+version: 0.6.0
+## 0.6.0 — the whole contract is read-only inside a lot, not only the plan:
+## lot_verify also refuses a lot that rewrites outcomes.json, brief.yaml,
+## ARBITRAGE.md or the defects register (defects-ledger.json), all beside the
+## plan, one named cause per file, before any gate command runs. The plan
+## check is deny by default (brief_targets, top-level keys and any future
+## field are protected like the gates). In the register a lot may add an
+## entry and rewrite the entries its lot declares in the new `remediates:`
+## (read at the base) — nothing else. A lot that records a fix on an entry
+## its contract does not assign to it is now refused: declare `remediates`.
+## Each file is judged as git would store it (a CRLF checkout is not a
+## rewrite, a clean filter's laundering is), and lot_verify and mark_done
+## read history as committed — a replace ref no longer answers for the base.
+## The contract is judged on what LANDS: before the gate commands and again
+## after the last one, on the working tree and on HEAD's committed tree; a
+## refusal after the gates goes back to the worker (lot_gate's converged and
+## stop carry the contract as a term). mark_done commits only on the HEAD and
+## the working tree the verdict judged, and recognises its own work on a
+## re-execution. The contract is the plan's whole DIRECTORY: what the base
+## holds beside the plan is byte-frozen, except the lot's own records (a name
+## carrying its id, or a file it creates). A name belongs to the lot whose id
+## it carries, among the plan's lots and the ones the lot proposes: the
+## outermost such name decides and the longest id wins (`L1-b-report.md` is
+## never L1's); a file a lot creates for another lot is refused, and so is a
+## link it creates under a name of no lot (it stands for every path beneath
+## it, another lot's records included). The index is judged as a third
+## tree, and an index flag or a `filter` attribute on a contract path is
+## refused — a commit would store what no tree shows.
+## mark_done holds the landing (the working tree, the index entries, their
+## flags, the filter attribute) to the verdict, path by path over the whole
+## directory — a path the verdict did not list is refused — and recognises its
+## own commit only at the plan's base mode. plan_read refuses a plan that is
+## not a regular file. A gate command that is a record's predicate (`test -s`
+## over a path in the directory) holds only if the record is a non-empty file
+## in the tree that lands — under the path the commit really carries it,
+## through the committed links of its way, in HEAD and in the tree the bank
+## builds. A conversion git cannot apply to a contract path is refused by
+## name, with the attribute. The verdict names the table's files and holds
+## the rest of the directory as a count and a digest. A conflicted landing is
+## re-judged against the verdict before it commits. No git command iterion
+## runs executes a repository hook — the landing of a run on the operator's
+## branch included — and the bank pushes LFS objects ahead of itself or
+## refuses by name. ADR-121.
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,
