@@ -101,17 +101,18 @@ The fourth review measured:
 - the checkpoint and the workspace seeding still ran git as shell strings,
   with the run's hooks on.
 
-- the gestures that LAND a run — the squash commit and the fast-forward, at
-  finalize or through `POST /merge`, and the commit of a resolved conflict —
-  ran the repository's hooks. A `pre-commit` hook planted through the run's
-  worktree rewrote the plan inside the landing commit; `merge_status` read
-  `merged`, and the rewrite reached the operator's branch under `done`;
-- a lot was marked `done` while the sweep record its own gate asserts
-  (`test -s .modernize/sweeps/L1.md`) was in no commit: left uncommitted,
-  ignored by a root `.gitignore`, or removed by a commit and put back on disk.
-  The gate's commands read the working tree;
-- the verdict grew with the directory: 2,000 captures gave a 279 kB
-  `contract_tree`, carried on every pass.
+A fifth review measured:
+
+- the conflict re-judge compared the staged resolution with the pre-flip
+  head: the run's own `done` plan was refused on the run's own landing;
+- the bank's explicit LFS push carried a `<sha>:<refspec>` argument, which
+  git-lfs cannot resolve: exit 0, no object uploaded;
+- the banked-tree simulation spelled a tree-noise exclusion where git
+  refuses it: an ignored `.claude` present untracked made every lot end in
+  `CONTRACT_UNREADABLE`;
+- the LFS detection listed paths quoted, and missed a non-ASCII name;
+- a record HEAD carried behind its committed link and the landing carried
+  at the literal path was refused though both trees held it.
 
 ## Options
 
