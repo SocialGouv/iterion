@@ -200,6 +200,14 @@ type RunMessage struct {
 	AllowUnknownInputs bool   `json:"allow_unknown_inputs,omitempty"`
 	SecretsRef         string `json:"secrets_ref,omitempty"`
 	TimeoutSec         int    `json:"timeout_sec,omitempty"`
+	// PoolGrantless marks a publication that asked the credential pool and
+	// was granted nothing: the attempt runs on env/fallback credentials,
+	// holds no pool lease, and its spend report must never reach the
+	// broker — it would be charged to the lease of the attempt this
+	// publication took the run from. Inverted (grantless, not served) so
+	// publications older than the field read as pool-served, which is what
+	// they were.
+	PoolGrantless bool `json:"pool_grantless,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant

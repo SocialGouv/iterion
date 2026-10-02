@@ -156,6 +156,13 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 		// nothing, and its report would close that lease under it.
 		return
 	}
+	if msg.PoolGrantless {
+		// A grantless delivery holds no pool lease: its spend belongs to
+		// no donor, and its report must never reach the broker — it would
+		// be charged to the lease of the attempt this publication took the
+		// run from.
+		return
+	}
 	costUSD, in, out, aggregate := usage.RunTotals()
 	condition, cooldownUntil := classifyPoolCondition(execErr, time.Now().UTC())
 	// An auth rejection the recovery machinery absorbed into a human pause

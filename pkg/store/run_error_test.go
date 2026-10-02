@@ -3,6 +3,7 @@ package store
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -44,10 +45,10 @@ func TestClipRunError(t *testing.T) {
 func TestClipRunError_keepsARemedyThatFitsTheLimitWhole(t *testing.T) {
 	const limit = 2000
 	for _, tc := range []struct {
-		name       string
-		headRunes  int
-		hintRunes  int
-		whole      bool
+		name      string
+		headRunes int
+		hintRunes int
+		whole     bool
 	}{
 		{"a small hint", 1900, 100, true},
 		{"a hint just over half the bound", 600, 1500, true},
@@ -71,5 +72,32 @@ func TestClipRunError_keepsARemedyThatFitsTheLimitWhole(t *testing.T) {
 				t.Fatalf("the clip does not keep the failure's start: %q", got[:40])
 			}
 		})
+	}
+}
+
+// TestPublishAt_neverInsideTheInstantItFollows: a publication carries a
+// millisecond strictly later than the identity instant it follows — the
+// run's marker, or the lease its grant opened — so the comparisons that
+// read the pair never meet a tie, in a store that keeps milliseconds.
+func TestPublishAt_neverInsideTheInstantItFollows(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 1005*int(time.Microsecond), time.UTC)
+	notBefore := now.Truncate(time.Millisecond) // .100 of the same second
+	got := PublishAt(now, notBefore)
+	if !got.Truncate(time.Millisecond).After(notBefore) {
+		t.Fatalf("the publication (%v) sits inside the instant it follows (%v): the identity comparisons meet a tie", got, notBefore)
+	}
+	if got != notBefore.Add(time.Millisecond) {
+		t.Fatalf("PublishAt = %v, want the instant's next millisecond when now is inside it", got)
+	}
+	// A publication after the instant: now, unchanged.
+	later := notBefore.Add(2 * time.Millisecond)
+	if got = PublishAt(later, notBefore); got != later {
+		t.Fatalf("PublishAt = %v, want now (%v) when it is already past the instant", got, later)
+	}
+	// An instant past now, at an exact millisecond: the publication lands
+	// in its next millisecond, strictly after it.
+	future := now.Add(time.Hour).Truncate(time.Millisecond)
+	if got = PublishAt(now, future); !got.Truncate(time.Millisecond).After(future) {
+		t.Fatalf("PublishAt = %v, want it strictly after the instant it follows (%v)", got, future)
 	}
 }

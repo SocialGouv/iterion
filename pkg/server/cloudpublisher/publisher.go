@@ -2688,7 +2688,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC:  store.PublishAt(time.Now().UTC(), *r.QueuedAt).Format(time.RFC3339Nano),
+		PoolGrantless:   creds.grant == nil,
+		PublishedAtRFC:  publishInstant(time.Now().UTC(), *r.QueuedAt, creds.grant).Format(time.RFC3339Nano),
 		TenantID:        tenantID,
 		OrgID:           orgID,
 		OwnerID:         ownerID,
@@ -2850,6 +2851,19 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
 // pattern in SubmitLaunch.
+// publishInstant composes the instants a publication must follow: never
+// inside the run marker's millisecond, never inside the millisecond of the
+// lease the pool grant opened — the identity comparisons that read the
+// pair (a delivery against its marker; a spend report against its lease)
+// never meet a tie.
+func publishInstant(now time.Time, marker time.Time, grant *credpool.Grant) time.Time {
+	pub := store.PublishAt(now, marker)
+	if grant != nil {
+		pub = store.PublishAt(pub, grant.AcquiredAt)
+	}
+	return pub
+}
+
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, cs *runview.CompiledSource) (retErr error) {
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
@@ -3099,9 +3113,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// reverting to the launch ask that already killed the run.
 		Budget:        wire,
 		BackendConfig: queue.BackendConfig{Default: queue.BackendClaw},
-		// Never before the attempt's own marker: this delivery is that
-		// attempt's, and must not read as superseded by it.
-		PublishedAtRFC: store.PublishAt(time.Now().UTC(), flip.At).Format(time.RFC3339Nano),
+		PoolGrantless: creds.grant == nil,
+		// Never inside the millisecond of the instant this delivery's
+		// identity follows — the run's marker, or the lease its grant
+		// opened — so the identity comparisons that read the pair never
+		// meet a tie.
+		PublishedAtRFC: publishInstant(time.Now().UTC(), flip.At, creds.grant).Format(time.RFC3339Nano),
 		// The fallback chain is replayed from the doc for the same reason:
 		// the auto-retry that follows a usage-window park is exactly the
 		// publication that must still carry the rescue chain.
@@ -3180,9 +3197,15 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// Published: the previous attempt is over. A pool grant superseded its
 	// lease when it was acquired; without one — no donor, no pool asked —
 	// its lease is superseded now, or it would hold its donor's slot and
-	// allowance until the lease TTL.
+	// allowance until the lease TTL. The close carries this publication's
+	// identity: a report of exactly it is the takeover's own, and stays
+	// silent on the lease.
 	if creds.grant == nil && p.credPool != nil {
-		if err := p.credPool.SupersedeRun(context.WithoutCancel(ctx), spec.RunID, prior.TenantID); err != nil {
+		supersedingPublishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+		if perr != nil {
+			supersedingPublishedAt = time.Time{}
+		}
+		if err := p.credPool.SupersedeRun(context.WithoutCancel(ctx), spec.RunID, prior.TenantID, supersedingPublishedAt); err != nil {
 			p.logger.Warn("cloudpublisher: supersede the previous attempt's pool lease of %s after its resume: %v", spec.RunID, err)
 		}
 	}

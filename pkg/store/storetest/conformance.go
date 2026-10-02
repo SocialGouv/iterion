@@ -651,6 +651,27 @@ func testQueuedFlipRevert(t *testing.T, s store.RunStore) {
 		}
 	})
 
+	t.Run("a flip whose instant carries sub-milliseconds", func(t *testing.T) {
+		const runID = "run-flip-subms"
+		parked(t, runID)
+		// The instant asked for is in the future of the prior marker's
+		// floor, and carries sub-milliseconds: the marker is exactly that
+		// instant at the stores' precision — not the raw instant, and not
+		// the store's own clock.
+		at := time.Now().Add(2 * time.Second)
+		f, ok, err := fl.FlipToQueued(ctx, runID, store.RunStatusFailedResumable, at)
+		if err != nil || !ok {
+			t.Fatalf("flip = (%t, %v)", ok, err)
+		}
+		want := at.Truncate(time.Millisecond)
+		if !f.At.Equal(want) {
+			t.Fatalf("the flip's marker = %v, want the asked instant at the stores' precision (%v)", f.At, want)
+		}
+		if r, err := s.LoadRun(ctx, runID); err != nil || r.QueuedAt == nil || !r.QueuedAt.Equal(want) {
+			t.Fatalf("stored marker = %v (%v), want %v", r, err, want)
+		}
+	})
+
 	t.Run("two flips inside one millisecond", func(t *testing.T) {
 		const runID = "run-flip-same-ms"
 		parked(t, runID)

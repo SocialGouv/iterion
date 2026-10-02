@@ -202,6 +202,11 @@ type Request struct {
 type Grant struct {
 	PledgeID string
 	DonorID  string
+	// AcquiredAt is the instant the lease this grant opened was acquired:
+	// what the attempt's publication must follow at millisecond precision
+	// (store.PublishAt), so the attempt's spend report can always tell its
+	// own lease from a successor's.
+	AcquiredAt time.Time
 	// Credential says WHAT was lent, so the caller knows which slot of the
 	// run bundle it belongs in — and whether the money is metered.
 	Credential
@@ -281,7 +286,7 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// so the retry is admitted as new. A run id another team holds is
 	// refused instead: its leases are that team's record of what their runs
 	// consumed, not this requester's to close.
-	superseded, err := b.supersedeOpenLeases(ctx, req, now)
+	superseded, err := b.supersedeOpenLeases(ctx, req, now, OutcomeSuperseded, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +638,19 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		return nil, StatusUnhealthy, nil
 	}
 
+	// The run's leases stay strictly ordered at the stores' precision, so
+	// an attempt's report can tell its own lease from a successor's.
+	// Advisory under concurrency (two acquisitions read before either
+	// writes): the tie then resolves by lease id, deterministically.
+	prev, err := b.leases.ListByRun(ctx, req.RunID)
+	if err != nil {
+		release()
+		return nil, "", fmt.Errorf("credpool: read the run's leases for the acquisition floor: %w", err)
+	}
+	acquiredAt := now
+	for i := range prev {
+		acquiredAt = nextAcquiredAt(acquiredAt, &prev[i].AcquiredAt)
+	}
 	lease := Lease{
 		ID:              uuid.NewString(),
 		RunID:           req.RunID,
@@ -645,8 +663,8 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		Credential:      p.Credential,
 		GrantedCostUSD:  remaining,
 		ConsumedRunUnit: !readmitting,
-		AcquiredAt:      now,
-		ExpiresAt:       now.Add(b.leaseTTL),
+		AcquiredAt:      acquiredAt,
+		ExpiresAt:       acquiredAt.Add(b.leaseTTL),
 	}
 	if err := b.leases.Put(ctx, lease); err != nil {
 		release()
@@ -670,6 +688,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		RecordID:          cred.recordID,
 		RecordConnectedAt: cred.connectedAt,
 		RemainingUSD:      remaining,
+		AcquiredAt:        lease.AcquiredAt,
 		releaseGuard:      &ReleaseGuard{lease: lease},
 	}, "", nil
 }
@@ -776,7 +795,7 @@ var ErrRunHeldElsewhere = errors.New("credpool: run id held by another team's op
 // closing it would free the donor's slot and erase the charge while the run
 // still uses the credential. Best-effort: a store miss only costs a slot
 // until the lease TTL.
-func (b *Broker) supersedeOpenLeases(ctx context.Context, req Request, now time.Time) ([]supersededLease, error) {
+func (b *Broker) supersedeOpenLeases(ctx context.Context, req Request, now time.Time, outcome string, supersededByPublishedAt *time.Time) ([]supersededLease, error) {
 	open, err := b.leases.ListOpenByRun(ctx, req.RunID)
 	if err != nil {
 		b.logger.Warn("credpool: could not check the open leases of run %s: %v", req.RunID, err)
@@ -793,13 +812,22 @@ func (b *Broker) supersedeOpenLeases(ctx context.Context, req Request, now time.
 	var closed []supersededLease
 	for _, l := range open {
 		// Zero, not l.CostUSD: Close ADDS, and whatever this lease already
-		// carries was recorded when it was charged.
-		won, cerr := b.leases.Close(ctx, l.ID, 0, OutcomeSuperseded, now)
+		// carries was recorded when it was charged. The cause gets its own
+		// outcome (outcome): an acquisition's plain supersede is the window
+		// its own attempt's report stamps through; SupersedeRun's grantless
+		// takeover must never be charged by a report of the takeover
+		// (ReportAttempt stays silent on superseded_grantless).
+		won, cerr := b.leases.Close(ctx, l.ID, 0, outcome, now)
 		if cerr != nil {
 			b.logger.Warn("credpool: could not supersede lease %s of run %s: %v", l.ID, req.RunID, cerr)
 			continue
 		}
 		if won {
+			if supersededByPublishedAt != nil {
+				if serr := b.leases.SetSupersededByPublication(ctx, l.ID, *supersededByPublishedAt); serr != nil {
+					b.logger.Warn("credpool: could not carry the superseding publication on lease %s: %v", l.ID, serr)
+				}
+			}
 			closed = append(closed, supersededLease{id: l.ID, runID: l.RunID, at: now})
 		}
 	}
@@ -819,17 +847,25 @@ func (b *Broker) reopenSuperseded(ctx context.Context, superseded []supersededLe
 	}
 }
 
-// SupersedeRun closes the run's open leases as superseded: a newer attempt
-// of the run was published without a pool grant, so the attempt they serve
-// is over. An acquisition supersedes them itself (Acquire), and reopens them
-// when it grants nothing — which leaves them to this, after the
-// publication. Best-effort, like that supersede; ErrRunHeldElsewhere when
-// another team's lease holds the run id.
-func (b *Broker) SupersedeRun(ctx context.Context, runID, tenantID string) error {
+// SupersedeRun closes the run's open leases as superseded by a GRANTLESS
+// publication (OutcomeSupersededGrantless): a newer attempt of the run was
+// published without a pool grant, so the attempt they serve is over — and
+// the takeover holds no lease of its own, so no report of the takeover may
+// charge these. An acquisition supersedes them itself (Acquire, the plain
+// supersede its own report stamps through), and reopens them when it grants
+// nothing — which leaves them to this, after the publication. Best-effort,
+// like that supersede; ErrRunHeldElsewhere when another team's lease holds
+// the run id.
+func (b *Broker) SupersedeRun(ctx context.Context, runID, tenantID string, supersedingPublishedAt time.Time) error {
 	if b == nil || runID == "" {
 		return nil
 	}
-	_, err := b.supersedeOpenLeases(ctx, Request{RunID: runID, TenantID: tenantID}, b.now())
+	var supersededBy *time.Time
+	if !supersedingPublishedAt.IsZero() {
+		t := supersedingPublishedAt
+		supersededBy = &t
+	}
+	_, err := b.supersedeOpenLeases(ctx, Request{RunID: runID, TenantID: tenantID}, b.now(), OutcomeSupersededGrantless, supersededBy)
 	return err
 }
 
@@ -1044,34 +1080,77 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 }
 
 // attemptLease picks the lease the attempt published at attemptPublishedAt
-// executed under: the run's newest lease acquired at or before it. A lease
-// a later resume's acquisition opened afterwards is not the reporting
-// attempt's. A run with no such lease — an attempt older than lease
-// stamping, or a publication that could not be read — falls back to the
-// open-lease lookup, the identity a report had before this rule; nil when
-// the run holds no lease at all.
-func attemptLease(ctx context.Context, leases LeaseStore, runID string, attemptPublishedAt time.Time) *Lease {
+// executed under: the run's newest lease acquired at or before it,
+// compared at the millisecond both stores keep. The publication carries
+// sub-millisecond precision and the acquisition does not, so a lease the
+// store recorded inside the publication's own millisecond is this
+// attempt's, and one recorded in a later millisecond is a successor's.
+// Within one millisecond the broker's acquisition floor keeps a run's
+// leases strictly ordered; a legacy tie (rows written before the floor)
+// sorts by lease id, descending, so the pick is deterministic. A run with
+// no such lease — an attempt older than lease stamping, or a publication
+// that could not be read — falls back to the open-lease lookup, the
+// identity a report had before this rule; nil when the run holds no lease
+// at all.
+func attemptLease(ctx context.Context, leases LeaseStore, runID string, attemptPublishedAt time.Time) (*Lease, error) {
 	if attemptPublishedAt.IsZero() {
-		if l, err := leases.GetOpenByRun(ctx, runID); err == nil {
-			return &l
+		l, err := leases.GetOpenByRun(ctx, runID)
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
 		}
-		return nil
+		return &l, err
 	}
+	pub := attemptPublishedAt.Truncate(time.Millisecond)
 	all, err := leases.ListByRun(ctx, runID)
-	if err != nil || len(all) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
 	}
+	if len(all) == 0 {
+		l, err := leases.GetOpenByRun(ctx, runID)
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return &l, err
+	}
+	sort.Slice(all, func(i, j int) bool {
+		a, b := all[i].AcquiredAt.Truncate(time.Millisecond), all[j].AcquiredAt.Truncate(time.Millisecond)
+		if !a.Equal(b) {
+			return a.After(b)
+		}
+		return all[i].ID > all[j].ID
+	})
 	for i := range all {
-		if !all[i].AcquiredAt.After(attemptPublishedAt) {
-			return &all[i]
+		// Strictly earlier at the stores' precision: the publication is
+		// never inside its own lease's acquisition millisecond
+		// (store.PublishAt), so the attempt's own lease always clears this,
+		// and a successor acquired after it never does.
+		if all[i].AcquiredAt.Truncate(time.Millisecond).Before(pub) {
+			return &all[i], nil
 		}
 	}
 	// The attempt predates every lease the run carries: fall back to the
 	// open lease, the identity the report had before this rule.
-	if l, err := leases.GetOpenByRun(ctx, runID); err == nil {
-		return &l
+	l, err := leases.GetOpenByRun(ctx, runID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
 	}
-	return nil
+	return &l, err
+}
+
+// nextAcquiredAt is a new lease's acquisition instant for a run whose
+// previous lease was acquired at prev: now, but never inside the previous
+// attempt's millisecond — a run's leases stay strictly ordered at the
+// precision the stores keep, so a report can always tell its own lease
+// from a successor's, even when a store keeps only milliseconds and a
+// double resume races inside one millisecond.
+func nextAcquiredAt(now time.Time, prev *time.Time) time.Time {
+	if prev == nil {
+		return now
+	}
+	if floor := prev.Truncate(time.Millisecond).Add(time.Millisecond); floor.After(now) {
+		return floor
+	}
+	return now
 }
 
 // ReportAttempt is Report carrying the reporting attempt's identity — its
@@ -1088,7 +1167,10 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 	if b == nil || runID == "" {
 		return nil
 	}
-	lease := attemptLease(ctx, b.leases, runID, attemptPublishedAt)
+	lease, err := attemptLease(ctx, b.leases, runID, attemptPublishedAt)
+	if err != nil {
+		return err // a store blip must not silently drop the donor's charge
+	}
 	if lease == nil {
 		return nil
 	}
@@ -1106,7 +1188,25 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 	// The supersede added nothing, so this is the attempt's only charge,
 	// and a redelivered report of the same attempt loses the CAS.
 	if lease.Closed {
-		if lease.Outcome != OutcomeSuperseded {
+		switch lease.Outcome {
+		case OutcomeSuperseded:
+			// An acquisition's supersede: the takeover's own lease is the
+			// one the pin would pick for the takeover's report — this is
+			// the superseded attempt's own report, and its spend is the
+			// donor's, once, through the stamp's CAS.
+		case OutcomeSupersededGrantless:
+			// A grantless takeover holds no lease of its own: the report of
+			// the publication the close carried — the takeover's own,
+			// stable across redeliveries and replays — is a no-op, or the
+			// donor would be charged for an attempt their credential
+			// never served. Any other publication (the superseded
+			// attempt's own, earlier; a later attempt's, gated at the
+			// runner) stamps through.
+			if lease.SupersededByPublishedAt != nil &&
+				lease.SupersededByPublishedAt.Truncate(time.Millisecond).Equal(attemptPublishedAt.Truncate(time.Millisecond)) {
+				return nil
+			}
+		default:
 			return nil // reported, released or abandoned elsewhere — as in Report
 		}
 		won, err := b.leases.StampSupersededReport(ctx, lease.ID, out.CostUSD, now)

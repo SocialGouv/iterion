@@ -301,7 +301,7 @@ func (s *MongoLeaseStore) Reopen(ctx context.Context, leaseID string, superseded
 // first — see LeaseStore.ListByRun.
 func (s *MongoLeaseStore) ListByRun(ctx context.Context, runID string) ([]Lease, error) {
 	cur, err := s.col.Find(ctx, bson.M{"run_id": runID},
-		options.Find().SetSort(bson.D{{Key: "acquired_at", Value: -1}}))
+		options.Find().SetSort(bson.D{{Key: "acquired_at", Value: -1}, {Key: "_id", Value: -1}}))
 	if err != nil {
 		return nil, fmt.Errorf("credpool: list leases of run: %w", err)
 	}
@@ -318,7 +318,7 @@ func (s *MongoLeaseStore) ListByRun(ctx context.Context, runID string) ([]Lease,
 // superseded close and the stamp land in one update.
 func (s *MongoLeaseStore) StampSupersededReport(ctx context.Context, leaseID string, costUSD float64, when time.Time) (bool, error) {
 	res, err := s.col.UpdateOne(ctx,
-		bson.M{"_id": leaseID, "closed": true, "outcome": OutcomeSuperseded},
+		bson.M{"_id": leaseID, "closed": true, "outcome": bson.M{"$in": bson.A{OutcomeSuperseded, OutcomeSupersededGrantless}}},
 		bson.M{
 			"$inc": bson.M{"cost_usd": costUSD},
 			"$set": bson.M{"outcome": OutcomeSupersededReported, "closed_at": when.UTC()},
@@ -334,6 +334,17 @@ func (s *MongoLeaseStore) StampSupersededReport(ctx context.Context, leaseID str
 		return false, ErrNotFound
 	}
 	return false, nil
+}
+
+// SetSupersededByPublication records the publication a grantless takeover
+// was published at — see LeaseStore.SetSupersededByPublication.
+func (s *MongoLeaseStore) SetSupersededByPublication(ctx context.Context, leaseID string, publishedAt time.Time) error {
+	if _, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": leaseID},
+		bson.M{"$set": bson.M{"superseded_by_published_at": publishedAt.UTC()}}); err != nil {
+		return fmt.Errorf("credpool: carry the superseding publication: %w", err)
+	}
+	return nil
 }
 
 // AddCost accumulates an interim attempt's spend onto an OPEN lease, so

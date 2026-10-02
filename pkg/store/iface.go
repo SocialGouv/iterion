@@ -437,12 +437,16 @@ func NextQueuedAt(at time.Time, prior *time.Time) time.Time {
 	return m
 }
 
-// PublishAt is a message's published_at for an attempt whose marker is
-// marker: now, but never before the marker — the attempt's own delivery
-// must not read as superseded by the very attempt whose publication it is.
-func PublishAt(now, marker time.Time) time.Time {
-	if marker.After(now) {
-		return marker
+// PublishAt is a message's published_at for an attempt whose identity
+// instant is notBefore — the run's marker, or the instant the lease its
+// grant opened was acquired: now, but never inside notBefore's
+// millisecond. What the publication follows is then strictly earlier at
+// the precision every store keeps, and the identity comparisons that read
+// the pair — a delivery against its run's marker, a spend report against
+// its lease — never meet a tie.
+func PublishAt(now, notBefore time.Time) time.Time {
+	if floor := notBefore.Truncate(time.Millisecond).Add(time.Millisecond); floor.After(now) {
+		return floor
 	}
 	return now
 }

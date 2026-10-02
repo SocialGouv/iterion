@@ -134,3 +134,35 @@ func TestSubmitResume_thePublicationNeverPrecedesItsOwnMarker(t *testing.T) {
 		t.Fatalf("the attempt's own delivery reads as superseded: marker %v, published_at %s", run.QueuedAt, published.PublishedAtRFC)
 	}
 }
+
+// TestSubmitResume_stampsPoolGrantlessOnAGrantlessResume: a resume whose
+// credential resolution granted nothing is published marked grantless —
+// the runner's spend report never reaches the broker for it.
+func TestSubmitResume_stampsPoolGrantlessOnAGrantlessResume(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team", "alice")
+	if _, err := st.CreateRun(ctx, "run-grantless", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateRunStatus(ctx, "run-grantless", store.RunStatusPausedWaitingHuman, ""); err != nil {
+		t.Fatal(err)
+	}
+	var published *queue.RunMessage
+	p := &Publisher{store: st, publishRun: func(_ context.Context, m *queue.RunMessage) error {
+		published = m
+		return nil
+	}}
+	cs := rollbackTestSource()
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{RunID: "run-grantless", FilePath: "main.bot", Source: cs.Files["main.bot"]}, &ir.Workflow{Name: "w"}, cs); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	if published == nil {
+		t.Fatal("the resume published nothing")
+	}
+	if !published.PoolGrantless {
+		t.Fatal("a resume granted nothing is not marked pool_grantless: its spend report would reach the broker and be charged to another attempt's lease")
+	}
+}

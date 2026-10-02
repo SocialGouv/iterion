@@ -265,7 +265,15 @@ func (s *MemoryLeaseStore) ListByRun(_ context.Context, runID string) ([]Lease, 
 			out = append(out, l)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].AcquiredAt.After(out[j].AcquiredAt) })
+	// Newest acquired first; a tie (rows written before the acquisition
+	// floor) is ordered by lease id, descending, so the report's pin is
+	// deterministic.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].AcquiredAt.Equal(out[j].AcquiredAt) {
+			return out[i].AcquiredAt.After(out[j].AcquiredAt)
+		}
+		return out[i].ID > out[j].ID
+	})
 	return out, nil
 }
 
@@ -278,7 +286,7 @@ func (s *MemoryLeaseStore) StampSupersededReport(_ context.Context, leaseID stri
 	if !ok {
 		return false, ErrNotFound
 	}
-	if !l.Closed || l.Outcome != OutcomeSuperseded {
+	if !l.Closed || (l.Outcome != OutcomeSuperseded && l.Outcome != OutcomeSupersededGrantless) {
 		return false, nil
 	}
 	l.Outcome = OutcomeSupersededReported
@@ -287,6 +295,21 @@ func (s *MemoryLeaseStore) StampSupersededReport(_ context.Context, leaseID stri
 	l.ClosedAt = &t
 	s.m[leaseID] = l
 	return true, nil
+}
+
+// SetSupersededByPublication records the publication a grantless takeover
+// was published at — see LeaseStore.SetSupersededByPublication.
+func (s *MemoryLeaseStore) SetSupersededByPublication(_ context.Context, leaseID string, publishedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.m[leaseID]
+	if !ok {
+		return ErrNotFound
+	}
+	t := publishedAt.UTC()
+	l.SupersededByPublishedAt = &t
+	s.m[leaseID] = l
+	return nil
 }
 
 func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD float64) error {
