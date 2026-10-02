@@ -262,3 +262,26 @@ func TestWantsFor_AnEnvTemplatedRouteFailsOpen(t *testing.T) {
 		t.Fatalf("wants narrowed to %d of %d — the env-templated route dropped donations", len(wants), len(poolWantOrder))
 	}
 }
+
+// The env-SET spelling (the deployment resolves ${GW} to the gateway here)
+// is not the gateway route either — what ${GW} names on the RUNNER is still
+// the runner's word: on a mixed run the pool's wants must fail open, or the
+// templated route drops the donation its peers need.
+func TestWantsFor_AnEnvSetTemplatedRouteFailsOpen(t *testing.T) {
+	t.Setenv("GW", "openai_compatible")
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"gw": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Model: "${GW}/m",
+		}},
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Provider: "anthropic", Model: "claude-opus-5",
+		}},
+	}}
+	wants, res := wantsFor(wf, model.ModelOverrides{}, nil)
+	if res.NarrowSafe {
+		t.Fatal("narrow-safe on an env-set templated route: the pool would narrow on it")
+	}
+	if len(wants) != len(poolWantOrder) {
+		t.Fatalf("wants narrowed to %d of %d — the env-set templated route dropped donations", len(wants), len(poolWantOrder))
+	}
+}

@@ -207,7 +207,6 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		// Nothing spends: nothing to narrow on, and nothing unresolved.
 		return ProviderResolution{NarrowSafe: true}
 	}
-	sawRoute := true
 	// The run-level chain (`--fallback` / spec.Fallback / prior.Fallback)
 	// lands on every agent node through ir.ApplyRunFallback — the same
 	// reasoning as an authored route.
@@ -224,7 +223,7 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		acc.backend = b
 		acc.resolveRoute(fb.Provider, fb.Model)
 	}
-	return acc.result(sawRoute)
+	return acc.result()
 }
 
 // llmFieldsOf returns the LLMFields a node resolves its route from: agent
@@ -260,7 +259,7 @@ type providerAccumulator struct {
 	envSeen bool
 }
 
-func (a *providerAccumulator) result(sawRoute bool) ProviderResolution {
+func (a *providerAccumulator) result() ProviderResolution {
 	res := ProviderResolution{NarrowSafe: a.narrowSafe}
 	// The widenings that matter here are narrowSafe's (an unresolvable or
 	// unknown route may spend anything), a recorded provider (some tier
@@ -513,7 +512,13 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 		if p == modelroute.OpenAICompatible {
 			// The gateway route: its credential is the runner's environment,
 			// so it names no bundle slot — recorded nowhere, and never a
-			// reason to widen. It is what OnlyEnvFunded is true OF.
+			// reason to widen. The RAW prefix alone says so: an
+			// env-templated model may expand to the gateway here and to a
+			// vendor on the runner, so it widens (envDeferred covers the
+			// empty expansion; this branch covers the resolved one).
+			if !rawGatewayPrefix(mdl) {
+				a.narrowSafe = false
+			}
 			return
 		}
 		a.hint(p)
