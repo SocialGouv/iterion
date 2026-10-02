@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
@@ -373,6 +374,12 @@ type Config struct {
 	// AssistantMissions persists bounded assistant control loops. Cloud
 	// wiring supplies Mongo; local mode derives an FS twin beside run.json.
 	AssistantMissions assistantmission.Store
+
+	// Leases elects the replica that runs each singleton net — the
+	// merge-gate sweep first (pkg/lease). Nil derives it: the Mongo store on
+	// Store's database in cloud mode, an in-memory one otherwise, where every
+	// lease is this process's own.
+	Leases lease.Store
 
 	// LaunchPublisher, when non-nil, routes the run console's Launch /
 	// Resume / Cancel through the cloud queue instead of spawning the

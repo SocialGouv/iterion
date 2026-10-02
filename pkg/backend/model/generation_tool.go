@@ -28,7 +28,10 @@ type GenerationTool struct {
 
 // GenerationOptions configures a direct generation call.
 type GenerationOptions struct {
-	// Model is the model ID (e.g., "claude-sonnet-4-6").
+	// Model is the routing spec the client was resolved from
+	// ("anthropic/claude-sonnet-4-6"). buildRequest strips its routing prefix
+	// exactly once: pass the spec, never an id already stripped — a model id
+	// holding slashes of its own ("meta-llama/…") would lose a segment.
 	Model string
 
 	// System is the system prompt (plain string form).
@@ -82,6 +85,12 @@ type GenerationOptions struct {
 	// execution (Layer 1). The placeholder form is what hooks/events
 	// persist, so the real secret never reaches the store.
 	MaterializeSecrets func(string) string
+
+	// UnmaterializeSecrets, when non-nil, turns the known secret values an
+	// echoing tool's result quotes (a fetched URL, an MCP tool's report of
+	// its input) back into their placeholders before the result enters the
+	// conversation — claude_code's PostToolUse twin.
+	UnmaterializeSecrets func(string) string
 
 	// CompactThresholdRatio overrides the default compaction trigger as a
 	// fraction of the model's context window. 0 falls back to the built-in

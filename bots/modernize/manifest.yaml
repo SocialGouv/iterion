@@ -43,7 +43,7 @@ version: 0.6.0
 ## re-judged against the verdict before it commits. No git command iterion
 ## runs executes a repository hook — the landing of a run on the operator's
 ## branch included — and the bank pushes LFS objects ahead of itself or
-## refuses by name. ADR-107.
+## refuses by name. ADR-121.
 ## 0.5.0 — `deploy_credential` is declared (optional, by reference, the same
 ## shape as review-env/app-dev/product-docs) AND lot_verify exports
 ## $DEPLOY_CREDENTIAL from the rendered path before running a gate command,

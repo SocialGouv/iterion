@@ -18,15 +18,26 @@ import (
 //
 //   - the resolved per-run credentials carried in ctx (cloud BYOK keys),
 //   - host env vars whose name looks secret (the local-run path — same
-//     definition store.CaptureLaunchEnv uses), and
+//     definition store.CaptureLaunchEnv uses),
 //   - the workflow's declared `secrets:` values (Layer 1; the agent only
-//     ever sees their placeholder).
+//     ever sees their placeholder), and
+//   - the credentials the server minted for the run (store.ServerMintedSecretVars).
+//
+// Only the declared secrets are materialisable. Everything else is
+// RedactOnly: scrubbed from every sink, and its placeholder resolves nowhere —
+// no agent, command or egress request can turn it back into the value.
+//
+// vars are the run's launch vars: a declared secret resolves {{vars.X}}
+// against them, and they carry the minted credentials of a fresh launch.
+// recorded holds minted credentials read from the records of the run and its
+// ancestors instead (a resume, a sub-bot child, a fork), any number per name:
+// registered for redaction only, never a value a declared secret resolves to.
 //
 // Returns nil when redaction is disabled via ITERION_SECRETS_REDACT=off,
 // in which case every guard method is a no-op. Otherwise returns a
 // non-nil guard even with zero known values, so the heuristic detector
 // pass still scrubs unknown token shapes from the run's sinks.
-func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]string) *secretguard.Guard {
+func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]string, recorded map[string][]string) *secretguard.Guard {
 	cfg := secretGuardConfigFromEnv()
 
 	var known []secretguard.Secret
@@ -40,8 +51,9 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 		// and the guard is what keeps it out of node output and logs.
 		for i, val := range creds.EveryKeyForRedaction() {
 			known = append(known, secretguard.Secret{
-				Name:  "provider_key_" + strconv.Itoa(i),
-				Value: val,
+				Name:       "provider_key_" + strconv.Itoa(i),
+				Value:      val,
+				RedactOnly: true,
 			})
 		}
 		genericSecrets = creds.Generic
@@ -66,12 +78,15 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 		// password named after the project). Such values remain protected at
 		// source by the credential-file and permission boundaries; only values
 		// distinctive enough for sink-wide literal matching enter this matcher.
-		if !ambientSecretGloballySafe(val) {
+		// A final newline makes no value more distinctive: the guard also
+		// registers the value without it.
+		if !ambientSecretGloballySafe(strings.TrimRight(val, "\r\n")) {
 			continue
 		}
 		known = append(known, secretguard.Secret{
-			Name:  "env_" + name,
-			Value: val,
+			Name:       "env_" + name,
+			Value:      val,
+			RedactOnly: true,
 		})
 	}
 
@@ -79,6 +94,17 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 	//    placeholder the agent sees in place of the value, plus optional
 	//    egress host scoping consumed by Layer 2.
 	known = append(known, declaredWorkflowSecrets(wf, vars, genericSecrets, genericHosts)...)
+
+	// 4. Credentials the server minted for this run and carries as launch
+	//    vars (the forge publish grant): a plain var to the workflow, a
+	//    secret in every sink.
+	for _, name := range store.ServerMintedSecretVars {
+		for _, val := range append([]string{vars[name]}, recorded[name]...) {
+			if val = strings.TrimSpace(val); val != "" && val != store.RedactedLaunchVar {
+				known = append(known, secretguard.Secret{Name: name, Value: val, RedactOnly: true})
+			}
+		}
+	}
 
 	g := secretguard.New(known, cfg)
 	// Return nil only when the guard would do nothing at all: no known

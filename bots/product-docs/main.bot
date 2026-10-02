@@ -109,7 +109,7 @@
 ## clone cannot reach the recorded commit the delta is reported
 ## UNAVAILABLE, never silently empty. See ADR-092.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): no language, ecosystem, framework or repo
 ## layout literal anywhere in the vars, commands or schemas. The
 ## product's shape is described by ITS catalog; how to read a given

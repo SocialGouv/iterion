@@ -741,8 +741,9 @@ export interface RunRepo {
 }
 
 // Shape of GET /api/runs/global-active — runs currently active in
-// ANY iterion store on the host (the global ~/.iterion slot plus
-// every per-project store under ~/.iterion/projects/). Surfaced on
+// ANY iterion store on the host (the iterion home's own slot plus
+// every per-project store under its projects/ — $ITERION_HOME, else
+// ~/.iterion). Surfaced on
 // the Home view so an operator sees in-flight work without having
 // to open each project first.
 export interface GlobalActiveRun {
@@ -940,6 +941,10 @@ export interface CreateRunRequest {
   compress?: string;
   // auto-memory (MEMORY.md) override ("on" | "off"). Empty inherits the
   // workflow/node `auto_memory:` DSL then ITERION_AUTO_MEMORY (default off).
+  // ambient-context override ("none" | "workspace" | "operator" | "all").
+  // Empty inherits the workflow/node `ambient_context:` DSL then
+  // ITERION_AMBIENT_CONTEXT (default workspace, ADR-119).
+  ambient_context?: string;
   auto_memory?: string;
   // tool-permission gate mode ("off" | "ask" | "deny"). Empty inherits
   // the workflow/node `permission:` DSL then ITERION_PERMISSION. "ask"
@@ -1042,6 +1047,7 @@ export interface PreviewEffectiveKnob {
 export interface PreviewEffectiveSettings {
   compress: PreviewEffectiveKnob;
   auto_memory: PreviewEffectiveKnob;
+  ambient_context: PreviewEffectiveKnob;
   permission: PreviewEffectiveKnob;
   backend: PreviewEffectiveKnob;
 }

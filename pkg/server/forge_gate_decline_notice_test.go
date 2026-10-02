@@ -144,10 +144,9 @@ func TestFixerDeclineIsANoOpWithANotice(t *testing.T) {
 
 	// R69a603. autofixForRun is reached from TWO paths: the eventbus
 	// subscription, and the reconciliation sweep, which re-offers every
-	// terminal run in a 60-minute lookback ONCE A MINUTE, per process. A
-	// DECLINED run is terminal and its updated_at never moves, so it stays in
-	// the window for the whole hour: the notice would land ~57 times per
-	// replica on one pull request.
+	// terminal run in a 60-minute lookback ONCE A MINUTE. A DECLINED run is
+	// terminal and its updated_at never moves, so it stays in the window for
+	// the whole hour: the notice would land ~57 times on one pull request.
 	//
 	// The subsystem already answers this, and it is not a marker scan — the
 	// pause and DLQ notices are wrapped in `via == gateTriggerEvent`
@@ -174,7 +173,7 @@ func TestFixerDeclineIsANoOpWithANotice(t *testing.T) {
 		s.autofixOffer(context.Background(), run.ID)
 		if len(c.bodies) != 1 {
 			t.Fatalf("the sweep re-posted the decline notice (%d comments): at one offer a minute for a 60-minute "+
-				"lookback that is ~57 identical comments per replica on one pull request", len(c.bodies))
+				"lookback that is ~57 identical comments on one pull request", len(c.bodies))
 		}
 	})
 

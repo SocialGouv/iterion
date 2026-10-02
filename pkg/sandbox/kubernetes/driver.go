@@ -1223,8 +1223,39 @@ func (r *Run) CaptureWorkspaceHead(ctx context.Context) (string, error) {
 //     host clone's own config (host credential-store path) must survive;
 //   - .git/iterion-credentials on the host is maintained LIVE by the
 //     runner's rotation refresher — the pod copy may be staler and must
-//     never overwrite it.
-var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials"}
+//     never overwrite it;
+//   - .git/hooks are programs git runs on the host clone — at the runner's
+//     commit and push — and what the pod wrote there is the sandboxed run's
+//     code: it stays in the pod.
+//
+// The HOST extract applies them too (exportOnce). The in-pod flags only save
+// bandwidth: the archiver runs in the sandbox, on an image the workflow
+// chooses, so a list enforced there alone is a list the exported side asks
+// the pod to respect. What the host must not receive, the host drops.
+var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials", "./.git/hooks"}
+
+// tarExcludeArgs renders exportExcludes as tar flags.
+func tarExcludeArgs() []string {
+	args := make([]string, 0, len(exportExcludes))
+	for _, ex := range exportExcludes {
+		args = append(args, "--exclude="+ex)
+	}
+	return args
+}
+
+// exportExcluded reports whether a workspace-relative path (slash-separated,
+// with or without the archive's "./" prefix) is one the export never carries
+// from the pod to the host — the member itself or anything under it.
+func exportExcluded(rel string) bool {
+	rel = strings.TrimPrefix(rel, "./")
+	for _, ex := range exportExcludes {
+		ex = strings.TrimPrefix(ex, "./")
+		if rel == ex || strings.HasPrefix(rel, ex+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // clearHostLooseRefs deletes the host clone's loose ref files so the
 // pod's ref state arrives authoritative through the export extract.
@@ -1435,7 +1466,9 @@ func (r *Run) dropRacedGitLeftovers(hostGit string, before, extracted map[string
 		return fmt.Errorf("list host .git after export: %w", err)
 	}
 	for rel := range now {
-		if before[rel] || extracted[".git/"+rel] {
+		// An excluded member is absent from `extracted` BECAUSE the host
+		// dropped it, not because an archive raced: never a candidate.
+		if before[rel] || extracted[".git/"+rel] || exportExcluded(".git/"+rel) {
 			continue
 		}
 		path := filepath.Join(hostGit, filepath.FromSlash(rel))
@@ -1457,40 +1490,34 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 	kubectlArgs := []string{"--namespace", r.namespace,
 		"exec", r.podName, "--container", "workload", "--",
 		"tar", "-C", r.prepared.workspace}
-	for _, ex := range exportExcludes {
-		kubectlArgs = append(kubectlArgs, "--exclude="+ex)
-	}
+	kubectlArgs = append(kubectlArgs, tarExcludeArgs()...)
 	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
 	podTar := kubectlCmdContext(ctx, kubectlArgs...)
-	hostTar := exec.CommandContext(ctx, "tar", "-C", hostDst, "-xvf", "-")
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {
 		return false, nil, fmt.Errorf("pod tar stdout pipe: %w", err)
 	}
-	hostTar.Stdin = pipe
-	var podErr, hostErr, hostOut bytes.Buffer
+	var podErr bytes.Buffer
 	podTar.Stderr = &podErr
-	hostTar.Stderr = &hostErr
-	hostTar.Stdout = &hostOut
 
-	if err := hostTar.Start(); err != nil {
-		return false, nil, fmt.Errorf("start host tar extract: %w", err)
+	if err := podTar.Start(); err != nil {
+		return false, nil, fmt.Errorf("start the pod's archiver: %w", err)
 	}
-	if err := podTar.Run(); err != nil {
-		_ = hostTar.Wait()
+	// The host reads the stream itself (extractExport): the exclusions and
+	// the path safety are decided here, not asked of the archiver running in
+	// the sandbox.
+	extracted, xerr := r.extractExport(pipe, hostDst)
+	if xerr != nil {
+		// Drain, so the pod's archiver sees its reader go away rather than
+		// block on a full pipe, then report the extraction error.
+		_, _ = io.Copy(io.Discard, pipe)
+		_ = podTar.Wait()
+		return false, nil, fmt.Errorf("extract the export into %s: %w", hostDst, xerr)
+	}
+	if err := podTar.Wait(); err != nil {
 		stderr := strings.TrimSpace(podErr.String())
 		return onlyTarRaceWarnings(err, stderr), nil, fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
-	}
-	if err := hostTar.Wait(); err != nil {
-		return false, nil, fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
-	}
-	extracted = map[string]bool{}
-	for _, name := range strings.Split(hostOut.String(), "\n") {
-		name = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(name), "./"), "/")
-		if name != "" {
-			extracted[name] = true
-		}
 	}
 	return false, extracted, nil
 }

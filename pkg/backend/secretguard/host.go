@@ -1,26 +1,58 @@
 package secretguard
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
-// MaterializeForHost swaps secret placeholders for their real values,
-// but ONLY for secrets whose Hosts permit `host` (empty Hosts = any
-// host). This is the egress-substitution half of Layer 2 (Deno-style
-// host scoping): a placeholder destined for a host the secret isn't
-// scoped to is left untouched, so it never resolves there. Nil-safe.
+// MaterializeForHost is MaterializeForHostWithin unbounded: the
+// convenience for callers that do not hold the result in memory. The proxy,
+// which holds every substitution, uses the bounded call.
 func (g *Guard) MaterializeForHost(s, host string) string {
-	if g == nil || s == "" {
-		return s
+	out, _ := g.MaterializeForHostWithin(s, host, math.MaxInt)
+	return out
+}
+
+// MaterializeForHostWithin swaps secret placeholders for their real values,
+// but ONLY for secrets whose Hosts permit `host` (empty Hosts = any host).
+// This is the egress-substitution half of Layer 2 (Deno-style host scoping):
+// a placeholder destined for a host the secret isn't scoped to is left
+// untouched, so it never resolves there.
+//
+// The caller holds the result in memory, so it is bounded: a result longer
+// than limit bytes is refused (s returned as given, false). A placeholder
+// expands to its value, so a short input can stand for a long result — the
+// length is computed before each substitution allocates it. Nil-safe.
+func (g *Guard) MaterializeForHostWithin(s, host string, limit int) (string, bool) {
+	if len(s) > limit {
+		return s, false
 	}
+	if g == nil || s == "" {
+		return s, true
+	}
+	in := s
 	host = canonicalHostname(host)
-	for _, sec := range g.secrets {
-		if !hostAllowed(sec.Hosts, host) {
-			continue
-		}
-		if strings.Contains(s, sec.Placeholder) {
+	// The secrets that shrink go first, so the room they free is available
+	// to the ones that grow: the verdict is the result's length, never the
+	// order two substitutions happen to be declared in.
+	for _, grows := range [2]bool{false, true} {
+		for _, sec := range g.secrets {
+			if sec.RedactOnly || grows != (len(sec.Value) > len(sec.Placeholder)) || !hostAllowed(sec.Hosts, host) {
+				continue
+			}
+			// A value may carry another secret's placeholder, so the count
+			// is taken on the current text, right before its substitution.
+			n := strings.Count(s, sec.Placeholder)
+			if n == 0 {
+				continue
+			}
+			if grow := len(sec.Value) - len(sec.Placeholder); grow > 0 && n > (limit-len(s))/grow {
+				return in, false
+			}
 			s = strings.ReplaceAll(s, sec.Placeholder, sec.Value)
 		}
 	}
-	return s
+	return s, true
 }
 
 // ExfiltratesTo reports whether s carries a real secret value (in any
@@ -41,11 +73,11 @@ func (g *Guard) ExfiltratesTo(s, host string) bool {
 		return false
 	}
 	host = canonicalHostname(host)
-	for _, sec := range g.secrets {
+	for i, sec := range g.secrets {
 		if hostAllowed(sec.Hosts, host) {
 			continue // this destination is approved for this secret
 		}
-		for _, enc := range g.encodingsByName[sec.Name] {
+		for _, enc := range g.encodings[i] {
 			if strings.Contains(s, enc) {
 				return true
 			}

@@ -39,7 +39,7 @@ func TestPRLaunchForkGuard_NamesAWithheldHeadAndItsCause(t *testing.T) {
 	}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 
-	_, err := s.applyPRLaunchContext(context.Background(), "team1", "conn1", "review-pr",
+	_, _, err := s.applyPRLaunchContext(context.Background(), "team1", "conn1", "review-pr",
 		map[string]string{"pr_url": "https://github.com/o/r/pull/42"}, nil)
 	if err == nil {
 		t.Fatal("a head repository the forge would not name must never be launched on — the pair is <base>.CloneURL + a branch that may live elsewhere")
@@ -63,7 +63,7 @@ func TestPRLaunchForkGuard_UndeclaredHeadIsRefusedWithoutInventingACause(t *test
 	gc := &fakeGateClient{headSHA: "deadbeef", noHeadRepo: true}
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
 
-	_, err := s.applyPRLaunchContext(context.Background(), "team1", "conn1", "review-pr",
+	_, _, err := s.applyPRLaunchContext(context.Background(), "team1", "conn1", "review-pr",
 		map[string]string{"pr_url": "https://github.com/o/r/pull/42"}, nil)
 	if !errors.Is(err, errPRLaunchForkGuard) {
 		t.Fatalf("err = %v, want the typed fork-guard refusal", err)

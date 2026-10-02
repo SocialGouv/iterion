@@ -82,6 +82,9 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // persisted as human answers or artifacts; callers must be able to derive
 // them again from the durable run record on every resume.
 func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) (resultErr error) {
+	// Registered first so it runs last: a throw-away test workdir belongs to
+	// this whole call, not to the helpers that prepare it and return early.
+	defer e.releaseTempWorkDir()
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -1346,10 +1349,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 	if err := e.store.WriteInteraction(ctx, interaction); err != nil {
 		return nil, fmt.Errorf("runtime: write answered interaction: %w", err)
 	}
-	return answers, e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, map[string]any{
-		"interaction_id": cp.InteractionID,
-		"answers":        answers,
-	})
+	return answers, e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, answersEventData(e.scrubForEvent, cp.InteractionID, answers))
 }
 
 // materializeHumanArtifact persists the human node's answers as a versioned
@@ -1593,20 +1593,12 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
 	e.defaultWorkDir()
-	if e.workDirTemp != "" {
-		defer os.RemoveAll(e.workDirTemp)
-		e.workDirTemp = ""
-	}
 	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
 	e.defaultWorkDir()
-	if e.workDirTemp != "" {
-		defer os.RemoveAll(e.workDirTemp)
-		e.workDirTemp = ""
-	}
 	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
 	if err != nil {
 		if e.logger != nil {
@@ -1674,6 +1666,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if rs.nodeSessions == nil {
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
+	rs.sessionLedger = restoreSessionLedger(cp.SessionLedger)
 	rs.pauseSessionRef = cp.BackendSessionStateRef
 	if cp.Parallel != nil {
 		rs.parallel = newParallelExecutionState(cp.Parallel)
@@ -1995,10 +1988,6 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
 	e.defaultWorkDir()
-	if e.workDirTemp != "" {
-		defer os.RemoveAll(e.workDirTemp)
-		e.workDirTemp = ""
-	}
 	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
@@ -2081,6 +2070,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint, arti
 	if rs.nodeSessions == nil {
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
+	rs.sessionLedger = restoreSessionLedger(cp.SessionLedger)
 	rs.pauseSessionRef = cp.BackendSessionStateRef
 	if cp.Parallel != nil {
 		rs.parallel = newParallelExecutionState(cp.Parallel)
@@ -2120,10 +2110,6 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 		e.workDir = r.WorkDir
 	} else {
 		e.defaultWorkDir()
-		if e.workDirTemp != "" {
-			defer os.RemoveAll(e.workDirTemp)
-			e.workDirTemp = ""
-		}
 	}
 	// Mirror the run's repo root onto the engine so resolveVars's
 	// `${PROJECT_MEMORY_DIR}` expansion finds the same path it did
@@ -3096,6 +3082,39 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID, nodeI
 	return texts
 }
 
+// answersEventData is the human_answers_recorded payload: the answers
+// scrubbed like a node's output, the interaction's id as is.
+func answersEventData(scrub func(map[string]any) map[string]any, interactionID string, answers map[string]any) map[string]any {
+	data := scrub(map[string]any{"answers": answers})
+	data["interaction_id"] = interactionID
+	return data
+}
+
+// pauseEventData is the human_input_requested payload — an observational
+// sink, scrubbed whole like a node's output: the questions and the extras (a
+// human node's rendered instructions). The interaction and the checkpoint
+// keep the questions as they are: the run needs them.
+func (e *Engine) pauseEventData(interactionID string, questions, extra map[string]any) map[string]any {
+	data := map[string]any{"questions": questions}
+	for k, v := range extra {
+		data[k] = v
+	}
+	data = e.scrubForEvent(data)
+	data["interaction_id"] = interactionID
+	return data
+}
+
+// scrubForEvent scrubs event data that carries model- or operator-written
+// text (a question, a router's reasoning, a review verdict, recorded answers)
+// with the executor's SecretScrubber, when it has one — a copy: what the run
+// keeps stays whole.
+func (e *Engine) scrubForEvent(data map[string]any) map[string]any {
+	if scrubber, ok := e.executor.(SecretScrubber); ok {
+		return scrubber.ScrubOutput(data)
+	}
+	return data
+}
+
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
 func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, eventExtra map[string]any, info pauseInfo) error {
@@ -3142,15 +3161,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 		return fmt.Errorf("runtime: write interaction: %w", err)
 	}
 
-	// Emit human_input_requested.
-	eventData := map[string]any{
-		"interaction_id": interactionID,
-		"questions":      questions,
-	}
-	for k, v := range eventExtra {
-		eventData[k] = v
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventHumanInputRequested, nodeID, e.pauseEventData(interactionID, questions, eventExtra)); err != nil {
 		return err
 	}
 

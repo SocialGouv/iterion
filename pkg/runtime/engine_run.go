@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -197,13 +198,11 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	// Default workDir to process cwd if not set explicitly.
 	e.defaultWorkDir()
-	if e.workDirTemp != "" {
-		defer os.RemoveAll(e.workDirTemp)
-		e.workDirTemp = ""
-	}
+	defer e.releaseTempWorkDir()
 
-	// Registered FIRST so it runs LAST, after finalize and after the
-	// sandbox is gone — and it reads e.repoRoot at that point, not now.
+	// Registered right after the throw-away workdir's release, so it runs
+	// just before it: after finalize and after the sandbox is gone — and it
+	// reads e.repoRoot at that point, not now.
 	// Nothing else reclaims ${PROJECT_SCRATCH_DIR}: `iterion runs prune`
 	// only touches runs/, and the worktree sweep only worktrees/, which is
 	// how one project reached 54 GB of it.
@@ -696,7 +695,12 @@ func (e *Engine) runPromoteAttachments(ctx context.Context, runID string, run *s
 // skills into the workspace's .claude/skills/ directory.
 func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *store.Run, worktreeActive bool, wtCtx worktreeContext) error {
 	if e.workDir != "" {
-		run.WorkDir = e.workDir
+		// A throw-away test workdir — this engine's, or a parent's handed down
+		// through WithWorkDir — is removed when its owner returns: recorded on
+		// the run, a later resume would adopt the removed path.
+		if !isThrowAwayWorkDir(e.workDir) {
+			run.WorkDir = e.workDir
+		}
 		// run.Worktree reflects whether the runtime actually set up an
 		// isolated git worktree for this run — not just whether the
 		// workflow declared `worktree: auto`. With auto being the IR
@@ -1077,7 +1081,7 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 			// gesture (mirror-only): a tracked-and-modified devbox.lock is
 			// dependency work the action would bank, so the worktree is
 			// preserved for it (verdict 9, R8e10f0).
-			porcelain, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain")
+			porcelain, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain", "-z")
 			if porcelainErr == nil && len(commitWorkPaths(porcelain)) != 0 {
 				if e.logger != nil {
 					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
@@ -1179,14 +1183,18 @@ func (e *Engine) evictRunSessions(runID string, loopErr error) {
 	}
 }
 
+// throwAwayWorkDirPrefix names the directories defaultWorkDir creates under
+// the system temp dir for an engine test that runs from the package directory.
+const throwAwayWorkDirPrefix = "iterion-test-workdir"
+
 // defaultWorkDir fills an engine's missing workDir with the process cwd —
 // the `iterion run` contract, at every layer including a t.Chdir'd test
 // workspace. ONE cwd is refused: the package directory itself under `go
 // test`, where a skill or plugin mirror would write into the developer's
 // checkout (pkg/runtime/.claude, seen 2026-09-24) — that engine gets a
-// throw-away directory instead, recorded in workDirTemp for the caller to
-// clean up (#1803). A test that wants a known workDir passes
-// runtime.WithWorkDir itself.
+// throw-away directory instead, recorded in workDirTemp until
+// releaseTempWorkDir removes it (#1803). A test that wants a known workDir
+// passes runtime.WithWorkDir itself.
 func (e *Engine) defaultWorkDir() {
 	if e.workDir != "" {
 		return
@@ -1197,14 +1205,124 @@ func (e *Engine) defaultWorkDir() {
 	}
 	e.workDir = cwd
 	if testing.Testing() && cwd == runtimePackageDir() {
-		dir, dirErr := os.MkdirTemp("", "iterion-test-workdir")
+		dir, dirErr := os.MkdirTemp("", throwAwayWorkDirPrefix)
 		if dirErr != nil {
 			e.logger.Error("no workDir and the test workdir could not be created: %v — the engine keeps the package directory as its workDir, mirrors will write into the checkout", dirErr)
 			return
 		}
 		e.workDir = dir
 		e.workDirTemp = dir
+		liveThrowAwayWorkDirs.Store(dir, nil)
+		everThrowAwayWorkDirs.Store(dir, struct{}{})
 	}
+}
+
+// liveThrowAwayWorkDirs holds every throw-away directory defaultWorkDir
+// created and releaseTempWorkDir has not removed. It is process-wide because
+// an engine hands its workdir to child engines (WithWorkDir), which must
+// recognise it as well. The value is nil, or the error the release's removal
+// failed with.
+var liveThrowAwayWorkDirs sync.Map
+
+// everThrowAwayWorkDirs remembers every throw-away workdir the process
+// created, released or not.
+var everThrowAwayWorkDirs sync.Map
+
+// isThrowAwayWorkDir reports whether dir is a throw-away test workdir — live
+// or already released — which no run record may keep: a child engine handed
+// it may still persist after its parent released it.
+func isThrowAwayWorkDir(dir string) bool {
+	_, ok := everThrowAwayWorkDirs.Load(dir)
+	return ok
+}
+
+// releaseTempWorkDir removes the throw-away directory defaultWorkDir created
+// and forgets it. Only the public calls that own a whole run segment — Run and
+// ResumeWithHostInputs — release it, when they return: the helpers that prepare
+// a resume return before the resumed run is done, and a directory removed
+// under a live engine is re-created by the next skill mirror with no owner.
+// Forgetting it makes the next call on the same engine derive a fresh one. A
+// directory that cannot be removed stays registered with its error, so the
+// package's test main reports it.
+func (e *Engine) releaseTempWorkDir() {
+	dir := e.workDirTemp
+	if dir == "" {
+		return
+	}
+	e.workDirTemp = ""
+	if e.workDir == dir {
+		e.workDir = ""
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		e.logger.Error("runtime: remove the throw-away test workdir %s: %v", dir, err)
+		liveThrowAwayWorkDirs.Store(dir, err)
+		return
+	}
+	liveThrowAwayWorkDirs.Delete(dir)
+}
+
+// throwAwayLeaks sorts, by cause, the throw-away workdirs that outlived a
+// test suite.
+type throwAwayLeaks struct {
+	// NeverReleased were driven by a test through an engine helper with
+	// neither Run nor ResumeWithHostInputs to release them.
+	NeverReleased []string
+	// Unremovable resisted their release's removal; each entry carries the
+	// error.
+	Unremovable []string
+	// Recreated were released, then written again by something that outlived
+	// the call owning them.
+	Recreated []string
+}
+
+func (l throwAwayLeaks) empty() bool {
+	return len(l.NeverReleased) == 0 && len(l.Unremovable) == 0 && len(l.Recreated) == 0
+}
+
+// reclaimThrowAwayWorkDirs finds every throw-away workdir of this process
+// still on disk — live, or re-created after its release, wherever it lies —
+// removes it by recorded path and only under the throw-away prefix, and
+// reports it by cause, each list sorted. The package's test main passes the
+// process registries and fails the suite on any leak.
+func reclaimThrowAwayWorkDirs(live, ever *sync.Map) (throwAwayLeaks, error) {
+	var dirs []string
+	seen := map[string]bool{}
+	for _, m := range []*sync.Map{live, ever} {
+		m.Range(func(k, _ any) bool {
+			if d := k.(string); !seen[d] {
+				seen[d] = true
+				dirs = append(dirs, d)
+			}
+			return true
+		})
+	}
+	sort.Strings(dirs)
+	var leaks throwAwayLeaks
+	var errs []error
+	for _, dir := range dirs {
+		v, isLive := live.Load(dir)
+		_, statErr := os.Lstat(dir)
+		switch {
+		case isLive && v != nil:
+			leaks.Unremovable = append(leaks.Unremovable, fmt.Sprintf("%s (%v)", dir, v))
+		case isLive:
+			leaks.NeverReleased = append(leaks.NeverReleased, dir)
+		case statErr == nil:
+			leaks.Recreated = append(leaks.Recreated, dir)
+		default:
+			continue
+		}
+		if !strings.HasPrefix(filepath.Base(dir), throwAwayWorkDirPrefix) {
+			errs = append(errs, fmt.Errorf("refusing to remove %q: not a throw-away test workdir", dir))
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		live.Delete(dir)
+	}
+	return leaks, errors.Join(errs...)
 }
 
 // runtimePackageDir is the directory holding this package's source, from

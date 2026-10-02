@@ -310,9 +310,23 @@ on shared infrastructure. The `kubernetes` driver hard-errors on
 `host_state: auto` for the same reason: cloud pods have no host
 filesystem to bind and the design refuses to fake it.
 
+**host_state mounts only the state the operator chose.** The iterion home
+(`$ITERION_HOME`, else `~/.iterion`) and the scratch dir under it are
+bind-mounted read-write only when that home is the one the operator chose —
+the value they exported, not one a project `.env` filled in
+(`store.InheritedIterionDataDir`); the shared `<tmp>/iterion-data` fallback a
+process without a home dir writes to is never mounted. Likewise host_state
+binds nothing under a home dir a `.env` set (`~/.claude`, `~/.codex`,
+`~/.gitconfig`, the caches). Mounting any of them would let a repository pick a host directory
+the sandboxed agent can write. The run still starts: the backend keeps its
+per-run state in the checkout's `.iterion/`, as with `host_state: none`, and
+`${PROJECT_SCRATCH_DIR}` stays container-local.
+
 Audit trail: the `sandbox_host_state_mounted` event in `events.jsonl`
 lists the resolved source (CLI / workflow / env / default), the
-container workspace path, and every mount that landed.
+container workspace path, every mount that landed,
+`iterion_home_not_mounted` when the iterion home was left out, and
+`home_not_mounted` when a `.env` set the home dir.
 
 ### Network policy
 
@@ -546,7 +560,10 @@ pinned to the running iterion version:
 | **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go (+ `g`), Python 3, pnpm, fnm, direnv, gh, yq (mikefarah), kubectl, helm, k9s              |
 
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
-Snapshot/dev binaries pull the `:edge` tag.
+Snapshot/dev binaries pull the `:edge` tag. The published images can also
+ship a **static** `iterion` on their own PATH, which sidesteps the
+host-binary bind-mount entirely (`CGO_ENABLED=0`; a nix-dynamic build dies
+in-container — see [the dogfood note](agents/workflow/dogfood.md)).
 
 **Why two variants?** The slim image is small enough to pull on
 demand and supports the common workflow (the agent calls `devbox install`

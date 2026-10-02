@@ -233,7 +233,12 @@ STDERR:
 %s
 
 Return only the corrected command (one shell invocation, may use && / pipes). Do not explain in the command itself.`,
-		strings.TrimSpace(node.Goal), strings.TrimSpace(lastCmd), truncate(stdout, 4000), truncate(stderr, 4000))
+		strings.TrimSpace(node.Goal), e.secretGuard.Redact(strings.TrimSpace(lastCmd)),
+		// A prompt: the command's output goes back to placeholders — Layer 1,
+		// which the sink switch leaves on — and a value that never was a
+		// placeholder (a minted launch var) is redacted outright.
+		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(stdout)), 4000),
+		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(stderr)), 4000))
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,

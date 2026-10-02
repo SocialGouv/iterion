@@ -252,11 +252,13 @@ func applyDotEnv(path string) bool {
 		if key == "" {
 			continue
 		}
-		// A key carrying the planted-names separator is refused, not set: it
-		// would reach a child as two names, and the extra one denies the
-		// OPERATOR's own environment its authority there. No shell can
-		// export such a name either, so the line is malformed anyway.
-		if strings.Contains(key, ",") {
+		// A key no shell could export is refused, not set. One carrying the
+		// planted-names separator would reach a child as two names, the extra
+		// one denying the OPERATOR's own environment its authority there; one
+		// outside ASCII is folded by Windows in ways envtrust.CanonicalName
+		// cannot mirror, so it could be recorded as planted under the name of
+		// a variable it never set. Such a line is malformed anyway.
+		if !envtrust.Exportable(key) {
 			continue
 		}
 		val := strings.TrimSpace(line[eq+1:])
@@ -272,8 +274,9 @@ func applyDotEnv(path string) bool {
 		// the whole planted set from the file itself — marking the
 		// OPERATOR's own variables as planted, and stripping every plugin
 		// they installed of its authority. A marker can then only ever be
-		// what an ancestor process exported.
-		if key == envtrust.EnvPlantedNames {
+		// what an ancestor process exported — in any case on Windows, where
+		// the variable is the same one whatever the case of its name.
+		if envtrust.CanonicalName(key) == envtrust.EnvPlantedNames {
 			continue
 		}
 		if _, exists := os.LookupEnv(key); !exists {

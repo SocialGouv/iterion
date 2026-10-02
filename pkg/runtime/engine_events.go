@@ -22,7 +22,20 @@ func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, no
 // emitBranch appends an event, optionally tagged with a branch ID. A blank
 // branchID is the non-branch case (what emit forwards) and keeps the
 // branch-free error message.
+//
+// Events are an observational sink, like node_finished: when the executor
+// implements SecretScrubber, the event and its console line carry the
+// redacted copy. A pause's questions, an author's rendered instructions or
+// a node error may quote a secret the run was launched with; the data the
+// engine reads back — checkpoint, interaction records — keeps the values.
 func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]any) error {
+	// The recorded-answers event is scrubbed narrowly, in answersEventData:
+	// its interaction_id is the key the studio and the interaction records
+	// flip on, and it must survive even when it happens to hold a
+	// registered value (an id is engine data, not what the model wrote).
+	if scrubber, ok := e.executor.(SecretScrubber); ok && data != nil && typ != store.EventHumanAnswersRecorded {
+		data = scrubber.ScrubOutput(data)
+	}
 	evt := store.Event{
 		Type:     typ,
 		BranchID: branchID,

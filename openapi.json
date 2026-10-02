@@ -610,6 +610,9 @@
           "budget_unpriced_tokens": {
             "type": "integer"
           },
+          "budget_unreported_calls": {
+            "type": "integer"
+          },
           "cost_usd_total": {
             "type": "number"
           },
@@ -707,6 +710,12 @@
               "type": "array"
             },
             "type": "object"
+          },
+          "session_ledger": {
+            "items": {
+              "$ref": "#/components/schemas/SessionLedgerEntry"
+            },
+            "type": "array"
           },
           "settled_incoming": {
             "additionalProperties": {
@@ -3212,6 +3221,24 @@
         ],
         "type": "object"
       },
+      "SessionLedgerEntry": {
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "tasks"
+        ],
+        "type": "object"
+      },
       "Settings": {
         "properties": {
           "five_hour_pct": {
@@ -5130,6 +5157,9 @@
       },
       "previewEffectiveSettings": {
         "properties": {
+          "ambient_context": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
           "auto_memory": {
             "$ref": "#/components/schemas/previewEffectiveKnob"
           },
@@ -5146,6 +5176,7 @@
         "required": [
           "compress",
           "auto_memory",
+          "ambient_context",
           "permission",
           "backend"
         ],

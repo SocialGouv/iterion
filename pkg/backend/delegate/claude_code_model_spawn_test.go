@@ -99,9 +99,10 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 					}
 					b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
 					if format {
-						_, _, _ = b.formatOutput(ctx, task, "review")
+						_, _, _, _ = b.formatOutput(ctx, task, "review")
 					} else {
-						opts, _ := b.buildTransportOptions(task)
+						opts, cleanup := b.buildTransportOptions(task)
+						defer cleanup()
 						opts, _, _, err := b.setupCredsAndSession(ctx, task, opts)
 						if tc.refusal {
 							if err == nil {

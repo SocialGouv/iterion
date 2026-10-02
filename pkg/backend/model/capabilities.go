@@ -172,9 +172,10 @@ func openaiCapabilities(modelID string) ModelCapabilities {
 // numbers when the online aggregator has them.
 func xaiCapabilities(modelID string) ModelCapabilities {
 	lower := strings.ToLower(modelID)
-	// stripRoutingPrefix-equivalent: "xai/grok-3-mini" won't reach here
-	// (ParseModelSpec already strips the provider), but a nested prefix
-	// like "grok/grok-3-mini" is still possible if someone types it.
+	// "xai/grok-3-mini" reaches here as "grok-3-mini" (ParseModelSpec strips
+	// the provider). A nested "xai/grok/grok-3-mini" keeps its "grok/" on the
+	// wire — the claw clients send the wire id verbatim — so x.ai refuses it;
+	// its capabilities are still read on the last segment.
 	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
 		lower = lower[idx+1:]
 	}

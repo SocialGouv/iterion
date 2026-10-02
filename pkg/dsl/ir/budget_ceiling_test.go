@@ -25,6 +25,16 @@ func TestBudgetClampToCeiling(t *testing.T) {
 			in:   Budget{},
 			want: Budget{MaxIterations: 100, MaxTokens: 1000, MaxCostUSD: 5.0, MaxDuration: "1h", MaxParallelBranches: 4, CapImposed: true},
 		},
+		{
+			name: "a zero duration is unlimited to the runtime, so it is raised",
+			in:   Budget{MaxIterations: 10, MaxTokens: 500, MaxCostUSD: 1.0, MaxDuration: "0s", MaxParallelBranches: 2},
+			want: Budget{MaxIterations: 10, MaxTokens: 500, MaxCostUSD: 1.0, MaxDuration: "1h", MaxParallelBranches: 2, CapImposed: true},
+		},
+		{
+			name: "a negative duration is raised too",
+			in:   Budget{MaxIterations: 10, MaxTokens: 500, MaxCostUSD: 1.0, MaxDuration: "-1h", MaxParallelBranches: 2},
+			want: Budget{MaxIterations: 10, MaxTokens: 500, MaxCostUSD: 1.0, MaxDuration: "1h", MaxParallelBranches: 2, CapImposed: true},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,5 +80,64 @@ func TestBudgetClampToCeilingMarksImposedCap(t *testing.T) {
 	unbudgeted.ClampToCeiling(&Budget{MaxCostUSD: 10})
 	if !unbudgeted.CapImposed {
 		t.Fatal("imposing a cap on an unbudgeted run is an imposed cap")
+	}
+}
+
+// A zero or negative duration ceiling is no platform limit: the bot keeps its
+// own.
+func TestBudgetClampToCeiling_NonPositiveDurationCeilingIsNoLimit(t *testing.T) {
+	for _, ceiling := range []string{"0s", "-1h"} {
+		b := Budget{MaxDuration: "5h"}
+		if b.ClampToCeiling(&Budget{MaxDuration: ceiling}) || b.MaxDuration != "5h" || b.CapImposed {
+			t.Errorf("ClampToCeiling under a %s ceiling = %+v, want the bot's 5h kept and no cap", ceiling, b)
+		}
+	}
+}
+
+// A ceiling written as a template is read from the process env — never a
+// stored bot var — and the value it caps a run to is that expansion, not the
+// template read again later.
+func TestClampToCeilingFreezesTheCeilingItApplies(t *testing.T) {
+	t.Setenv("ITERION_TEST_CLAMP_CEILING", "")
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_TEST_CLAMP_CEILING" {
+			return "12h", true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+
+	b := &Budget{MaxDuration: "5h"}
+	if !b.ClampToCeiling(&Budget{MaxDuration: "${ITERION_TEST_CLAMP_CEILING:-1h}"}) {
+		t.Error("ClampToCeiling reported no cap for 5h under a 1h ceiling")
+	}
+	if b.MaxDuration != "1h" {
+		t.Errorf("MaxDuration = %q, want the 1h the process env gives the ceiling — never the stored 12h", b.MaxDuration)
+	}
+}
+
+// The duration the ceiling judged is the duration that runs. A bot's
+// ${ITERION_…} budget is expanded again when the run's budget is built, and a
+// stored bot var changed in between would otherwise escape the ceiling.
+func TestClampToCeilingFreezesTheJudgedDuration(t *testing.T) {
+	stored := "1h"
+	SetEnvOverlay(func(name string) (string, bool) {
+		if name == "ITERION_TEST_CLAMP_MAX_DURATION" {
+			return stored, true
+		}
+		return "", false
+	})
+	defer SetEnvOverlay(nil)
+
+	b := &Budget{MaxDuration: "${ITERION_TEST_CLAMP_MAX_DURATION:-30m}"}
+	if b.ClampToCeiling(&Budget{MaxDuration: "2h"}) {
+		t.Error("ClampToCeiling reported a cap for the bot's own 1h under a 2h ceiling")
+	}
+	if b.CapImposed {
+		t.Error("CapImposed = true — keeping the bot's own 1h under a 2h ceiling imposes no cap")
+	}
+	stored = "12h"
+	if got := ExpandEnvWithDefault(b.MaxDuration); got != "1h" {
+		t.Errorf("MaxDuration expands to %q once the stored var changed, want the judged 1h", got)
 	}
 }

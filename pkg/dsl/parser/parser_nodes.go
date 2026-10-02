@@ -129,6 +129,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenAutoMemory:
 		p.expect(TokenColon)
 		d.AutoMemory = p.expectIdent()
+	case TokenAmbientContext:
+		p.expect(TokenColon)
+		d.AmbientContext = p.expectIdent()
 	case TokenPermission:
 		p.expect(TokenColon)
 		d.Permission = p.expectIdent()

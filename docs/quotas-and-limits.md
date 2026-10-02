@@ -241,15 +241,24 @@ different economic facts.
 **Where a route's model comes from.** The runner's metrics emitter names each
 node's route from three events, in order: `delegate_started.declared_model`
 (the node's spec, provider included — every backend emits it), then each
-`llm_request` (the id the call actually went to), then
-`delegate_finished.effective_model` when the backend reports one. A backend
-reports the id it CALLED, and claw strips the provider before the request —
-so a claw step reports `gpt-5.6-sol`, not `openai/gpt-5.6-sol`. A bare id
-names no provider and would fall to the backend's default wire (anthropic for
-claw), charging an OpenAI model's tokens to the Claude forfait; when the
-reported id is the declared model without its prefix, the route keeps the
-declared, provider-qualified name. A different id (a fallback element) is kept
-as reported.
+`llm_request` (the routing spec the call was resolved from), then
+`delegate_finished` when the delegation ends.
+
+- A claw `llm_request` carries the routing spec (`openai/gpt-5.6-sol`) and,
+  when the request carried a different id, that wire id as `wire_model`; such
+  a request names its own route — a fallback element's included.
+- `delegate_finished.route_model` is the spec of the chain element that
+  SERVED the node, named by the executor that ran the chain: the delegation is
+  keyed on it, refined by `effective_model` only when the backend reports
+  another model (an `ANTHROPIC_MODEL` override), never re-routed by the
+  reported id's spelling — OpenRouter reports `anthropic/claude-sonnet-4.5`
+  for the model it served.
+- Without either fact (an older runner, a backend reporting a bare id), the
+  route is rebuilt from the declaration: a report equal to the declared
+  model's wire id keeps the declared route; a report whose prefix is a
+  provider iterion routes or funds on names that route; a report that is the
+  declared model up to its snapshot alias keeps the declared route; any other
+  id is kept as reported.
 
 **claw inside a sandbox.** The LLM loop runs in `iterion __claw-runner` in the
 container, and the runner relays its per-step `llm_request` /

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -71,11 +72,13 @@ func wrapSandboxDelegateArgv(mark string, argv []string) []string {
 
 // killSandboxDelegate returns a cleanup that terminates the recorded
 // in-container process: TERM, a grace second, then KILL, then removes the
-// pidfile. Idempotent and best-effort — after a clean exit the PID is
-// gone and every kill is a no-op; failures only log. The cleanup uses its
-// own timeout context so it still runs when the session context is
-// already cancelled (the abort path is exactly when it matters).
-func killSandboxDelegate(run sandbox.Run, mark string, logger *iterlog.Logger) func() {
+// pidfile. It first removes the in-container files the spawn wrote, when
+// the caller names any (claude_code's flag settings file). Idempotent and
+// best-effort — after a clean exit the PID is gone and every kill is a
+// no-op; failures only log. The cleanup uses its own timeout context so it
+// still runs when the session context is already cancelled (the abort path
+// is exactly when it matters).
+func killSandboxDelegate(run sandbox.Run, mark string, logger *iterlog.Logger, spawnFiles ...string) func() {
 	pidFile := sandboxDelegatePIDFile(mark)
 	script := fmt.Sprintf(
 		"[ -f %[1]s ] || exit 0; P=$(cat %[1]s); rm -f %[1]s; "+
@@ -84,6 +87,13 @@ func killSandboxDelegate(run sandbox.Run, mark string, logger *iterlog.Logger) f
 			"kill -0 \"$P\" 2>/dev/null && kill -KILL \"$P\" 2>/dev/null; true",
 		pidFile,
 	)
+	if len(spawnFiles) > 0 {
+		quoted := make([]string, len(spawnFiles))
+		for i, file := range spawnFiles {
+			quoted[i] = shellquote.Quote(file)
+		}
+		script = "rm -f " + strings.Join(quoted, " ") + "; " + script
+	}
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

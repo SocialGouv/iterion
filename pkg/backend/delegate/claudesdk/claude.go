@@ -3,6 +3,7 @@ package claudesdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 )
 
@@ -70,6 +71,22 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 		if isControlRequest(rm) {
 			handleControlRequestOneShot(cfg, proc, rm.Data)
 			continue
+		}
+
+		if len(cfg.messageObservers) > 0 && isMessage(rm) {
+			msg, err := unmarshalMessage(rm.Data)
+			if err != nil {
+				// The cause only: the raw line can carry what a tool printed.
+				var perr *ParseError
+				if errors.As(err, &perr) {
+					err = perr.Err
+				}
+				cfg.errorf("claudesdk: a %q message reached no observer: %v", rm.Type, err)
+			} else {
+				for _, observe := range cfg.messageObservers {
+					observe(msg)
+				}
+			}
 		}
 
 		if rm.Type == "result" {
@@ -171,6 +188,7 @@ func configToProcess(cfg *config) processConfig {
 		MaxTurns:               cfg.maxTurns,
 		MaxBudgetUSD:           cfg.maxBudgetUSD,
 		IncludePartialMessages: cfg.includePartialMessages,
+		ReplayUserMessages:     cfg.replayUserMessages,
 		ThinkingDisplay:        cfg.thinkingDisplay,
 		Resume:                 cfg.resume,
 		ForkSession:            cfg.forkSession,

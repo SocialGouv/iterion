@@ -190,15 +190,15 @@ func TestBranchLocalLoopBudgetGuardDoesNotPriceSiblingSpend(t *testing.T) {
 	}
 	branch := newBranchRunState(parent, nil, result)
 	markLoopBudget(branch, "retry")
-	shared.RecordUsage(5_000, 0) // may have been spent by a sibling branch
+	shared.RecordUsage(spendOf(5_000, 0)) // may have been spent by a sibling branch
 	if got := engine.loopBudgetShortfall("retry", branch); got != nil {
 		t.Fatalf("branch loop priced shared sibling spend: %+v", got)
 	}
 
 	trunk := &runState{budget: shared, loopBudgetMarks: make(map[string]loopBudgetMark)}
-	shared.Restore(0, 0, 0, 0, 0, 0)
+	shared.Restore(0, 0, 0, 0, 0, 0, 0)
 	markLoopBudget(trunk, "retry")
-	shared.RecordUsage(5_000, 0)
+	shared.RecordUsage(spendOf(5_000, 0))
 	if got := engine.loopBudgetShortfall("retry", trunk); got == nil {
 		t.Fatal("trunk loop budget guard unexpectedly disabled")
 	}
@@ -210,7 +210,7 @@ func TestBranchLocalLoopCannotUseBudgetExitGrace(t *testing.T) {
 	wf.Budget = &ir.Budget{MaxTokens: 10_000}
 	engine := New(wf, tmpStore(t), newStubExecutor())
 	shared := newSharedBudget(wf.Budget, engine.logger)
-	shared.RecordUsage(10_100, 0)
+	shared.RecordUsage(spendOf(10_100, 0))
 	if _, ok := engine.withinBudgetGrace(&runState{budget: shared, branchLocal: true}); ok {
 		t.Fatal("branch-local loop received exit grace without a predictive loop guard")
 	}
@@ -251,7 +251,7 @@ func TestRetiredBranchStillRecordsCompletedNodeUsage(t *testing.T) {
 	if result == nil || result.err == nil {
 		t.Fatalf("retired branch result = %+v, want cancellation", result)
 	}
-	tokens, _, _, _, _, _ := rs.budget.Snapshot()
+	tokens, _, _, _, _, _, _ := rs.budget.Snapshot()
 	if tokens != 7 {
 		t.Fatalf("recorded tokens = %d, want 7 spent before retirement", tokens)
 	}
@@ -1037,6 +1037,12 @@ func testFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {
 	err := New(wf, runStore, exec).Run(ctx, "branch-pause-store-failure", nil)
 	if err == nil || errors.Is(err, ErrRunPaused) || !strings.Contains(err.Error(), pauseErr.Error()) {
 		t.Fatalf("run error = %v, want visible pause persistence failure (not ErrRunPaused)", err)
+	}
+	// The fact must travel with the result, not only its text: the run's
+	// error chain reaches the persistence failure whatever order the two
+	// branches' ends were collected in (#1669).
+	if !errors.Is(err, pauseErr) {
+		t.Fatalf("run error = %v, want the pause persistence failure reachable through errors.Is", err)
 	}
 	run, loadErr := base.LoadRun(context.Background(), "branch-pause-store-failure")
 	if loadErr != nil {

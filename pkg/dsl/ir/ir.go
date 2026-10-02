@@ -5,6 +5,7 @@
 package ir
 
 import (
+	"os"
 	"sort"
 	"time"
 
@@ -45,11 +46,12 @@ type Workflow struct {
 	// Contracts are the unit's `contract` declarations by name, each bound
 	// to this program (ADR-099); Contract is the one the workflow names by
 	// `contract:` (nil = none).
-	Contracts  map[string]*PublicContract
-	Contract   *PublicContract
-	Worktree   string // "auto" runs in a per-run git worktree; "" or "none" runs in-place
-	Compress   string // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	Contracts      map[string]*PublicContract
+	Contract       *PublicContract
+	Worktree       string // "auto" runs in a per-run git worktree; "" or "none" runs in-place
+	Compress       string // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory     string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	AmbientContext string // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset)
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -243,6 +245,7 @@ type AgentNode struct {
 	Fallbacks        []Fallback
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
@@ -281,6 +284,7 @@ type JudgeNode struct {
 	Fallbacks        []Fallback
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
@@ -643,6 +647,7 @@ type LLMNode interface {
 	GetFallbacks() []Fallback
 	GetCompress() string
 	GetAutoMemory() string
+	GetAmbientContext() string
 	GetPermission() string
 	GetPermissionAllow() []string
 	GetPermissionAsk() []string
@@ -674,6 +679,7 @@ func (n *AgentNode) GetCursors() *CursorInvocation            { return n.Cursors
 func (n *AgentNode) GetFallbacks() []Fallback                 { return n.Fallbacks }
 func (n *AgentNode) GetCompress() string                      { return n.Compress }
 func (n *AgentNode) GetAutoMemory() string                    { return n.AutoMemory }
+func (n *AgentNode) GetAmbientContext() string                { return n.AmbientContext }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 func (n *AgentNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *AgentNode) GetPermissionAsk() []string               { return n.PermissionAsk }
@@ -699,6 +705,7 @@ func (n *JudgeNode) GetCursors() *CursorInvocation            { return n.Cursors
 func (n *JudgeNode) GetFallbacks() []Fallback                 { return n.Fallbacks }
 func (n *JudgeNode) GetCompress() string                      { return n.Compress }
 func (n *JudgeNode) GetAutoMemory() string                    { return n.AutoMemory }
+func (n *JudgeNode) GetAmbientContext() string                { return n.AmbientContext }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 func (n *JudgeNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *JudgeNode) GetPermissionAsk() []string               { return n.PermissionAsk }
@@ -1569,18 +1576,29 @@ type Budget struct {
 // ceiling field means "no platform limit on this dimension" and is ignored. A
 // zero workflow field means "unlimited" and is RAISED to the ceiling (so an
 // unbudgeted bot still inherits the platform cap). Duration is compared by
-// parsed seconds; an unparseable value is replaced by the ceiling.
-func (b *Budget) ClampToCeiling(ceiling *Budget) {
+// parsed seconds; an unparseable, zero or negative value is replaced by the
+// ceiling, itself expanded from the process env, never from a stored bot var.
+// It reports whether it imposed a cap.
+func (b *Budget) ClampToCeiling(ceiling *Budget) (imposed bool) {
 	if b == nil || ceiling == nil {
-		return
+		return false
 	}
 	before := *b
+	var judged string
 	defer func() {
 		// One choke point marks every externally-imposed cap: both the
 		// platform ceiling and the pool-grant clamp go through here.
 		before.CapImposed = b.CapImposed
 		if *b != before {
 			b.CapImposed = true
+			imposed = true
+		}
+		// The duration the ceiling judged is the one that runs: the budget
+		// re-expands MaxDuration later, and a ${…} read again then could
+		// see a stored bot var changed since. Frozen after the comparison
+		// above — keeping the bot's own value is no imposed cap.
+		if judged != "" {
+			b.MaxDuration = judged
 		}
 	}()
 	b.MaxIterations = clampToCeiling(b.MaxIterations, ceiling.MaxIterations)
@@ -1588,14 +1606,22 @@ func (b *Budget) ClampToCeiling(ceiling *Budget) {
 	b.MaxParallelBranches = clampToCeiling(b.MaxParallelBranches, ceiling.MaxParallelBranches)
 	b.MaxCostUSD = clampToCeiling(b.MaxCostUSD, ceiling.MaxCostUSD)
 	if ceiling.MaxDuration != "" {
-		cd, cerr := time.ParseDuration(ExpandEnvWithDefault(ceiling.MaxDuration))
-		if cerr == nil {
-			vd, verr := time.ParseDuration(ExpandEnvWithDefault(b.MaxDuration))
-			if verr != nil || b.MaxDuration == "" || vd > cd {
-				b.MaxDuration = ceiling.MaxDuration
+		ceil := ExpandWithDefault(ceiling.MaxDuration, os.Getenv)
+		cd, cerr := time.ParseDuration(ceil)
+		// A zero ceiling is no platform limit, as for the numeric
+		// dimensions; a zero or negative bot duration is unlimited to the
+		// runtime, so it is raised to the ceiling like an absent one.
+		if cerr == nil && cd > 0 {
+			expanded := ExpandEnvWithDefault(b.MaxDuration)
+			vd, verr := time.ParseDuration(expanded)
+			if verr != nil || vd <= 0 || vd > cd {
+				b.MaxDuration = ceil
+			} else {
+				judged = expanded
 			}
 		}
 	}
+	return imposed
 }
 
 // clampToCeiling lowers v to max when max is a real ceiling (>0) and v either

@@ -28,7 +28,7 @@ vars:
   ## ${PROJECT_DIR} is the workspace root the engine launches against.
   ## On a sandboxed run it resolves to the in-container mount point;
   ## locally it's the host cwd. Do NOT override with a literal repo
-  ## root (see CLAUDE.md dogfood note).
+  ## root (see docs/agents dogfood).
   workspace_dir: string = "${PROJECT_DIR}"
   ## REQUIRED. Repo-relative path to the ADR file under review,
   ## e.g. "docs/adr/008-bot-golden-replay-framework.md".

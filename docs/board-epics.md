@@ -9,8 +9,8 @@ know which view answers your question.
 
 The board is the roadmap/chantier view; the iterion **native board** (studio
 `/board`) stays the bots' operational surface. The working contract —
-statuses, session phases, the claim rule — is in [AGENTS.md](../AGENTS.md).
-This page is the mechanics.
+session phases and the claim rule — is in [AGENTS.md](../AGENTS.md); the
+statuses, fields and views are this page's mechanics.
 
 ## 🧭 Which view answers what
 
@@ -151,7 +151,8 @@ means *what is left*.
 ## ➕ Adding a ticket
 
 1. Open the issue as usual.
-2. Add it to the board, set `Epic`, `Status`, `Area`.
+2. Add it to the board, set `Epic`, `Status`, `Area` and `Mode` (the planned
+   dev mode: `dogfood` or `direct`).
 3. Attach it as a sub-issue of its epic (`gh issue edit` in the UI, or
    `addSubIssue`).
 4. `task board:epics:sync` — it must say `board is consistent`.

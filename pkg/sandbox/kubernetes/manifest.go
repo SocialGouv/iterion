@@ -288,9 +288,15 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	// the security boundary and shouldn't be silently overridden.
 	envSlice := envMapToSlice(in.Spec.Env)
 	if in.ProxyEndpoint != "" {
-		envSlice = upsertEnv(envSlice, "HTTPS_PROXY", in.ProxyEndpoint)
-		envSlice = upsertEnv(envSlice, "HTTP_PROXY", in.ProxyEndpoint)
-		// NO_PROXY=localhost,127.0.0.1 only. The previous default
+		// Both spellings: curl, wget and git (libcurl) read only the
+		// lower-case http_proxy for an http:// URL and prefer the lower-case
+		// forms — a spec's own lower-case value would win otherwise.
+		for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+			envSlice = upsertEnv(envSlice, k, in.ProxyEndpoint)
+		}
+		// NO_PROXY: the sandbox's own loopback only (sandbox.LoopbackNoProxy
+		// — a server bound there is reached directly, not on the proxy's
+		// host). The previous default
 		// added .svc and .cluster.local — those let the sandboxed
 		// workload bypass the iterion proxy and reach in-cluster
 		// services (kube API at kubernetes.default.svc.cluster.local,
@@ -303,7 +309,13 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 		// cluster-suffix carve-outs were a real proxy bypass. Drop
 		// them so the network posture matches the documented
 		// "allowlist via iterion proxy" promise.
-		envSlice = upsertEnv(envSlice, "NO_PROXY", "localhost,127.0.0.1")
+		// The spec's own entries are REPLACED here, unlike on docker: a pod's
+		// egress is locked by the synthesized NetworkPolicy (driver.go), and
+		// an entry kept from the spec would send that host around the proxy
+		// — the allowlist never seeing it on a CNI that ignores the policy,
+		// and the connection simply dropped on one that enforces it.
+		envSlice = upsertEnv(envSlice, "NO_PROXY", sandbox.LoopbackNoProxy)
+		envSlice = upsertEnv(envSlice, "no_proxy", sandbox.LoopbackNoProxy)
 	}
 
 	// Git safe.directory for the workspace. The emptyDir mountpoint is

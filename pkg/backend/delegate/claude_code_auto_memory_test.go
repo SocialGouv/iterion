@@ -73,9 +73,14 @@ func TestAutoMemorySpawn_OnPinsDirectory(t *testing.T) {
 }
 
 // The settings object merges over the operator's own configuration, so it
-// must carry nothing beyond the two memory keys and the pinned environment —
-// and the environment nothing beyond the four pinned variables.
+// must carry nothing beyond the two memory keys, the ambient-context
+// exclusions and the pinned environment — and the environment nothing beyond
+// the four pinned variables. claudeMdExcludes is safe there: the CLI
+// concatenates it across layers, so a repository's or an operator's own
+// exclusions survive it (measured on CLI 2.1.282, ADR-119).
 func TestFlagSettingsCarryOnlyMemoryKeysAndThePinnedEnvironment(t *testing.T) {
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS", "")
+	t.Setenv("ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE", "")
 	_, memory := autoMemorySpawn(Task{AutoMemoryDir: "/tmp/mem"})
 	if len(memory) == 0 {
 		t.Fatal("memory keys must not be empty when memory is on")
@@ -91,13 +96,17 @@ func TestFlagSettingsCarryOnlyMemoryKeysAndThePinnedEnvironment(t *testing.T) {
 		t.Fatalf("the settings object is not valid JSON (%s): %v", raw, err)
 	}
 	for k := range parsed {
-		if k != "env" && !strings.HasPrefix(k, "autoMemory") {
+		if k != "env" && k != "claudeMdExcludes" && !strings.HasPrefix(k, "autoMemory") {
 			t.Errorf("settings carries an unrelated key %q — it merges over the "+
 				"operator's own settings and must touch nothing else", k)
 		}
 	}
 	env := flagSettingsEnv(t, raw)
-	want := []string{"BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"}
+	// The four switches, the CLI's wind-down ceiling, and the background
+	// lifecycle's signals (the lifecycle is on by default).
+	want := []string{"BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS", "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "CLAUDE_CODE_EXIT_AFTER_STOP_DELAY",
+		"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"}
 	if got := slices.Sorted(maps.Keys(env)); !slices.Equal(got, want) {
 		t.Errorf("the env block carries %v, want exactly %v", got, want)
 	}

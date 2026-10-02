@@ -39,8 +39,15 @@ task test              # all Go unit tests
 task test:e2e          # deterministic/stub E2E suite
 task test:goldens      # recorded bot-schema/invariant replays; no credentials
 task studio:check      # ESLint + TypeScript + Vitest
-task check             # lint + unit + goldens + studio:check
+task check             # lint + the free layer: unit, goldens, studio, pi extension, brand, DSL and map checks
 ```
+
+`task --list` prints every task with its description. `task lint` runs a
+curated golangci-lint (`.golangci.yml`: errcheck, govet, ineffassign,
+staticcheck, unconvert, unused; misspell is off because it flags French
+comments; tests skip errcheck and SA1012; `cmd/iterion-desktop` is excluded as
+cgo/build-tagged). Binaries build with `CGO_ENABLED=0`; version and commit come
+in through ldflags from `package.json` and git.
 
 Useful narrower gates:
 
@@ -124,10 +131,16 @@ from.
 task studio:dev              # backend + Vite HMR
 task studio:dev:backend
 task studio:dev:frontend
-task cloud:up                # local Mongo/NATS/MinIO/server stack
+task cloud:up                # local Mongo/NATS/SeaweedFS/server stack
+task cloud:test:s3           # S3 compatibility bench against its SeaweedFS, in its own bucket
 task cloud:logs
 task cloud:down              # also removes compose volumes
 ```
+
+A stack started before SeaweedFS replaced MinIO leaves two volumes that
+`cloud:down` no longer knows; remove them once with
+`docker volume rm -f iterion-cloud_minio-data iterion-cloud_runner-work` (`-f`
+ignores one that is not there).
 
 Desktop, chart, image, and cross-platform packaging tasks are listed by `task --list-all`; use their dedicated runbooks before releasing: [desktop build](desktop-build.md), [desktop release](desktop-release-checklist.md), and [cloud deployment](cloud-deployment.md).
 
@@ -174,5 +187,6 @@ The labels `schedule-related`, `cloud-related`, and `extensions/state` above are
 - `bots/` is the editable full catalogue. `pkg/cli/templates/dispatch_bots/` is generated for the embedded zero-config subset; do not hand-maintain the copies.
 - Studio's production build is copied into `pkg/server/static` and embedded into the Go binary.
 - The module vendors [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) for in-process multi-provider execution. Keep `go.mod`, `go.sum`, and `vendor/` consistent.
+- Bump the claw-code-go pin **only** with [`scripts/bump-claw.sh`](../scripts/bump-claw.sh): it pushes the claw commit if needed, then runs `go get @<sha>`, tidy, vendor, verify and commits. Never hand-write the pseudo-version — a locally computed, non-UTC timestamp fails `go mod verify` ("does not match version-control timestamp") and turns `vendor-check` red on `main` and on every PR merge ref (three times on 2026-07-11). claw-code-go is developed by this team (sibling worktrees under `.works/`): improving it while touching a seam that crosses it is in scope.
 
 Before opening a change, run the smallest relevant gates and finish with `devbox run -- task check` when practical. Changes to OpenAPI, the SDK, Helm, desktop, or live-test declarations also need their domain-specific checks above.

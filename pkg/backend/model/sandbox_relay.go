@@ -51,6 +51,7 @@ import (
 // relayedLLMRequest is the wire form of LLMRequestInfo.
 type relayedLLMRequest struct {
 	Model           string    `json:"model"`
+	WireModel       string    `json:"wire_model,omitempty"`
 	MessageCount    int       `json:"message_count"`
 	ToolCount       int       `json:"tool_count"`
 	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
@@ -70,6 +71,7 @@ type relayedLLMStep struct {
 	CacheWriteTokens int               `json:"cache_write_tokens,omitempty"`
 	ReasoningTokens  int               `json:"thinking_tokens,omitempty"`
 	ThinkingMs       int               `json:"thinking_ms,omitempty"`
+	UsageUnreported  bool              `json:"usage_unreported,omitempty"`
 	Thinking         string            `json:"thinking,omitempty"`
 	Iteration        int               `json:"iteration"`
 }
@@ -297,6 +299,7 @@ func SandboxRelayHooks(write func(delegate.Envelope) error, report func(error)) 
 				CacheWriteTokens: step.CacheWriteTokens,
 				ReasoningTokens:  step.ReasoningTokens,
 				ThinkingMs:       step.ThinkingMs,
+				UsageUnreported:  step.UsageUnreported,
 				Thinking:         relayClampText(step.Thinking),
 				Iteration:        step.Iteration,
 			})
@@ -448,6 +451,7 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 				CacheWriteTokens: s.CacheWriteTokens,
 				ReasoningTokens:  s.ReasoningTokens,
 				ThinkingMs:       s.ThinkingMs,
+				UsageUnreported:  s.UsageUnreported,
 				Thinking:         s.Thinking,
 				Iteration:        s.Iteration,
 			})

@@ -4,6 +4,7 @@
 export const iterDslKeywords = [
   "agent",
   "allow",
+  "ambient_context",
   "args",
   "artifact_labels",
   "artifacts_only",
@@ -165,6 +166,7 @@ export const iterDslDeclarations = [
 export const iterDslPropertiesByKind = {
   "agent": [
     "allow",
+    "ambient_context",
     "artifact_labels",
     "ask",
     "auto_memory",
@@ -337,6 +339,7 @@ export const iterDslPropertiesByKind = {
   ],
   "judge": [
     "allow",
+    "ambient_context",
     "artifact_labels",
     "ask",
     "auto_memory",
@@ -512,6 +515,7 @@ export const iterDslPropertiesByKind = {
   ],
   "workflow": [
     "allow",
+    "ambient_context",
     "ask",
     "attachments",
     "auto_memory",

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -174,6 +175,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// — one input, one behaviour.
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
+	}
+	if err := ambient.Validate(spec.AmbientContext); err != nil {
+		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
 	runID := spec.RunID
 	if runID == "" {
@@ -364,6 +368,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		BoardRegister:   s.boardRegister,
 		Compress:        spec.Compress,
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		Permission:      spec.Permission,
 		LocalSecrets:    s.localSecrets,
 		LocalSealer:     s.localSealer,
@@ -542,6 +547,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
+	}
+	if err := ambient.Validate(spec.AmbientContext); err != nil {
+		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
 	// E3 (part of #652 review round 1): validate the resume budget
 	// ask synchronously — a malformed max_duration ("4 hours") would
@@ -744,6 +752,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 
 	executorSpec := s.resumeExecutorSpec(wf, r, runLogger, spec.AutoMemory)
+	executorSpec.AmbientContext = spec.AmbientContext
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
 	if err != nil {

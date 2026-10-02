@@ -481,7 +481,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// as an explicit wip bank so the storage branch preserves it; the
 	// operator reviews it there (it is NEVER merged into their branch —
 	// see step 5).
-	porcelain, porcelainErr := runGit(wc.wtPath, "status", "--porcelain")
+	porcelain, porcelainErr := runGit(wc.wtPath, "status", "--porcelain", "-z")
 	if porcelainErr != nil {
 		if logger != nil {
 			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", porcelainErr)

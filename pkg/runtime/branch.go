@@ -616,13 +616,7 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	if err := e.store.WriteInteraction(parent.ctx, interaction); err != nil {
 		return fmt.Errorf("runtime: write branch interaction: %w", err)
 	}
-	eventData := map[string]any{
-		"interaction_id": interactionID,
-		"questions":      questions,
-	}
-	for key, value := range e.humanPauseExtra(nodeID, questions, branchRS) {
-		eventData[key] = value
-	}
+	eventData := e.pauseEventData(interactionID, questions, e.humanPauseExtra(nodeID, questions, branchRS))
 	if err := e.emitBranch(parent.ctx, parent.runID, branchID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
 		return err
 	}
@@ -943,7 +937,8 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 // recordBranchUsage is this plus the verdict, recordFailedBranchSpend is this
 // alone.
 func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) *budgetCheckResult {
-	tokens, costUSD := extractUsage(output)
+	spend := extractSpend(output)
+	costUSD := spend.costUSD
 
 	if e.dailyCap != nil && costUSD > 0 {
 		*branchCostUSD += costUSD
@@ -961,8 +956,8 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 	if rs.budget == nil {
 		return nil
 	}
-	checks := rs.budget.RecordUsage(tokens, costUSD)
-	if tokens > 0 || costUSD > 0 {
+	checks := rs.budget.RecordUsage(spend)
+	if !spend.empty() {
 		// The run budget just moved in memory. Every exit of this branch that
 		// writes no checkpoint would leave it there: a failed node, a fail
 		// node, an edge that cannot resolve, an exceeded budget. The flag is
@@ -997,11 +992,27 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 // detached from the branch's, so a teardown mid-branch cannot refuse the
 // ledger write it is the last chance to make.
 func (e *Engine) recordFailedBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) {
-	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
+	spend := extractSpend(output)
+	if spend.empty() {
 		return
 	}
 	bookCtx, cancel := detachedBookingCtx(ctx)
 	defer cancel()
+	if spend.onlyUnreported() {
+		// Noted, not booked — recordFailedNodeSpend says why. The count
+		// still moved the run budget in memory, so the flush is armed.
+		if rs.budget == nil {
+			return
+		}
+		result.spendUncheckpointed = true
+		for _, w := range rs.budget.noteUnreported(spend.unreportedCalls) {
+			if err := e.emitBranch(bookCtx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
+				result.eventErrors++
+			}
+		}
+		return
+	}
 	// The flush is armed by whichever DURABLE axis the booking moved — the
 	// shared run budget or the branch's own cost cursor, both inside
 	// recordBranchSpend. Arming it here as well would order a full

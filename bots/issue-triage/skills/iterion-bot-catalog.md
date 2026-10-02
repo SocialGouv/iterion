@@ -890,6 +890,12 @@ target workspace (an ops repository, never the application's own):
   healthy | breached | no_data | error — an absent metric is never read
   as a healthy one.
 - The application's own health URLs.
+- Sentry's issues for one project and environment, through the org-scoped
+  API: issues first processed since the cursor (NEW), regressed or
+  escalating ones dated by their own activity (posted whether tracked or
+  not), the alerted ones read back by id (sightings, resolution). A
+  silent bootstrap per lane identity; issue text is scrubbed like a log
+  line and never persisted; no event body is fetched.
 - A redaction scan that is the ONLY reader of the raw lines: secrets,
   JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
   (Luhn), emails and phone numbers are replaced before anything is
@@ -899,26 +905,27 @@ target workspace (an ops repository, never the application's own):
   reminder / not-observed, source-health staleness, a per-tick cap
   with an explicit overflow, and a dead lane that never counts as an
   absence of observation.
-- Deterministic delivery to Mattermost/Slack incoming webhooks with
+- Deterministic delivery to Mattermost incoming webhooks with
   per-sink severity thresholds and required/optional sinks; the state
   advances only after delivery (at-least-once, never a silent loss).
 
 Universal by design: no host, namespace, metric name, language or
 channel is baked in — everything comes from the workspace config
-(prod-watch.json) plus the `webhooks` and `grafana_token` secrets.
+(prod-watch.json) plus the `webhooks`, `grafana_token` and
+`sentry_token` secrets.
 Requires python3 (stdlib only) on the execution host.
 
 - **Use when**:
   Use to watch ONE production (or production-like) deployment of an
-  application from its logs (Loki), metrics (Prometheus) and health
-  endpoints, with deterministic alerting to chat and a git-backed
+  application from its logs (Loki), metrics (Prometheus), Sentry issues
+  and health endpoints, with deterministic alerting to chat and a git-backed
   incident state — the "is prod healthy, and what just changed" tick.
   Requires the target workspace (an ops repo) to carry a prod-watch.json
   (see skills/argus-config.md) and a Grafana service-account token. Not a
   vulnerability watch (use vuln-watch), not an editorial digest (use
   feed-watch), not the instrumentation of the application itself (use
   instrument); it never edits code.
-- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/prod-watch/main.bot`
 
 ### `product-docs` — Prody

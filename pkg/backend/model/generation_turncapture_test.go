@@ -36,7 +36,7 @@ func TestTurnCaptureIsUniformAcrossGenerationModes(t *testing.T) {
 			{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output"}},
 			{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"ok":true}`}},
 			{Type: api.EventContentBlockStop, Index: 0},
-			{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 3}},
+			{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 3}},
 			{Type: api.EventMessageStop},
 		})
 
@@ -67,7 +67,7 @@ func TestTurnCaptureIsUniformAcrossGenerationModes(t *testing.T) {
 			{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 			{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "yes"}},
 			{Type: api.EventContentBlockStop, Index: 0},
-			{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 2}},
+			{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 2}},
 			{Type: api.EventMessageStop},
 		})
 

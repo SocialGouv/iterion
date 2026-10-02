@@ -129,8 +129,9 @@ func EnvValue() string {
 }
 
 // IsNoise reports whether a `git status --porcelain` path is tree noise.
-// The path arrives as runOutputPaths normalizes it: rename arrows cut to
-// the destination, outer quotes stripped. Every plain entry agrees with
+// The path arrives as runOutputPaths normalizes it: read from the `-z`
+// porcelain (#1577), where a rename's destination is the record's path and
+// every name is raw bytes. Every plain entry agrees with
 // its pathspec on every path — git's own semantics hide a top-level FILE
 // named `.claude` just as well as the directory, AND a directory named
 // `devbox.lock` just as well as the file — so the predicate matches the

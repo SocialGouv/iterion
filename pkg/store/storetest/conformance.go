@@ -61,6 +61,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
+	t.Run("SessionLedgerSurvivesTheFailureCheckpoint", func(t *testing.T) { testSessionLedgerSurvivesTheFailureCheckpoint(t, factory(t)) })
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
@@ -1034,7 +1035,8 @@ func testTurnStore(t *testing.T, s store.RunStore) {
 		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 0, Backend: "claw", Model: "m", FinishReason: "tool_use"},
 		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 1, Backend: "claw"},
 		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 2, Backend: "claw", SessionID: "sess-abc",
-			Messages: []byte(`[{"role":"user","content":"hi"}]`)},
+			TerminatedBackground: []string{"auditor (local_agent, t1)"},
+			Messages:             []byte(`[{"role":"user","content":"hi"}]`)},
 		{RunID: runID, NodeID: "impl", LoopIter: 1, TurnIndex: 0, Backend: "claw"},
 	}
 	for _, w := range writes {
@@ -1085,6 +1087,11 @@ func testTurnStore(t *testing.T, s store.RunStore) {
 	}
 	if at2.SessionID != "sess-abc" {
 		t.Errorf("LoadTurnAtIndex(2).SessionID = %q; want sess-abc", at2.SessionID)
+	}
+	// The work that died with the turn's process travels with its session:
+	// a run forked from the turn must tell its agent.
+	if !reflect.DeepEqual(at2.TerminatedBackground, []string{"auditor (local_agent, t1)"}) {
+		t.Errorf("LoadTurnAtIndex(2).TerminatedBackground = %v; want the persisted labels", at2.TerminatedBackground)
 	}
 
 	// Messages sidecar: present for the turn that carried one, not-found
@@ -2913,6 +2920,34 @@ func testOutputsSurviveTerminal(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint == nil || r.Checkpoint.Outputs["gate"]["converged"] != true {
 		t.Fatalf("terminal outputs destroyed by the finish transition: %+v", r.Checkpoint)
+	}
+}
+
+// testSessionLedgerSurvivesTheFailureCheckpoint: the session ledger is what
+// a resumed run — on any replica — reads to tell a resumed CLI session that
+// its background work died. It rides the checkpoint a resumable failure
+// persists, so every backend must round-trip it there.
+func testSessionLedgerSurvivesTheFailureCheckpoint(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-session-ledger"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	want := []store.SessionLedgerEntry{
+		{SessionID: "11111111-aaaa-4bbb-8ccc-000000000001", Tasks: []string{"auditor (local_agent, t1)", "npm run dev (local_bash, b2)"}},
+		{SessionID: "11111111-aaaa-4bbb-8ccc-000000000002", Tasks: []string{"fetcher (local_agent, t3)"}},
+	}
+	cp := &store.Checkpoint{NodeID: "worker", SessionLedger: want}
+	if err := s.FailRunResumable(ctx, runID, cp, "the runner went away", "EXECUTION_FAILED"); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil || !reflect.DeepEqual(r.Checkpoint.SessionLedger, want) {
+		t.Fatalf("session ledger = %+v, want %+v", r.Checkpoint, want)
 	}
 }
 

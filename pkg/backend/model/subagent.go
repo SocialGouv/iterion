@@ -59,8 +59,7 @@ func NewSubagentRunner(
 		if err != nil {
 			return "", fmt.Errorf("subagent: resolve model %q: %w", modelSpec, err)
 		}
-		_, modelID, err := ParseModelSpec(modelSpec)
-		if err != nil {
+		if _, _, err := ParseModelSpec(modelSpec); err != nil {
 			return "", fmt.Errorf("subagent: parse model spec: %w", err)
 		}
 
@@ -68,7 +67,7 @@ func NewSubagentRunner(
 		genTools := buildSubagentTools(toolReg, allowed)
 
 		opts := GenerationOptions{
-			Model:  modelID,
+			Model:  modelSpec,
 			System: "You are a sub-agent. Complete the task with the tools available and return your final answer concisely.",
 			Messages: []api.Message{{
 				Role:    "user",

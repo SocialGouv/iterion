@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
@@ -155,6 +156,20 @@ func (r *Rewriter) Locate() string { return r.binPath }
 // Available reports whether this rewriter's binary was located.
 func (r *Rewriter) Available() bool { return r.binPath != "" }
 
+// RunEnv is the environment (KEY=value, sorted) of a shell whose commands
+// this rewriter compresses — its spec's run_env — or nil when its binary is
+// absent.
+func (r *Rewriter) RunEnv() []string {
+	if !r.Available() || len(r.spec.RunEnv) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(r.spec.RunEnv))
+	for _, k := range slices.Sorted(maps.Keys(r.spec.RunEnv)) {
+		out = append(out, k+"="+r.spec.RunEnv[k])
+	}
+	return out
+}
+
 // locate resolves a binary path: locate.env, then PATH (locate.bin), then the
 // conventional locate.paths (with ~ expansion). Returns "" when not found.
 func locate(loc plugin.LocateSpec) string {
@@ -235,13 +250,16 @@ func (r *Rewriter) Rewrite(ctx context.Context, m Mode, cmd string) (string, boo
 	if out == "" || out == trimmed {
 		return cmd, false
 	}
-	out = applyModeTransform(out, r.spec.Invoke.Modes, m)
+	out = applyModeTransform(out, r.spec.Invoke.Modes, m, r.spec.Locate.Bin)
 	return out, true
 }
 
 // applyModeTransform applies the per-mode inject_flag (if any) to a successful
-// rewrite by inserting the flag right after the binary name (first token).
-func applyModeTransform(out string, modes map[string]plugin.ModeSpec, m Mode) string {
+// rewrite by inserting the flag right after the binary name — when the rewrite
+// starts with it. A rewrite that keeps a leading command of its own (`cd x &&
+// rtk git status`, `FOO=1 rtk …`, `timeout 10 rtk …`) is left as is: the flag
+// after that command's name would be that command's option.
+func applyModeTransform(out string, modes map[string]plugin.ModeSpec, m Mode, bin string) string {
 	ms, ok := modes[m.String()]
 	if !ok || strings.TrimSpace(ms.InjectFlag) == "" {
 		return out
@@ -251,6 +269,9 @@ func applyModeTransform(out string, modes map[string]plugin.ModeSpec, m Mode) st
 		return out
 	}
 	parts := strings.SplitN(out, " ", 2)
+	if bin != "" && filepath.Base(parts[0]) != bin {
+		return out
+	}
 	if len(parts) == 1 {
 		return parts[0] + " " + flag
 	}
@@ -298,8 +319,26 @@ func (c *Chain) Available() bool {
 	return false
 }
 
+// RunEnv is the environment of a shell whose commands the chain compresses:
+// every available rewriter's run env, in chain order. A surface that
+// compresses sets it on the process that runs the compressed commands.
+func (c *Chain) RunEnv() []string {
+	if c == nil {
+		return nil
+	}
+	var out []string
+	for _, r := range c.rewriters {
+		out = append(out, r.RunEnv()...)
+	}
+	return out
+}
+
 // Rewrite applies each rewriter in order, threading the output of one into the
-// next. Returns the final command and whether any rewriter changed it.
+// next. Returns the final command and whether any rewriter changed it. A
+// compressed command exports the chain's run env first: the shell running it
+// may have replaced the environment it was given (claude_code's settings
+// `env`, the operator's shell rc the CLI sources before each command,
+// BASH_ENV).
 func (c *Chain) Rewrite(ctx context.Context, m Mode, cmd string) (string, bool) {
 	if c == nil || !m.Enabled() {
 		return cmd, false
@@ -312,7 +351,24 @@ func (c *Chain) Rewrite(ctx context.Context, m Mode, cmd string) (string, bool) 
 			changed = true
 		}
 	}
+	if changed {
+		cur = exportPrefix(c.RunEnv()) + cur
+	}
 	return cur, changed
+}
+
+// exportPrefix is the shell prefix exporting env (KEY=value entries, names
+// the manifest validated as shell identifiers): "export K=v …; ", or "".
+func exportPrefix(env []string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		parts = append(parts, k+"="+shellquote.Quote(v))
+	}
+	return "export " + strings.Join(parts, " ") + "; "
 }
 
 // RewriteCommandField rewrites the "command" field of a tool-input map via the

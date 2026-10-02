@@ -13,7 +13,10 @@ import (
 
 // LLMRequestInfo describes an LLM request, passed to the OnLLMRequest hook.
 type LLMRequestInfo struct {
+	// Model is the routing spec; WireModel the id the request carried when
+	// it differs from Model ("" for a bare spec).
 	Model           string
+	WireModel       string
 	MessageCount    int
 	ToolCount       int
 	ReasoningEffort string
@@ -54,6 +57,9 @@ type LLMStepInfo struct {
 	// in thinking blocks. Both are 0 when the step produced no thinking.
 	ReasoningTokens int
 	ThinkingMs      int
+	// UsageUnreported marks a step whose provider did not report its usage
+	// in full: the token counts above are a lower bound, not a measurement.
+	UsageUnreported bool
 	// Thinking is the extended-thinking text for this step (empty when the
 	// step produced no thinking).
 	Thinking string
@@ -111,6 +117,18 @@ type OrchestrationStallInfo struct {
 	Model     string
 	IdleFor   time.Duration
 	Recovered bool
+}
+
+// BackgroundWorkInfo is one step of the lifecycle that keeps a delegate
+// session open for the background work it launched, passed to the
+// OnBackgroundWork hook.
+type BackgroundWorkInfo struct {
+	Backend   string
+	Phase     string // waiting | settled | finalizing | abandoned
+	Running   int
+	Tasks     []string
+	WaitedFor time.Duration
+	Reason    string
 }
 
 // LLMToolCallInfo describes a tool call execution, passed to the OnToolCall hook.
@@ -210,6 +228,10 @@ type LLMTurnCaptureInfo struct {
 	// passes it to `claude --resume <id> --fork-session` for the
 	// claude_code rehydration path.
 	SessionID string
+	// TerminatedBackgroundTasks is the background work this claude_code
+	// call's processes lost (delegate.TurnFinishedInfo): a fork that resumes
+	// SessionID must tell the agent it is gone.
+	TerminatedBackgroundTasks []string
 	// ConversationOmittedBytes is non-zero when the turn crossed the
 	// sandbox IPC without its snapshot, the snapshot being larger than
 	// one relayed line may carry (relayConversationBudget): the turn is
@@ -250,6 +272,7 @@ func (i LLMTurnCaptureInfo) MarshalConversation() json.RawMessage {
 func toLLMRequestInfo(info RequestInfo) LLMRequestInfo {
 	return LLMRequestInfo{
 		Model:           info.Model,
+		WireModel:       info.WireModel,
 		MessageCount:    info.MessageCount,
 		ToolCount:       info.ToolCount,
 		ReasoningEffort: info.ReasoningEffort,
@@ -289,6 +312,7 @@ func toLLMStepInfo(step StepResult) LLMStepInfo {
 		CacheWriteTokens: step.Usage.CacheWriteTokens,
 		ReasoningTokens:  step.Usage.ReasoningTokens,
 		ThinkingMs:       step.Usage.ThinkingMs,
+		UsageUnreported:  step.Usage.UnreportedCalls > 0,
 		Thinking:         step.Thinking,
 	}
 }

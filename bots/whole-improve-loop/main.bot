@@ -57,7 +57,7 @@
 ## untracked files (`git add -A -- ':/' {{run.tree_noise}}`) so a change that ADDS files actually lands;
 ## the deterministic verify gate then re-checks the committed tree.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): the AXIS + the repo define the work. No language /
 ## package-manager literal, and no iterion-specific target path, appears in
 ## any var default, command body, or schema — campaign / verify_build are

@@ -61,6 +61,9 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodAzureIdent
 // Deployment precedence: stripped cfg.Model > AZURE_OPENAI_DEPLOYMENT.
 // Auth precedence: cfg.APIKey > AZURE_OPENAI_API_KEY > azidentity.DefaultAzureCredential.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
+	if err := api.RefuseOpenAIOnlyOptions("foundry", cfg); err != nil {
+		return nil, err
+	}
 	endpoint := strings.TrimSpace(cfg.BaseURL)
 	if endpoint == "" {
 		endpoint = strings.TrimSpace(os.Getenv("AZURE_OPENAI_ENDPOINT"))

@@ -86,7 +86,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
 
-	systemPrompt := task.BuildSystemPrompt()
+	systemPrompt := piComposeSystemPrompt(task)
 	promptFile, cleanupPrompt, err := piWriteSystemPrompt(ctx, task, systemPrompt)
 	if err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err

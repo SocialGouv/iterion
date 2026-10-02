@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
@@ -41,9 +42,14 @@ const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 // 1 773 dead entries / 2.5 GB after two days of parallel agent work (#870),
 // and 66 more per full `go test ./...`. gittest.NoWorktreeLeaks fails the
 // package when that count moves, and names the test that moved it.
+// hometest keeps the suite off the operator's iterion home, and the
+// directory it owns doubles as processScratch.
 func TestMain(m *testing.M) {
 	capParallelism()
-	os.Exit(proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) }))
+	os.Exit(hometest.Isolate(func() int {
+		processScratch = os.Getenv("ITERION_HOME")
+		return proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })
+	}))
 }
 
 // capParallelism lowers `-parallel` to e2eParallelCap when the operator left

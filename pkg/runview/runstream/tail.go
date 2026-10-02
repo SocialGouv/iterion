@@ -91,7 +91,7 @@ func tailFile(path string, done <-chan struct{}, drain func(offset int64) int64,
 	// Watch the directory rather than the file directly so we still see
 	// Create events if the file is rotated or initially missing.
 	dir := filepath.Dir(path)
-	if err := watcher.Add(dir); err != nil {
+	if err := fswatch.Add(watcher, dir); err != nil {
 		logger.Warn("runstream: tail %s: watcher.Add(%q): %v — falling back to polling", path, dir, err)
 		tailFilePolling(path, done, drain)
 		return

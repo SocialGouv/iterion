@@ -35,6 +35,14 @@ type DelegateInfo struct {
 	// fallback, env override (ANTHROPIC_MODEL), or proxy rewrote it.
 	// Empty when the backend does not report it.
 	EffectiveModel string
+	// RouteModel is the model spec of the chain element that served the
+	// node — on a skip, of the last one that spent (else the last that
+	// executed); on a failure, of the last one that executed; on a schema
+	// re-ask, of the element re-asked: the route its spend belongs to,
+	// which a backend's report cannot name — a CLI reports the id it
+	// called, OpenRouter's "anthropic/claude-sonnet-4.5" included. Empty
+	// when no element ran.
+	RouteModel string
 	// ContextWindow is the effective model's context window in tokens.
 	// Zero when unknown.
 	ContextWindow int
@@ -90,11 +98,12 @@ type DelegateInfo struct {
 	// record a $0 sample.
 	CostUSD float64
 	// Skipped marks a node completed by an `action: skip` terminal route:
-	// NOTHING served it. BackendName then names the LAST route that
-	// actually EXECUTED and spent (chainOutcome.BackendName = lastBackend;
+	// NOTHING served it. BackendName, RouteModel and Fingerprint then name
+	// the last route whose attempt spent — else the last that executed;
 	// the node's requested backend only when no route executed at all, in
-	// which case the spend is zero) — deliberately, because the runner's
-	// cost accumulator keys its claw double-count exclusion on that name.
+	// which case the spend is zero — deliberately, because the runner's
+	// cost accumulator keys its claw double-count exclusion on that name
+	// and the credential ledger its slot on the route and fingerprint.
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
@@ -260,9 +269,15 @@ type EventHooks struct {
 	// outcome — the number an admission decision about a provider can
 	// rest on.
 	OnOrchestrationStall func(nodeID string, info OrchestrationStallInfo)
-	OnLLMCompacted       func(nodeID string, info LLMCompactInfo)
-	OnToolStarted        func(nodeID string, info LLMToolStartedInfo)
-	OnToolCall           func(nodeID string, info LLMToolCallInfo)
+	// OnBackgroundWork fires as a delegate session moves through the
+	// lifecycle that keeps it open for the background work it launched
+	// (waiting → settled, or finalizing / abandoned). The store hook
+	// persists it as a delegate_background event, metered by the runner
+	// per backend/phase.
+	OnBackgroundWork func(nodeID string, info BackgroundWorkInfo)
+	OnLLMCompacted   func(nodeID string, info LLMCompactInfo)
+	OnToolStarted    func(nodeID string, info LLMToolStartedInfo)
+	OnToolCall       func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
@@ -376,6 +391,7 @@ func ChainHooks(a, b EventHooks) EventHooks {
 		OnUsageCap:           chainCb2(a.OnUsageCap, b.OnUsageCap),
 		OnUsageProgress:      chainCb2(a.OnUsageProgress, b.OnUsageProgress),
 		OnOrchestrationStall: chainCb2(a.OnOrchestrationStall, b.OnOrchestrationStall),
+		OnBackgroundWork:     chainCb2(a.OnBackgroundWork, b.OnBackgroundWork),
 		OnLLMCompacted:       chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
 		OnToolStarted:        chainCb2(a.OnToolStarted, b.OnToolStarted),
 		OnToolCall:           chainCb2(a.OnToolCall, b.OnToolCall),

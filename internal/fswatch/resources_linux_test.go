@@ -92,3 +92,21 @@ func TestWatcherResourceEvidenceDoesNotInventTheCause(t *testing.T) {
 		t.Fatal("non-resource error was changed")
 	}
 }
+
+// #1554: ENOSPC is the inotify_add_watch refusal — a spent max_user_watches
+// budget — and inotify_init1 never returns it, so this arm of resourceError
+// only ever fires through fswatch.Add. A real watch-exhaustion cannot be
+// staged per-process (the budget is per-UID, shared with every other
+// container under it), so the arm is exercised on the error Add would wrap.
+func TestWatchExhaustionEvidenceNamesTheWatchBudget(t *testing.T) {
+	refused := fmt.Errorf("inotify_add_watch: %w", syscall.ENOSPC)
+	err := resourceError(refused)
+	if !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("lost original errno: %v", err)
+	}
+	for _, fragment := range []string{watcherResourcesEvidence, "max_user_watches=", "max_user_instances="} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("missing %q in %v", fragment, err)
+		}
+	}
+}

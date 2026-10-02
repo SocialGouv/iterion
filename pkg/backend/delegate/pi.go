@@ -88,10 +88,11 @@ var piProtocol = CLIAgentProtocol{
 	// Rebound by NewPiBackend to carry that backend's logger. The default has
 	// to stay non-nil: this value is copied by anything building a pi
 	// CLIAgentBackend by hand, and a nil field there is argv silently lost.
-	ExtraArgsFor:    func(task Task) []string { return piExtraArgsFor(task, nil) },
-	ParseOutputRich: parsePiOutput,
-	ResolveEnv:      piResolveEnv,
-	SandboxEnv:      piSandboxEnv,
+	ExtraArgsFor:       func(task Task) []string { return piExtraArgsFor(task, nil) },
+	SystemPromptSuffix: piSystemPromptSuffix,
+	ParseOutputRich:    parsePiOutput,
+	ResolveEnv:         piResolveEnv,
+	SandboxEnv:         piSandboxEnv,
 
 	ExtraArgs: []string{
 		"--mode", "json",
@@ -578,13 +579,16 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 	// pi walks up from the working directory and injects every AGENTS.md and
 	// CLAUDE.md it finds into the system prompt. That is parity with
 	// claude_code and on by default for the same reason — but it is not free,
-	// and the bill is invisible until measured: on iterion's own tree (a
-	// 103 KB CLAUDE.md) a trivial one-word prompt costs 26,933 input tokens
-	// with context files against 448 without. Sixty times the input, before
-	// the node does any work, on every call.
+	// and the bill is invisible until measured: when iterion's own CLAUDE.md
+	// was 103 KB (ADR-085), a trivial one-word prompt cost 26,933 input
+	// tokens with context files against 448 without. Sixty times the input,
+	// before the node does any work, on every call.
 	//
-	// So it stays on, and it gets an off switch.
-	if strings.TrimSpace(os.Getenv("ITERION_PI_NO_CONTEXT_FILES")) == "1" {
+	// Which of them reach the node is its ambient-context policy (ADR-119):
+	// pi's walk cannot be bounded, so every policy but `all` turns it off and
+	// iterion supplies the allowed files itself (piSystemPromptSuffix).
+	// ITERION_PI_NO_CONTEXT_FILES=1 stays the operator's raw off switch.
+	if !piUsesNativeContextFiles(task) {
 		args = append(args, "--no-context-files")
 	}
 

@@ -37,6 +37,7 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 	if usage == nil {
 		return
 	}
+	r.warnUnreportedUsage(msg, usage)
 	// The per-CREDENTIAL ledger, charged per (backend, model) route rather
 	// than from the run total — the same attempt, read by credential
 	// instead of by org (#641). Independent of the org gate below: a route
@@ -198,4 +199,20 @@ func classifyPoolCondition(execErr error, now time.Time) (credpool.Condition, ti
 		return credpool.ConditionAuthFailed, time.Time{}
 	}
 	return credpool.ConditionOK, time.Time{}
+}
+
+// warnUnreportedUsage says, once per attempt and route, that the attempt made
+// LLM calls whose usage the provider did not report in full. Every ledger
+// this attempt charges booked them at a lower bound; this line is where that
+// is said on a runner with no budget ceiling to warn.
+func (r *Runner) warnUnreportedUsage(msg *queue.RunMessage, usage *metricsEmitter) {
+	if r.cfg.Logger == nil {
+		return
+	}
+	for route, totals := range usage.RouteTotals() {
+		if totals.unreportedCalls > 0 {
+			r.cfg.Logger.Warn("runner: run %s made %d LLM call(s) on %s/%s whose usage the provider did not report — booked at %d tokens, a lower bound",
+				msg.RunID, totals.unreportedCalls, route.backend, route.model, totals.tokens())
+		}
+	}
 }

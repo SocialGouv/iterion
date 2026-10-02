@@ -540,18 +540,24 @@ func TestBuildSystemPrompt_Modes(t *testing.T) {
 	}
 }
 
-// Subagents run in the foreground, so a message that launches several is a
-// barrier: they run concurrently and the next message waits for all of them.
-// The ultracode section describes that shape, and no longer the pipeline one
-// ("prefer pipelines to barriers") a background launch allowed.
+// Subagents launched together in one message run concurrently: the ultracode
+// section describes that shape, and no longer the pipeline one ("prefer
+// pipelines to barriers") a background launch allowed. Whether the next
+// message waits for all of them is how a subagent returns — claude_code's
+// subagent rule states it when subagents run in the foreground, and with
+// background work on, a claim of it here would contradict the CLI's own
+// guidance in the same request.
 func TestUltracodeSectionDescribesParallelismPerMessage(t *testing.T) {
 	got := Task{SystemPrompt: "author", Ultracode: true}.BuildSystemPrompt()
 	if strings.Contains(got, "Prefer pipelines to barriers") {
 		t.Error("the ultracode section still advises pipelines over barriers, a shape foreground subagents cannot take")
 	}
-	for _, want := range []string{"ONE message run concurrently", "waits for all of them"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the ultracode section does not say %q", want)
+	if !strings.Contains(got, "ONE message run concurrently") {
+		t.Error(`the ultracode section does not say "ONE message run concurrently"`)
+	}
+	for _, barrier := range []string{"waits for all of them", "before your next step"} {
+		if strings.Contains(got, barrier) {
+			t.Errorf("the ultracode section claims a barrier (%q): how a subagent returns is the backend's to state", barrier)
 		}
 	}
 }

@@ -6247,6 +6247,7 @@ export interface components {
             budget_tokens_used?: number;
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
+            budget_unreported_calls?: number;
             cost_usd_total?: number;
             fired_events?: {
                 [key: string]: {
@@ -6299,6 +6300,7 @@ export interface components {
             selected_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
+            session_ledger?: components["schemas"]["SessionLedgerEntry"][];
             settled_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
@@ -7055,6 +7057,10 @@ export interface components {
             updated_at: string;
             updated_by?: string;
         };
+        SessionLedgerEntry: {
+            session_id: string;
+            tasks: string[];
+        };
         Settings: {
             five_hour_pct?: number;
             /** Format: date-time */
@@ -7613,6 +7619,7 @@ export interface components {
             source: string;
         };
         previewEffectiveSettings: {
+            ambient_context: components["schemas"]["previewEffectiveKnob"];
             auto_memory: components["schemas"]["previewEffectiveKnob"];
             backend: components["schemas"]["previewEffectiveKnob"];
             compress: components["schemas"]["previewEffectiveKnob"];

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // TestE2ECoverageMatrixGate guards the deterministic MATRIX CONTRACT half of
@@ -95,6 +97,13 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 	greenVerify := func(t *testing.T, scratch string) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	verifyScript := func(t *testing.T, scratch, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -643,6 +652,208 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		res := run(t, ws, scratch)
 		if !res.MatrixOK {
 			t.Fatalf("a justified covered-live row with a resolving ref must pass: %+v", res)
+		}
+	})
+
+	// ---------------------------------------------------------------
+	// #1598 — a citation resolves by EXISTENCE, but the claim is
+	// EXECUTION: a test the suite itself reported skipped this pass
+	// satisfies the grep while the feature stays unexercised.
+	// ---------------------------------------------------------------
+
+	t.Run("cited_test_the_suite_reported_skipped_is_red", func(t *testing.T) {
+		for _, tc := range []struct{ name, path, body, cite, scriptOut string }{
+			{"go", "e2e/flaky_test.go", "package e2e\n\nfunc TestFlaky(t *testing.T) {}\n",
+				"TestFlaky (e2e/flaky_test.go)", "--- SKIP: TestFlaky (0.00s)"},
+			// A go SUBTEST report names the parent with a slash: the boundary
+			// match must still see it — the separator is never an identifier
+			// character.
+			{"go subtest", "e2e/flaky_test.go", "package e2e\n\nfunc TestFlaky(t *testing.T) {}\n",
+				"TestFlaky (e2e/flaky_test.go)", "--- SKIP: TestFlaky/case_a (0.00s)"},
+			{"pytest", "tests/test_flaky.py", "def test_flaky():\n    pass\n",
+				"test_flaky (tests/test_flaky.py)", "tests/test_flaky.py::test_flaky SKIPPED [ 50%]"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ws, scratch := gitWorkspace(t), t.TempDir()
+				verifyScript(t, scratch, "#!/bin/sh\necho '"+tc.scriptOut+"'\nexit 0\n")
+				writeFile(t, ws, tc.path, tc.body)
+				writeFile(t, ws, matrixRel, header+
+					"| a.b | Thing | a | covered-deterministic | "+tc.cite+" | |\n")
+				res := run(t, ws, scratch)
+				if res.MatrixOK || !strings.Contains(res.LogTail, "UNEXECUTED CLAIM") {
+					t.Fatalf("a covered row resting on a test the suite reported skipped must be red: %+v", res)
+				}
+				if !res.Passed {
+					t.Fatalf("the suite verdict stays independent — the run WAS green, the claim is the lie: %+v", res)
+				}
+			})
+		}
+	})
+
+	t.Run("a_skip_report_for_a_name_prefixed_test_is_not_the_cited_one", func(t *testing.T) {
+		// The skip report must name the CITED test on identifier boundaries:
+		// TestFlakyBackend / test_flaky_2 are DIFFERENT tests, and their skip
+		// says nothing about whether TestFlaky / test_flaky ran.
+		for _, tc := range []struct{ name, path, body, cite, scriptOut string }{
+			{"go", "e2e/flaky_test.go",
+				"package e2e\n\nfunc TestFlaky(t *testing.T) {}\nfunc TestFlakyBackend(t *testing.T) {}\n",
+				"TestFlaky (e2e/flaky_test.go)", "--- SKIP: TestFlakyBackend (0.00s)"},
+			{"pytest", "tests/test_flaky.py",
+				"def test_flaky():\n    pass\ndef test_flaky_2():\n    pass\n",
+				"test_flaky (tests/test_flaky.py)", "test_flaky_2 SKIPPED [ 50%]"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ws, scratch := gitWorkspace(t), t.TempDir()
+				verifyScript(t, scratch, "#!/bin/sh\necho '"+tc.scriptOut+"'\nexit 0\n")
+				writeFile(t, ws, tc.path, tc.body)
+				writeFile(t, ws, matrixRel, header+
+					"| a.b | Thing | a | covered-deterministic | "+tc.cite+" | |\n")
+				res := run(t, ws, scratch)
+				if !res.MatrixOK {
+					t.Fatalf("a skip report for %q must not redden the citation of the prefix it shares: %+v", tc.scriptOut, res)
+				}
+			})
+		}
+	})
+
+	t.Run("a_passing_cited_test_is_not_an_unexecuted_claim", func(t *testing.T) {
+		// Negative evidence only: a verbose green run names its tests with
+		// PASS markers, and a summary line carrying the word skipped names
+		// no test — neither may trip the detection, or every loud suite
+		// reddens.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		verifyScript(t, scratch, "#!/bin/sh\necho '=== RUN   TestReal'\necho '--- PASS: TestReal (0.00s)'\necho '5 passed, 1 skipped in 0.10s'\nexit 0\n")
+		writeFile(t, ws, "e2e/real_test.go", "package e2e\n\nfunc TestReal(t *testing.T) {}\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | TestReal (e2e/real_test.go) | |\n")
+		res := run(t, ws, scratch)
+		if !res.MatrixOK {
+			t.Fatalf("a green run reporting the cited test PASSED must stay green: %+v", res)
+		}
+	})
+
+	t.Run("skip_evidence_in_a_fellow_row_does_not_acquit_or_accuse", func(t *testing.T) {
+		// The skip report must name the CITED test: another test's skip is
+		// not this row's business (the runner ran what the row claims).
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		verifyScript(t, scratch, "#!/bin/sh\necho '--- PASS: TestReal (0.00s)'\necho '--- SKIP: TestOther (0.00s)'\nexit 0\n")
+		writeFile(t, ws, "e2e/real_test.go", "package e2e\n\nfunc TestReal(t *testing.T) {}\nfunc TestOther(t *testing.T) {}\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | TestReal (e2e/real_test.go) | |\n")
+		res := run(t, ws, scratch)
+		if !res.MatrixOK {
+			t.Fatalf("a skip report for a DIFFERENT test must not redden this row: %+v", res)
+		}
+	})
+}
+
+// TestE2ECoverageConvergedRequiresAnExecutedSuite pins #1598's delivery
+// condition on the CONVERGENCE side: `gate.converged` is the only edge into
+// done, so it is the run's green — and it must test `skipped` explicitly.
+// verify_run already answers passed=false on a missing script (#1711), which
+// blocks convergence transitively; but "the suite ran" is the property the
+// unattended-merge decision rests on, and a conjunction that never names it
+// is one verify_run refactor away from reading "the gate was skipped" as
+// "the gate passed" again — which is exactly how the ticket found it.
+//
+// The expression is EVALUATED, not grepped (the lesson of
+// TestGateFailLogCarriesTheReviewOnASkippedBuild): a gate expression parses
+// and validates clean and only runs once something else already went wrong.
+func TestE2ECoverageConvergedRequiresAnExecutedSuite(t *testing.T) {
+	pr := parseBotUnit("e2e-coverage/main.bot")
+	if pr.File == nil {
+		t.Fatalf("parse produced no File")
+	}
+	cr := ir.Compile(pr.File)
+	if cr.Workflow == nil {
+		t.Fatalf("compile produced no Workflow")
+	}
+	raw, ok := cr.Workflow.Nodes["gate"]
+	if !ok {
+		t.Fatalf("no gate node")
+	}
+	cn, ok := raw.(*ir.ComputeNode)
+	if !ok {
+		t.Fatalf("gate is %T, want *ir.ComputeNode", raw)
+	}
+	var converged *expr.AST
+	for _, e := range cn.Exprs {
+		if e != nil && e.Key == "converged" {
+			converged = e.AST
+		}
+	}
+	if converged == nil {
+		t.Fatalf("gate carries no converged expression")
+	}
+
+	// outputs.<node>.<field>, as the runtime supplies them.
+	ctxFor := func(passed, skipped, matrixOK, complete, scoped bool, uncovered int) *expr.Context {
+		return &expr.Context{
+			Outputs: func(path []string) any {
+				if len(path) < 2 {
+					return nil
+				}
+				switch path[0] + "." + path[1] {
+				case "verify_run.passed":
+					return passed
+				case "verify_run.skipped":
+					return skipped
+				case "verify_run.matrix_ok":
+					return matrixOK
+				case "verify_run.scoped":
+					return scoped
+				case "verify_run.uncovered_rows":
+					return uncovered
+				case "campaign.coverage_complete":
+					return complete
+				}
+				return nil
+			},
+		}
+	}
+	eval := func(t *testing.T, passed, skipped, matrixOK, complete, scoped bool, uncovered int) bool {
+		t.Helper()
+		got, err := converged.Eval(ctxFor(passed, skipped, matrixOK, complete, scoped, uncovered))
+		if err != nil {
+			t.Fatalf("converged does not evaluate on (passed=%v skipped=%v matrix_ok=%v complete=%v scoped=%v uncovered=%d): %v",
+				passed, skipped, matrixOK, complete, scoped, uncovered, err)
+		}
+		b, ok := got.(bool)
+		if !ok {
+			t.Fatalf("converged evaluated to %T, want bool", got)
+		}
+		return b
+	}
+
+	t.Run("a fully green executed run converges", func(t *testing.T) {
+		if !eval(t, true, false, true, true, false, 0) {
+			t.Error("suite green + matrix_ok + complete + no uncovered rows must converge")
+		}
+	})
+	t.Run("a skipped suite never converges, whatever passed says", func(t *testing.T) {
+		// THE case: "the gate was skipped" must not read as "the gate
+		// passed" — even in a shape where passed came out true.
+		if eval(t, true, true, true, true, false, 0) {
+			t.Error("converged on skipped=true: a gate that did not run certified delivery")
+		}
+		if eval(t, false, true, true, true, false, 0) {
+			t.Error("converged on a refused (skipped) run")
+		}
+	})
+	t.Run("a red suite or matrix still blocks", func(t *testing.T) {
+		if eval(t, false, false, true, true, false, 0) {
+			t.Error("converged on a red suite")
+		}
+		if eval(t, true, false, false, true, false, 0) {
+			t.Error("converged on a red matrix")
+		}
+	})
+	t.Run("uncovered rows block a whole-app run", func(t *testing.T) {
+		if eval(t, true, false, true, true, false, 2) {
+			t.Error("converged with uncovered rows remaining and no scope")
+		}
+		if !eval(t, true, false, true, true, true, 2) {
+			t.Error("a scoped run must be allowed to converge with out-of-scope rows uncovered")
 		}
 	})
 }

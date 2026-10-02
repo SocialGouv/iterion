@@ -371,13 +371,14 @@ func (s *Server) ListenAndServe() error {
 			"runs parked on a provider quota window will never resume on their own")
 	}
 	// Merge-gate sweeper (cloud only): the reconciliation net under the
-	// reconciler's lossy outcome event. Same shape and cadence as the retry
-	// sweeper next door, and needed for the same reason — a required check
-	// nobody answers blocks a pull request indefinitely, and a dropped event
-	// leaves no trace saying so.
+	// reconciler's lossy outcome event. Same cadence as the retry sweeper next
+	// door, and needed for the same reason — a required check nobody answers
+	// blocks a pull request indefinitely, and a dropped event leaves no trace
+	// saying so. Unlike it, the sweep runs on ONE elected replica: its offers
+	// spend the forge's request budget, not a store claim.
 	if lister, ok := s.cfg.Store.(gateSweepLister); ok && s.forgePublishTokens != nil && s.forgeConnections != nil {
 		s.goUntilShutdown("server.gateSweeper", func(ctx context.Context) {
-			s.runGateSweeper(ctx, lister)
+			s.runElectedGateSweeper(ctx, lister)
 		})
 	} else if s.cfg.ScheduledBots != nil && s.forgePublishTokens != nil {
 		// Cloud mode with gating wired but no sweep: the event path is then the
@@ -860,6 +861,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		backgroundWorker{name: "server.assistantWatch", done: watchDone},
 		backgroundWorker{name: "server.assistantMissions", done: missionDone},
 	)
+	s.flushForgeTally()
 	s.stateMu.RLock()
 	boardDone := s.boardDispDone
 	s.stateMu.RUnlock()

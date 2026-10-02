@@ -118,6 +118,16 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []string {
 	var out []string
 	unterminated := func(t Token) bool { return t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t) }
+	// The property whose value the list is, for the resync below: the tokens
+	// just consumed are `<name> : [` on both paths into this loop, and the
+	// name's column is the indentation a sibling property shares. On
+	// parseDeclaredToolList's fall-through path the `[` was NOT read (the
+	// offending token stands where it would be), the shape check fails, and
+	// the give-up keeps its old recovery — the one the line-end tests pin.
+	propTok, propOk := Token{}, false
+	if toks, ti := p.lex.tokens, p.lex.ti; ti >= 3 && toks[ti-1].Type == TokenLBrack && toks[ti-2].Type == TokenColon {
+		propTok, propOk = toks[ti-3], true
+	}
 	// appendElem reads one element and reports whether the list goes on. The
 	// element reader is never handed the token that ends the line: every
 	// element reader consumes at least one token, so it would eat the line
@@ -126,6 +136,9 @@ func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []s
 		first := p.peek()
 		if unterminated(first) {
 			p.expectFailed(first, TokenRBrack, "expected ] to close the list, got "+first.Type.String())
+			if propOk && lineEnds(first) {
+				p.resyncBrokenBracketList(propTok)
+			}
 			return false
 		}
 		if v, ok := parseElem(); ok {
@@ -158,6 +171,9 @@ func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []s
 			return out
 		case unterminated(t):
 			p.expectFailed(t, TokenRBrack, "expected ] to close the list, got "+t.Type.String())
+			if propOk && lineEnds(t) {
+				p.resyncBrokenBracketList(propTok)
+			}
 			return out
 		default:
 			// Another element with no comma before it, or a stray token:
@@ -201,6 +217,87 @@ func (p *parser) resyncListElement(refused Token) {
 
 func opensBracket(t Token) bool {
 	return t.Type == TokenLBrack || t.Type == TokenLBrace || t.Type == TokenLParen
+}
+
+// resyncBrokenBracketList is the recovery of an inline list left open at the
+// end of its line, the closer — or the rest of the elements — written on a
+// line of its own (`tools: [bash,` then `]` below): the first text an author
+// with YAML habits writes. The give-up is said where it stands; what would
+// otherwise happen is the broken line's DEDENT escaping to the enclosing
+// block's property loop, which closes the block on it — the orphaned closer
+// then reads as a top-level stray and the property AFTER the list is lost to
+// the top-level skip (#1630). The broken list's remainder is everything up
+// to the next line that starts at the list's own indentation — a sibling
+// property — so the remainder is consumed here (a lexer diagnosis it holds
+// is still said, the way skipIndentedBlock says one) and the cursor lands on
+// the sibling. Nothing is consumed when no such line follows: a remainder
+// that runs out of file, or reaches a line an outer block or the top level
+// owns, is left to the ordinary recovery, which needs the dedents as they
+// are. The list's own indentation is propTok's column; a same-column `]` is
+// left for the block loop, which already refuses it in place.
+//
+// The bail keeps the broken text, it does not rescue it: for a list nested
+// two blocks deep or more whose next property lives in an ANCESTOR block
+// (a `rules:` broken under `network:` with `image:` following under
+// `sandbox:`), the dedents close the blocks as before and that outer
+// property is still lost to the top-level skip. Saving it wants a level the
+// tokens no longer carry — a design decision, not a resync tweak. An
+// off-stack dedent bails for the opposite reason: the lexer pops to a level
+// it does not re-push past its E003, so landing on the sibling there would
+// eat the only DEDENTs the enclosing block can close on, and every
+// declaration after the block would read as its property — the sibling is
+// lost instead, until a lexer-side re-push exists (Error arm below).
+func (p *parser) resyncBrokenBracketList(propTok Token) {
+	i := 0
+	lineStart := false
+	dedent := false // a DEDENT since the last line end
+	for {
+		t := p.lex.PeekAt(i)
+		switch {
+		case t.Type == TokenEOF:
+			return
+		case lineEnds(t):
+			lineStart, dedent = true, false
+			i++
+		case t.Type == TokenIndent:
+			i++
+		case t.Type == TokenDedent:
+			dedent = true
+			i++
+		case t.Type == TokenError:
+			if dedent {
+				// An off-stack dedent: the lexer popped to a level it does
+				// NOT re-push — no INDENT follows the Error, and no DEDENT
+				// comes before the next top-level line. Landing on a sibling
+				// past this Error would consume the pop-DEDENTs and leave the
+				// enclosing block unclosable (its loop closes on DEDENT/EOF
+				// only): every following declaration would read as a property
+				// of the broken block — strictly worse than losing the
+				// sibling. Bail, keeping main's behavior; the rescue for this
+				// shape wants a lexer-side re-push of the errored level, a
+				// design decision of its own.
+				return
+			}
+			// Any other lexer diagnosis — a tab-indented line, a mid-line
+			// one — popped nothing: it is not the line's content, and it is
+			// said when the span is consumed below. Read past it, or the
+			// sibling it precedes is never found.
+			i++
+		case lineStart && t.Column == propTok.Column:
+			for ; i > 0; i-- {
+				if tok := p.next(); tok.Type == TokenError {
+					p.lexerError(tok)
+				}
+			}
+			return
+		case lineStart && t.Column < propTok.Column && tokenAsIdent(t) != "":
+			// A line an outer block or the top level owns.
+			return
+		default:
+			lineStart = false
+			i++
+		}
+	}
 }
 
 // parseDashList parses the YAML-style form of a list: after the property's

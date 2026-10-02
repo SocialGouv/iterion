@@ -50,6 +50,7 @@ type backendFields struct {
 	cursors          *ir.CursorInvocation
 	compress         string // node-level `compress:` value ("" = unset)
 	autoMemory       string // node-level `auto_memory:` value ("" = inherit workflow)
+	ambientContext   string // node-level `ambient_context:` value ("" = inherit workflow)
 	permission       string // node-level `permission:` mode override ("" = inherit)
 	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
 	// REPLACES the workflow list of the same kind; see
@@ -100,6 +101,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
+			ambientContext:   n.AmbientContext,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -128,6 +130,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
+			ambientContext:   n.AmbientContext,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -369,6 +372,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 			bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 			di := delegateInfoFromResult(bn, out.Result)
 			di.DeclaredModel = baseModel
+			di.RouteModel = out.Route
 			di.Error = err
 			sess.describeDivergence(&di)
 			e.hooks.OnDelegateError(nodeID, di)
@@ -379,6 +383,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 		bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 		di := delegateInfoFromResult(bn, out.Result)
 		di.DeclaredModel = baseModel
+		di.RouteModel = out.Route
 		// A skip outcome finished nothing: keep BackendName (the spend's
 		// origin — the metrics claw-exclusion keys on it) but flag it so
 		// recordServed and the event do not claim a backend SERVED.
@@ -996,6 +1001,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	if usd := cost.USDFromOutput(primary.Output); usd > 0 {
 		out.Output["_cost_usd"] = usd
 	}
+	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
@@ -1103,6 +1109,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	task := delegate.Task{
 		NodeID:                f.id,
+		AmbientContext:        e.ambientContextPolicy(f, backendName),
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,
@@ -1128,9 +1135,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		ReasoningEffort:       wireEffort(effort),
 		Ultracode:             ultracode,
 		InteractionEnabled:    f.interaction != ir.InteractionNone,
+		SessionLedger:         SessionLedgerFromContext(ctx),
 		SecretsHygiene:        e.secretGuard.HasKnownSecrets(),
 		SecretFiles:           e.secretFileHints(),
 		MaterializeSecrets:    e.secretMaterializer(),
+		RedactSecrets:         e.secretRedactor(),
+		RedactSecretsSpan:     e.secretGuard.LongestLiteral(),
+		UnmaterializeSecrets:  e.secretUnmaterializer(),
 		CompactThresholdRatio: compactRatio,
 		CompactPreserveRecent: compactPreserve,
 		Sandbox:               e.sandbox,
@@ -1179,6 +1190,11 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	}
 	if m := rewrite.ResolveWithDefault(e.compressOverride, f.compress, e.wfCompress, e.compressEnvDefault, compressDefault); m.Enabled() {
 		task.CompressMode = m.String()
+	}
+	// The rewriters ride the task whatever the mode: the agent may run one
+	// itself, or an operator's own hook may (rtk's `rtk init -g`), and the
+	// node's shell carries their run env either way.
+	if e.chain.Available() {
 		task.Rewriters = e.chain.Specs()
 	}
 	// Tool-permission gate (precedence: run override > node DSL > workflow

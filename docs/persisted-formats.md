@@ -210,6 +210,9 @@ parent's).
     }
   },
   "backend_session_state_ref": "",
+  "session_ledger": [
+    { "session_id": "sess-…", "tasks": ["auditor (local_agent, a1b2)"] }
+  ],
   "node_attempts": { "review": { "RATE_LIMITED": 1 } },
   "recovery_pause": true,
   "recovery_code": "AUTH_FAILED",
@@ -259,6 +262,16 @@ usable: a `session: fork` resume drops a session whose parent provider it
 cannot identify (cross-provider thinking blocks 400). Absent on checkpoints
 written before the field existed, which reads as "unknown" — the same
 conservative outcome as before.
+`session_ledger` is the run's record of the background work (claude_code async
+subagents, background commands) a CLI session's processes lost — still running
+when the process ended, or finished without its result reaching the agent —
+one entry per session id, sorted by id: whichever process resumes or
+forks that transcript later is told the tasks are gone, then settles the
+entry (see [backends.md](backends.md), "Background work"). Absent on
+checkpoints written before it existed — an empty ledger, the previous
+behaviour. A turn checkpoint (`turns/…json`) carries the same fact for its
+own processes as `terminated_background`; a Fork API child run seeds its
+ledger with it.
 `recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
 for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
 the node still owes its work, so the answer that resumes the run is an
@@ -375,7 +388,7 @@ deployments that move independently. The same pair is on the run document as
 that finds them different logs a WARN and keeps going, because skew is normal
 for the length of every rolling deploy.
 | Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
-| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `model_fallback`, `model_drift`, `model_served_via_facade` |
+| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `delegate_background`, `model_fallback`, `model_drift`, `model_served_via_facade` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |

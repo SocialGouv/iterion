@@ -61,6 +61,9 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodADC }
 // returning a clear error when the project ID is missing. Region defaults to
 // us-east5.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
+	if err := api.RefuseOpenAIOnlyOptions("vertex", cfg); err != nil {
+		return nil, err
+	}
 	project := strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
 	if project == "" {
 		return nil, fmt.Errorf("vertex provider: GOOGLE_CLOUD_PROJECT is not set (run `gcloud config set project <id>` or export the env var)")

@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -134,6 +135,9 @@ type OutputCorrector interface {
 type OutputCorrectionUsage struct {
 	Tokens  int
 	CostUSD float64
+	// UnreportedCalls has no field yet because no implementer exists
+	// (the interface is test-only): when a second OutputCorrectorWithUsage
+	// appears, the correction call's unreported count comes with it.
 }
 
 // OutputCorrectorWithUsage extends OutputCorrector for executors that can
@@ -171,8 +175,8 @@ type Engine struct {
 	seamWarnOnce   sync.Once
 	onNodeFinished func(ctx context.Context, runID, nodeID string, output map[string]any)
 	// workDirTemp is the throw-away directory defaultWorkDir created under
-	// `go test` when the process cwd was the package directory (#1803); its
-	// owner removes it when the run is done.
+	// `go test` when the process cwd was the package directory (#1803);
+	// releaseTempWorkDir removes it when Run or ResumeWithHostInputs returns.
 	workDirTemp              string
 	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
@@ -276,7 +280,7 @@ func (e *Engine) ActiveElapsed() time.Duration {
 	if b == nil {
 		return 0
 	}
-	_, _, _, elapsed, _, _ := b.Snapshot()
+	_, _, _, elapsed, _, _, _ := b.Snapshot()
 	return elapsed
 }
 
@@ -481,6 +485,12 @@ type runState struct {
 	artifactVersions map[string]int
 	nodeSessions     map[string]store.NodeSessionSlot
 	pauseSessionRef  string // in-flight CLI ask_user pack (ADR-089)
+	// sessionLedger records the background work a CLI session's processes
+	// lost, per session id (delegate.SessionLedger). One
+	// ledger per run, shared by the trunk and every branch — its entries are
+	// keyed by session id, which no two items share — persisted in each
+	// checkpoint and restored on resume.
+	sessionLedger *delegate.MemorySessionLedger
 	// lastGraceNode/lastGraceDim dedupe the budget_exit_grace event: the
 	// pre-exec check and the post-resource-wait duration gate can route
 	// the SAME overrun through graceOrFailBudget at one node boundary,
@@ -806,6 +816,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		selectedIncoming:   make(map[string][]store.IncomingEdge),
 		artifactVersions:   make(map[string]int),
 		nodeSessions:       make(map[string]store.NodeSessionSlot),
+		sessionLedger:      delegate.NewSessionLedger(nil),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             e.newRunBudget(),

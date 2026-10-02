@@ -424,6 +424,14 @@ const (
 	// interrupted and nudged in place and went on; `aborted` means it was
 	// killed for the executor's retry (a delegate_error follows).
 	EventDelegateStall EventType = "delegate_stall"
+	// EventDelegateBackground records a step of the lifecycle that keeps a
+	// session open for the background work it launched (claude_code async
+	// subagents / background commands). Data: backend, phase
+	// (waiting|settled|finalizing|abandoned), running, tasks (labels),
+	// waited_ms, reason (finalizing/abandoned only). `abandoned` means work
+	// that never reported back was lost with a process of the session — the
+	// session ledger tells whoever resumes the transcript.
+	EventDelegateBackground EventType = "delegate_background"
 
 	// EventModelFallback is emitted once each time a node's fallback
 	// chain falls through from a failed element to the next one — a
@@ -548,6 +556,11 @@ const (
 	//   - source: precedence label (CLI > workflow > env > default)
 	//   - mounts: []string of "host_path:container_path" pairs (only
 	//     paths actually mounted are listed; skipped ones are absent)
+	//   - iterion_home_not_mounted: the iterion home left out because it is
+	//     not the one the operator chose (a project `.env` set it, or it is
+	//     the shared <tmp> fallback); absent when it was mounted
+	//   - home_not_mounted: the home dir a project `.env` set, under which
+	//     nothing was mounted; absent when the operator's own
 	EventSandboxHostStateMounted EventType = "sandbox_host_state_mounted"
 	// EventSandboxUserRemap fires when the docker driver injects
 	// `--user $(id -u):$(id -g)` because host_state=auto requires

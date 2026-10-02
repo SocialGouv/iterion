@@ -75,7 +75,14 @@ type Mirror struct {
 	// them out of `hydrated` is exactly what keeps the deletion loop off
 	// them.
 	skipped []error
+	// unmaterialize turns the run's known secret values back into their
+	// placeholders before a document is persisted — an agent writes MEMORY.md
+	// with the file tools, which run with the values. nil leaves it as is.
+	unmaterialize func(string) string
 }
+
+// SetUnmaterialize installs the run's secret unmaterializer.
+func (m *Mirror) SetUnmaterialize(f func(string) string) { m.unmaterialize = f }
 
 // NewMirror binds a mirror to a space and an on-disk directory. dir is the
 // absolute path both the backend and this process see (inside a sandbox it is
@@ -260,6 +267,9 @@ func (m *Mirror) SyncBack(ctx context.Context) error {
 
 	for _, path := range slices.Sorted(maps.Keys(onDisk)) {
 		content := onDisk[path]
+		if m.unmaterialize != nil {
+			content = []byte(m.unmaterialize(string(content)))
+		}
 		if before, ok := m.hydrated[path]; ok && before == knowledge.ChecksumHex(content) {
 			continue // untouched
 		}

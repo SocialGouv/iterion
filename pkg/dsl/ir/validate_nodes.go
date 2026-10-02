@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"math"
 	"net/url"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -325,6 +327,84 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		}
 	}
 	c.warnIfWorkflowAutoMemoryIsInert(w)
+}
+
+// validateAmbientContext enforces that every ambient_context value (the
+// workflow's and each agent/judge node's) is one of the accepted barewords:
+// a typo would otherwise read as "inherit" and hand the node the default, so
+// an invalid value is an ERROR (C184). Empty means unset.
+//
+// It then warns (C185) when an EXPLICIT per-node value meets a backend that
+// does not translate the policy: the node's effective backend and every
+// backend its fallback chain may route to. The workflow default reaches every
+// node, so a mixed-backend workflow would warn on each node that cannot honour
+// it; the workflow-level value is only reported once, when no node at all can
+// honour it. An unresolved backend is left alone: the resolver falls through
+// to env and host detection, so the compiler cannot know.
+//
+// Both the accepted values and the backend list come from pkg/backend/ambient,
+// so the compiler and the engine cannot disagree.
+func (c *compiler) validateAmbientContext(w *Workflow) {
+	valid := func(v string) bool {
+		if strings.TrimSpace(v) == "" {
+			return true
+		}
+		_, ok := ambient.Parse(v)
+		return ok
+	}
+	accepted := strings.Join(ambient.Values, ", ")
+	if !valid(w.AmbientContext) {
+		c.errorfAtSpan(DiagInvalidAmbientContext, c.workflowSpan(w.Name),
+			"workflow %q has invalid ambient_context %q; valid values are %s",
+			w.Name, w.AmbientContext, accepted)
+	}
+	honouring, ignoring := 0, 0
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		kind, value := nn.NodeKind().String(), nn.GetAmbientContext()
+		if !valid(value) {
+			c.errorfAt(DiagInvalidAmbientContext, n.NodeID(), "",
+				"%s %q has invalid ambient_context %q; valid values are %s",
+				kind, n.NodeID(), value, accepted)
+			continue
+		}
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if backend == "" || ambient.Enforces(backend) {
+			honouring++
+		} else {
+			ignoring++
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if backend != "" && !ambient.Enforces(backend) {
+			c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
+				"%s %q: ambient_context: %s is not enforced on backend=%q — it keeps its own conventions; claude_code, claw, codex and pi apply the policy",
+				kind, n.NodeID(), strings.TrimSpace(value), backend)
+		}
+		for _, f := range nn.GetFallbacks() {
+			if f.Action == FallbackActionSkip {
+				continue
+			}
+			routeBackend := f.Backend
+			if routeBackend == "" {
+				routeBackend = backend
+			}
+			if routeBackend != "" && routeBackend != backend && !ambient.Enforces(routeBackend) {
+				c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
+					"%s %q: ambient_context: %s is not enforced if fallback route %q runs on backend=%q",
+					kind, n.NodeID(), strings.TrimSpace(value), f.Name, routeBackend)
+			}
+		}
+	}
+	if strings.TrimSpace(w.AmbientContext) != "" && valid(w.AmbientContext) && ignoring > 0 && honouring == 0 {
+		c.warnfAtSpan(DiagAmbientContextNotEnforced, c.workflowSpan(w.Name),
+			"workflow %q sets ambient_context: %s but no agent/judge node runs on a backend that enforces it (claude_code, claw, codex, pi)",
+			w.Name, strings.TrimSpace(w.AmbientContext))
+	}
 }
 
 // warnIfWorkflowAutoMemoryIsInert covers the one shape the per-node rule above
@@ -1002,15 +1082,75 @@ func SetEnvOverlay(fn func(name string) (string, bool)) {
 // the write surface validates that namespace, and gating the read side
 // too means a corrupted or hand-edited settings document can never
 // inject $HOME, $PATH or a provider credential into an expansion.
+//
+// A name the process-env policy refuses (SetProcessEnvPolicy) resolves as
+// unset: on a cloud process, workflow text never reads the platform's
+// credentials. LookupOperatorEnv is the unrestricted read for text the
+// operator wrote.
 func LookupEnv(name string) string {
-	if strings.HasPrefix(name, "ITERION_") {
-		if fn := envOverlay.Load(); fn != nil {
-			if v, ok := (*fn)(name); ok && v != "" {
-				return v
-			}
-		}
+	if v, ok := lookupOverlay(name); ok {
+		return v
+	}
+	if !ProcessEnvReadable(name) {
+		return ""
 	}
 	return os.Getenv(name)
+}
+
+// LookupOperatorEnv is LookupEnv for text the operator wrote — a plugin's
+// MCP server, the deployment's own settings: the process-env policy is about
+// workflow text and does not reach the operator's configuration.
+func LookupOperatorEnv(name string) string {
+	if v, ok := lookupOverlay(name); ok {
+		return v
+	}
+	return os.Getenv(name)
+}
+
+func lookupOverlay(name string) (string, bool) {
+	if !strings.HasPrefix(name, "ITERION_") {
+		return "", false
+	}
+	if fn := envOverlay.Load(); fn != nil {
+		if v, ok := (*fn)(name); ok && v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// DurationParseReason is why a duration field does not parse, safe to show to
+// whoever reads the message: the parser's own error quotes its input, and
+// when `${…}` expansion produced that input it may be any value of the
+// process environment.
+func DurationParseReason(raw, expanded string, err error) string {
+	if raw == expanded {
+		return err.Error()
+	}
+	return "its ${…} references expand to a value that is not a duration"
+}
+
+// envPolicy says which names workflow text may read from the process
+// environment: a `${NAME}` in a .bot, a launch value, a tool command. Nil —
+// the default, a local operator's own environment — reads every name. A
+// cloud process installs one at boot: its environment holds the platform's
+// credentials, not the tenant's.
+var envPolicy atomic.Pointer[func(name string) bool]
+
+// SetProcessEnvPolicy installs envPolicy. Nil restores "every name".
+func SetProcessEnvPolicy(fn func(name string) bool) {
+	if fn == nil {
+		envPolicy.Store(nil)
+		return
+	}
+	envPolicy.Store(&fn)
+}
+
+// ProcessEnvReadable reports whether workflow text may read name from the
+// process environment.
+func ProcessEnvReadable(name string) bool {
+	fn := envPolicy.Load()
+	return fn == nil || (*fn)(name)
 }
 
 // lookupEnv keeps the package-internal call sites on the short name.
@@ -1268,7 +1408,7 @@ func (c *compiler) validateNodeTimeout(w *Workflow) {
 		d, err := time.ParseDuration(expanded)
 		if err != nil {
 			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
-				"node %q has an invalid timeout %q: %v", node.NodeID(), raw, err)
+				"node %q has an invalid timeout %q: %s", node.NodeID(), raw, DurationParseReason(raw, expanded, err))
 			continue
 		}
 		if d <= 0 {
@@ -1289,6 +1429,11 @@ func ModelSupportsUltracode(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" || IsEnvSubstitutedEffort(m) {
 		return true
+	}
+	if modelroute.Parse(m).Gateway() {
+		// A gateway's model ids are its own namespace: an alias spelled
+		// like a Claude model is no evidence of one.
+		return false
 	}
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]

@@ -45,6 +45,16 @@ func TestBuildArgs_SettingSources(t *testing.T) {
 	if hasFlag(buildArgs(processConfig{}, true), "--setting-sources") {
 		t.Error("--setting-sources must be omitted when no sources are configured")
 	}
+
+	// An explicitly empty list loads NO source, and must still be emitted:
+	// omitted, the CLI would load every source, `local` included.
+	none := buildArgs(processConfig{SettingSources: []SettingSource{}}, true)
+	if !hasFlag(none, "--setting-sources") {
+		t.Fatal("an empty, non-nil list must emit --setting-sources")
+	}
+	if got := flagValue(none, "--setting-sources"); got != "" {
+		t.Errorf("--setting-sources = %q, want the empty string", got)
+	}
 }
 
 func TestBuildArgs_ThinkingDisplay(t *testing.T) {
@@ -126,5 +136,18 @@ func TestBuildArgs_DedupesBothToolFlagsKeepingFirstOccurrenceOrder(t *testing.T)
 	}
 	if got := flagValue(args, "--disallowedTools"); got != "Task,Agent,Workflow" {
 		t.Errorf("--disallowedTools = %q, want Task,Agent,Workflow", got)
+	}
+}
+
+func TestWithNoSettingSourcesIsDistinctFromNoOption(t *testing.T) {
+	var c config
+	WithNoSettingSources()(&c)
+	if c.settingSources == nil || len(c.settingSources) != 0 {
+		t.Fatalf("WithNoSettingSources set %#v, want an empty non-nil list", c.settingSources)
+	}
+	var unset config
+	WithSettingSources()(&unset)
+	if unset.settingSources != nil {
+		t.Fatalf("WithSettingSources() with no source set %#v, want nil (CLI default)", unset.settingSources)
 	}
 }

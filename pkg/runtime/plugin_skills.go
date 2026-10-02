@@ -73,7 +73,9 @@ func (t *contribClaimTracker) report(destPath string) bool {
 // mirrored, so a plugin file is shadowed by a same-named bundle/workspace file
 // rather than clobbering it. A registry-load failure or a single broken plugin
 // is logged and skipped — a plugin must never break a run's setup. No-op when
-// workDir is empty.
+// workDir is empty. A `.claude` that is a symlink is likewise soft: the whole
+// pass is skipped with a warning naming the link and its target (the write
+// would land outside every tree-noise rule, #1569), never an error.
 //
 // When inj is non-nil the payload is AUTHORITATIVE: the files it carries are
 // mirrored and the local plugin registry is never consulted. That is the cloud
@@ -120,6 +122,20 @@ func mirrorPluginContributions(workDir string, inj *Contributions, ambientUnreso
 		if err := mirrorCwdGuard(workDir); err != nil {
 			return nil, false, err
 		}
+	}
+	// A `.claude` that is a symlink routes every write below — the injected
+	// branch included — through to the link's target, outside every
+	// tree-noise rule: the same defect #1569 refuses in the bundle mirror.
+	// Plugin contributions keep their soft-fail semantics (ambient
+	// enablement must never brick a run): skip the whole pass with a
+	// warning naming the link and its target. complete drops to false so
+	// the orphan pruner is skipped — last pass's sidecars stay
+	// un-refreshed, and an incomplete pass must not bless a prune.
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		if logger != nil {
+			logger.Warn("runtime/plugin: %v — skipping the contribution mirror this pass", err)
+		}
+		return nil, false, nil
 	}
 	if inj != nil {
 		injOwned, injComplete, injErr := mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)

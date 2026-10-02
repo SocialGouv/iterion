@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -214,13 +216,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// so the bash builtin can compress command output (rewrite via context).
 	// Off is a no-op. For the sandboxed path the mode + chain specs ride the
 	// IOTask to the in-container runner, whose own Execute re-applies them here.
-	ctx = rewrite.WithMode(ctx, rewrite.ParseMode(task.CompressMode))
-	ctx = rewrite.WithChain(ctx, rewrite.NewChain(task.Rewriters))
+	mode, chain := rewrite.ParseMode(task.CompressMode), rewrite.NewChain(task.Rewriters)
+	ctx = rewrite.WithMode(ctx, mode)
+	ctx = rewrite.WithChain(ctx, chain)
 	// Run-level env additions (devbox profile PATH on no-sandbox runs)
 	// reach the in-process bash builtin via ctx — the tool registry is
 	// built before the run's provisioning resolves, so the closure reads
-	// the value per call.
-	ctx = tool.WithBashExtraEnv(ctx, task.ExtraEnv)
+	// the value per call. The shell also carries the chain's run env, last
+	// so it wins, whatever the mode (the agent may run a rewriter itself): it
+	// keeps what a command ran and printed out of the rewriter's own stores.
+	ctx = tool.WithBashExtraEnv(ctx, append(slices.Clip(task.ExtraEnv), chain.RunEnv()...))
 
 	// claw is an in-process Anthropic SDK consumer rather than the vendor's
 	// own CLI, which was once read as putting a Claude Pro/Max OAuth
@@ -319,30 +324,29 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
 
-	// Strip the "provider/" prefix so the request body carries the bare
-	// model ID. Provider routing is already done at this point (via
-	// Resolve), and provider APIs (Anthropic, OpenAI) don't recognize the
-	// prefixed form in the JSON body — Anthropic returns 404, OpenAI may
-	// silently coerce or also reject depending on the model.
-	_, modelID, err := ParseModelSpec(task.Model)
-	if err != nil {
+	// The spec must name a provider; the prefix itself comes off in
+	// buildRequest (wireModelID), exactly once — stripping it here too cut a
+	// model id that holds slashes of its own ("meta-llama/…") short.
+	if _, _, err := ParseModelSpec(task.Model); err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
+	route := modelroute.Parse(task.Model)
 
 	// Build GenerationOptions.
 	opts := GenerationOptions{
-		Model:                 modelID,
+		Model:                 task.Model,
 		MaxTokens:             task.MaxTokens,
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
 		MaterializeSecrets:    task.MaterializeSecrets,
+		UnmaterializeSecrets:  task.UnmaterializeSecrets,
 	}
 
 	// Reasoning effort via ProviderOptions. Coerce against the model's
 	// supported matrix — claw-code-go does NOT clamp on its own, so a
 	// recipe asking for "max" on an OpenAI model would otherwise reach
 	// the API with an unsupported value and bounce as 400.
-	if effort := coerceEffortForModel(task.ReasoningEffort, modelID); effort != "" {
+	if effort := coerceEffortForModel(task.ReasoningEffort, route.CapabilityID()); effort != "" {
 		opts.ProviderOptions = providerOptsForNode(effort)
 	}
 
@@ -355,6 +359,14 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			Text:         systemText,
 			CacheControl: api.EphemeralCacheControl(),
 		}}
+	}
+
+	// The ambient-context policy (ADR-119): the instruction files the node
+	// inherits, rendered by claw-code-go's own loader. Appended before the
+	// memory blocks, whose cache_control re-mark covers the last block — this
+	// one included, and it is as stable as they are.
+	if ctx := clawAmbientSystemContext(task); ctx != "" {
+		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: ctx})
 	}
 
 	// User message.
@@ -703,13 +715,14 @@ func askUserResult(err error) (delegate.Result, bool) {
 //
 // Zero usage yields the zero Result: an empty output map with a `_tokens: 0`
 // stamp would read as an output rather than as a bill, and the engine's own
-// guard already skips a spendless failure.
+// guard already skips a spendless failure. A call whose usage went
+// unreported is no such zero: its bill is unknown, and the map says so.
 func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.UnreportedCalls == 0 {
 		return delegate.Result{}
 	}
 	output := map[string]any{}
-	tokens := cost.Annotate(output, task.Model, usage.InputTokens, usage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, usage)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,
@@ -717,6 +730,14 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 		ThinkingTokens: usage.ReasoningTokens,
 		ThinkingMs:     usage.ThinkingMs,
 	}
+}
+
+// annotateUsage stamps a generation's usage onto its output: the `_tokens` /
+// `_model` / `_cost_usd` keys, and the count of calls whose usage the
+// provider did not report, for which those figures are a lower bound.
+func annotateUsage(output map[string]any, model string, u Usage) int {
+	cost.SetUnreportedCalls(output, u.UnreportedCalls)
+	return cost.Annotate(output, model, u.InputTokens, u.OutputTokens)
 }
 
 // partialUsage reads the usage off a best-effort partial result, tolerating
@@ -756,7 +777,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		output = make(map[string]any)
 	}
 
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
 		Output:         output,
@@ -785,7 +806,7 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 	}
 
 	output := map[string]any{"text": result.Text}
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
 		Output:         output,
@@ -900,6 +921,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if b.hooks.OnLLMRequest != nil {
 			b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
 				Model:        task.Model,
+				WireModel:    wireModelIfDistinct(task.Model),
 				MessageCount: len(nudged.Messages),
 				Timestamp:    time.Now(),
 			})
@@ -932,6 +954,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				accumulateUsage(&abandoned, partialUsage(reRun))
 				return meteredFailure(task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
 			}
+			// Falling through to recovery: the nudge was billed too, so its
+			// partial usage rides the first pass's into every exit below.
+			accumulateUsage(&result.TotalUsage, partialUsage(reRun))
 		}
 	}
 
@@ -943,7 +968,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text != "" {
 		var output map[string]any
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
-			tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+			tokens := annotateUsage(output, task.Model, result.TotalUsage)
 			return delegate.Result{
 				Output:         output,
 				Tokens:         tokens,
@@ -978,15 +1003,16 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if b.hooks.OnLLMRequest != nil {
 		b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
 			Model:        task.Model,
+			WireModel:    wireModelIfDistinct(task.Model),
 			MessageCount: len(recoveryOpts.Messages),
 			Timestamp:    time.Now(),
 		})
 	}
 	obj, recErr := GenerateObjectDirect[map[string]any](ctx, client, recoveryOpts)
 	if recErr == nil && obj != nil && obj.Object != nil {
-		tokens := cost.Annotate(obj.Object, task.Model,
-			result.TotalUsage.InputTokens+obj.TotalUsage.InputTokens,
-			result.TotalUsage.OutputTokens+obj.TotalUsage.OutputTokens)
+		both := result.TotalUsage
+		accumulateUsage(&both, obj.TotalUsage)
+		tokens := annotateUsage(obj.Object, task.Model, both)
 		return delegate.Result{
 			Output:             obj.Object,
 			Tokens:             tokens,
@@ -1020,7 +1046,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
 	output := map[string]any{"text": text}
-	tokens := cost.Annotate(output, task.Model, billed.InputTokens, billed.OutputTokens)
+	tokens := annotateUsage(output, task.Model, billed)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,

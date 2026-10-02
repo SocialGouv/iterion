@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/deeplink"
@@ -231,8 +232,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		if via == gateTriggerEvent {
 			s.noticeGateDLQParked(ctx, run)
 		}
-	} else if run.Status == store.RunStatusFailedResumable &&
-		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+	} else if runAwaitsArmedRetry(run) {
 		// A resumable failure is only "not dead" when something will
 		// actually resume it. The runner arms a durable retry for
 		// usage-window failures (persisted BEFORE the outcome event fires
@@ -271,8 +271,8 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// Warn on the EVENT path, and on the sweep's LAST pass over this run.
 	// The sweep re-offers the same run every minute for the whole lookback, so
 	// a run sitting in a permanent abstain branch — a lost grant, an
-	// unreachable forge — would log the identical line ~60 times an hour per
-	// replica and bury the branches that carry new information. But Debug is
+	// unreachable forge — would log the identical line ~60 times an hour and
+	// bury the branches that carry new information. But Debug is
 	// suppressed at the info level deployments run at, so those passes said
 	// NOTHING at all: the one Warn the event path emits dies with the pod, and
 	// a check stuck for a day leaves nothing to diagnose it with. The last
@@ -312,6 +312,23 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if !s.runOwnsGrant(run, grant, "gate reconcile") {
 		return nil
 	}
+	// A verdict whose post the forge refused for a while waits on the grant
+	// for the moment the forge named, or a backoff (deferGateVerdict). Until
+	// then the run's silence is answered with nothing — no forge read, no
+	// synthetic failure, no relaunch: the budget a read would spend may be the
+	// one exhausted, and the silence is not a death. Once due, the deferral is
+	// replayed by its own terms, before anything the run's inputs decide.
+	if d := grant.Deferred; d != nil {
+		if s.gateNow().Before(d.RetryAt) {
+			if s.logger != nil {
+				s.logger.Debug("forge gate: run %s's verdict waits to be posted until %s", runID, d.RetryAt.UTC().Format(time.RFC3339))
+			}
+			return nil
+		}
+		if s.replayGateDeferral(ctx, run, token, grant, d) {
+			return nil
+		}
+	}
 
 	// Holding a grant is NOT owing a verdict. The server mints one for any bot
 	// launched with a pr_url — the brancher, the docs amender, the implementer
@@ -337,6 +354,37 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		return nil
 	}
 	gateCtx := runInputString(run, "gate_context")
+
+	// Only the revision this run was reviewing. Between its start and its
+	// death the head routinely moves — the author pushes a fix, a brancher
+	// commits, review_on_sync already has a fresh review in flight. Painting
+	// the CURRENT head red would report on a commit this run never read, and
+	// a newer head is a newer review's responsibility.
+	//
+	// REQUIRED, not best-effort: a run that cannot name the revision it
+	// reviewed cannot speak for any of them. (An earlier version treated an
+	// absent value as "no constraint", which made the guard vacuous — nothing
+	// set the var at the time, so it never once fired outside its own test.)
+	// Such a run is settled before any forge read.
+	reviewed := runInputString(run, "head_sha")
+	if reviewed == "" {
+		s.settleGateRun(run, gateSettledUnpinned, "")
+		if s.logger != nil {
+			s.logger.Debug("forge gate: run %s names no reviewed revision — it can speak for no head of %s", runID, prURL)
+		}
+		return nil
+	}
+	// The verdict this run owed, recorded on its grant by the publish endpoint
+	// that posted it (recordGateVerdict): settled with no forge read, which is
+	// what makes a healthy run cost the sweep nothing past the event path.
+	// The endpoint knows the grant, not the run, so the record is this run's
+	// only while no other run publishes with the grant: on a shared one it may
+	// be the other run's verdict, posted before this run claimed the head —
+	// the forge decides.
+	if v := grant.Verdict; v != nil && verdictAnswersRun(run, grant, v.SHA, v.Context) {
+		s.settleOwnVerdict(ctx, run, token, grant, v)
+		return nil
+	}
 
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
@@ -390,34 +438,33 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// suppressed on a guess. Debug rather than abstain(): a pull request
 	// closed while its review ran is ordinary, not an anomaly.
 	//
-	// What this leaves behind is an in-flight claim nothing repairs. It blocks
-	// nothing — the pull request is already merged or closed — and a reopen
-	// heals it, because the fresh review's own claim may overwrite an
-	// in-flight marker (markGateInFlight).
+	// What this leaves behind is an in-flight claim nothing repairs while the
+	// pull request stays closed; it blocks nothing there. A merge is final,
+	// and nothing will ever post with this run's grant again, so it is cut
+	// back. A closed pull request can reopen — and a reopen on the same head
+	// launches no fresh review (its delivery shares the original launch's
+	// per-head key) — so that settlement is re-checked, and the repair made
+	// then.
 	if pr.State != "" && pr.State != "open" {
+		reason := gateSettledClosed
+		if pr.State == "merged" {
+			reason = gateSettledMerged
+			s.cutBackGrant(run, token)
+		}
+		s.settleGateRun(run, reason, pr.HeadSHA)
 		if s.logger != nil {
 			s.logger.Debug("forge gate: run %s owed %s on %s, but the pull request is %s — a closed pull request needs no verdict",
 				runID, gateCtx, prURL, pr.State)
 		}
 		return nil
 	}
-	// Only the revision this run was reviewing. Between its start and its
-	// death the head routinely moves — the author pushes a fix, a brancher
-	// commits, review_on_sync already has a fresh review in flight. Painting
-	// the CURRENT head red would report on a commit this run never read, and
-	// a newer head is a newer review's responsibility.
-	//
-	// REQUIRED, not best-effort: a run that cannot name the revision it
-	// reviewed cannot speak for any of them. (An earlier version treated an
-	// absent value as "no constraint", which made the guard vacuous — nothing
-	// set the var at the time, so it never once fired outside its own test.)
-	//
 	// Not routed through abstain(): a head that moved while the review ran is
 	// the ORDINARY case (every re-push does it), and the newer head already
 	// has its own review claiming its own check. Warning on it would bury the
-	// branches that mean something under routine noise.
-	reviewed := runInputString(run, "head_sha")
-	if reviewed == "" || !strings.EqualFold(reviewed, pr.HeadSHA) {
+	// branches that mean something under routine noise. A force-push back to
+	// the reviewed commit is possible, so that settlement is re-checked.
+	if !strings.EqualFold(reviewed, pr.HeadSHA) {
+		s.settleGateRun(run, gateSettledHeadMoved, pr.HeadSHA)
 		if s.logger != nil {
 			s.logger.Debug("forge gate: run %s reviewed %s but %s is now at %s — leaving the newer head to its own review",
 				runID, shortSHA(reviewed), prURL, shortSHA(pr.HeadSHA))
@@ -450,37 +497,20 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// Nothing on the head: this run owes the answer.
 
 	case !isGateInFlight(gate) && !isSyntheticGateInterruption(gate.Description):
-		// A real verdict — never overwrite one. When it is THIS run's own, the
-		// run has already said everything it had to say, and that is the only
-		// moment the grant is PROVABLY without a reader: not "the run ended"
-		// (a repair may still owe a verdict, which is why a gating run keeps
-		// forgePublishGateGrace) but "the verdict this run owed is posted".
+		// A real verdict on the reviewed head — never overwrite one. Whoever
+		// posted it, this run owes nothing more: settled, for good.
 		//
-		// Worth the narrowness. The grant is a forge-write bearer held by an
-		// agent that reads untrusted pull-request content and can post a
-		// review AND a commit status — including a green one on the required
-		// check. Deliberately NOT extended to a verdict posted by ANOTHER run:
-		// a repo's gate context is shared between bots, so that would revoke
-		// the grant of a run still on its way to publishing.
-		//
-		// ⚠️ TODAY THIS NEVER FIRES, and the window reduction it was written
-		// for does not happen. Ownership is read off the status target URL,
-		// and no producer of a real verdict puts a run there: postGateStatus
-		// (forge_publish.go) writes the REVIEW's URL — the forge comment — or
-		// an empty string, and the two webhook approval paths write a comment
-		// URL too. The only statuses carrying a run URL are this package's own
-		// claim and synthetic failure, both of which are handled by the other
-		// branches above. So speaksFor is always false here and the grant
-		// simply expires on its horizon, as it did before this arm existed.
-		//
-		// Left in place rather than deleted because the fix is a product
-		// decision, not a cleanup: making the verdict carry the run would move
-		// where every reviewer lands from the PR check. Whoever takes it must
-		// also rebuild forge_gate_grant_revoke_test.go, which is green only
-		// because its stub writes a run URL no real producer writes.
-		if runTarget.speaksFor(gate) {
-			s.forgePublishTokens.Revoke(token)
+		// Whether it is THIS run's own is not readable here: the status's
+		// target URL is the review, where reviewers land, not the run. The
+		// publish endpoint records the run's own verdict on its grant instead,
+		// and the grant check above acts on that record — including the grant
+		// shortening a verdict makes safe (settleOwnVerdict). A verdict found
+		// only here is another run's, or one posted before the record existed.
+		reason := gateSettledVerdictFailure
+		if gate.State == forge.CommitStateSuccess {
+			reason = gateSettledVerdictSuccess
 		}
+		s.settleGateRun(run, reason, pr.HeadSHA)
 		return nil
 
 	case isGateInFlight(gate):

@@ -76,7 +76,7 @@ func (e *Engine) reclaimEarlyRefusalWorktree(ctx context.Context, runID string, 
 	// a release restores the baseline by design, so a drifted devbox.lock
 	// (which re-derives from devbox.json on the next devbox run) is not work
 	// this run is keeping.
-	out, err := runGit(wc.wtPath, "status", "--porcelain", "--ignored=matching", "--untracked-files=all")
+	out, err := runGit(wc.wtPath, "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all")
 	if err != nil || len(runOutputPaths(out)) != 0 {
 		return false
 	}

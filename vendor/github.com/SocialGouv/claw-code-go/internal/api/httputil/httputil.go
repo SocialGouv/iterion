@@ -26,6 +26,11 @@ const (
 	// Shorter than BodyTruncateForLog because this string ends up in
 	// terminal output and engine traces.
 	BodyTruncateForMessage = 200
+
+	// FieldTruncateForLog is the budget for a short field an error carries
+	// beside its message — a type, a code, a reason — so an endpoint that
+	// sends a huge one cannot unbound the error built from it.
+	FieldTruncateForLog = 128
 )
 
 // TruncateBody clamps body to maxRunes runes, appending an ellipsis when

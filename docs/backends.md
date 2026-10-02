@@ -210,13 +210,14 @@ The citations, per cell that is not self-evident from the table:
   pre-capability behaviour. The other backends have no workspace-command
   convention; a `/name` prompt reaches them as written.
 
-  On `claude_code` a workspace command resolves with `--setting-sources`
-  omitted entirely, and stops resolving under a list that names only `user`
-  — measured both ways. So the flag does not *enable* project commands, it
-  *scopes* them: iterion always passes it and its default is `user,project`
-  (`ITERION_CLAUDE_CODE_SETTING_SOURCES`), which keeps the project scope
-  that carries them and additionally gives a `claude_code` node the
-  operator's own `~/.claude/commands/` — a `claw` node never sees those.
+  On `claude_code` a workspace command resolves under the `project` scope
+  and stops resolving under a list that names only `user` — measured both
+  ways. So the flag does not *enable* project commands, it *scopes* them:
+  iterion always passes it, and the ambient-context policy (above) decides
+  which scopes accompany it. `workspace`, the default, keeps the project
+  scope that carries them; the operator's own `~/.claude/commands/` need
+  `all` — which also closes the old asymmetry where a `claude_code` node
+  saw them and a `claw` node never did (#1716).
 
 - **claw, five proven cells.** Structured output:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its
@@ -317,6 +318,59 @@ The open parity gaps, in one list: codex/kimi/grok/opencode MCP
 servers; kimi/grok/opencode session resume/fork (silent, unguarded); pi's print-mode
 runtime refusals without diagnostic codes; and every `unknown` cell,
 which is one live e2e away from proven.
+
+## Ambient context (ADR-119) — what a node inherits besides its prompt
+
+`ambient_context: none | workspace | operator | all` — on an agent/judge node
+or the workflow, with a run override (`--ambient-context`, launch
+`ambient_context`) and `ITERION_AMBIENT_CONTEXT` above the DSL. Default
+`workspace`. Two origins:
+
+- **workspace** — the repository's instruction files, from the working
+  directory up to the repository root, never above it: `CLAUDE.md`,
+  `.claude/rules/`, `AGENTS.md` … as each backend names them. The
+  repository's settings, skills, commands and hooks are NOT governed here:
+  they carry the engine's own mirrored skills and plugin contributions.
+- **operator** — the operator's personal agent setup (`~/.claude` or
+  `$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, pi's agent directory) and the
+  instruction files above the repository root. For a worktree nested in its
+  own main checkout, the main checkout counts as the repository.
+
+| backend | `none` | `workspace` (default) | `operator` | `all` |
+|---|---|---|---|---|
+| `claude_code` | `project` + every memory file excluded | `project` + the memory files above the root excluded | `user,project` + the repository's memory excluded | `user,project` |
+| `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on | the walk above the root + the user scope | everything |
+| `pi` | `--no-context-files` | `--no-context-files` + iterion supplies the allowed files, rendered in pi's own shape | the same, operator files | pi's native loading |
+| `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without its `AGENTS.md` | the same home | `project_doc_max_bytes=0` | unchanged |
+| `opencode`, `kimi`, `grok` | not enforced (C185 on an explicit value) | | | |
+
+Measured on Claude Code CLI 2.1.282 and codex-cli 0.156.1, each cell checked
+against the real tool with planted markers and an invalid key (no cost):
+
+- **Project memory walks up to `/`, not to the repository root.** With the
+  workspace under `$HOME`, `--setting-sources project` alone still loads
+  `~/.claude/CLAUDE.md` and `~/.claude/rules` — `~/.claude/` is an
+  ancestor's `.claude/`. Dropping the `user` scope does not keep the
+  operator out; iterion therefore also excludes the memory files of every
+  directory above the root (`CLAUDE.md`, `CLAUDE.local.md`,
+  `.claude/CLAUDE.md`, `.claude/rules/**` — never `.claude/**` whole, since
+  session worktrees live under a main checkout's `.claude/worktrees/`).
+- `claudeMdExcludes` is CONCATENATED across settings layers: the engine's
+  exclusions never remove one a repository or an operator set themselves.
+- A run worktree nested in the repository also loads the primary checkout's
+  `CLAUDE.md` through that walk — the policy removes the double-load.
+- The `project` scope always loads on `claude_code`: the engine's mirrored
+  skills and plugin contributions are only discovered under it
+  (`pkg/runtime/plugin_skills.go`).
+- Workspace `@imports` are confined: Claude Code does not follow an import
+  outside the repository in headless mode, and claw-code-go's loader (used
+  by `claw`) enforces the same for the workspace scope, symlinks included —
+  a pull request's `CLAUDE.md` cannot read `@/proc/self/environ` or
+  `@~/.ssh/id_rsa` into the prompt.
+
+The structured-output pass of a `claude_code` node follows its policy too;
+before ADR-119 it passed no `--setting-sources` at all, and so loaded every
+scope, `local` included.
 
 ## TL;DR
 
@@ -1171,6 +1225,18 @@ tool, ultracode or not, carries a `## Subagents in this session` section
 that says so. A process the node needs running while it works, such as a
 dev server, is started from the shell itself (`nohup … &`).
 
+An operator who wants background work — subagents and shells that run while
+the main agent keeps working — asks for it: `ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`
+pins the switch empty in both layers instead (the CLI reads it as set only
+for `1`, `true`, `yes` or `on`). The session then stays open until a
+background subagent or workflow comes back — the background lifecycle below;
+a background shell or monitor is not waited for, and dies with the session
+if it still runs at the final output. The `## Subagents in this session`
+section gives way to a `## Background work in this session` section that
+says so, where the CLI's own guidance says every background task notifies
+the agent when it completes; with the lifecycle off, the section says
+nothing is waited for.
+
 A Bash command that outlives its timeout is now killed rather than moved to
 the background. So every spawn also pins `BASH_DEFAULT_TIMEOUT_MS` and
 `BASH_MAX_TIMEOUT_MS`, derived from this backend's own watchdogs. While a
@@ -1192,7 +1258,9 @@ a warning that names it.
 
 Every pinned variable rides two layers, so that nothing lower can move it.
 There are four: the switch, the node's auto-memory decision
-(`CLAUDE_CODE_DISABLE_AUTO_MEMORY`), and the two Bash timeouts.
+(`CLAUDE_CODE_DISABLE_AUTO_MEMORY`), and the two Bash timeouts — and, when a
+rewriter is available, its `run_env` (rtk's stores off; see
+[secrets.md](secrets.md)).
 
 - The process environment, which the run's provisioning environment cannot
   override.
@@ -1204,7 +1272,66 @@ There are four: the switch, the node's auto-memory decision
   operator's user settings could switch background work back on. They could
   also turn auto-memory back on, against the operator's personal
   `~/.claude/projects/<cwd>/memory/`. The flag layer comes after them; only
-  managed policy settings come later.
+  managed policy settings come later. The CLI applies those `env` blocks
+  again whenever a settings file changes during the session.
+
+**Routing is pinned too.** The same `env` blocks can set the variables that
+decide where the CLI sends its requests, and over which channel. A target
+repository's committed `.claude/settings.json` setting `ANTHROPIC_BASE_URL`
+would otherwise send every request of the run, with its API key or
+subscription token, to an endpoint the repository chose. Every spawn (the
+session, the structured-output pass, on the host and in a sandbox) therefore
+pins each variable of `ClaudeCodeRoutingEnv` in the flag layer:
+
+- the API endpoints (`ANTHROPIC_BASE_URL`, the Bedrock, Bedrock Mantle, Vertex,
+  Foundry, AWS and Google Cloud base URLs, `ANTHROPIC_FOUNDRY_RESOURCE`,
+  `CLAUDE_CODE_API_BASE_URL`), the provider switches (`CLAUDE_CODE_USE_*`) and
+  the companions the CLI groups with them (`CLAUDE_CODE_SKIP_*_AUTH`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL`);
+- the proxies, `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` under
+  both spellings;
+- the TLS trust: `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`,
+  `CLAUDE_CODE_CERT_STORE`.
+
+Each is pinned at the value the spawn's own environment holds, or `""` when
+it holds none: the CLI reads an empty routing variable as unset, and the empty
+value still outranks one a settings file sets. A proxy pair the spawn spells
+one way only is pinned to that value under both spellings, since the CLI's
+readers disagree on which spelling wins. The pinned values also reach the
+agent's own commands, like the rest of the CLI's environment: there, a
+routing variable the spawn left unset is set and empty. Most tools (curl,
+git, Node, Python's `urllib`) read an empty proxy or CA variable as unset.
+The Python Anthropic SDK does not: it takes an empty `ANTHROPIC_BASE_URL` as
+its base URL.
+
+The flag settings object travels as a file, never on argv, because a routing
+value can carry a credential: a proxy URL's userinfo, the sandbox egress
+proxy's token, a gateway header. On the host it is a 0600 file in a private
+temporary directory, removed when the pass ends. In a sandbox, the spawn
+writes it inside the container from the environment the CLI runs with there:
+the egress proxy and its CA are set when the container starts, and the host
+never sees them. The CLI keeps the content it read at startup, so a later
+write to the file does not move the pin, and it refuses to start when the file
+is missing.
+
+What the pin does not cover:
+
+- Credentials. They stay in the process environment and are never written to
+  the settings object. A settings file can still replace the key the CLI
+  sends, but only towards the pinned endpoint.
+- Settings that run commands (`hooks`, `apiKeyHelper` and the other auth or
+  header helpers): the pin only concerns the `env` block.
+- The cloud SDK variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`, metadata
+  endpoints). They only take effect once a provider switch selects that
+  cloud. They stay unpinned because the pinned `env` also reaches the agent's
+  own commands, and those SDKs read a set-but-empty variable differently from
+  an unset one.
+- `ANTHROPIC_UNIX_SOCKET`: the CLI already drops it from every settings source.
+- Managed policy settings, which outrank the flag layer by design.
+
+`ITERION_CLAUDE_CODE_SETTING_SOURCES=none` does not turn this off, and does not
+turn settings off either: it omits `--setting-sources`, and the CLI then loads
+every source, `local` included.
 
 Why this switch, and not a softer lever. With background work enabled, the
 CLI (2.1.280) runs an agent in the background:
@@ -1240,6 +1367,210 @@ ultracode included:
 
 A name the running CLI does not register costs nothing on
 `--disallowedTools`.
+
+**Background work: the session stays open until it comes back.** With
+background work on (`ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`, above) — or
+for the background work the switch does not reach — Claude Code runs
+subagents asynchronously and lets the main agent end its turn while they
+work; a finished task is announced and, when the agent
+is idle, the CLI starts the turn that delivers it by itself. A session that
+returned at its first result killed that work with the process — and under
+`--json-schema` kept the report the turn-end enforcement
+(`[structured-output-enforce]`) extracted from an agent that was only
+waiting (measured on a Doki run: 4 of 5 passes reported before their
+subagents came back, ~73 % of the run's spend). iterion therefore follows
+the CLI's own task protocol (`background_tasks_changed` is the authority on
+what still runs; `task_started` / `task_notification` name each task) and,
+when a turn ends with work still running or a result not yet delivered,
+keeps reading the same session instead of closing it. What the CLI delivered
+is never guessed from the stream's order — its queue folds, coalesces or
+defers notifications by rules that change with its version and remote flags;
+iterion asks the CLI instead. It spawns it with
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` (session state events: `idle` comes
+only once no work the CLI waits for runs and none of its finished results is
+still on its way to the CLI's queue — the queue itself it does not check: it
+reports idle, then re-kicks a turn for a command already queued) and
+`--replay-user-messages` (each message iterion writes carries a uuid the CLI
+re-emits when a turn takes it); it pins
+`CLAUDE_CODE_BG_TASKS_REPORT_RUNNING=1` — `false` would make the CLI report
+idle while agents still run — and clears `CLAUDE_CODE_EXIT_AFTER_STOP_DELAY`:
+the session ends when iterion decides, not on the CLI's own idle exit.
+
+The session waits for **subagents and workflows** (`local_agent`,
+`local_workflow`) — work the CLI's own print-mode wind-down waits for too, up
+to its own ceiling (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, past which the
+CLI **terminates** that work). Every spawn pins it at the CLI's own default,
+10 minutes, and at nothing else: the point is that the repository under
+review cannot move it — `0`, "wait indefinitely", included — not to shorten
+a deadline that kills, and iterion's own wave budget, which merely asks for
+a report, never derives it. The ceiling arms only where the CLI's stdin is
+closed, which is the structured-output pass: the one spawn with no lifecycle
+to catch what a kill loses. No spawn can
+start a workflow today — `Workflow` is withheld from every node — so the
+`local_workflow` arm is there for the task type, not for a tool the model
+can reach. A background shell (`run_in_background`:
+a dev server never ends), a monitor, a teammate or an MCP task does not hold
+it, by choice — the CLI's wind-down also holds armed monitors (behind a
+feature flag) and active teammates: those die with the session as they always
+did, and are reported. A monitor's events still start turns of their own;
+they are bounded below. The background shells a subagent launched (the CLI
+flags them `owned_by_subagent`) report to that subagent: they never hold the
+session, and while a subagent or workflow still runs they are its, not the
+main agent's loss — once none does, a shell's end would wake its finished
+subagent, whose continuation reports to the main agent, so it is reported
+lost with the session. A subagent's own background agents are held like the
+main agent's — the CLI's wind-down waits for them too. Nor do the
+tasks the CLI marks `ambient` — not activity: its own housekeeping (memory
+consolidation) and every live-update watcher, requested or auto-started; a
+watcher the agent asked for dies with the process unrecorded. A node that
+needs a long command's result runs it in the foreground.
+
+The session ends at rest on the CLI's idle, once it held for a moment
+(`ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE`, 1s — the CLI reports idle an
+instant before a turn it re-kicks; `0` ends on the first idle, and is warned)
+with no message of iterion's unanswered — and only an idle reported after the
+last end of a background task the main agent launched counts: a finished
+subagent the CLI resumes outside its turn loop ends again with no `running`
+in between, and a shell ending right after an idle gets a turn of its own. A CLI that
+exits cleanly at rest ends the node like an idle that held — unless a turn
+source may have prompted its last turns (see the ceiling below): no request
+for the report can reach it any more, and the call ends on a retryable error.
+The node's report is then the last `StructuredOutput` the agent wrote in its
+last turn that made a request: every turn that delivers background work runs
+the structured-output enforcement again, so a report written while work
+still ran is replaced; a node whose last such turn wrote none gets no
+structured output (its usual recovery runs), never an earlier report. The
+report is not refused when it is written — the CLI counts every `StructuredOutput` call of a turn, refused
+ones included, against its own `MAX_STRUCTURED_OUTPUT_RETRIES` (5), and a
+refusal loop ends the turn with `error_max_structured_output_retries`.
+
+While the agent waits by design, the silence and no-progress watchdogs rest
+and a budget governs each wave of background work
+(`ITERION_CLAUDE_CODE_BACKGROUND_WAIT`, default 30m, counted from the first
+result that left held work running, or from held work coming back without a
+turn; once all of it came back, the next launch starts a budget of its own).
+A held result whose end was reported but that has not reached the CLI's
+queue yet — the CLI queues it only once the subagent's worktree is finalised,
+and reports no idle meanwhile — is waited for up to
+`ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT` (5m, the CLI's own bound for
+it), with no nudge: none could deliver it; past it, it is recorded lost. A CLI that is neither in a turn
+nor at rest — a turn it owes, or work iterion does not wait for (an MCP task,
+a remote agent, a teammate, a timed monitor) keeping it from idle — gets a
+grace (`ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE`): one nudge if a
+result may still be owed, then the session ends with the last turn's report,
+the tasks that kept the CLI busy named and recorded lost; a nudge no turn
+ever takes ends the call on a retryable error — how long its answer may take
+is a wait of its own (`ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT`, five
+graces by default), because the grace decides when to nudge, and a replay
+plus the first message of the answering turn does not fit in it. The silence
+watchdogs are suspended while a nudge is outstanding, so that budget is how
+long a CLI that took the message and went quiet holds the node. Turns the CLI keeps running on
+its own once nothing held runs — a monitor's events, each re-kicking it right
+after an idle, so that no idle ever holds — do not restart that grace: the
+session ends at the close of the first such turn past the grace counted from
+the first close with nothing held running, unless a held result is still on
+its way. The grace restarts when held work started or came back, when one of
+the agent's background tasks ended (a shell ends once), and at a nudge; only
+turns for work that never ends leave it running.
+
+Two more bounds apply: the node's `tool_max_steps` (which `--max-turns` only
+applies per query), and a **ceiling** while a **turn source** runs — a task
+that makes the CLI run turns for as long as it runs: the watch a `Monitor`
+call started — the main agent's; a background subagent's once that
+subagent finished (the CLI keeps it alive for the watch and resumes it on
+each event, its result reported again; until then the watch reports to it
+alone; from then on it counts as long as it runs, those resumes included —
+not a resume a message asks for, the main agent's or another agent's,
+whatever name it gives the agent: that is the agent's own work; an agent's
+agent's watch counts once its owner finished — an agent that took it over
+with a message is its owner then —, the owner's own owner never entering
+into it);
+a foreground subagent's while it runs, its turn being the main agent's — an
+MCP or WebSocket monitor, a teammate (a monitor armed with no tool call — by a
+plugin — is not recognised). The session spends at most one wave budget with a turn
+source running — the time one runs past the node's first turn (its own: no
+source prompted it), summed over the session, a monitor the agent re-arms at
+its expiry included: a monitor answered event after event with work that
+ends would otherwise restart the grace — or open a wave with a budget of its
+own — forever. Past it, iterion asks for the report at a close where one
+runs, or where one ended since the previous deciding close (a close that
+answers a message of iterion's decides nothing) without an agent stopping it
+(a monitor that expired, or whose command exited — a stop by a teammate's
+name or agent ID counts as the agent's, the CLI's reply naming the task, and
+so does a stop of the subagent a watch belongs to, or of an agent above it
+that was parked at the stop — the CLI stops a parked agent's agents with it,
+a running one's keep running —, made after the watch started; a stop the
+CLI refuses — of a task that already
+ended, of one another agent owns — stops nothing). The ceiling bounds every such
+turn, the waves its turns launch and a loop on background shells included —
+iterion does not wait for a shell, here as anywhere; time without a turn
+source does not count, and a turn with none is never cut by it, however many
+waves an orchestration runs. When one of these bounds is spent
+at a close with nothing held running and a held
+result may still reach the agent — owed, or finished with no idle that held
+proving it delivered since (the CLI may have queued it behind the commands
+the last turns ran for, or still be finalising it) — iterion
+asks for the report instead of ending (the request queues behind what the
+CLI queued; the agent is told to say which parts depended on work whose
+result it has not seen); otherwise the session ends at that close with that
+turn's report. Either way, what still runs, and every result no idle proved
+delivered, is recorded lost. Once a turn has run while a turn source was
+running, a turn's report may answer the source — a monitor's event, a
+teammate's message — rather than the task: from then on the session never
+ends at rest on one (the idle that held, the grace, a bound, a CLI that
+starts no more turns) without asking for the report first. When the
+wave budget, the node's `tool_max_steps` or the ceiling is spent while held
+work runs, iterion asks for the report at a turn's close or at the next idle
+point, never cutting a turn short (the CLIs this lifecycle accepts have no
+blocking wait to cut: `TaskOutput` is gone, `Monitor` returns at once); a
+request written as the CLI starts its next turn is folded into it, as the
+CLI folds any queued command. A request for the report — at rest or while
+work runs — is answered by the turn the
+CLI's replay shows took it — not by turns the CLI had queued before it —
+only a report written after that is kept, and its bound
+(`ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT`; past it, a retryable
+error) runs from then. A subagent streaming meanwhile does not count as the main
+agent moving on, and the consecutive tool-error breaker keeps one streak per
+agent. The session's results merge into one: per-query usage, turns and
+wall-clock durations add up; the figures the CLI keeps per process (cost, API
+duration) take their largest value, per-model usage its last non-empty
+one. Every step is a `delegate_background`
+event (`phase: waiting|settled|finalizing|abandoned`) and increments
+`iterion_delegate_background_total{backend,phase}`. The dispatcher's
+event-silence reaper (`stall.timeout_ms`) still applies to a wait during
+which nothing at all streams — a subagent's tool calls are events; a single
+silent tool call longer than the reaper's timeout is not.
+
+Work that has not reported back when a process of the session ends by any
+path (error, pause, wrap-up, a background server, a disabled lifecycle, the
+end of a formatting pass) — still running, or finished without its delivery
+proven (an idle that held proves a result delivered, and so does a whole
+grace with no turn — the CLI starts one for anything queued; the order of its
+events does not: the CLI queues a subagent's result only once its worktree is
+finalised) — is reported as abandoned and
+recorded in the run's **session ledger** — keyed by the CLI session id,
+persisted in every checkpoint (`session_ledger`), carried by a Fork API turn
+(`terminated_background`). Whichever process resumes or forks that
+transcript next — an in-process retry, a schema re-ask, a loop re-entry, a
+resumed run on another replica, a formatting pass — is told the tasks may
+not have reported back and that any whose result it does not see never will
+(the record errs toward telling, never the reverse), instead of waiting on
+them; a formatting pass is told not to re-launch them. Once it took that
+prompt it settles the entry — it removes what it was told and adds what it
+leaves behind, so two processes of one session settle to the same entry in
+either order; a process that died before taking it settles nothing.
+
+The lifecycle engages only when the CLI itself reports background work
+(older than 2.1.280: not at all): a session that backgrounds nothing still
+ends at its first result. `ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE=off`
+restores the previous behaviour — first result, the orchestration-stall
+guard's historical rule, no state events nor replays asked of the CLI — and
+keeps the reporting and the session ledger; the
+per-agent tool-error breaker applies either way. claw: iterion's claw
+`agent` tool is, in production, a metadata-only stub that reports a subagent
+"running" and launches nothing — tracked as
+[#1940](https://github.com/SocialGouv/iterion/issues/1940), not a parity
+this lifecycle gives.
 
 ### `codex`
 
@@ -1637,15 +1968,20 @@ workflow that depends on those tools.**
 
 #### Behaviour worth knowing
 
-- **`AGENTS.md` is read alongside `CLAUDE.md`, and it is the dominant
-  per-call cost.** pi walks up from the working directory and injects both.
+- **Context files are the dominant per-call cost.** Per directory pi loads
+  the FIRST existing file among `AGENTS.override.md`, `AGENTS.md`,
+  `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` — one file per directory, not both
+  (0.84.3, `resource-loader.js`) — walking up from the working directory to
+  `/`, plus the agent dir's own file. The ambient-context policy (above)
+  scopes this: every value but `all` turns pi's own loading off and has
+  iterion supply the allowed files, rendered exactly as pi renders its own.
   Two consequences:
   - If your repo carries an `AGENTS.md` meant for a different agent, it
     reaches pi nodes too.
-  - **Measure it before you budget.** On iterion's own tree (a 103 KB
-    `CLAUDE.md`) a one-word prompt costs **26,933 input tokens with context
-    files against 448 without** — sixty times the input, on every call,
-    before the node does any work. It stays on by default for parity with
+  - **Measure it before you budget.** When iterion's own `CLAUDE.md` was
+    103 KB, a one-word prompt cost **26,933 input tokens with context files
+    against 448 without** — sixty times the input, on every call, before the
+    node does any work ([ADR-085](adr/085-pi-as-execution-backend.md)). It stays on by default for parity with
     `claude_code`; set `ITERION_PI_NO_CONTEXT_FILES=1` to turn it off when a
     node does not need the repo's instructions.
 - **The target repo's `.pi/` directory is refused.** pi executes

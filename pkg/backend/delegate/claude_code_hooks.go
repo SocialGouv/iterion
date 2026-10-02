@@ -2,14 +2,18 @@ package delegate
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"regexp"
+	"slices"
+
 	"strings"
 	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
@@ -361,27 +365,164 @@ func installMaterializeSecretsHook(task Task, opts []claudesdk.Option) []claudes
 	if materialize == nil {
 		return opts
 	}
-	return append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
-		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
-			if len(in.ToolInput) == 0 {
-				return claudesdk.HookOutput{}, nil
-			}
-			raw, err := json.Marshal(in.ToolInput)
-			if err != nil {
-				return claudesdk.HookOutput{}, nil
-			}
-			swapped := materialize(string(raw))
-			if swapped == string(raw) {
-				return claudesdk.HookOutput{}, nil // no placeholder present
-			}
-			var updated map[string]any
-			if err := json.Unmarshal([]byte(swapped), &updated); err != nil {
-				return claudesdk.HookOutput{}, nil
-			}
-			return claudesdk.HookOutput{Decision: "allow", UpdatedInput: updated}, nil
-		},
+	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+		Handler: materializeSecretsHandler(materialize),
 	}))
+	if task.UnmaterializeSecrets != nil {
+		opts = append(opts, claudesdk.WithHook(claudesdk.HookPostToolUse, claudesdk.HookMatcher{
+			Handler: unmaterializeOutputHandler(task.MaterializeSecrets, task.UnmaterializeSecrets, task.WorkDir),
+		}))
+	}
+	return opts
 }
+
+// rawOutputTools: the tools whose output shows what the workspace holds — a
+// file, a command's output, a search over files (2.1.280's names). Their
+// output is left as is: an agent editing a line that holds a secret must see
+// the value the file holds. Every other tool's output — a stop naming its
+// command, a fetch its URL, a task or a message echoing what it was given, a
+// foreground subagent's report, an MCP tool whatever it reports — goes back
+// to placeholders.
+var rawOutputTools = map[string]bool{
+	"Read": true, "Edit": true, "Glob": true, "Grep": true, "Bash": true, "PowerShell": true, "LSP": true,
+}
+
+// unmaterializeOutputHandler is the PostToolUse handler that turns the known
+// secret values a tool's output quotes back into their placeholders. It
+// replaces the output only when that changed anything: the CLI applies
+// sibling hooks' replacements last-write-wins.
+func unmaterializeOutputHandler(materialize, unmaterialize func(string) string, workspace string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+	own := workspaceRef(workspace)
+	return func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+		// A workspace reader keeps what the workspace holds — unless its call
+		// carried a secret (a command using a credential may print it back).
+		if rawOutputTools[in.ToolName] && !carriesSecret(in.ToolInput, materialize, unmaterialize) && !namesTaskOutput(in.ToolInput, own) {
+			return claudesdk.HookOutput{}, nil
+		}
+		out, changed := secretguard.MaterializeLeaves(in.ToolResponse, unmaterialize)
+		if !changed {
+			return claudesdk.HookOutput{}, nil
+		}
+		// The CLI checks the replacement against the tool's output schema and
+		// keeps the ORIGINAL when it does not match: a replacement stays on
+		// schema even where the original was not — a notebook's language comes
+		// from its own metadata, whatever type that holds.
+		if m, ok := out.(map[string]any); ok && in.ToolName == "NotebookEdit" {
+			if l, ok := m["language"]; ok {
+				if _, isString := l.(string); !isString {
+					m["language"] = fmt.Sprint(l)
+				}
+			}
+		}
+		return claudesdk.HookOutput{UpdatedToolOutput: out}, nil
+	}
+}
+
+// carriesSecret reports whether a tool call's input named a secret — a
+// placeholder, or the value the PreToolUse hook materialised it into (the
+// CLI hands PostToolUse the input the tool ran with).
+func carriesSecret(input map[string]any, materialize, unmaterialize func(string) string) bool {
+	for _, f := range []func(string) string{materialize, unmaterialize} {
+		if f == nil {
+			continue
+		}
+		if _, changed := secretguard.MaterializeLeaves(input, f); changed {
+			return true
+		}
+	}
+	return false
+}
+
+// taskOutputFile matches the files the CLI writes background tasks' output
+// to — <tmp>/claude-<uid>/<project>/<session>/tasks/<id>.output, an agent's
+// id running to 128 characters, a glob or a variable standing for it — the
+// session's tasks directory (<session> is a UUID) and the CLI's own tmp root:
+// a search or a glob over either reads every task's output. A file outside
+// the node's workspace named like one matches too: its output returns
+// placeholders, the safe side.
+var taskOutputFile = regexp.MustCompile(`/tasks/[^/\s"']{1,128}\.output\b|/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/tasks\b|/claude-[0-9]+(?:/|$|[\s"'])`)
+
+// workspaceRef matches the node's workspace where a string names it — the
+// directory itself or a path under it, as given or with its symlinks resolved
+// (the CLI reports its working directory resolved) — or is nil without one.
+func workspaceRef(workspace string) *regexp.Regexp {
+	if workspace == "" {
+		return nil
+	}
+	var names []string
+	for _, ws := range []string{filepath.Clean(workspace), resolvedPath(workspace)} {
+		if ws != "" && ws != "/" && ws != "." && !slices.Contains(names, ws) {
+			names = append(names, ws)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	// The longest first: one name may extend the other.
+	slices.SortFunc(names, func(a, b string) int { return len(b) - len(a) })
+	for i, n := range names {
+		names[i] = regexp.QuoteMeta(n)
+	}
+	return regexp.MustCompile(`(?:` + strings.Join(names, "|") + `)(/|$|[\s"';&|)])`)
+}
+
+// resolvedPath is path with its symlinks resolved, or "" when it does not
+// resolve.
+func resolvedPath(path string) string {
+	r, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ""
+	}
+	return r
+}
+
+// namesTaskOutput reports whether a call reads a background task's output
+// file: a command's output, read after the call that ran it — which may have
+// named a secret the command prints back. A path in the node's workspace is
+// the workspace's own, whatever its name: a worktree's root is named by its
+// run's UUID, like the CLI's session directory.
+func namesTaskOutput(input map[string]any, own *regexp.Regexp) bool {
+	found := false
+	secretguard.MaterializeLeaves(input, func(s string) string {
+		t := s
+		if own != nil {
+			t = own.ReplaceAllString(t, ".$1")
+		}
+		found = found || taskOutputFile.MatchString(t)
+		return s
+	})
+	return found
+}
+
+// materializeSecretsHandler is the PreToolUse handler that swaps secret
+// placeholders for their values in a tool's input.
+func materializeSecretsHandler(materialize func(string) string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+	return func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+		if len(in.ToolInput) == 0 || keepsPlaceholders(in.ToolName) {
+			return claudesdk.HookOutput{}, nil
+		}
+		updated, changed := secretguard.MaterializeLeaves(in.ToolInput, materialize)
+		if !changed {
+			return claudesdk.HookOutput{}, nil // no placeholder present
+		}
+		out := updated.(map[string]any)
+		if describedByCommand[in.ToolName] {
+			// The CLI labels a shell with its description — with its command
+			// when there is none — and relays that label to the model when a
+			// background shell ends: it stays in placeholder form.
+			if d, ok := in.ToolInput["description"].(string); ok && d != "" {
+				out["description"] = d
+			} else if c, ok := in.ToolInput["command"].(string); ok {
+				out["description"] = c
+			}
+		}
+		return claudesdk.HookOutput{Decision: "allow", UpdatedInput: out}, nil
+	}
+}
+
+// describedByCommand: the tools the CLI labels with their description, or
+// their command when there is none (a background shell, a monitor).
+var describedByCommand = map[string]bool{"Bash": true, "PowerShell": true, "Monitor": true}
 
 // installRewriteHook adds a PreToolUse hook on the Bash tool that rewrites
 // commands to their compressed equivalent (e.g. "git status" → "rtk git
@@ -391,7 +532,8 @@ func installMaterializeSecretsHook(task Task, opts []claudesdk.Option) []claudes
 // truth); iterion uses rewriters purely as compressors — never a permission
 // gate — so it always auto-allows the rewritten command. The rewrite runs
 // host-side; the (sandboxed) CLI runs the rewritten command in-container
-// against the bind-mounted rewriter binary.
+// against the bind-mounted rewriter binary (the chain's run env is pinned on
+// both spawns: claudeEnvPins).
 func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 	mode := rewrite.ParseMode(task.CompressMode)
 	chain := rewrite.NewChain(task.Rewriters)
@@ -401,18 +543,40 @@ func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 	bashMatcher := "^Bash$"
 	return append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
 		Matcher: &bashMatcher,
-		Handler: func(hookCtx context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
-			updated, changed := chain.RewriteCommandField(hookCtx, mode, in.ToolInput)
-			if !changed {
+		Handler: rewriteCommandHandler(chain, mode, task.MaterializeSecrets),
+	}))
+}
+
+// rewriteCommandHandler is the PreToolUse handler that rewrites a Bash
+// command to its compressed equivalent. A command naming a secret is not
+// compressed: the compressor runs it — rtk records every command it runs in
+// its history, value included — and the CLI keeps one PreToolUse hook's
+// updatedInput: the materialisation hook's runs it.
+func rewriteCommandHandler(chain *rewrite.Chain, mode rewrite.Mode, materialize func(string) string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+	return func(hookCtx context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+		if materialize != nil {
+			if _, named := secretguard.MaterializeLeaves(in.ToolInput, materialize); named {
 				return claudesdk.HookOutput{}, nil
 			}
-			return claudesdk.HookOutput{
-				Decision:       "allow",
-				DecisionReason: "compress auto-rewrite",
-				UpdatedInput:   updated,
-			}, nil
-		},
-	}))
+		}
+		updated, changed := chain.RewriteCommandField(hookCtx, mode, in.ToolInput)
+		if !changed {
+			return claudesdk.HookOutput{}, nil
+		}
+		// The CLI labels a shell with its description, with its command when
+		// there is none, and relays the label to the agent when a background
+		// shell ends: the agent's own command, not the compressed one.
+		if d, _ := in.ToolInput["description"].(string); d == "" {
+			if c, ok := in.ToolInput["command"].(string); ok {
+				updated["description"] = c
+			}
+		}
+		return claudesdk.HookOutput{
+			Decision:       "allow",
+			DecisionReason: "compress auto-rewrite",
+			UpdatedInput:   updated,
+		}, nil
+	}
 }
 
 // wireBoardMCP registers the internal __mcp-board MCP server when the node
@@ -573,4 +737,22 @@ func (b *ClaudeCodeBackend) installInboxDrainHooks(task Task, opts []claudesdk.O
 		},
 	}))
 	return opts
+}
+
+// keepsPlaceholders: the tools whose input is kept rather than run — the
+// node's report (StructuredOutput: the CLI stores the input it is called
+// with), the session's task list, a scheduled prompt (CronCreate writes it to
+// .claude/scheduled_tasks.json, ScheduleWakeup sends it back to the model), a
+// memory note, a skill's arguments (the CLI injects the skill's body with
+// them, where no hook runs), iterion's own MCP tools (a question to the
+// operator, a board issue, a run query). The CLI or iterion stores and shows
+// it: it stays in placeholder form.
+func keepsPlaceholders(name string) bool {
+	switch name {
+	case structuredOutputToolName, "TodoWrite", "TaskCreate", "TaskUpdate", "CronCreate", "memory_write", "Skill", "ScheduleWakeup":
+		return true
+	}
+	return strings.HasPrefix(name, "mcp__"+askUserMCPServerName+"__") ||
+		strings.HasPrefix(name, "mcp__"+boardMCPServerName+"__") ||
+		strings.HasPrefix(name, "mcp__"+runsMCPServerName+"__")
 }

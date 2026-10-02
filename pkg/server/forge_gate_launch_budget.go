@@ -80,7 +80,7 @@ func unattendedLaunchRetry(prior webhooks.Delivery, found bool, now time.Time) (
 
 // unattendedLaunchVerdict reads the claim row under key and applies the
 // budget. One indexed store read and no forge traffic — it runs on every
-// sweep offer of a dead run, ~once a minute for an hour, on every replica.
+// sweep offer of a dead run, ~once a minute for an hour.
 func (s *Server) unattendedLaunchVerdict(ctx context.Context, key string) (prior webhooks.Delivery, found bool, verdict launchRetryVerdict, wait time.Duration) {
 	if s == nil || s.webhookDeliveries == nil || key == "" {
 		return webhooks.Delivery{}, false, launchRetryFresh, 0
@@ -93,11 +93,13 @@ func (s *Server) unattendedLaunchVerdict(ctx context.Context, key string) (prior
 
 // gateEscalation is one "automation is out of moves" notice for a (PR, head):
 // a board card plus the same text as a PR comment. The card id is
-// deterministic (UUIDv5 of lane/team/repo/PR/head): the gate sweep runs
-// unelected on every replica, and two replicas racing past a List-based dedup
-// would each file the card AND each post the comment — the store's unique-id
-// insert is the only primitive here that serialises cross-replica. The dedup
-// label stays on the card for querying.
+// deterministic (UUIDv5 of lane/team/repo/PR/head): two offers of one dead run
+// can still race — the event path runs on whichever replica its queue group
+// picks, beside the ONE elected sweep, and a lease handed over mid-stall
+// overlaps two sweeps for the length of the stall — and two racers past a
+// List-based dedup would each file the card AND each post the comment. The
+// store's unique-id insert is the only primitive here that serialises
+// cross-replica. The dedup label stays on the card for querying.
 type gateEscalation struct {
 	teamID  string
 	conn    forge.Connection

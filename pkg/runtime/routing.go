@@ -223,10 +223,10 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 	reasoning, _ := output["reasoning"].(string)
 
 	// Emit node_finished.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, e.scrubForEvent(map[string]any{
 		"selected_route": selected,
 		"reasoning":      reasoning,
-	}); err != nil {
+	})); err != nil {
 		return "", err
 	}
 
@@ -308,10 +308,10 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	// restart reuses that durable selection and must not emit a second finish
 	// without a matching node_started.
 	if emitRouterFinished {
-		if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, e.scrubForEvent(map[string]any{
 			"selected_routes": selected,
 			"reasoning":       reasoning,
-		}); err != nil {
+		})); err != nil {
 			return "", err
 		}
 	}

@@ -120,6 +120,10 @@ type launchRunRequest struct {
 	// ("on"|"off"). Empty inherits the workflow/node auto_memory: DSL then
 	// ITERION_AUTO_MEMORY. See docs/memory-and-knowledge.md.
 	AutoMemory string `json:"auto_memory,omitempty"`
+	// AmbientContext is the run-level ambient-context override ("none" |
+	// "workspace" | "operator" | "all", ADR-119). Empty inherits the
+	// workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT.
+	AmbientContext string `json:"ambient_context,omitempty"`
 	// LoopBudgetGuard is the run-level override for the loop back-edge
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
@@ -352,6 +356,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	dropMaskedGrant(req.Vars)
 	runSource, err := validateLaunchRunSource(req.RunSource)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid run_source: %v", err)
@@ -569,7 +574,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
 	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		vars, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		vars, minted, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
 		if err != nil {
 			// One table for the whole class (prLaunchContextStatus): an
 			// inadmissible request answers 422, the server's own grant
@@ -581,6 +586,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Vars = vars
+		defer func() {
+			if !runMayExist {
+				s.revokeUnlaunchedGrant(minted)
+			}
+		}()
 	}
 
 	// Detach lifecycle from the HTTP request context so a client
@@ -620,6 +630,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Backend:            req.Backend,
 		Compress:           req.Compress,
 		AutoMemory:         req.AutoMemory,
+		AmbientContext:     req.AmbientContext,
 		LoopBudgetGuard:    req.LoopBudgetGuard,
 		Supervisors:        req.Supervisors,
 		Permission:         req.Permission,

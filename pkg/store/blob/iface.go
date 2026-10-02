@@ -41,8 +41,11 @@ type Client interface {
 
 	// DeleteRun removes every blob under `artifacts/<runID>/` in a
 	// single sweep. Used by retention sweepers and the migration tool
-	// (plan §F T-42). Best-effort: partial failures must be logged
-	// but should not break the sweeper.
+	// (plan §F T-42). Delete failures are
+	// accumulated and returned; a listing the sweep cannot trust or get
+	// past (a failed page, a key outside the prefix, a truncated page that
+	// cannot advance) stops it with the error. A caller sweeping many runs
+	// logs the error and goes on to the next run.
 	DeleteRun(ctx context.Context, runID string) error
 
 	// Ping verifies the backend is reachable and the configured bucket
@@ -79,8 +82,8 @@ type Client interface {
 	DeleteAttachment(ctx context.Context, runID, name, filename string) error
 
 	// DeleteRunAttachments removes every blob under
-	// `attachments/<runID>/` in a single sweep. Best-effort: partial
-	// failures must be logged but should not break sweepers.
+	// `attachments/<runID>/` in a single sweep, with DeleteRun's
+	// semantics.
 	DeleteRunAttachments(ctx context.Context, runID string) error
 
 	// PutToolBlob uploads a per-tool-call I/O body under
@@ -100,7 +103,7 @@ type Client interface {
 	GetToolBlobRange(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) (data []byte, total int64, eof bool, err error)
 
 	// DeleteRunToolBlobs removes every blob under `tools/<runID>/` in a
-	// single sweep. Best-effort, mirroring DeleteRunAttachments.
+	// single sweep, with DeleteRun's semantics.
 	DeleteRunToolBlobs(ctx context.Context, runID string) error
 
 	// PutRunFile uploads a tool-produced artifact file (run report, SBOM,
@@ -121,7 +124,7 @@ type Client interface {
 	GetRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, RunFileObject, error)
 
 	// DeleteRunFiles removes every blob under `runfiles/<runID>/` in a
-	// single sweep. Best-effort, mirroring DeleteRunAttachments.
+	// single sweep, with DeleteRun's semantics.
 	DeleteRunFiles(ctx context.Context, runID string) error
 
 	// PutIRBlob stashes an out-of-band compiled IR under `ir/<runID>.json`
@@ -148,7 +151,8 @@ type Client interface {
 	GetBackendSession(ctx context.Context, runID, ref string) ([]byte, error)
 	// DeleteBackendSession removes one packed session. Idempotent.
 	DeleteBackendSession(ctx context.Context, runID, ref string) error
-	// DeleteRunBackendSessions removes sessions/<runID>/. Best-effort.
+	// DeleteRunBackendSessions removes sessions/<runID>/, with DeleteRun's
+	// semantics.
 	DeleteRunBackendSessions(ctx context.Context, runID string) error
 }
 

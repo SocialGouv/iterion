@@ -312,6 +312,7 @@ var (
 	pCompress        = checked("compress", "Command-output compression: on, ultra or off (C102)", "on", "ultra", "off")
 	pPermission      = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
 	pAutoMemory      = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
+	pAmbientContext  = checked("ambient_context", "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)", "none", "workspace", "operator", "all")
 	pInteraction     = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
 	pInteractionP    = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
 	pInteractionM    = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
@@ -350,7 +351,7 @@ var llmProperties = []Property{
 	prop("images", StringList, "Image paths sent with the prompt"),
 	pInteraction, pInteractionP, pInteractionM,
 	pAwait,
-	pCompress, pAutoMemory, pPermission,
+	pCompress, pAutoMemory, pAmbientContext, pPermission,
 	prop("allow", StringList, "Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list)"),
 	prop("ask", StringList, "Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it)"),
 	prop("deny", StringList, "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)"),
@@ -584,7 +585,7 @@ var Kinds = append([]Kind{
 			pSandbox,
 			checked("worktree", "auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place", "auto", "none"),
 			word(prop("default_backend", String, "Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}")),
-			pCompress, pAutoMemory,
+			pCompress, pAutoMemory, pAmbientContext,
 			checked("loop_budget_guard", "Decline a loop's back-edge the budget cannot fund: on (default) or off (C133)", "on", "off"),
 			checked("repo_devbox", "Load the target repo's devbox.json toolchain: on (default) or off (C134)", "on", "off"),
 			checked("workspace_checkpoint", "Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139)", "on", "off"),

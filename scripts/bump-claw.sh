@@ -8,13 +8,18 @@
 # computes the canonical UTC pseudo-version, so this script wraps it.
 #
 # Usage: scripts/bump-claw.sh [<sha>] [--no-commit]
-#   <sha>        claw-code-go commit to pin (default: HEAD of the
-#                .works/claw-code-go worktree)
+#   <sha>        claw-code-go commit to pin (default: HEAD of the primary
+#                checkout's .works/claw-code-go clone, which must be on master)
 #   --no-commit  stage go.mod/go.sum/vendor but leave the commit to you
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CLAW_DIR="${CLAW_DIR:-$REPO_ROOT/.works/claw-code-go}"
+# .works/ lives in the primary checkout only: resolve it through the common
+# git dir so the script also finds it when run from a linked worktree. Two
+# assignments, so that set -e stops on a git failure instead of `dirname ""`.
+COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+PRIMARY_ROOT="$(dirname "$COMMON_DIR")"
+CLAW_DIR="${CLAW_DIR:-$PRIMARY_ROOT/.works/claw-code-go}"
 MODULE=github.com/SocialGouv/claw-code-go
 
 sha=""
@@ -28,6 +33,10 @@ done
 
 if [ -z "$sha" ]; then
   [ -d "$CLAW_DIR" ] || { echo "error: no sha given and $CLAW_DIR not found" >&2; exit 1; }
+  # Every worktree's sessions share this clone: without a sha, pin its master,
+  # never whatever branch a session left checked out there.
+  head_ref=$(git -C "$CLAW_DIR" rev-parse --abbrev-ref HEAD)
+  [ "$head_ref" = master ] || { echo "error: no sha given and $CLAW_DIR is on $head_ref, not master; pass the sha to pin" >&2; exit 1; }
   sha=$(git -C "$CLAW_DIR" rev-parse HEAD)
 fi
 short=${sha:0:12}

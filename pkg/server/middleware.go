@@ -38,7 +38,19 @@ const hostCookiePrefix = "__Host-"
 // runs once that gate has matched.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A team route's {id} is the team's UUID from here on, whichever
+		// spelling the caller used (#1931) — before ANY reader below (the
+		// authz checks, teamPathTenantCtx, the stores) sees the raw value.
+		// A no-op before routing (the authMiddleware wrap): no path values
+		// are set yet, and the per-route wrap re-runs it after the mux has.
+		teamResolved := s.canonicalizeTeamPathValue(r)
 		if s.cfg.DisableAuth {
+			// Dev mode synthesizes a super-admin identity, so the ghost
+			// refusal of the authenticated path below applies unconditionally.
+			if !teamResolved && isStateChangingMethod(r.Method) {
+				ghostTeamMutatingRefusal(w, r)
+				return
+			}
 			// Dev mode: synthesize a super-admin identity so handlers
 			// behave as if the request was authenticated. Never use
 			// in production. Stamp a stable "dev" tenant_id/user_id
@@ -121,8 +133,39 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		if !ok {
 			return
 		}
+		// The canManageTeam probe stays behind the short-circuit: it costs
+		// a store read, due only on a request already known to name a ghost
+		// team with a mutating method — never on the hot path.
+		if !teamResolved && isStateChangingMethod(r.Method) && s.canManageTeam(ctx, id, r.PathValue("id")) {
+			ghostTeamMutatingRefusal(w, r)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// ghostTeamMutatingRefusal writes the #2046 refusal — 404 naming the
+// unknown spelling — for a MUTATING /api/teams/{id}/… route whose {id}
+// resolves to NO team (canonicalizeTeamPathValue left the ghost spelling
+// in place) and whose caller's authz would otherwise PASS: canManageTeam
+// admits a super-admin over any spelling, so without this refusal a
+// mutating call keyed its rows by the ghost — a store split invisible to
+// every UUID reader (a case-variant TEAM-A next to team-a).
+//
+// The callers gate it on canManageTeam rather than refusing everyone:
+// anyone the ghost's authz already rejects keeps their handler's 403, so
+// the 404 is no existence oracle over team spellings (the rule
+// handlePutOrgMember states for its own 404/200 split). Read routes never
+// come here — they keep the ghost semantics #1931 preserved deliberately.
+//
+// Accepted residual: GET /api/teams/{id}/forge/connections/{conn_id}/health
+// is a READ route (never refused here) whose syncGrantedPermissions can
+// still UPDATE a legacy pre-#2046 row already keyed by a ghost spelling —
+// in place, under the same tenant. It creates no new split, so it is left
+// as is; new ghost-keyed rows are what this refusal exists to prevent.
+func ghostTeamMutatingRefusal(w http.ResponseWriter, r *http.Request) {
+	httpError(w, http.StatusNotFound,
+		"unknown team %q — no team has this id or slug; the mutating call was refused rather than keyed by a spelling no reader resolves", r.PathValue("id"))
 }
 
 // tenantFreePrefixes lists the routes an authenticated but TEAM-LESS

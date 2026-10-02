@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -515,6 +516,14 @@ func TestSiblingChildrenNeverHoldTheOwnedCopyAtOnce(t *testing.T) {
 // measured, before the guard: the file below was gone and the mirror said
 // nothing. A workspace REACHED through a symlink stays legitimate.
 //
+// Since #1569 the refusal is EARLIER and broader: any symlink at `.claude` —
+// pointing out, at the root, or at another top-level directory inside the
+// workspace — routes the mirror's writes through to a path no tree-noise
+// entry names, so the mirror refuses it (typed *claudeSymlinkError) before
+// the first write. The "accepted" case this test used to pin for an
+// in-workspace link was the #1569 defect itself: the files landed under the
+// target and the wip bank staged them as the run's work.
+//
 // Everything this test can reach lives under its own t.TempDir().
 func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 	t.Run("out of the workspace: refused, nothing removed", func(t *testing.T) {
@@ -536,11 +545,9 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if _, statErr := os.Stat(theirs); statErr != nil {
 			t.Errorf("the reset removed a directory outside the workspace: %v", statErr)
 		}
-		if err == nil {
-			t.Fatal("the mirror accepted a .claude pointing out of the workspace")
-		}
-		if !strings.Contains(err.Error(), "not strictly under") {
-			t.Fatalf("the refusal does not name what is wrong: %v", err)
+		var linkErr *claudeSymlinkError
+		if !errors.As(err, &linkErr) {
+			t.Fatalf("the mirror accepted a .claude pointing out of the workspace: %v", err)
 		}
 	})
 
@@ -567,11 +574,9 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if _, ownErr := os.Stat(filepath.Join(work, ownedSkillsDirName, sharedNameSkill)); ownErr == nil {
 			t.Error("the engine wrote its own copy outside `.claude/`, where no staging gesture excludes it")
 		}
-		if err == nil {
-			t.Fatal("the mirror accepted a .claude pointing at the workspace root")
-		}
-		if !strings.Contains(err.Error(), "not strictly under") {
-			t.Fatalf("the refusal does not name what is wrong: %v", err)
+		var linkErr *claudeSymlinkError
+		if !errors.As(err, &linkErr) {
+			t.Fatalf("the mirror accepted a .claude pointing at the workspace root: %v", err)
 		}
 	})
 
@@ -589,7 +594,11 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		}
 	})
 
-	t.Run("a link inside the workspace: accepted", func(t *testing.T) {
+	t.Run("a link inside the workspace: refused, nothing written through", func(t *testing.T) {
+		// The #1569 case: `.claude` -> another top-level directory routes the
+		// mirror's writes through to `config/…`, a path no tree-noise entry
+		// names — the wip bank would stage the mirrored skills as the run's
+		// work. Refused like every other `.claude` symlink.
 		work := t.TempDir()
 		inside := filepath.Join(work, "config")
 		if err := os.MkdirAll(inside, 0o755); err != nil {
@@ -598,11 +607,13 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if err := os.Symlink(inside, filepath.Join(work, ".claude")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil); err != nil {
-			t.Fatalf("a .claude resolving inside the workspace was refused: %v", err)
+		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil)
+		var linkErr *claudeSymlinkError
+		if !errors.As(err, &linkErr) {
+			t.Fatalf("the mirror accepted a .claude resolving inside the workspace: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(inside, ownedSkillsDirName, sharedNameSkill)); err != nil {
-			t.Fatalf("the owned copy did not land: %v", err)
+		if entries, readErr := os.ReadDir(inside); readErr != nil || len(entries) != 0 {
+			t.Fatalf("the mirror wrote through the link: entries=%v err=%v", entries, readErr)
 		}
 	})
 }

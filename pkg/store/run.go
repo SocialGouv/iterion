@@ -1627,6 +1627,12 @@ type NodeSessionSlot struct {
 	ConversationRef string `json:"conversation_ref,omitempty"`
 }
 
+// SessionLedgerEntry is one session's entry of Checkpoint.SessionLedger.
+type SessionLedgerEntry struct {
+	SessionID string   `json:"session_id" bson:"session_id"`
+	Tasks     []string `json:"tasks" bson:"tasks"`
+}
+
 // Checkpoint captures the runtime state at a pause point (human node or
 // backend interaction), enabling exact resume without replaying upstream nodes.
 //
@@ -1723,6 +1729,13 @@ type Checkpoint struct {
 	// thinking-block 400s. Empty on checkpoints written before this field
 	// existed — absent stays "unknown", the conservative reading.
 	BackendSessionFingerprint string `json:"backend_session_fingerprint,omitempty" bson:"backend_session_fingerprint,omitempty"`
+	// SessionLedger is the run's record of background work that died with a
+	// CLI session's last process, one entry per session id (see
+	// delegate.SessionLedger): whichever node resumes that session later — a
+	// retry, a loop re-entry, a resumed run on another replica — tells the
+	// agent the work is gone. Sorted by session id. Absent on checkpoints
+	// written before it existed: an empty ledger, the pre-ledger behaviour.
+	SessionLedger []SessionLedgerEntry `json:"session_ledger,omitempty" bson:"session_ledger,omitempty"`
 	// BackendName identifies which backend was used.
 	BackendName string `json:"backend_name,omitempty" bson:"backend_name,omitempty"`
 	// BackendConversation is the opaque, backend-specific persisted
@@ -1769,10 +1782,14 @@ type Checkpoint struct {
 	// BudgetUnpricedTokens / BudgetUnpricedNodes carry the volume the cost
 	// axis could not price. Absent from checkpoints written before they
 	// existed, which restores as zero — the prior behaviour.
-	BudgetUnpricedTokens int   `json:"budget_unpriced_tokens,omitempty" bson:"budget_unpriced_tokens,omitempty"`
-	BudgetUnpricedNodes  int   `json:"budget_unpriced_nodes,omitempty" bson:"budget_unpriced_nodes,omitempty"`
-	BudgetIterationsUsed int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
-	BudgetElapsedNS      int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
+	BudgetUnpricedTokens int `json:"budget_unpriced_tokens,omitempty" bson:"budget_unpriced_tokens,omitempty"`
+	BudgetUnpricedNodes  int `json:"budget_unpriced_nodes,omitempty" bson:"budget_unpriced_nodes,omitempty"`
+	// BudgetUnreportedCalls counts the LLM calls whose usage the provider
+	// did not report in full. Absent from earlier checkpoints, which
+	// restores as zero — the prior behaviour.
+	BudgetUnreportedCalls int   `json:"budget_unreported_calls,omitempty" bson:"budget_unreported_calls,omitempty"`
+	BudgetIterationsUsed  int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
+	BudgetElapsedNS       int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
 	// CostUSDTotal is the run's cumulative LLM spend across ALL execution
 	// segments. Persisted so the daily-spend-cap ledger (a monotonic max of
 	// the per-run cumulative) keeps climbing after a resume instead of

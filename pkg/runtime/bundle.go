@@ -165,7 +165,10 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 //
 // No-op when the bundle is nil, has no SkillsDir, or the skill name
 // doesn't resolve to a file/dir under SkillsDir. Returns an error
-// only when the copy/marker write itself fails — a missing skill
+// when <workDir>/.claude is a symlink (the same typed refusal as the
+// run-start mirror, #1569 — the attach path runs INSIDE a run, after
+// the run-start guard passed, and the checkout may have changed since)
+// or when the copy/marker write itself fails — a missing skill
 // silently no-ops (the agent simply sees the text message without
 // the skill loaded; the studio surfaces the discrepancy via the
 // catalog endpoint).
@@ -186,6 +189,14 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 			return nil
 		}
 		return fmt.Errorf("runtime/bundle: stat skill %s: %w", srcPath, err)
+	}
+	// Refuse BEFORE the first write, like the run-start mirror: a `.claude`
+	// that is a symlink routes the copy through to the link's target, a
+	// path no tree-noise entry names (#1569). Checked here, not at run
+	// start only, because the attach path runs mid-run and the workspace
+	// is a checkout of an untrusted repository.
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		return err
 	}
 	dest := filepath.Join(workDir, ".claude", "skills")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
@@ -320,6 +331,49 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, tier skillTier, logg
 	return outcome, nil
 }
 
+// claudeSymlinkError is the typed refusal the mirror returns when the
+// workspace's `.claude` is a symlink: writing through the link lands the
+// mirrored files under the link's TARGET — a path no tree-noise entry names
+// (the dir-only `**/.claude/` rule never matches a symlink, and IsNoise sees
+// `target-dir/skill.md`, not `.claude/skill.md`, #1569). The wip bank and the
+// operator's commit-and-finalize would then stage the mirrored skills as the
+// run's work, and the dirtiness probes would miss them for what they are.
+//
+// Refusing — not warning — because every alternative keeps the defect: warn
+// and continue writes through the link all the same, and laying the mirror
+// "beside" the link means removing a symlink the CHECKOUT owns. The run stops
+// at mirror time with the target named — the one piece of information only
+// the engine has, being the writer.
+type claudeSymlinkError struct {
+	link   string
+	target string
+}
+
+func (e *claudeSymlinkError) Error() string {
+	return fmt.Sprintf("runtime/bundle: %s is a symlink to %s — the run-start mirror would write through it and land outside every tree-noise rule (#1569); replace the link with a real directory", e.link, e.target)
+}
+
+// refuseAClaudeSymlink returns the typed refusal when <workDir>/.claude is a
+// symlink. A workspace REACHED through a symlink is fine — only the final
+// component is examined (Lstat), and both sides of a workDir link are the
+// same tree. Anything else (absent, a real directory, a plain file) is left
+// to the mirror's own handling — MkdirAll already refuses the plain file.
+func refuseAClaudeSymlink(workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+	claudeDir := filepath.Join(workDir, ".claude")
+	info, err := os.Lstat(claudeDir)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	target, readErr := os.Readlink(claudeDir)
+	if readErr != nil {
+		target = "<unreadable>"
+	}
+	return &claudeSymlinkError{link: claudeDir, target: target}
+}
+
 // mirrorBundleSkills copies every top-level entry from bundle.SkillsDir
 // into <workDir>/.claude/skills/. A flat "<name>.md" source is mirrored as the
 // directory form "<name>/SKILL.md" (see skillDestDirForm); a source that is
@@ -345,6 +399,12 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, tier skillTier, logg
 // two apart. The workspace is a checkout of an untrusted repository, so nothing
 // read back from it can establish that distinction; only the mirror knows.
 func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) ([]string, error) {
+	// A `.claude` that is a symlink routes every write below — the owned
+	// copy's reset included — through to the link's target, outside every
+	// tree-noise rule. Refuse before the first write (#1569).
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		return nil, err
+	}
 	// The engine-owned copy of the same skills, first and unconditionally: it
 	// is reset even for a run with no bundle, so a directory of that name
 	// committed by the checkout is never read as the engine's own. This is
@@ -682,7 +742,7 @@ func ClearMirroredTierMarkers(workDir string) {
 // keep every mirror file — an orphan there costs one unused file; a false
 // positive costs an operator's edit. The escape hatch is a load-bearing
 // limit, greppable and opt-in: ITERION_PRUNE_MIRROR_IN_CHECKOUT=1 (see
-// CLAUDE.md philosophy #1).
+// docs/philosophy.md, principle 1).
 //
 // Best-effort throughout: a prune failure is logged but never fails a run.
 // The sweep walks all three mirror kind dirs (skills / commands / agents).

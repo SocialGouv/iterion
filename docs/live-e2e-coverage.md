@@ -211,6 +211,7 @@ Status legend: ✅ implemented · 🚧 planned.
 | Dispatcher | `e2e/dispatcher_test.go`, `board_dispatcher_test.go` (deterministic) | ✅ |
 | Webhooks | `pkg/webhooks/*_test.go` (parsers) + server stubs (deterministic) | ✅ |
 | Schedule (trigger → run) | `TestLive_Feat_Schedule` | ✅ |
+| claude_code background work (session waits for its async subagent; lifecycle-off witness) | `TestLive_Feat_ClaudeCodeBackgroundWork` (`task test:live:claude-bg`) | ✅ |
 | Bundles / Expr-Compute / Codex | skills+bundle bots / `ExhaustiveDSLCoverage` / dual-model (covered) | ✅ |
 
 ## Cost discipline

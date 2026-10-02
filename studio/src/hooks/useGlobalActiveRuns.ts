@@ -13,7 +13,7 @@ export interface UseGlobalActiveRunsResult {
 
 // Polls /api/runs/global-active so the Home view can surface runs
 // active in OTHER iterion stores (other projects, the no-project
-// ~/.iterion slot). Slower poll than useRuns because the inputs are
+// slot of the iterion home — $ITERION_HOME, else ~/.iterion). Slower poll than useRuns because the inputs are
 // runs the user is NOT currently watching closely; 8s keeps the
 // indicator fresh without driving filesystem walks every 3s.
 export function useGlobalActiveRuns(): UseGlobalActiveRunsResult {

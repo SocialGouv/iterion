@@ -290,3 +290,36 @@ func TestOnlyTarRaceWarnings(t *testing.T) {
 		}
 	}
 }
+
+// The leftover sweep answers for what an archive wrote. An excluded member is
+// absent from the extract BECAUSE the host dropped it — never a leftover to
+// remove, whoever put it there while the export ran.
+func TestDropRacedGitLeftoversNeverRemovesAnExcludedMember(t *testing.T) {
+	ws := exportTarget(t)
+	hostGit := filepath.Join(ws, ".git")
+	before, err := gitDirFiles(hostGit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(hostGit, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Written after the snapshot: in neither `before` nor the extract.
+	hook := filepath.Join(hostGit, "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(hostGit, "MERGE_HEAD")
+	if err := os.WriteFile(stray, []byte("3333333333333333333333333333333333333333\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := exportRun(ws).dropRacedGitLeftovers(hostGit, before, map[string]bool{".git/HEAD": true}); err != nil {
+		t.Fatalf("dropRacedGitLeftovers: %v", err)
+	}
+	if _, err := os.Stat(hook); err != nil {
+		t.Errorf("the sweep removed an excluded member it never wrote: %v", err)
+	}
+	if _, err := os.Stat(stray); err == nil {
+		t.Error("the sweep kept a non-excluded leftover: the test proves nothing")
+	}
+}

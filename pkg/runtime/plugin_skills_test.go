@@ -259,7 +259,7 @@ func TestMirrorPluginContributions_DirectoryFormSkillKeepsItsName(t *testing.T) 
 // the flat form, which claude_code did NOT discover — so every plugin-
 // contributed skill was invisible to it, and reachable only by claw or by a
 // prompt that Read the path explicitly. That would have been a silent
-// backend-parity gap, exactly what CLAUDE.md's backend-parity addendum names.
+// backend-parity gap, exactly what docs/philosophy.md's backend-parity rule names.
 //
 // Mutation: replace mirrorFileSkill with a bare reconcileSkillFile at the
 // flat destination (the pre-#1373 shape) and the directory-form assertion

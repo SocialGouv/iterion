@@ -110,6 +110,9 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// values into a run without entering Engine.Run. Before CreateRun, so a
 	// refusal leaves nothing behind and the atomic contract is untouched: the
 	// caller receives no child id, exactly as for every other early error.
+	// The child inherits the parent's publish grant from the record; a value
+	// sent under that name — the mask the fork dialog was shown — is not it.
+	spec.NewInputs = store.DropServerMintedVars(spec.NewInputs)
 	if err := s.gateForkInputs(parent, spec.NewInputs); err != nil {
 		return nil, err
 	}
@@ -277,6 +280,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		Vars:                   copyVars(parent.Checkpoint),
 		BackendName:            turn.Backend,
 		BackendSessionID:       turn.SessionID,
+		SessionLedger:          forkSessionLedger(parent.Checkpoint, turn),
 		// The anchor re-executes first, so it needs the incoming state an
 		// ordinary resume would rebuild it from: which edges fired into it,
 		// and the floor a stabilized fan-out left it. Only the anchor's own
@@ -661,4 +665,37 @@ func copyVars(cp *store.Checkpoint) map[string]any {
 		return out
 	}
 	return map[string]any{}
+}
+
+// forkSessionLedger is the child run's session ledger: the parent's, plus the
+// background work the forked turn's own processes lost. The child
+// resumes that session, so its agent must be told; the union also covers a
+// later process of the same session, whose entry the parent's ledger holds —
+// telling twice is harmless, not telling leaves the agent waiting on work
+// that no longer exists.
+func forkSessionLedger(cp *store.Checkpoint, turn *store.TurnCheckpoint) []store.SessionLedgerEntry {
+	byID := map[string][]string{}
+	if cp != nil {
+		for _, e := range cp.SessionLedger {
+			byID[e.SessionID] = slices.Clone(e.Tasks)
+		}
+	}
+	if turn != nil && turn.SessionID != "" {
+		for _, t := range turn.TerminatedBackground {
+			if !slices.Contains(byID[turn.SessionID], t) {
+				byID[turn.SessionID] = append(byID[turn.SessionID], t)
+			}
+		}
+	}
+	out := make([]store.SessionLedgerEntry, 0, len(byID))
+	for id, tasks := range byID {
+		if id != "" && len(tasks) > 0 {
+			out = append(out, store.SessionLedgerEntry{SessionID: id, Tasks: tasks})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SessionID < out[j].SessionID })
+	return out
 }

@@ -34,8 +34,11 @@ taskres='{"type":"user","message":{"role":"user","content":[{"type":"tool_result
 final='{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","model":"fake-model","content":[{"type":"text","text":"continuing without the task; done"}],"usage":{"input_tokens":1,"output_tokens":1}}}'
 resultok='{"type":"result","subtype":"success","is_error":false,"result":"done","num_turns":2,"duration_ms":1,"duration_api_ms":1,"session_id":"s1"}'
 
-read -r first
-printf '%s\n' "$first" >> "$log"
+while read -r first; do
+  printf '%s\n' "$first" >> "$log"
+  case "$first" in *'"type":"control_request"'*) continue ;; esac
+  break
+done
 emit "$init"
 case "${FAKE_CLAUDE_SCENARIO:-recover}" in
   legit)

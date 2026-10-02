@@ -89,25 +89,29 @@ func isForfaitSuppressed(env map[string]string) bool {
 	return env[ForfaitSuppressedEnvKey] != ""
 }
 
-// settingSourcesFromEnv returns the CLI --setting-sources for claude_code
-// nodes. Default "user,project": load the operator's user-level CLAUDE.md /
-// settings.json and the target repo's project CLAUDE.md / .claude/settings.json
-// so the agent honours the same conventions native Claude Code would — a core
-// part of closing the adaptivity gap. Override via
-// ITERION_CLAUDE_CODE_SETTING_SOURCES (comma-separated user/project/local);
-// "" or "none" disables it, restoring the CLI's headless no-settings default.
-// "local" is omitted from the default: .claude/settings.local.json is
-// machine-specific and may carry absolute paths that don't resolve in a sandbox.
-func settingSourcesFromEnv() []claudesdk.SettingSource {
-	raw, ok := os.LookupEnv("ITERION_CLAUDE_CODE_SETTING_SOURCES")
+// settingSourcesEnv is the raw, claude_code-specific override of the scopes a
+// node loads. The ambient-context policy (ADR-119, claudeAmbient) decides them
+// otherwise.
+const settingSourcesEnv = "ITERION_CLAUDE_CODE_SETTING_SOURCES"
+
+// settingSourcesFromEnv reads ITERION_CLAUDE_CODE_SETTING_SOURCES, a
+// comma-separated list of user/project/local. set is false when the variable
+// is absent: the policy then decides. "" or "none" loads no scope at all,
+// which the caller must emit as `--setting-sources ""` — omitting the flag
+// would make the CLI load every scope, `local` included. The routing pin
+// (claudeRoutingPin) holds whatever the scopes. unknown lists the tokens that
+// are none of the three, for the caller to report: a list made only of typos
+// loads no scope at all.
+func settingSourcesFromEnv() (sources []claudesdk.SettingSource, set bool, unknown []string) {
+	raw, ok := os.LookupEnv(settingSourcesEnv)
 	if !ok {
-		raw = "user,project"
+		return nil, false, nil
 	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.EqualFold(raw, "none") {
-		return nil
+		return []claudesdk.SettingSource{}, true, nil
 	}
-	var out []claudesdk.SettingSource
+	out := []claudesdk.SettingSource{}
 	for _, part := range strings.Split(raw, ",") {
 		switch strings.ToLower(strings.TrimSpace(part)) {
 		case "user":
@@ -116,9 +120,11 @@ func settingSourcesFromEnv() []claudesdk.SettingSource {
 			out = append(out, claudesdk.SettingSourceProject)
 		case "local":
 			out = append(out, claudesdk.SettingSourceLocal)
+		default:
+			unknown = append(unknown, strings.TrimSpace(part))
 		}
 	}
-	return out
+	return out, true, unknown
 }
 
 // strictMCPFromEnv reports whether claude_code nodes should run with
@@ -195,8 +201,28 @@ var headlessWithheldTools = []string{
 // It is one of the variables every spawn pins in two layers, the process
 // environment and the flag settings layer (claudeEnvPins): the CLI rewrites
 // its environment at startup from the settings files it loads, and this key
-// is one a project's settings may set.
+// is one a project's settings may set. ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on
+// pins it empty instead (backgroundTasksOnFromEnv): background work, which
+// the background lifecycle keeps the session open for.
 const backgroundTasksOffEnv = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+
+// backgroundTasksOnFromEnv reads ITERION_CLAUDE_CODE_BACKGROUND_TASKS
+// (unset/other → false; "1"/"true"/"on"/"yes" → true): the operator's opt-in
+// to background work. It lifts the foreground pin (backgroundTasksOffEnv) —
+// subagents and shells may then run while the main agent works — and leaves
+// holding the session open to the background lifecycle
+// (claude_code_background.go), which waits for a background subagent or
+// workflow to come back and asks for the report once it has. A background
+// shell or monitor is not waited for (holdsSession); the system prompt says
+// so (headlessBackgroundRule).
+func backgroundTasksOnFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_CLAUDE_CODE_BACKGROUND_TASKS"))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
+}
 
 // disallowOrchestrationToolsFromEnv reads
 // ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;

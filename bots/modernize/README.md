@@ -108,7 +108,7 @@ commands are the lot's own code), on the working tree as git would store it,
 on the index and on what is committed. `mark_done` then writes `done` only on the HEAD and the
 working tree that verdict judged — a commit or an edit that arrived since is
 refused, never committed under the gate's subject
-([ADR-107](../../docs/adr/107-a-lots-contract-is-a-directory-judged-on-what-lands.md)).
+([ADR-121](../../docs/adr/121-a-lots-contract-is-a-directory-judged-on-what-lands.md)).
 The verdict names the table's five files and holds the rest of the directory
 as a count and a digest, so it does not grow with a lot's captures. A gate
 command that is a record's predicate (`test -s .modernize/sweeps/<lot>.md`)

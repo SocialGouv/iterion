@@ -31,6 +31,10 @@ docs/scripts/og-card.html
 # generated, 6.6k lines
 CHANGELOG.md
 testdata/
+# Go tests: 37 % of the nodes and 70 % of the edges (measured 2026-10-01),
+# little orientation value — `iterion map` and grep answer "which test
+# covers X". Keeping them made the graph 209 MB and its MCP server slow.
+*_test.go
 # secrets: never enter the graph nor the semantic extraction payload
 .env
 .secrets/

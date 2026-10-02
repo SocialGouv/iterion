@@ -474,6 +474,7 @@ type jsonAgentDecl struct {
 	Fallbacks         []*jsonFallbackDecl  `json:"fallbacks,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
+	AmbientContext    string               `json:"ambient_context,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -523,6 +524,7 @@ type jsonJudgeDecl struct {
 	Fallbacks         []*jsonFallbackDecl  `json:"fallbacks,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
+	AmbientContext    string               `json:"ambient_context,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -888,6 +890,7 @@ type jsonWorkflowDecl struct {
 	Worktree            string               `json:"worktree,omitempty"`
 	Compress            string               `json:"compress,omitempty"`
 	AutoMemory          string               `json:"auto_memory,omitempty"`
+	AmbientContext      string               `json:"ambient_context,omitempty"`
 	LoopBudgetGuard     string               `json:"loop_budget_guard,omitempty"`
 	RepoDevbox          string               `json:"repo_devbox,omitempty"`
 	WorkspaceCheckpoint string               `json:"workspace_checkpoint,omitempty"`
@@ -1543,6 +1546,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Fallbacks:         fallbacksToJSON(a.Fallbacks),
 		Compress:          a.Compress,
 		AutoMemory:        a.AutoMemory,
+		AmbientContext:    a.AmbientContext,
 		Permission:        a.Permission,
 		Allow:             a.Allow,
 		Ask:               a.Ask,
@@ -1590,6 +1594,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Fallbacks:         fallbacksToJSON(j.Fallbacks),
 		Compress:          j.Compress,
 		AutoMemory:        j.AutoMemory,
+		AmbientContext:    j.AmbientContext,
 		Permission:        j.Permission,
 		Allow:             j.Allow,
 		Ask:               j.Ask,
@@ -1636,6 +1641,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Worktree:            w.Worktree,
 		Compress:            w.Compress,
 		AutoMemory:          w.AutoMemory,
+		AmbientContext:      w.AmbientContext,
 		LoopBudgetGuard:     w.LoopBudgetGuard,
 		RepoDevbox:          w.RepoDevbox,
 		WorkspaceCheckpoint: w.WorkspaceCheckpoint,
@@ -2335,6 +2341,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Fallbacks:         fallbacksFromJSON(ja.Fallbacks),
 			Compress:          ja.Compress,
 			AutoMemory:        ja.AutoMemory,
+			AmbientContext:    ja.AmbientContext,
 			Permission:        ja.Permission,
 			Allow:             ja.Allow,
 			Ask:               ja.Ask,
@@ -2396,6 +2403,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Fallbacks:         fallbacksFromJSON(jj.Fallbacks),
 			Compress:          jj.Compress,
 			AutoMemory:        jj.AutoMemory,
+			AmbientContext:    jj.AmbientContext,
 			Permission:        jj.Permission,
 			Allow:             jj.Allow,
 			Ask:               jj.Ask,
@@ -2459,6 +2467,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Worktree:            jw.Worktree,
 		Compress:            jw.Compress,
 		AutoMemory:          jw.AutoMemory,
+		AmbientContext:      jw.AmbientContext,
 		LoopBudgetGuard:     jw.LoopBudgetGuard,
 		RepoDevbox:          jw.RepoDevbox,
 		WorkspaceCheckpoint: jw.WorkspaceCheckpoint,

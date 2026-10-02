@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -86,6 +87,21 @@ type ProviderResolution struct {
 	// backend of its own keeps its provider out, and the zero value claims
 	// nothing. Sorted.
 	ForfaitFirst []string
+	// envFundedOnly reports whether every LLM route the walk read resolved
+	// to the openai_compatible gateway — a route whose credential the
+	// RUNNER's environment funds, never the bundle. A route that resolved
+	// to any bundle-funded provider, a route that could not resolve (an
+	// "auto", an empty ${VAR}, a name the vocabulary does not know, a
+	// model-answering node without fields), and a run with no LLM route at
+	// all, all read false.
+	// envFundedOnly reports whether every LLM route the walk read resolved
+	// to the openai_compatible gateway — a route whose credential the
+	// RUNNER's environment funds, never the bundle. A route that resolved
+	// to any bundle-funded provider, a route that could not resolve (an
+	// "auto", an empty ${VAR}, a name the vocabulary does not know, a
+	// model-answering node without fields), and a run with no LLM route at
+	// all, all read false.
+	envFundedOnly bool
 	// AnthropicWireDefaultReads lists the anthropic-wire key slots some route
 	// may spend as the run's DEFAULT credential — through the delegates'
 	// default precedence — rather than as a key its hint or spec names. A
@@ -102,6 +118,12 @@ type ProviderResolution struct {
 	// read any. Sorted.
 	AnthropicWireDefaultReads []string
 }
+
+// OnlyEnvFunded reports whether the run's every LLM route is an
+// openai_compatible route — the gateway the runner's environment funds — so
+// the resolution acquires no LLM credential for it. See
+// ProviderResolution.envFundedOnly.
+func (r ProviderResolution) OnlyEnvFunded() bool { return r.envFundedOnly }
 
 // EffectiveProviders is the walk every "which providers does this run
 // actually target?" question goes through — the pool's wants derivation
@@ -191,6 +213,7 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		// Nothing spends: nothing to narrow on, and nothing unresolved.
 		return ProviderResolution{NarrowSafe: true}
 	}
+	sawRoute := true
 	// The run-level chain (`--fallback` / spec.Fallback / prior.Fallback)
 	// lands on every agent node through ir.ApplyRunFallback — the same
 	// reasoning as an authored route.
@@ -207,7 +230,7 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		acc.backend = b
 		acc.resolveRoute(fb.Provider, fb.Model)
 	}
-	return acc.result()
+	return acc.result(sawRoute)
 }
 
 // llmFieldsOf returns the LLMFields a node resolves its route from: agent
@@ -237,10 +260,19 @@ type providerAccumulator struct {
 	backend      string
 	narrowSafe   bool
 	wireDefault  map[string]bool
+	// envDependent: some route's text defers to an environment or the run's
+	// variables (see envDeferred).
+	envDependent bool
 }
 
-func (a *providerAccumulator) result() ProviderResolution {
+func (a *providerAccumulator) result(sawRoute bool) ProviderResolution {
 	res := ProviderResolution{NarrowSafe: a.narrowSafe}
+	// The widenings that matter here are narrowSafe's (an unresolvable or
+	// unknown route may spend anything), a recorded provider (some tier
+	// holds what it spends) and an env-dependent route (it may resolve to
+	// anything on the runner). An all-openai_compatible walk is none of
+	// those: narrow-safe, nameless, unknownless, resolved here.
+	res.envFundedOnly = sawRoute && a.narrowSafe && !a.envDependent && len(a.providers) == 0 && len(a.unknown) == 0
 	for slot := range a.wireDefault {
 		res.AnthropicWireDefaultReads = append(res.AnthropicWireDefaultReads, slot)
 	}
@@ -296,6 +328,18 @@ func resolveRouteBackend(override, node, wfDefault string) (backend string, from
 	return "", fromEnv
 }
 
+// envDeferred marks the walk env-dependent when a route's own text defers to
+// an environment or the run's variables: the executor resolves it with the
+// runner's env and the run's vars, so what it names is unknown here.
+func (a *providerAccumulator) envDeferred(parts ...string) {
+	for _, part := range parts {
+		if strings.Contains(part, "${") || strings.Contains(part, "{{") {
+			a.envDependent = true
+			return
+		}
+	}
+}
+
 // resolveNode applies the executor's precedence to one LLM node, in the
 // executor's order: a launch-time provider override collapses the chain;
 // else the DSL `provider:` chain decides — the hint IS the route, and the
@@ -312,13 +356,17 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	if mdl == "" {
 		mdl = fields.Model
 	}
+	a.envDeferred(ov.Provider, fields.Provider, mdl)
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(ov.Provider, mdl)
-		a.hint(ov.Provider)
-		return
+		if a.chainDecides(ov.Provider, mdl) {
+			return
+		}
+		// The launch override collapsed the chain; fall through to the
+		// prefix of the effective model.
 	}
 	a.noteWireDefault(fields.Provider, mdl)
-	if a.chainDecides(fields.Provider) {
+	if a.chainDecides(fields.Provider, mdl) {
 		return
 	}
 	a.prefixOrWiden(mdl)
@@ -329,8 +377,9 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 // prefix; one that pins neither inherits whatever the process holds,
 // which the walk cannot name — widen.
 func (a *providerAccumulator) resolveRoute(provider, mdl string) {
+	a.envDeferred(provider, mdl)
 	a.noteWireDefault(provider, mdl)
-	if a.chainDecides(provider) {
+	if a.chainDecides(provider, mdl) {
 		return
 	}
 	a.prefixOrWiden(mdl)
@@ -344,6 +393,7 @@ func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) 
 	if strings.TrimSpace(mdl) == "" {
 		mdl = nodeModel
 	}
+	a.envDeferred(mdl, nodeModel)
 	a.prefixOrWiden(mdl)
 }
 
@@ -403,7 +453,13 @@ func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
 // chain named at least one — in which case it IS the route and the caller
 // looks no further. A chain with hints AND an unresolved step ("auto", an
 // empty ${VAR}) still decides, and still widens.
-func (a *providerAccumulator) chainDecides(raw string) bool {
+//
+// mdl is the route's effective model: an openai_compatible hint is only the
+// gateway route when the model carries the gateway prefix — a bare model
+// behind the hint spends a process-held credential (the backends that do not
+// honour the hint), so it widens as an unknown name, and OnlyEnvFunded reads
+// false.
+func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 	hints, unresolved := chainHints(raw)
 	if len(hints) == 0 {
 		return false
@@ -412,9 +468,19 @@ func (a *providerAccumulator) chainDecides(raw string) bool {
 		a.narrowSafe = false
 	}
 	for _, h := range hints {
+		if h == modelroute.OpenAICompatible && gatewayRoute(mdl) {
+			continue
+		}
 		a.hint(h)
 	}
 	return true
+}
+
+// gatewayRoute reports whether the route's effective model is
+// gateway-prefixed — the only spelling that puts a route on the
+// openai_compatible gateway.
+func gatewayRoute(mdl string) bool {
+	return providerFromModelPrefix(strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))) == modelroute.OpenAICompatible
 }
 
 // prefixOrWiden routes on a model spec's `provider/` prefix, or widens
@@ -429,6 +495,12 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 		return
 	}
 	if p := providerFromModelPrefix(mdl); p != "" {
+		if p == modelroute.OpenAICompatible {
+			// The gateway route: its credential is the runner's environment,
+			// so it names no bundle slot — recorded nowhere, and never a
+			// reason to widen. It is what OnlyEnvFunded is true OF.
+			return
+		}
 		a.hint(p)
 		return
 	}

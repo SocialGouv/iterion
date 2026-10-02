@@ -18,6 +18,21 @@ type sharedTierPolicy struct {
 	// facade says whether a facade key (z.ai, Moonshot) may be the anthropic
 	// wire's default — see platformcfg.PlatformCredentials.FacadeDefault.
 	facade platformcfg.FacadePolicy
+	// runNative is the OR of every tier's native probe of ONE resolution —
+	// the question `auto` asks since #1998: a Claude-native credential any
+	// tier holds, open or closed, keeps every tier's facade key off the
+	// wire's default, and the run parks on it. Built at the resolution root
+	// beside the per-tier probes; nil asks nobody (a policy built without
+	// tiers, as in unit tests, then behaves like `tier`).
+	runNative *tierNative
+}
+
+// orNative composes two tiers' probes into the run's: held by either is held
+// by the run. Each side keeps its own cache, so a question asked through the
+// composite costs a tier at most one forfait list and one key list, whatever
+// asks first. A nil side holds nothing.
+func orNative(a, b *tierNative) *tierNative {
+	return &tierNative{probe: func() bool { return a.holds() || b.holds() }}
 }
 
 func (p *Publisher) sharedTierPolicyFor(ctx context.Context) sharedTierPolicy {
@@ -40,17 +55,22 @@ func (pol sharedTierPolicy) inOrder(forfaits, keys func()) {
 }
 
 // facadeMayDefault reports whether, in the tier `native` describes, a facade
-// key may be the anthropic wire's default. `native` is only asked under
-// `auto`, for a facade provider on a free family — once per resolution: at
-// most one forfait list and one key list per tier.
+// key may be the anthropic wire's default. Under `auto` the answer is the
+// RUN's — every tier's facade stays off the default while any tier of the
+// run holds a native credential; `tier` is the per-tier rule (capacity
+// fall-through for the tier that itself holds nothing). `native` is only
+// asked under `tier`, for a facade provider on a free family — once per
+// resolution: at most one forfait list and one key list per tier.
 func (pol sharedTierPolicy) facadeMayDefault(native *tierNative) bool {
 	switch pol.facade {
 	case platformcfg.FacadeAlways:
 		return true
 	case platformcfg.FacadeNever:
 		return false
+	case platformcfg.FacadeTier:
+		return !native.holds()
 	}
-	return !native.holds()
+	return !pol.runNative.holds()
 }
 
 // isFacadeProvider names the providers that ride the anthropic wire without
@@ -134,22 +154,24 @@ func (t *tierNative) holds() bool {
 	return t.value
 }
 
-// newTierNative builds the probe for the tier whose forfaits live under
-// forfaitOwner and whose keys live under keyScope. A store that cannot answer
-// counts as holding NONE — the platform tier's rule for a degraded read: the
-// tier a deployment runs on must not lose its only credential to a store
-// blip. It is said out loud, since a facade may then take the default.
-func (p *Publisher) newTierNative(ctx context.Context, tier, forfaitOwner, keyScope, botID string) *tierNative {
+// newTierNative builds the probe for the tier whose forfaits live under any
+// of forfaitOwners and whose keys live under keyScope. A store that cannot
+// answer counts as holding NONE — the platform tier's rule for a degraded
+// read: the tier a deployment runs on must not lose its only credential to a
+// store blip. It is said out loud, since a facade may then take the default.
+func (p *Publisher) newTierNative(ctx context.Context, tier, keyScope, botID string, forfaitOwners ...string) *tierNative {
 	return &tierNative{probe: func() bool {
 		if p.oauthForfait != nil {
-			recs, err := p.oauthForfait.ListByUser(ctx, forfaitOwner)
-			if err != nil {
-				p.logger.Warn("cloudpublisher: %s tier forfait list for the facade policy: %v — read as holding none: a facade key may take the anthropic wire's default for this launch", tier, err)
-				return false
-			}
-			for _, rec := range recs {
-				if rec.Kind == secrets.OAuthKindClaudeCode {
-					return true
+			for _, forfaitOwner := range forfaitOwners {
+				recs, err := p.oauthForfait.ListByUser(ctx, forfaitOwner)
+				if err != nil {
+					p.logger.Warn("cloudpublisher: %s tier forfait list for the facade policy: %v — read as holding none: a facade key may take the anthropic wire's default for this launch", tier, err)
+					return false
+				}
+				for _, rec := range recs {
+					if rec.Kind == secrets.OAuthKindClaudeCode {
+						return true
+					}
 				}
 			}
 		}

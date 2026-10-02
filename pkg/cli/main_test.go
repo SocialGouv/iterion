@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
@@ -15,7 +16,11 @@ import (
 // t.TempDir() store and is deleted on return.
 //
 // The guard fails the package when the registry the tests run in gained such
-// an entry, and names the test that left it.
+// an entry, and names the test that left it. The runs those tests launch
+// resolve their stores from the iterion home, which hometest keeps off the
+// operator's.
 func TestMain(m *testing.M) {
-	os.Exit(proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) }))
+	os.Exit(hometest.Isolate(func() int {
+		return proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })
+	}))
 }

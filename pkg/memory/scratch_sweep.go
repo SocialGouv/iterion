@@ -50,6 +50,12 @@ func ScanScratch(root string, retention time.Duration, now time.Time) ([]Scratch
 	if root == "" {
 		return nil, nil
 	}
+	// A root that is a symlink is refused, not followed: the sweep would
+	// remove the stale entries wherever it points, outside the store the
+	// scratch belongs to.
+	if fi, err := os.Lstat(root); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("scratch: %s is a symlink — refused", root)
+	}
 	items, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {

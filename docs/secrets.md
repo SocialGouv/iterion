@@ -19,11 +19,25 @@ declared `secrets:` block.
 Two tiers:
 
 - **Known-value taint (deterministic).** Iterion knows its secret
-  values, so for each it precomputes every textual form — raw, base64
-  (std + url, ±padding), hex (upper/lower), URL-escape, JSON-escape —
-  and matches those literally via a single RE2 alternation. This is the
-  reliable answer to "also detect base64": we match the base64 form of a
-  secret we *hold*, we don't guess. Zero encoding false-negatives.
+  values, so for each it precomputes every textual form — raw (and,
+  for a value ending with a newline, without it, raw and JSON-escaped: a
+  tool printing a file drops it), base64 (std + url, ±padding), hex
+  (upper/lower), URL-escape (Go's, the strict RFC 3986 form, Python's
+  `quote()` default that keeps `/`, and the WHATWG forms a JS runtime
+  writes: query, form-urlencoded, path, fragment, userinfo, component),
+  JSON-escape (Go's, which escapes `&` `<` `>`, and as `JSON.stringify` or
+  `jq` write it) — and matches those literally in one pass: a form of 4 KiB
+  or more (a file secret) and a binary one as a plain string, the others in
+  leftmost-longest RE2 alternations. At a position the longest form wins; a
+  form that starts inside another and runs past it is replaced too, so no
+  part of either shows. This is the reliable answer to "also detect
+  base64": we match the base64 form of a secret we *hold*, we don't
+  guess. What it does not match: a form it does not precompute — base64
+  or hex wrapped at a column width (`base64`, `xxd -p`), a multi-line
+  value printed in part or line by line (`grep`, `head`, a file view that
+  numbers its lines), a binary (non-UTF-8) value that went through a
+  channel decoding it as UTF-8 (the claude_code stream, a Node tool: its
+  invalid bytes arrive as U+FFFD).
 - **Heuristic (for unknown secrets).** The gitleaks-derived detector
   ([`tool/privacy/detector`](../pkg/backend/tool/privacy/detector)) +
   Shannon entropy, plus a recursive base64/hex decode pass that peels one
@@ -36,9 +50,29 @@ Two tiers:
 and unknown token shapes → `[redacted]`, at every **observational**
 sink, before persistence:
 
-- events.jsonl (all event types, via a redacting `AppendEvent` wrapper +
-  `node_finished` output via the engine's `SecretScrubber`),
+- events.jsonl (the backends' events via a redacting `AppendEvent`
+  wrapper, `node_finished` output via the engine's `SecretScrubber`),
+- a node's error, which the engine writes to `run.json`, `run.log`, its
+  own events (`node_recovery`, `run_failed`) and the completion webhook —
+  scrubbed where the executor returns it (`ClawExecutor.Execute`), for
+  every node kind: a failing command's stdout and stderr, an MCP error
+  echoing its input,
+- the engine's events that carry model- or operator-written text: the
+  whole `human_input_requested` payload of a question the run pauses on (a
+  human node's rendered instructions, a fan-out branch's pause, an async
+  question), an LLM router's reasoning, a review's verdict, the answers
+  recorded at a resume or at a review gate (the interaction and the
+  checkpoint keep them whole: the run needs them). A placeholder in them is
+  kept as is — the heuristic pass never redacts one, trailing sentence
+  punctuation included,
 - run.log block bodies, tool sidecar blobs, turn-snapshot conversations.
+
+Values iterion only scrubs — the run's provider keys, the process's own
+secret-named environment, and credentials a server mints for a run (the forge
+publish grant) — are **redact-only**: their placeholder resolves nowhere, so
+no agent, command or egress request can turn it back into the value, and it is
+passed through unchanged. Only the secrets a workflow declares (Layer 1)
+materialize.
 
 **Deliberately NOT redacted:** persisted **artifacts** and the resume
 **checkpoint**. These are load-bearing — they feed `{{outputs.X}}` /
@@ -68,9 +102,95 @@ form in every hook/log:
 - **claw** `tool` nodes (shell + script) and the in-process tool loop
   (`executeToolsDirect`) call `Guard.Materialize` before exec.
 - **claude_code** uses a `PreToolUse` hook returning `UpdatedInput` with
-  the materialised tool input (the SDK-supported substitution path).
+  the materialised tool input (the SDK-supported substitution path). The
+  placeholders are swapped in the input's decoded strings, never in its JSON
+  text; a shell's (or a monitor's) `description` stays in placeholder form —
+  the CLI labels a background shell with it, or with its command when there
+  is none, and relays that label to the agent when the shell ends.
+- Neither materialises the input of a tool that keeps it rather than runs
+  it — the node's report (claude_code's `StructuredOutput` stores the input
+  it is called with), the session's task list (`TodoWrite`, `TaskCreate`,
+  `TaskUpdate`; claw's `todo_write`, written to disk), a scheduled prompt
+  (`CronCreate` writes it to `.claude/scheduled_tasks.json`,
+  `ScheduleWakeup` sends it back to the model), a memory note
+  (`memory_write`; claw's `memory_write`, the knowledge store the next run
+  loads), a skill's arguments (`Skill`: the CLI injects the skill's body
+  with them), claw's PII vault (`privacy_filter`), a question to the
+  operator (`ask_user`), iterion's own MCP tools (a board issue, a run
+  query): they stay in placeholder form. The auto-memory mirror persists
+  `MEMORY.md` in placeholder form too (the file tools write it with the
+  values).
+- A command naming a secret is not compressed (claude_code's `rtk` hook,
+  claw's agent loop, a tool node's `compress:`): the compressor runs the
+  command it rewrites, and rtk records every command it runs in its
+  history — the value would land there. A shell iterion compresses also
+  runs with the rewriter's `run_env` (rtk's: `RTK_RECALL=0`, and its
+  history database under `/dev/null`, a path nothing can create) — every
+  shell of a node, whatever its mode, as the agent may run rtk itself —,
+  exported by each command it compresses as well (a settings `env` or a
+  shell rc cannot outrank it there), which turns off the stores where rtk
+  keeps the commands it ran and the output lines it left out: a command
+  carrying a secret some other way (its raw value, an environment variable),
+  or an output quoting one, leaves nothing there either. On claude_code the
+  run env is pinned in the CLI's `--settings` flag layer too, which a user's
+  or a repository's settings `env` cannot outrank. That layer rides the
+  CLI's command line, as its MCP configuration does: iterion's log names
+  its keys and never prints a value, but a process listing on the host
+  shows it — a `secret` field of a rewriter plugin's config placed in its
+  `run_env` included. A command iterion did not
+  compress — rtk typed by the agent, or run by an operator's own rtk hook —
+  still gets it from its environment only, which the operator's shell rc or
+  `BASH_ENV` can replace.
 - Both consume `delegate.Task.MaterializeSecrets` (a closure set by the
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
+- Its mirror, `delegate.Task.UnmaterializeSecrets` (`Guard.Unmaterialize`),
+  turns a known value — in any registered encoding — back into its
+  placeholder in what iterion carries from the far side of that boundary into
+  a prompt or the run store — a background task's label is the CLI's command
+  after materialisation. It is not a sink pass: `ITERION_SECRETS_REDACT=off`
+  leaves it on.
+- A verified action's self-repair (`policy: recover`) quotes the failing
+  command and its output to a model: both in placeholder form.
+- Both turn known values back into placeholders in the output of every tool
+  but the workspace readers — stopping a background shell names its command,
+  a notebook edit its new source, a redirected fetch its URL, a task or a
+  message what it was given, a foreground subagent's report whatever it saw,
+  an MCP tool whatever it reports: **claude_code** through a `PostToolUse`
+  hook (`updatedToolOutput`), **claw** before the result enters the
+  conversation. The workspace readers' output — a file (`Read`,
+  `read_file`), a search over files, an edit's snippet, a command's output
+  (`Bash`, `bash`) — is left as is, unless the call itself carried a secret
+  (a search's pattern, an image's URL: it may quote it back) or reads the
+  CLI's background task outputs — a task's file (named by a glob or a
+  variable too), their directory, or the CLI's tmp root (`claude-<uid>`): a
+  command's output, read after the call that ran it. A path in the node's
+  workspace is the workspace's own, whatever its name (a worktree is named
+  by its run's UUID, like the CLI's session directory): an agent editing a
+  line that holds a secret must see the value the file holds.
+  **Known limitations, claude_code only:** a call a permission rule denies is
+  refused with its materialised input quoted to the agent, an MCP tool's
+  error result reaches it as is, a background subagent's report reaches
+  the lead verbatim in its task notification, a monitor's events — each line
+  its command prints — reach the agent as the CLI relays them, and after a
+  compaction the CLI re-announces every background shell or monitor still
+  running with the command it runs — materialised (a foreground command the
+  CLI moves to the background past its timeout included) — no hook runs on
+  any of them. A
+  settings hook iterion does not own (the operator's user settings, the
+  target repository's `.claude/settings.json`, an iterion `hooks` plugin)
+  runs beside iterion's, and the CLI keeps the answer that lands last: one
+  that rewrites a tool's input runs the command with the placeholder, one
+  that rewrites a tool's output can send the value it received to the
+  model. A read of a task's output by a relative path after a `cd` made in
+  an earlier call, or through a variable or a parent of the CLI's tmp
+  directory (`grep -r "$TMPDIR"`), is not recognised as one, and a background
+  task's output file stays in the CLI's tmp directory after the session;
+  and the CLI keeps a tool's
+  original output when the replacement does not match its output schema
+  (iterion keeps the replacement on schema where the original can be off it:
+  a notebook's language, read from its own metadata). Keep a secret out of a
+  command a deny rule may match, or an MCP call that may fail on it (a file
+  secret).
 
 Generic placeholder materialization is currently limited to `claw` and
 `claude_code`. Pi, Kimi, Grok, and Codex leave
@@ -202,11 +322,91 @@ rewrite the plaintext request (Deno-parity secret handling):
   in-memory, never persisted) mints per-host leaves. Its public cert is
   injected into the sandbox so in-container clients trust the leaves.
 - **Substitution** ([`inspect.go`](../pkg/sandbox/netproxy/inspect.go)):
-  `MaterializeForHost` swaps placeholder→value, but only toward a
-  secret's approved `hosts:`.
+  `MaterializeForHostWithin` swaps placeholder→value, but only toward a
+  secret's approved `hosts:` (a secret that declares none goes toward any
+  host), and within the inspection bound.
 - **Content DLP**: `ExfiltratesTo` blocks (403) a real secret value bound
   for a host it isn't scoped to — defeats domain-fronting the host
   allowlist can't see.
+- **A model's conversation is never substituted.** The harness's own model
+  calls (the claude CLI, the claw runner) leave the sandbox through the
+  same proxy, their conversation naming secrets by their placeholders. A
+  request to a model API keeps its body as sent: a provider's host
+  (`api.anthropic.com`, `api.openai.com`, `openrouter.ai`, `api.x.ai`,
+  `api.mistral.ai`, `api.z.ai`, `api.moonshot.ai`/`.cn`, the Gemini and
+  Vertex AI hosts, Azure OpenAI, Bedrock runtime), a model API's path at
+  any host (`/v1/messages`, `/chat/completions`, `/v1/completions`,
+  `/responses` under any base (a gateway's, Copilot's, the ChatGPT
+  forfait's `chatgpt.com/backend-api/codex/responses`), `/v1/embeddings`,
+  `/images/generations`, `:generateContent`, `:rawPredict` and their
+  streaming forms, Ollama's `/api/chat` and `/api/generate`, Bedrock's
+  `/model/{id}/invoke` and `/converse`), or a host listed in
+  `ITERION_SANDBOX_MODEL_HOSTS` (a gateway at a path of its own, in the
+  network rules' syntax — `gw.corp`, `*.corp`, `**.corp`, an IP, a CIDR,
+  `!` to exclude; a base URL or `host:port` names its host; an entry that
+  is none of these, one matching every host (`*`, `**`), or a list of
+  exclusions only, fails the run's start whenever its sandbox starts the
+  proxy, the entry named by its position). Its
+  headers are substituted as usual (an API key a tool gives as a
+  placeholder), and content DLP applies to it like to any request. A
+  tool that sends a secret in the body of a model API call gets the
+  placeholder there: a model sees placeholders, never values
+  ([`model.go`](../pkg/sandbox/netproxy/model.go)).
+- **A scoped value in the conversation.** A secret scoped with `hosts:`
+  whose value a workspace reader showed the agent (Read, Bash — they
+  return what the workspace holds) is in the conversation from then on:
+  content DLP refuses the run's next model call (403 `blocked by sandbox
+  secret policy`, a `network_blocked` event). Keep such a file out of the
+  agent's reads, or scope the secret to the model provider's host too.
+- **A request goes where its tunnel was opened.** Policy, content DLP and
+  substitution all key on the `CONNECT` target; a request naming another
+  host inside the tunnel — its `Host` header, an absolute URL, another
+  port — is refused (421, a `network_blocked` event) rather than forwarded
+  there with the target's secrets. A client that routes a request to
+  another host than its URL's through the proxy (`curl --connect-to`) is
+  refused that way.
+- **Plain HTTP too.** A plain-HTTP request through the same proxy gets the
+  same content DLP as an inspected one — its method, URL, headers and body;
+  a chunked request's trailers, which it does not scan, are dropped (on
+  both paths).
+  Its placeholders are never substituted: a value never goes out over clear
+  text.
+- **Clients that honour the proxy.** The drivers set `HTTPS_PROXY`,
+  `HTTP_PROXY` and their lower-case spellings (curl, wget and git read only
+  `http_proxy` for an `http://` URL), and `NO_PROXY`/`no_proxy` to the
+  sandbox's own loopback — `localhost,127.0.0.1,0.0.0.0`, plus
+  `host.docker.internal` on docker (the host's MCP listeners, reached
+  directly). Docker ADDS those to the entries the spec carried, under both
+  spellings: nothing enforces egress there, so an inherited corporate
+  proxy's exceptions stay the operator's. A pod REPLACES them: its egress
+  is locked by the synthesized NetworkPolicy, and an entry kept from the
+  spec would carve a hole in the allowlist that policy enforces. No IPv6 loopback: clients read entries as patterns, and every
+  spelling of it breaks a mainstream one — a bare `::1` reads to Ruby's
+  Net::HTTP as any IPv4 address ending in `.1` and to Python's requests as
+  any IPv6 address ending in `::1`, while `[::1]` and `::1/128` make httpx
+  refuse to build a client. Where the driver enforces no egress
+  policy — docker, or a kubernetes cluster whose CNI ignores
+  NetworkPolicy — a client that ignores them reaches the network directly:
+  the proxy governs the clients that use it.
+- **A bounded body.** The proxy holds a request's body to scan and
+  substitute it: one over the bound (64 MiB by default) is refused (413),
+  never cut — a plain-HTTP upload included (an `http://` git push, an
+  artifact `curl -T`), which the proxy now scans too. The bound holds for
+  what substitution makes as well: a placeholder expands to its value, so
+  a body that would pass the bound once substituted is refused, and so are
+  header values whose substitution would add more than the bound.
+  `ITERION_SANDBOX_INSPECT_MAX_BODY` moves the bound (a byte count, or
+  `256MiB`, `1GiB`; the proxy holds several times that per request in
+  memory — about five with the header budget, more as a request carries
+  more distinct secrets, and once per request in flight);
+  `ITERION_SANDBOX_TLS_INSPECT=off` lifts it with Layer 2.
+- **What the scan sees.** Content DLP matches each registered form of a
+  value as one contiguous run of the request's text — its method, URL,
+  headers (a field name as sent when the value is all lower-case: Go
+  canonicalises names, and the other case shapes are a follow-up) and body.
+  A value split across two fields, or re-encoded in a way the guard does
+  not register, is not seen: the gate stops a leak, not an agent that
+  works around it.
 
 Inspection activates by default when a sandboxed run has known secrets;
 it forces a proxy even under `network: open`. Why TLS inspection is safe
@@ -360,12 +560,14 @@ to the LLMs, not what a bot uses inside a run.
 
 | Var | Default | Effect |
 |---|---|---|
-| `ITERION_SECRETS_REDACT` | on | Master: off disables Layer 0 sink redaction (materialization still works). |
+| `ITERION_SECRETS_REDACT` | on | Master: off disables Layer 0 sink redaction (materialization, and its mirror in what iterion writes into a prompt or the run store, still work). |
 | `ITERION_SECRETS_REDACT_HEURISTIC` | on | off keeps known-value redaction but disables the gitleaks/entropy pass. |
 | `ITERION_SECRETS_REDACT_DECODE` | on | off disables the recursive base64/hex decode pass. |
 | `ITERION_SECRETS_REDACT_MIN_SCORE` | 0.7 | Heuristic confidence floor (the 0.6 generic high-entropy rule is excluded by default). |
 | `ITERION_SECRETS_PLACEHOLDERS` | on | off renders `{{secrets.X}}` as the real value instead of a placeholder. |
-| `ITERION_SANDBOX_TLS_INSPECT` | on | off disables Layer 2 TLS inspection (the escape hatch for a pinning client or broken CA injection). |
+| `ITERION_SANDBOX_TLS_INSPECT` | on | off disables Layer 2 — TLS inspection and the plain-HTTP content DLP alike (the escape hatch for a pinning client or broken CA injection). |
+| `ITERION_SANDBOX_MODEL_HOSTS` | (none) | Your own model gateways, comma- or space-separated, in the network rules' syntax (a base URL or `host:port` names its host): Layer 2 leaves their request bodies in placeholder form, beside the built-in providers and model API paths. An invalid entry fails the run's start whenever its sandbox starts the proxy. |
+| `ITERION_SANDBOX_INSPECT_MAX_BODY` | 64 MiB | The bound of a request body Layer 2 holds to inspect: a byte count or a KiB/MiB/GiB size (`256MiB`); a larger body is refused (413). It bounds what substitution makes too, and the request line and headers keep net/http's own bound. The proxy holds several times the bound per request in memory (about five with the header budget, more with several distinct secrets), once per request in flight. A value that is no positive size fails the run's start whenever its sandbox starts the proxy. |
 
 ## Diagnostics
 

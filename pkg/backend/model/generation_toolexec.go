@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"strings"
 	"time"
 
@@ -13,7 +14,9 @@ import (
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
 )
 
@@ -251,8 +254,14 @@ func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, 
 	}
 
 	execInput := json.RawMessage(tu.PartialJSON)
-	if materialize != nil {
-		execInput = json.RawMessage(materialize(tu.PartialJSON))
+	if materialize != nil && !keepsPlaceholders(tu.Name) {
+		execInput = json.RawMessage(secretguard.MaterializeJSON([]byte(tu.PartialJSON), materialize))
+		if string(execInput) != tu.PartialJSON {
+			// A command naming a secret is not compressed: the compressor
+			// runs it (rtk records every command it runs, value included).
+			ctx = rewrite.WithMode(ctx, rewrite.Off)
+		}
+
 	}
 	start := time.Now()
 	output, err := gt.Execute(ctx, execInput)
@@ -356,6 +365,16 @@ func diagnosticShellFailureOutput(toolName, output string, err error) (string, b
 	return header + "\n" + output, true
 }
 
+// compactionConfig sizes threshold compaction for a model spec. claw's
+// registry knows vendor ids, never a routing prefix — "anthropic/claude-…"
+// would miss it and fall to the unknown-model threshold — so it is asked
+// about the route's capability id: the wire id of a vendor route. A gateway
+// route has none, and gets claw's unknown-model threshold rather than a
+// vendor's window matched on the alias's spelling.
+func compactionConfig(model string, ratio float64, preserveRecent int) clawrt.CompactionConfig {
+	return clawrt.DefaultCompactionConfigForModel(modelroute.Parse(model).CapabilityID(), ratio, preserveRecent)
+}
+
 // maybeCompact runs claw's pure-function compactor with a config sized
 // to the given model's context window (default trigger at 85% of the
 // window, last 4 messages kept verbatim). The ratio and preserveRecent
@@ -366,7 +385,7 @@ func diagnosticShellFailureOutput(toolName, output string, err error) (string, b
 // last preserveRecent turns are kept verbatim. The shared wrapper also
 // removes any tool protocol half-pair exposed by the raw message boundary.
 func maybeCompact(messages []api.Message, model string, ratio float64, preserveRecent int) (out []api.Message, info CompactInfo, compacted bool) {
-	cfg := clawrt.DefaultCompactionConfigForModel(model, ratio, preserveRecent)
+	cfg := compactionConfig(model, ratio, preserveRecent)
 	res := compactMessagesToolSafe(messages, cfg, nil)
 	if res == nil {
 		return messages, CompactInfo{}, false
@@ -386,7 +405,7 @@ func maybeCompactPause(messages []api.Message, model string, ratio float64, pres
 	if pendingToolUseID != "" {
 		allowedPending[pendingToolUseID] = struct{}{}
 	}
-	cfg := clawrt.DefaultCompactionConfigForModel(model, ratio, preserveRecent)
+	cfg := compactionConfig(model, ratio, preserveRecent)
 	if res := compactMessagesToolSafe(messages, cfg, allowedPending); res != nil {
 		messages = res.CompactedMessages
 	}
@@ -491,4 +510,17 @@ func callWithContextRetry(ctx context.Context, client api.APIClient, opts Genera
 			opts.OnContextCompactRetry(attempt+1, e, len(compacted), target)
 		}
 	}
+}
+
+// keepsPlaceholders: the tools whose input iterion or claw keeps rather than
+// executes — a question to the operator the run pauses on, a board issue or a
+// run query the store keeps and shows, the session's todo list written to disk.
+// Like claude_code's interception of ask_user, they see the placeholder form.
+func keepsPlaceholders(name string) bool {
+	switch name {
+	case "ask_user", delegate.AskUserAsyncToolName, delegate.AwaitAnswersToolName, "todo_write",
+		MemoryWriteToolName, "privacy_filter":
+		return true
+	}
+	return strings.HasPrefix(canonicalMCPToolName(name), "mcp_iterion_")
 }

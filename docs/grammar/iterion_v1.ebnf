@@ -207,6 +207,7 @@ llm_prop = "description" ":" str_value NEWLINE
          | "await" ":" await_mode NEWLINE
          | "compress" ":" compress_mode NEWLINE
          | "auto_memory" ":" auto_memory_mode NEWLINE
+         | "ambient_context" ":" ambient_context_mode NEWLINE
          | "permission" ":" permission_mode NEWLINE
          | "allow" ":" string_list NEWLINE
          | "ask" ":" string_list NEWLINE
@@ -224,6 +225,7 @@ interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review"
                  | "async" | "human_or_host" ;
 compress_mode = "off" | "on" | "ultra" ;
 auto_memory_mode = "off" | "on" ;
+ambient_context_mode = "none" | "workspace" | "operator" | "all" ;
 loop_budget_guard_mode = "off" | "on" ;
 repo_devbox_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;
@@ -411,6 +413,7 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "worktree" ":" worktree_mode NEWLINE
                 | "compress" ":" compress_mode NEWLINE
                 | "auto_memory" ":" auto_memory_mode NEWLINE
+                | "ambient_context" ":" ambient_context_mode NEWLINE
                 | "loop_budget_guard" ":" loop_budget_guard_mode NEWLINE
                 | "repo_devbox" ":" repo_devbox_mode NEWLINE
                 | "workspace_checkpoint" ":" ( "on" | "off" ) NEWLINE

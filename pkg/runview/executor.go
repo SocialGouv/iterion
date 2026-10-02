@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -66,9 +67,18 @@ type ExecutorSpec struct {
 	Workflow *ir.Workflow
 	Vars     map[string]string
 	Store    model.EventEmitter // typically *store.RunStore
-	RunID    string
-	Logger   *iterlog.Logger
-	StoreDir string
+	// Runs reads the run's record where Store cannot: a caller whose Store
+	// wraps the run store (the cloud runner's metrics emitter) passes the
+	// store itself. guardVars recovers a resumed run's server-minted
+	// credentials through it. Nil falls back to Store when it can load runs.
+	Runs  RunLoader
+	RunID string
+	// ParentRunID is the run a sub-bot child executes under. Its guard also
+	// redacts the parent's server-minted credentials: the child receives them
+	// through `with:`, under any name, before its own record exists.
+	ParentRunID string
+	Logger      *iterlog.Logger
+	StoreDir    string
 	// WorkDir is the effective workspace of this run. It is the root used by
 	// Claw's relative file tools. Empty preserves the historical os.Getwd()
 	// fallback for callers that execute in their intended workspace.
@@ -165,6 +175,10 @@ type ExecutorSpec struct {
 	// "off"), highest-priority input to automemory.Resolve (above node/workflow
 	// DSL and ITERION_AUTO_MEMORY). See docs/memory-and-knowledge.md.
 	AutoMemory string
+	// AmbientContext is the run-level ambient-context override ("", "none",
+	// "workspace", "operator", "all"), highest-priority input to
+	// ambient.ResolveSourced (ADR-119).
+	AmbientContext string
 
 	// UsageGuard enforces the operator's subscription usage cap
 	// (pkg/usagecap) for this run. The cloud runner injects one backed by
@@ -381,7 +395,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// credentials in ctx + sensitive host env + declared workflow
 	// secrets, then thread it through the event hooks so every sink is
 	// scrubbed before persistence.
-	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars)
+	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
 	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
@@ -443,6 +457,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithSecretGuard(guard),
 		model.WithCompressOverride(spec.Compress),
 		model.WithAutoMemoryOverride(spec.AutoMemory),
+		model.WithAmbientContextOverride(spec.AmbientContext),
 		// The auto-memory mirror persists through the SAME store as the
 		// `memory:` block, so a cloud runner's Mongo store is what carries
 		// MEMORY.md past the pod's ephemeral disk. nil keeps the local
@@ -782,7 +797,7 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 		// only origin that reaches a spawn.
 		dropped := map[string]bool{}
 		suppressed := !expandsAgainstLauncherEnv(origin, policy)
-		expand := recordingExpander(name, server, logger, dropped, suppressed)
+		expand := recordingExpander(name, server, logger, dropped, suppressed, origin.OperatorControlled())
 		expandedArgs := make([]string, len(server.Args))
 		for i, a := range server.Args {
 			expandedArgs[i] = expand(a)
@@ -933,16 +948,20 @@ func hasDefault(s, name string) bool {
 // the launcher's environment answers — and a reference it does not hold
 // still resolved to nothing, which is exactly as unusable. Both cases feed
 // `dropped`, so unusableAfterDroppedRefs speaks for either.
-func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger, dropped map[string]bool, suppressed bool) func(string) string {
+func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger, dropped map[string]bool, suppressed, operator bool) func(string) string {
 	if !suppressed {
+		// The overlay-then-env chain, not os.Getenv: the engine installs an
+		// env OVERLAY consulted before the process environment — the same
+		// expansion ExpandEnvWithDefault performs, with a note taken when it
+		// comes back empty. An operator's server reads every name; a
+		// workflow's reads what the process-env policy lets workflow text read.
+		lookup := ir.LookupEnv
+		if operator {
+			lookup = ir.LookupOperatorEnv
+		}
 		return func(s string) string {
-			// ir.LookupEnv, not os.Getenv: the engine installs an env
-			// OVERLAY that is consulted before the process environment, and
-			// reading the process directly skipped it — the same expansion
-			// ExpandEnvWithDefault performs, with a note taken when it
-			// comes back empty.
 			return ir.ExpandWithDefault(s, func(v string) string {
-				value := ir.LookupEnv(v)
+				value := lookup(v)
 				if value == "" && !hasDefault(s, v) {
 					dropped[v] = true
 				}
@@ -1145,6 +1164,86 @@ func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permi
 		Cache:     permissions.NewClassifierCache(30 * time.Minute),
 		MaxTokens: 64,
 	}, nil
+}
+
+// RunLoader reads a run's record.
+type RunLoader interface {
+	LoadRun(ctx context.Context, id string) (*store.Run, error)
+}
+
+// maxLineageWalk bounds a walk up a run's ParentRunID chain (sub-bot
+// children, scan shards, forks); the visited set breaks cycles, this bound
+// breaks a corrupt chain.
+const maxLineageWalk = 64
+
+// recordedMintedSecrets returns the server-minted secret values
+// (store.ServerMintedSecretVars) that the records of the run and of every
+// ancestor hold beyond its launch vars. A resumed run's spec carries no
+// launch vars, a sub-bot child's record does not exist when its executor is
+// built, and a descendant receives an ancestor's grant under whatever name
+// its `with:` chose — only the ancestor that was launched with the grant
+// holds it under the minted name. The guard registers these values for
+// redaction only: a descendant its ancestors did not hand the grant to must
+// not obtain it through a declared secret.
+func recordedMintedSecrets(ctx context.Context, spec ExecutorSpec) map[string][]string {
+	if spec.RunID == "" && spec.ParentRunID == "" {
+		return nil
+	}
+	loader := spec.Runs
+	if loader == nil {
+		loader, _ = spec.Store.(RunLoader)
+	}
+	if loader == nil {
+		if spec.Store != nil && spec.Logger != nil {
+			spec.Logger.Warn("secret guard: the store of run %s (%T) cannot load run records and ExecutorSpec.Runs is unset — the minted credentials of this run's records and its ancestors' are not redacted from this execution's sinks", spec.RunID, spec.Store)
+		}
+		return nil
+	}
+	var out map[string][]string
+	known := func(name, v string) bool {
+		if v == strings.TrimSpace(spec.Vars[name]) {
+			return true
+		}
+		for _, have := range out[name] {
+			if have == v {
+				return true
+			}
+		}
+		return false
+	}
+	ids := []string{spec.RunID, spec.ParentRunID}
+	visited := make(map[string]bool, len(ids))
+	for i := 0; i < len(ids) && len(visited) < maxLineageWalk; i++ {
+		id := ids[i]
+		if id == "" || visited[id] {
+			continue
+		}
+		visited[id] = true
+		r, err := loader.LoadRun(ctx, id)
+		if errors.Is(err, store.ErrRunNotFound) {
+			// A fresh launch builds its executor before the engine records
+			// the run: its launch vars are the only place its own grant can be.
+			continue
+		}
+		if err != nil || r == nil {
+			if spec.Logger != nil {
+				spec.Logger.Warn("secret guard: run %s not readable for its minted credentials (%v) — they, and those of its ancestors, are not redacted from this execution's sinks", id, err)
+			}
+			continue
+		}
+		ids = append(ids, r.ParentRunID)
+		for _, name := range store.ServerMintedSecretVars {
+			v, _ := r.Inputs[name].(string)
+			if v = strings.TrimSpace(v); v == "" || v == store.RedactedLaunchVar || known(name, v) {
+				continue
+			}
+			if out == nil {
+				out = make(map[string][]string, len(store.ServerMintedSecretVars))
+			}
+			out[name] = append(out[name], v)
+		}
+	}
+	return out
 }
 
 // resolveSourceIssueID returns the ticket that owns this run: explicit

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
@@ -26,13 +27,13 @@ func TestFormattingPassVerdicts(t *testing.T) {
 	newBackend := func(replies ...*claudesdk.ResultMessage) (*ClaudeCodeBackend, *int) {
 		calls := 0
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}), formatRetryDelay: -1}
-		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, error) {
+		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, []string, error) {
 			i := calls
 			calls++
 			if i >= len(replies) {
 				t.Fatalf("formatting pass called %d times, only %d replies scripted", calls, len(replies))
 			}
-			return replies[i], nil
+			return replies[i], nil, nil
 		}
 		return b, &calls
 	}
@@ -106,9 +107,9 @@ func TestFormattingPassVerdicts(t *testing.T) {
 	t.Run("a pass that could not run still prices the delegation on the exhausted path", func(t *testing.T) {
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}), formatRetryDelay: -1}
 		calls := 0
-		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, error) {
+		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, []string, error) {
 			calls++
-			return nil, errors.New("container is not running")
+			return nil, nil, errors.New("container is not running")
 		}
 		in, out := 100, 10
 		handled, res, err := b.runTwoPassFormatting(context.Background(), task, pass1, Result{Tokens: 110}, &in, &out)
@@ -122,12 +123,12 @@ func TestFormattingPassVerdicts(t *testing.T) {
 	t.Run("a billed first attempt prices the delegation when the second could not spawn", func(t *testing.T) {
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}), formatRetryDelay: -1}
 		calls := 0
-		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, error) {
+		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, []string, error) {
 			calls++
 			if calls == 1 {
-				return render("API Error: 429 rate limit exceeded", 0.45), nil
+				return render("API Error: 429 rate limit exceeded", 0.45), nil, nil
 			}
-			return nil, errors.New("container is not running")
+			return nil, nil, errors.New("container is not running")
 		}
 		in, out := 100, 10
 		_, res, err := b.runTwoPassFormatting(context.Background(), task, pass1, Result{Tokens: 110}, &in, &out)
@@ -217,6 +218,44 @@ func TestFormattingPassVerdicts(t *testing.T) {
 		var tr *ErrTransient
 		if err := b.renderedFailure(context.Background(), rm, task, "pass 1", forfaitSpawn{}); !errors.As(err, &tr) {
 			t.Fatalf("render with a fenced body exempted as an answer: %v", err)
+		}
+	})
+}
+
+// What a formatting pass's process lost joins what pass 1 lost, on both
+// paths that run one: the node's result is what a fork of this turn is told.
+func TestFormattingPassLostWorkJoinsTheResult(t *testing.T) {
+	str := func(s string) *string { return &s }
+	// Two required fields: pass 1's free text cannot satisfy the schema on
+	// its own, so the formatting pass runs.
+	schema := json.RawMessage(`{"type":"object","required":["answer","count"],"properties":{"answer":{"type":"string"},"count":{"type":"integer"}}}`)
+	task := Task{NodeID: "n", Iteration: 1, OutputSchema: schema}
+	pass1 := &claudesdk.ResultMessage{Result: str("free-form conclusion"), SessionID: "s1"}
+	passLost := []string{"./watch (local_bash, b9)"}
+	newBackend := func() *ClaudeCodeBackend {
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}), formatRetryDelay: -1}
+		b.formatOutputFn = func(context.Context, Task, string) (*claudesdk.ResultMessage, []string, error) {
+			return &claudesdk.ResultMessage{Result: str(`{"answer":"x","count":1}`), SessionID: "s1"}, passLost, nil
+		}
+		return b
+	}
+	want := []string{"auditor (local_agent, t1)", "./watch (local_bash, b9)"}
+	t.Run("two-pass", func(t *testing.T) {
+		in, out := 0, 0
+		handled, res, err := newBackend().runTwoPassFormatting(context.Background(), task, pass1,
+			Result{TerminatedBackgroundTasks: []string{"auditor (local_agent, t1)"}}, &in, &out)
+		if !handled || err != nil || !res.FormattingPassUsed || !slices.Equal(res.TerminatedBackgroundTasks, want) {
+			t.Fatalf("handled=%v err=%v pass=%v terminated=%q, want %q", handled, err, res.FormattingPassUsed, res.TerminatedBackgroundTasks, want)
+		}
+	})
+	t.Run("recovery", func(t *testing.T) {
+		in, out := 0, 0
+		res := Result{TerminatedBackgroundTasks: []string{"auditor (local_agent, t1)"}}
+		if _, err := newBackend().runRecoveryFormatterPass(context.Background(), task, "s1", &res, &in, &out); err != nil {
+			t.Fatalf("recovery: %v", err)
+		}
+		if !slices.Equal(res.TerminatedBackgroundTasks, want) {
+			t.Fatalf("terminated=%q, want %q", res.TerminatedBackgroundTasks, want)
 		}
 	})
 }

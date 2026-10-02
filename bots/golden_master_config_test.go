@@ -97,15 +97,25 @@ func TestGoldenMasterHarnessNamesTheConfig(t *testing.T) {
 		// pass this loop while testing less. The count is read from the
 		// unset run rather than written here: pinning a number would fail
 		// every branch that adds a check, and the claim is EQUALITY.
+		//
+		// Four rows, not one per variable: each row is a FULL selftest, the
+		// package's most expensive repeated unit, and eight of them put
+		// ./bots over CI's per-package budget (measured: 521.8s for the
+		// package on CI before this suite grew, then a timeout at 10m0s).
+		// The rows keep the classes: a var that selects WHAT is judged
+		// (GM_CONFIG), a var that flips a fixture's opt-in (GM_SEAL_COMMITTED,
+		// combined with a floor and the sealed dir, whose pop the selftest
+		// asserts), and git's identity ENV, which outranks every config
+		// source and once turned every fixture commit red. The selftest pops
+		// the whole class at dispatch; a pop that loses one variable is a
+		// change to that loop, and the count answers for the class, not for
+		// a name.
 		want := ""
 		for _, env := range [][]string{
 			nil,
 			{"GM_CONFIG=config-pg.json"},
-			{"GM_CONFIG="},
-			{"GM_SEAL_COMMITTED=1"},
-			{"GM_SEALED_DIR=" + filepath.Join(t.TempDir(), "pile")},
-			{"GM_MUTATION_FLOOR=1"},
-			{"GM_CONFIG=config-pg.json", "GM_SEAL_COMMITTED=1"},
+			{"GM_SEAL_COMMITTED=1", "GM_MUTATION_FLOOR=1",
+				"GM_SEALED_DIR=" + filepath.Join(t.TempDir(), "pile")},
 			// Not only the judge's own variables: git's identity ENV
 			// outranks every config source, so a host that exports it made
 			// every fixture commit under the caller's name and turned the
