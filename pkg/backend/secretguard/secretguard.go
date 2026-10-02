@@ -37,6 +37,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -132,12 +133,13 @@ func PlaceholderForName(name string) string { return defaultPlaceholder(name) }
 type Guard struct {
 	secrets            []Secret
 	literalPlaceholder map[string]string // every encoding → its placeholder
-	matcher            *regexp.Regexp    // alternation of known encodings
+	matcher            *literalMatcher   // every known encoding, longest first
 	placeholderValue   map[string]string // placeholder → raw value (Materialize)
 	filePathByName     map[string]string // secret name → mounted file path
 	fileHints          []FileSecretHint
 	fileValueByName    map[string]string // secret name → file plaintext (host materialisation)
 	encodings          [][]string        // per entry of secrets: its value encodings (egress DLP)
+	longestLiteral     int               // the longest registered encoding, in bytes
 	det                *detector.Detector
 	cfg                Config
 }
@@ -204,6 +206,10 @@ func New(secrets []Secret, cfg Config) *Guard {
 	// agent reading it back the other credential — silently, since both are
 	// secrets it is otherwise entitled to.
 	resolvable := map[string]bool{}
+	// trimmed: the forms of a value without its final newline, registered
+	// after every whole value so they never take another secret's.
+	type literal struct{ enc, ph string }
+	var trimmed []literal
 	for _, s := range secrets {
 		if !s.RedactOnly && len([]rune(s.Value)) >= cfg.MinLen {
 			resolvable[placeholderOf(s)] = true
@@ -237,7 +243,7 @@ func New(secrets []Secret, cfg Config) *Guard {
 			g.placeholderValue[ph] = s.Value
 		}
 		encs := encodingsOf(s.Value)
-		g.encodings = append(g.encodings, encs)
+
 		for _, enc := range encs {
 			// First registration wins so a value shared by two names
 			// keeps a stable placeholder — except that a materialisable
@@ -248,6 +254,27 @@ func New(secrets []Secret, cfg Config) *Guard {
 			if !ok || (!prevResolves && !s.RedactOnly) {
 				g.literalPlaceholder[enc] = ph
 			}
+		}
+		// A file's value ends with its newline; a tool printing it (cat, the
+		// CLI trimming a result) drops it. Its placeholder still stands for
+		// the whole value: materialised, it carries the newline back.
+		if t := strings.TrimRight(s.Value, "\r\n"); t != s.Value && len([]rune(t)) >= cfg.MinLen {
+			tencs := []string{t}
+			for _, body := range jsonBodies(t) {
+				if body != t {
+					tencs = append(tencs, body)
+				}
+			}
+			encs = append(encs, tencs...)
+			for _, enc := range tencs {
+				trimmed = append(trimmed, literal{enc, ph})
+			}
+		}
+		g.encodings = append(g.encodings, encs)
+	}
+	for _, l := range trimmed {
+		if _, ok := g.literalPlaceholder[l.enc]; !ok {
+			g.literalPlaceholder[l.enc] = l.ph
 		}
 	}
 
@@ -272,11 +299,220 @@ func (g *Guard) buildMatcher() {
 		}
 		return lits[i] < lits[j]
 	})
-	quoted := make([]string, len(lits))
-	for i, lit := range lits {
+	g.longestLiteral = len(lits[0])
+	g.matcher = newLiteralMatcher(lits)
+}
+
+// literalMatcher matches a set of literals, the longest at the leftmost
+// position: a literal of plainLiteralMin bytes or more as a plain string —
+// compiled, each of its bytes costs tens of bytes of regexp program for no
+// gain — and one holding U+FFFD or an invalid byte too (see
+// newLiteralMatcher); the others in as few RE2 alternations as the regexp
+// package accepts, and a literal none accepts as a plain string. It never
+// panics and never keeps a compile error: the pattern it failed on is the
+// secrets.
+type literalMatcher struct {
+	plain []string         // matched as plain strings
+	res   []*regexp.Regexp // leftmost-longest alternations
+	// resLits holds each alternation's literals by first byte, longest first.
+	resLits []map[byte][]string
+}
+
+const plainLiteralMin = 4 << 10
+
+// newLiteralMatcher takes the literals longest first.
+func newLiteralMatcher(lits []string) *literalMatcher {
+	m := &literalMatcher{}
+	for len(lits) > 0 && len(lits[0]) >= plainLiteralMin {
+		m.plain = append(m.plain, lits[0])
+		lits = lits[1:]
+	}
+	// A literal holding U+FFFD would match, in a regexp, any invalid byte at
+	// that position: a span that is no registered literal, emitted as is,
+	// hiding what it covers. Such a literal is matched as a plain string.
+	exact := lits[:0:0]
+	for _, lit := range lits {
+		if strings.ContainsRune(lit, utf8.RuneError) {
+			m.plain = append(m.plain, lit)
+			continue
+		}
+		exact = append(exact, lit)
+	}
+	lits = exact
+	for len(lits) > 0 {
+		n := len(lits)
+		for m.addAlternation(lits[:n]) != nil {
+			if n == 1 {
+				m.plain = append(m.plain, lits[0])
+				break
+			}
+			n = (n + 1) / 2
+		}
+		lits = lits[n:]
+	}
+	return m
+}
+
+// addAlternation adds lits, longest first, as one alternation — with its
+// literals by first byte, longest first — or returns why they do not compile.
+func (m *literalMatcher) addAlternation(lits []string) error {
+	re, err := compileAlternation(lits)
+	if err != nil {
+		return err
+	}
+	byFirst := make(map[byte][]string)
+	for _, lit := range lits {
+		byFirst[lit[0]] = append(byFirst[lit[0]], lit)
+	}
+	m.res = append(m.res, re)
+	m.resLits = append(m.resLits, byFirst)
+	return nil
+}
+
+// compileAlternation compiles lits as one leftmost-longest alternation, in
+// lexical order: RE2 factors shared prefixes, which a length order defeats.
+func compileAlternation(lits []string) (*regexp.Regexp, error) {
+	sorted := append([]string(nil), lits...)
+	sort.Strings(sorted)
+	quoted := make([]string, len(sorted))
+	for i, lit := range sorted {
 		quoted[i] = regexp.QuoteMeta(lit)
 	}
-	g.matcher = regexp.MustCompile(strings.Join(quoted, "|"))
+	re, err := regexp.Compile(strings.Join(quoted, "|"))
+	if err != nil {
+		return nil, err
+	}
+	re.Longest()
+	return re, nil
+}
+
+func (m *literalMatcher) MatchString(s string) bool {
+	for _, p := range m.plain {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	for _, re := range m.res {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReplaceAllStringFunc replaces every match in one pass over s: the matches
+// of every literal, the longest at the leftmost position — one inside it is
+// covered by it, and one that runs past it is replaced too, from where it
+// starts, so no part of either shows. A replacement is never scanned again
+// (a placeholder holds its secret's name, which may be another secret's
+// value).
+func (m *literalMatcher) ReplaceAllStringFunc(s string, f func(string) string) string {
+	// Each search resumes a byte past the last match's start, not at its
+	// end — a match that starts inside it is found too — or, past a run, at
+	// the run's end (add).
+	var spans [][3]int // start, covered end, the literal's end
+	// add records the match s[a:b] of a literal from lits (by first byte,
+	// longest first) and returns where the search resumes. A literal found
+	// again before its end repeats by that shift: the span covers every whole
+	// shift the text keeps repeating, and the literals that start in its last
+	// bytes and run past it are found by prefix — restarting the search at
+	// each byte of a run costs the run's length times the literal's.
+	add := func(a, b int, lits map[byte][]string, covered *int) int {
+		if b <= *covered {
+			return a + 1
+		}
+		lit := s[a:b]
+		j := strings.Index(s[a+1:min(len(s), b+len(lit)-1)], lit)
+		if j < 0 {
+			spans = append(spans, [3]int{a, b, b})
+			*covered = b
+			return a + 1
+		}
+		p := j + 1
+		e := b
+		for e < len(s) && s[e] == s[e-p] {
+			e++
+		}
+		end := b + (e-b)/p*p
+		spans = append(spans, [3]int{a, end, b})
+		longest := 0
+		for _, ls := range lits {
+			longest = max(longest, len(ls[0]))
+		}
+		for q := max(a+1, end-longest+1); q < end; q++ {
+			for _, l := range lits[s[q]] {
+				if q+len(l) <= end {
+					break
+				}
+				if strings.HasPrefix(s[q:], l) {
+					spans = append(spans, [3]int{q, q + len(l), q + len(l)})
+					break
+				}
+			}
+		}
+		*covered = end
+		return end
+	}
+	for _, p := range m.plain {
+		lits := map[byte][]string{p[0]: {p}}
+		covered := 0
+		for off := 0; off < len(s); {
+			i := strings.Index(s[off:], p)
+			if i < 0 {
+				break
+			}
+			off = add(off+i, off+i+len(p), lits, &covered)
+		}
+	}
+	for k, re := range m.res {
+		covered := 0
+		for off := 0; off < len(s); {
+			loc := re.FindStringIndex(s[off:])
+			if loc == nil {
+				break
+			}
+			off = add(off+loc[0], off+loc[1], m.resLits[k], &covered)
+		}
+	}
+	if len(spans) == 0 {
+		return s
+	}
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i][0] != spans[j][0] {
+			return spans[i][0] < spans[j][0]
+		}
+		return spans[i][1] > spans[j][1]
+	})
+	var b strings.Builder
+	last := 0
+	for _, sp := range spans {
+		if sp[1] <= last {
+			continue
+		}
+		if sp[0] > last {
+			b.WriteString(s[last:sp[0]])
+		}
+		// A span over a repeating run stands for as many of its literal as
+		// the run holds, the last one partly.
+		ph := f(s[sp[0]:sp[2]])
+		for n := (sp[1] - max(sp[0], last) + sp[2] - sp[0] - 1) / (sp[2] - sp[0]); n > 0; n-- {
+			b.WriteString(ph)
+		}
+		last = sp[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// LongestLiteral is the length in bytes of the longest text Unmaterialize
+// (and Redact) recognises as one known value: a caller that redacts a window
+// of a longer text must read at least that far past what it keeps. 0 on a nil
+// Guard or one with no known value.
+func (g *Guard) LongestLiteral() int {
+	if g == nil {
+		return 0
+	}
+	return g.longestLiteral
 }
 
 // HasKnownSecrets reports whether any known value is registered.
@@ -305,13 +541,8 @@ func (g *Guard) Redact(s string) string {
 	if g == nil || s == "" {
 		return s
 	}
-	if g.matcher != nil && g.cfg.RedactKnown {
-		s = g.matcher.ReplaceAllStringFunc(s, func(m string) string {
-			if ph, ok := g.literalPlaceholder[m]; ok {
-				return ph
-			}
-			return m
-		})
+	if g.cfg.RedactKnown {
+		s = g.Unmaterialize(s)
 	}
 	if g.cfg.Heuristic && g.det != nil {
 		s = g.heuristicRedact(s)
@@ -320,6 +551,24 @@ func (g *Guard) Redact(s string) string {
 		}
 	}
 	return s
+}
+
+// Unmaterialize maps every known secret value (in any registered encoding)
+// back to its placeholder, and nothing else — Materialize's mirror, for text
+// iterion carries from the far side of the materialisation boundary into a
+// prompt or the run store. Unlike Redact it is not a sink pass: the
+// ITERION_SECRETS_REDACT kill switch leaves it on, the agent only ever sees
+// placeholders. Safe on a nil Guard.
+func (g *Guard) Unmaterialize(s string) string {
+	if g == nil || s == "" || g.matcher == nil {
+		return s
+	}
+	return g.matcher.ReplaceAllStringFunc(s, func(m string) string {
+		if ph, ok := g.literalPlaceholder[m]; ok {
+			return ph
+		}
+		return m
+	})
 }
 
 // RedactBytes is a convenience wrapper for []byte sinks.
@@ -402,6 +651,11 @@ func (g *Guard) heuristicRedact(s string) string {
 		if sp.Start < prev || sp.End > len(runes) || sp.Start > sp.End {
 			continue
 		}
+		// A placeholder is a secret's safe form, never one: redacted, the
+		// reference is lost to whoever reads the text back.
+		if placeholderToken.MatchString(strings.TrimRight(string(runes[sp.Start:sp.End]), ".,;:!?)]}\"'")) {
+			continue
+		}
 		b.WriteString(string(runes[prev:sp.Start]))
 		b.WriteString(g.cfg.Marker)
 		prev = sp.End
@@ -409,6 +663,9 @@ func (g *Guard) heuristicRedact(s string) string {
 	b.WriteString(string(runes[prev:]))
 	return b.String()
 }
+
+// placeholderToken matches a span made of placeholders only.
+var placeholderToken = regexp.MustCompile(`^__ITERION_SECRET_[A-Za-z0-9_]+__$`)
 
 // b64ish matches a run that could be base64/hex-encoded data.
 var b64ish = regexp.MustCompile(`[A-Za-z0-9+/_\-]{16,}={0,2}`)

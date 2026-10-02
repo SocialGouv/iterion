@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"strings"
 	"time"
 
@@ -253,14 +254,14 @@ func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, 
 	}
 
 	execInput := json.RawMessage(tu.PartialJSON)
-	if materialize != nil {
-		// In the string values, never the text: a secret carrying a quote
-		// must not rewrite the input around it.
-		materialized, merr := secretguard.MaterializeJSON(execInput, materialize)
-		if merr != nil {
-			return "", merr
+	if materialize != nil && !keepsPlaceholders(tu.Name) {
+		execInput = json.RawMessage(secretguard.MaterializeJSON([]byte(tu.PartialJSON), materialize))
+		if string(execInput) != tu.PartialJSON {
+			// A command naming a secret is not compressed: the compressor
+			// runs it (rtk records every command it runs, value included).
+			ctx = rewrite.WithMode(ctx, rewrite.Off)
 		}
-		execInput = materialized
+
 	}
 	start := time.Now()
 	output, err := gt.Execute(ctx, execInput)
@@ -509,4 +510,17 @@ func callWithContextRetry(ctx context.Context, client api.APIClient, opts Genera
 			opts.OnContextCompactRetry(attempt+1, e, len(compacted), target)
 		}
 	}
+}
+
+// keepsPlaceholders: the tools whose input iterion or claw keeps rather than
+// executes — a question to the operator the run pauses on, a board issue or a
+// run query the store keeps and shows, the session's todo list written to disk.
+// Like claude_code's interception of ask_user, they see the placeholder form.
+func keepsPlaceholders(name string) bool {
+	switch name {
+	case "ask_user", delegate.AskUserAsyncToolName, delegate.AwaitAnswersToolName, "todo_write",
+		MemoryWriteToolName, "privacy_filter":
+		return true
+	}
+	return strings.HasPrefix(canonicalMCPToolName(name), "mcp_iterion_")
 }

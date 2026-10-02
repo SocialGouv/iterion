@@ -99,7 +99,7 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 					}
 					b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
 					if format {
-						_, _, _ = b.formatOutput(ctx, task, "review")
+						_, _, _, _ = b.formatOutput(ctx, task, "review")
 					} else {
 						opts, cleanup := b.buildTransportOptions(task)
 						defer cleanup()

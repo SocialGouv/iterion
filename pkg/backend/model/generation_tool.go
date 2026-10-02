@@ -86,6 +86,12 @@ type GenerationOptions struct {
 	// persist, so the real secret never reaches the store.
 	MaterializeSecrets func(string) string
 
+	// UnmaterializeSecrets, when non-nil, turns the known secret values an
+	// echoing tool's result quotes (a fetched URL, an MCP tool's report of
+	// its input) back into their placeholders before the result enters the
+	// conversation — claude_code's PostToolUse twin.
+	UnmaterializeSecrets func(string) string
+
 	// CompactThresholdRatio overrides the default compaction trigger as a
 	// fraction of the model's context window. 0 falls back to the built-in
 	// default (0.85). Values outside (0, 1] fall back to the default.

@@ -61,6 +61,12 @@ type HookOutput struct {
 	// AdditionalContext is appended to the tool result (PostToolUse only).
 	AdditionalContext string `json:"additionalContext,omitempty"`
 
+	// UpdatedToolOutput replaces the tool's output before it reaches the
+	// model (PostToolUse only). The CLI keeps the original when the
+	// replacement does not match the tool's output shape, and applies sibling
+	// hooks' replacements last-write-wins: return one only when it differs.
+	UpdatedToolOutput any `json:"updatedToolOutput,omitempty"`
+
 	// SystemMessage is injected into the conversation for the model.
 	SystemMessage string `json:"systemMessage,omitempty"`
 

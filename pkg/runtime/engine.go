@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -484,6 +485,12 @@ type runState struct {
 	artifactVersions map[string]int
 	nodeSessions     map[string]store.NodeSessionSlot
 	pauseSessionRef  string // in-flight CLI ask_user pack (ADR-089)
+	// sessionLedger records the background work a CLI session's processes
+	// lost, per session id (delegate.SessionLedger). One
+	// ledger per run, shared by the trunk and every branch — its entries are
+	// keyed by session id, which no two items share — persisted in each
+	// checkpoint and restored on resume.
+	sessionLedger *delegate.MemorySessionLedger
 	// lastGraceNode/lastGraceDim dedupe the budget_exit_grace event: the
 	// pre-exec check and the post-resource-wait duration gate can route
 	// the SAME overrun through graceOrFailBudget at one node boundary,
@@ -809,6 +816,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		selectedIncoming:   make(map[string][]store.IncomingEdge),
 		artifactVersions:   make(map[string]int),
 		nodeSessions:       make(map[string]store.NodeSessionSlot),
+		sessionLedger:      delegate.NewSessionLedger(nil),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             e.newRunBudget(),

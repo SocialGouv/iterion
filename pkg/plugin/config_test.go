@@ -77,6 +77,7 @@ func TestEnabledRewriterSpecsExpandsConfig(t *testing.T) {
 					Argv: []string{"--level", "{{config.level}}", "{{command}}"},
 					Env:  map[string]string{"RW_LEVEL": "{{config.level}}"},
 				},
+				RunEnv: map[string]string{"RW_STORE": "{{config.level}}"},
 			}}},
 		},
 	}
@@ -96,12 +97,15 @@ func TestEnabledRewriterSpecsExpandsConfig(t *testing.T) {
 	if s.Invoke.Env["RW_LEVEL"] != "ultra" {
 		t.Fatalf("env not config-expanded: %v", s.Invoke.Env)
 	}
+	if s.RunEnv["RW_STORE"] != "ultra" {
+		t.Fatalf("run env not config-expanded: %v", s.RunEnv)
+	}
 	if s.Invoke.Argv[1] != "ultra" || s.Invoke.Argv[2] != "{{command}}" {
 		t.Fatalf("argv expansion wrong ({{command}} must survive): %v", s.Invoke.Argv)
 	}
 	// The registry's manifest must be untouched (we expand a copy).
-	if p.Manifest.Contributes.Rewriters[0].Invoke.Env["RW_LEVEL"] != "{{config.level}}" {
-		t.Fatalf("manifest mutated: %v", p.Manifest.Contributes.Rewriters[0].Invoke.Env)
+	if p.Manifest.Contributes.Rewriters[0].Invoke.Env["RW_LEVEL"] != "{{config.level}}" || p.Manifest.Contributes.Rewriters[0].RunEnv["RW_STORE"] != "{{config.level}}" {
+		t.Fatalf("manifest mutated: %+v", p.Manifest.Contributes.Rewriters[0])
 	}
 }
 

@@ -122,6 +122,11 @@ type TurnCheckpoint struct {
 	// `claude --resume <id> --fork-session` to materialise the child
 	// run's conversation. Empty for claw turns (no session id concept).
 	SessionID string `json:"session_id,omitempty"`
+	// TerminatedBackground labels the background work (claude_code: async
+	// subagents, background commands) this call's processes lost — never
+	// reported back. A run forked from this turn resumes SessionID and seeds
+	// its session ledger with it, so the agent is told.
+	TerminatedBackground []string `json:"terminated_background,omitempty"`
 	// MessagesRef, when non-empty, names a sibling file
 	// `<turn>.messages.json` holding the full []api.Message slice the
 	// claw loop had accumulated when this turn completed. Populated

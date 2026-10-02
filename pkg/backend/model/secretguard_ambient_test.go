@@ -37,3 +37,16 @@ func TestBuildSecretGuard_RedactsDistinctiveAmbientSecret(t *testing.T) {
 		t.Fatalf("distinctive ambient secret was not redacted: %q", got)
 	}
 }
+
+// A final newline makes no ambient value more distinctive: a weak one stays
+// out of the guard — the guard would register it without the newline too, and
+// rewrite the word everywhere.
+func TestBuildSecretGuard_ANewlineDoesNotMakeAWeakAmbientValueSafe(t *testing.T) {
+	t.Setenv("ITERION_TEST_PASSWORD", "password123\n")
+	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, nil, nil)
+	for _, text := range []string{"reset password123 to a new value", "password123\n"} {
+		if got := g.Unmaterialize(text); got != text {
+			t.Fatalf("Unmaterialize(%q) = %q: a weak ambient value poisoned ordinary text", text, got)
+		}
+	}
+}

@@ -119,6 +119,18 @@ type OrchestrationStallInfo struct {
 	Recovered bool
 }
 
+// BackgroundWorkInfo is one step of the lifecycle that keeps a delegate
+// session open for the background work it launched, passed to the
+// OnBackgroundWork hook.
+type BackgroundWorkInfo struct {
+	Backend   string
+	Phase     string // waiting | settled | finalizing | abandoned
+	Running   int
+	Tasks     []string
+	WaitedFor time.Duration
+	Reason    string
+}
+
 // LLMToolCallInfo describes a tool call execution, passed to the OnToolCall hook.
 type LLMToolCallInfo struct {
 	ToolName  string
@@ -216,6 +228,10 @@ type LLMTurnCaptureInfo struct {
 	// passes it to `claude --resume <id> --fork-session` for the
 	// claude_code rehydration path.
 	SessionID string
+	// TerminatedBackgroundTasks is the background work this claude_code
+	// call's processes lost (delegate.TurnFinishedInfo): a fork that resumes
+	// SessionID must tell the agent it is gone.
+	TerminatedBackgroundTasks []string
 	// ConversationOmittedBytes is non-zero when the turn crossed the
 	// sandbox IPC without its snapshot, the snapshot being larger than
 	// one relayed line may carry (relayConversationBudget): the turn is

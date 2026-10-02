@@ -22,7 +22,9 @@ package plugin
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 
 	yaml "go.yaml.in/yaml/v2"
 )
@@ -136,6 +138,12 @@ type RewriterSpec struct {
 	// SandboxMount, when set, is the in-container path the host binary is
 	// bind-mounted to for sandboxed runs (e.g. /usr/local/bin/rtk).
 	SandboxMount string `yaml:"sandbox_mount"`
+	// RunEnv is the environment of a shell whose commands the rewriter
+	// compresses: the compressed command runs the rewriter's binary, which
+	// may keep what it ran and what it printed in stores of its own (rtk's
+	// history and recall databases) — past the run, secrets included. The
+	// spec turns them off here; it wins over the inherited environment.
+	RunEnv map[string]string `yaml:"run_env"`
 }
 
 // LocateSpec resolves a binary: env override first, then PATH (Bin), then the
@@ -259,8 +267,23 @@ func (r *RewriterSpec) validate(plugin string) error {
 	if !seen {
 		return fmt.Errorf("plugin %q rewriter %q: invoke.argv must contain %s", plugin, r.ID, CommandPlaceholder)
 	}
+	for k, v := range r.RunEnv {
+		if !envName.MatchString(k) {
+			return fmt.Errorf("plugin %q rewriter %q: run_env has an invalid variable name %q (want a shell identifier)", plugin, r.ID, k)
+		}
+		// The value rides the command a compressed shell runs (an export
+		// prefix): the claude_code CLI refuses a command carrying a control
+		// character, and exec refuses a NUL.
+		if strings.ContainsFunc(v, unicode.IsControl) {
+			return fmt.Errorf("plugin %q rewriter %q: run_env %s has a control character in its value", plugin, r.ID, k)
+		}
+	}
 	return nil
 }
+
+// envName is a shell identifier: a run_env name is exported by a shell
+// prefix ahead of the command it compresses.
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (s *MCPServerSpec) validate(plugin string) error {
 	if strings.TrimSpace(s.Name) == "" {

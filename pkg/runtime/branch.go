@@ -616,13 +616,7 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	if err := e.store.WriteInteraction(parent.ctx, interaction); err != nil {
 		return fmt.Errorf("runtime: write branch interaction: %w", err)
 	}
-	eventData := map[string]any{
-		"interaction_id": interactionID,
-		"questions":      questions,
-	}
-	for key, value := range e.humanPauseExtra(nodeID, questions, branchRS) {
-		eventData[key] = value
-	}
+	eventData := e.pauseEventData(interactionID, questions, e.humanPauseExtra(nodeID, questions, branchRS))
 	if err := e.emitBranch(parent.ctx, parent.runID, branchID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
 		return err
 	}

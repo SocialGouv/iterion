@@ -1135,9 +1135,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		ReasoningEffort:       wireEffort(effort),
 		Ultracode:             ultracode,
 		InteractionEnabled:    f.interaction != ir.InteractionNone,
+		SessionLedger:         SessionLedgerFromContext(ctx),
 		SecretsHygiene:        e.secretGuard.HasKnownSecrets(),
 		SecretFiles:           e.secretFileHints(),
 		MaterializeSecrets:    e.secretMaterializer(),
+		RedactSecrets:         e.secretRedactor(),
+		RedactSecretsSpan:     e.secretGuard.LongestLiteral(),
+		UnmaterializeSecrets:  e.secretUnmaterializer(),
 		CompactThresholdRatio: compactRatio,
 		CompactPreserveRecent: compactPreserve,
 		Sandbox:               e.sandbox,
@@ -1186,6 +1190,11 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	}
 	if m := rewrite.ResolveWithDefault(e.compressOverride, f.compress, e.wfCompress, e.compressEnvDefault, compressDefault); m.Enabled() {
 		task.CompressMode = m.String()
+	}
+	// The rewriters ride the task whatever the mode: the agent may run one
+	// itself, or an operator's own hook may (rtk's `rtk init -g`), and the
+	// node's shell carries their run env either way.
+	if e.chain.Available() {
 		task.Rewriters = e.chain.Specs()
 	}
 	// Tool-permission gate (precedence: run override > node DSL > workflow

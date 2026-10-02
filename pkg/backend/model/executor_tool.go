@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -441,7 +442,9 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// placeholder (rewriter-form) command, never the materialised secret.
 			// Shell-only: a script body (executeToolNodeScript) is not a shell
 			// command line and never rewrites.
-			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() {
+			// A command naming a secret is not compressed: the compressor
+			// runs it with the value (rtk records every command it runs).
+			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && e.secretGuard.Materialize(resolved) == resolved {
 				if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
 					resolved = rewritten
 				}
@@ -708,6 +711,25 @@ func scriptInterpreter(language string) (argv []string, ext string) {
 	}
 }
 
+// withRunEnv is env (a fresh map, the caller's left as is) plus the
+// rewriter chain's run env: every command a tool node runs — its recipe, its
+// script, its postcondition, a self-repair's command — may run a rewriter
+// itself, compressed or not, and keeps what it ran and printed out of the
+// rewriter's own stores.
+func (e *ClawExecutor) withRunEnv(env map[string]string) map[string]string {
+	runEnv := e.chain.RunEnv()
+	if len(runEnv) == 0 {
+		return env
+	}
+	out := make(map[string]string, len(env)+len(runEnv))
+	maps.Copy(out, env)
+	for _, kv := range runEnv {
+		k, v, _ := strings.Cut(kv, "=")
+		out[k] = v
+	}
+	return out
+}
+
 // toolNodeScriptCommand returns a configured *exec.Cmd that invokes the
 // interpreter argv (scriptInterpreter) on the script temp file. Mirrors
 // toolNodeCommand for the script-mode path: sandbox-routed if a sandbox
@@ -715,7 +737,7 @@ func scriptInterpreter(language string) (argv []string, ext string) {
 func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) *exec.Cmd {
 	argv := append(append([]string{}, interpreter...), script)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{})
+		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{Env: e.withRunEnv(nil)})
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
@@ -733,6 +755,7 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 		}
 	}
+	cmd.Env = append(cmd.Env, e.chain.RunEnv()...)
 	// The canonical tree-noise pathspecs, engine-owned: a run without a
 	// devbox.json carries them just the same (#1464) — but the operator,
 	// the run or the node wins when they set the variable themselves, as
@@ -817,6 +840,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		args = []string{"bash", "-s"}
 		stdin = strings.NewReader(resolved)
 	}
+	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
 		return e.sandbox.Command(ctx, args, sandbox.ExecOpts{Env: env, Stdin: stdin})
 	}

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -56,9 +57,34 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		CostUSDTotal:           rs.costUSDTotal,
 		FiredEvents:            rs.events.snapshot(),
 		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
+		SessionLedger:          snapshotSessionLedger(rs.sessionLedger),
 		BackendSessionStateRef: rs.pauseSessionRef,
 	}
 	return cp
+}
+
+// snapshotSessionLedger is the checkpoint form of the run's session ledger,
+// sorted by session id so two checkpoints of one state are byte-identical.
+func snapshotSessionLedger(l *delegate.MemorySessionLedger) []store.SessionLedgerEntry {
+	entries := l.Entries()
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]store.SessionLedgerEntry, 0, len(entries))
+	for id, tasks := range entries {
+		out = append(out, store.SessionLedgerEntry{SessionID: id, Tasks: tasks})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SessionID < out[j].SessionID })
+	return out
+}
+
+// restoreSessionLedger rebuilds the run's session ledger from a checkpoint.
+func restoreSessionLedger(entries []store.SessionLedgerEntry) *delegate.MemorySessionLedger {
+	m := make(map[string][]string, len(entries))
+	for _, e := range entries {
+		m[e.SessionID] = e.Tasks
+	}
+	return delegate.NewSessionLedger(m)
 }
 
 // snapshotArtifactState persists the logical catalog without duplicating the

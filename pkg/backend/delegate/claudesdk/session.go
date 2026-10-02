@@ -96,12 +96,38 @@ func (s *Session) Send(ctx context.Context, prompt string) error {
 		return err
 	}
 
+	return s.write(prompt, "")
+}
+
+// SendTagged is Send with a uuid on the message: a session started with
+// WithReplayUserMessages re-emits it (isReplay, same uuid) when a turn takes
+// it — the host's proof the CLI read it, in the CLI's own order.
+func (s *Session) SendTagged(ctx context.Context, prompt, uuid string) error {
+	if prompt == "" {
+		return ErrEmptyPrompt
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrSessionClosed
+	}
+	s.mu.Unlock()
+	if err := s.ensureStarted(ctx); err != nil {
+		return err
+	}
+	return s.write(prompt, uuid)
+}
+
+func (s *Session) write(prompt, uuid string) error {
 	msg := map[string]any{
 		"type": "user",
 		"message": map[string]any{
 			"role":    "user",
 			"content": prompt,
 		},
+	}
+	if uuid != "" {
+		msg["uuid"] = uuid
 	}
 	return s.proc.writeLine(msg)
 }
@@ -209,6 +235,9 @@ func (s *Session) Stream(ctx context.Context) iter.Seq2[Message, error] {
 			// so the two readings of one fact cannot disagree.
 			if sys, ok := msg.(*SystemMessage); ok {
 				s.noteSessionID(sys.SessionID, sys.Subtype == "init")
+			}
+			for _, observe := range s.cfg.messageObservers {
+				observe(msg)
 			}
 
 			if !yield(msg, nil) {
@@ -405,6 +434,28 @@ func (s *Session) handleControlResponse(data json.RawMessage) {
 	s.ctrl.handleResponse(resp.Response)
 }
 
+// hookSpecificFields returns the hook-specific fields a callback's output
+// sets — none for a no-op hook.
+func hookSpecificFields(output HookOutput) map[string]any {
+	hookSpecific := make(map[string]any)
+	if output.Decision != "" {
+		hookSpecific["permissionDecision"] = output.Decision
+	}
+	if output.DecisionReason != "" {
+		hookSpecific["permissionDecisionReason"] = output.DecisionReason
+	}
+	if output.UpdatedInput != nil {
+		hookSpecific["updatedInput"] = output.UpdatedInput
+	}
+	if output.AdditionalContext != "" {
+		hookSpecific["additionalContext"] = output.AdditionalContext
+	}
+	if output.UpdatedToolOutput != nil {
+		hookSpecific["updatedToolOutput"] = output.UpdatedToolOutput
+	}
+	return hookSpecific
+}
+
 // handleHookCallback processes hook callbacks from the CLI.
 func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
 	var body struct {
@@ -451,19 +502,7 @@ func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
 	// spam on every tool call from no-op hooks (e.g. our PostToolUse
 	// inbox drainer that returns HookOutput{} when no operator messages
 	// are queued).
-	hookSpecific := make(map[string]any)
-	if output.Decision != "" {
-		hookSpecific["permissionDecision"] = output.Decision
-	}
-	if output.DecisionReason != "" {
-		hookSpecific["permissionDecisionReason"] = output.DecisionReason
-	}
-	if output.UpdatedInput != nil {
-		hookSpecific["updatedInput"] = output.UpdatedInput
-	}
-	if output.AdditionalContext != "" {
-		hookSpecific["additionalContext"] = output.AdditionalContext
-	}
+	hookSpecific := hookSpecificFields(output)
 
 	resp := map[string]any{}
 	if len(hookSpecific) > 0 {

@@ -67,7 +67,14 @@ Code:
   **not** gate the toolset — claude_code nodes always have the full native
   toolset (a node's lowercase `tools:` list is a no-op here; the real
   hard-restrict flag is `--tools`, deliberately unused to preserve
-  adaptivity).
+  adaptivity). Async subagents / workflows: the session stays open until
+  that work comes back (a background shell does not hold it), and a report
+  written before it did is not the node's answer (save the one a spent
+  budget's wrap-up asks for) — a node that "stops too
+  early" or re-does its audit every pass is the thing to check against
+  [backends.md](../../backends.md) ("Background work"), `delegate_background`
+  events, the checkpoint's `session_ledger` and
+  `ITERION_CLAUDE_CODE_BACKGROUND_*`.
 - **claw** — claw-code-go is a bare API client with **no** native system
   prompt, so iterion prepends an authored `agenticOperatingPosture` base
   (the parity substrate) before the node's `system:` text. A node's

@@ -41,13 +41,14 @@ import (
 // reads it — or a "<no settings file: …>" marker.
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
-if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" >> "$ENV_LOG"; fi
+if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s] rtkdb=[%s] rtkrecall=[%s] sse=[%s] rr=[%s] exitdelay=[%s] bgceil=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" "${RTK_DB_PATH-<unset>}" "${RTK_RECALL-<unset>}" "${CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS-<unset>}" "${CLAUDE_CODE_BG_TASKS_REPORT_RUNNING-<unset>}" "${CLAUDE_CODE_EXIT_AFTER_STOP_DELAY-<unset>}" "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-<unset>}" >> "$ENV_LOG"; fi
 if [ -n "$SETTINGS_LOG" ]; then
 	settings=; prev=
 	for a in "$@"; do if [ "$prev" = --settings ]; then settings=$a; fi; prev=$a; done
 	if [ -n "$settings" ] && [ -f "$settings" ]; then tr '\n' ' ' < "$settings" >> "$SETTINGS_LOG"; else printf '<no settings file: %s>' "$settings" >> "$SETTINGS_LOG"; fi
 	printf '\n' >> "$SETTINGS_LOG"
 fi
+
 case "$*" in *--input-format*)
 	while read -r line; do
 		case "$line" in *'"type":"user"'*) break ;; esac
@@ -180,6 +181,9 @@ func disallowed(argv string) []string {
 // second pass carried no tool flags at all, so the boundary held on one spawn
 // and not the other, which is no boundary.
 func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
+	// These rows assert what the node DECLARES: the orchestration knob is
+	// the environment's and would add its own withholdings on top.
+	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
 	roster := []string{
 		"Bash", "Read", "Glob", "Grep", "Write", "Edit", "MultiEdit",
 		"NotebookEdit", "Task", "WebFetch", "WebSearch", "ToolSearch",

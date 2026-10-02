@@ -39,6 +39,7 @@ type processConfig struct {
 	MaxBudgetUSD float64
 
 	IncludePartialMessages bool
+	ReplayUserMessages     bool
 
 	// ThinkingDisplay maps to --thinking-display (summarized|omitted).
 	// Opus 4.8+ defaults display to omitted in headless mode, streaming
@@ -105,6 +106,9 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 	}
 	if cfg.IncludePartialMessages {
 		args = append(args, "--include-partial-messages")
+	}
+	if streaming && cfg.ReplayUserMessages {
+		args = append(args, "--replay-user-messages")
 	}
 	if cfg.ThinkingDisplay != "" {
 		args = append(args, "--thinking-display", cfg.ThinkingDisplay)

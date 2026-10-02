@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -215,13 +216,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// so the bash builtin can compress command output (rewrite via context).
 	// Off is a no-op. For the sandboxed path the mode + chain specs ride the
 	// IOTask to the in-container runner, whose own Execute re-applies them here.
-	ctx = rewrite.WithMode(ctx, rewrite.ParseMode(task.CompressMode))
-	ctx = rewrite.WithChain(ctx, rewrite.NewChain(task.Rewriters))
+	mode, chain := rewrite.ParseMode(task.CompressMode), rewrite.NewChain(task.Rewriters)
+	ctx = rewrite.WithMode(ctx, mode)
+	ctx = rewrite.WithChain(ctx, chain)
 	// Run-level env additions (devbox profile PATH on no-sandbox runs)
 	// reach the in-process bash builtin via ctx — the tool registry is
 	// built before the run's provisioning resolves, so the closure reads
-	// the value per call.
-	ctx = tool.WithBashExtraEnv(ctx, task.ExtraEnv)
+	// the value per call. The shell also carries the chain's run env, last
+	// so it wins, whatever the mode (the agent may run a rewriter itself): it
+	// keeps what a command ran and printed out of the rewriter's own stores.
+	ctx = tool.WithBashExtraEnv(ctx, append(slices.Clip(task.ExtraEnv), chain.RunEnv()...))
 
 	// claw is an in-process Anthropic SDK consumer rather than the vendor's
 	// own CLI, which was once read as putting a Claude Pro/Max OAuth
@@ -335,6 +339,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
 		MaterializeSecrets:    task.MaterializeSecrets,
+		UnmaterializeSecrets:  task.UnmaterializeSecrets,
 	}
 
 	// Reasoning effort via ProviderOptions. Coerce against the model's
