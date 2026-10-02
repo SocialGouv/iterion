@@ -7,79 +7,93 @@
 - **Serves**: epic [#2000](https://github.com/SocialGouv/iterion/issues/2000), slice [#1999](https://github.com/SocialGouv/iterion/issues/1999)
 - **First delivery only**: the policy foundation, launch-time harness selection, and same-harness mid-run fallback. Cross-harness relaunch with transcript handoff is the next delivery on this foundation (§ Out of scope).
 
-## Context
+### Context
 
-Today a run finds its credential through pieces that do not compose. A bot author may hand-declare per-node `fallbacks:` routes (ADR-087) and a run-level `--fallback` chain; the delegates hold a hardcoded precedence inside their own family (claude_code: its bundle default, then a hinted key, then the forfait); the shared tiers fill wires in an order two knobs order (#1956); the facade policy (#2096) decides whether a z.ai key may be the wire's default at all; the pool is a last resort with a full-preference order; and when every tier abstains, the run either parks on a usage window or fails at its first LLM call.
+Today a run finds its credential through pieces that do not compose. A bot author may hand-declare per-node `fallbacks:` routes (ADR-087) and a run-level `--fallback` chain; inside one family the delegates hold a precedence that is easy to mis-state and matters here in full: a `provider:` hint overrides everything; without a hint the anthropic wire is walked `zai → moonshot → anthropic → forfait → env` (the forfait passes a key only for a **pinned** same-provider route — `RegisterForfaitFirst`); the walk is over a bundle **sealed at launch** — it has no notion of a window state. The shared tiers fill wires in an order two knobs order (#1956); the facade policy (#2096) decides whether a z.ai key may be the wire's default; the pool is a last resort with a whole-bundle gate ("only for a run that has no credential of its own at all"); and when every tier abstains, the run either parks on a usage window or fails at its first LLM call. Host-side `ITERION_BACKEND_PREFERENCE` is detection, not a run's sealed credentials.
 
-What no piece does: **follow the credentials the run actually holds**. A run whose tiers hold only an OpenAI key still starts its `claude_code` nodes and dies at the first call; a run whose Claude forfait closes mid-run parks, while a z.ai key sits sealed in its own bundle able to serve GLM on the same session. Making that work by hand costs a `fallbacks:` chain per node, per bot, per repo — knowledge the operator, not the author, holds (which vendor is paid for, which is capped, which model answers a claude id).
+What no piece does: **follow the credentials the run actually holds**. A run whose tiers hold only an OpenAI key still starts its `claude_code` nodes and dies at the first call; a run whose Claude forfait closes mid-run parks, while a z.ai key sits sealed in its own bundle. Making that work by hand costs a `fallbacks:` chain per node, per bot, per repo — knowledge the operator, not the author, holds.
 
 The operator's decision (2026-09-30, on epic #2000): routing becomes a **policy, configurable at every level, automatic by default**, and the harness follows the credential.
 
 ## Decision
 
-### 1. One policy object, five levels, locks
+### 0. The form: a per-field fold, on the retrypolicy pattern
 
-`RoutingPolicy` is a record whose fields are each independently settable and independently lockable. It lives at five levels; resolution folds from the broadest to the most specific, most specific wins, and **a field marked `locked` at any level stops the descent for that field** — the one primitive cost governance has.
+`RoutingPolicy` resolves exactly the way `retrypolicy.Resolve` already does (field by field, the first level that sets a field wins, a **provenance map** answers "which level decided this", and the platform level can only **lower** what the levels below may do — on `triggers`, the platform ceiling prunes and never extends). List fields carry their own merge rule, stated per field in §1 — a reordered prefix of a longer list being a semantics trap, `pair_order` **replaces** at the highest level that sets it rather than merging. A field marked `locked` at a level stops the descent for that field: the one primitive cost governance has. The resolved policy is snapshotted onto the run document at launch, as retrypolicy already snapshots.
 
-| Level | Where it lives | Written by |
-|---|---|---|
-| platform | the platform-credentials settings record (`platformcfg`), env default | the deployment operator |
-| org | a new org settings record | the org admin |
-| team | a new team settings record | the team admin |
-| bot | the bot manifest (`routing:` block), shipped with the bot | the bot author |
-| run | launch vars (`--routing-*`) / the launch spec | whoever launches |
+**Levels and sequencing.** Platform (the settings record the facade and keys-first knobs already ride), bot (a `routing:` block in the manifest — orchestration, not workflow semantics, the same rule ADR-087's alternative 6 set for `retry:`), and run (launch fields) are delivery 1. Org and team are **delivery 2**: they are greenfield — `identity` records are directory entries, admission lists are not settings, and each level means a new collection, API routes, an RBAC answer to "who is an org admin", tenancy threading, CAS and preview support. Named, costed, sequenced — not smuggled into "four of them new".
 
 Fields of the first delivery:
 
-- **`pair_order`** — the ordered list of `(harness, credential)` pairs a run may occupy: the default is `claude_code+claude_forfait`, `codex+chatgpt_forfait`, `claw+anthropic_key`, `claw+openai_key`, `claude_code+zai_key`, then the rest. Any level may reorder, prune or extend it.
-- **`triggers`** — which ADR-087 failure categories may fire a fallback: `usage_window`, `unavailable`, `transient_exhausted`, `auth` by default; `budget` and `schema` are excluded always (they re-fail identically on every route). Any level may prune; never extend past the platform's set.
-- **`model_classes`** — model *classes* (`top`, `standard`, `fast`) mapped to a concrete model per family (`top: {anthropic: claude-opus-5-5, openai: gpt-6-sol, zai: glm-5.3}`). iterion ships defaults; any level overrides a class per family. A route whose model names a class resolves to the concrete model of the family it lands on.
-- **`refused_pinned_key`** — `park` (default, #1999's status quo) or `forfait` (a refused pinned key stands down; its routes fall through to the same-provider forfait). Exactly #1999's setting, expressed in the policy so it resolves per level like everything else.
-- **`strict`** — marks a node's `backend:` pin (or the whole workflow's) as a requirement instead of a preference (§2). An author writes `strict`; a level may set it where the author did not; a level above the author may not unset it.
+- **`pair_order`** — the ordered list of `(harness, credential)` pairs a run may occupy, named per FAMILY (the instance follows the tier walk: `claw+anthropic_key` does not name WHICH anthropic key — the shared order and the walk do, which is what keeps fill/restore/preview parity and per-fingerprint audit). Default: `claude_code+claude_forfait`, `codex+chatgpt_forfait`, `claw+anthropic_key`, `claw+openai_key`, `claude_code+zai_key`, then the rest. A level replaces it.
+- **`triggers`** — a subset of the closed vocabulary the fallback machinery already classifies: `usage_window`, `unavailable`, `transient_exhausted`, `auth`. `budget`/`schema` were never categories and are not offered; `unclassified` and `any` are excluded by rule — per ADR-087, a non-classifiable failure advances a hand-declared chain but never fires a policy switch, and when the proof is flattened text (`UsageWindowInFlattenedError` is the retry side's carve-out) the policy side inherits exactly that carve-out or fires nothing. The platform ceiling prunes; no level extends.
+- **`model_classes`** — an extension of the MODEL REGISTRY, not a field of this policy (the class is consumed outside routing: the cost estimator bills per model, spec validation, display). The policy references it. Classes (`top`, `standard`, `fast`) map to a concrete model per family; iterion ships the defaults in the registry; a level overrides a class per family; a class that resolves nowhere on its family leaves the route as written and warns — and its switch effects (stamps, cost, the C173 analogue) follow the registry's rules.
+- **`refused_pinned_key`** — `park` (the default #1999 decided) or `forfait`. The epic's "falls back to the forfait by default" contradicts #1999's `park` — an arbitration the operator owes (§ Open arbitrations). Migration: #1999 ships its knob AS the platform-level policy field (one source, never two), and #1999's carve-out travels with the field — a facade key pinned beside a Claude forfait is out of its scope, and the fold may not pair what the carve-out excludes.
+- **`strict`** — marks a node's `backend:` pin (or the workflow's) as a requirement instead of a preference (§2). An author writes it; a level may set it where the author did not; a level above the author may not unset it.
 
-Compatibility with what ships today: `facade_default` (#2096) stays, and composes — the pair order says whether a z.ai key may serve; `facade_default` remains the per-wire veto on it being a route's DEFAULT. `park|forfait` for refused pinned keys becomes `refused_pinned_key` at the platform level when #1999 lands; until then #1999 ships its own setting and the policy folds it in.
+`facade_default` (#2096) stays and composes (§3's rule); `ITERION_BACKEND_PREFERENCE` remains host DETECTION and is replaced at launch by the policy's selection — the detector's answer is what the policy decides with, not a sixth level.
 
-### 2. Launch-time: the harness follows the credentials the run holds
+### 1. Launch-time: the pair selection happens DURING the resolution, and the program it produces is screened
 
-At the entry of the credential resolution — the same seam #2038's predicate and #1998's probes now occupy — after the tier walk seals what the run holds, the resolved `RoutingPolicy` picks the `(harness, credential)` pair: the first pair in `pair_order` whose credential the bundle actually carries. The selection then expresses itself the one way the executor already honours without a new mechanism: **launch-time overrides**. A node whose routes are re-targeted gets a computed provider/backend override; an author's `backend:` pin is honoured as a preference (re-target only when the pinned harness holds no credential and a later pair does) unless `strict`.
+The pair selection is not a post-walk retarget — a retarget after the walk would seal into channels the executor never reads (a facade key sealed pinned-only is invisible to the default precedence, and a facade hint without a reachable key refuses rather than degrades) and would leave the resolution's derivations (`spendableProviders`, `wantsFor`, `derivePinnedProviders`, `envFunded`, `mayReadWireDefault`, `unfundedPinnedProviders`, the fingerprint stamps, the launch gate) reading a program nobody rewrote. Instead:
 
-A run that acquires no credential at all (env-funded, #2038) selects nothing: the env is the harness. A run that holds several families gets the first pair in its order — determinism over cleverness; the order is the knob.
+1. The resolved policy is computed once, before the tier walk.
+2. The tier walk runs, and the pair selection shapes it: the first pair in `pair_order` whose credential a consulted tier holds decides which channels the walk seals into — a facade key serving a selected `claude_code+zai` pair seals as the wire's DEFAULT where the facade policy permits, pinned-only where it does not (§3's composition rule).
+3. The program is rewritten through the SAME screened path `--fallback` already uses: computed routes materialized on the IR by `ApplyRunFallback`'s screen — **agent nodes only** (a judge's verdict is load-bearing and is never re-targeted by policy), every computed stage through the C176/C135 predicates, refusals landing on `run_fallback_refused` as run-level fallbacks do today. A `permission: ask|deny` node is never re-targeted onto a harness that cannot enforce its gate: refused by the screen, said on the event, never degraded in silence.
 
-### 3. Mid-run, same harness: the credential follows the window
+After that rewrite, every derivation listed above reads the rewritten program — once, with the same answer for fill, restore, preview and launch gate. This is the honest version of the alternative the first draft rejected on a false premise: synthesis CAN act at launch, after compile, pruned by what the launch funds — the screen is what makes it legitimate.
 
-When the serving credential closes mid-run (`usage_window` — window shut, provider refusal, operator cap), today's answer is a park: the usage-window retry arms on the forfait's reset and the run waits. The policy adds the automatic alternative, within the same harness: fall through to the **next compatible credential** — a z.ai key already sealed serving GLM on the same claude_code session, then the pool's donations marked fallback-usable (last resort, never before the run's own tiers).
+The selection is deterministic: the first pair in the order whose credential the run holds. A run that acquires no credential at all (env-funded, #2038) selects nothing — the env is the harness.
 
-Mechanism, not new: the delegates' precedence already walks a bundle's credentials per family; what changes is that a window-closed credential is **re-ordered at re-resolution** instead of left first, and the run's retry arms on the REPLACEMENT's window when one exists, on the closed one's when none does. Every switch emits the audit line ADR-087 routes already emit (which credential stopped serving, which took over, which trigger), and the usage ledger attributes the spend to the credential that served — no invoice moves in silence.
+### 2. Between attempts: the re-resolution re-picks the pair; in-run, the cooldown ledger already re-orders
 
-### 4. What deliberately does not change
+"Mid-run" needs its two halves named, because they are different mechanisms:
 
-- Tenant isolation: the policy reorders what the walk may consult; it never lets a tier read another tenant's credential. The fill, restore and preview keep their parity property (#1956, #1998, #2038 each carry it) — a policy resolved once per launch applies the same answer to the fill, the platform stage, the restore and the preview.
-- Author intent: `fallbacks:` chains declared by hand remain authoritative for the nodes that declare them; the policy synthesizes nothing where the author already wrote a route. `strict` is the author's and the operator's tool to say the pin was the point.
+- **In-run (per node, per dispatch)**: the route cooldown ledger exists — `(backend, provider, model)` keyed, category and `until` recorded, cause preserved for the retry classifiers. A closed window already de-orders a route at dispatch. The policy's `triggers` filter what that ledger may de-order, and this ledger is where a switch's audit line is emitted in-run.
+- **Between attempts (per run)**: the only re-resolution is the one `SubmitResume` already performs after a park — the full `resolveAndSealCredentials` replay. §1's selection runs there: the retried attempt spends what the re-picked pair serves. A JetStream redelivery re-plays the original message and SecretsRef and re-resolves nothing — unchanged.
+
+The retry **arming** does not change: `usageWindowRetryAt` remains authoritative from the FAILED credential's terminal proof, `skippedReopensAt` remains a speculative earlier wake refused at the last attempt if the authoritative wall is still reachable, and the last-attempt reservation stands. The switch changes what the retried attempt spends, not when it is armed.
+
+Session semantics at a switch are part of the contract: a same-family credential switch (GLM via z.ai on a `claude_code` session) keeps the session and answers GLM **only where the facade policy permits it** — under `facade_default: auto`, the veto wins and the run parks on its forfait (#2096's doctrine stands: no GLM in silence); `always`, `tier`, or a lock opens it. A cross-family or cross-backend switch evicts the session (ADR-087 §3) and emits the `session_degraded` equivalent (ADR-091). The design ticket owns the full harness × credential × family compatibility matrix — who can serve what, what answers, which session event fires.
+
+Resume classifies every policy field as **identity or volatile**: identity fields are frozen at launch and replayed by the resume (the `PinnedProviders` doctrine — the resume replays the launch's answer), volatile fields (windows, availability) re-resolve. A `pair_order` change between launch and resume moves the harness of a living session only through the session-event contract above, never in silence.
+
+### 3. What deliberately does not change
+
+- Tenant isolation: the policy reorders what the walk may consult; it never lets a tier read another tenant's credential. The parity property keeps its full cast — fill, platform stage, restore, preview, the launch gate (`usagecap` pre-flight judges the routes on what they then spend), `reviewtopology`'s families (injected from the SEALED credentials by design; the policy does not change the topology), and the three route derivations agreeing.
+- Author intent: hand-declared `fallbacks:` chains remain authoritative where declared; the policy synthesizes nothing there. `strict` is how a pin stops being a preference.
 - Budget and schema failures never fall back: they re-fail identically on every route.
+- The pool stays a whole-bundle last resort in this delivery ("only for a run that has no credential of its own at all"). A per-family pool fallback is a contract change — it would hand the pool to a run holding a credential of another wire — and is explicitly a future decision, not a subordinate clause here.
 
 ## Alternatives considered
 
-- **Per-node policy in the DSL** (`routing:` on each node): maximal author control, and exactly the per-bot per-repo duplication the epic exists to remove; rejected as the primary mechanism, kept as `strict`'s spelling.
-- **Synthesizing `fallbacks:` routes at compile time**: reuses ADR-087 verbatim, but freezes the policy at authoring/compile time — the levels, the locks and the credential state at launch could not act. Rejected: the policy must resolve at launch and re-resolve mid-run.
-- **A dedicated routing service deciding per call**: a second brain beside the executor, with its own view of the credentials — the divergence risk #1956 closed (fill, restore and preview disagreeing) rebuilt at the routing layer. Rejected: the decision stays in the resolution, read once per launch.
+- **Per-node policy in the DSL** (`routing:` on each node): maximal author control, exactly the per-bot per-repo duplication the epic removes; rejected as the primary mechanism, kept as `strict`'s spelling.
+- **Launch-time overrides without the screen** (the first draft's mechanism): computed overrides reach past the C176/C135 screen ADR-087 built precisely so a machine could not do what an author is refused — an ungated node, a tools-less claw node, a permission gate no harness can enforce. Rejected: the synthesis goes through the screen or it does not land.
+- **A dedicated routing service deciding per call**: a second brain beside the executor with its own view of the credentials — the divergence risk #1956 closed, rebuilt at the routing layer. Rejected: the decision stays in the resolution, read once per launch.
 - **Doing nothing**: the per-bot `fallbacks:` authoring cost is what kept the capability from landing twice before.
 
 ## Consequences
 
-- **Cost is automatic by default** — every allowed fallback is attempted, a subscription may spend as extra usage (claw on a Claude forfait), and the governing tool is the lock, not an opt-in. This is the operator's explicit stance; the ADR records it as such.
-- **Every switch is said**: audit lines at launch selection and at each mid-run switch, the pair in the run document, the spend on the serving credential. A run that switched is legible after the fact.
-- **The five levels are five stores and a fold** — four of them new (org, team, bot manifest block, run spec fields), each with its writer and its read path; the platform level rides the settings record the facade and #1999 knobs already use.
-- **Model classes add a vocabulary** that must ship defaults and accept per-level overrides without a migration: a class the policy does not map, on a family with no mapping, resolves as today (the route stays as written) and warns.
-- **Testing obligation**: the resolution is deterministic and pure — policy fold tests, pair-selection tests against seeded bundles, mid-run switch tests against window states, and the parity property (fill/restore/preview agree) asserted for the policy-resolved answer exactly as #1998 and #2038 carry theirs.
+- **Cost is automatic by default** — every allowed fallback is attempted, a subscription may spend as extra usage (claw on a Claude forfait), and the governing tool is the lock, not an opt-in. The operator's explicit stance, recorded.
+- **Every switch is said**: audit lines at launch selection and at each in-run de-order, the resolved pair and its provenance in the run document, the spend on the serving credential.
+- **The fold is pure; the walk is not**: the policy fold is table-testable; the resolution is tested by properties over injected probes — fill/restore/preview/launch-gate agreement, and `spendableProviders`/`wantsFor`/`derivePinnedProviders` reading the same rewritten program.
+- **Delivery 1 is platform + bot + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are.
+- **Testing obligation**: fold tables; pair-selection tests against seeded bundles; switch tests against window states; the parity property asserted for the policy-resolved answer; mutation-checked like #1998/#2038.
 
-## Open questions for the design review
+## Open arbitrations (the operator's)
 
-1. `pair_order` names pairs concretely (`claude_code+claude_forfait`) — should a deployment be able to name abstract slots (`forfait+harness`) resolved per held credential, or is the concrete list enough?
-2. Does the **run** level get to SET policy, or only to choose among what the levels above allow? (A launch flag that could unlock a platform lock would make the lock decorative.)
-3. Should `model_classes` be a separate record shared with the cost estimator, or a field of this policy?
-4. Pool donations "marked usable for fallback" — a new donor-facing field, or a pool-level policy switch?
-5. Where mid-run re-resolution reads the replacement's window from — the usage ledger's own readings, or a fresh provider probe?
+1. **`refused_pinned_key`'s default**: #1999 decided `park`; the epic says `forfait` by default. One of the two words is wrong — the ADR ships `park` until arbitrated.
+2. **The facade veto vs the pair order**: this ADR fixes "the veto wins by default; `always`/`tier`/a lock opens" — confirm, or the flagship scenario of epic #2000 needs `always` as the deployment default, reversing #2096's refusal of "GLM in silence".
+3. **Run level SET or CHOOSE**: the recommendation is SET within bounds — own-tier extension is the launcher's right; what a lock binds is extension toward SHARED credentials (org, platform, pool): other people's money. Confirm the boundary as written.
 
-## Out of scope (delivery 2)
+## Open questions resolved by the review (recorded)
 
-Cross-harness relaunch with transcript handoff: a node whose only remaining credential belongs to another harness is relaunched on that harness, the new agent reading a harness-neutral transcript rendered from the run's own events and extracting the work already done (economical) or restarting clean (costlier). It sits on this foundation — the pair order, the triggers and the levels are its vocabulary.
+1. Pair order is CONCRETE per family in delivery 1; the instance follows the tier walk (abstract slots would rebuild per-tier semantics inside the policy).
+2. The run level SETS within the bounds above; locks bind it; the platform ceiling can only lower `triggers`.
+3. `model_classes` lives in the model registry, referenced by the policy — the class is consumed outside routing.
+4. Pool fallback-usable is a DONOR-facing field (the epic already decided it); the policy reads a rollup. The question is retired.
+5. A replacement's window reads the usage ledger first, `forfaitWindowClosed`'s probe on absence — no third source; retry arming is unchanged.
+
+## Out of scope (later deliveries)
+
+Cross-harness relaunch with transcript handoff (delivery 2 on this foundation: the pair order, the triggers and the levels are its vocabulary). Per-family pool fallback (a contract change, named above). Org and team levels (delivery 2, costed above).
