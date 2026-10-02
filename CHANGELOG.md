@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.224.0](https://github.com/SocialGouv/iterion/compare/v3.223.0...v3.224.0) (2026-10-02)
+
+### Features
+
+* **delegate:** claude_code sessions honour their background work ([#1936](https://github.com/SocialGouv/iterion/issues/1936)) ([#2091](https://github.com/SocialGouv/iterion/issues/2091)) ([b90eb5d](https://github.com/SocialGouv/iterion/commit/b90eb5d4c17b0ca6ab358b4207cef914bbe077cf)), references [#2017](https://github.com/SocialGouv/iterion/issues/2017) [#2032](https://github.com/SocialGouv/iterion/issues/2032) [#1940](https://github.com/SocialGouv/iterion/issues/1940) [#1940](https://github.com/SocialGouv/iterion/issues/1940)
+
+    <details><summary>why</summary>
+
+    A claude_code session stays open until the CLI itself says its background work is back and delivered, under per-wave and turn-source budgets that ask the agent for its report rather than cut it; a session ledger tells whoever resumes a transcript what its earlier process lost. Found along the way and fixed: secret values reaching the model or persisting outside the run — tool outputs back to placeholders, inputs iterion keeps in placeholder form, reads of the CLI's task outputs, scrubbed…
+
+    </details>
+
+### Bug Fixes
+
+* **runtime,revi:** fan-out aggregate keeps the root-cause branch error; review workspaces report anomalies instead of phantom findings ([#1669](https://github.com/SocialGouv/iterion/issues/1669), [#1666](https://github.com/SocialGouv/iterion/issues/1666)) ([#2117](https://github.com/SocialGouv/iterion/issues/2117)) ([4ec5db5](https://github.com/SocialGouv/iterion/commit/4ec5db5f4d1205f422194ff1119e0336cfdeb1ec))
+
+    <details><summary>why</summary>
+
+    #1669: on the merge queue, a fan-out whose PauseRun store failed ended with an error naming the sibling's "run cancelled: context canceled" — the root cause invisible to the operator, the test intermittent on collection order. processConvergence now falls back to a *RuntimeError{EXECUTION_FAILED, Cause: root} when rootCauseBranchErr finds a branch that failed by itself (first by branch-id, order-independent), and classifiesBranchErr only attaches errors with no classification of their own —…
+
+    </details>
+
 ## [3.223.0](https://github.com/SocialGouv/iterion/compare/v3.222.0...v3.223.0) (2026-10-02)
 
 ### Features
