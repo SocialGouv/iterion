@@ -295,6 +295,28 @@ func validateAuthoringGitExclusion(ctx context.Context, dir string) error {
 		if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
 			tracked, err := runAuthoringGit(ctx, dir, "ls-files", "-z", "--", ".")
 			if err != nil {
+				// A .git the walk saw but Git itself refuses as a repository —
+				// transient, broken or foreign, and possibly at an ancestor
+				// the operator does not control: the walk reaches the shared
+				// temp root, and another process's scratch `git init` there
+				// (created, then removed or left half-written) reddened every
+				// authoring save on a loaded multi-session host (#2048). What
+				// Git cannot see AND leaves no trace of governs nothing: the
+				// exclusion is vacuously satisfied.
+				//
+				// Unless the trace is there: a .git whose HEAD is broken
+				// (removed, empty, unreadable) gets the same "not a git
+				// repository" from Git while its INDEX still names staged
+				// files — one restored HEAD line and the recovery is tracked
+				// again. Git cannot answer for it, so that one refuses.
+				if strings.Contains(err.Error(), "not a git repository") {
+					if authoringGitIndexStagesFiles(filepath.Join(p, ".git")) {
+						return fmt.Errorf("verify authoring Git exclusion: %w (git cannot read this repository but its index still stages files)", err)
+					}
+					return nil
+				}
+				// Every other Git failure — no binary, a corrupt repository,
+				// a locked index — still refuses.
 				return fmt.Errorf("verify authoring Git exclusion: %w", err)
 			}
 			if tracked != "" {
@@ -308,6 +330,53 @@ func validateAuthoringGitExclusion(ctx context.Context, dir string) error {
 			return nil
 		}
 	}
+}
+
+// authoringGitIndexStagesFiles reports whether the repository .git at
+// dotgit — a directory, or a gitfile pointing at the real gitdir — still
+// holds a non-empty index. It exists for the moment Git has just refused
+// the repository: the exclusion is vacuous only when nothing is left that
+// could still stage a file.
+//
+// A directory's index sits inside it. A gitfile is a TEXT file whose
+// `gitdir: <path>` line (a linked worktree's .git) names where the index
+// lives, possibly relative to the gitfile's own directory — and the
+// gitdir's HEAD and index outlive the worktree's readability, so the
+// pointer is followed. A dangling pointer, a missing index and an EMPTY
+// index answer false: nothing there can stage a recovery. An unreadable
+// gitfile answers true — the index it hides is exactly the threat the
+// exclusion exists for — and so does a malformed one, which in practice
+// never reaches here: Git calls that "invalid gitfile format", a failure
+// the caller still refuses. A zero-entry index git wrote (32 bytes of
+// header) answers true — a false refusal, fail-closed, accepted: it costs
+// a save where the alternative is a silently tracked recovery.
+func authoringGitIndexStagesFiles(dotgit string) bool {
+	info, err := os.Lstat(dotgit)
+	if err != nil {
+		return false
+	}
+	indexPath := filepath.Join(dotgit, "index")
+	if info.Mode().IsRegular() {
+		body, err := os.ReadFile(dotgit) // #nosec G304 -- the .git the exclusion walk just found
+		if err != nil {
+			return true
+		}
+		line, _, _ := strings.Cut(string(body), "\n")
+		target, found := strings.CutPrefix(line, "gitdir:")
+		if !found {
+			return true
+		}
+		target = strings.TrimSpace(target)
+		if target == "" {
+			return true
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(dotgit), target)
+		}
+		indexPath = filepath.Join(target, "index")
+	}
+	index, err := os.Stat(indexPath)
+	return err == nil && index.Size() > 0
 }
 
 func (l *authoringLocalLock) verify() error {
