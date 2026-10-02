@@ -132,8 +132,15 @@ func TestBotsList_FormatMarkdown(t *testing.T) {
 	if err := BotsList(BotsListOptions{Paths: []string{dir}, Format: "markdown"}, &buf); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "## x") {
-		t.Fatalf("markdown output missing bot header:\n%s", buf.String())
+	// An uncategorized bot renders under the Uncategorized group, demoted
+	// one heading level below its category section.
+	for _, want := range []string{
+		"## Uncategorized — visible, never hidden",
+		"### `x`",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("markdown output missing %q:\n%s", want, buf.String())
+		}
 	}
 }
 

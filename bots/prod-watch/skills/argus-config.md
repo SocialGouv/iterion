@@ -194,6 +194,18 @@ overrides).
   out in parts, each naming its own members; and every tick, notify
   refuses — by name, flood or not — labels that leave a note no room for
   one name (a label renders escaped: `&` becomes `&amp;`).
+- `ledger` — the bound on what the two ledger files keep in the working
+  tree (`max_bytes`, 2 000 000; `keep`, 8). A file past `max_bytes` is
+  abandoned under a generation name (`alertlog-<gen>.jsonl`) and a fresh
+  one takes its place the same tick; the newest `keep` rotations stay in
+  the tree, the rest leave it — **git history keeps every version**, the
+  pruning only untracks. The rotation is said: the tick's summary names
+  `alertlog.jsonl -> alertlog-<gen>.jsonl` (and what it pruned), and the
+  commit output carries it. `max_bytes: 0` = no bound (the growth is the
+  operator's to prune); `keep: 0` = every rotation stays in the tree.
+  The git history of the ops repo still grows one blob per rotation: the
+  operator's lever is the repo's own pruning (a periodic squash of the
+  state-dir history, or a shallow clone for readers).
 
 ## The secrets
 
@@ -229,10 +241,14 @@ Cloud: bind team secrets by name (`POST /api/teams/<id>/secrets` with
 <state_dir>/             default .prod-watch/  (--var state_dir=)
   .lock                  flock serializing state writes (one runner)
   .gitignore             keeps .lock out of git (written by the bot)
-  .gitattributes         alertlog.jsonl and ticks.jsonl merge=union
+  .gitattributes         alertlog*/ticks* merge=union (rotations included)
   state.json             cursors (Loki, Sentry) + incidents + source health — mode=watch is its ONLY writer
-  alertlog.jsonl         append-only history of every alert posted
-  ticks.jsonl            append-only tick ledger (the digest slice reads it)
+  alertlog.jsonl         history of every alert posted; at ledger.max_bytes it
+                         rotates to alertlog-<gen>.jsonl and a fresh file starts
+  ticks.jsonl            tick ledger (the digest slice reads it); rotates the same way
+  alertlog-<gen>.jsonl   closed rotations — never appended again; the newest
+  ticks-<gen>.jsonl      ledger.keep stay tracked, older ones leave the tree
+                         (git history keeps every version)
 ```
 
 Each Loki cursor carries a high-water mark (`covered_to_ns`, never moving

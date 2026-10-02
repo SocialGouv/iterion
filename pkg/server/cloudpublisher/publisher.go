@@ -530,6 +530,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// The composite is asked through the policy value the fill, the restore
 	// and the platform stage all receive.
 	policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
+
 	// Deferred, not called after the walk: a walk that returns an error exits
 	// before any trailing statement, and a launch that fails while a key was
 	// withheld is exactly when the reason matters most. Said once, whichever

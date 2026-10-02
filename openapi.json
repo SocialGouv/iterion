@@ -711,6 +711,12 @@
             },
             "type": "object"
           },
+          "session_ledger": {
+            "items": {
+              "$ref": "#/components/schemas/SessionLedgerEntry"
+            },
+            "type": "array"
+          },
           "settled_incoming": {
             "additionalProperties": {
               "items": {
@@ -3212,6 +3218,24 @@
         },
         "required": [
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionLedgerEntry": {
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "tasks"
         ],
         "type": "object"
       },

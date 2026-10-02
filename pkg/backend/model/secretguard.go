@@ -78,7 +78,9 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 		// password named after the project). Such values remain protected at
 		// source by the credential-file and permission boundaries; only values
 		// distinctive enough for sink-wide literal matching enter this matcher.
-		if !ambientSecretGloballySafe(val) {
+		// A final newline makes no value more distinctive: the guard also
+		// registers the value without it.
+		if !ambientSecretGloballySafe(strings.TrimRight(val, "\r\n")) {
 			continue
 		}
 		known = append(known, secretguard.Secret{

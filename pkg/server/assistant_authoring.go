@@ -1226,7 +1226,10 @@ func authoringGitPublish(r *http.Request, target *authoringTarget, req authoring
 
 func runAuthoringGit(ctx context.Context, workDir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, gitlib.NoAutoMaintenance(args...)...)...)
-	cmd.Env = gitlib.SanitizeEnv(os.Environ())
+	// The C locale, as pkg/git.gitEnv already forces it: callers match on
+	// git's own diagnostics ("not a git repository"), which a localized
+	// build translates.
+	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

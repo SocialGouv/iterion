@@ -602,6 +602,31 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	if err != nil {
 		return nil, err
 	}
+	// `provider: "anthropic"` forces Anthropic-direct: the z.ai synthesis
+	// both factories below would apply from ZAI_API_KEY is skipped, so the
+	// node's spend cannot land on a vendor the hint excluded (#1718). The
+	// branch runs BEFORE the cache-eligible paths and never caches: the
+	// cache key is the spec alone, and two nodes in one process may hold
+	// different hints for it.
+	//
+	// EXEMPT: a GLM id on the anthropic wire. Anthropic does not serve GLM,
+	// so the hint is a no-op for it — the route is funded by the z.ai key
+	// WHEN ONE IS REACHABLE, and by the anthropic-wire env auth (an explicit
+	// ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN gateway) exactly as it is
+	// without a hint. Intercepting it refused a funded route with a message
+	// claiming it was not, or routed a model api.anthropic.com does not
+	// serve to it. The GLM branches below keep their precedence — gated by
+	// a typed refusal when NOTHING can fund the route, so the fall-through
+	// can no longer build the unauthenticated client whose every call 401s
+	// (#687's shape) without naming z.ai.
+	if providerName == "anthropic" && providerHintFromContext(ctx) == "anthropic" {
+		if !modelServedByZAI(modelID) {
+			return r.resolveAnthropicDirect(ctx, modelID)
+		}
+		if !glmKeyReachableUnderHint(ctx) {
+			return nil, &ErrGLMHintUnfunded{Model: modelID}
+		}
+	}
 	creds, hasCreds := credentialsLookup(ctx)
 	if !hasCreds {
 		return r.Resolve(spec)
@@ -807,7 +832,14 @@ func openAIForfaitConfig(modelID string, view secrets.CodexCredentialsView) api.
 // BILLING: like the env path, this spends the subscription's EXTRA-USAGE
 // balance rather than the plan's limits, hence the same one-time notice.
 func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
-	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+	return r.anthropicFromCtxForfaitOnWire(ctx, modelID, os.Getenv("ANTHROPIC_BASE_URL"))
+}
+
+// anthropicFromCtxForfaitOnWire is anthropicFromCtxForfait with the wire's
+// base URL decided by the caller: the default path forwards the env's
+// ANTHROPIC_BASE_URL; the `provider: "anthropic"` hint path passes "" —
+// the hint skips that variable, so the wire check must not see it either.
+func (r *Registry) anthropicFromCtxForfaitOnWire(ctx context.Context, modelID, baseURL string) (api.APIClient, bool, error) {
 	if !secrets.AnthropicForfaitWireOK(baseURL) {
 		return nil, false, nil
 	}

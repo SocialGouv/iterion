@@ -296,7 +296,7 @@ func TestProdWatch_TheStateCommitHasAWindow(t *testing.T) {
 	start := time.Now()
 	_, stderr, err := runPyEnv(t, h.ws, pwSub(t, pwCommitScript(t, wf, "720", "670"), map[string]any{
 		"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": 0, "state_commit": true,
-		"workspace": h.ws, "state_dir": ".prod-watch"}, nil, nil), gittest.Env())
+		"workspace": h.ws, "state_dir": ".prod-watch", "ledger": pwLedgerOff()}, nil, nil), gittest.Env())
 	took := time.Since(start)
 	if err == nil || !strings.Contains(stderr, "state commit window") {
 		t.Fatalf("a push that hangs: want the commit ended by its window, got %v %s", err, stderr)
@@ -338,7 +338,7 @@ func TestProdWatch_TheStateCommitRetriesWithinItsWindow(t *testing.T) {
 	start := time.Now()
 	_, stderr, err := runPyEnv(t, h.ws, pwSub(t, pwCommitScript(t, wf, "720", "600"), map[string]any{
 		"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": 0, "state_commit": true,
-		"workspace": h.ws, "state_dir": ".prod-watch"}, nil, nil), gittest.Env())
+		"workspace": h.ws, "state_dir": ".prod-watch", "ledger": pwLedgerOff()}, nil, nil), gittest.Env())
 	took := time.Since(start)
 	if err == nil || !strings.Contains(stderr, "state commit window") {
 		t.Fatalf("a push refused after 40 s each time: want the retries ended by the window, got %v %s", err, stderr)
@@ -456,7 +456,7 @@ func pwCommitRepo(t *testing.T, h *pwHarness, hook string) (map[string]any, stri
 		}
 	}
 	return map[string]any{"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": 0, "state_commit": true,
-		"workspace": h.ws, "state_dir": ".prod-watch"}, bare
+		"workspace": h.ws, "state_dir": ".prod-watch", "ledger": pwLedgerOff()}, bare
 }
 
 // pwCommitScript is commit_state's script under a run budget of maxDur

@@ -233,7 +233,11 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 		// only the ctx-aware path builds a client from them — which is
 		// exactly what the ctx-funded ProviderHint branch above assumes.
 		// It falls back to Resolve when ctx carries no credentials.
-		client, err := e.registry.ResolveWithContext(ctx, spec)
+		// The hint rides along: the registry honours `provider: "anthropic"`
+		// at the same chokepoint the supervised nodes' backend used, so the
+		// eval cannot resolve a credential (the z.ai env synthesis) that the
+		// nodes themselves were forbidden from spending (#1718's class).
+		client, err := e.registry.ResolveWithContext(model.WithProviderHint(ctx, in.Spec.ProviderHint), spec)
 		if err != nil {
 			return nil, EvalUsage{}, fmt.Errorf("supervise: resolve model %q: %w", spec, err)
 		}

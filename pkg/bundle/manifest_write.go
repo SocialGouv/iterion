@@ -51,6 +51,15 @@ type ManifestPatch struct {
 	// declares its own `## triggers:` frontmatter, discovery overlays it
 	// over the manifest value (see botregistry.parseBundle).
 	Triggers *[]string
+	// Category sets the manifest's navigation-spine slug (empty string
+	// clears it back to Uncategorized). Form-normalized (trim + lowercase)
+	// but NOT validated against the closed set here — an unknown slug is
+	// bundlelint's soft diagnostic, not a write error.
+	Category *string
+	// Tags is nil for "no change"; a non-nil slice (even empty) sets the
+	// manifest's tag list. Form-normalized (trim + lowercase + dedup);
+	// unknown tags stay declared (bundlelint warns softly).
+	Tags *[]string
 	// Forge is nil for "no change"; a non-nil pointer rewrites the whole
 	// `forge:` block (forge-access requirements). Reserved for a future
 	// studio Integrations editor — the value is encoded with its yaml
@@ -198,6 +207,12 @@ func manifestPatchReadBack(m *Manifest, patch ManifestPatch) error {
 	if patch.Triggers != nil && !slices.Equal(m.Triggers, *patch.Triggers) {
 		return fmt.Errorf("triggers read %v, patched %v", m.Triggers, *patch.Triggers)
 	}
+	if patch.Category != nil && normalizeBotCategory(m.Category) != normalizeBotCategory(*patch.Category) {
+		return fmt.Errorf("category read %q, patched %q", m.Category, *patch.Category)
+	}
+	if patch.Tags != nil && !slices.Equal(normalizeBotTagList(m.Tags), normalizeBotTagList(*patch.Tags)) {
+		return fmt.Errorf("tags read %v, patched %v", m.Tags, *patch.Tags)
+	}
 	if patch.Requires != nil {
 		if m.Requires == nil || m.Requires.Iterion != patch.Requires.Iterion {
 			return fmt.Errorf("requires read %+v, patched %+v", m.Requires, patch.Requires)
@@ -333,6 +348,16 @@ func patchManifestText(body []byte, patch ManifestPatch) ([]byte, map[string]boo
 	}
 	if patch.Triggers != nil {
 		if err := apply("triggers", *patch.Triggers, false, ""); err != nil {
+			return nil, nil, err
+		}
+	}
+	if patch.Category != nil {
+		if err := apply("category", normalizeBotCategory(*patch.Category), false, "when_to_use"); err != nil {
+			return nil, nil, err
+		}
+	}
+	if patch.Tags != nil {
+		if err := apply("tags", normalizeBotTagList(*patch.Tags), false, "category"); err != nil {
 			return nil, nil, err
 		}
 	}

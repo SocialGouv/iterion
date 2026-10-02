@@ -76,6 +76,12 @@ type Spec struct {
 	Icon        string `json:"icon,omitempty"`
 	Description string `json:"description,omitempty"`
 	WhenToUse   string `json:"when_to_use,omitempty"`
+	// Category is the navigation-spine slug written to the manifest
+	// (bundle.BotCategories slugs). Empty leaves the bot Uncategorized —
+	// the templates that fit a shape pre-fill it so a builder bot is born
+	// classed. Not validated against the closed set here: an unknown value
+	// is bundlelint's soft warning, same as in any manifest.
+	Category string `json:"category,omitempty"`
 
 	// Instructions is the mission of the single campaign agent — the
 	// bot's system prompt body.

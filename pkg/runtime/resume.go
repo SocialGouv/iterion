@@ -1488,10 +1488,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 	if err := e.store.WriteInteraction(ctx, interaction); err != nil {
 		return nil, fmt.Errorf("runtime: write answered interaction: %w", err)
 	}
-	return answers, e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, map[string]any{
-		"interaction_id": cp.InteractionID,
-		"answers":        answers,
-	})
+	return answers, e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, answersEventData(e.scrubForEvent, cp.InteractionID, answers))
 }
 
 // loadPauseInteraction is the interaction a pause path records its answers
@@ -1845,7 +1842,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
 	e.defaultWorkDir()
-	ClearMirroredTierMarkers(e.workDir)
+	ClearMirroredTierMarkers(e.workDir, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
@@ -1859,8 +1856,9 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		return nil, nil, fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
+	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	if hooksErr != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot. I/O
@@ -1873,9 +1871,10 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	}
 	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
 	// Three preconditions gate the pruner on resume too (launch site has
-	// the same rationale): I/O clean, plugin+library complete, this is
+	// the same rationale): I/O clean, plugin+hooks+library complete (the
+	// hooks flag carries the `.claude` symlink veto, #2061), this is
 	// NOT a child subbot (children run in their parent's workspace).
-	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
 		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
 	} else if e.logger != nil {
 		e.logger.Debug("runtime: skipping orphan prune (pause resume) — child or incomplete mirror")
@@ -1923,6 +1922,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if rs.nodeSessions == nil {
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
+	rs.sessionLedger = restoreSessionLedger(cp.SessionLedger)
 	rs.pauseSessionRef = cp.BackendSessionStateRef
 	if cp.Parallel != nil {
 		rs.parallel = newParallelExecutionState(cp.Parallel)
@@ -2256,7 +2256,7 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, loaded
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
 	e.defaultWorkDir()
-	ClearMirroredTierMarkers(e.workDir)
+	ClearMirroredTierMarkers(e.workDir, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
@@ -2269,8 +2269,9 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 		return fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
+	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	if hooksErr != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
 	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
 	if libraryErr != nil {
@@ -2278,9 +2279,10 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	}
 	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
 	// Same three preconditions as the launch and pause-resume sites: I/O
-	// clean (already returned), plugin+library both complete, not a
+	// clean (already returned), plugin+hooks+library complete (the hooks
+	// flag carries the `.claude` symlink veto, #2061), not a
 	// child subbot.
-	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
 		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
 	} else if e.logger != nil {
 		e.logger.Debug("runtime: skipping orphan prune (failure resume) — child or incomplete mirror")
@@ -2338,6 +2340,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint, arti
 	if rs.nodeSessions == nil {
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
+	rs.sessionLedger = restoreSessionLedger(cp.SessionLedger)
 	rs.pauseSessionRef = cp.BackendSessionStateRef
 	if cp.Parallel != nil {
 		rs.parallel = newParallelExecutionState(cp.Parallel)
@@ -3349,6 +3352,39 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID, nodeI
 	return texts
 }
 
+// answersEventData is the human_answers_recorded payload: the answers
+// scrubbed like a node's output, the interaction's id as is.
+func answersEventData(scrub func(map[string]any) map[string]any, interactionID string, answers map[string]any) map[string]any {
+	data := scrub(map[string]any{"answers": answers})
+	data["interaction_id"] = interactionID
+	return data
+}
+
+// pauseEventData is the human_input_requested payload — an observational
+// sink, scrubbed whole like a node's output: the questions and the extras (a
+// human node's rendered instructions). The interaction and the checkpoint
+// keep the questions as they are: the run needs them.
+func (e *Engine) pauseEventData(interactionID string, questions, extra map[string]any) map[string]any {
+	data := map[string]any{"questions": questions}
+	for k, v := range extra {
+		data[k] = v
+	}
+	data = e.scrubForEvent(data)
+	data["interaction_id"] = interactionID
+	return data
+}
+
+// scrubForEvent scrubs event data that carries model- or operator-written
+// text (a question, a router's reasoning, a review verdict, recorded answers)
+// with the executor's SecretScrubber, when it has one — a copy: what the run
+// keeps stays whole.
+func (e *Engine) scrubForEvent(data map[string]any) map[string]any {
+	if scrubber, ok := e.executor.(SecretScrubber); ok {
+		return scrubber.ScrubOutput(data)
+	}
+	return data
+}
+
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
 func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, eventExtra map[string]any, info pauseInfo) error {
@@ -3395,15 +3431,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 		return fmt.Errorf("runtime: write interaction: %w", err)
 	}
 
-	// Emit human_input_requested.
-	eventData := map[string]any{
-		"interaction_id": interactionID,
-		"questions":      questions,
-	}
-	for k, v := range eventExtra {
-		eventData[k] = v
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventHumanInputRequested, nodeID, e.pauseEventData(interactionID, questions, eventExtra)); err != nil {
 		return err
 	}
 

@@ -119,6 +119,8 @@ func TestReviewPRPublishPinsTheGateToTheReviewedRevision(t *testing.T) {
 		// A NON-NEGATIVE count is the only shape that means the scope was
 		// answered; anything else fails the gate closed before the pin.
 		"{{input.scope_files}}": "'3'",
+		// A clean tree: no workspace-anomaly routing under test here.
+		"{{input.workspace_anomaly}}": "''",
 
 		// An empty WS keeps the stale-anchor guard inert: it reads git only
 		// when both a sha-looking REVIEWED_SHA and a workspace are set.

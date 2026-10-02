@@ -143,6 +143,27 @@ iterion run bots/review-pr/main.bot \
   and publishes to `pr_url`; check out the PR branch and pass its base
   as `base_ref`. Auto-resolving base/head from the URL is a planned
   enhancement.
+- **Workspace anomaly (#1666).** The workspace must equal the tree under
+  review. `diff_precheck` reports any TRACKED uncommitted entry
+  (`git status --porcelain -z`, untracked scratch and engine/tooling tree
+  noise excluded — neither enters the review's diff scope) as
+  `workspace_anomaly`; the reviewers scope those files out WHOLE
+  (committed hunks included), and `publish_review` strips any finding
+  still anchored on a drifted file from the PR findings and reports it
+  under a "workspace anomaly" section naming the file and the difference
+  — an edit the PR does not contain is workspace state, never a finding
+  against the change under review. Reclassified findings stay visible:
+  the workspace-anomaly section and the gate note always carry their
+  count (a green gate never reads as approval by omission), and when the
+  strip empties the finding list the review headline itself names the
+  reclassification instead of claiming a clean review. A failed status
+  read publishes the "?" marker: nothing is stripped and the review says
+  the workspace state could not be verified.
+  Scope: the sanitisation covers the FORGE publication (summary, inline
+  comments, gate); the board/markdown report written upstream by
+  `emit`/`converge` may still carry a drift-drawn finding a reviewer
+  filed against rule 2d. Empty in `base_ref: HEAD` mode, where
+  uncommitted work IS the review's object.
 - **Anti-façade.** The endpoint re-fetches the posted review to count the
   comments the forge actually stored (falling back to a summary-only
   review when inline anchors are rejected — findings are folded into the

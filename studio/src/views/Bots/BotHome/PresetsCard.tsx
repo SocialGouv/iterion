@@ -3,6 +3,7 @@
 
 import type { BotEntryWithSchema } from "@/api/bots";
 import { Card } from "@/components/ui";
+import { presetDisplayName } from "@/lib/botTaxonomy";
 
 import SectionTitle from "./SectionTitle";
 
@@ -18,7 +19,7 @@ export default function PresetsCard({ entry }: { entry: BotEntryWithSchema }) {
           <li key={p.name} className="rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
             <div className="flex items-baseline gap-1.5">
               <span className="text-xs font-medium text-fg-default">
-                {p.display_name?.trim() || p.name}
+                {presetDisplayName(p)}
               </span>
               {p.display_name?.trim() && (
                 <span className="font-mono text-caption text-fg-subtle">{p.name}</span>

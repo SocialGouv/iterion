@@ -118,6 +118,17 @@ type Entry struct {
 	// card and editable via the studio Bot-metadata panel.
 	WhenToUse string `json:"when_to_use,omitempty" yaml:"when_to_use,omitempty"`
 
+	// Category is the bot's slot in the CLOSED navigation spine (the six
+	// slugs in bundle.BotCategories). Empty = Uncategorized, which every
+	// grouped surface renders LAST, visibly. Carried by discovery so the
+	// studio gallery, `iterion bots list`, and the generated catalog all
+	// group by the same declared value.
+	Category string `json:"category,omitempty" yaml:"category,omitempty"`
+
+	// Tags are the bot's orthogonal facets (bundle.KnownBotTags seed,
+	// open set). Carried by discovery for the tag-chip views.
+	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+
 	// Author and Version mirror the manifest fields so the studio Bot
 	// metadata panel can pre-fill + edit them. Empty for loose .bot files.
 	Author  string `json:"author,omitempty" yaml:"author,omitempty"`
@@ -610,6 +621,8 @@ func parseBundle(dir string) (*Entry, error) {
 		Consumes:        m.Consumes,
 		Invocations:     bundle.EffectiveInvocations(m),
 		WhenToUse:       strings.TrimSpace(m.WhenToUse),
+		Category:        m.Category,
+		Tags:            m.Tags,
 		Author:          m.Author,
 		Version:         m.Version,
 		Enabled:         m.IsEnabled(), // manifest default; overlay composed in List

@@ -94,13 +94,7 @@ type ProviderResolution struct {
 	// "auto", an empty ${VAR}, a name the vocabulary does not know, a
 	// model-answering node without fields), and a run with no LLM route at
 	// all, all read false.
-	// envFundedOnly reports whether every LLM route the walk read resolved
-	// to the openai_compatible gateway — a route whose credential the
-	// RUNNER's environment funds, never the bundle. A route that resolved
-	// to any bundle-funded provider, a route that could not resolve (an
-	// "auto", an empty ${VAR}, a name the vocabulary does not know, a
-	// model-answering node without fields), and a run with no LLM route at
-	// all, all read false.
+
 	envFundedOnly bool
 	// AnthropicWireDefaultReads lists the anthropic-wire key slots some route
 	// may spend as the run's DEFAULT credential — through the delegates'
@@ -273,6 +267,7 @@ func (a *providerAccumulator) result(sawRoute bool) ProviderResolution {
 	// anything on the runner). An all-openai_compatible walk is none of
 	// those: narrow-safe, nameless, unknownless, resolved here.
 	res.envFundedOnly = sawRoute && a.narrowSafe && !a.envDependent && len(a.providers) == 0 && len(a.unknown) == 0
+
 	for slot := range a.wireDefault {
 		res.AnthropicWireDefaultReads = append(res.AnthropicWireDefaultReads, slot)
 	}

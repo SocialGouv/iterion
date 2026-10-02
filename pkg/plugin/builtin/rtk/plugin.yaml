@@ -28,3 +28,14 @@ contributes:
           ultra:
             inject_flag: "--ultra-compact"
       sandbox_mount: /usr/local/bin/rtk
+      # rtk keeps every command it runs (its history, 90 days) and the lines a
+      # compressed output left out (its recall store, 30 days): a secret that
+      # a command or its output carried would outlive the run there. A shell
+      # iterion compresses runs with both stores off. rtk has no switch for
+      # its history: its database goes under /dev/null, a path nothing can
+      # create — rtk makes the directory a database lives in owner-only
+      # before opening it (/dev itself, were it /dev/null), and records
+      # nothing when the database will not open.
+      run_env:
+        RTK_DB_PATH: /dev/null/iterion-rtk-history.db
+        RTK_RECALL: "0"

@@ -27,6 +27,7 @@ version: 0.1.2
 ## lint that walks EVERY lot. Effort projection is deliberately absent — it
 ## consumes a measured campaign's cost ledger, which does not exist on a
 ## first assessment, and a projection without one would invent its input.
+category: verify
 description: |
   Assesses a repository at the START of a modernisation campaign and writes
   the contract the execution bot then carries out: the state of the

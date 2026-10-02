@@ -52,6 +52,10 @@ func TestParseManifestRejects(t *testing.T) {
 		"rewriter no cmd":   "name: x\ncontributes:\n  rewriters:\n    - id: y\n      locate: { bin: y }\n      invoke: { argv: [\"rewrite\"] }\n",
 		"mcp stdio no cmd":  "name: x\ncontributes:\n  mcp_servers:\n    - { name: s, transport: stdio }\n",
 		"mcp bad transport": "name: x\ncontributes:\n  mcp_servers:\n    - { name: s, transport: carrier-pigeon, command: c }\n",
+		"run_env bad name":  "name: x\ncontributes:\n  rewriters:\n    - id: y\n      locate: { bin: y }\n      invoke: { argv: [\"rewrite\", \"{{command}}\"] }\n      run_env: { \"A=B\": \"1\" }\n",
+		"run_env no name":   "name: x\ncontributes:\n  rewriters:\n    - id: y\n      locate: { bin: y }\n      invoke: { argv: [\"rewrite\", \"{{command}}\"] }\n      run_env: { \"\": \"1\" }\n",
+		"run_env shell":     "name: x\ncontributes:\n  rewriters:\n    - id: y\n      locate: { bin: y }\n      invoke: { argv: [\"rewrite\", \"{{command}}\"] }\n      run_env: { \"A;touch /tmp/x;B\": \"1\" }\n",
+		"run_env digit":     "name: x\ncontributes:\n  rewriters:\n    - id: y\n      locate: { bin: y }\n      invoke: { argv: [\"rewrite\", \"{{command}}\"] }\n      run_env: { \"1A\": \"1\" }\n",
 	}
 	for label, doc := range cases {
 		if _, err := ParseManifest([]byte(doc)); err == nil {
@@ -93,6 +97,35 @@ func TestLoadBuiltinsAndEnableState(t *testing.T) {
 	// A builtin cannot be uninstalled.
 	if err := reg2.Remove("rtk"); err == nil {
 		t.Error("removing a builtin should error")
+	}
+}
+
+// rtk keeps every command it runs and the lines a compressed output left out,
+// in stores of its own that outlive the run: the builtin turns both off for
+// the shells iterion compresses. Its history has no switch: the database path
+// is one nothing can create — its parent exists and is no directory, so rtk
+// neither makes the database nor chmods the directory it would live in (it
+// makes that directory owner-only first: /dev itself, for /dev/null).
+func TestTheBuiltinRtkRunsWithItsStoresOff(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	reg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	specs := reg.EnabledRewriterSpecs()
+	if len(specs) != 1 || specs[0].ID != "rtk" {
+		t.Fatalf("EnabledRewriterSpecs = %+v, want [rtk]", specs)
+	}
+	got := specs[0].RunEnv
+	if len(got) != 2 || got["RTK_RECALL"] != "0" {
+		t.Errorf("rtk's run_env = %v, want its recall store off", got)
+	}
+	db := got["RTK_DB_PATH"]
+	if !filepath.IsAbs(db) {
+		t.Fatalf("rtk's history path %q is not absolute", db)
+	}
+	if fi, err := os.Stat(filepath.Dir(db)); err != nil || fi.IsDir() {
+		t.Errorf("rtk's history path %q: its parent must exist and be no directory (stat: %v, %v) — rtk would create the database there, and chmod the directory", db, fi, err)
 	}
 }
 
@@ -244,5 +277,20 @@ func TestExpandContext(t *testing.T) {
 	want := "serve /ws/.falcon /c /p"
 	if got != want {
 		t.Fatalf("Expand = %q, want %q", got, want)
+	}
+}
+
+// A run_env value rides every compressed command (an export prefix): a
+// control character in it makes the claude_code CLI refuse the command.
+func TestARunEnvValueWithAControlCharacterIsRejected(t *testing.T) {
+	for _, v := range []string{`"a\x1bb"`, `"a\u0000b"`, `"a\nb"`} {
+		doc := "name: x\ncontributes:\n  rewriters:\n    - id: y\n      locate: { bin: y }\n      invoke: { argv: [\"rewrite\", \"{{command}}\"] }\n      run_env: { A: " + v + " }\n"
+		if _, err := ParseManifest([]byte(doc)); err == nil {
+			t.Errorf("run_env value %s accepted", v)
+		}
+	}
+	ok := "name: x\ncontributes:\n  rewriters:\n    - id: y\n      locate: { bin: y }\n      invoke: { argv: [\"rewrite\", \"{{command}}\"] }\n      run_env: { A: \"/dev/null/x.db\" }\n"
+	if _, err := ParseManifest([]byte(ok)); err != nil {
+		t.Errorf("a plain value refused: %v", err)
 	}
 }

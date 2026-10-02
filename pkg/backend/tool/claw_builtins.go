@@ -129,7 +129,10 @@ func executeWorkspaceBash(ctx context.Context, input map[string]any, workspace s
 		for key, value := range input {
 			executionInput[key] = value
 		}
-		executionInput["command"] = "cd -- " + shellquote.Quote(workspace) + " && " + command
+		// `|| exit` on a line of its own, not `&&`: `cd … && cmd` binds the
+		// command's first list only — `true; ls`, or a compressed command
+		// that exports first, would run the rest where the process is.
+		executionInput["command"] = "cd -- " + shellquote.Quote(workspace) + " || exit\n" + command
 		input = executionInput
 	}
 

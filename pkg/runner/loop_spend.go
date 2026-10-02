@@ -105,7 +105,6 @@ func (r *Runner) warnUnreportedUsage(msg *queue.RunMessage, usage *metricsEmitte
 	}
 }
 
-
 func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMessage, at time.Time) {
 	if r.cfg.ApiKeys == nil {
 		return

@@ -116,7 +116,11 @@ type config struct {
 	settingsJSON    []byte
 	stderrCallback  func(string)
 	messageCallback MessageCallbackFunc
-	addDirs         []string
+	// replayUserMessages asks the CLI to re-emit every stdin user message,
+	// with its uuid, at the moment a turn takes it (--replay-user-messages).
+	replayUserMessages bool
+	messageObservers   []func(Message)
+	addDirs            []string
 
 	// commandBuilder, when non-nil, replaces the default
 	// exec.CommandContext invocation with a caller-supplied builder.
@@ -347,6 +351,30 @@ func WithStderrCallback(fn func(string)) Option {
 // callers to observe raw protocol messages for logging or diagnostics.
 func WithMessageCallback(fn MessageCallbackFunc) Option {
 	return func(c *config) { c.messageCallback = fn }
+}
+
+// WithReplayUserMessages makes the CLI re-emit each stdin user message — with
+// the uuid it was sent with (Session.SendTagged) and isReplay set — at the
+// moment a turn takes it: as the head of a turn (after its init) or folded
+// into a running one (after a tool result). Streaming sessions only: the CLI
+// refuses the flag without stream-json input.
+func WithReplayUserMessages() Option {
+	return func(c *config) { c.replayUserMessages = true }
+}
+
+// WithMessageObserver registers fn to see every typed message Session.Stream
+// decodes, on the reader goroutine and before the message is yielded. That
+// goroutine is also the one that serves hook callbacks, so state an observer
+// keeps is up to date for every hook that follows the message on the wire —
+// a guarantee a consumer of the yielded stream cannot give, since it runs
+// behind a channel. Observers compose (each call appends) and must not block.
+// The one-shot Prompt feeds them too, every message but its control requests.
+func WithMessageObserver(fn func(Message)) Option {
+	return func(c *config) {
+		if fn != nil {
+			c.messageObservers = append(c.messageObservers, fn)
+		}
+	}
 }
 
 // WithLogf routes the SDK's internal error diagnostics (e.g. failures to

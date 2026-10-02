@@ -466,12 +466,14 @@ func chainLabel(chain []chainElement) string {
 
 // providerFallbackEligible reports whether a backend actually consumes
 // the per-node provider hint, and therefore whether walking a
-// HINT-ONLY chain is meaningful. Only claude_code honours ProviderHint
-// (anthropic ↔ z.ai ↔ Anthropic-compatible facades); claw derives its
-// provider from the model-spec prefix and codex ignores the hint
-// entirely, so for those a multi-provider chain would re-run an
-// identical call and waste a second retry budget. Compile-time C088
-// warns the author; collapseHintOnlyChain trims the chain so the run
+// HINT-ONLY chain is meaningful. Only claude_code walks the chain
+// (anthropic ↔ z.ai ↔ Anthropic-compatible facades). claw honours a
+// single-value `provider: "anthropic"` hint on its anthropic provider
+// (Anthropic-direct at the resolution chokepoint, #1718) but derives its
+// provider from the model-spec prefix and does NOT walk chains; codex
+// ignores the hint entirely, so for those a multi-provider chain would
+// re-run an identical call and waste a second retry budget. Compile-time
+// C088 warns the author; collapseHintOnlyChain trims the chain so the run
 // never pays for a no-op fall-through.
 //
 // This says nothing about a chain whose elements pin their OWN backend

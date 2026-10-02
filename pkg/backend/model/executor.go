@@ -670,6 +670,22 @@ func (e *ClawExecutor) secretMaterializer() func(string) string {
 	return e.secretGuard.Materialize
 }
 
+// secretRedactor is secretMaterializer's mirror (delegate.Task.RedactSecrets):
+// known secret values back to their placeholders. Nil without a guard.
+func (e *ClawExecutor) secretRedactor() func(string) string {
+	if e.secretGuard == nil {
+		return nil
+	}
+	return e.secretGuard.Redact
+}
+
+func (e *ClawExecutor) secretUnmaterializer() func(string) string {
+	if e.secretGuard == nil {
+		return nil
+	}
+	return e.secretGuard.Unmaterialize
+}
+
 func (e *ClawExecutor) secretFileHints() []delegate.SecretFileHint {
 	if e.secretGuard == nil {
 		return nil
@@ -776,6 +792,11 @@ func (e *ClawExecutor) bindAsyncAsk(ctx context.Context, nodeID string, task *de
 			e.logger.Warn("node %q declares interaction: async but no async-ask binder is available for this run (embedder missing WithExecutorAsyncAsk, or no run ID on context) — ask_user_async/await_answers will error", nodeID)
 		}
 		return
+	}
+	if s, ok := hook.(interface {
+		SetEventScrubber(func(map[string]any) map[string]any)
+	}); ok && e.secretGuard != nil {
+		s.SetEventScrubber(e.ScrubOutput)
 	}
 	task.PostAsyncQuestion = func(q delegate.AsyncQuestion) (string, error) {
 		return hook.Post(ctx, q)
@@ -1142,7 +1163,10 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 					// it to a generic "tool error" cost a real debugging hour:
 					// 2.1.128's stringified-bool emissions surfaced as five
 					// opaque "tool error (0ms)" lines. Keep it, truncated.
-					msg := strings.TrimSpace(output)
+					// It goes to the run log and error tracking: redacted
+					// before the cut, which would leave a secret it splits
+					// unrecognisable.
+					msg, _ := secretguard.RedactHead(strings.TrimSpace(output), 500, max(1<<10, e.secretGuard.LongestLiteral()), e.secretRedactor())
 					if msg == "" {
 						msg = "tool error"
 					}
@@ -1196,6 +1220,22 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				Model:     st.Model,
 				IdleFor:   st.IdleFor,
 				Recovered: st.Recovered,
+			})
+		}
+	}
+	// Background-work lifecycle (claude_code sessions kept open for their
+	// async subagents / background commands): persisted as a
+	// delegate_background event, metered by the runner per backend/phase.
+	if e.hooks.OnBackgroundWork != nil {
+		fn := e.hooks.OnBackgroundWork
+		h.OnBackgroundWork = func(w delegate.BackgroundWork) {
+			fn(nodeID, BackgroundWorkInfo{
+				Backend:   w.Backend,
+				Phase:     string(w.Phase),
+				Running:   w.Running,
+				Tasks:     w.Tasks,
+				WaitedFor: w.WaitedFor,
+				Reason:    w.Reason,
 			})
 		}
 	}
@@ -1269,6 +1309,9 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				SessionID:       info.SessionID,
 				Backend:         backendName,
 				Iteration:       iteration,
+				// A run forked from this turn resumes the session: the work
+				// the call's processes lost travels with the anchor.
+				TerminatedBackgroundTasks: info.TerminatedBackgroundTasks,
 			})
 		}
 	}
@@ -1294,6 +1337,12 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 	}
 
 	output, err := e.executeNode(ctx, node, input)
+	if err != nil {
+		// The engine persists, logs and posts a node's error: a tool's output
+		// it quotes (a failing command's stdout/stderr, an MCP error echoing
+		// its input) goes back to placeholders here, for every node kind.
+		err = e.scrubNodeError(err)
+	}
 	if err == nil {
 		// Successful node completion: drop any session messages so
 		// the store doesn't grow without bound across long runs.
@@ -1323,6 +1372,30 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 		}
 	}
 	return output, err
+}
+
+// redactedNodeError is a node error whose text went through the guard. The
+// error below it answers errors.Is / errors.As, but is not unwrapped: a
+// reporter walking the chain (Sentry records every link's Error()) would
+// print its text unredacted.
+type redactedNodeError struct {
+	msg string
+	err error
+}
+
+func (r *redactedNodeError) Error() string        { return r.msg }
+func (r *redactedNodeError) Is(target error) bool { return errors.Is(r.err, target) }
+func (r *redactedNodeError) As(target any) bool   { return errors.As(r.err, target) }
+
+func (e *ClawExecutor) scrubNodeError(err error) error {
+	if err == nil || e.secretGuard == nil {
+		return err
+	}
+	msg := err.Error()
+	if red := e.secretGuard.Redact(msg); red != msg {
+		return &redactedNodeError{msg: red, err: err}
+	}
+	return err
 }
 
 func (e *ClawExecutor) executeNode(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {

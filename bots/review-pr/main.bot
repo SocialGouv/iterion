@@ -64,6 +64,13 @@
 ## tree, run with `--var base_ref=HEAD` (nothing is fetched, the merge-base
 ## is HEAD, and the diff is HEAD-vs-working-tree).
 ##
+## The working-tree scope holds only while the workspace EQUALS the tree
+## under review: `diff_precheck` also reports any tracked uncommitted entry
+## as `workspace_anomaly` (#1666 — a stray edit left by an earlier run was
+## filed as a PR finding on a docs-only PR). The reviewers scope the named
+## files out, and `publish_review` strips findings anchored on them into a
+## workspace-anomaly section of the report rather than against the PR.
+##
 ## Read-only safety: no node mutates source. reviewer_claude is
 ## `readonly: true`; reviewer_gpt is given only read tools (bash,
 ## read_file, glob, grep — no write_file/file_edit). The single
@@ -570,6 +577,10 @@ workflow review_pr:
     ## tool node's command body substitutes only input/vars/secrets/run.id —
     ## an {{outputs.…}} ref there reaches the shell as literal text.
     scope_files: "{{outputs.diff_precheck.changed_files}}",
+    ## Same EDGE rule: the tracked uncommitted entries precheck found, so the
+    ## publish step routes them (and any finding anchored on them) as a
+    ## workspace anomaly rather than as PR content (#1666).
+    workspace_anomaly: "{{outputs.diff_precheck.workspace_anomaly}}",
     ai_run_tokens: "{{run.tokens}}",
     ai_reviewer_claude_model: "{{outputs.reviewer_claude._model}}",
     ai_reviewer_claude_backend: "{{outputs.reviewer_claude._backend}}",

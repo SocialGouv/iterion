@@ -45,6 +45,8 @@ when_to_use: |
   to prefer for RGAA theme-by-theme reasoning over a Système de Design de
   l'État UI, where the DSFR MCP tools carry the reference markup.
 author: SocialGouv (devthejo) — bots/ultra11y/main.bot
+category: verify
+tags: [a11y, read-only]
 schema_version: 1
 triggers: [ultra11y, a11y, accessibility, wcag]
 

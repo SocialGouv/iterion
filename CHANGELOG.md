@@ -3,6 +3,86 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.226.0](https://github.com/SocialGouv/iterion/compare/v3.225.1...v3.226.0) (2026-10-02)
+
+### Features
+
+* **bots:** prod-watch — the ledgers rotate past a bound ([#2064](https://github.com/SocialGouv/iterion/issues/2064)) ([#2129](https://github.com/SocialGouv/iterion/issues/2129)) ([a6cb80d](https://github.com/SocialGouv/iterion/commit/a6cb80d1daaf3cf1f089fcdebcc03745ba754a60)), references [2093/#2112](https://github.com/SocialGouv/iterion/issues/2112)
+
+    <details><summary>why</summary>
+
+    alertlog.jsonl and ticks.jsonl grew for ever (a flooded fold note's line carries ~3 KB; ~50 MB a year in the tree AND in the ops repo's git history). A file past ledger.max_bytes (2 MB, 0 = off) is abandoned under a generation name (alertlog-<gen>.jsonl) and a fresh one starts the same tick; the newest ledger.keep (8, 0 = all) rotations stay in the working tree, older ones leave it — git history keeps every version, the pruning only untracks.
+
+    </details>
+
+## [3.225.1](https://github.com/SocialGouv/iterion/compare/v3.225.0...v3.225.1) (2026-10-02)
+
+### Bug Fixes
+
+* **backends:** claw honors provider: "anthropic" and fires settings hooks when sandboxed ([#1715](https://github.com/SocialGouv/iterion/issues/1715), [#1718](https://github.com/SocialGouv/iterion/issues/1718), [#1713](https://github.com/SocialGouv/iterion/issues/1713)) ([#2115](https://github.com/SocialGouv/iterion/issues/2115)) ([52ec25a](https://github.com/SocialGouv/iterion/commit/52ec25a9feaee5b30babfe54ae520b8b281aa09d))
+
+    <details><summary>why</summary>
+
+    #1718 (confirmed, fixed): ClawBackend.Execute resolved its model through the registry without ever stamping task.ProviderHint, so a node pinned to provider: "anthropic" spent on z.ai whenever ZAI_API_KEY was set and no direct Anthropic credential was around — invisibly, until an error happened to carry z.ai's error code. The hint is now stamped at Execute (re-stamped in-container from the IOTask copy) and ResolveWithContext routes anthropic+hint through resolveAnthropicDirect: skips the z.ai…
+
+    </details>
+
+## [3.225.0](https://github.com/SocialGouv/iterion/compare/v3.224.1...v3.225.0) (2026-10-02)
+
+### Features
+
+* **bots:** the six-verb navigation spine — manifest category + tags, grouped views everywhere ([#1520](https://github.com/SocialGouv/iterion/issues/1520)) ([fbfabb9](https://github.com/SocialGouv/iterion/commit/fbfabb97f54255964932a3fd5a7e2c6225df3ab6))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 (plan review) Adversarial-Model: claude-opus-5 (via cswap, read-only)
+
+    </details>
+
+### Bug Fixes
+
+* **ci:** authoring saves tolerate a .git Git itself refuses; raw fsnotify .Add/.AddWith pinned by a typed inventory ([#2048](https://github.com/SocialGouv/iterion/issues/2048), [#2082](https://github.com/SocialGouv/iterion/issues/2082)) ([#2118](https://github.com/SocialGouv/iterion/issues/2118)) ([1c2cf9f](https://github.com/SocialGouv/iterion/commit/1c2cf9f32f346e7f3e540506475eef49996266e1))
+
+    <details><summary>why</summary>
+
+    #2048: authoring/journal tests flaked under host load, never the same one — root cause characterized: validateAuthoringGitExclusion walks ancestors Lstat-ing .git, and on a loaded multi-session host the shared temp root can hold a .git Git refuses (empty scratch init, dangling gitfile from a racing worktree add/remove). git ls-files then exits 128 "not a git repository" and EVERY authoring save was refused — red bursts under load, green in isolation. When Git can see no repository, no file can…
+
+    </details>
+
+## [3.224.1](https://github.com/SocialGouv/iterion/compare/v3.224.0...v3.224.1) (2026-10-02)
+
+### Bug Fixes
+
+* **runtime:** the mirror records what it writes, so a tracked .claude/ edit is banked instead of destroyed; every .claude writer refuses a symlink ([#1571](https://github.com/SocialGouv/iterion/issues/1571), [#2060](https://github.com/SocialGouv/iterion/issues/2060), [#2061](https://github.com/SocialGouv/iterion/issues/2061)) ([#2122](https://github.com/SocialGouv/iterion/issues/2122)) ([75097df](https://github.com/SocialGouv/iterion/commit/75097df2827a4cf58ebeca30b31bb835734798e2)), closes [#1364](https://github.com/SocialGouv/iterion/issues/1364), references [#1364](https://github.com/SocialGouv/iterion/issues/1364) [#1558](https://github.com/SocialGouv/iterion/issues/1558) [#2044](https://github.com/SocialGouv/iterion/issues/2044) [#1364](https://github.com/SocialGouv/iterion/issues/1364)
+
+    <details><summary>why</summary>
+
+    #1571: treenoise classified by path alone — a run whose only deliverable was a tracked file under .claude/ (a bot editing the repo's own tracked settings.json) saw runOutputPaths return nothing, the finalize log "nothing to bank", and the worktree removed --force: the deliverable destroyed silently. "tracked => work" was not the fix (the mirror rewrites .claude/skills/** at every run start — counting that would wip-bank every converged run, the #1364 failure). The mirror now records what it…
+
+    </details>
+
+## [3.224.0](https://github.com/SocialGouv/iterion/compare/v3.223.0...v3.224.0) (2026-10-02)
+
+### Features
+
+* **delegate:** claude_code sessions honour their background work ([#1936](https://github.com/SocialGouv/iterion/issues/1936)) ([#2091](https://github.com/SocialGouv/iterion/issues/2091)) ([b90eb5d](https://github.com/SocialGouv/iterion/commit/b90eb5d4c17b0ca6ab358b4207cef914bbe077cf)), references [#2017](https://github.com/SocialGouv/iterion/issues/2017) [#2032](https://github.com/SocialGouv/iterion/issues/2032) [#1940](https://github.com/SocialGouv/iterion/issues/1940) [#1940](https://github.com/SocialGouv/iterion/issues/1940)
+
+    <details><summary>why</summary>
+
+    A claude_code session stays open until the CLI itself says its background work is back and delivered, under per-wave and turn-source budgets that ask the agent for its report rather than cut it; a session ledger tells whoever resumes a transcript what its earlier process lost. Found along the way and fixed: secret values reaching the model or persisting outside the run — tool outputs back to placeholders, inputs iterion keeps in placeholder form, reads of the CLI's task outputs, scrubbed…
+
+    </details>
+
+### Bug Fixes
+
+* **runtime,revi:** fan-out aggregate keeps the root-cause branch error; review workspaces report anomalies instead of phantom findings ([#1669](https://github.com/SocialGouv/iterion/issues/1669), [#1666](https://github.com/SocialGouv/iterion/issues/1666)) ([#2117](https://github.com/SocialGouv/iterion/issues/2117)) ([4ec5db5](https://github.com/SocialGouv/iterion/commit/4ec5db5f4d1205f422194ff1119e0336cfdeb1ec))
+
+    <details><summary>why</summary>
+
+    #1669: on the merge queue, a fan-out whose PauseRun store failed ended with an error naming the sibling's "run cancelled: context canceled" — the root cause invisible to the operator, the test intermittent on collection order. processConvergence now falls back to a *RuntimeError{EXECUTION_FAILED, Cause: root} when rootCauseBranchErr finds a branch that failed by itself (first by branch-id, order-independent), and classifiesBranchErr only attaches errors with no classification of their own —…
+
+    </details>
+
 ## [3.223.0](https://github.com/SocialGouv/iterion/compare/v3.222.0...v3.223.0) (2026-10-02)
 
 ### Features

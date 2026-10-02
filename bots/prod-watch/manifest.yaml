@@ -1,7 +1,13 @@
 name: prod-watch
 display_name: Argus
 icon: 👁️
-version: 0.2.0
+version: 0.2.2
+## 0.2.2 — the ledger bound (#2064): a ledger file past `ledger.max_bytes`
+## (2 MB, 0 = off) rotates to a generation-named file and a fresh one
+## starts; the newest `ledger.keep` (8, 0 = all) rotations stay in the
+## working tree, older ones leave it (git history keeps every version).
+## The rotation is said in the tick's summary. (Also carries the deferred
+## bump of the minting-store caps, #2042/#2057, lost to the merge queue.)
 ## 0.2.0 — the Sentry lane (#1702): the org-scoped issue lists of one
 ## project and environment — NEW issues (first processed since the
 ## cursor), REGRESSED / ESCALATING ones dated by their activity (tracked
@@ -16,6 +22,7 @@ version: 0.2.0
 ## state). The leak policy with its circuit-breaker, the analysis agent,
 ## Telegram, the forge issue reporter, the daily digest and the session
 ## mode are the next slices of the same epic.
+category: operate
 description: |
   Production watchdog for ONE deployed application (a scheduled tick,
   zero LLM in this slice — the compiled workflow contains no agent or

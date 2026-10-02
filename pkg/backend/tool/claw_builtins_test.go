@@ -125,6 +125,42 @@ func TestClawShellToolsRunInTheirRegisteredWorkspace(t *testing.T) {
 	}
 }
 
+// A workspace the shell cannot enter runs nothing — the whole command, not
+// its first list: `true; ls`, or a compressed command that exports the
+// rewriter's run env first, would otherwise run the rest where the process
+// is.
+func TestAWorkspaceTheShellCannotEnterRunsNothing(t *testing.T) {
+	processDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(processDir, "OUTSIDE-THE-WORKSPACE.marker"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(processDir)
+	gone := filepath.Join(t.TempDir(), "gone")
+	r := NewRegistry()
+	if err := RegisterClawBuiltins(r, gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterClawWorkspaceDiagnostics(r, gone, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bash", "diagnostic_shell"} {
+		td, err := r.Resolve(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, command := range []string{"ls", "true; ls", "export RTK_RECALL=0; ls"} {
+			in, _ := json.Marshal(map[string]any{"command": command})
+			out, err := td.Execute(context.Background(), in)
+			if strings.Contains(out, "OUTSIDE-THE-WORKSPACE.marker") {
+				t.Errorf("%s %q ran outside the workspace it could not enter: %q", name, command, out)
+			}
+			if err == nil {
+				t.Errorf("%s %q: no error for a workspace it could not enter (%q)", name, command, out)
+			}
+		}
+	}
+}
+
 // TestDiagnosticShellCharacterizesFailureOutput pins the dependency contract
 // Copi relies on for diagnostics: the public claw executor returns combined
 // output alongside a non-nil error when a command exits non-zero. The model

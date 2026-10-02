@@ -133,6 +133,18 @@ func (e *Engine) beginRunResources(ctx context.Context, runID string, childInPla
 	restore := func() error { return nil }
 	backup := "workspace " + dir
 	if childInPlace {
+		// A `.claude` symlink routes everything this block does through to
+		// the link's target: the snapshot's restore (RemoveAll + copy back),
+		// and hideParentSkillCollisions' removals of files matching the
+		// parent's owned hashes. The child borrows its parent's workspace IN
+		// PLACE, and this runs before any of the mirror's refusals (#1569
+		// guards the mirror sequence, not this path) — refuse before the
+		// first write, with the same typed error.
+		if linkErr := refuseAClaudeSymlink(dir); linkErr != nil {
+			releaseWriter()
+			release()
+			return ctx, nil, linkErr
+		}
 		// Nodes within the child may run concurrently. Sibling/parent readers use
 		// the outer gate, held exclusively until restoration has finished.
 		scope.gate = &resourceGate{sem: semaphore.NewWeighted(resourceWriterWeight)}
@@ -201,12 +213,20 @@ func (e *Engine) executeWithResources(ctx context.Context, node ir.Node, input m
 // copy is one of them — the child's mirror resets it wholesale, and a parent
 // reading it afterwards must find its own bundle's names and bytes.
 //
+// The root `.iterion-managed/` rides along: it holds the mirror manifest
+// (#1571) and the plugin-hooks sidecar, both engine-owned resource state
+// exactly like the per-kind marker dirs the "skills"/"commands"/"agents"
+// entries already sweep. Without it the child's manifest syncs survived the
+// restore, and a TRACKED file of the parent's owned copy hash-mismatched
+// the child's recorded bytes afterwards — the parent's own mirror rewrite
+// reading as the parent's work at finalize (#1364 through the child).
+//
 // It is the ONE list for every site acting on those entries: the host-side
 // snapshot below, the in-sandbox snapshot, restore and reset
 // (child_sandbox_resources.go), and the write-through that refills an adopted
 // sandbox (writeThroughMirroredSkills). An entry saved but not reset leaks the
 // parent's files to the child; reset but not saved, it destroys the parent's.
-var childResourcePaths = []string{"skills", "commands", "agents", ownedSkillsDirName, "settings.json"}
+var childResourcePaths = []string{"skills", "commands", "agents", ownedSkillsDirName, "settings.json", bundleMirrorMarkerDir}
 
 // Copy only the directories the resource mirrors own. Other workspace edits,
 // including code produced by the child, are deliberately outside this scope.
@@ -234,6 +254,13 @@ func snapshotChildResources(workDir string) (func() error, string, error) {
 		existed[name] = true
 	}
 	return func() error {
+		// Defense in depth behind beginRunResources' refusal: a `.claude`
+		// symlink swapped in mid-run would route the RemoveAll below into
+		// the link's target. Fail loudly and keep the backup — the parent's
+		// resources are recoverable there, the target's files are not.
+		if linkErr := refuseAClaudeSymlink(workDir); linkErr != nil {
+			return fmt.Errorf("restore child resources (backup %s): %w", backup, linkErr)
+		}
 		for _, name := range childResourcePaths {
 			dst := filepath.Join(root, name)
 			if err := os.RemoveAll(dst); err != nil {

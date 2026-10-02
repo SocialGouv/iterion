@@ -90,6 +90,7 @@ func (e *ClawExecutor) applyAutoMemory(ctx context.Context, task *delegate.Task,
 		memStore = memory.DefaultFSStore()
 	}
 	mirror := automemory.NewMirror(memStore, ref, dir, autoMemoryAttribution(e.botID))
+	mirror.SetUnmaterialize(e.secretUnmaterializer())
 	if err := mirror.Hydrate(ctx); err != nil {
 		warn("running without MEMORY.md: %v", err)
 		releaseDir()

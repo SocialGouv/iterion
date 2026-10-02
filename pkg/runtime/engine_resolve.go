@@ -844,6 +844,7 @@ func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveSc
 		manifest = e.bundle.Manifest
 	}
 	ctx = tool.WithBuiltinAliases(ctx, bundle.AllowsToolAliases(manifest))
+	ctx = model.WithSessionLedger(ctx, rs.sessionLedger)
 	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }
 

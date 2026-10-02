@@ -29,7 +29,11 @@ func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, no
 // a node error may quote a secret the run was launched with; the data the
 // engine reads back — checkpoint, interaction records — keeps the values.
 func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]any) error {
-	if scrubber, ok := e.executor.(SecretScrubber); ok && data != nil {
+	// The recorded-answers event is scrubbed narrowly, in answersEventData:
+	// its interaction_id is the key the studio and the interaction records
+	// flip on, and it must survive even when it happens to hold a
+	// registered value (an id is engine data, not what the model wrote).
+	if scrubber, ok := e.executor.(SecretScrubber); ok && data != nil && typ != store.EventHumanAnswersRecorded {
 		data = scrubber.ScrubOutput(data)
 	}
 	if typ == store.EventNodeFinished && nodeID != "" {

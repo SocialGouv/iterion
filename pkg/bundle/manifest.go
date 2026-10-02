@@ -102,6 +102,24 @@ type Manifest struct {
 	// Edited via the studio Bot-metadata panel.
 	WhenToUse string `yaml:"when_to_use,omitempty"`
 
+	// Category is the bot's slot in the CLOSED navigation spine — one of
+	// the six slugs in BotCategories (build/verify/harden/document/
+	// operate/steer), the "what does this bot do for my repo" answer every
+	// bot picker groups by. Advisory display metadata like WhenToUse:
+	// an unknown value is NEVER rejected or rewritten — the bot lands in
+	// the visible Uncategorized group and bundlelint emits a soft
+	// diagnostic naming the known slugs. Empty = Uncategorized. Normalized
+	// to lowercase-trimmed form at parse; the VALUE stays as declared.
+	Category string `yaml:"category,omitempty"`
+
+	// Tags are the bot's orthogonal facets from the OPEN governed
+	// vocabulary (KnownBotTags — domain, safety, modality): `security`,
+	// `ships-code`, `read-only`, … They power the by-tag views across the
+	// studio gallery, `iterion bots list --tag`, and the marketplace.
+	// Unknown tags are a lint warning (reuse before inventing), never an
+	// error. Normalized to lowercase-trimmed, deduped form at parse.
+	Tags []string `yaml:"tags,omitempty"`
+
 	// DispatchVars maps the issue into THIS bot's input vars when the
 	// dispatcher runs it (e.g. {"feature_prompt": "{{issue.title}}\n\n
 	// {{issue.body}}"} for feature-dev, {"scope_notes": "…"} for a
@@ -314,15 +332,25 @@ func (l *LaunchHints) normalized() *LaunchHints {
 // normalizeNameList trims each entry, drops empties, and dedupes
 // keeping first-occurrence order. Returns nil when nothing survives.
 func normalizeNameList(names []string) []string {
+	return normalizeStringList(names, false)
+}
+
+// normalizeStringList is the shared list normalizer: trim, optionally
+// lowercase, drop empties, dedupe keeping first occurrence. Nil when
+// nothing survives.
+func normalizeStringList(values []string, lower bool) []string {
 	var out []string
-	seen := make(map[string]bool, len(names))
-	for _, n := range names {
-		n = strings.TrimSpace(n)
-		if n == "" || seen[n] {
+	seen := make(map[string]bool, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if lower {
+			v = strings.ToLower(v)
+		}
+		if v == "" || seen[v] {
 			continue
 		}
-		seen[n] = true
-		out = append(out, n)
+		seen[v] = true
+		out = append(out, v)
 	}
 	return out
 }
@@ -1034,6 +1062,11 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	// which the manifest loader cannot see, so nothing here hard-fails.
 	m.Launch = m.Launch.normalized()
 	m.Chat = m.Chat.normalized()
+	// Category/tags normalize FORM only (trim + lowercase + dedup): an
+	// unknown slug or tag stays declared for the soft lint and the
+	// Uncategorized group to name — never blanked, never rejected here.
+	m.Category = normalizeBotCategory(m.Category)
+	m.Tags = normalizeBotTagList(m.Tags)
 	// Every attachment value is later joined to the bundle's attachments/
 	// directory and opened as a file by the runtime. Reject absolute or
 	// "../"-escaping values at parse time so a hostile bundle can't turn

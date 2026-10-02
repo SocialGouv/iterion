@@ -429,6 +429,14 @@ const (
 	// interrupted and nudged in place and went on; `aborted` means it was
 	// killed for the executor's retry (a delegate_error follows).
 	EventDelegateStall EventType = "delegate_stall"
+	// EventDelegateBackground records a step of the lifecycle that keeps a
+	// session open for the background work it launched (claude_code async
+	// subagents / background commands). Data: backend, phase
+	// (waiting|settled|finalizing|abandoned), running, tasks (labels),
+	// waited_ms, reason (finalizing/abandoned only). `abandoned` means work
+	// that never reported back was lost with a process of the session — the
+	// session ledger tells whoever resumes the transcript.
+	EventDelegateBackground EventType = "delegate_background"
 
 	// EventModelFallback is emitted once each time a node's fallback
 	// chain falls through from a failed element to the next one — a

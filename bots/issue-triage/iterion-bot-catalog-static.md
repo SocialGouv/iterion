@@ -27,6 +27,15 @@ No confident fit → leave the bot unset and label `needs-manual-triage`.
 
 ## Decision tree — pick the handler bot per card
 
+**Route by category first.** The persona table in the generated region
+carries a Category column and the reference cards are grouped under it —
+the six-verb spine, in lifecycle order: **build** (ship new capability) ·
+**verify** (judge the code, touch nothing) · **harden** (strengthen what
+exists) · **document** (align words with code) · **operate** (run the
+delivery machinery) · **steer** (judge the direction, converse). Naming the
+category for the card narrows the candidates before the tree walks; a bot
+without a category sits in Uncategorized, visibly last.
+
 Walk top-to-bottom; first match wins.
 
 | If the card sounds like… | → bot |

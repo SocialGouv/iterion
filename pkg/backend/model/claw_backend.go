@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -215,13 +216,25 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// so the bash builtin can compress command output (rewrite via context).
 	// Off is a no-op. For the sandboxed path the mode + chain specs ride the
 	// IOTask to the in-container runner, whose own Execute re-applies them here.
-	ctx = rewrite.WithMode(ctx, rewrite.ParseMode(task.CompressMode))
-	ctx = rewrite.WithChain(ctx, rewrite.NewChain(task.Rewriters))
+	mode, chain := rewrite.ParseMode(task.CompressMode), rewrite.NewChain(task.Rewriters)
+	ctx = rewrite.WithMode(ctx, mode)
+	ctx = rewrite.WithChain(ctx, chain)
 	// Run-level env additions (devbox profile PATH on no-sandbox runs)
 	// reach the in-process bash builtin via ctx — the tool registry is
 	// built before the run's provisioning resolves, so the closure reads
-	// the value per call.
-	ctx = tool.WithBashExtraEnv(ctx, task.ExtraEnv)
+	// the value per call. The shell also carries the chain's run env, last
+	// so it wins, whatever the mode (the agent may run a rewriter itself): it
+	// keeps what a command ran and printed out of the rewriter's own stores.
+	ctx = tool.WithBashExtraEnv(ctx, append(slices.Clip(task.ExtraEnv), chain.RunEnv()...))
+
+	// The node's credential-routing hint (the DSL `provider:` field) travels
+	// with the context so the registry honours it at the resolution
+	// chokepoint (ResolveWithContext). The sandboxed path's in-container
+	// runner re-stamps it from its own IOTask-carried copy at this same line —
+	// a runner binary that PREDATES the stamp silently resolves without the
+	// hint (the pre-#1718 z.ai-synthesis behaviour), the same skew tolerance
+	// as every other capability an older sandbox image lacks.
+	ctx = WithProviderHint(ctx, task.ProviderHint)
 
 	// claw is an in-process Anthropic SDK consumer rather than the vendor's
 	// own CLI, which was once read as putting a Claude Pro/Max OAuth
@@ -335,6 +348,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
 		MaterializeSecrets:    task.MaterializeSecrets,
+		UnmaterializeSecrets:  task.UnmaterializeSecrets,
 	}
 
 	// Reasoning effort via ProviderOptions. Coerce against the model's
@@ -527,10 +541,20 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// claude_code reads via --setting-sources project), run them through claw's
 	// hook Runner too. A fresh per-run runner = default lifecycle + settings
 	// hooks (only when present), so the shared runner never accumulates per-run
-	// handlers. The sandboxed path returned above, so this is in-process only.
-	if task.WorkDir != "" {
+	// handlers. On the launcher's sandboxed path Execute returned above; the
+	// in-container runner re-enters HERE with the launcher-parsed document on
+	// task.SettingsHooks — the host's WorkDir may not exist in the container
+	// (a workspace not mounted at its host path), so the wired document takes
+	// precedence over re-reading the file.
+	if task.WorkDir != "" || len(task.SettingsHooks) > 0 {
 		merged := NewDefaultLifecycleHooks(b.hooks)
-		if registerSettingsHooks(merged, task.WorkDir, nil) > 0 {
+		wired := 0
+		if len(task.SettingsHooks) > 0 {
+			wired = registerSettingsHooksJSON(merged, task.SettingsHooks, b.logger)
+		} else {
+			wired = registerSettingsHooks(merged, task.WorkDir, b.logger)
+		}
+		if wired > 0 {
 			opts.Hooks = merged
 		}
 	}
@@ -912,6 +936,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// whole_improve_loop's chunk_content) never pays for it.
 	if task.HasTools && countToolCalls(result) == 0 && !looksStructured(result.Text) {
 		nudged := opts
+		// The nudge is the harness's re-ask, not the operator's prompt —
+		// already screened on the first pass.
+		nudged.SkipUserPromptSubmit = true
 		nudged.Messages = append(append([]api.Message(nil), result.Messages...), toolUseReminder())
 		if b.hooks.OnLLMRequest != nil {
 			b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
@@ -983,6 +1010,10 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// structured output on its next turn. Mirrors claude_code's
 	// two-pass formatting.
 	recoveryOpts := opts
+	// The recovery pass is the harness's formatting re-ask: screening it
+	// would fire UserPromptSubmit a second time on text the operator never
+	// wrote, and a Block there is swallowed by the fall-through below.
+	recoveryOpts.SkipUserPromptSubmit = true
 	// Append finalizeReminder so the schema-forced pass reports the state the
 	// model actually reached instead of coercing a "work in progress"
 	// placeholder (run 019ec9d5). Copy result.Messages rather than mutate it.
@@ -1170,8 +1201,16 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}
 
 	// Send the task envelope. The runner blocks on its
-	// EnvelopeReader.Read() until this arrives.
-	taskEnv, err := delegate.NewTaskEnvelope(delegate.ToIOTask(task))
+	// EnvelopeReader.Read() until this arrives. The workspace's
+	// .claude/settings.json hooks ride along: the launcher reads them on the
+	// host and the in-container runner registers the document instead of
+	// re-reading a WorkDir that may not exist inside the container (a
+	// workspace not mounted at its host path would otherwise fire NO hooks
+	// in silence — the parity gap of #1715). An old runner ignores the
+	// unknown field and falls back to its own WorkDir read.
+	ioTask := delegate.ToIOTask(task)
+	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
+	taskEnv, err := delegate.NewTaskEnvelope(ioTask)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -1223,6 +1262,37 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		res.BackendName = delegate.BackendClaw
 	}
 	return res, nil
+}
+
+// settingsHooksForWire reads the host's .claude/settings.json hooks document
+// for the sandbox crossing and emits every diagnostic on the LAUNCHER side —
+// the in-container registration's warnings go to the container's stderr,
+// which the launcher surfaces only on failure, so on a successful sandboxed
+// run this pass is the diagnostic's only channel. Returns nil when there is
+// nothing useful to ship (no document, or one claw cannot parse — a document
+// of the wrong JSON type is warned about here, never shipped in silence).
+func settingsHooksForWire(workDir, nodeID string, iteration int, logger *iterlog.Logger) json.RawMessage {
+	doc, err := readSettingsHooksDoc(workDir)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("[%s#%d/claw] parse .claude/settings.json hooks: %v — the sandboxed node fires no settings hooks",
+				nodeID, iteration, err)
+		}
+		return nil
+	}
+	if len(doc) == 0 {
+		return nil
+	}
+	var hooksDoc map[string][]settingsHookGroup
+	if err := json.Unmarshal(doc, &hooksDoc); err != nil {
+		if logger != nil {
+			logger.Warn("[%s#%d/claw] .claude/settings.json hooks: %v — the sandboxed node fires no settings hooks",
+				nodeID, iteration, err)
+		}
+		return nil
+	}
+	diagnoseSettingsHooks(hooksDoc, logger)
+	return doc
 }
 
 // providerCredentialEnvVars enumerates the env-var names the in-runner
@@ -1370,13 +1440,18 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// A PINNED key (secrets.RunBundle.PinnedAPIKeys) crosses only for the
 	// node that names its provider in its model spec — `moonshot/kimi-k2`
 	// carries MOONSHOT_API_KEY into the container, an `anthropic/…` node in
-	// the same run does not see it. That spec IS the pin on this backend
-	// (claw has no `provider:` hint of its own), so it is the licence the
-	// key travels on; forwarding it to every node would put a credential
-	// provisioned for one route into the environment of all of them. After
-	// the run's own key of that provider, never over it: a tenant's
-	// instrument outranks the deployment's, as it does in process
-	// (APIKeyForRoute).
+	// the same run does not see it. The funded provider stays the one
+	// clawPinnedProvider derives from the spec: claw's `provider:` hint
+	// narrows an anthropic route to Anthropic-direct for models Anthropic
+	// serves, but it never names a different credential slot — and a GLM id
+	// on the anthropic wire is a no-op for it (Anthropic does not serve
+	// GLM): z.ai-funded when a z.ai key is reachable, the anthropic-wire
+	// env auth otherwise, exactly as without a hint (registry.go's hint
+	// branch). Forwarding the key to every
+	// node would put a credential provisioned for one route into the
+	// environment of all of them. After the run's own key of that
+	// provider, never over it: a tenant's instrument outranks the
+	// deployment's, as it does in process (APIKeyForRoute).
 	if prov := clawPinnedProvider(model); prov != "" && creds.APIKey(prov) == "" {
 		if k := creds.PinnedAPIKey(prov); k != "" {
 			if name := byokEnvVar[prov]; name != "" {
@@ -1472,8 +1547,11 @@ func clawPinnedProvider(model string) secrets.Provider {
 // is actually served by z.ai's Anthropic-compatible endpoint. Same predicate
 // anthropicCapabilities uses to split the two families apart. It reads a model
 // ID, not a spec: GLMOnAnthropicWire is the spec-level question.
+// Anchored on the PREFIX: every z.ai id starts with "glm" (glm-4.6, glm-5.3),
+// and a substring match misrouted ids that merely contain it
+// ("notglm", "claude-glm-experimental") onto a vendor that does not serve them.
 func modelServedByZAI(model string) bool {
-	return strings.Contains(strings.ToLower(model), "glm")
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm")
 }
 
 // GLMOnAnthropicWire reports whether a model spec names a GLM model on the

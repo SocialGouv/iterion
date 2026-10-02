@@ -249,10 +249,7 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 			e.logger.Warn("runtime: review gate %q: persist answered interaction: %v", nodeID, werr)
 		}
 	}
-	if err := e.emit(ctx, rs.runID, store.EventHumanAnswersRecorded, nodeID, map[string]any{
-		"interaction_id": interactionID,
-		"answers":        verdict,
-	}); err != nil {
+	if err := e.emit(ctx, rs.runID, store.EventHumanAnswersRecorded, nodeID, answersEventData(e.scrubForEvent, interactionID, verdict)); err != nil {
 		return "", err
 	}
 
@@ -593,7 +590,7 @@ func (e *Engine) emitReviewTurn(ctx context.Context, runID, nodeID, role string,
 		return
 	}
 	if v := reviewVerdict(companion); v != nil {
-		_ = e.emit(ctx, runID, store.EventReviewVerdict, nodeID, v)
+		_ = e.emit(ctx, runID, store.EventReviewVerdict, nodeID, e.scrubForEvent(v))
 	}
 }
 

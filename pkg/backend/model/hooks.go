@@ -261,12 +261,11 @@ func (h *storeHooks) rememberInput(toolUseID string, input []byte) {
 	if toolUseID == "" || len(input) == 0 {
 		return
 	}
-	preview := string(input)
-	if len(preview) > toolInputPreviewMax {
-		preview = preview[:toolInputPreviewMax] + "…"
-	}
-	if h.red != nil {
-		preview = h.red(preview)
+	// Redacted before the cut, which would leave a secret it splits
+	// unrecognisable.
+	preview, cut := secretguard.RedactHead(string(input), toolInputPreviewMax, max(1<<10, h.guard.LongestLiteral()), h.red)
+	if cut {
+		preview += "…"
 	}
 	h.inputsMu.Lock()
 	defer h.inputsMu.Unlock()
@@ -709,6 +708,26 @@ func (h *storeHooks) onOrchestrationStall(nodeID string, info OrchestrationStall
 		nodeID, info.Backend, info.Tool, info.IdleFor.Round(time.Second), outcome)
 }
 
+// onBackgroundWork persists a step of the background-work lifecycle, so the
+// time sessions spend waiting for their async work — and the work their
+// processes lost — are countable per backend instead of living only in a
+// process log line.
+func (h *storeHooks) onBackgroundWork(nodeID string, info BackgroundWorkInfo) {
+	data := map[string]any{
+		"backend":   info.Backend,
+		"phase":     info.Phase,
+		"running":   info.Running,
+		"waited_ms": info.WaitedFor.Milliseconds(),
+	}
+	if len(info.Tasks) > 0 {
+		data["tasks"] = info.Tasks
+	}
+	if info.Reason != "" {
+		data["reason"] = info.Reason
+	}
+	h.emit(nodeID, store.EventDelegateBackground, data)
+}
+
 // isLikelyStructuredPayload reports whether text is a bare JSON object
 // or array — the shape of a structured-output answer rather than
 // human-facing narration.
@@ -765,7 +784,8 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 			OutputTokens:    info.OutputTokens,
 			AggregateTokens: info.AggregateTokens,
 		},
-		SessionID: info.SessionID,
+		SessionID:            info.SessionID,
+		TerminatedBackground: info.TerminatedBackgroundTasks,
 	}
 	// Materialise the conversation bytes only when we're
 	// about to persist them — the marshal is O(N) in
@@ -947,9 +967,17 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	persistToolPayload(h.ctx, h.guard, h.toolBlobSink, h.runID, info.ToolUseID, "output", []byte(info.Output), data)
 
 	evtType := store.EventToolCalled
+	var errText string
 	if info.Error != nil {
 		evtType = store.EventToolError
-		data["error"] = info.Error.Error()
+		// A tool's error is its output: known values back to placeholders
+		// here too, whatever produced it — the run log and error tracking
+		// read it below.
+		errText = info.Error.Error()
+		if h.red != nil {
+			errText = h.red(errText)
+		}
+		data["error"] = errText
 	}
 	h.emit(nodeID, evtType, data)
 
@@ -961,11 +989,11 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 		// The rejected input goes on the same line: an error naming a missing
 		// property is not actionable without the payload that omitted it.
 		if preview := h.takeInput(info.ToolUseID); preview != "" {
-			h.logger.Error("Tool error [%s]: %s — %v (%dms)\n  rejected input: %s",
-				nodeID, info.ToolName, info.Error, info.Duration.Milliseconds(), preview)
+			h.logger.Error("Tool error [%s]: %s — %s (%dms)\n  rejected input: %s",
+				nodeID, info.ToolName, errText, info.Duration.Milliseconds(), preview)
 		} else {
-			h.logger.Error("Tool error [%s]: %s — %v (%dms)",
-				nodeID, info.ToolName, info.Error, info.Duration.Milliseconds())
+			h.logger.Error("Tool error [%s]: %s — %s (%dms)",
+				nodeID, info.ToolName, errText, info.Duration.Milliseconds())
 		}
 	} else {
 		h.takeInput(info.ToolUseID)
@@ -1406,15 +1434,19 @@ func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []by
 	}
 
 	evtType := store.EventToolCalled
+	var errText string
 	if err != nil {
 		evtType = store.EventToolError
-		data["error"] = err.Error()
+		// The run log, error tracking and the event read it: redacted,
+		// whatever produced it.
+		errText = h.red(err.Error())
+		data["error"] = errText
 	}
 	h.emit(nodeID, evtType, data)
 
 	if err != nil {
-		h.logger.Error("Tool error [%s]: %s — %v (%dms)",
-			nodeID, toolName, err, elapsed.Milliseconds())
+		h.logger.Error("Tool error [%s]: %s — %s (%dms)",
+			nodeID, toolName, errText, elapsed.Milliseconds())
 	} else {
 		h.logger.Logf(iterlog.LevelInfo, "🔧", "Tool result [%s]: %s → %s (%dms)",
 			nodeID, toolName, humanSize(len(output)), elapsed.Milliseconds())
@@ -1497,6 +1529,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnUsageCap:           h.onUsageCap,
 		OnUsageProgress:      h.onUsageProgress,
 		OnOrchestrationStall: h.onOrchestrationStall,
+		OnBackgroundWork:     h.onBackgroundWork,
 		OnLLMTurnCapture:     h.onLLMTurnCapture,
 		OnLLMCompacted:       h.onLLMCompacted,
 		OnToolStarted:        h.onToolStarted,

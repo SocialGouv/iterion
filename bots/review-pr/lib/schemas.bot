@@ -83,6 +83,20 @@ schema diff_precheck_output:
   ## scope rests on whatever the local checkout last knew, so the review is
   ## not authoritative about what the branch introduced.
   base_is_current: bool
+  ## workspace_anomaly: the TRACKED uncommitted entries the precheck's
+  ## status read reported, one porcelain line per entry ("" = the workspace
+  ## equals the reviewed tree). Their edits enter the reviewers'
+  ## working-tree scope without being in the PR, so the reviewers scope them
+  ## out and publish_review routes them as a workspace anomaly, never as PR
+  ## findings (#1666). Untracked entries and the engine/tooling tree noise
+  ## (ITERION_TREE_NOISE: the .claude mirror, devbox.lock, script scratch)
+  ## are excluded at the read — neither is the workspace drifting. Forced
+  ## "" in base_ref: HEAD mode, where uncommitted work IS the review's
+  ## object. The single marker "?" means the status read itself FAILED:
+  ## the publish step then strips nothing and says the workspace state
+  ## could not be verified, rather than reading a disarmed check as a
+  ## clean tree.
+  workspace_anomaly: string
 
 ## REVIEW TIERS (#685). The concrete, resolved values `tier_expand`
 ## derives from `review_tier` + the sentinel-default knobs — see the vars'
@@ -138,6 +152,12 @@ schema publish_input:
   ## sentinel — the scope could not be computed, so no code was read — and the
   ## gate fails closed on it. Distinct from `0`, which is a real answer.
   scope_files: json
+  ## workspace_anomaly: diff_precheck's tracked uncommitted entries
+  ## (newline-joined porcelain lines, "" = clean tree), EDGE-injected like
+  ## reviewed_sha. A finding anchored on one of these files judges an edit
+  ## the pull request does not contain: publish strips it from the PR
+  ## findings and reports it under the workspace anomaly instead (#1666).
+  workspace_anomaly: string
   ## Engine telemetry is mapped at publication, never supplied by the LLM.
   ai_run_tokens: json
   ## `*_wire` is the engine's `_session_fingerprint` (the routing label of

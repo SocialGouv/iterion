@@ -410,3 +410,25 @@ func captureSessionMessages(ctx context.Context, nodeID string, result *TextResu
 		}
 	}
 }
+
+// sessionLedgerKey carries the run's delegate.SessionLedger: the record of
+// the background work a CLI session's processes lost, keyed by the session id
+// so every task that resumes the transcript reads the same entry.
+type sessionLedgerKey struct{}
+
+// WithSessionLedger returns a derived ctx carrying the run's session ledger.
+// The runtime engine sets it for every node execution, trunk and branches
+// alike: its entries are keyed by session id, which no two items share.
+func WithSessionLedger(ctx context.Context, l delegate.SessionLedger) context.Context {
+	if l == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionLedgerKey{}, l)
+}
+
+// SessionLedgerFromContext returns the ledger set by WithSessionLedger, or
+// nil when none is wired (a task then neither reads nor records one).
+func SessionLedgerFromContext(ctx context.Context) delegate.SessionLedger {
+	l, _ := ctx.Value(sessionLedgerKey{}).(delegate.SessionLedger)
+	return l
+}

@@ -19,7 +19,8 @@ var botsCmd = &cobra.Command{
 studio builder at /bots/new. "install" imports a published bundle. "list"
 discovers .bot files and bundle directories on disk and emits a structured
 catalog used by orchestrator bots (e.g. whats-next) to pick the right bot
-for an issue. Output formats: json (default), markdown, skill.
+for an issue. Output formats: json (default), markdown, skill, tree (the
+category → bot → presets spine).
 
 The "skill" format emits a SKILL.md ready to drop into a bundle's skills/
 directory; that's the canonical way to refresh bots/whats-next/skills/
@@ -33,10 +34,14 @@ var botsListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		paths, _ := cmd.Flags().GetStringSlice("paths")
 		format, _ := cmd.Flags().GetString("format")
+		categories, _ := cmd.Flags().GetStringSlice("category")
+		tags, _ := cmd.Flags().GetStringSlice("tag")
 		if len(paths) == 0 {
 			paths = []string{"bots", "examples"}
 		}
-		return cli.BotsList(cli.BotsListOptions{Paths: paths, Format: format, ErrW: os.Stderr}, os.Stdout)
+		return cli.BotsList(cli.BotsListOptions{
+			Paths: paths, Format: format, Categories: categories, Tags: tags, ErrW: os.Stderr,
+		}, os.Stdout)
 	},
 }
 
@@ -243,7 +248,9 @@ the materialized .botz copy. Local Git bundle changes must be committed unless
 
 func init() {
 	botsListCmd.Flags().StringSlice("paths", nil, "Directories or .bot files to scan (default: bots, examples)")
-	botsListCmd.Flags().String("format", "json", "Output format: json|markdown|skill")
+	botsListCmd.Flags().String("format", "json", "Output format: json|markdown|skill|tree")
+	botsListCmd.Flags().StringSlice("category", nil, "Keep bots in these categories (build, verify, harden, document, operate, steer; or \"uncategorized\" — selects the no/unknown-category group)")
+	botsListCmd.Flags().StringSlice("tag", nil, "Keep bots carrying ALL these tags (e.g. --tag security --tag read-only)")
 	botsRegenCatalogCmd.Flags().String("workdir", "", "Workspace root to scan (default: current directory)")
 	botsCreateCmd.Flags().String("template", "blank", "Template to start from (see `iterion bots templates`)")
 	botsCreateCmd.Flags().String("workdir", "", "Workspace root anchoring --dest and the catalog refresh (default: current directory)")

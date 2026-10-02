@@ -36,16 +36,21 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    tools (an unrestricted set already exposes the claw builtins). The
    `claude_code` backend orchestrates through its native `Agent` tool, and
    every subagent runs in the **foreground**: each spawn sets
-   `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so an `Agent` call returns the
-   agent's report as its tool result. To parallelise, the model puts several
+   `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (unless the operator asks for
+   background work, `ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`), so an `Agent`
+   call returns the agent's report as its tool result. To parallelise, the model puts several
    `Agent` calls in one message; they run concurrently. A
    `## Subagents in this session` section states this on every spawn that
    keeps the tool, ultracode or not. The session is one-shot, so a
    background agent's report could only arrive while the turn was still
-   running. A model that ends its turn to wait for one ends the session with
-   it, and the findings are lost. The multi-agent `Workflow` tool is withheld
-   from every node, ultracode included: it only runs in the background, and
-   nothing in the session can wait on it (see
+   running: a model that ended its turn to wait for one would end the
+   session with it, and lose the findings. With background work on, a
+   background agent is waited for instead — the background lifecycle keeps
+   the session open until its report is delivered — and a
+   `## Background work in this session` section says so. The multi-agent
+   `Workflow` tool is withheld from every node, ultracode included, whether
+   background work is on or not: a workflow fans out agents of its own, whose
+   cost and scope the node never declared (see
    [backends.md](backends.md#claude_code)).
 4. **Warns off Opus 4.8.** Compiling `ultracode` on a model that isn't
    `claude-opus-4-8` emits diagnostic **C089** (a warning, not an error): the

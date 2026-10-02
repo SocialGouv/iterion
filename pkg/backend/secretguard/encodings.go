@@ -56,11 +56,33 @@ func encodingsOf(v string) []string {
 
 	add(url.QueryEscape(v))
 	add(url.PathEscape(v))
+	// A URL written back by a JS runtime (a fetched URL a tool reports):
+	// query (special and not), path — with `^`, which Bun and Node encode
+	// there too — fragment, userinfo, and encodeURIComponent's set.
+	add(whatwgEscape(v, " \"#<>'"))
+	add(whatwgEscape(v, " \"#<>"))
+	add(whatwgEscape(v, " \"#<>?`{}"))
+	add(whatwgEscape(v, " \"#<>?^`{}"))
+	add(whatwgEscape(v, " \"<>`"))
+	add(whatwgEscape(v, " \"#<>?^`{}/:;=@[\\]|"))
+	add(whatwgEscape(v, " \"#<>?^`{}/:;=@[\\]|$%&+,"))
+	// The WHATWG application/x-www-form-urlencoded serializer
+	// (URLSearchParams, a form body; Java's URLEncoder): every byte but ASCII
+	// alphanumerics and *-._ percent-encoded, a space as "+" — Go's
+	// QueryEscape differs on "*" and "~".
+	add(formURLEncode(v))
+	// RFC 3986 strict (curl's escape, Python's quote(safe=""), PHP's rawurlencode):
+	// Go's QueryEscape with a space as %20 — a literal "+" is already %2B —
+	// and Python's quote() default, which keeps "/".
+	strict := strings.ReplaceAll(url.QueryEscape(v), "+", "%20")
+	add(strict)
+	add(strings.ReplaceAll(strict, "%2F", "/"))
 
-	// JSON string escaping: marshal then strip the surrounding quotes,
-	// leaving the escaped body (e.g. embedded `\"` / `\n` / `\\`).
-	if j, err := json.Marshal(v); err == nil && len(j) >= 2 {
-		add(string(j[1 : len(j)-1]))
+	// JSON string escaping: the escaped body between the quotes (embedded
+	// `\"` / `\n` / `\\`), as Go writes it and as JSON.stringify or jq do
+	// (no HTML escaping of & < >).
+	for _, body := range jsonBodies(v) {
+		add(body)
 	}
 
 	return out
@@ -119,4 +141,59 @@ func mostlyPrintable(b []byte) bool {
 		return false
 	}
 	return float64(printable)/float64(total) >= 0.85
+}
+
+// jsonBodies returns the JSON string bodies of v: HTML-escaped (Go's
+// default) and not.
+func jsonBodies(v string) []string {
+	var out []string
+	if j, err := json.Marshal(v); err == nil && len(j) >= 2 {
+		out = append(out, string(j[1:len(j)-1]))
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err == nil {
+		if j := strings.TrimSuffix(b.String(), "\n"); len(j) >= 2 && (len(out) == 0 || j[1:len(j)-1] != out[0]) {
+			out = append(out, j[1:len(j)-1])
+		}
+	}
+	return out
+}
+
+// formURLEncode is the WHATWG application/x-www-form-urlencoded byte
+// serializer.
+func formURLEncode(v string) string {
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == ' ':
+			b.WriteByte('+')
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '*', c == '-', c == '.', c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteString("%")
+			b.WriteString(strings.ToUpper(hex.EncodeToString([]byte{c})))
+		}
+	}
+	return b.String()
+}
+
+// whatwgEscape percent-encodes C0 controls, bytes >= 0x7F and the bytes of
+// set, the way a WHATWG URL serialiser writes a query (set: space, `"`, `#`,
+// `<`, `>`, `'`) or a path (space, `"`, `#`, `<`, `>`, `?`, backtick, `{`,
+// `}`).
+func whatwgEscape(v, set string) string {
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c < 0x20 || c >= 0x7F || strings.IndexByte(set, c) >= 0 {
+			b.WriteString("%")
+			b.WriteString(strings.ToUpper(hex.EncodeToString([]byte{c})))
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }

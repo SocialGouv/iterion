@@ -82,7 +82,7 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"spawning a subagent.\n\n" +
 	"Orchestration mechanics:\n" +
 	"- Batch by stage: subagents launched together in ONE message run " +
-	"concurrently, and your next message waits for all of them. Put every " +
+	"concurrently. Put every " +
 	"independent subagent of a stage in the same message, and move on to a new " +
 	"message only when the next stage genuinely needs the previous results " +
 	"(dedup/merge across the set, early-exit on zero findings, cross-item " +
@@ -666,6 +666,27 @@ type Task struct {
 	// the delegate package stays decoupled from pkg/backend/secretguard.
 	MaterializeSecrets func(string) string
 
+	// RedactSecrets is the run's sink redaction (Layer 0): known secret
+	// values back to their placeholders, unknown token shapes to a marker —
+	// for what a backend writes to its log or its events. The
+	// ITERION_SECRETS_REDACT kill switch turns it off. Nil disables it.
+	RedactSecrets func(string) string
+
+	// RedactSecretsSpan is the length in bytes of the longest text
+	// RedactSecrets recognises as one known value: a backend that redacts a
+	// window of a longer text reads at least that far past what it keeps, so
+	// a value straddling the cut is recognised whole. 0 when unknown.
+	RedactSecretsSpan int
+
+	// UnmaterializeSecrets is MaterializeSecrets' mirror: a known secret
+	// value, in any registered encoding, back to its placeholder — nothing
+	// else. Backends apply it
+	// to text from the far side of the materialisation boundary they write
+	// into a prompt or the run store — a background task's description is
+	// the command AFTER materialisation. The sink kill switch leaves it on:
+	// the agent only ever sees placeholders. Nil disables it.
+	UnmaterializeSecrets func(string) string
+
 	// CursorFragments are resolved prompt-engineering cursor fragments
 	// to append to the system prompt under a "## Calibration" section.
 	// Each entry is one cursor activation, pre-formatted as
@@ -720,6 +741,11 @@ type Task struct {
 
 	// SessionID is an optional session ID to resume (empty = fresh session).
 	SessionID string
+	// SessionLedger is the run's record of the background work a session's
+	// processes lost — launched, never reported back (see SessionLedger). A backend that resumes a
+	// transcript reads it to tell the agent those tasks are gone, and records
+	// what its own process leaves behind. Nil disables both.
+	SessionLedger SessionLedger
 	// SessionSlot is the runtime-owned key for in-process session history.
 	// Empty preserves the historical per-node key.
 	SessionSlot string
@@ -840,6 +866,15 @@ type Task struct {
 	// next hint here after a hard failure beyond the retry budget — the
 	// backend itself stays chain-unaware.
 	ProviderHint string
+
+	// SettingsHooks carries the raw "hooks" object of the workspace's
+	// .claude/settings.json across the sandbox boundary. The launcher reads
+	// the host file (which the container may not see at the same path when
+	// the workspace is not mounted at its host location) and ships the
+	// document on the wire; the in-container claw runner registers it
+	// instead of re-reading a path that may not exist. Nil outside the
+	// sandboxed claw path — an in-process backend reads the file itself.
+	SettingsHooks json.RawMessage
 
 	// Hooks lets the backend surface mid-execution events back to the
 	// engine without returning. Currently used by the claude_code
@@ -1139,8 +1174,10 @@ type TaskHooks struct {
 	OnToolCalled func(toolName string, toolUseID string, isError bool, output string)
 
 	// OnTurnFinished fires once per successful delegate call boundary
-	// (claude_code: one Result; claw: not used — claw fires per-step
-	// hooks via GenerationOptions.OnTurnCapture instead). The runtime
+	// (claude_code: once per call, on the merged Result — a session that
+	// waited for background work spans several CLI results; claw: not
+	// used — claw fires per-step hooks via GenerationOptions.OnTurnCapture
+	// instead). The runtime
 	// uses it to persist a store.TurnCheckpoint anchored at
 	// (run, node, iter, turn=0) carrying the CLI's SessionID, so the
 	// Fork API can later relaunch claude with --resume <id>
@@ -1189,6 +1226,36 @@ type TaskHooks struct {
 	// → the runner's iterion_delegate_idle_deadlock_total counter). Runs on
 	// the stream-handling goroutine: must not block.
 	OnOrchestrationStall func(OrchestrationStall)
+
+	// OnBackgroundWork fires as a session that launched background work
+	// (claude_code: async subagents, background commands) moves through the
+	// lifecycle that keeps it alive until that work comes back: waiting,
+	// settled, finalizing (iterion asked for a report before the work was
+	// done), abandoned (work that never reported back — still running, or
+	// finished without its result reaching the agent — was lost with a
+	// process of the session). Runs on the stream-handling goroutine: must
+	// not block.
+	OnBackgroundWork func(BackgroundWork)
+}
+
+// BackgroundPhase names a step of the background-work lifecycle.
+type BackgroundPhase string
+
+const (
+	BackgroundWaiting    BackgroundPhase = "waiting"
+	BackgroundSettled    BackgroundPhase = "settled"
+	BackgroundFinalizing BackgroundPhase = "finalizing"
+	BackgroundAbandoned  BackgroundPhase = "abandoned"
+)
+
+// BackgroundWork describes one background-work lifecycle transition.
+type BackgroundWork struct {
+	Backend   string // backend that runs the session
+	Phase     BackgroundPhase
+	Running   int           // tasks still running; abandoned: tasks lost
+	Tasks     []string      // their labels (description, type, id)
+	WaitedFor time.Duration // since the first result that left this wave running
+	Reason    string        // why a finalizing/abandoned transition happened
 }
 
 // OrchestrationStall describes one classified orchestration deadlock.
@@ -1237,6 +1304,10 @@ type TurnFinishedInfo struct {
 	InputTokens     int
 	OutputTokens    int
 	AggregateTokens int
+	// TerminatedBackgroundTasks is Result.TerminatedBackgroundTasks: the
+	// background work this call's processes lost. A run forked from this turn
+	// resumes the session, and must be told.
+	TerminatedBackgroundTasks []string
 }
 
 // BuildSystemPrompt returns the task's SystemPrompt augmented with
@@ -1760,6 +1831,14 @@ type Result struct {
 	// downstream forks can detect a cross-provider switch and fall back
 	// to a fresh session instead of failing on signed thinking blocks.
 	SessionFingerprint string
+
+	// TerminatedBackgroundTasks labels the background work (claude_code:
+	// async subagents, background commands) this call's processes — the
+	// session and any formatting pass — lost: still running when the process
+	// ended, or finished without its result reaching the agent. The backend
+	// records it in Task.SessionLedger, so whoever resumes the session is told
+	// instead of waiting on work that no longer exists.
+	TerminatedBackgroundTasks []string
 
 	// PendingConversation is the persisted LLM conversation captured at
 	// the moment the agent loop was suspended by an ask_user call. The

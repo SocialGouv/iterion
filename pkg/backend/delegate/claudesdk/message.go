@@ -61,6 +61,87 @@ type SystemMessage struct {
 	APIKeySource      string          `json:"apiKeySource"`
 	ClaudeCodeVersion string          `json:"claude_code_version"`
 	Agents            json.RawMessage `json:"agents"`
+
+	// raw keeps the line so subtype-specific payloads (see TaskEvent) decode
+	// on demand. Typed fields for them would put every system subtype at the
+	// mercy of one field-type collision: a strict decode failure is a
+	// ParseError, and a ParseError ends the session.
+	raw json.RawMessage
+}
+
+// BackgroundTask is one entry of a background_tasks_changed snapshot.
+// Ambient marks what the CLI calls not activity: its own housekeeping (every
+// skip_transcript task, e.g. memory consolidation) and every live-update
+// watcher, requested by the agent or auto-started. The CLI tells hosts to
+// leave these out: none holds a session, none is recorded as lost.
+type BackgroundTask struct {
+	TaskID      string `json:"task_id"`
+	TaskType    string `json:"task_type,omitempty"`
+	Description string `json:"description,omitempty"`
+	Ambient     bool   `json:"ambient,omitempty"`
+}
+
+// TaskEvent is the payload of the background-task subtypes: task_started,
+// task_progress, task_updated, task_notification and
+// background_tasks_changed. The latter lists EVERY live background task of
+// the process — the main agent's, a subagent's own, and ambient ones — and
+// replaces the previous list: it is the authority on what
+// is still running.
+type TaskEvent struct {
+	TaskID          string           `json:"task_id"`
+	ToolUseID       string           `json:"tool_use_id"`
+	Status          string           `json:"status"`
+	Summary         string           `json:"summary"`
+	OutputFile      string           `json:"output_file"`
+	Description     string           `json:"description"`
+	TaskType        string           `json:"task_type"`
+	IsBackgrounded  *bool            `json:"is_backgrounded"`
+	OwnedBySubagent bool             `json:"owned_by_subagent"`
+	SkipTranscript  bool             `json:"skip_transcript"`
+	Ambient         bool             `json:"ambient"`
+	Tasks           []BackgroundTask `json:"tasks"`
+	// Prompt: a task_started's prompt — for a resumed subagent, the one it
+	// was resumed with (the CLI's wake of a parked agent joins the
+	// task-notifications queued for it; a message's resume carries the
+	// message).
+	Prompt string `json:"prompt"`
+}
+
+// TaskEvent decodes the background-task payload of a task_* or
+// background_tasks_changed message. ok is false for any other subtype, and
+// for a payload that does not decode — the caller treats that as "no
+// visibility", never as a session failure.
+func (m *SystemMessage) TaskEvent() (ev TaskEvent, ok bool) {
+	switch m.Subtype {
+	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":
+	default:
+		return TaskEvent{}, false
+	}
+	if len(m.raw) == 0 || json.Unmarshal(m.raw, &ev) != nil {
+		return TaskEvent{}, false
+	}
+	return ev, true
+}
+
+// SessionState reports the state a session_state_changed message announces
+// ("idle", "running", "requires_action"; the CLI emits them when
+// CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS is set). "idle" is the CLI's own
+// turn-over signal: no turn running, no background work it waits for still
+// running, none of its finished results still on its way to the queue — the
+// queue itself it does not check (it reports idle, then re-kicks a turn for a
+// command already queued). ok is false for any other subtype, or a payload
+// that does not decode.
+func (m *SystemMessage) SessionState() (state string, ok bool) {
+	if m.Subtype != "session_state_changed" || len(m.raw) == 0 {
+		return "", false
+	}
+	var p struct {
+		State string `json:"state"`
+	}
+	if json.Unmarshal(m.raw, &p) != nil || p.State == "" {
+		return "", false
+	}
+	return p.State, true
 }
 
 // MCPServerCount returns the number of MCP servers reported in the
@@ -170,6 +251,14 @@ func (m *UserAPIMessage) UnmarshalJSON(data []byte) error {
 	}
 	*m = UserAPIMessage(raw.Alias)
 	m.RawContent = raw.Content
+	// The API also takes a user message's content as a bare string — the
+	// shape the CLI replays a prompt in (--replay-user-messages): one text
+	// block.
+	var text string
+	if len(raw.Content) > 0 && raw.Content[0] == '"' && json.Unmarshal(raw.Content, &text) == nil {
+		m.Content = []ContentBlock{&TextBlock{Type: "text", Text: text}}
+		return nil
+	}
 	if len(raw.Content) > 0 {
 		blocks, err := unmarshalContentBlocks(raw.Content)
 		if err != nil {
@@ -182,8 +271,11 @@ func (m *UserAPIMessage) UnmarshalJSON(data []byte) error {
 
 // UserMessage contains tool results sent back to Claude.
 type UserMessage struct {
-	Type            string          `json:"type"` // "user"
-	UUID            string          `json:"uuid"`
+	Type string `json:"type"` // "user"
+	UUID string `json:"uuid"`
+	// IsReplay marks the CLI re-emitting a stdin message a turn just took
+	// (WithReplayUserMessages); UUID is then the one it was sent with.
+	IsReplay        bool            `json:"isReplay,omitempty"`
 	SessionID       string          `json:"session_id"`
 	ParentToolUseID *string         `json:"parent_tool_use_id,omitempty"`
 	Message         *UserAPIMessage `json:"message"`
@@ -261,6 +353,11 @@ type RateLimitEvent struct {
 func (*RateLimitEvent) messageType() string { return "rate_limit_event" }
 func (*RateLimitEvent) sealed()             {}
 
+// UnmarshalMessage decodes one stream-json line of the CLI into its Message.
+func UnmarshalMessage(data []byte) (Message, error) {
+	return unmarshalMessage(data)
+}
+
 // unmarshalMessage dispatches a raw JSON line to the correct Message type.
 func unmarshalMessage(data []byte) (Message, error) {
 	var probe struct {
@@ -275,6 +372,8 @@ func unmarshalMessage(data []byte) (Message, error) {
 	case "system":
 		var m SystemMessage
 		err = json.Unmarshal(data, &m)
+		// data is already the message's own copy of the line (parseLine).
+		m.raw = json.RawMessage(data)
 		msg = &m
 	case "assistant":
 		var m AssistantMessage
