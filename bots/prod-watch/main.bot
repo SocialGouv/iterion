@@ -181,6 +181,9 @@ schema plan_output:
   ## Which lanes the config actually enables — the zero-façade guard
   ## and the staleness net read this, not the raw config.
   lanes: json
+  ## {max_bytes, keep} — the bound on what the ledger files keep in the
+  ## working tree; commit_state rotates by it.
+  ledger: json
   halted: bool
   halt: json
   ## The operator-facing reason the typed fail node renders ("" when not halted).
@@ -397,10 +400,17 @@ schema commit_input:
   state_commit: bool
   workspace: string
   state_dir: string
+  ## {max_bytes, keep} from the plan's normalized config: the bound on
+  ## what the ledger files keep in the working tree.
+  ledger: json
 
 schema commit_output:
   committed: bool
   summary: string
+  ## [{ledger, rotated_to, removed: [names]}] — the rotation this tick
+  ## performed, one entry per ledger file that passed its bound: the trim
+  ## is SAID here and in the summary, never silent. Empty when none.
+  rotations: json
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -516,6 +526,23 @@ tool plan:
     if isinstance(g_deadline, bool) or not isinstance(g_deadline, int) or not 10 <= g_deadline <= 600:
         raise SystemExit('prod-watch: config.grafana.deadline_secs must be an integer in [10, 600], got ' + repr(g_deadline)[:40])
     grafana['deadline_secs'] = g_deadline
+
+    ## ── the ledgers ────────────────────────────────────────────────
+    ## When a ledger file passes max_bytes, commit_state abandons it under
+    ## a generation name and starts a fresh one; the newest `keep` rotations
+    ## stay in the working tree, the rest leave it (git history keeps every
+    ## version). 0 max_bytes: no bound — an explicit operator's override,
+    ## the growth is then theirs to prune. 0 keep: every rotation stays.
+    ledger_cfg = section('ledger', {})
+    def l_int(name, default, lo, hi):
+        v = ledger_cfg.get(name)
+        if v is None:
+            return default
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            raise SystemExit('prod-watch: config.ledger.' + name + ' must be an integer in [' + str(lo) + ', ' + str(hi) + '], got ' + repr(v)[:40])
+        return v
+    ledger = {'max_bytes': l_int('max_bytes', 2000000, 0, 10 ** 9),
+              'keep': l_int('keep', 8, 0, 1000)}
 
     ## ── http probes ────────────────────────────────────────────────
     http_probes = []
@@ -1054,7 +1081,7 @@ tool plan:
                ', ' + str(len(sinks)) + ' sink(s)' + (', HALTED' if halted else ''))
     print(json.dumps({'app': app, 'release': release, 'grafana': grafana, 'loki': loki_plan,
                       'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sentry': sentry, 'sinks': sinks,
-                      'labels': labels, 'lanes': lanes, 'halted': halted, 'halt': halt or {},
+                      'labels': labels, 'lanes': lanes, 'ledger': ledger, 'halted': halted, 'halt': halt or {},
                       'halt_reason': halt_reason, 'deliver_by': deliver_by, 'summary': summary}, ensure_ascii=False))
 
   language: py
@@ -4743,7 +4770,7 @@ tool notify:
 ## delivery succeeded (or nothing needed delivering).
 tool commit_state:
   script: |
-    import json, os, fcntl, subprocess, time, signal
+    import json, os, re, fcntl, subprocess, time, signal
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     state_next = {{input.state_next_file}}
     alertlog_delta = {{input.alertlog_file}}
@@ -4752,6 +4779,11 @@ tool commit_state:
     state_commit = {{input.state_commit}}
     ws = {{input.workspace}}
     state_dir = {{input.state_dir}}
+    _led = {{input.ledger}} or {}
+    _lmax = _led.get('max_bytes')
+    ledger_max_bytes = 2000000 if _lmax is None else int(_lmax)
+    _lkeep = _led.get('keep')
+    ledger_keep = 8 if _lkeep is None else int(_lkeep)
     ## What the run's effective budget has left as this node starts (the
     ## clock the engine kills the run by, carried across a resume), less the
     ## engine's own end: the push and the pull's window. None without a
@@ -4793,8 +4825,8 @@ tool commit_state:
         out = subprocess.run(['git', 'check-ignore'] + paths, capture_output=True, text=True).stdout
         return [ln.strip() for ln in out.split(chr(10)) if ln.strip()]
 
-    def _commit_push_state(sdir, msg):
-        paths = [os.path.join(sdir, f) for f in STAGED_FILES]
+    def _commit_push_state(sdir, msg, extra):
+        paths = [os.path.join(sdir, f) for f in STAGED_FILES] + [os.path.join(sdir, f) for f in extra]
         added = subprocess.run(['git', 'add', '--'] + paths, capture_output=True, text=True)
         said = ((added.stderr or added.stdout or '')[-400:]).strip()
         ## Judged by the INDEX, never by the exit code: under a rule that
@@ -4802,10 +4834,19 @@ tool commit_state:
         ## and still exits 1 for the directory it walked. What git actually
         ## took: every state file tracked, with the content just written —
         ## or "pushed" would describe a commit without the cursor in it.
-        missing = [f for f in STAGED_FILES
-                   if subprocess.run(['git', 'ls-files', '--error-unmatch', os.path.join(sdir, f)], capture_output=True).returncode != 0]
-        if missing:
-            raise SystemExit('prod-watch: git did not take ' + ', '.join(missing) + ' from the state dir ' + repr(sdir) +
+        ## Every path handed to git is judged by the INDEX, never by the
+        ## add's exit code: one that exists on disk must have been taken —
+        ## an ignore rule matching only the rotation names would otherwise
+        ## drop them in silence while the summary still said "pushed" —
+        ## and one that is gone must not be tracked any more (the deletion
+        ## was staged, or it was never git's). Under a rule that ignores
+        ## the state dir itself, `git add` stages the tracked files and
+        ## still exits 1 for the directory it walked — the index is what
+        ## git actually took.
+        untracked = [os.path.basename(p) for p in paths if os.path.exists(p)
+                     and subprocess.run(['git', 'ls-files', '--error-unmatch', p], capture_output=True).returncode != 0]
+        if untracked:
+            raise SystemExit('prod-watch: git did not take ' + ', '.join(untracked) + ' from the state dir ' + repr(sdir) +
                              ' (an ignore rule?) -- refusing to push a state commit without them. git said: ' + said)
         if subprocess.run(['git', 'diff', '--quiet', '--'] + paths).returncode != 0:
             raise SystemExit('prod-watch: git add left state files unstaged in ' + repr(sdir) +
@@ -4868,6 +4909,50 @@ tool commit_state:
                              'is NOT pushed, so this tick may replay next run; give the run more time (iterion run --max-duration)')
         raise SystemExit('prod-watch: git push failed after 5 retries (non-fast-forward or network)')
 
+    ROTATION_RE = re.compile(r'^(alertlog|ticks)-(\d+)(?:-(\d+))?\.jsonl$')
+
+    def _prune_ledger(sdir, stem, keep):
+        ## The prune runs EVERY tick, not only when a rotation happens: a
+        ## lowered `keep` must shrink the tree at the next tick however
+        ## quiet the lanes are. Oldest first — by generation, then by the
+        ## replay suffix (a `-2` of generation N is NEWER than the plain
+        ## rotation of N; sorting by the bare name would put it first,
+        ## `'-'` sorting before `.`, and prune the wrong one).
+        rots = sorted((int(m.group(2)), int(m.group(3) or 0), m.group(0)) for m in
+                      (ROTATION_RE.match(fn) for fn in os.listdir(sdir) if fn.startswith(stem + '-')) if m)
+        removed = []
+        if keep > 0:
+            for *_, fn in rots[:-keep]:
+                os.remove(os.path.join(sdir, fn))
+                removed.append(fn)
+        return removed
+
+    def _rotate_ledger(sdir, base, gen, max_bytes):
+        ## Rotation, never a line-trim: a merge=union file grafts a
+        ## concurrent push's side back over a trim at the rebase, so a
+        ## bounded working tree can only come from abandoning a full file
+        ## under a generation name (no wall clock) and starting a fresh
+        ## one. Only the rotator appends to the CURRENT file; a closed
+        ## rotation is never appended again — within a clone the state
+        ## lock serializes the writers, and across clones the push-rebase
+        ## arbitrates (an add/add of the same rotation under merge=union
+        ## keeps the shared past once and both sides' deltas — no
+        ## duplication, no loss).
+        if max_bytes <= 0:
+            return None
+        cur = os.path.join(sdir, base)
+        if os.path.getsize(cur) <= max_bytes:
+            return None
+        stem = base[:-len('.jsonl')]
+        dst = os.path.join(sdir, stem + '-' + str(gen) + '.jsonl')
+        n = 1
+        while os.path.exists(dst):
+            n += 1
+            dst = os.path.join(sdir, stem + '-' + str(gen) + '-' + str(n) + '.jsonl')
+        os.rename(cur, dst)
+        open(cur, 'a', encoding='utf-8').close()
+        return os.path.basename(dst)
+
     os.makedirs(state_dir, exist_ok=True)
     if state_commit:
         ## Preflight BEFORE a byte of state is written: a misconfiguration
@@ -4881,7 +4966,10 @@ tool commit_state:
             raise SystemExit('prod-watch: refusing to commit path(s) outside the state dir ' + repr(state_dir) +
                              ' already staged in this checkout: ' + ', '.join(outside[:10]))
     ga = os.path.join(state_dir, '.gitattributes')
-    want = ['alertlog.jsonl merge=union', 'ticks.jsonl merge=union']
+    ## The pattern covers the current files AND their rotations
+    ## (`alertlog-<gen>.jsonl`); an older attributes file carrying only the
+    ## exact names is topped up once, then stable.
+    want = ['alertlog*.jsonl merge=union', 'ticks*.jsonl merge=union']
     have = open(ga, encoding='utf-8').read() if os.path.exists(ga) else ''
     missing = [w for w in want if w not in have]
     if missing:
@@ -4936,11 +5024,51 @@ tool commit_state:
         if tick:
             with open(os.path.join(state_dir, 'ticks.jsonl'), 'a', encoding='utf-8') as dst:
                 dst.write(tick + chr(10))
+    ## The ledgers' bound runs after the append (the file just grew) and
+    ## before the commit, so the rotation and the pruning land in the SAME
+    ## state commit the growth did. The prune runs on every tick: `keep`
+    ## is the tree's steady state, not a rotation-day event.
+    rotations = []
+    if ledger_max_bytes > 0:
+        for base in ('alertlog.jsonl', 'ticks.jsonl'):
+            rotated_to = _rotate_ledger(state_dir, base, generation, ledger_max_bytes)
+            removed = _prune_ledger(state_dir, base[:-len('.jsonl')], ledger_keep)
+            if rotated_to or removed:
+                note = {'ledger': base, 'removed': removed}
+                if rotated_to:
+                    note['rotated_to'] = rotated_to
+                rotations.append(note)
+
+    def _said(r):
+        if r.get('rotated_to') and r['removed']:
+            return 'rotated ' + r['ledger'] + ' -> ' + r['rotated_to'] + ' (pruned ' + ', '.join(r['removed']) + ')'
+        if r.get('rotated_to'):
+            return 'rotated ' + r['ledger'] + ' -> ' + r['rotated_to']
+        return 'pruned ' + r['ledger'] + ': ' + ', '.join(r['removed'])
+    said = ', '.join(_said(r) for r in rotations)
     committed = False
     if state_commit:
-        committed = _commit_push_state(state_dir, 'chore(prod-watch): watch tick, ' + str(appended) + ' alert(s)')
-    print(json.dumps({'committed': committed,
-                      'summary': 'state persisted (' + str(appended) + ' alert(s) logged)' + (', pushed' if committed else '')},
+        ## Stage every rotation-named file present (this tick's and any a
+        ## resumed tick left) plus the pruned ones — `git add` records a
+        ## tracked file's removal when handed its path.
+        stage_extra = sorted(fn for fn in os.listdir(state_dir) if ROTATION_RE.match(fn))
+        ## Rotations GONE from the tree but still tracked — pruned during a
+        ## state_commit=false era (a mode the push-credentials refusal
+        ## itself suggests) — have their deletion handed to git here, read
+        ## from the INDEX: it covers the prunes of every earlier
+        ## non-committing tick, and a never-tracked rotation pruned now is
+        ## naturally absent (nothing for git to untrack; a pathspec for it
+        ## would abort the whole add). `git ls-files` reads the index, so
+        ## once the deletion is staged the name stops coming back.
+        for _ln in subprocess.run(['git', 'ls-files', '--', state_dir], capture_output=True, text=True).stdout.split(chr(10)):
+            _fn = os.path.basename(_ln.strip())
+            if _fn and ROTATION_RE.match(_fn) and not os.path.exists(os.path.join(state_dir, _fn)):
+                stage_extra.append(_fn)
+        committed = _commit_push_state(state_dir, 'chore(prod-watch): watch tick, ' + str(appended) + ' alert(s)' +
+                                       (', ' + said if said else ''), stage_extra)
+    print(json.dumps({'committed': committed, 'rotations': rotations,
+                      'summary': 'state persisted (' + str(appended) + ' alert(s) logged)' + (', pushed' if committed else '') +
+                                 (', ' + said if said else '')},
                      ensure_ascii=False))
 
   language: py
@@ -5082,6 +5210,7 @@ workflow prod_watch:
     state_commit: "{{vars.state_commit}}",
     workspace: "{{vars.workspace_dir}}",
     state_dir: "{{vars.state_dir}}",
+    ledger: "{{outputs.plan.ledger}}",
   }
 
   commit_state -> done
