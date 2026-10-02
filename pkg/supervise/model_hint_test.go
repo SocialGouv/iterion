@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -274,5 +275,30 @@ func TestProviderHintSkipsBogusPrefixAndContinues(t *testing.T) {
 	specs := SpecsFromWorkflow(wf, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("bogus alias prefix must be skipped and the next watched node consulted, got %+v", specs)
+	}
+}
+
+// TestEvaluateStampsProviderHintOnResolution: the evaluator's registry
+// resolution reads the same hint the supervised nodes were routed with.
+// `provider: "anthropic"` + ZAI_API_KEY in the env must REFUSE by type (the
+// z.ai env synthesis skipped) — never evaluate on z.ai while the supervised
+// nodes are forced Anthropic-direct (#1718's class, supervisor seam).
+func TestEvaluateStampsProviderHintOnResolution(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "zai-key-not-for-evals")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+
+	e := NewLLMEvaluator()
+	_, _, err := e.Evaluate(context.Background(), EvalInput{Spec: Spec{
+		Name:         "persy",
+		Model:        "anthropic/claude-sonnet-4-6",
+		ProviderHint: "anthropic",
+	}})
+	var unfunded *model.ErrProviderHintUnfunded
+	if !errors.As(err, &unfunded) {
+		t.Fatalf("err = %v, want a wrapped *model.ErrProviderHintUnfunded — the eval must not resolve z.ai under an anthropic hint", err)
 	}
 }

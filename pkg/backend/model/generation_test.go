@@ -13,6 +13,8 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
 // ---------------------------------------------------------------------------
@@ -1823,5 +1825,260 @@ func TestGuardNonEmptyConversation(t *testing.T) {
 	}
 	if err := guardNonEmptyConversation([]api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}}}); err != nil {
 		t.Fatalf("a real message must pass, got %v", err)
+	}
+}
+
+// TestGenerateTextDirect_UserPromptSubmitFires: the UserPromptSubmit
+// lifecycle event fires once, before the first model call, carrying the
+// node's user prompt — claude_code's prompt-submission parity point.
+func TestGenerateTextDirect_UserPromptSubmitFires(t *testing.T) {
+	client := newMockClient(textEvents("done", 10, 5))
+
+	r := hooks.NewRunner()
+	var submitted []string
+	r.Register(hooks.UserPromptSubmit, func(_ context.Context, hctx hooks.Context) (hooks.Decision, error) {
+		submitted = append(submitted, hctx.UserPrompt)
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	if _, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Hooks: r,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hello hook"}}},
+		},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(submitted) != 1 || submitted[0] != "hello hook" {
+		t.Fatalf("UserPromptSubmit fired with %v, want [hello hook]", submitted)
+	}
+}
+
+// TestGenerateTextDirect_UserPromptSubmitBlockRefuses: a Block decision
+// refuses the generation BEFORE any model request — the mock client has no
+// scripts, so reaching the model would fail with a different error.
+func TestGenerateTextDirect_UserPromptSubmitBlockRefuses(t *testing.T) {
+	client := newMockClient(textEvents("unreachable", 10, 5))
+
+	r := hooks.NewRunner()
+	r.Register(hooks.UserPromptSubmit, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		return hooks.Decision{Action: hooks.ActionBlock, Reason: "prompt policy"}, nil
+	})
+
+	_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Hooks: r,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "go"}}},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "prompt policy") {
+		t.Fatalf("err = %v, want the hook's block reason", err)
+	}
+}
+
+// TestCompactBetweenIterations_PrePostCompactFire: the threshold-triggered
+// in-loop compaction is bracketed by PreCompact / PostCompact.
+func TestCompactBetweenIterations_PrePostCompactFire(t *testing.T) {
+	messages := bigTranscript()
+
+	r := hooks.NewRunner()
+	var events []string
+	r.Register(hooks.PreCompact, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		events = append(events, "pre")
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+	r.Register(hooks.PostCompact, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		events = append(events, "post")
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	out := compactBetweenIterations(context.Background(), messages, GenerationOptions{
+		Model:                 "test-only-unknown-model",
+		CompactPreserveRecent: 2,
+		Hooks:                 r,
+	})
+	if len(out) >= len(messages) {
+		t.Fatalf("expected compaction to shrink %d messages, got %d", len(messages), len(out))
+	}
+	if len(events) != 2 || events[0] != "pre" || events[1] != "post" {
+		t.Fatalf("events = %v, want [pre post]", events)
+	}
+}
+
+// TestCompactBetweenIterations_PreCompactBlockSkips: a PreCompact Block skips
+// THIS compaction — the history comes back untouched and PostCompact does not
+// fire for a compaction that never happened.
+func TestCompactBetweenIterations_PreCompactBlockSkips(t *testing.T) {
+	messages := bigTranscript()
+
+	r := hooks.NewRunner()
+	postFired := false
+	r.Register(hooks.PreCompact, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		return hooks.Decision{Action: hooks.ActionBlock, Reason: "not now"}, nil
+	})
+	r.Register(hooks.PostCompact, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		postFired = true
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	out := compactBetweenIterations(context.Background(), messages, GenerationOptions{
+		Model:                 "test-only-unknown-model",
+		CompactPreserveRecent: 2,
+		Hooks:                 r,
+	})
+	if len(out) != len(messages) {
+		t.Fatalf("blocked compaction changed the history: %d → %d", len(messages), len(out))
+	}
+	if postFired {
+		t.Fatal("PostCompact fired for a compaction that was blocked")
+	}
+}
+
+// bigTranscript builds a conversation whose token estimate crosses the
+// unknown-model compaction trigger (~10k tokens), so maybeCompact fires.
+func bigTranscript() []api.Message {
+	big := strings.Repeat("filler word ", 2000)
+	messages := make([]api.Message, 0, 8)
+	for range 4 {
+		messages = append(messages,
+			api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: big}}},
+			api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: big}}},
+		)
+	}
+	return messages
+}
+
+// TestFireUserPromptSubmit_SkipFlag: the harness's re-ask passes (nudge,
+// schema recovery) set SkipUserPromptSubmit — the operator's prompt was
+// already screened on the first pass.
+func TestFireUserPromptSubmit_SkipFlag(t *testing.T) {
+	r := hooks.NewRunner()
+	fired := 0
+	r.Register(hooks.UserPromptSubmit, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		fired++
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+	opts := GenerationOptions{
+		Hooks:                r,
+		SkipUserPromptSubmit: true,
+		Messages:             []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "go"}}}},
+	}
+	if err := fireUserPromptSubmit(context.Background(), opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fired != 0 {
+		t.Fatalf("UserPromptSubmit fired %d times with SkipUserPromptSubmit set", fired)
+	}
+}
+
+// TestFireUserPromptSubmit_EmptyPromptSkipped: a resumed turn whose last
+// user message is a bare tool_result carries no prompt text — the original
+// prompt was screened before the pause, so nothing fires (#1715 round-1
+// finding 10).
+func TestFireUserPromptSubmit_EmptyPromptSkipped(t *testing.T) {
+	r := hooks.NewRunner()
+	fired := 0
+	r.Register(hooks.UserPromptSubmit, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		fired++
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+	// Resume shape: the last user message answers a pending tool_use — no
+	// text of its own, and the lastUserMessageText walk stops AT it.
+	resumeLike := []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "original (screened before the pause)"}}},
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "tu_1", Name: "ask_user"}}},
+		{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: "tu_1", Content: "the answer"}.ToContentBlock()}},
+	}
+	if err := fireUserPromptSubmit(context.Background(), GenerationOptions{Hooks: r, Messages: resumeLike}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fired != 0 {
+		t.Fatalf("fired = %d on a resumed tool_result turn, want 0 — the prompt was screened pre-pause", fired)
+	}
+}
+
+// TestGenerateTextDirect_BlockedPromptFiresNoStop: a prompt blocked by a
+// UserPromptSubmit hook never became a session — Stop must NOT fire for it.
+func TestGenerateTextDirect_BlockedPromptFiresNoStop(t *testing.T) {
+	client := newMockClient(textEvents("unreachable", 10, 5))
+
+	r := hooks.NewRunner()
+	stopFired := false
+	r.Register(hooks.UserPromptSubmit, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		return hooks.Decision{Action: hooks.ActionBlock, Reason: "policy"}, nil
+	})
+	r.Register(hooks.Stop, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		stopFired = true
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Hooks: r,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "go"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected the hook's block to refuse the generation")
+	}
+	if stopFired {
+		t.Fatal("Stop fired for a prompt that never reached the model — no session ever started")
+	}
+}
+
+// TestGenerateTextWithToolsAndSchema_UserPromptSubmitFiresOnce: the tool
+// loop, the nudge AND the schema-recovery pass together fire
+// UserPromptSubmit exactly once — for the operator's prompt, on the first
+// pass. The harness's own re-ask texts are never screened (and a Block on
+// the recovery pass would be swallowed by its fall-through).
+func TestGenerateTextWithToolsAndSchema_UserPromptSubmitFiresOnce(t *testing.T) {
+	// Step 1: the model calls the echo tool. Step 2: it answers with a
+	// non-JSON narrative → the schema-recovery pass runs (a second
+	// GenerateObjectDirect with the synthetic schema tool).
+	client := newMockClient(
+		toolUseEvents("tu_1", "echo", `{"msg":"hi"}`, 100, 30),
+		textEvents("Let me explain at length why the answer is yes.", 50, 20),
+		toolUseEvents("tu_2", "structured_output", `{"ok":true}`, 30, 10),
+	)
+	echoTool := GenerationTool{
+		Name:        "echo",
+		Description: "echoes",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute: func(_ context.Context, in json.RawMessage) (string, error) {
+			return string(in), nil
+		},
+	}
+
+	r := hooks.NewRunner()
+	fires := 0
+	r.Register(hooks.UserPromptSubmit, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		fires++
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	b := &ClawBackend{}
+	task := delegate.Task{
+		NodeID:       "n1",
+		Model:        "claude-sonnet-4-6",
+		HasTools:     true,
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+	}
+	res, err := b.generateTextWithToolsAndSchema(context.Background(), client, task, GenerationOptions{
+		Model:    "claude-sonnet-4-6",
+		Tools:    []GenerationTool{echoTool},
+		Hooks:    r,
+		Messages: []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "the operator prompt"}}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Output["ok"] != true {
+		t.Fatalf("Output = %v, want the recovery pass's object", res.Output)
+	}
+	if fires != 1 {
+		t.Fatalf("UserPromptSubmit fired %d times for one operator prompt, want 1", fires)
 	}
 }

@@ -38,8 +38,70 @@ func guardNonEmptyConversation(messages []api.Message) error {
 	return nil
 }
 
+// fireUserPromptSubmit fires the UserPromptSubmit lifecycle event once,
+// before a generation call's first model request — claude_code's
+// prompt-submission parity point. The payload is the text of the last
+// user-role message. A Block decision refuses the generation (the node
+// fails with the hook's reason, exactly what an operator arming a
+// prompt-screening plugin expects); the command-hook bridge has no channel
+// to carry a Modify replacement, so only Block is honoured.
+//
+// Two deliberate skips: SkipUserPromptSubmit (the harness's own nudge /
+// schema-recovery re-asks — the operator's prompt was already screened on
+// the first pass, and the reminder text is not theirs); and an EMPTY
+// extracted prompt (a resumed tool_result-only turn — the original prompt
+// was screened before the pause, and a hook fired with no payload is
+// noise).
+func fireUserPromptSubmit(ctx context.Context, opts GenerationOptions) error {
+	if opts.Hooks == nil || opts.SkipUserPromptSubmit {
+		return nil
+	}
+	prompt := lastUserMessageText(opts.Messages)
+	if prompt == "" {
+		return nil
+	}
+	dec, _ := opts.Hooks.Fire(ctx, hooks.Context{
+		Event:      hooks.UserPromptSubmit,
+		UserPrompt: prompt,
+	})
+	if dec.Action == hooks.ActionBlock {
+		reason := strings.TrimSpace(dec.Reason)
+		if reason == "" {
+			reason = "no reason given"
+		}
+		return fmt.Errorf("a UserPromptSubmit hook blocked this node's prompt: %s", reason)
+	}
+	return nil
+}
+
+// lastUserMessageText returns the concatenated text blocks of the last
+// user-role message — the prompt a UserPromptSubmit hook screens. ""
+// when the conversation carries no user text (a resumed tool_result-only
+// turn).
+func lastUserMessageText(messages []api.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		var b strings.Builder
+		for _, c := range messages[i].Content {
+			if c.Type == "text" {
+				b.WriteString(c.Text)
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
 func GenerateTextDirect(ctx context.Context, client api.APIClient, opts GenerationOptions) (*TextResult, error) {
 	if err := guardNonEmptyConversation(opts.Messages); err != nil {
+		return nil, err
+	}
+	// UserPromptSubmit BEFORE the Stop defer: a prompt the hook blocks
+	// never became a session, so it must not fire the session-end event
+	// (Stop observers would see an end for a start that never happened).
+	if err := fireUserPromptSubmit(ctx, opts); err != nil {
 		return nil, err
 	}
 	if opts.Hooks != nil {
@@ -163,7 +225,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		})
 
 		captureToolRoundTurn(opts, messages, step, stepResult)
-		messages = compactBetweenIterations(messages, opts)
+		messages = compactBetweenIterations(ctx, messages, opts)
 		messages = drainOperatorInbox(ctx, messages, opts)
 	}
 
@@ -290,10 +352,23 @@ func stashPauseConversation(toolErr error, messages []api.Message, opts Generati
 // with our tool_results stays in the preserved-recent window. Without this
 // the tool loop on a small-context model crashes with
 // context_length_exceeded once history exceeds the budget.
-func compactBetweenIterations(messages []api.Message, opts GenerationOptions) []api.Message {
+//
+// The threshold-triggered compaction is the claw firing point of the
+// PreCompact / PostCompact lifecycle events (claude_code's auto-compact
+// parity): PreCompact's Block skips THIS compaction, PostCompact observes
+// the result. The forced compaction of callWithContextRetry — recovery
+// from a context-window rejection — deliberately does not fire them: a
+// Block there could only turn a recoverable overflow into a failed node.
+func compactBetweenIterations(ctx context.Context, messages []api.Message, opts GenerationOptions) []api.Message {
 	compacted, info, ok := maybeCompact(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
 	if !ok {
 		return messages
+	}
+	if opts.Hooks != nil {
+		dec, _ := opts.Hooks.Fire(ctx, hooks.Context{Event: hooks.PreCompact, MessageCount: len(messages)})
+		if dec.Action == hooks.ActionBlock {
+			return messages
+		}
 	}
 	// Compaction is about to fire: give OnBeforeCompact a chance to
 	// inject content (e.g. a session-memory user turn) so the summary
@@ -314,6 +389,9 @@ func compactBetweenIterations(messages []api.Message, opts GenerationOptions) []
 	// the todo file survived on disk, the model's view of it did not.
 	if hasTodoTool(opts.Tools) {
 		messages = append(messages, todoReseedMessage())
+	}
+	if opts.Hooks != nil {
+		_, _ = opts.Hooks.Fire(ctx, hooks.Context{Event: hooks.PostCompact, MessageCount: len(messages)})
 	}
 	return messages
 }
@@ -445,12 +523,6 @@ func assistantToolUseMessage(text string, toolUses []toolUseBlock) api.Message {
 // with the given schema and forcing the model to call it. The tool_use input
 // is parsed as the result object of type T.
 func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts GenerationOptions) (*ObjectResult[T], error) {
-	if opts.Hooks != nil {
-		defer func() {
-			_, _ = opts.Hooks.Fire(ctx, hooks.Context{Event: hooks.Stop})
-		}()
-	}
-
 	schemaName := opts.SchemaName
 	if schemaName == "" {
 		schemaName = "structured_output"
@@ -461,6 +533,16 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	}
 	if err := guardNonEmptyConversation(opts.Messages); err != nil {
 		return nil, err
+	}
+	// UserPromptSubmit BEFORE the Stop defer, like GenerateTextDirect: a
+	// blocked prompt never became a session and must not fire session-end.
+	if err := fireUserPromptSubmit(ctx, opts); err != nil {
+		return nil, err
+	}
+	if opts.Hooks != nil {
+		defer func() {
+			_, _ = opts.Hooks.Fire(ctx, hooks.Context{Event: hooks.Stop})
+		}()
 	}
 
 	var inputSchema api.InputSchema

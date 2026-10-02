@@ -93,6 +93,7 @@ type IOTask struct {
 	AmbientContext         string                `json:"ambient_context,omitempty"`
 	CompressMode           string                `json:"compress_mode,omitempty"`
 	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
+	SettingsHooks          json.RawMessage       `json:"settings_hooks,omitempty"`
 }
 
 // IOToolDef is the wire form of a [ToolDef]. The Execute closure is
@@ -194,6 +195,7 @@ func ToIOTask(t Task) IOTask {
 		AmbientContext:         t.AmbientContext.String(),
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
+		SettingsHooks:          t.SettingsHooks,
 	}
 }
 
@@ -253,6 +255,7 @@ func FromIOTask(t IOTask) Task {
 		AmbientContext:         ambientFromIO(t.AmbientContext),
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
+		SettingsHooks:          t.SettingsHooks,
 	}
 }
 

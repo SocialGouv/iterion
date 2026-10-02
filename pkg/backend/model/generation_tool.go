@@ -65,6 +65,15 @@ type GenerationOptions struct {
 	// nodes; harmless for models that already use their tools.
 	ForceInitialToolUse bool
 
+	// SkipUserPromptSubmit suppresses the UserPromptSubmit hook fire for
+	// this call. Set by the claw backend on the harness's OWN re-ask
+	// passes (the tool-use nudge and the schema-recovery formatting pass):
+	// the operator's prompt was already screened on the first pass, the
+	// reminder text those passes append is not the operator's, and a
+	// screening Block landing on a recovery pass would be swallowed by
+	// its fall-through — firing there is all cost, no signal.
+	SkipUserPromptSubmit bool
+
 	// MaxTokens is the maximum tokens per response (default 8192).
 	MaxTokens int
 
