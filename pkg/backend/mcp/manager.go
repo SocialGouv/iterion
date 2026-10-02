@@ -81,6 +81,157 @@ func WithLogger(l *iterlog.Logger) ManagerOption {
 	return func(m *Manager) { m.logger = l }
 }
 
+// WithStartPolicy arms the manager's launcher-start policy at
+// construction, from what the launch surface can predict about the
+// run's sandbox. Left unset it stays StartPolicyUnknown, which starts
+// only operator-controlled servers — the safe answer while the question
+// is open. SetStartPolicy replaces it once the engine settles the
+// sandbox for real.
+func WithStartPolicy(p StartPolicy) ManagerOption {
+	return func(m *Manager) { m.startPolicy = p }
+}
+
+// SetStartPolicy installs the policy the run's SETTLED sandbox implies.
+// The engine calls it through the executor once resolveAndStartSandbox
+// has returned — either with a live sandbox (tighten) or without one
+// (relax); a prediction is never the last word, because a
+// sandbox-by-default run on a host with no container runtime degrades
+// to unsandboxed, and several launch surfaces cannot predict at all.
+//
+// Tightening also closes the clients the new policy refuses: their
+// server processes are already running beside the launcher, and nothing
+// else would stop them before the run ends.
+// A config the PREDICTION transformed is rebuilt under the settled
+// policy: the launcher-environment expansion of an untrusted server's
+// `${VAR}` is suppressed only to stop the value crossing into a
+// container, so a run that settles WITHOUT one must get its variables
+// back. Left stale, a `command: ${MY_BIN}` blanked on the prediction
+// stayed blanked and failed as an untyped startup error — on the most
+// ordinary local run there is, `sandbox: auto` degrading on a host with
+// no container runtime.
+func (m *Manager) SetStartPolicy(p StartPolicy) {
+	m.policyMu.Lock()
+	m.startPolicy = p
+	m.policyMu.Unlock()
+
+	m.rebuildCatalogFor(p)
+
+	// The identity is captured HERE, under the lock, not read back from
+	// state.cfg below: rebuildCatalogFor now WRITES that pointer, so a
+	// second caller reaching this loop reads a field another is replacing.
+	// The parent commit had no writer, which is why the unlocked reads were
+	// harmless then and are a race now.
+	type refusal struct {
+		state  *serverState
+		name   string
+		origin Origin
+	}
+	var refused []refusal
+	m.mu.Lock()
+	for _, state := range m.states {
+		if !p.Allows(state.cfg.Origin) {
+			refused = append(refused, refusal{state: state, name: state.cfg.Name, origin: state.cfg.Origin})
+		}
+	}
+	m.mu.Unlock()
+
+	for _, r := range refused {
+		r.state.mu.Lock()
+		client := r.state.client
+		r.state.client = nil
+		r.state.discovered = false
+		r.state.mu.Unlock()
+		if client == nil {
+			continue
+		}
+		if err := client.Close(); err != nil {
+			m.logger.Warn("mcp: closing %q after the start policy tightened: %v", r.name, err)
+		} else {
+			m.logger.Info("mcp: closed %q (origin: %s) — %s", r.name, r.origin, p)
+		}
+	}
+}
+
+// WithConfigRefresher hands the manager the way back to a config's
+// pre-policy form. It is called on every SetStartPolicy, for the servers
+// that have not been started yet — a live client was built from the
+// config that was in force when it started, and replacing it underneath
+// would make the gate judge one config while the session speaks another.
+func WithConfigRefresher(fn func(StartPolicy) map[string]*ServerConfig) ManagerOption {
+	return func(m *Manager) { m.refreshCatalog = fn }
+}
+
+// rebuildCatalogFor replaces the config of every not-yet-started server
+// with the one the given policy implies. A started server keeps the
+// config it was started from.
+func (m *Manager) rebuildCatalogFor(p StartPolicy) {
+	if m.refreshCatalog == nil {
+		return
+	}
+	fresh := m.refreshCatalog(p)
+	if len(fresh) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name, cfg := range fresh {
+		if cfg == nil {
+			continue
+		}
+		if _, known := m.catalog[name]; !known {
+			// The refresher answers about the catalog it built; a name
+			// that is not in it now is not this manager's to add.
+			continue
+		}
+		clone := cloneServerConfig(cfg)
+		m.catalog[name] = clone
+		state, ok := m.states[name]
+		if !ok {
+			continue
+		}
+		state.mu.Lock()
+		if state.client == nil {
+			state.cfg = clone
+		}
+		state.mu.Unlock()
+	}
+}
+
+// StartPolicy returns the policy in force.
+func (m *Manager) StartPolicy() StartPolicy {
+	m.policyMu.RLock()
+	defer m.policyMu.RUnlock()
+	return m.startPolicy
+}
+
+// checkStart is THE gate. It answers "may this server's process be
+// started (or kept in use) by this launcher, right now" and is consulted
+// on every protocol operation, not once at creation: a client built
+// while the policy was open must not still be usable after it closed.
+func (m *Manager) checkStart(cfg *ServerConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("mcp: start check on a nil server config")
+	}
+	// The POLICY first. A server that may not run here is refused with the
+	// typed error whether or not it is also broken: the callers branch on
+	// that type to choose between degrading (or falling back to a backend
+	// that starts the server in the container) and failing the node. Reading
+	// StartErr first turned a recoverable refusal into an untyped boot
+	// failure and killed the node before its fallbacks — for a server whose
+	// definition, and whose malformed auth block, came from the repository
+	// under review.
+	policy := m.StartPolicy()
+	if !policy.Allows(cfg.Origin) {
+		return &ServerNotStartableError{
+			Server: cfg.Name, Origin: cfg.Origin, Policy: policy, Cause: cfg.StartErr,
+		}
+	}
+	if cfg.StartErr != nil {
+		return fmt.Errorf("mcp: server %q cannot start: %w", cfg.Name, cfg.StartErr)
+	}
+	return nil
+}
+
 // Manager lazily connects to MCP servers, caches clients and tool discovery,
 // and bridges discovered tools into a tool.Registry.
 type Manager struct {
@@ -91,6 +242,20 @@ type Manager struct {
 	cache             *ToolCache
 	fingerprints      *FingerprintStore
 	logger            *iterlog.Logger
+
+	// policyMu guards startPolicy alone, on its own lock: the gate is
+	// read from inside a client's start path, which already holds that
+	// client's lock, while SetStartPolicy runs on the engine's
+	// goroutine when the run's sandbox settles.
+	policyMu    sync.RWMutex
+	startPolicy StartPolicy
+
+	// refreshCatalog rebuilds the catalog under a given policy, for the
+	// parts of a config the policy DECIDES. The policy a manager is built
+	// with is a prediction; without this, anything the prediction
+	// transformed stays transformed after the engine settles the sandbox
+	// for real. See SetStartPolicy.
+	refreshCatalog func(StartPolicy) map[string]*ServerConfig
 }
 
 type serverState struct {
@@ -178,6 +343,7 @@ func (m *Manager) EnsureServers(ctx context.Context, registry *tool.Registry, se
 // otherwise leak the goroutine for the lifetime of the daemon
 // even after HealthCheck returns. The timeout bounds that leak.
 func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
+	servers = m.startableForHealthCheck(servers)
 	if len(servers) == 0 {
 		return nil
 	}
@@ -229,6 +395,41 @@ func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// startableForHealthCheck drops the servers this launcher may not start.
+//
+// Probing them would be the very thing the policy forbids — the probe IS a
+// connection, and for a stdio server a spawn. It is not an error either: a
+// claude_code or pi node starts that server inside the container later, and a
+// claw node is refused by type when it executes. Each skip is logged, because
+// a health check that silently checks less than it was asked to reads as a
+// clean bill of health.
+func (m *Manager) startableForHealthCheck(servers []string) []string {
+	out := servers[:0:0]
+	for _, server := range servers {
+		cfg, ok := m.ServerConfig(server)
+		if !ok {
+			// Unknown here: let the health check report it as it always has.
+			out = append(out, server)
+			continue
+		}
+		if err := m.checkStart(cfg); err != nil {
+			// A server this launcher may not start is skipped, not failed: a
+			// CLI backend starts it in the container later. Any OTHER reason
+			// it cannot start is exactly what a pre-run health check exists
+			// to report — skipping that would hand back a clean bill of
+			// health for a server already known to be unusable.
+			if !ServerNotStartable(err) {
+				out = append(out, server)
+				continue
+			}
+			m.logger.Info("mcp: health check skips %q (origin: %s) — %v", server, cfg.Origin, err)
+			continue
+		}
+		out = append(out, server)
+	}
+	return out
 }
 
 // mcpHealthPingTimeout bounds the per-server Ping in HealthCheck. An
@@ -395,6 +596,17 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 		}
 	}
 
+	// Registration is idempotent: whatever this server left in the registry
+	// from an earlier discovery goes first. The registry refuses a name
+	// collision, and this function only runs when `discovered` is false —
+	// so anything still registered under this server's name is a leftover,
+	// not a live tool. Without this, a server discovered, then dropped when
+	// the start policy tightened (which clears `discovered` but cannot reach
+	// the registry), could never be discovered again: the re-registration
+	// failed on its own previous entries, with an error that says the server
+	// "cannot boot" and kills the node before its fallbacks.
+	registry.UnregisterServer(server)
+
 	workDir := state.cfg.WorkDir
 	for _, info := range toolsList {
 		serverName := server
@@ -535,7 +747,19 @@ func (m *Manager) state(server string) (*serverState, error) {
 	return state, nil
 }
 
+// clientForState returns the state's client, creating it if needed.
+//
+// Creating a client starts nothing: the transport is dialled (and, for
+// stdio, the process spawned) lazily on the first protocol operation,
+// and a tool-cache hit means discovery registers closures over a client
+// that was never started. The start gate therefore cannot live here —
+// it lives at sdkClient.ensureStarted, which every operation crosses.
+// The refusal is repeated here only so discovery fails early and with
+// the typed error rather than at the model's first tool call.
 func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
+	if err := m.checkStart(state.cfg); err != nil {
+		return nil, err
+	}
 	if state.client != nil {
 		return state.client, nil
 	}
@@ -545,7 +769,8 @@ func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
 		Version: appinfo.FullVersion(),
 	}
 
-	state.client = newSDKClient(state.cfg, info)
+	cfg := state.cfg
+	state.client = newSDKClient(cfg, info, func() error { return m.checkStart(cfg) }, m.logger)
 	return state.client, nil
 }
 

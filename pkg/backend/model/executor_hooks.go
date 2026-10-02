@@ -35,6 +35,14 @@ type DelegateInfo struct {
 	// fallback, env override (ANTHROPIC_MODEL), or proxy rewrote it.
 	// Empty when the backend does not report it.
 	EffectiveModel string
+	// RouteModel is the model spec of the chain element that served the
+	// node — on a skip, of the last one that spent (else the last that
+	// executed); on a failure, of the last one that executed; on a schema
+	// re-ask, of the element re-asked: the route its spend belongs to,
+	// which a backend's report cannot name — a CLI reports the id it
+	// called, OpenRouter's "anthropic/claude-sonnet-4.5" included. Empty
+	// when no element ran.
+	RouteModel string
 	// ContextWindow is the effective model's context window in tokens.
 	// Zero when unknown.
 	ContextWindow int
@@ -90,11 +98,12 @@ type DelegateInfo struct {
 	// record a $0 sample.
 	CostUSD float64
 	// Skipped marks a node completed by an `action: skip` terminal route:
-	// NOTHING served it. BackendName then names the LAST route that
-	// actually EXECUTED and spent (chainOutcome.BackendName = lastBackend;
+	// NOTHING served it. BackendName, RouteModel and Fingerprint then name
+	// the last route whose attempt spent — else the last that executed;
 	// the node's requested backend only when no route executed at all, in
-	// which case the spend is zero) — deliberately, because the runner's
-	// cost accumulator keys its claw double-count exclusion on that name.
+	// which case the spend is zero — deliberately, because the runner's
+	// cost accumulator keys its claw double-count exclusion on that name
+	// and the credential ledger its slot on the route and fingerprint.
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
@@ -184,13 +193,37 @@ type SessionDegradedInfo struct {
 	Err    error // the failure the dropped session is being blamed for
 }
 
-// MCPServerDegradedInfo describes an ambient MCP server dropped from a
-// node's tool set because it failed to boot, passed to the
-// OnMCPServerDegraded hook.
+// MCPServerDegradedInfo describes an MCP server dropped from a node's tool
+// set because it failed to boot, or because this launcher may not start it,
+// passed to the OnMCPServerDegraded hook.
 type MCPServerDegradedInfo struct {
-	Server string // MCP server name that failed to boot
-	Source string // where the server came from — "ambient" (repo .mcp.json / plugin catalog)
-	Err    error  // the boot failure the dropped tools are blamed for
+	Server string // MCP server name whose tools were dropped
+	// Source says why the server was in this node's reach — "declared"
+	// (the node's own `mcp: servers:`) or "ambient" (inherited from the
+	// target repo's .mcp.json, the plugin catalog or the workflow). It is
+	// read from the node's declaration, not from the merged active set,
+	// which holds both and so cannot tell them apart.
+	Source string
+	// Origin is who controls the server's definition — "project", "workflow",
+	// "plugin", or empty when unknown. It is a FIELD rather than a phrase
+	// inside Err because that is the difference between a consumer being able
+	// to tell a repository's `.mcp.json` from the bot's own declaration and
+	// having to parse an error message to guess.
+	Origin string
+	// Refused distinguishes the two reasons the tools are gone: the server
+	// could not boot (Refused false — go and look at the server), or this
+	// launcher may not start it for a sandboxed run (Refused true — the
+	// placement was declined). Reporting the second as the first sends the
+	// operator after a bug that is not there.
+	Refused bool
+	// Cause is a health problem the server had ANYWAY, known before the
+	// placement question was asked — a malformed auth block, an emptied
+	// command. It is a separate field because the two facts are
+	// independent: a refused server can also be broken, and a consumer
+	// reading Refused alone as "nothing to fix here" would then be wrong.
+	// Nil for the common refusal of a perfectly healthy server.
+	Cause error
+	Err   error // why the tools were dropped
 }
 
 // EventHooks allows the executor to emit observability events back to the caller.
@@ -267,12 +300,21 @@ type EventHooks struct {
 	// record; the process log alone leaves a downstream gate blind.
 	OnSessionDegraded func(nodeID string, info SessionDegradedInfo)
 
-	// OnMCPServerDegraded fires when an AMBIENT MCP server (repo
-	// .mcp.json / plugin catalog — never named by the node) fails to
-	// boot and is dropped from the node's tool set. Purely observational
-	// — the node runs on without that server's tools — but it is the
-	// only thing that puts "this node ran without an inherited server"
-	// in the run record.
+	// OnMCPServerDegraded fires when one of a node's active MCP servers is
+	// dropped from the TASK's tool set — it failed to boot, or this
+	// launcher may not start it for a sandboxed run.
+	//
+	// That is the claim, and its scope is deliberate: the server's tools
+	// are not in this task. Whether the NODE ended up with them is a
+	// different question — claw may decline the task and a `fallbacks:`
+	// route may start those servers in its own container — and the
+	// timeline answers it with the fallback event beside this one. An
+	// earlier version asserted the node ran without them, which no
+	// build-time predicate can know.
+	//
+	// `info.Source` says whether the bot named the server or inherited it;
+	// a tool the node names EXPLICITLY on such a server is refused at
+	// execution instead, so its `fallbacks:` get their turn.
 	OnMCPServerDegraded func(nodeID string, info MCPServerDegradedInfo)
 
 	// OnNodeFinished fires after a node's executor returns successfully.

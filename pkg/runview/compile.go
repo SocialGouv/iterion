@@ -221,25 +221,73 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // the path the operator named. The bundle the compile used is returned
 // (nil for inline source without one, or a loose file) so the launch
 // hands the engine the same handle it compiled against.
+//
+// Every refusal is cut by relLaunchError before it crosses to a client.
 func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
+	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir)
+	return wf, cs, b, relLaunchError(path, bundleDir, u, err)
+}
+
+func compileForLaunchUncut(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
 	if bundleDir != "" {
 		b, err := bundle.OpenDir(bundleDir)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}
-		wf, cs, err := compileUnit(path, source, true, b)
-		return wf, cs, b, err
+		wf, cs, u, err := compileUnit(path, source, true, b)
+		return wf, cs, b, u, err
 	}
 	if source != "" {
-		wf, cs, err := compileUnit(path, source, true, nil)
-		return wf, cs, nil, err
+		wf, cs, u, err := compileUnit(path, source, true, nil)
+		return wf, cs, nil, u, err
 	}
 	b, err := bundleForPath(path)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	wf, cs, err := compileUnit(path, "", true, b)
-	return wf, cs, b, err
+	wf, cs, u, err := compileUnit(path, "", true, b)
+	return wf, cs, b, u, err
+}
+
+// relLaunchError is the #1934 root cut for the launch path's refusals
+// (#1970): the run console answers them verbatim — 400 "launch: %v" — and
+// a refusal of a disk read names the server's paths. The cut is the launch
+// path's own, never the CLI's (CompileWorkflowPath and CompileLoadedUnit
+// keep their absolute names: the operator typed them). The loaded unit's
+// root goes first — the cut the diagnostics get, for the errors that ride
+// no diagnostic — then the roots an error can name BEFORE the unit exists
+// or beside it: the stamped bundle dir, and the directory of the file the
+// launch named (a `cannot read file`, an entrypoint's manifest, the
+// materialised copy an inline-import refusal names). Only a text the cut
+// rewrites is re-wrapped; anything else — an inline source's map has no
+// root — comes back chain-intact.
+func relLaunchError(path, bundleDir string, u *unit.Unit, err error) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	if u != nil {
+		text = u.RelText(text)
+	}
+	if bundleDir != "" {
+		text = unit.RelTextRoot(bundleDir, text)
+	}
+	if path != "" {
+		if abs, aerr := filepath.Abs(path); aerr == nil {
+			text = unit.RelTextRoot(filepath.Dir(abs), text)
+		}
+	}
+	if text != err.Error() {
+		err = errors.New(text)
+	}
+	if u != nil && u.RootCutRefused() {
+		// The unit's own root cut was refused (#2047): this body keeps
+		// absolute names, so it also says why — the boundary serves an error
+		// TEXT, never the diagnostics list the E048 warning rides. The %w
+		// keeps the refusal's chain.
+		return fmt.Errorf("%w (file names not cut: the unit's root is the filesystem root)", err)
+	}
+	return err
 }
 
 // insideDir reports whether path lies under dir (both absolute), symlinks
@@ -335,13 +383,17 @@ func ResolveBundleFromFilePath(filePath string) (*bundle.Bundle, error) {
 // bundle does not open, with the remedy a bare main.bot beside a manifest
 // needs. subject names the entrypoint and how it stands to the bundle —
 // `x/main.bot is`, or an author document that `stands for` it — so a .bot
-// and the document of that .bot are refused in one set of words.
+// and the document of that .bot are refused in one set of words. The
+// bundle is named by its directory's base name, not its path: the subject
+// already says where the entrypoint lives, and a refusal that crosses to
+// a client (the launch path's 422) must not carry the server's directory
+// layout (#1970).
 func EntrypointBundleError(subject, dir string, err error) error {
-	return fmt.Errorf("%s the entrypoint of bundle %s, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, dir, err)
+	return fmt.Errorf("%s the entrypoint of bundle %q, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, filepath.Base(dir), err)
 }
 
 func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
-	wf, cs, err := compileUnit(path, inline, withHash, b)
+	wf, cs, _, err := compileUnit(path, inline, withHash, b)
 	if err != nil {
 		return nil, "", err
 	}
@@ -355,12 +407,18 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // unit with the document as its main, the fragments read beside the
 // bundle's main. Inline text alone is a unit of one file, and one that
 // imports is refused (ErrInlineImport): its fragments did not travel.
-func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
+//
+// The loaded unit (nil when the refusal predates the load) is returned
+// alongside, so the launch path's boundary cut (relLaunchError) works
+// from the loader's own root rather than a re-derived one. Callers that
+// are not that boundary — the CLI's compiles — ignore it, and their
+// errors keep the absolute names the operator typed.
+func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, *unit.Unit, error) {
 	if workflowfile.IsAuthorDocument(path) {
 		// The floor under every compile entry: a draft never becomes a
 		// program here, whatever door named it — and it is refused by
 		// name, never as a parse error of a text that was YAML.
-		return nil, nil, bundle.AuthorDocumentError(path)
+		return nil, nil, nil, bundle.AuthorDocumentError(path)
 	}
 	parserPath := path
 	if parserPath == "" {
@@ -378,13 +436,13 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 	case besideBundleMain(parserPath, b):
 		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
 		if err != nil {
-			return nil, nil, fmt.Errorf("cannot read file: %w", err)
+			return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
 		}
 		u = unit.LoadDirWithMain(b.IterPath, parserPath, src)
 	case inline != "":
 		u = unit.LoadMap(map[string]string{parserPath: inline}, parserPath)
 		if len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
-			return nil, nil, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
+			return nil, nil, nil, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
 		}
 	default:
 		u = unit.LoadDir(parserPath)
@@ -392,11 +450,12 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 			// The main itself was not read: the error names the file the
 			// caller asked for, wrapped, as it always has.
 			if _, err := os.ReadFile(parserPath); err != nil {
-				return nil, nil, fmt.Errorf("cannot read file: %w", err)
+				return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
 			}
 		}
 	}
-	return compileLoadedUnit(u, path, parserPath, withHash, b)
+	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b)
+	return wf, cs, u, err
 }
 
 // CompileLoadedUnit runs, on a unit the caller loaded, every stage a
@@ -414,7 +473,10 @@ func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.W
 }
 
 // compileLoadedUnit is every stage of compileUnit after the unit is loaded;
-// name is the file a refusal names.
+// name is the file a refusal names. Its refusals keep the loader's absolute
+// names — the CLI's compile path runs through here and the operator typed
+// those names; the launch path's boundary cut is relLaunchError's, applied
+// by compileForLaunch (#1970).
 func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {

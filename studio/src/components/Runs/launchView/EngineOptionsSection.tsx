@@ -55,6 +55,7 @@ export default function EngineOptionsSection({
         backendOverride={overrides.backendOverride}
         compressOverride={overrides.compressOverride}
         autoMemoryOverride={overrides.autoMemoryOverride}
+        ambientContextOverride={overrides.ambientContextOverride}
         permissionOverride={overrides.permissionOverride}
         reviewModeOverride={overrides.reviewModeOverride}
         backendReport={backendReport}
@@ -62,6 +63,7 @@ export default function EngineOptionsSection({
         onBackendChange={overrides.setBackendOverride}
         onCompressChange={overrides.setCompressOverride}
         onAutoMemoryChange={overrides.setAutoMemoryOverride}
+        onAmbientContextChange={overrides.setAmbientContextOverride}
         onPermissionChange={overrides.setPermissionOverride}
         onReviewModeChange={overrides.setReviewModeOverride}
         showReviewMode={showReviewMode}

@@ -19,7 +19,7 @@ import (
 //     desktop app surface "this run is in project X" without picking
 //     the project itself open.
 //   - WorkspaceDir: best-effort guess at the project workdir, derived
-//     from the store path. Empty for the global ~/.iterion/runs/ slot.
+//     from the store path. Empty for the iterion home's own runs/ slot.
 //
 // Status is always one of the active values (running, queued, paused).
 // Inactive runs are filtered out at scan time so the response stays
@@ -42,8 +42,8 @@ type globalActiveRun struct {
 
 // handleListGlobalActiveRuns serves GET /api/runs/global-active. It
 // scans every iterion store the daemon can see on the local
-// filesystem (the global ~/.iterion/runs/ slot, every per-project
-// slot under ~/.iterion/projects/*/runs/) and returns the runs whose
+// filesystem (the iterion home's own runs/ slot, every per-project
+// slot under <iterion home>/projects/*/runs/) and returns the runs whose
 // status is currently active.
 //
 // Read-only on JSON files; no locking required because run.json is
@@ -56,7 +56,7 @@ type globalActiveRun struct {
 // + inotify watcher if this grows past a few hundred runs.
 func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Request) {
 	// This endpoint is a desktop-daemon affordance: it walks the local
-	// $HOME/.iterion/** filesystem looking for active runs across every
+	// iterion home (store.IterionHome) looking for active runs across every
 	// project the user has on this machine. In cloud mode the server
 	// pod's $HOME is shared infrastructure that may contain runs from
 	// other tenants (or the cloud store's local mirror), so we refuse
@@ -235,19 +235,20 @@ func runEventsFilenameForStore(root, runID string) string {
 }
 
 // globalStoreRoots returns every iterion store directory the daemon
-// should scan for cross-folder runs. Always includes:
+// should scan for cross-folder runs — the iterion home the operator chose
+// (store.InheritedIterionHome: the $ITERION_HOME they exported, else
+// ~/.iterion; a home a project `.env` planted is not theirs to list):
 //
-//   - $HOME/.iterion        (the "loose" / no-project slot)
-//   - $HOME/.iterion/projects/<key>/  (every per-project store)
+//   - <iterion home>                  (the "loose" / no-project slot)
+//   - <iterion home>/projects/<key>/  (every per-project store)
 //
-// Missing directories produce no error — the deeper read picks them
-// up empty.
+// No resolvable home means nothing to scan. Missing directories produce
+// no error — the deeper read picks them up empty.
 func globalStoreRoots() ([]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	iterionHome, err := store.InheritedIterionHome()
+	if err != nil {
 		return nil, nil
 	}
-	iterionHome := filepath.Join(home, ".iterion")
 	roots := []string{iterionHome}
 
 	projectsDir := filepath.Join(iterionHome, "projects")
@@ -266,7 +267,7 @@ func globalStoreRoots() ([]string, error) {
 // original workspace dir (best-effort, for display only). The
 // encoding in pkg/store/storedir.go replaces "/" with "-", so we
 // reverse that here. Empty string when the path isn't a per-project
-// slot (e.g. the global ~/.iterion root).
+// slot (e.g. the iterion home itself).
 func workspaceDirForStore(storePath string) string {
 	key := filepath.Base(storePath)
 	parent := filepath.Base(filepath.Dir(storePath))

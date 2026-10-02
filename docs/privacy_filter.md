@@ -190,6 +190,11 @@ agent summarize:
   output: summary
 
 workflow main:
+  # A `web_fetch` tool node is a launcher closure, refused under a sandbox:
+  # it would fetch from the host. For domains you do not control, prefer a
+  # shell `command:` (e.g. curl), which runs in the container under its
+  # network policy; this recipe keeps web_fetch and opts the workflow out.
+  sandbox: none
   entry: start
   start -> fetch_doc
   fetch_doc -> sanitize

@@ -192,7 +192,7 @@ Errors are mapped to standard codes:
 | Mode         | Layout                                                     |
 | ------------ | ---------------------------------------------------------- |
 | Local / desktop | `<store>/runs/<run_id>/attachments/<name>/<filename>` plus a sidecar `meta.json` |
-| Cloud (S3 / MinIO) | `attachments/<run_id>/<name>/<filename>` (S3 key); metadata reflected in the runs collection |
+| Cloud (S3-compatible store) | `attachments/<run_id>/<name>/<filename>` (S3 key); metadata reflected in the runs collection |
 
 The metadata struct (`AttachmentRecord`) carries `name`,
 `original_filename`, `mime`, `size`, `sha256`, `created_at`, and a
@@ -263,8 +263,8 @@ construction: a malicious agent cannot corrupt the run store.
 
 ## Cloud notes
 
-- The runner pod reads the bytes through `blob.GetAttachment` (S3 /
-  MinIO) when a node opens an attachment by URL or path. No shared
+- The runner pod reads the bytes through `blob.GetAttachment` (the S3
+  store) when a node opens an attachment by URL or path. No shared
   filesystem is required.
 - Upload limits are advisory at the SPA level; the server pod
   re-validates each upload with its compiled server configuration.

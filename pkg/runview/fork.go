@@ -110,6 +110,9 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// values into a run without entering Engine.Run. Before CreateRun, so a
 	// refusal leaves nothing behind and the atomic contract is untouched: the
 	// caller receives no child id, exactly as for every other early error.
+	// The child inherits the parent's publish grant from the record; a value
+	// sent under that name — the mask the fork dialog was shown — is not it.
+	spec.NewInputs = store.DropServerMintedVars(spec.NewInputs)
 	if err := s.gateForkInputs(parent, spec.NewInputs); err != nil {
 		return nil, err
 	}

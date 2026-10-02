@@ -59,8 +59,7 @@ func NewSubagentRunner(
 		if err != nil {
 			return "", fmt.Errorf("subagent: resolve model %q: %w", modelSpec, err)
 		}
-		_, modelID, err := ParseModelSpec(modelSpec)
-		if err != nil {
+		if _, _, err := ParseModelSpec(modelSpec); err != nil {
 			return "", fmt.Errorf("subagent: parse model spec: %w", err)
 		}
 
@@ -68,7 +67,7 @@ func NewSubagentRunner(
 		genTools := buildSubagentTools(toolReg, allowed)
 
 		opts := GenerationOptions{
-			Model:  modelID,
+			Model:  modelSpec,
 			System: "You are a sub-agent. Complete the task with the tools available and return your final answer concisely.",
 			Messages: []api.Message{{
 				Role:    "user",
@@ -105,11 +104,26 @@ func NewSubagentRunner(
 // expose to a subagent, applying claw's per-type allowlist (nil =
 // general-purpose, all tools allowed). The `agent` tool itself is
 // always filtered to prevent recursion.
+//
+// MCP is withheld entirely, in both of its shapes: the per-server
+// `mcp.<server>.<tool>` tools, and the three builtins that take a server NAME
+// the model writes (list_mcp_resources, read_mcp_resource, mcp_auth). Which
+// MCP servers may be reached is a property of the NODE — its `mcp:` block —
+// and this runner has no node: it selects from the process registry, so a
+// child conversation would inherit every server every node of the run can
+// reach, and claw's own per-type allowlist does not help (nil means "all").
+//
+// When a host wires this runner for real, the parent node's active MCP set is
+// what has to come with it; until then, withholding is the honest answer
+// rather than a scope silently wider than the node that spawned the child.
 func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []GenerationTool {
 	defs := reg.List()
 	out := make([]GenerationTool, 0, len(defs))
 	for _, td := range defs {
 		if td.QualifiedName == "agent" {
+			continue
+		}
+		if isNodeScopedMCPTool(td.QualifiedName) {
 			continue
 		}
 		if allowed != nil && !allowed[td.QualifiedName] {
@@ -123,4 +137,17 @@ func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []Generatio
 		})
 	}
 	return out
+}
+
+// isNodeScopedMCPTool reports whether a tool's reach is decided by the NODE
+// that declared it rather than by the tool itself: every per-server MCP tool,
+// and the three builtins that name their server in the model's own argument.
+//
+// A caller with no node must not hand these out — there is nothing to scope
+// them by.
+func isNodeScopedMCPTool(qualified string) bool {
+	if _, ok := tool.MCPServerOf(qualified); ok {
+		return true
+	}
+	return mcpServerNamingTools[qualified]
 }

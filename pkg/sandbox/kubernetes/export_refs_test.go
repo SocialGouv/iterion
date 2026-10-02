@@ -1,10 +1,14 @@
 package kubernetes
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // The export is a tar overlay, and tar cannot delete: when the pod ran
@@ -32,9 +36,24 @@ func trun(t *testing.T, dir string, name string, args ...string) string {
 // pod-side archive of "." with the export excludes, extracted over host.
 func overlayExport(t *testing.T, pod, host string) {
 	t.Helper()
+	overlayExportArchived(t, pod, host, tarExcludeArgs())
+}
+
+// overlayExportArchived streams pod into host the way exportOnce does: the
+// archiver is given podArgs, and the host side is the production extract.
+func overlayExportArchived(t *testing.T, pod, host string, podArgs []string) {
+	t.Helper()
 	archive := filepath.Join(t.TempDir(), "export.tar")
-	trun(t, pod, "tar", "--exclude=./.git/config", "--exclude=./.git/iterion-credentials", "-cf", archive, ".")
-	trun(t, host, "tar", "-xf", archive)
+	trun(t, pod, "tar", append(append([]string{}, podArgs...), "-cf", archive, ".")...)
+	f, err := os.Open(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	run := &Run{driver: &Driver{logger: iterlog.Nop()}, info: sandbox.RunInfo{WorkspacePath: host}}
+	if _, err := run.extractExport(f, host); err != nil {
+		t.Fatalf("host extract: %v", err)
+	}
 }
 
 // muteGitBackground disables git's detached background maintenance in a
@@ -119,4 +138,82 @@ func TestClearHostLooseRefsMakesExportRefsAuthoritative(t *testing.T) {
 			t.Fatalf("expected no-op on a missing refs dir, got %v", err)
 		}
 	})
+}
+
+// A hook the pod wrote stays in the pod: the export never carries .git/hooks
+// back, so the host's next commit or push runs none of the sandboxed run's
+// code.
+func TestExportNeverCarriesThePodsHooksToTheHost(t *testing.T) {
+	host, pod, _, _ := gcShadowFixture(t)
+	marker := filepath.Join(t.TempDir(), "pod-hook-ran")
+	hook := filepath.Join(pod, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	overlayExport(t, pod, host)
+	if _, err := os.Stat(filepath.Join(host, ".git", "hooks", "pre-commit")); err == nil {
+		t.Fatal("the pod's hook reached the host clone")
+	}
+	trun(t, host, "git", "config", "user.email", "t@test.invalid")
+	trun(t, host, "git", "config", "user.name", "t")
+	trun(t, host, "git", "commit", "-q", "--allow-empty", "-m", "host commit")
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the host's commit ran a hook the pod wrote")
+	}
+}
+
+// The exclusions are the HOST's: the archiver runs in the sandbox, on an
+// image the workflow chooses, so what the host must not receive it drops
+// itself — whatever the archive carries.
+func TestTheHostExtractDropsTheExcludedMembersWhateverTheArchiveCarries(t *testing.T) {
+	host, pod, _, _ := gcShadowFixture(t)
+	hostConfig := filepath.Join(host, ".git", "config")
+	before, err := os.ReadFile(hostConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds := filepath.Join(host, ".git", "iterion-credentials")
+	if err := os.WriteFile(creds, []byte("host-live-credential\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range map[string]string{
+		".git/config":              "[core]\n\tpod = wrote-this\n",
+		".git/iterion-credentials": "pod-stale-credential\n",
+		".git/hooks/pre-commit":    "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(pod, filepath.FromSlash(rel)), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An archiver that honours none of the --exclude flags it was given.
+	overlayExportArchived(t, pod, host, nil)
+
+	if got, err := os.ReadFile(hostConfig); err != nil || string(got) != string(before) {
+		t.Errorf("the host clone's .git/config was overwritten by the archive: %q (%v)", got, err)
+	}
+	if got, err := os.ReadFile(creds); err != nil || string(got) != "host-live-credential\n" {
+		t.Errorf("the host's live credential was overwritten by the archive: %q (%v)", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(host, ".git", "hooks", "pre-commit")); err == nil {
+		t.Error("a hook the archive carried reached the host clone")
+	}
+	// The run's work still arrives: the exclusions are not a blanket refusal.
+	if _, err := os.Stat(filepath.Join(host, ".git", "packed-refs")); err != nil {
+		t.Errorf("the export carried nothing: %v", err)
+	}
+}
+
+// exportExcluded answers for a member and for everything under it, with or
+// without the archive's "./" prefix.
+func TestExportExcludedCoversTheTreeUnderEachMember(t *testing.T) {
+	for _, rel := range []string{".git/hooks", "./.git/hooks", ".git/hooks/pre-commit", "./.git/hooks/sub/dir/x", ".git/config", ".git/iterion-credentials"} {
+		if !exportExcluded(rel) {
+			t.Errorf("exportExcluded(%q) = false", rel)
+		}
+	}
+	for _, rel := range []string{".git/packed-refs", ".git/config.worktree", ".git/hooks-extra", "./src/.git/hooks", ".gitignore"} {
+		if exportExcluded(rel) {
+			t.Errorf("exportExcluded(%q) = true", rel)
+		}
+	}
 }

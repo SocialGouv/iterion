@@ -2,7 +2,7 @@
  * Shared scaffolding for tests that need a temporary run-store directory.
  *
  * Mirrors the Go `tmpStore()` helper used by iterion's e2e tests
- * (`CLAUDE.md` § Testing Patterns).
+ * (docs/agents/testing/testing.md).
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

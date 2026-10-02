@@ -595,6 +595,11 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			// Charging every attempt exactly needs the backend to declare
 			// which semantics it reports; until it does, this is the safe
 			// error, and TestFailedNodeSpendReachesTheRunOnlyOnce pins it.
+			//
+			// The count of calls whose usage went unreported is kept: it
+			// counts requests, not a session's cumulative usage, so the
+			// retry's own calls add to these and none is counted twice.
+			e.noteUnreportedCalls(rs.ctx, rs, currentNodeID, extractSpend(output).unreportedCalls)
 			return nil, true, nil
 		}
 		// Fail terminally carrying BOTH the classified code and the

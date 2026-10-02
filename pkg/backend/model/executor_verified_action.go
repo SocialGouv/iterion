@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -74,6 +75,11 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 	if setupErr != nil {
 		// Build / policy failure — not a recoverable recipe error.
 		return nil, setupErr
+	}
+	if res.runErr != nil {
+		// The ladder judges the recipe by its postcondition, not by this
+		// error — but the error is still what happened, so it is recorded.
+		e.logVA(node.ID, fmt.Sprintf("recipe failed: %v", res.runErr))
 	}
 	met, pcOut, pcErr := e.runPostcondition(ctx, node, input)
 	if pcErr != nil {
@@ -160,8 +166,13 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 		return res, true, err
 	default:
 		// Registry tool (bare name): run via the standard recipe path. No
-		// command to self-repair, so report non-repairable.
+		// command to self-repair, so report non-repairable. The sandbox
+		// refusal is a setup error; any other failure is the recipe's run.
 		out, rerr := e.executeToolNodeRecipe(ctx, node, input)
+		var setup *toolNodeSetupError
+		if errors.As(rerr, &setup) {
+			return recipeResult{}, false, rerr
+		}
 		return recipeResult{output: out, runErr: rerr}, false, nil
 	}
 }
@@ -222,7 +233,8 @@ STDERR:
 %s
 
 Return only the corrected command (one shell invocation, may use && / pipes). Do not explain in the command itself.`,
-		strings.TrimSpace(node.Goal), strings.TrimSpace(lastCmd), truncate(stdout, 4000), truncate(stderr, 4000))
+		strings.TrimSpace(node.Goal), e.secretGuard.Redact(strings.TrimSpace(lastCmd)),
+		truncate(e.secretGuard.Redact(stdout), 4000), truncate(e.secretGuard.Redact(stderr), 4000))
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,

@@ -9,7 +9,7 @@ import (
 )
 
 // The engine carries no knowledge of a SPECIFIC run or a SPECIFIC bot
-// (CLAUDE.md, "The ENGINE stays bot-agnostic"). The shape that broke that
+// (docs/agents/bots/engine-bot-agnostic.md). The shape that broke that
 // rule was live debugging left behind: a branch gated on a literal run id
 // so a single production run would log extra detail. It compiles, it is
 // unreachable for every other deployment, and nothing failed when it

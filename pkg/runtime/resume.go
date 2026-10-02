@@ -82,6 +82,9 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // persisted as human answers or artifacts; callers must be able to derive
 // them again from the durable run record on every resume.
 func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) (resultErr error) {
+	// Registered first so it runs last: a throw-away test workdir belongs to
+	// this whole call, not to the helpers that prepare it and return early.
+	defer e.releaseTempWorkDir()
 	// The consent to the scratch's loss is this resume's: an engine resumed
 	// again — an automatic retry after a failure — has not been shown the
 	// loss that execution may meet.
@@ -1842,20 +1845,12 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
 	e.defaultWorkDir()
-	if e.workDirTemp != "" {
-		defer os.RemoveAll(e.workDirTemp)
-		e.workDirTemp = ""
-	}
 	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
 	e.defaultWorkDir()
-	if e.workDirTemp != "" {
-		defer os.RemoveAll(e.workDirTemp)
-		e.workDirTemp = ""
-	}
 	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
 	if err != nil {
 		if e.logger != nil {
@@ -2261,10 +2256,6 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, loaded
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
 	e.defaultWorkDir()
-	if e.workDirTemp != "" {
-		defer os.RemoveAll(e.workDirTemp)
-		e.workDirTemp = ""
-	}
 	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
@@ -2386,10 +2377,6 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 		e.workDir = r.WorkDir
 	} else {
 		e.defaultWorkDir()
-		if e.workDirTemp != "" {
-			defer os.RemoveAll(e.workDirTemp)
-			e.workDirTemp = ""
-		}
 	}
 	// Mirror the run's repo root onto the engine so resolveVars's
 	// `${PROJECT_MEMORY_DIR}` expansion finds the same path it did

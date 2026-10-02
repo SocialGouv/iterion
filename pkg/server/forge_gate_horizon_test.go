@@ -90,18 +90,18 @@ func TestTheGraceFollowsWhoActuallyOwesAVerdict(t *testing.T) {
 // a horizon of days affordable; making every Nth pass deep is what makes the
 // horizon real rather than declared.
 func TestOnlyTheDeepPassReachesTheHorizon(t *testing.T) {
-	if got := gateSweepWindowFor(0); got != gateSweepHorizon {
-		t.Errorf("the first pass reaches %s, want the full %s — a replica that just started is the one that missed the most", got, gateSweepHorizon)
+	if got := defaultSweepWindow(0); got != gateSweepHorizon {
+		t.Errorf("the first pass reaches %s, want the full %s — a replica that just took the sweep is the one that missed the most", got, gateSweepHorizon)
 	}
-	if got := gateSweepWindowFor(1); got != gateSweepLookback {
+	if got := defaultSweepWindow(1); got != gateSweepLookback {
 		t.Errorf("an ordinary pass reaches %s, want %s", got, gateSweepLookback)
 	}
-	if got := gateSweepWindowFor(gateDeepSweepEvery); got != gateSweepHorizon {
+	if got := defaultSweepWindow(gateDeepSweepEvery); got != gateSweepHorizon {
 		t.Errorf("pass %d reaches %s, want the full %s", gateDeepSweepEvery, got, gateSweepHorizon)
 	}
 	deep := 0
 	for pass := 0; pass < 4*gateDeepSweepEvery; pass++ {
-		if gateSweepWindowFor(pass) == gateSweepHorizon {
+		if defaultSweepWindow(pass) == gateSweepHorizon {
 			deep++
 		}
 	}
@@ -121,13 +121,13 @@ func TestTheDeepPassScansBackPastAMultiDayOutage(t *testing.T) {
 	diedAt := now.Add(-72 * time.Hour)
 
 	fast := &fakeGateSweepLister{}
-	s.sweepGates(context.Background(), fast, now, gateSweepWindowFor(1), time.Time{})
+	s.sweepGates(context.Background(), fast, now, defaultSweepWindow(1), time.Time{})
 	if !fast.since.After(diedAt) {
 		t.Errorf("the fast pass reached back to %s, past a run that died at %s — then it is not the narrow pass the cadence assumes", fast.since, diedAt)
 	}
 
 	deep := &fakeGateSweepLister{}
-	s.sweepGates(context.Background(), deep, now, gateSweepWindowFor(0), time.Time{})
+	s.sweepGates(context.Background(), deep, now, defaultSweepWindow(0), time.Time{})
 	if deep.since.After(diedAt) {
 		t.Errorf("the deep pass reached back only to %s, so a run that died at %s is never offered again — the 81-hour pending check reproduces", deep.since, diedAt)
 	}
@@ -137,15 +137,17 @@ func TestTheDeepPassScansBackPastAMultiDayOutage(t *testing.T) {
 // it. A dead gating run must still hold a usable grant deep into the horizon —
 // that grant is what the repair speaks through — while a run that owes no
 // verdict is retired on the old short window, so the token cap keeps its shape
-// and a crashed run's forge-write credential does not linger for days.
+// and a crashed run's forge-write credential does not linger for days. So is a
+// gating run that names no reviewed revision: no repair can speak for it.
 func TestTheReaperKeepsAGatingRunsGrantAndRetiresTheRest(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		inputs   map[string]any
 		wantLong bool
 	}{
-		{"owes a gate verdict", map[string]any{"gate_context": "revi/review"}, true},
+		{"owes a gate verdict", map[string]any{"gate_context": "revi/review", "head_sha": "deadbeef"}, true},
 		{"holds a grant but gates nothing", map[string]any{}, false},
+		{"gates but names no reviewed revision", map[string]any{"gate_context": "revi/review"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := store.New(t.TempDir())
@@ -290,4 +292,10 @@ func (l *frozenPageLister) ListNotifiableRuns(_ context.Context, _, _ time.Time,
 		out = append(out, mongostore.NotifiableRunRef{ID: "absent-run", UpdatedAt: l.at})
 	}
 	return out, nil
+}
+
+// defaultSweepWindow is the live window function under the default cadence.
+func defaultSweepWindow(pass int) time.Duration {
+	window, _ := (&Server{gateSweep: defaultGateSweepSettings()}).gateSweepWindow(pass)
+	return window
 }

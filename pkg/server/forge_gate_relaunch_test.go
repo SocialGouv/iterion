@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -244,10 +245,11 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
-	// The gate sweep runs unelected on every replica, so two replicas can race
-	// past the List pre-check before either card commits. The deterministic
-	// card id is what serialises them: the loser's Create is refused by the
-	// store, and neither a second card NOR a second PR comment lands.
+	// Two offers of one dead run can still race past the List pre-check before
+	// either card commits — the event path beside the elected sweep, or two
+	// sweeps across a lease hand-over. The deterministic card id is what
+	// serialises them: the loser's Create is refused by the store, and neither
+	// a second card NOR a second PR comment lands.
 	t.Run("two replicas racing the escalation file one card and one comment", func(t *testing.T) {
 		w := build(t, nil)
 		rc := &fakeReviewClient{}
@@ -347,9 +349,9 @@ func TestGateRelaunch(t *testing.T) {
 	})
 
 	// "Duplicate" is not "the replacement died". The idempotency claim is a
-	// read-then-insert and the gate sweep runs UNELECTED on every replica, so
-	// two passes landing on one dead run give one launch and one duplicate —
-	// for the same, live, replacement. Escalating on that files a card telling
+	// read-then-insert and two offers can still land on one dead run (the
+	// event path beside the elected sweep), giving one launch and one
+	// duplicate — for the same, live, replacement. Escalating on that files a card telling
 	// a human the automation is out of moves while the replacement is alive and
 	// reviewing.
 	t.Run("a relaunch still in flight does not escalate", func(t *testing.T) {
@@ -383,6 +385,42 @@ func TestGateRelaunch(t *testing.T) {
 			t.Fatalf("board cards = %d, want 0 — a human was told automation is out of moves while run %s is still reviewing", len(cards), alive.ID)
 		}
 	})
+
+	// The claim row learns its run only once the launch returns, so a second
+	// offer racing the first finds a duplicate naming NO run: a relaunch
+	// still launching, not a death — until the row is old enough that the
+	// launch died on the way.
+	for _, tc := range []struct {
+		name      string
+		age       time.Duration
+		wantCards int
+	}{
+		{"a relaunch still launching does not escalate", time.Minute, 0},
+		{"a claim that never named its run escalates once it is old", acceptedLaunchWindow + time.Minute, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := build(t, nil)
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: "d-launching", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
+				Status: webhooks.StatusAccepted, ReceivedAt: time.Now().UTC().Add(-tc.age),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			w.gc.statuses = []forge.CommitStatus{{
+				Context: gateNm, State: forge.CommitStateFailure,
+				Description: gateInterruptedDescription,
+			}}
+			runID := seedDeadRun(t, w.s)
+			_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+			cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cards) != tc.wantCards {
+				t.Fatalf("board cards = %d, want %d (claim row %s old, no run named yet)", len(cards), tc.wantCards, tc.age)
+			}
+		})
+	}
 
 	t.Run("a real red verdict is left alone entirely", func(t *testing.T) {
 		w := build(t, nil)
@@ -644,6 +682,48 @@ func TestGateRelaunch(t *testing.T) {
 		})
 		if *w.launched != 0 {
 			t.Fatal("relaunched with an empty HeadRepoFullName — deleted-fork payloads must fail closed")
+		}
+	})
+
+	// The relaunch replays the dead run's inputs minus EVERY var the grant
+	// path mints, not only the token. A tail that mints nothing — no public
+	// URL, as here — is where a carried var survives: an endpoint of the dead
+	// run's grant would reach the new run with no grant behind it.
+	t.Run("the relaunch carries none of the dead run's grant vars", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.cfg.PublicURL = ""
+		inputs := maps.Clone(deadInputs)
+		for _, k := range forgePublishVars() {
+			inputs[k] = "https://stale.example/" + k
+		}
+		run, err := w.s.cfg.Store.CreateRun(context.Background(), "run-dead-grant", "dep_update_guard", inputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = botID
+		run.Status = store.RunStatusFailedResumable
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.relaunchDeadGateRun(context.Background(), deadGateRun{
+			run:   run,
+			grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo, Bot: botID},
+			conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+			repo:  repo, number: 7,
+			pr:      forge.PullRef{HeadSHA: head, SourceBranch: "feat/x", TargetBranch: "main", HeadRepoFullName: repo},
+			gateCtx: gateNm, prURL: prURL,
+		})
+		if *w.launched != 1 {
+			t.Fatalf("launched %d runs, want the dead run's one relaunch", *w.launched)
+		}
+		vars := *w.lastVars
+		for _, k := range forgePublishVars() {
+			if v, ok := vars[k]; ok {
+				t.Errorf("the relaunch carries the dead run's %s = %q", k, v)
+			}
+		}
+		if vars["pr_url"] != prURL || vars["arm_automerge"] != "true" {
+			t.Errorf("the relaunch dropped the dead run's own launch vars: %v", vars)
 		}
 	})
 }

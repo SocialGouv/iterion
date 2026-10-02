@@ -499,11 +499,22 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// policy's `auto` asks each tier whether it holds an Anthropic-native
 	// credential, lazily — a tier the question never reaches costs no read.
 	policy := p.sharedTierPolicyFor(ctx)
-	platformNative := p.newTierNative(ctx, "platform", secrets.PlatformOwnerKey, secrets.PlatformTenantID, audienceBotID)
+	tenantOwners := []string{ownerID}
+	if tenantID != "" {
+		tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
+	}
+	tenantNative := p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
+	platformNative := p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
 	var orgNative *tierNative
 	if orgID != "" {
-		orgNative = p.newTierNative(ctx, "org", secrets.OrgTierOwnerKey(orgID), secrets.OrgTierTenantID(orgID), audienceBotID)
+		orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
 	}
+	// `auto` is the RUN's question, not a tier's (#1998): a native credential
+	// ANY tier holds — the team's own forfait or key, the org tier's, the
+	// platform tier's — keeps every tier's facade key off the wire's default.
+	// The composite is asked through the policy value the fill, the restore
+	// and the platform stage all receive.
+	policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
 	// Deferred, not called after the walk: a walk that returns an error exits
 	// before any trailing statement, and a launch that fails while a key was
 	// withheld is exactly when the reason matters most. Said once, whichever
@@ -830,8 +841,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// deterministic. A shared tier's key comes back in the channel its
 				// fill would have sealed it in (sealDecision): the default of a free
 				// family, or — beside the credential holding the family — only for
-				// the routes that name its provider, which then park on their own
-				// refusal instead of reaching a credential that cannot serve them.
+				// the routes that name its provider. Those park on the key's own
+				// refusal, with its durable retry, instead of running without a
+				// credential of that provider: a claude_code facade hint is refused
+				// by name, a pi route or an `anthropic` hint beside no forfait falls
+				// to the pod's env, and claw's `anthropic/…` provider spends the
+				// family's holder — the z.ai key in a sandbox, or a Claude forfait it
+				// bills as extra usage. (claude_code spends a run's forfait before
+				// such a key.)
 				if len(skippedForfaits) > 0 || len(skippedAPIKeys) > 0 {
 					taken := map[string]bool{}
 					for prov := range bundle.APIKeys {
@@ -2684,6 +2701,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BotBundle:       queueBotBundleRef(spec.BotBundle),
 		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
@@ -3093,6 +3111,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		BotBundle:       queueBotBundleRef(spec.BotBundle),
 		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      prior.PermissionOverride,
@@ -3484,7 +3503,11 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	case path != "":
 		body, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("cloudpublisher: read %s: %w", path, err)
+			// The refusal crosses to the client (a launch's 400, a
+			// resume's): name the file, not its absolute path on this
+			// server — the #1934 root cut, with the file's directory as
+			// the root the loader would have used (#1970).
+			return nil, fmt.Errorf("cloudpublisher: read %s: %s", filepath.Base(path), unit.RelTextRoot(filepath.Dir(path), err.Error()))
 		}
 		src = string(body)
 	default:
@@ -3533,14 +3556,18 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 			return nil, fmt.Errorf("cloudpublisher: %w — launch the bot as a bundle", runview.ErrInlineImport)
 		}
 	}
+	// The refusal below crosses to the client as the 400 body `launch: %v`:
+	// a disk-loaded unit's diagnostics are cut to the unit's relative names
+	// (#1934's rule, on the publish path: #1970) — a no-op for a files map.
+	u.RelDiagnostics()
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
-			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", parserPath, d.Error())
+			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", u.RelName(parserPath), d.Error())
 		}
 	}
 	file := u.Merged
 	if file == nil {
-		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", parserPath)
+		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", u.RelName(parserPath))
 	}
 	if source != "" && bundleDir == "" {
 		for _, p := range file.Prompts {
@@ -3560,9 +3587,11 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	}
 	// The AST that travels must compile on a pod that has none of the files
 	// beside the source: every include is resolved into its prompt body here,
-	// on the server that has them.
+	// on the server that has them. A refusal names the include as the prompt
+	// wrote it — the resolved path it stats is the server's, and rides the
+	// error rather than any diagnostic, so the root cut is the error's (#1970).
 	if err := ir.InlinePromptIncludes(file); err != nil {
-		return nil, fmt.Errorf("cloudpublisher: %w", err)
+		return nil, fmt.Errorf("cloudpublisher: %w", u.RelError(err))
 	}
 	body, err := ast.MarshalFile(file)
 	if err != nil {

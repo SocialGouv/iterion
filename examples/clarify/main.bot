@@ -3,7 +3,7 @@
 ##
 ## Catalog bot: runs against ANY chat/discussion context. No
 ## target-repo or iterion-specific facts baked into var defaults,
-## prompts, or schemas (see CLAUDE.md "Catalog bots are repo-agnostic"
+## prompts, or schemas (see docs/agents "Repo-agnostic and stack-agnostic — the universality rules"
 ## + catalog_universality_test.go).
 ##
 ## Purpose: given an anonymised transcript of a discussion and the

@@ -97,6 +97,11 @@ const (
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
 	DiagAutoMemoryNotSupported DiagCode = "C132" // auto_memory: on for a backend that does not consume it (warning)
 
+	// Ambient-context policy diagnostics (ADR-119). C184/C185 come from the
+	// free C184-C189 band, after the C180-C183 var and compute family.
+	DiagInvalidAmbientContext     DiagCode = "C184" // ambient_context: value not one of none|workspace|operator|all (error)
+	DiagAmbientContextNotEnforced DiagCode = "C185" // an explicit ambient_context on a backend that does not translate it — opencode, kimi, grok (warning)
+
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
 

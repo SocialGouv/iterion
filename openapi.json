@@ -610,6 +610,9 @@
           "budget_unpriced_tokens": {
             "type": "integer"
           },
+          "budget_unreported_calls": {
+            "type": "integer"
+          },
           "cost_usd_total": {
             "type": "number"
           },
@@ -5130,6 +5133,9 @@
       },
       "previewEffectiveSettings": {
         "properties": {
+          "ambient_context": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
           "auto_memory": {
             "$ref": "#/components/schemas/previewEffectiveKnob"
           },
@@ -5146,6 +5152,7 @@
         "required": [
           "compress",
           "auto_memory",
+          "ambient_context",
           "permission",
           "backend"
         ],

@@ -1769,10 +1769,14 @@ type Checkpoint struct {
 	// BudgetUnpricedTokens / BudgetUnpricedNodes carry the volume the cost
 	// axis could not price. Absent from checkpoints written before they
 	// existed, which restores as zero — the prior behaviour.
-	BudgetUnpricedTokens int   `json:"budget_unpriced_tokens,omitempty" bson:"budget_unpriced_tokens,omitempty"`
-	BudgetUnpricedNodes  int   `json:"budget_unpriced_nodes,omitempty" bson:"budget_unpriced_nodes,omitempty"`
-	BudgetIterationsUsed int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
-	BudgetElapsedNS      int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
+	BudgetUnpricedTokens int `json:"budget_unpriced_tokens,omitempty" bson:"budget_unpriced_tokens,omitempty"`
+	BudgetUnpricedNodes  int `json:"budget_unpriced_nodes,omitempty" bson:"budget_unpriced_nodes,omitempty"`
+	// BudgetUnreportedCalls counts the LLM calls whose usage the provider
+	// did not report in full. Absent from earlier checkpoints, which
+	// restores as zero — the prior behaviour.
+	BudgetUnreportedCalls int   `json:"budget_unreported_calls,omitempty" bson:"budget_unreported_calls,omitempty"`
+	BudgetIterationsUsed  int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
+	BudgetElapsedNS       int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
 	// CostUSDTotal is the run's cumulative LLM spend across ALL execution
 	// segments. Persisted so the daily-spend-cap ledger (a monotonic max of
 	// the per-run cumulative) keeps climbing after a resume instead of

@@ -28,7 +28,10 @@ type GenerationTool struct {
 
 // GenerationOptions configures a direct generation call.
 type GenerationOptions struct {
-	// Model is the model ID (e.g., "claude-sonnet-4-6").
+	// Model is the routing spec the client was resolved from
+	// ("anthropic/claude-sonnet-4-6"). buildRequest strips its routing prefix
+	// exactly once: pass the spec, never an id already stripped — a model id
+	// holding slashes of its own ("meta-llama/…") would lose a segment.
 	Model string
 
 	// System is the system prompt (plain string form).

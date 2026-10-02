@@ -648,9 +648,9 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue, prior *stor
 			gaveUp = issue.GaveUp
 		}
 	}
-	entry := stringMapToAny(issue.BotArgs)
+	entry := store.RedactLaunchVars(stringMapToAny(issue.BotArgs))
 	if len(entry) == 0 && prior != nil {
-		entry = cloneAnyMap(prior.Inputs)
+		entry = store.RedactLaunchVars(cloneAnyMap(prior.Inputs))
 	}
 	card := PipelineBoardCard{
 		ID:   "task:" + issue.ID,
@@ -752,9 +752,9 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	}
 	if root.Status == store.RunStatusQueued {
 		card.QueuePosition = b.queuePositions[root.ID]
-		card.EntryInput = cloneAnyMap(root.Inputs)
+		card.EntryInput = store.RedactLaunchVars(cloneAnyMap(root.Inputs))
 	} else if len(root.Inputs) > 0 {
-		card.EntryInput = cloneAnyMap(root.Inputs)
+		card.EntryInput = store.RedactLaunchVars(cloneAnyMap(root.Inputs))
 	}
 	if root.Status == store.RunStatusFinished {
 		card.Output = b.cachedFinalOutput(root)
@@ -777,7 +777,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 			card.GaveUp = issue.GaveUp
 		}
 		if card.EntryInput == nil {
-			card.EntryInput = stringMapToAny(issue.BotArgs)
+			card.EntryInput = store.RedactLaunchVars(stringMapToAny(issue.BotArgs))
 		}
 	}
 	// A run-only card (no backing issue) still has a repo identity when

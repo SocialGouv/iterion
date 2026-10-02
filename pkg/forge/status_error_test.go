@@ -67,7 +67,7 @@ func itoa(i int) string {
 
 // A rate limiter says how long to wait, in a header only the response
 // carries. Dropped at the call site, the caller can only guess.
-func TestDoTypedCarriesRetryAfter(t *testing.T) {
+func TestDoTypedCarriesTheResetInstant(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "42")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -83,11 +83,14 @@ func TestDoTypedCarriesRetryAfter(t *testing.T) {
 	if se.Code != http.StatusTooManyRequests {
 		t.Errorf("Code = %d, want 429", se.Code)
 	}
-	if se.RetryAfter != 42*time.Second {
-		t.Errorf("RetryAfter = %v, want 42s — the forge said how long to wait", se.RetryAfter)
+	if wait := time.Until(se.ResetAt); wait < 40*time.Second || wait > 42*time.Second {
+		t.Errorf("ResetAt in %v, want ~42s — the forge said how long to wait", wait)
 	}
 	if !se.RateLimited() {
 		t.Error("RateLimited() = false on a 429")
+	}
+	if se.Op != "create oauth app" {
+		t.Errorf("Op = %q, want the caller's name for the call", se.Op)
 	}
 }
 

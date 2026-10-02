@@ -89,25 +89,29 @@ func isForfaitSuppressed(env map[string]string) bool {
 	return env[ForfaitSuppressedEnvKey] != ""
 }
 
-// settingSourcesFromEnv returns the CLI --setting-sources for claude_code
-// nodes. Default "user,project": load the operator's user-level CLAUDE.md /
-// settings.json and the target repo's project CLAUDE.md / .claude/settings.json
-// so the agent honours the same conventions native Claude Code would — a core
-// part of closing the adaptivity gap. Override via
-// ITERION_CLAUDE_CODE_SETTING_SOURCES (comma-separated user/project/local);
-// "" or "none" disables it, restoring the CLI's headless no-settings default.
-// "local" is omitted from the default: .claude/settings.local.json is
-// machine-specific and may carry absolute paths that don't resolve in a sandbox.
-func settingSourcesFromEnv() []claudesdk.SettingSource {
-	raw, ok := os.LookupEnv("ITERION_CLAUDE_CODE_SETTING_SOURCES")
+// settingSourcesEnv is the raw, claude_code-specific override of the scopes a
+// node loads. The ambient-context policy (ADR-119, claudeAmbient) decides them
+// otherwise.
+const settingSourcesEnv = "ITERION_CLAUDE_CODE_SETTING_SOURCES"
+
+// settingSourcesFromEnv reads ITERION_CLAUDE_CODE_SETTING_SOURCES, a
+// comma-separated list of user/project/local. set is false when the variable
+// is absent: the policy then decides. "" or "none" loads no scope at all,
+// which the caller must emit as `--setting-sources ""` — omitting the flag
+// would make the CLI load every scope, `local` included. The routing pin
+// (claudeRoutingPin) holds whatever the scopes. unknown lists the tokens that
+// are none of the three, for the caller to report: a list made only of typos
+// loads no scope at all.
+func settingSourcesFromEnv() (sources []claudesdk.SettingSource, set bool, unknown []string) {
+	raw, ok := os.LookupEnv(settingSourcesEnv)
 	if !ok {
-		raw = "user,project"
+		return nil, false, nil
 	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.EqualFold(raw, "none") {
-		return nil
+		return []claudesdk.SettingSource{}, true, nil
 	}
-	var out []claudesdk.SettingSource
+	out := []claudesdk.SettingSource{}
 	for _, part := range strings.Split(raw, ",") {
 		switch strings.ToLower(strings.TrimSpace(part)) {
 		case "user":
@@ -116,9 +120,11 @@ func settingSourcesFromEnv() []claudesdk.SettingSource {
 			out = append(out, claudesdk.SettingSourceProject)
 		case "local":
 			out = append(out, claudesdk.SettingSourceLocal)
+		default:
+			unknown = append(unknown, strings.TrimSpace(part))
 		}
 	}
-	return out
+	return out, true, unknown
 }
 
 // strictMCPFromEnv reports whether claude_code nodes should run with
@@ -145,16 +151,58 @@ func strictMCPFromEnv() bool {
 	}
 }
 
-// orchestrationTools is the claude_code tool surface that spawns background
-// work (Agent, and Task on older CLIs) or waits on it (TaskOutput, Monitor).
-// Withheld as one unit by ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS:
-// a waiter without a spawner is only a way to deadlock, and a spawner
-// without a waiter leaves background results unreadable.
+// orchestrationTools is the claude_code tool surface that spawns subagents
+// (Agent, and Task on older CLIs) or waits on background work (TaskOutput, on
+// CLIs that still have it, and Monitor). The opt-in
+// ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS withholds it as one unit,
+// because a waiter without a spawner is only a way to deadlock.
 var orchestrationTools = []string{"Agent", "Task", "TaskOutput", "Monitor"}
 
-// workflowOrchestrationTools is the multi-agent surface ultracode grants:
-// withheld from every node that is not in ultracode mode, knob or not.
-var workflowOrchestrationTools = []string{"Workflow"}
+// headlessWithheldTools are withheld from every claude_code spawn, whatever the
+// node declares and whatever its effort grants, ultracode included. Each one
+// hands work to a later turn, and a headless session has none: it ends with
+// its final output.
+//
+//   - Workflow always runs in the background and reports through a completion
+//     notification. It has no foreground mode, and the pinned CLI has no tool
+//     that waits on a task. The background-task switch (backgroundTasksOffEnv)
+//     does not reach it either. Its result could only arrive while the turn was
+//     still running, which is what a model ending its turn to wait never gets.
+//     The CLI also arms it on the word "ultracode" anywhere in the prompt,
+//     content included.
+//   - ScheduleWakeup and CronCreate/CronDelete/CronList schedule a prompt for a
+//     later turn of this session, so here they can never fire. A durable cron
+//     is written into the workspace's .claude/scheduled_tasks.json instead.
+//   - RemoteTrigger schedules remote agents under the account the CLI runs on.
+//
+// Withholding a name the running CLI does not register costs nothing: a deny
+// rule for an absent tool matches nothing.
+var headlessWithheldTools = []string{
+	"Workflow",
+	"ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
+	"RemoteTrigger",
+}
+
+// backgroundTasksOffEnv is the CLI's own switch for background work. With it
+// set, subagents run in the foreground and `run_in_background` disappears
+// from the Agent and Bash schemas. The CLI's Agent prompt then says the report
+// comes back as the tool result, instead of "the turn ends here, the report
+// arrives in a separate turn". In a one-shot session a background result can
+// only arrive while the turn is still running, and a model that ends its turn
+// to wait for one ends the session with it.
+//
+// The flag is the only lever that holds for every launch. The CLI decides
+// `async = remote || (wanted && !backgroundTasksDisabled)`, where `wanted` is
+// also true for an agent definition with `background: true`, for the fork
+// gate, and for coordinator mode. Forcing `run_in_background: false` on the
+// call would leave all three in the background. Only `isolation: "remote"`
+// (a cloud agent, gated behind claude.ai) stays asynchronous.
+//
+// It is one of the variables every spawn pins in two layers, the process
+// environment and the flag settings layer (claudeEnvPins): the CLI rewrites
+// its environment at startup from the settings files it loads, and this key
+// is one a project's settings may set.
+const backgroundTasksOffEnv = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
 
 // disallowOrchestrationToolsFromEnv reads
 // ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;
@@ -839,11 +887,11 @@ func facadeHintRefusal(providerHint string, env map[string]string) error {
 // on the run's credential-less meter either way.
 func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
 	task := Task{ProviderHint: providerHint}
-	env := anthropicCredEnvForTask(ctx, task)
+	env, selected := anthropicCredRouteForTask(ctx, task)
 	if facadeHintRefusal(providerHint, env) != nil {
 		return "", true
 	}
-	return providerFingerprint(anthropicFingerprintEnvForTask(task, env)), false
+	return providerFingerprint(anthropicFingerprintEnvForTask(task, env, selected)), false
 }
 
 // AnthropicWireFacadeSlot maps a usage Reading.Source label back onto the
@@ -973,17 +1021,24 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 // credential route. The last layer includes suppression entries: an extra
 // variable must not redirect a selected facade's bearer or revive its forfait.
 func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
+	env, _ := anthropicCredRouteForTask(ctx, task)
+	return env
+}
+
+// anthropicCredRouteForTask is anthropicCredEnvForTask with the resolver's
+// selection beside the composed env: the credentials bound for the route,
+// which alone may name it (anthropicFingerprintEnvForTask).
+func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected map[string]string) {
 	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
-	env := map[string]string{}
+	env = map[string]string{}
 	if inheritAmbient && taskSandboxed(task) {
 		for key, value := range ambientAnthropicEnvForSandbox() {
 			env[key] = value
 		}
 	}
-	for _, kv := range task.ExtraEnv {
-		if key, value, ok := strings.Cut(kv, "="); ok && key != "" {
-			env[key] = value
-		}
+	entries, _ := claudeExtraEnvEntries(task)
+	for _, kv := range entries {
+		env[kv[0]] = kv[1]
 	}
 	// These labels belong to the resolver, never to process provisioning.
 	// Otherwise an extra env entry can forge a usage-meter slot or turn a
@@ -1010,36 +1065,51 @@ func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
 	for key, value := range selected {
 		env[key] = value
 	}
-	return env
+	return env, selected
 }
 
-// anthropicFingerprintEnvForTask accounts for a host-inherited endpoint without
-// changing the spawn environment. A sandbox already has explicit forwarding.
-// Preserve an explicit empty override and the historical cloud-mode labels:
-// a cloud switch makes an inherited Anthropic endpoint irrelevant to routing.
-func anthropicFingerprintEnvForTask(task Task, env map[string]string) map[string]string {
-	if taskSandboxed(task) {
-		return env
+// directCredentialChannels are the env entries that name a credential of the
+// run by themselves: the Anthropic key, the OAuth forfait's config dir.
+var directCredentialChannels = []string{"ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"}
+
+// anthropicFingerprintEnvForTask is the env a session's source label is read
+// from, never the one it spawns with. A direct credential names the route only
+// when the resolver selected it: the pod's ambient key forwarded into a
+// sandbox, or one a node's own env adds, is no credential of the run and reads
+// as the inherited env does on the host — the usage meter and the spend ledger
+// charge that label to no bundle credential. A host-inherited endpoint is
+// accounted for without changing the spawn environment; a sandbox already has
+// explicit forwarding. Preserve an explicit empty override and the historical
+// cloud-mode labels: a cloud switch makes an inherited Anthropic endpoint
+// irrelevant to routing.
+func anthropicFingerprintEnvForTask(task Task, env, selected map[string]string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	for key, value := range env {
+		out[key] = value
 	}
-	if _, explicit := env["ANTHROPIC_BASE_URL"]; explicit {
-		return env
+	for _, key := range directCredentialChannels {
+		if selected[key] == "" {
+			delete(out, key)
+		}
+	}
+	if taskSandboxed(task) {
+		return out
+	}
+	if _, explicit := out["ANTHROPIC_BASE_URL"]; explicit {
+		return out
 	}
 	base := os.Getenv("ANTHROPIC_BASE_URL")
 	if base == "" {
-		return env
+		return out
 	}
 	for _, key := range cloudProviderSwitches {
-		value, explicit := env[key]
+		value, explicit := out[key]
 		if !explicit {
 			value = os.Getenv(key)
 		}
 		if value != "" {
-			return env
+			return out
 		}
-	}
-	out := make(map[string]string, len(env)+1)
-	for key, value := range env {
-		out[key] = value
 	}
 	out["ANTHROPIC_BASE_URL"] = base
 	return out

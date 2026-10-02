@@ -438,7 +438,7 @@ func parseSSEData(data string) (StreamEvent, error) {
 
 	// Parse "usage" for message_delta events
 	if usageRaw, ok := raw["usage"]; ok {
-		json.Unmarshal(usageRaw, &event.Usage) //nolint:errcheck
+		event.Usage = DecodeUsageDelta(usageRaw)
 	}
 
 	// Parse "message.usage" for message_start events (input tokens + cache tokens)

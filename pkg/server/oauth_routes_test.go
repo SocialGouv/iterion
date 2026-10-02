@@ -694,6 +694,10 @@ func TestOAuthBrowserCompletion_ServerBuiltBlobIsNotHeldToPasteRules(t *testing.
 // never the value. Before this only the success path wrote anything.
 func TestOAuthCredentialIngestion_RefusalLeavesATrace(t *testing.T) {
 	srv, hs, signer, oauthStore := oauthTestServer(t)
+	// team-x must EXIST: a mutating route whose {id} resolves to no team
+	// is refused at route resolution (#2046), before the ingestion path
+	// this test audits ever runs.
+	seedTeam(t, srv, "team-x", "team-x")
 	var logs bytes.Buffer
 	srv.logger = iterlog.New(iterlog.LevelWarn, &logs)
 	auditStore := audit.NewMemoryStore()

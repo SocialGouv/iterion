@@ -214,6 +214,88 @@ func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
 	}
 }
 
+// update is a read-modify-write under WATCH: the write is SET XX KEEPTTL, so
+// a grant that expired or was revoked meanwhile is not re-created and its
+// expiry is not pushed out, and a concurrent write to the same grant makes
+// the transaction retry rather than be overwritten.
+func (s *valkeyForgePublishTokenStore) update(token string, fn func(*ForgePublishGrant)) (bool, error) {
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	key := forgePublishTokenKeyPrefix + token
+	found := false
+	txf := func(tx *redis.Tx) error {
+		b, err := tx.Get(ctx, key).Bytes()
+		if err == redis.Nil {
+			found = false
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var g ForgePublishGrant
+		if err := json.Unmarshal(b, &g); err != nil {
+			return fmt.Errorf("decode forge publish grant: %w", err)
+		}
+		fn(&g)
+		out, err := mergeGrantJSON(b, g)
+		if err != nil {
+			return fmt.Errorf("encode forge publish grant: %w", err)
+		}
+		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+			p.SetArgs(ctx, key, out, redis.SetArgs{Mode: "XX", KeepTTL: true})
+			return nil
+		})
+		if err == redis.Nil { // XX: the grant is gone
+			found = false
+			return nil
+		}
+		found = err == nil
+		return err
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		err := s.rdb.Watch(ctx, txf, key)
+		if err == redis.TxFailedErr {
+			continue // the grant changed under us: read it again
+		}
+		if err != nil {
+			return false, fmt.Errorf("update forge publish grant: %w", err)
+		}
+		return found, nil
+	}
+	return false, fmt.Errorf("update forge publish grant: still contended after 3 attempts")
+}
+
+// mergeGrantJSON writes g over the stored blob raw, keeping the keys this
+// build does not know: a newer build may carry a field this one would
+// otherwise erase on its first read-modify-write. The keys this build owns are
+// taken from g — present when set, removed when g omits them.
+func mergeGrantJSON(raw []byte, g ForgePublishGrant) ([]byte, error) {
+	stored := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(g)
+	if err != nil {
+		return nil, err
+	}
+	mine := map[string]json.RawMessage{}
+	if err := json.Unmarshal(b, &mine); err != nil {
+		return nil, err
+	}
+	for _, key := range forgePublishGrantKeys {
+		if v, ok := mine[key]; ok {
+			stored[key] = v
+		} else {
+			delete(stored, key)
+		}
+	}
+	return json.Marshal(stored)
+}
+
+// forgePublishGrantKeys are the JSON keys ForgePublishGrant owns; a test pins
+// the list to the struct's tags.
+var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", "verdict", "deferred", "shared", "cut_back"}
+
 func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()

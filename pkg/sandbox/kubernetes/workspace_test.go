@@ -208,13 +208,13 @@ func TestExportWorkspace_WorkspaceLessRunIsNoop(t *testing.T) {
 	}
 }
 
-// TestExportExcludes pins the two host-authoritative paths the reverse
-// tar must never overwrite: the host clone's .git/config (the pod copy
-// was re-pointed at POD paths by fixupWorkspaceGit) and the host's
-// .git/iterion-credentials (kept LIVE by the runner's rotation
-// refresher — the pod copy may be staler).
+// TestExportExcludes pins the host-authoritative paths the reverse tar must
+// never overwrite: the host clone's .git/config (the pod copy was re-pointed
+// at POD paths by fixupWorkspaceGit), the host's .git/iterion-credentials
+// (kept LIVE by the runner's rotation refresher — the pod copy may be
+// staler), and .git/hooks (programs the host's git would run).
 func TestExportExcludes(t *testing.T) {
-	want := map[string]bool{"./.git/config": true, "./.git/iterion-credentials": true}
+	want := map[string]bool{"./.git/config": true, "./.git/iterion-credentials": true, "./.git/hooks": true}
 	if len(exportExcludes) != len(want) {
 		t.Fatalf("exportExcludes = %v", exportExcludes)
 	}

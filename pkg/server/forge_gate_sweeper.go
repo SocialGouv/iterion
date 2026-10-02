@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -94,6 +97,21 @@ const (
 	// rows without ever being a candidate.) The cap keeps one slow pass from
 	// outliving its own ticker.
 	gateSweepMaxPages = 10
+
+	// gateSweepMinInterval is the shortest interval an operator may set: the
+	// lease is paced by it, and below a second a pass would outlive its own
+	// ticker on any real forge.
+	gateSweepMinInterval = time.Second
+
+	// gateSweepLeaseTTLFactor sizes the sweep's lease in paces — the sweep
+	// interval, capped at the default one (runElectedGateSweeper). The holder
+	// renews every pace and steps down 2.5 paces after its last successful
+	// renewal was sent, so the term survives one lost renewal when the next
+	// one, sent a pace later, is answered within half a pace. A holder that
+	// dies without releasing is outlived by the TTL: a successor is elected at
+	// most one retry (one pace) after that — four paces after its last renewal
+	// — and its term opens with a pass at once.
+	gateSweepLeaseTTLFactor = 3
 )
 
 // gateSweepLister is the store capability the sweep scans with — the same
@@ -104,59 +122,258 @@ type gateSweepLister interface {
 	ListNotifiableRuns(ctx context.Context, since, before time.Time, limit int) ([]mongostore.NotifiableRunRef, error)
 }
 
-// runGateSweeper ticks sweepGates until ctx is cancelled. Started by
+// runElectedGateSweeper runs the sweep on the ONE replica holding the
+// merge-gate lease, and campaigns for it on every other. Started by
 // ListenAndServe alongside the event-driven reconciler.
 //
+// The repair is idempotent — reconcileGateForRunID re-reads the live status
+// before it writes — so what every replica sweeping cost was, first, N times
+// the forge reads: each offer spends the App installation's hourly budget,
+// which the sweep alone outspends at the fleet's replica count. It also put N
+// sweeps on every dead run at once, and two offers racing on one run are what
+// the relaunch and escalation guards have to absorb. The lease makes the cost
+// one replica's and keeps the net's reach: a holder that stops releases on
+// its way out, one that dies is outlived by the TTL, and each term opens with
+// a deep pass.
+func (s *Server) runElectedGateSweeper(ctx context.Context, lister gateSweepLister) {
+	err := lease.Run(ctx, s.leases, s.gateSweepLeaseSpec(), func(ctx context.Context) { s.runGateSweeper(ctx, lister) })
+	if err != nil {
+		s.warnf("merge-gate sweeper NOT started: %v — a review whose outcome event is dropped will leave its required check absent forever", err)
+	}
+}
+
+// gateSweepLeaseSpec is the sweep's lease. It is paced by the sweep interval,
+// but never slower than the default one: a longer interval an operator chose
+// to spare the forge must not also stretch the time a dead holder keeps the
+// net down.
+func (s *Server) gateSweepLeaseSpec() lease.Spec {
+	pace := min(s.gateSweepEvery(), gateSweepInterval)
+	return lease.Spec{
+		Name:  leaseMergeGateSweeper,
+		Owner: s.replicaID,
+		TTL:   gateSweepLeaseTTLFactor * pace,
+		Retry: pace,
+		Info:  s.infof,
+		Warn:  s.warnf,
+	}
+}
+
+// gateSweepSettings is the sweep's cadence: the interval between passes, how
+// far back an ordinary pass reaches, and how many passes separate two deep
+// ones. The defaults are the constants above; an operator overrides each from
+// the environment (gateSweepSettingsFromEnv) — the lever that slows the sweep
+// down without a release when the forge's budget is what runs short. The
+// horizon is not one of them: it is the grant's, and a sweep reaching past it
+// would find nothing to post with.
+type gateSweepSettings struct {
+	interval  time.Duration
+	lookback  time.Duration
+	deepEvery int
+}
+
+func defaultGateSweepSettings() gateSweepSettings {
+	return gateSweepSettings{interval: gateSweepInterval, lookback: gateSweepLookback, deepEvery: gateDeepSweepEvery}
+}
+
+// gateSweepSettingsFromEnv reads ITERION_GATE_SWEEP_INTERVAL,
+// ITERION_GATE_SWEEP_LOOKBACK (Go durations) and ITERION_GATE_SWEEP_DEEP_EVERY
+// (a pass count). A value that does not parse, an interval under
+// gateSweepMinInterval or of half the horizon or more, or a combination that
+// breaks the net keeps the default for that setting, and warns naming the
+// variable — an operator's explicit choice is never replaced in silence. The
+// combinations the net cannot survive:
+//   - a lookback not exceeding interval plus grace: a run could end between
+//     two windows and never be examined;
+//   - a lookback reaching the horizon: every pass would be a deep one, and the
+//     ordinary grant would outlive the gate's;
+//   - deep passes half the horizon apart or more: a run would see fewer than
+//     two, and the last-pass warning would fire on every offer.
+//
+// Every bound is checked without multiplying the operator's values, which
+// overflow: a huge pass count must be refused, not wrap into an accepted one.
+func gateSweepSettingsFromEnv(getenv func(string) string, warnf func(format string, args ...any)) gateSweepSettings {
+	out := defaultGateSweepSettings()
+	duration := func(name string, def time.Duration) time.Duration {
+		raw := strings.TrimSpace(getenv(name))
+		if raw == "" {
+			return def
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			warnf("merge-gate sweeper: %s=%q is not a positive duration — keeping the default %s", name, raw, def)
+			return def
+		}
+		return d
+	}
+	out.interval = duration("ITERION_GATE_SWEEP_INTERVAL", gateSweepInterval)
+	switch {
+	case out.interval < gateSweepMinInterval:
+		warnf("merge-gate sweeper: ITERION_GATE_SWEEP_INTERVAL=%s is under the %s floor — keeping the default %s", out.interval, gateSweepMinInterval, gateSweepInterval)
+		out.interval = gateSweepInterval
+	case out.interval >= gateSweepHorizon/2:
+		warnf("merge-gate sweeper: ITERION_GATE_SWEEP_INTERVAL=%s is half the %s horizon or more — keeping the default %s", out.interval, gateSweepHorizon, gateSweepInterval)
+		out.interval = gateSweepInterval
+	}
+	out.lookback = duration("ITERION_GATE_SWEEP_LOOKBACK", gateSweepLookback)
+	if out.lookback >= gateSweepHorizon {
+		warnf("merge-gate sweeper: ITERION_GATE_SWEEP_LOOKBACK=%s reaches the %s horizon — keeping the default lookback %s", out.lookback, gateSweepHorizon, gateSweepLookback)
+		out.lookback = gateSweepLookback
+	}
+	if raw := strings.TrimSpace(getenv("ITERION_GATE_SWEEP_DEEP_EVERY")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			warnf("merge-gate sweeper: ITERION_GATE_SWEEP_DEEP_EVERY=%q is not a pass count ≥ 1 — keeping the default %d", raw, gateDeepSweepEvery)
+		} else {
+			out.deepEvery = n
+		}
+	}
+	// interval < horizon/2 from here on, so interval+grace cannot overflow.
+	// Each fallback blames the variable it resets: a value already at its
+	// default is left alone, and the interval answers for the gap instead.
+	if out.lookback <= out.interval+gateSweepGrace {
+		if out.lookback != gateSweepLookback {
+			warnf("merge-gate sweeper: ITERION_GATE_SWEEP_LOOKBACK=%s does not exceed ITERION_GATE_SWEEP_INTERVAL=%s plus the %s grace, so a run could end between two windows — keeping the default lookback %s",
+				out.lookback, out.interval, gateSweepGrace, gateSweepLookback)
+			out.lookback = gateSweepLookback
+		}
+		if out.lookback <= out.interval+gateSweepGrace {
+			warnf("merge-gate sweeper: ITERION_GATE_SWEEP_INTERVAL=%s is not covered by the %s lookback plus the %s grace, so a run could end between two windows — keeping the default interval %s",
+				out.interval, out.lookback, gateSweepGrace, gateSweepInterval)
+			out.interval = gateSweepInterval
+		}
+	}
+	if !deepCadenceFits(out.deepEvery, out.interval) {
+		if out.deepEvery != gateDeepSweepEvery {
+			warnf("merge-gate sweeper: ITERION_GATE_SWEEP_DEEP_EVERY=%d × ITERION_GATE_SWEEP_INTERVAL=%s spaces deep passes half the %s horizon apart or more — keeping the default deep cadence %d",
+				out.deepEvery, out.interval, gateSweepHorizon, gateDeepSweepEvery)
+			out.deepEvery = gateDeepSweepEvery
+		}
+		if !deepCadenceFits(out.deepEvery, out.interval) {
+			warnf("merge-gate sweeper: ITERION_GATE_SWEEP_INTERVAL=%s spaces the %d-pass deep cadence half the %s horizon apart or more — keeping the default interval %s",
+				out.interval, out.deepEvery, gateSweepHorizon, gateSweepInterval)
+			out.interval = gateSweepInterval
+		}
+	}
+	return out
+}
+
+// deepCadenceFits reports whether deep passes every deepEvery passes of
+// interval come strictly closer than half the horizon. It divides rather than
+// multiplies: the product of a large pass count and an interval overflows into
+// a small or negative duration that every comparison would accept.
+func deepCadenceFits(deepEvery int, interval time.Duration) bool {
+	return deepEvery >= 1 && interval > 0 && int64(deepEvery) <= int64((gateSweepHorizon/2-1)/interval)
+}
+
+// gateSweepEvery is the sweep cadence: the configured interval, unless a test
+// shortened it.
+func (s *Server) gateSweepEvery() time.Duration {
+	if s != nil && s.gateSweepTick > 0 {
+		return s.gateSweepTick
+	}
+	if s != nil && s.gateSweep.interval > 0 {
+		return s.gateSweep.interval
+	}
+	return gateSweepInterval
+}
+
+// gateSweepCadence is the configured lookback and deep cadence, defaults
+// filled in.
+func (s *Server) gateSweepCadence() (lookback time.Duration, deepEvery int) {
+	lookback, deepEvery = gateSweepLookback, gateDeepSweepEvery
+	if s != nil && s.gateSweep.lookback > 0 {
+		lookback = s.gateSweep.lookback
+	}
+	if s != nil && s.gateSweep.deepEvery > 0 {
+		deepEvery = s.gateSweep.deepEvery
+	}
+	return lookback, deepEvery
+}
+
+// gateSweepWindow picks how far back pass number `pass` of a term reaches,
+// and whether it is a deep pass. Pass 0 — the first of a term — is deep on
+// purpose: a replica that has just been elected is precisely the one with no
+// idea what died while it was not sweeping.
+func (s *Server) gateSweepWindow(pass int) (window time.Duration, deep bool) {
+	lookback, deepEvery := s.gateSweepCadence()
+	if pass%deepEvery == 0 {
+		return gateSweepHorizon, true
+	}
+	return lookback, false
+}
+
+// runGateSweeper ticks sweepGates until ctx is cancelled — for one term of the
+// merge-gate lease (runElectedGateSweeper).
+//
 // It announces itself for the reason the retry sweeper does: "no PR is stuck"
-// and "every stuck PR is invisible" produce identical silence otherwise.
+// and "every stuck PR is invisible" produce identical silence otherwise. The
+// line also names the replica holding the term.
 func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
-	s.infof("merge-gate sweeper: re-offering dead gating runs to the reconciler (every %s, %s grace, %s lookback, %s horizon reached every %d passes) — the net under the lossy outcome event",
-		gateSweepInterval, gateSweepGrace, gateSweepLookback, gateSweepHorizon, gateDeepSweepEvery)
-	t := time.NewTicker(gateSweepInterval)
+	every := s.gateSweepEvery()
+	lookback, deepEvery := s.gateSweepCadence()
+	s.infof("merge-gate sweeper: %s re-offering dead gating runs to the reconciler (every %s, %s grace, %s lookback, %s horizon reached every %d passes) — the net under the lossy outcome event",
+		s.replicaID, every, gateSweepGrace, lookback, gateSweepHorizon, deepEvery)
+	t := time.NewTicker(every)
 	defer t.Stop()
-	// The first pass is a deep one: a replica that has just started is exactly
-	// the one with no idea what died while nothing was watching, and waiting
-	// gateDeepSweepEvery ticks to find out would make a rolling deploy the
-	// longest blind window the net has.
+	// The first pass of a term is a deep one, and it runs at once: a replica
+	// that has just been elected — at boot, or taking over from a holder that
+	// stopped or died — is exactly the one with no idea what died while it was
+	// not sweeping, and waiting even one interval to find out would make every
+	// hand-over a blind window, and a fleet restarted more often than the
+	// interval a net that never sweeps.
 	pass := 0
-	// Where the last deep pass ran out of page budget. A pass is capped at
-	// gateSweepMaxPages × gateSweepBatch rows, and rows arrive newest-first, so
-	// a deep pass that restarted at now−grace every time would examine the same
-	// newest rows forever and NEVER reach the old ones — which are precisely
-	// the batch-death runs the horizon exists for. Resuming from the cursor is
-	// what turns a capped pass into eventual traversal.
+	// Where the deep traversal under way ran out of page budget. A pass is
+	// capped at gateSweepMaxPages × gateSweepBatch rows, and rows arrive
+	// newest-first, so a deep pass that restarted at now−grace every time would
+	// examine the same newest rows forever and NEVER reach the old ones — which
+	// are precisely the batch-death runs the horizon exists for. Resuming from
+	// the cursor is what turns a capped pass into a traversal.
 	//
-	// In memory, per replica, on purpose: the repair is idempotent, so a
-	// restart that loses the cursor costs a re-scan and nothing else, and two
-	// replicas at different depths cover more of the window rather than less.
+	// The traversal resumes at the very next pass, beside that pass's fast
+	// one, not at the next deep pass: with deep passes spaced out, waiting
+	// would let a traversal outlast the runs it walks — a run near the
+	// window's edge would leave it unvisited, and with it the re-read a
+	// reversible settlement counts on. A traversal ends when the window is
+	// exhausted (the cursor back to zero, see sweepGates); the next deep pass
+	// starts a new one at the newest end.
+	//
+	// In memory, for the term: the repair is idempotent, so a term that ends
+	// loses the cursor and nothing else — the successor's first pass is deep
+	// and starts again at the newest end.
 	var deepCursor time.Time
+	// The consecutive deep sweeps that did not move the cursor. One is a blip
+	// the next pass retries; a page that keeps failing — two in a row — waits
+	// for the next deep pass instead of failing at every tick.
+	deepMisses := 0
+	sweep := func() {
+		now := time.Now().UTC()
+		_, deep := s.gateSweepWindow(pass)
+		parked := !deepCursor.IsZero()
+		if !deep || parked {
+			// The fast pass always starts at the newest end, so a deep
+			// traversal parked in the past never delays a fresh death.
+			s.sweepGates(ctx, lister, now, lookback, time.Time{})
+		}
+		if deep || (parked && deepMisses < 2) {
+			from := deepCursor
+			deepCursor = s.sweepGates(ctx, lister, now, gateSweepHorizon, from)
+			if !deepCursor.IsZero() && deepCursor.Equal(from) {
+				deepMisses++
+			} else {
+				deepMisses = 0
+			}
+		}
+		pass++
+	}
+	sweep()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			now := time.Now().UTC()
-			if window := gateSweepWindowFor(pass); window == gateSweepHorizon {
-				deepCursor = s.sweepGates(ctx, lister, now, window, deepCursor)
-			} else {
-				// The fast pass always starts at the newest end, so a deep pass
-				// parked deep in the past never delays a fresh death.
-				s.sweepGates(ctx, lister, now, window, time.Time{})
-			}
-			pass++
+			sweep()
 		}
 	}
-}
-
-// gateSweepWindowFor picks how far back pass number `pass` reaches. Pass 0 —
-// the first after a start or a rollout — is deep on purpose: a replica that
-// has just come up is precisely the one with no idea what died while nothing
-// was watching.
-func gateSweepWindowFor(pass int) time.Duration {
-	if pass%gateDeepSweepEvery == 0 {
-		return gateSweepHorizon
-	}
-	return gateSweepLookback
 }
 
 // sweepGates performs one pass over the window `lookback` reaches back to,
@@ -172,6 +389,11 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 	if lister == nil || s.cfg.Store == nil {
 		return time.Time{}
 	}
+	// Every forge request the pass itself sends — its reconcile, autofix and
+	// relaunch offers — is counted as the sweep's (forgeRequestTally): it is
+	// the lane whose cost the election exists to bound, and the hourly line
+	// is how that is read. What a relaunched run later publishes is its own.
+	ctx = withForgeLane(ctx, forgeLaneGateSweeper)
 	since := now.Add(-lookback)
 	before := now.Add(-gateSweepGrace)
 	// A cursor older than the window has nothing left to offer: the window
@@ -190,6 +412,7 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 			return before
 		}
 		oldest := before
+		settled := s.gateSettledIn(ctx, refs)
 		for _, ref := range refs {
 			select {
 			case <-ctx.Done():
@@ -199,22 +422,39 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 			// Every guard that decides whether this run owes anything lives in
 			// the reconciler; the sweep's only job is to offer the run again.
 			// Runs that gate nothing — the vast majority of any window — exit
-			// on a local field read with no forge traffic.
-			_ = s.reconcileGateForRunID(ctx, ref.ID, gateTriggerSweep)
+			// on a local field read with no forge traffic, and a run the
+			// reconciler already found settled is not offered at all.
+			mark, isSettled := settled[ref.ID]
+			if !isSettled {
+				_ = s.reconcileGateForRunID(ctx, ref.ID, gateTriggerSweep)
+			}
 			// Same net for the auto-fix lane: it consumes the same lossy bus
 			// with the same miss modes, and until now had NO second path — a
 			// dropped outcome event silently meant no fix pass for a repo
 			// that opted in. The offer is idempotent (per-head claim + idem
 			// key) and the lane's own guards exclude cancelled/paused/armed
 			// runs the reconciler-oriented window also contains. Recovery
-			// horizon = gateSweepHorizon, same as the gate's.
-			s.autofixOffer(ctx, ref.ID)
+			// horizon = gateSweepHorizon, same as the gate's. A failure verdict
+			// is that lane's own trigger, so a run settled on one is still
+			// offered: the lane stands down on its per-head claim without a
+			// forge read once its fix has launched.
+			if !isSettled || mark.Reason == gateSettledVerdictFailure {
+				s.autofixOffer(ctx, ref.ID)
+			}
 			if !ref.UpdatedAt.IsZero() && ref.UpdatedAt.Before(oldest) {
 				oldest = ref.UpdatedAt
 			}
 		}
 		if len(refs) < gateSweepBatch {
 			return time.Time{} // window exhausted — next pass starts fresh
+		}
+		// ListNotifiableRuns bounds only terminal runs by `since`: a run
+		// waiting on a human comes back however old it is. A page reaching
+		// past `since` has therefore offered every terminal run of the window,
+		// and what lies further is paused runs neither lane acts on — the
+		// window is exhausted, and walking on would page through them forever.
+		if !oldest.After(since) {
+			return time.Time{}
 		}
 		// Rows come back newest-first, so the next page starts at the oldest
 		// row of this one. A page that fails to advance the cursor (every row
@@ -238,6 +478,36 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 	return before
 }
 
+// gateSettledIn returns the runs of a page the reconciler marked settled for
+// their current episode. A store that cannot answer settles nothing — every
+// run is offered, as before the marks existed — and says so once per episode.
+func (s *Server) gateSettledIn(ctx context.Context, refs []mongostore.NotifiableRunRef) map[string]gateSettlement {
+	if s.gateSettles == nil || len(refs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(refs))
+	for i, r := range refs {
+		ids[i] = r.ID
+	}
+	marks, err := s.gateSettles.settled(ctx, ids)
+	if err != nil {
+		if !s.gateSettleReadFailing.Swap(true) {
+			s.warnf("merge-gate sweeper: the settled marks are unreadable — offering every run until they are: %v", err)
+		}
+		return nil
+	}
+	if s.gateSettleReadFailing.Swap(false) {
+		s.infof("merge-gate sweeper: the settled marks are readable again")
+	}
+	out := make(map[string]gateSettlement, len(marks))
+	for _, r := range refs {
+		if g, ok := marks[r.ID]; ok && g.appliesTo(r.UpdatedAt) {
+			out[r.ID] = g
+		}
+	}
+	return out
+}
+
 // gateSweepIsLastPass reports whether this pass is among the final ones that
 // will ever offer the run to the reconciler. Candidacy is bounded by
 // gateSweepHorizon on the run's own updated_at, so once that much time has
@@ -255,7 +525,8 @@ func (s *Server) gateSweepIsLastPass(run *store.Run) bool {
 	if run == nil || run.UpdatedAt.IsZero() {
 		return false
 	}
-	return s.gateNow().Sub(run.UpdatedAt) >= gateSweepHorizon-2*gateDeepSweepEvery*gateSweepInterval
+	_, deepEvery := s.gateSweepCadence()
+	return s.gateNow().Sub(run.UpdatedAt) >= gateSweepHorizon-2*time.Duration(deepEvery)*s.gateSweepEvery()
 }
 
 // gateNow reads the wall clock the gate lanes measure by — the sweeper's

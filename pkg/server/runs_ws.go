@@ -147,7 +147,7 @@ type wsErrorPayload struct {
 // state-bound, while the Hub broadcasts one stream to N clients.
 //
 // Cross-store mode: when `?store=<path>` is present (and valid under
-// $HOME/.iterion/**), the subscription reads snapshots + tails events
+// the iterion home, store.IterionHome), the subscription reads snapshots + tails events
 // from THAT store instead of the daemon's primary. State-changing
 // commands (cancel, resume, answer) are rejected with cross_store_readonly
 // in this mode since we don't drive the foreign run's engine — its
@@ -188,7 +188,7 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	// us from accounting WSConnections for forbidden subscriptions.
 	// Cross-store mode skips this — the foreign FS store has no
 	// tenant scoping and the resolveCrossStore() above already
-	// gated the path under $HOME/.iterion/**.
+	// gated the path under the iterion home.
 	if xStore == nil {
 		if _, lerr := s.runs.LoadRunCtx(r.Context(), runID); lerr != nil {
 			http.Error(w, "run not found", http.StatusNotFound)

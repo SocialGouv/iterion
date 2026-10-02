@@ -103,7 +103,7 @@ func rootRunID(ctx context.Context, runStore store.RunStore, parentID, fallback 
 	}
 	current := parentID
 	seen := map[string]struct{}{}
-	for i := 0; i < 64 && current != ""; i++ {
+	for i := 0; i < maxLineageWalk && current != ""; i++ {
 		if _, ok := seen[current]; ok {
 			break
 		}

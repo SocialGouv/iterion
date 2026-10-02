@@ -636,3 +636,52 @@ func TestCodexCapabilities_LiveListOffersNoneForCarriers(t *testing.T) {
 		[]string{"none"},                         // forbidden: the runtime 400s it
 	)
 }
+
+// A claw node names its model as a routing spec; the endpoint answers for
+// it what it answers for the bare id — the levels the runtime clamps the
+// node's effort to. Red when the spec itself is looked up in the registry,
+// which knows no "anthropic/…" id and answers nothing.
+func TestEffortCapabilities_ClawSpecReadsLikeItsBareID(t *testing.T) {
+	_, hs := newTestServer(t)
+	bare := getEffortCaps(t, hs.URL, "claw", "claude-opus-5-5")
+	if len(bare.Supported) == 0 {
+		t.Fatal("fixture: the registry no longer knows claude-opus-5-5's effort levels")
+	}
+	spec := getEffortCaps(t, hs.URL, "claw", "anthropic/claude-opus-5-5")
+	if strings.Join(spec.Supported, ",") != strings.Join(bare.Supported, ",") || spec.Default != bare.Default {
+		t.Errorf("anthropic/claude-opus-5-5 = %v (default %q), want %v (default %q)", spec.Supported, spec.Default, bare.Supported, bare.Default)
+	}
+}
+
+// claude_code reads a node's spec like claw does: on its capability id.
+func TestEffortCapabilities_ClaudeCodeSpecReadsLikeItsBareID(t *testing.T) {
+	_, hs := newTestServer(t)
+	bare := getEffortCaps(t, hs.URL, "claude_code", "claude-opus-5-5")
+	spec := getEffortCaps(t, hs.URL, "claude_code", "anthropic/claude-opus-5-5")
+	if len(bare.Supported) == 0 || strings.Join(spec.Supported, ",") != strings.Join(bare.Supported, ",") {
+		t.Errorf("anthropic/claude-opus-5-5 = %v, want %v", spec.Supported, bare.Supported)
+	}
+}
+
+// ultracode is offered on the model as written — the compiler's C089
+// predicate — so an env-substituted spec keeps it, and a gateway alias does
+// not gain it, even spelled like a Claude model.
+func TestEffortCapabilities_UltracodeFollowsTheCompiler(t *testing.T) {
+	_, hs := newTestServer(t)
+	has := func(levels []string) bool {
+		for _, l := range levels {
+			if l == "ultracode" {
+				return true
+			}
+		}
+		return false
+	}
+	if got := getEffortCaps(t, hs.URL, "claw", "${X_MODEL:-anthropic/claude-opus-4-8}"); !has(got.Supported) {
+		t.Errorf("env-substituted Opus 4.8 spec lost ultracode: %v", got.Supported)
+	}
+	for _, m := range []string{"openai_compatible/gpt-oss-120b", "openai_compatible/claude-opus-5-5"} {
+		if got := getEffortCaps(t, hs.URL, "claw", m); has(got.Supported) {
+			t.Errorf("gateway model %s was offered ultracode: %v", m, got.Supported)
+		}
+	}
+}

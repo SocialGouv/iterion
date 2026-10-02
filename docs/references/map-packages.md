@@ -29,13 +29,16 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/automaintguard` | holds the acceptance witness of scripts/auto-maintenance-check.sh — the preflight that decides whether a repository's dependency loop is safe to… | — |
 | `internal/ciguard` | holds tests that keep this repository's CI configuration honest from inside the test suite, where a required check can see them. | — |
 | `internal/docsguard` | holds tests that keep this repository's documentation honest from inside the test suite, where a required check can see them. | `FS` |
+| `internal/envtrust` | tells apart the environment iterion INHERITED from the part a project `.env` filled in. | — |
 | `internal/floorsalign` | realigns the syntax-floor pins at the release cut. | — |
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — |
+| `internal/hometest` | keeps a test binary off the operator's iterion home. | — |
 | `internal/httpx` | provides the shared JSON request/response helpers used by iterion's HTTP handlers. | — |
 | `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — |
 | `internal/pricingtest` | isolates a test binary from the host's live model prices. | — |
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
+| `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
 | `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `Sink` |
@@ -48,6 +51,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/auth/oidc` | owns the SSO connectors: Google, GitHub, and a generic OIDC discovery-based provider. | `Connector`, `StateStore` |
 | `pkg/auth/orgsso` | owns the per-tenant (per-org) SSO provider configuration: the rows an iterion org admin self-serves to enable login via their own Keycloak (a… | `DomainStore`, `Store` |
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` |
+| `pkg/backend/ambient` | iterion's switch for what an agent node inherits from its surroundings besides its prompt (ADR-119). | — |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — |
 | `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend` |
@@ -59,6 +63,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` |
 | `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` |
+| `pkg/backend/modelroute` | the one reading of a model spec: which provider routes it, which id goes on the wire, and which id names its capabilities. | — |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — |
 | `pkg/backend/permissionhook` | adapts third-party CLI PreToolUse payloads to iterion's shared permission.Policy evaluator. | — |
@@ -67,7 +72,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/secretguard` | protects secret values from leaking through an agent run. | — |
 | `pkg/backend/sessionpack` | packs and unpacks CLI session files for ADR-089 persist. | — |
 | `pkg/backend/thinktokens` | provides an approximate token count for extended-thinking (reasoning) text. | — |
-| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ToolChecker`, `WatchStore` |
+| `pkg/backend/tool` | provides a unified ToolRegistry that normalizes built-in tools and MCP server tools under a single namespace and resolution scheme. | `ClassifierLogger`, `ModelConsultingChecker`, `ToolChecker`, `WatchStore` |
 | `pkg/backend/tool/privacy` | implements two iterion built-in tools that detect and redact personally identifiable information (PII): - privacy_filter: detect or redact 5… | — |
 | `pkg/backend/tool/privacy/detector` | implements the pure-Go PII detection backend used by the privacy_filter / privacy_unfilter built-in tools. | `Rule` |
 | `pkg/backend/toolcatalog` | the compile-time view of a node's `tools:` list: which backends the list actually CONSTRAINS, and which bare tool names the run-time registry can… | — |
@@ -145,6 +150,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/internal/storekit` | holds the generic skeletons behind iterion's paired Mongo+memory store backends (pkg/audit, pkg/pat, pkg/cloudsched, pkg/webhooks,… | — |
 | `pkg/internal/strutil` | holds tiny string helpers that have no direct stdlib equivalent and were otherwise copy-pasted across packages. | — |
 | `pkg/knowledge` | defines the backend-agnostic contract for iterion's shared memory / knowledge system: the MemoryStore interface, the SpaceRef identity model (the… | `MemoryStore` |
+| `pkg/lease` | elects one holder per named lease across the replicas of a deployment, so a periodic net runs on ONE replica instead of every one. | `Store` |
 | `pkg/liveledger` | keeps a committed, single-file record of the LAST run of every `task test:live:*` target. | `TB` |
 | `pkg/log` | provides a leveled logger with emoji-rich console output for the iterion workflow engine. | — |
 | `pkg/mail` | iterion's minimal transactional mailer: stdlib SMTP (explicit STARTTLS) + embedded templates for the two flows that need email — invitations and… | `Mailer` |
@@ -174,7 +180,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `Compactor`, `EffectiveBackendResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber` |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher` |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher`, `RunLoader` |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `PreparedSpec`, `ProcessIsolated`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |

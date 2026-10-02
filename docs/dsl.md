@@ -34,7 +34,7 @@ group, use, workflow
 
 **Names and keys are unique.** A node id is unique across every node kind (C041 — `emit`, `wait` and `await_answers` included), a prompt, a schema, a cursor or a group among its own kind, and a key of `vars:`, `presets:`, `attachments:` or `secrets:` appears once in its block (E010) — in one file as across two: a duplicate key used to shadow the other in silence.
 
-**A bot in several files.** A file may open — after `dsl:` and the comments, before its first declaration — with `import "lib/<file>.bot"` lines, one per fragment. A path is relative to the file that imports it and must resolve under the bot's `lib/` directory, next to the main (no absolute path, no `..`, no symlink); a fragment may import its siblings by bare name, and a file is read once however many files import it. The unit — the main and every fragment its imports reach — compiles as ONE program: the declarations of every kind are appended in the order the files are reached, `vars:`/`presets:`/`attachments:`/`secrets:` merge by key, and a name declared in two files, or a key declared twice anywhere, is refused naming both places (E010); a fragment holds no `workflow`, and two workflows in a unit are refused too. Each file keeps its own `dsl:` header (and its own C144). An `import` after a declaration is E044, a path outside `lib/` or malformed E045, a fragment missing or unreadable E046, a cycle E047; a file that imports, compiled alone (a document, an upload), is refused by name (C030). See [`import` under reuse](#import--a-bot-in-several-files) for what every surface does with the unit.
+**A bot in several files.** A file may open — after `dsl:` and the comments, before its first declaration — with `import "lib/<file>.bot"` lines, one per fragment. A path is relative to the file that imports it and must resolve under the bot's `lib/` directory, next to the main (no absolute path, no `..`, no symlink); a fragment may import its siblings by bare name, and a file is read once however many files import it. The unit — the main and every fragment its imports reach — compiles as ONE program: the declarations of every kind are appended in the order the files are reached, `vars:`/`presets:`/`attachments:`/`secrets:` merge by key, and a name declared in two files, or a key declared twice anywhere, is refused naming both places (E010); a fragment holds no `workflow`, and two workflows in a unit are refused too. Each file keeps its own `dsl:` header (and its own C144). An `import` after a declaration is E044, a path outside `lib/` or malformed E045, a fragment missing or unreadable E046, a cycle E047; a main loaded from the filesystem's own root keeps its absolute names in client-boundary answers, with a warning saying why — no name cut is safe there (E048); a file that imports, compiled alone (a document, an upload), is refused by name (C030). See [`import` under reuse](#import--a-bot-in-several-files) for what every surface does with the unit.
 
 Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191); an empty workflow draws the compiler's own diagnostics (no entry first); a `use` of an empty group draws C141. A block header — `vars:`, `budget:`, `memory:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `compaction:`, `resources:`, `presets:`, `attachments:`, `secrets:`, `sandbox:` and its `build:`/`network:` — may stand bare the same way and declares an empty block, kept as the author wrote it: a nested one ends at its parent's dedent or before a blank line and a sibling; a top-level one, having no dedent to end it, needs the blank line (or the end of the file). What an empty block means is the compiler's call: an empty `mcp:` wires nothing (a tool name it cannot resolve stays the error it was), a bare `sandbox:` is the inline block form, which C044 refuses until it carries an `image:` or `build:`. Two things do not follow the rule: `fallbacks:` must name at least one route (a bare header is refused, by name — a chain with no route is not a chain, and a route with no name has no written form either: the studio refuses it at save), and a property spelled the same in a block and in its parent (`user:` in a sandbox and on an agent), written at the parent's level after a blank line, is the parent's — the blank line is the author's signal, as for declarations. `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). A comment keeps the place it was written at through a rewrite — a studio save, `iterion fmt`: it is carried by the declaration it was written around, above the line it leads, and written back there, `##` being the canonical form. The indentation written INSIDE a comment is part of its text, and a blank line between two `##` lines is kept as the paragraph break it is. A comment whose line the writer does not emit — a property equal to its default, an empty list — is written at the end of the block it was in rather than dropped. Two places have no declaration to hold them and land at the file's head: a comment at the end of the `dsl:` header's own line, and one above the file's FIRST declaration separated from it by a blank line — there the file's own comments and the first declaration's are written one after the other, and that blank line is what tells them apart. Values accept quoted strings, backtick-delimited raw strings, `|` block scalars, and one plain bare word (`backend: claw`) where the grammar expects a string; a value that is not one word (`20m`, `gpt-5.5`) keeps its quotes. A word from a fixed list (`session: fresh`, `await: wait_all`, `mode: fan_out_each`, `transport: stdio`, `interaction: human`) reads quoted as well as bare, and a word outside the list is refused either way. A list is written inline (`tools: [bash, grep]`) or as one `- item` per line indented under the property, comment lines allowed between items; both read as the same list, and `[]` is the empty list's only form. A `with { n: 3, ok: true }` map reads a number or a bool as the string it spells.
 
@@ -298,7 +298,7 @@ An LLM node's answer is held to its `output:` schema at the end of its turn. Whe
 | `{{loop.name.iteration}}` / `.max` / `.previous_output` | Declared-loop state. |
 | `{{each.name.item}}` / `.index` / `.count` / `.first` / `.last` / `.empty` | Sequential edge-`foreach` state. |
 | `{{run.id}}` | Current run id. |
-| `{{run.tree_noise}}` | The canonical tree-noise pathspecs (`':(exclude,top).claude' ':(exclude,top)devbox.lock' ':(exclude,top).iterion-script-*'`) — what a scope gate or a whole-tree staging must exclude, because the run's setup and tooling wrote it, never the pass's work. In a **prompt** it renders ready to paste into a git command. In an EXECUTABLE body it does not: a tool `command:` shell-escapes it into ONE argument, and a `script:` body JSON-encodes it (`"':(exclude,top).claude' …"` — one double-quoted word under `sh`/`bash`) — `git add` refuses it, and a `git status`-based gate silently ignores it and lists the noise anyway. Read `$ITERION_TREE_NOISE` in both (set for every tool process, host and sandbox), **unquoted**: the value is space-separated and must word-split into one pathspec per entry — `"$ITERION_TREE_NOISE"` collapses them into a single pathspec that matches nothing, so the exclusion vanishes in silence. See [the run namespace](#the-run-namespace) and [bot authoring](agents/bot-authoring.md). |
+| `{{run.tree_noise}}` | The canonical tree-noise pathspecs (`':(exclude,top).claude' ':(exclude,top)devbox.lock' ':(exclude,top).iterion-script-*'`) — what a scope gate or a whole-tree staging must exclude, because the run's setup and tooling wrote it, never the pass's work. In a **prompt** it renders ready to paste into a git command. In an EXECUTABLE body it does not: a tool `command:` shell-escapes it into ONE argument, and a `script:` body JSON-encodes it (`"':(exclude,top).claude' …"` — one double-quoted word under `sh`/`bash`) — `git add` refuses it, and a `git status`-based gate silently ignores it and lists the noise anyway. Read `$ITERION_TREE_NOISE` in both (set for every tool process, host and sandbox), **unquoted**: the value is space-separated and must word-split into one pathspec per entry — `"$ITERION_TREE_NOISE"` collapses them into a single pathspec that matches nothing, so the exclusion vanishes in silence. See [the run namespace](#the-run-namespace) and [bot authoring](agents/bots/bot-authoring.md). |
 | `{{run.elapsed_seconds}}` / `.cost_usd` / `.tokens` / `.iterations` | What the run has consumed so far — see [the run namespace](#the-run-namespace). |
 | `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
@@ -349,6 +349,7 @@ agent reviewer:
   tool_max_steps: 10
   max_tokens: 12000
   reasoning_effort: high
+  ambient_context: none   ## none|workspace|operator|all (default workspace, ADR-119)
   timeout: "20m"
   readonly: true
   publish: review_artifact
@@ -367,6 +368,19 @@ Important property groups:
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
 | Backend-specific | `full_access` and `images` are honored by the Codex backend; other backends ignore them. |
 | Persistent context | `memory` and `cursors`. |
+
+`ambient_context: none | workspace | operator | all` picks what the node
+inherits from its surroundings besides its prompt (ADR-119): the
+repository's instruction files (`workspace`, the default — `CLAUDE.md`,
+`.claude/rules/`, `AGENTS.md` …), the operator's personal agent setup and
+the files above the repository root (`operator`), both (`all`) or nothing
+(`none`). Declared on the node or the workflow, with a run override
+(`--ambient-context`) and `ITERION_AMBIENT_CONTEXT` below it. Enforced on
+`claude_code`, `claw`, `codex` and `pi`; an explicit value on another
+backend warns (C185). An invalid value is a compile error (C184). Review
+bots that judge a checkout they do not control usually want `none`. See
+[backends.md](backends.md#ambient-context-adr-119--what-a-node-inherits-besides-its-prompt) and
+[ADR-119](adr/119-ambient-context-policy.md).
 
 `readonly: true` forces delegated agents into a read-only sandbox and classifies the node as non-mutating for parallel workspace safety. `full_access: true` is a high-authority Codex-only opt-in; `readonly` wins if both are present.
 
@@ -935,6 +949,7 @@ workflow review:
   default_backend: "claude_code"
   worktree: auto
   compress: on
+  ambient_context: none
   permission: ask
   allow: ["Read(*)", "Grep(*)"]
   ask: ["Bash(git push:*)"]
@@ -1129,6 +1144,41 @@ those same sources, so it only goes unpriced when its model does. If the
 warning fires, run `iterion models pricing` to see which source (if any)
 answers, then either add the model to the table or expect `max_cost_usd` to
 bind on the priced nodes only.
+
+#### Neither ceiling counts usage the provider never reported
+
+The budget counts what the provider reported. A claw call whose usage the
+provider did not report in full is counted apart. Two causes:
+
+- A provider that sends no usage at all. On the OpenAI chat wire, usage
+  is sent only when requested, and claw requests it from api.openai.com
+  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked,
+  so its calls count as unreported unless it sends usage anyway.
+- A call that ended before its final account: a cut, a stall, a failure
+  frame carrying none, or a request abandoned unanswered by the cold-stream
+  watchdog. A request the provider refused before serving any of it — a
+  rate limit, an overload, an exhausted balance, an over-window prompt, or
+  any condition no new request clears, named by the error's code or type —
+  is billed nothing and is not counted. The verdict is read on the chat and
+  Responses wires; the Anthropic wire forwards the frame's message only, so
+  a refusal named only in prose still counts there.
+
+Whatever the call consumed reaches the run as a lower bound at most: the
+tokens it streamed before failing, or nothing. The first such call under a
+declared `max_tokens` or `max_cost_usd` emits one advisory `budget_warning`
+on dimension `usage_unreported`. Its `detail` names how many calls went
+unreported so far. As for `cost_usd_unpriced`, this figure is a floor:
+the warning is raised once per ceiling and re-armed when a ceiling is
+raised. The count rides the checkpoint, so a resumed run keeps it — and
+raises the warning once more. A failed attempt counts too, retried or not;
+when that count is all it spent, it takes no `max_iterations` slot.
+
+Each node output carries the count under `_usage_unreported_calls`, and
+each completed claw step that went unreported carries
+`usage_unreported: true` on its `llm_step_finished` event. Outside a
+budget, the runner logs that fact once per attempt and per route — for
+the steps it saw: a failed call emits no `llm_step_finished`, so only the
+budget counts it.
 
 ### The target repo's toolchain — `repo_devbox:`
 

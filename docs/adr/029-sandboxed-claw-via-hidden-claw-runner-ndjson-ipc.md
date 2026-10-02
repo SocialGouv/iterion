@@ -1,6 +1,6 @@
 # ADR-029: Sandboxed claw via hidden claw-runner NDJSON IPC
 
-- **Status**: Accepted
+- **Status**: Accepted · **amended 2026-09-29** (see [Amendment](#amendment-2026-09-29--three-placements-and-a-boundary-held-by-the-launcher))
 - **Date**: 2026-06-22
 - **Authors**: Adry
 - **Code**: [cmd/iterion/claw_runner.go](../../cmd/iterion/claw_runner.go), [pkg/backend/delegate/io.go](../../pkg/backend/delegate/io.go), [pkg/backend/delegate/multiplexer.go](../../pkg/backend/delegate/multiplexer.go)
@@ -50,3 +50,17 @@ The runner could have attempted to instantiate all tools inside the container an
 - **The IPC protocol is now a compatibility seam.** Envelope types and correlation semantics must remain stable across runner and launcher code.
 - **Observability crosses the same channel.** Session capture and events are modelled as envelopes rather than Go callbacks, which keeps closure state out of the sandbox.
 - **Rechallenge if a third placement category appears.** Tools requiring simultaneous trusted host state and container-local filesystem state may need a third category beyond local built-ins and launcher-proxied tools.
+
+## Amendment (2026-09-29) — three placements, and a boundary held by the launcher
+
+The trigger above fired. A third category exists, and two sentences of the original decision no longer describe the code.
+
+**1. Placement is an exhaustive, typed classification with three values.** `tool.SandboxPlacementOf` answers `Sandbox`, `Launcher` or `Refused`, and **`Refused` is the zero value**: a name nobody classified is refused rather than proxied. `lsp`, `screenshot`, `computer_use` and the `worker_*` family land there — they need trusted host state AND container-local state, exactly the case this ADR anticipated. A sandboxed node declaring one is refused when it EXECUTES, not when it is built, so the node's `fallbacks:` still get their turn.
+
+**2. The launcher holds the boundary; the runner's routing is a request.** The original text reads as though the runner decides what to proxy. It cannot: the runner is the contained process, it may be an older binary baked into an image, and its stdout is writable from inside the container. The launcher therefore executes a forwarded call only when the tool was advertised to that node under that exact name, is `Launcher`-placed, and passes the run's `permission:` policy — re-evaluated on the tool's IDENTITY (its advertised name and its MCP FQN), never on the spelling the runner sent. Every refusal is logged and emitted by the launcher.
+
+**3. "MCP tools … are represented as proxy tool definitions" (above) is now conditional.** An MCP *tool* is still launcher-placed. An MCP *server* is a process, and where it runs is the question this ADR exists to answer. `claude_code` and pi start their own servers, so a sandboxed node's servers run in the container with it; claw connects them in the launcher process. Under an active sandbox the launcher therefore starts only the OPERATOR's servers (`plugin` origin: a builtin, or a plugin installed under the iterion home the operator's own environment names — enabled and configured by the operator in both cases; builtins are the normal case). A server the node inherited is dropped with an `mcp_server_degraded` event; a server it names refuses the node at execution, so a route that starts the server in the container can serve it. Origins and consequences: [sandbox.md](../sandbox.md#mcp-servers-under-a-sandbox).
+
+**What this does not change.** The hybrid split, the NDJSON protocol and the multiplexer stand as decided; the compatibility seam is unchanged. What the amendment records is that placement is now *enforced*, exhaustively, on the trusted side of the boundary — and that the honest concession above ("tool placement is an architectural category") extends to processes, not only to tools.
+
+**The end state, still open.** An MCP manager inside the claw runner, so claw's servers run in the container like `claude_code`'s — parity, and the removal of the last launcher-side execution a sandboxed claw node can reach. It needs an IOTask field, secret/env crossing, plugin binaries in the sandbox images and a version handshake with the runner binary; it is tracked as a follow-up, and until it lands the refusal above is the typed alternative the backend-parity doctrine requires.

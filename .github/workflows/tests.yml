@@ -288,7 +288,15 @@ jobs:
         # AND ran the suite under Go's implicit per-package 10m first — the
         # timeout that actually ejected PRs from the merge queue. Unit tests
         # are everything but e2e; the e2e step is the only e2e run.
-        run: go test -mod=vendor -count=1 $(go list -mod=vendor ./... | grep -v '/e2e$')
+        #
+        # The explicit -timeout is here for the same reason: the implicit 10m
+        # is a budget a healthy run can reach, and did — ./bots carried the
+        # whole job to the panic at 10m0s while the same commit passed on a
+        # faster machine (measured: 521.8s on CI at one commit, a timeout at
+        # 10m0s on the next). Like the e2e budget above, the number bounds a
+        # HANG, not a slow machine; a package that genuinely needs 20 minutes
+        # of test time is a review finding either way.
+        run: go test -mod=vendor -count=1 -timeout 1200s $(go list -mod=vendor ./... | grep -v '/e2e$')
 
       - name: E2E tests
         # The ONLY run of the e2e package in this job (the unit step excludes
@@ -484,7 +492,7 @@ jobs:
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
-            ./pkg/forge/... ./pkg/trigger/...
+            ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/...
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the

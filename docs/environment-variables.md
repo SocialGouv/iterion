@@ -19,11 +19,11 @@ falls back to the listed default.
 | `ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS` | Aborts a `claude_code` session after this many **consecutive** tool errors (any success resets the count) — guards against degenerate tool-error loops. `0` disables the guard. | `25` |
 | `ITERION_CLAUDE_CODE_THINKING_DISPLAY` | Controls the `claude_code` thinking-block display flag: unset/other → `summarized` (readable summary); `omitted` → the CLI's latency-optimised default; `off` → stop passing the flag (required for `claude` CLIs older than the flag). | `summarized` |
 | `ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT` | How long a `claude_code` session may produce no SDK message at all — an SDK or process deadlock shows up immediately, so this tier fails fast and lets the recovery dispatcher retry instead of burning minutes on a corpse. `0` disables the tier. | `90s` |
-| `ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT` | The **hot** tier: how long a session that has already produced a message may go silent. Generous because a sub-agent run commonly takes 5–10 min between visible messages. The name predates the cold/hot split and is kept for back-compat. `0` disables the tier. | `15m` |
+| `ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT` | The **hot** tier: how long a session that has already produced a message may go silent. Generous because a sub-agent run commonly takes 5–10 min between visible messages. It also bounds the Bash timeouts every `claude_code` spawn pins (`BASH_MAX_TIMEOUT_MS` sits under the tighter of this tier and the no-progress tier, by a margin; see [backends.md](backends.md#claude_code)): a foreground command is silent while it runs. The name predates the cold/hot split and is kept for back-compat. `0` disables the tier. | `15m` |
 | `ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT` | A tighter budget for one specific deadlock: the model blocked on a blocking orchestration tool (`TaskOutput` / `Monitor`) it reached with **no background work to wait on** — no subagent spawned (`Agent`, or `Task` on older CLIs) and no `run_in_background` command started. A blocking call that follows real background work keeps the full hot budget. Once classified, the stall is recovered **in place** first (next row); only a failed recovery aborts the session, with an error that still carries "session idle for" so the node auto-re-executes on a fresh subprocess. Every classification lands as a `delegate_stall` event (outcome `recovered` or `aborted`) and on the runner's `iterion_delegate_idle_deadlock_total{backend,model,outcome}` counter. | `4m` |
 | `ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT` | The in-place recovery of that deadlock: the session is interrupted (the CLI's control-protocol interrupt aborts the tool call it is blocked on and closes the turn), then told which wait could never return, and continues on the same session — one tier cheaper than the node restart a kill costs (re-clone, re-provision, replay). This bounds how long the turn may take to close after the interrupt; past it, or when the model blocks the same way again, the session is aborted for retry. `0` disables the recovery (the stall aborts immediately). | `30s` |
-| `ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS` | Opt-in: withhold the single-subagent surface (`Agent`, `Task`, `TaskOutput`, `Monitor`, via `--disallowedTools`) too — the multi-agent `Workflow` tool is withheld from every non-`ultracode` node regardless, since the harness arms it on the word `ultracode` anywhere in the prompt, content included from `claude_code` nodes that are not in `ultracode` mode — for a deployment whose served model family hallucinates task ids and deadlocks on `TaskOutput`. Off by default: a claude_code node keeps its full native toolset, subagents included. Also removes the reading of background `Bash` output, which rides `TaskOutput`. `ultracode` nodes keep the surface regardless — on every spawn, so this knob decides nothing for them. For a non-`ultracode` node it decides the main spawn; what it never decides is the structured-output pass of a node with `permission: ask`/`deny`, which withholds that surface and `Workflow` whatever this is set to, because that spawn carries no permission hook and nothing there can run the policy. | unset (off) |
-| `ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT` | How long a session may keep *talking* without *acting*. The idle tiers only see silence; they are blind to a model streaming text and thinking in circles (observed after a network outage: 20+ min of reasoning, no tool call, no commit). Only a tool_use, a tool result, or a turn's ResultMessage resets this timer. Deliberately longer than the hot tier so one slow build does not trip it. `0` disables it. | `25m` |
+| `ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS` | Opt-in: withhold the single-subagent surface (`Agent`, `Task`, `TaskOutput`, `Monitor`, via `--disallowedTools`) from `claude_code` nodes that are not in `ultracode` mode, for a deployment whose served model family hallucinates task ids and deadlocks on `TaskOutput`. The tools no headless session can use — `Workflow`, `ScheduleWakeup`, `CronCreate`/`CronDelete`/`CronList`, `RemoteTrigger` — are withheld from every node regardless, and subagents always run in the foreground (every spawn sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`; see [backends.md](backends.md#claude_code)). Off by default: a claude_code node keeps its full native toolset, subagents included. `ultracode` nodes keep the surface regardless — on every spawn, so this knob decides nothing for them. For a non-`ultracode` node it decides the main spawn; what it never decides is the structured-output pass of a node with `permission: ask`/`deny`, which withholds that surface and `Workflow` whatever this is set to, because that spawn carries no permission hook and nothing there can run the policy. | unset (off) |
+| `ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT` | How long a session may keep *talking* without *acting*. The idle tiers only see silence; they are blind to a model streaming text and thinking in circles (observed after a network outage: 20+ min of reasoning, no tool call, no commit). Only a tool_use, a tool result, or a turn's ResultMessage resets this timer. Deliberately longer than the hot tier so one slow build does not trip it. With the hot tier it bounds the Bash timeouts every `claude_code` spawn pins. `0` disables it. | `25m` |
 | `ITERION_CLAUDE_CODE_CLOSE_GRACE` | How long the `claude_code` subprocess gets to exit on its own after stdin closes, before the shutdown ladder escalates. Bounds `close()` so a hung child (the CLI keeping bash background loops alive past the agent's logical end) cannot deadlock the caller's `defer sess.Close()`. | `3s` |
 | `ITERION_CLAUDE_CODE_CLOSE_TERM` | How long the same subprocess gets after `SIGTERM` before the ladder resorts to `SIGKILL`. | `1s` |
 | `ITERION_CLAW_COMPACT_THRESHOLD_RATIO` | Context-window fraction (`0 < r ≤ 1`) at which the `claw` router compacts the conversation. Used only when the workflow does not set the field. | engine default |
@@ -40,9 +40,9 @@ falls back to the listed default.
 | `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the **target repository's** `.opencode/` resources (and an `opencode.json` at any level up to the git root). opencode loads and executes what it finds there inside the agent process, so this turns prompt injection into code execution — only for a repo you control. Process-wide: on a shared server it lifts the refusal for every concurrent run. | refused |
 | `ITERION_PI_TRUST_PROJECT` | `1` trusts the **target repository's** `.pi/` extensions, skills and settings. pi executes project-local extensions as TypeScript inside the agent process, so this turns prompt injection into code execution — only for a repo you control. | refused |
 | `ITERION_PI_MCP_CONNECT_TIMEOUT_MS` | How long one MCP server gets to handshake and list its tools before the `pi` extension gives up on it. Servers connect in parallel during pi's session start — which iterion's own RPC handshake is waiting on, bounded by `ITERION_PI_STREAM_COLD_TIMEOUT` (90s) — so this bounds what an unreachable server can cost: its own tools, never the run. | `10000` |
-| `ITERION_PI_NO_CONTEXT_FILES` | `1` stops pi injecting the repo's `AGENTS.md` / `CLAUDE.md` into every call. On by default for `claude_code` parity, but it is the dominant per-call cost: measured at **26,933 vs 448 input tokens** on iterion's own tree (103 KB `CLAUDE.md`) for a one-word prompt. | context files loaded |
+| `ITERION_PI_NO_CONTEXT_FILES` | `1` is the raw off switch for pi's context files (`AGENTS.md` / `CLAUDE.md`, one per directory up to `/` plus the agent dir's), whatever the node's `ambient_context:` says — a cost lever: measured at **26,933 vs 448 input tokens** on iterion's own tree (103 KB `CLAUDE.md`) for a one-word prompt. Without it, the ambient-context policy decides ([ADR-119](adr/119-ambient-context-policy.md)): every policy but `all` already turns pi's own loading off, and iterion supplies the files the policy allows. | unset (the policy decides) |>>>>>>> 025ea9449 (wip(ambient): S7 docs, studio select, maps (local checkpoint))
 | `ITERION_FORBID_SUBSCRIPTION_OAUTH` | `1` refuses to spend a Claude Pro/Max subscription OAuth token on the `pi` and `claw` backends, which reach the API directly rather than through the vendor's CLI. Permitted by default — Anthropic accepts it, billing against a **separate extra-usage balance** rather than your plan limits, and iterion warns on each such node. Set this on a shared or cloud instance, where spending an operator's extra-usage balance is a cost decision taken for everyone. `claude_code` / `codex` are unaffected. | permitted, with a warning |
-| `ITERION_CLAUDE_CODE_SETTING_SOURCES` | Comma-separated `--setting-sources` for `claude_code` nodes (`user`, `project`, `local`). The default loads the operator's user-level settings **and** the target repo's project `CLAUDE.md` / `.claude/settings.json`, so a node honours the same conventions native Claude Code would. `local` is left out on purpose: `.claude/settings.local.json` is machine-specific and can carry absolute paths that do not resolve in a sandbox. `""` or `none` disables it, restoring the CLI's headless no-settings default. | `user,project` |
+| `ITERION_CLAUDE_CODE_SETTING_SOURCES` | Comma-separated `--setting-sources` for `claude_code` nodes (`user`, `project`, `local`). **Raw override**: when set it replaces the node's `ambient_context:` translation (ADR-119) for every claude_code spawn, logged once; the routing pin holds whatever the scopes. `none`/`""` now loads NO source at all (an explicit `--setting-sources ""`): omitting the flag would make the CLI load every source, `local` included. Unknown tokens are logged and dropped — a list made only of typos loads nothing. Unset, the policy decides: `workspace` by default, which keeps the project scope that carries the engine's mirrored skills and plugin contributions, adds the repository's memory, and keeps the operator's user scope out. | unset (the policy decides) |
 | `ITERION_CLAW_SLASH_COMMANDS` | `off`/`0`/`false` stops `claw` nodes resolving a user prompt that opens with `/<name>` against `<workspace>/.claude/commands/<name>.md`, sending the raw text instead. On by default, so a command a plugin contributes (`contributes: commands`) reaches a `claw` node the way `--setting-sources project` gives it to `claude_code` — see [backends.md](backends.md#workspace-slash-commands). Read on the HOST, in the executor, so it holds for a sandboxed run too. Other backends are unaffected: `claude_code` resolves these natively, the CLI agents have no such convention. | on |
 | `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` | Ceiling, in bytes, checked on a workspace command's body **and again on the text it expands to** — a body under the ceiling can still amplify past it, since `$ARGUMENTS` repeated N times multiplies the arguments N-fold. On a review run the workspace is a checkout the run does not control, so that file is untrusted input that becomes a **billed** request; over the ceiling the node sends its prompt unchanged and logs the file, its size and this variable — an abstention, never a truncation, because half a command body is an instruction nobody wrote. `0` removes the ceiling; a value that does not parse is ignored, so a typo cannot silently remove the bound. | `262144` (256 KiB) |
 | `ITERION_CLAUDE_CODE_STRICT_MCP` | `0`/`false`/`off`/`no` drops `--strict-mcp-config`, letting a `claude_code` node inherit the operator's personal `~/.claude.json` MCP servers. On by default so the node's resolved MCP set (`mcp_server:` / `mcp:` blocks, the repo's `.mcp.json`, iterion's own ask-user and board servers) is authoritative — see [backends.md](backends.md). | strict (on) |
@@ -70,6 +70,44 @@ default image are `ITERION_SANDBOX_DEFAULT`, `ITERION_SANDBOX_OVERRIDE`,
 `ITERION_SANDBOX_HOST_STATE`, and `ITERION_SANDBOX_DEFAULT_IMAGE` —
 documented in [sandbox.md](sandbox.md).
 
+## MCP catalog and the launcher
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_MCP_AUTOLOAD` | `0`/`false` stops iterion reading a `.mcp.json` next to the `.bot` (CLI, studio) or at the root of the cloned repository (cloud runner). Those entries are `project`-origin: under an active sandbox the launcher does not start them anyway — this removes them from the catalog entirely. | on |
+| `ITERION_MCP_HEALTHCHECK` | `0`/`false` skips the pre-run health check of the workflow's active MCP servers. The check connects — for a stdio server, spawns — so it only ever probes servers the launcher may start; the rest are skipped and logged. | on |
+| `ITERION_MCP_CACHE_TTL` | Lifetime of the on-disk tool-discovery cache (`0` disables it). The cache stores tool names and schemas only, keyed by a hash of the server's configuration. | `1h` |
+| `ITERION_MCP_EXPAND_UNTRUSTED_ENV` | `true` restores the pre-#1945 behaviour: a **workflow-controlled** server's `command`/`args`/`url` expand `${VAR}` against the launcher's own environment. Off by default — that expansion reads the operator's shell (or the cloud runner pod's credentials) on behalf of a definition the target repository controls, and the expanded value travels into the container as the CLI backends' MCP config. `plugin`-origin servers are unaffected. | off |
+
+Which servers the launcher starts at all is decided by their ORIGIN — see
+[sandbox.md § MCP servers under a sandbox](sandbox.md#mcp-servers-under-a-sandbox).
+Note that `ITERION_PLUGINS_ENABLE`, `ITERION_HOME` and
+`ITERION_PLUGIN_<NAME>_<KEY>` are honoured wherever they come from, but only
+speak for the OPERATOR when the process inherited them: a value a project
+`.env` filled in still applies and still does not confer the operator's
+authority.
+
+`ITERION_PLUGINS_DISABLE` is read live and applied whatever its source, with
+no provenance distinction — deliberately: disabling only ever removes a
+capability, so there is no authority to lose. A project `.env` can therefore
+silence a plugin the operator enabled in their own `plugins.yaml`.
+
+`ITERION_MCP_EXPAND_UNTRUSTED_ENV` is read **only** from the inherited
+environment, so a value a project `.env` planted does not turn the hatch on
+**through this variable**: it is an operator's consent to read the launcher's
+environment on behalf of a definition the repository controls, and a
+repository cannot consent on the operator's behalf. Setting it in a `.env` is
+reported as such in the diagnostic that names the missing variables. It is
+not the only door, though — the expansion also follows the SANDBOX (an
+unsandboxed run expands, because nothing crosses into a container), and
+`ITERION_SANDBOX_DEFAULT` / `ITERION_SANDBOX_OVERRIDE` are read live, so a
+`.env` setting either to `none` makes the run unsandboxed and the expansion
+happens. Closing that family is tracked separately.
+Note that an operator-installed plugin's stdio server inherits the whole
+environment of the launcher process: that is the operator's own binary and
+the operator's choice, but it is worth knowing before enabling one in a pod
+that holds platform credentials (`ITERION_PLUGINS_ENABLE`).
+
 ## Runtime and runner
 
 | Variable | Effect | Default |
@@ -92,6 +130,7 @@ documented in [sandbox.md](sandbox.md).
 | `ITERION_WORKSPACE_TRACK` | `off`/`0`/`false`/`no` disables workspace versioning globally — the content-addressed capture that backs `iterion rewind`'s file restore for runs with no isolated worktree ([workspace-versioning.md](workspace-versioning.md)). On by default: without it a rewind cannot undo what a node produced. The escape hatch exists because the cost scales with the workspace, not with the run. | on |
 | `ITERION_WORKSPACE_MAX_FILE_MB` | Largest single file workspace versioning will capture. A file over the bound is **reported** (`files.overwritten` / `files.left_in_place`), not silently lost — but reporting is not restoring, so raise it for a media pipeline whose deliverable is the artefact a rewind most needs back. A non-numeric or non-positive value keeps the default. | `32` (MiB) |
 | `ITERION_AUTO_MEMORY` | Env level of the `auto_memory:` precedence chain (`--auto-memory` → node → workflow → this → default). Off by default so a run is hermetic — see [memory-and-knowledge.md](memory-and-knowledge.md). | `off` |
+| `ITERION_AMBIENT_CONTEXT` | Env level of the `ambient_context:` precedence chain (`--ambient-context` / launch `ambient_context` → node → workflow → this → `workspace`). Which instruction files agent/judge nodes inherit besides their prompt: `workspace` (the repository's, the default), `operator` (the operator's setup), `all`, `none` — ADR-119. An invalid value is ignored, logged once, and the run falls through to the workflow or the default. Enforced on `claude_code`, `claw`, `codex` and `pi`. | `workspace` |
 | `ITERION_LOOP_BUDGET_GUARD` | Env level of the `loop_budget_guard:` chain (`--loop-budget-guard` → workflow → this → default). Declines a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path instead of dying mid-pass on `BUDGET_EXCEEDED` — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `on` |
 | `ITERION_BUDGET_EXIT_GRACE` | How far past a *spent* cap a run may walk **forward** to reach a terminal node, as a fraction of the declared cap — so work already paid for gets delivered instead of dying on disk. Accepts a ratio in `[0,1]`; `off`/`no`/`false`/`none`/`0` make every declared cap **absolute** (the setting for shared instances and pooled credentials). Fails **closed**: an out-of-range or unparsable value is treated as `0` with a one-time stderr warning, never as the permissive default. The grace is refused outright when the loop budget guard is off, and on a cap clamped by an outside authority (platform ceiling, credential-pool donor allowance). Each graced node emits a `budget_exit_grace` event — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `0.1` (10%) |
 | `ITERION_REPO_DEVBOX` | Env level of the `repo_devbox:` chain (`--repo-devbox` → workflow → this → default). `off` skips the **target repo's** `devbox.json`; the bot's own is always installed. Worth turning off for a run that reads a repo without building it — see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox). | `on` |
@@ -140,7 +179,7 @@ on that dimension), not as zero.
 | `ITERION_CLOUD_MAX_ITERATIONS` | Ceiling on the workflow's `max_iterations`. | unset (no ceiling) |
 | `ITERION_CLOUD_MAX_TOKENS` | Ceiling on `max_tokens`. | unset |
 | `ITERION_CLOUD_MAX_COST_USD` | Ceiling on `max_cost_usd`, in dollars. | unset |
-| `ITERION_CLOUD_MAX_DURATION` | Ceiling on `max_duration` (Go duration, e.g. `4h`). Compared by parsed seconds; a workflow value that is unparseable or absent is replaced by the ceiling. Unlike the numeric dials this one is not validated at read time: any non-empty string is accepted, and one that is not a Go duration clamps **nothing** on this axis — silently, with no log line, since the runner only logs a clamp that changed something. | unset |
+| `ITERION_CLOUD_MAX_DURATION` | Ceiling on `max_duration` (Go duration, e.g. `4h`). Compared by parsed seconds; a workflow value that is unparseable, absent, zero or negative (all unlimited to the runtime) is replaced by the ceiling, and a value kept under it is frozen as judged — a stored bot var changed later does not reach the run. A zero or negative ceiling clamps nothing. Unlike the numeric dials this one is not validated at read time: any non-empty string is accepted, and one that is not a Go duration clamps **nothing** on this axis — silently, with no log line, since the runner only logs a clamp that changed something. | unset |
 | `ITERION_CLOUD_MAX_PARALLEL_BRANCHES` | Ceiling on `max_parallel_branches`. | unset |
 | `ITERION_CLOUD_RETRY_MAX_ATTEMPTS` | Ceiling on the resolved retry policy's `max_attempts`, applied last so a tenant cannot reserve a pod for a hundred attempts — see [scheduling.md](scheduling.md). | unset |
 | `ITERION_CLOUD_RETRY_MAX_WAIT` | Ceiling on the resolved retry policy's `max_wait` (Go duration). | unset |
@@ -148,6 +187,55 @@ on that dimension), not as zero.
 This is the *per-run* bound. The *per-org* monthly cost cap, run quota,
 concurrency and launch rate are a separate admission layer with its own
 variables — see [quotas-and-limits.md](quotas-and-limits.md).
+
+## Merge gate (server)
+
+The cadence of the [merge-gate sweep](merge-gate.md#two-triggers-because-one-event-is-not-a-guarantee),
+the net that re-offers dead gating runs to the reconciler. It runs on one
+elected server replica, and every offer it makes spends the forge's request
+budget, so these are the levers that slow it down without a release. Set on
+the **server** Deployment; read at start. A value that breaks the net keeps its
+default and warns in the server log, naming the variable:
+
+- a value that does not parse, or is not positive;
+- an interval under 1 s, or of half the 8-day horizon (96 h) or more;
+- a lookback that does not exceed the interval plus the sweep's 3-minute grace
+  (a run could end between two windows and never be examined), or that reaches
+  the horizon;
+- deep passes half the horizon apart or more (interval × deep-every of 96 h or
+  more).
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_GATE_SWEEP_INTERVAL` | Time between two passes (Go duration). The sweeper's lease is paced by it, capped at the default: its TTL is three intervals, three minutes at most, so a long interval does not delay the failover. A new term's first pass runs at once. | `1m` |
+| `ITERION_GATE_SWEEP_LOOKBACK` | How far back an ordinary pass reaches (Go duration). The ordinary publish grant outlives it by 30 minutes. | `1h` |
+| `ITERION_GATE_SWEEP_DEEP_EVERY` | Passes between two deep ones, which reach the whole 8-day horizon. | `30` |
+## Platform environment isolation (cloud)
+
+A cloud server or runner keeps its own credentials out of what the workflows
+it executes can read. Once booted, it removes them from its process
+environment — `ITERION_SECRETS_KEY`, `ITERION_JWT_SECRET`, the Mongo, NATS,
+Redis and S3 credentials, the SMTP password, the forge GitHub App key and
+client secret, the OIDC client secrets, the VAPID private key, the bootstrap
+admin password, the completion webhook secret, the alerts webhook URL, the
+SMTP username, the bootstrap admin address, the error-tracker DSN and the OTLP
+header blocks — and marks itself non-dumpable, so a child process cannot read
+its boot environment from `/proc` either. The tracker and the OTLP exporter
+read their configuration while booting, well before the scrub. Provider keys
+stay: runs spend them.
+
+Workflow text — a `${NAME}` in a `.bot`, a launch value, a tool command, a
+node's `backend:`/`model:`/`provider:` — reads no credential-shaped name from
+a cloud process's environment (the definition the bot-vars settings use:
+TOKEN, KEY, SECRET, PASSWORD, CREDENTIAL, AUTH, PRIVATE, a `HEADER(S)` or
+`PROXY` segment and the like), nor any name the scrub removes: in the DSL such
+a reference reads as unset, and a tool command's `${NAME}` is left as written,
+for the command's own shell. Local runs are unaffected.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_CLOUD_ENV_PASSTHROUGH` | Comma-separated credential-shaped names that workflow text may still read from a cloud process's environment — for a deployment whose teams are its operators. | unset |
+| `ITERION_CLOUD_SCHEDULE_GUARDS` | `allow` lets a cloud schedule or trigger carry a `guard:`, which the server runs as a shell command in its own pod. Otherwise the field is refused at write (422) and a guard stored earlier does not run: its tick is recorded `guard_error` and the reason is raised on the schedule's own `last_error`. | unset |
 
 ## See also
 

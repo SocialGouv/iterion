@@ -693,7 +693,11 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 	caller, _ := auth.FromContext(r.Context())
 	runID, err := s.launchTicketNow(r.Context(), caller.TeamID, runs, boardStore, issue)
 	if err != nil {
-		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board launch: %v", err)
+		status := http.StatusConflict
+		if errors.Is(err, errTicketPRLaunchContext) {
+			status = prLaunchContextStatus(err)
+		}
+		s.httpErrorFor(w, r, status, "pipeline board launch: %v", err)
 		return
 	}
 	if s.logger != nil {

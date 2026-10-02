@@ -23,7 +23,7 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 // themselves; keeping that path separate avoids deep-copying every branch a
 // second time only to overwrite the copy immediately.
 func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoint {
-	tokens, cost, iterations, elapsed, unpricedTokens, unpricedNodes := rs.budget.Snapshot()
+	tokens, cost, iterations, elapsed, unpricedTokens, unpricedNodes, unreportedCalls := rs.budget.Snapshot()
 	artifactValues, artifactOwners, artifactRevisions := snapshotArtifactState(rs.artifacts, rs.artifactOwners, rs.artifactRevisions, rs.outputs)
 	cp := &store.Checkpoint{
 		NodeID:                 nodeID,
@@ -52,6 +52,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		BudgetElapsedNS:        elapsed.Nanoseconds(),
 		BudgetUnpricedTokens:   unpricedTokens,
 		BudgetUnpricedNodes:    unpricedNodes,
+		BudgetUnreportedCalls:  unreportedCalls,
 		CostUSDTotal:           rs.costUSDTotal,
 		FiredEvents:            rs.events.snapshot(),
 		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
@@ -296,7 +297,7 @@ func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
 	if cp == nil {
 		return
 	}
-	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS), cp.BudgetUnpricedTokens, cp.BudgetUnpricedNodes)
+	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS), cp.BudgetUnpricedTokens, cp.BudgetUnpricedNodes, cp.BudgetUnreportedCalls)
 	// Keep the run-state clock in step with the budget's, so the two
 	// sources `{{run.elapsed_seconds}}` can read never disagree. Only the
 	// budgeted shape persists an elapsed at all; without a `budget:` block

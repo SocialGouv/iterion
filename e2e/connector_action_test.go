@@ -371,6 +371,14 @@ func runConnectorBot(t *testing.T, src string, resolver *connection.Resolver, cl
 		Store:    s,
 		RunID:    runID,
 		StoreDir: storeDir,
+		// This harness runs the node in THIS process, unsandboxed, so the
+		// launcher may start the workflow's own MCP servers. Said
+		// explicitly: the zero value means "nobody looked", which starts
+		// operator-installed servers only and would refuse this
+		// workflow's own.
+		SandboxTiersKnown: true,
+		// No bot: a fixture workflow, not an installed bundle.
+		BotID: "",
 	}
 	// Nil stays nil: the no-catalog case must go through the same builder, or
 	// it would be testing a different wiring than the one that ships.

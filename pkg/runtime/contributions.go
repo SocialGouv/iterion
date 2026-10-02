@@ -137,6 +137,21 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 	// caller skips the pruner (an un-mirrored entry leaves last pass's
 	// file un-refreshed, and an incomplete pass must not bless a prune).
 	complete = true
+	// The same `.claude`-symlink defect as the local path (#1569), the same
+	// soft-fail semantics: warn naming the link and its target, skip the
+	// mirror, and drop complete so the caller skips the pruner — an
+	// un-mirrored pass must not bless a prune. mirrorPluginContributions
+	// guards the same shape one level up; this guard keeps the function
+	// correct for a direct caller. It runs before the empty-payload return
+	// so an empty pass against a symlink still vetoes the pruner, matching
+	// the local twin (refuseAClaudeSymlink("") is nil, so the workDir == ""
+	// no-op is preserved).
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		if logger != nil {
+			logger.Warn("runtime/contrib: %v — skipping the injected mirror this pass", err)
+		}
+		return nil, false, nil
+	}
 	if workDir == "" || len(files) == 0 {
 		return nil, complete, nil
 	}

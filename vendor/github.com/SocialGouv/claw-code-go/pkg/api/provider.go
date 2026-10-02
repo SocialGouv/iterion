@@ -28,7 +28,14 @@ type Provider = api.Provider
 type Identity = api.Identity
 
 var (
-	DefaultUserAgent   = api.DefaultUserAgent
-	ResolveIdentity    = api.ResolveIdentity
-	ParseCustomHeaders = api.ParseCustomHeaders
+	DefaultUserAgent        = api.DefaultUserAgent
+	ResolveIdentity         = api.ResolveIdentity
+	ResolveExplicitIdentity = api.ResolveExplicitIdentity
+	ParseCustomHeaders      = api.ParseCustomHeaders
+)
+
+// OpenAI endpoint families accepted by ProviderConfig.OpenAIWireAPI.
+const (
+	OpenAIWireChat      = api.OpenAIWireChat
+	OpenAIWireResponses = api.OpenAIWireResponses
 )

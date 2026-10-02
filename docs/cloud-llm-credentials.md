@@ -854,27 +854,31 @@ Semantics worth knowing:
   - **A facade key is not the wire's default beside a Claude credential**
     (`facade_default`, `auto` by default). z.ai and Moonshot keys ride the
     anthropic wire but answer a claude id with their own model. Under `auto`
-    such a key is the wire's DEFAULT only in a tier that holds no
-    Anthropic-native credential — a Claude forfait in any window state, or an
-    `anthropic` key the launch's bot may spend; beside one, it funds only the
-    routes that name its provider. A z.ai-only deployment keeps serving every
-    node; a shared tier holding a Claude forfait never serves its claude
-    nodes GLM from its own facade key, not even while the forfait is closed —
-    the run parks on the forfait. The rule is **per tier**: a team whose own
-    Claude forfait is closed, or an org's, falls through to a later tier's
-    z.ai key when that tier holds no Claude credential — the capacity
-    fall-through — and `never` on the shared tiers is what keeps a facade
-    key off the default there too.
+    such a key is the wire's default on NO tier of the run while ANY tier of
+    the run holds an Anthropic-native credential — a Claude forfait in any
+    window state, or an `anthropic` key the launch's bot may spend. The rule
+    spans the run since #1998: an org whose Claude forfait is closed keeps
+    the platform tier's z.ai key off the wire too, and the run parks on the
+    forfait, because a claude id answered GLM in silence is the failure mode
+    the policy exists for. A z.ai-only deployment (no tier holds a Claude
+    credential) keeps serving every node.
+    `facade_default: tier` is the per-tier rule #1956 first shipped: a tier
+    that itself holds no native credential falls through to its facade key —
+    capacity over label, for operators who prefer a served run on another
+    vendor to a parked one.
     `never` keeps a facade key off the default everywhere (the routes that
     name it only); `always` lets it take any free family, so a closed forfait
     falls through to it. A tier whose store cannot answer "do you hold a
     Claude credential?" is read as holding none, said on the server log.
-    One tier holding a Claude forfait F and a z.ai key Z:
+    One tier holding a Claude forfait F and a z.ai key Z (`tier` reads every
+    row as if that tier were the only one):
 
-    | `keys_first` | `facade_default` | F | anthropic wire's default | Z |
+    | `keys_first` | `facade_default` | F on ANY tier | anthropic wire's default | Z |
     |---|---|---|---|---|
     | false | auto | open | F | routes naming `zai` |
     | false | auto | closed | F, restored — the run parks on it | routes naming `zai` |
+    | false | auto | none on every tier | Z | default |
+    | false | tier | closed on THIS tier, none on it | Z — this tier's fall-through | default |
     | false | always | closed | Z | default |
     | false | never | any | F (restored when closed) | routes naming `zai` |
     | true | auto | open | F — Z is a facade | routes naming `zai` |

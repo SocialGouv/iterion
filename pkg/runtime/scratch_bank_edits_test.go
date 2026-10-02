@@ -281,7 +281,7 @@ func TestResume_theScratchRefusalNamesAnEditedSource(t *testing.T) {
 			x.on("measure", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 			x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 			eng := func(hash string) *Engine {
-				e := scratchEngine(s, x, d)
+				e := scratchEngine(t, s, x, d)
 				e.workflowHash = hash
 				return e
 			}
@@ -431,10 +431,10 @@ func TestResume_aPlainRestoreRecordDoesNotHoldTheResume(t *testing.T) {
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "floor.json"), []byte("v1"), 0o644)
 	})
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(base, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, base, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
-	e := scratchEngine(s, x, d)
+	e := scratchEngine(t, s, x, d)
 	e.recordRetryPause = time.Millisecond
 	e.recordWriteLimit = 100 * time.Millisecond
 	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
@@ -495,7 +495,7 @@ func scratchLossRun(t *testing.T, s store.RunStore, runID string) (resume func(s
 		*ran = true
 		return map[string]any{}, nil
 	})
-	launch := scratchEngine(s, x, d)
+	launch := scratchEngine(t, s, x, d)
 	launch.workflowHash = "sha256:launch"
 	if err := launch.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
@@ -504,7 +504,7 @@ func scratchLossRun(t *testing.T, s store.RunStore, runID string) (resume func(s
 		t.Fatalf("precondition: want the scratch banked, got %v", dataOf(b))
 	}
 	return func(sandboxed, force, accept bool) error {
-		e := scratchEngine(s, x, d)
+		e := scratchEngine(t, s, x, d)
 		if !sandboxed {
 			e = New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
 		}
@@ -586,13 +586,13 @@ func TestResume_theScratchsConsentIsSpentByItsResume(t *testing.T) {
 		reportRan = true
 		return map[string]any{}, nil
 	})
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	if err := store.AsScratchBankStore(s).DeleteScratchBank(ctx, runID); err != nil {
 		t.Fatal(err)
 	}
-	e := scratchEngine(s, x, d)
+	e := scratchEngine(t, s, x, d)
 	e.acceptScratchLoss = true
 	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err == nil || isScratchRefusal(err) {
 		t.Fatalf("the accepting resume: %v, want it past the gone bank and failed on report", err)

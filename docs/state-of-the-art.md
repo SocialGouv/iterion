@@ -224,5 +224,5 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 - **A discovery lands here.** When a session burns real time finding out how
   proven something actually is, the answer belongs in this table, not in the
   transcript. Operating knowledge goes to a runbook instead —
-  [agents/runbooks.md](agents/runbooks.md) is the index, and
+  [agents/ops/runbooks.md](agents/ops/runbooks.md) is the index, and
   [board-epics.md](board-epics.md) is the runbook for this board.

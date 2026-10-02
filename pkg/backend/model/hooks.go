@@ -17,6 +17,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -340,6 +342,9 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 		"message_count": info.MessageCount,
 		"tool_count":    info.ToolCount,
 	}
+	if info.WireModel != "" {
+		data["wire_model"] = info.WireModel
+	}
 	if info.ReasoningEffort != "" {
 		data["reasoning_effort"] = info.ReasoningEffort
 	}
@@ -399,6 +404,9 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	}
 	if step.ThinkingMs > 0 {
 		data["thinking_ms"] = step.ThinkingMs
+	}
+	if step.UsageUnreported {
+		data["usage_unreported"] = true
 	}
 
 	// Always include response text in persisted events. Thinking text is
@@ -981,6 +989,9 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.EffectiveModel != "" {
 		data["effective_model"] = info.EffectiveModel
 	}
+	if info.RouteModel != "" {
+		data["route_model"] = info.RouteModel
+	}
 	if info.ContextWindow > 0 {
 		data["context_window"] = info.ContextWindow
 	}
@@ -992,11 +1003,25 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	}
 }
 
+// sameServedModel reports whether a backend's effective model is the one
+// the node declared. Vendor ids compare as snapshot aliases
+// (delegate.SameModelID: "claude-opus-4-5" serves "anthropic/claude-opus-4-5"),
+// but a gateway id is opaque — "openai_compatible/team-a/m" and
+// "openai_compatible/team-b/m" are different models — so a gateway route on
+// either side compares exactly, by route or by wire id.
+func sameServedModel(declared, effective string) bool {
+	d, e := modelroute.Parse(declared), modelroute.Parse(effective)
+	if d.Gateway() || e.Gateway() {
+		return declared == effective || (d.Gateway() && !e.Gateway() && effective == d.Wire)
+	}
+	return delegate.SameModelID(declared, effective)
+}
+
 func (h *storeHooks) emitModelDrift(nodeID string, info DelegateInfo) {
 	if info.DeclaredModel == "" || info.EffectiveModel == "" {
 		return
 	}
-	if delegate.SameModelID(info.DeclaredModel, info.EffectiveModel) {
+	if sameServedModel(info.DeclaredModel, info.EffectiveModel) {
 		return
 	}
 	key := nodeID + "\x00" + info.DeclaredModel + "\x00" + info.EffectiveModel
@@ -1248,15 +1273,36 @@ func (h *storeHooks) onSessionDegraded(nodeID string, info SessionDegradedInfo) 
 }
 
 // onMCPServerDegraded implements the OnMCPServerDegraded hook: it turns a
-// dropped ambient MCP server into a first-class store event.
+// dropped MCP server into a first-class store event.
 //
-// Warn-level: the node is about to run, but without the tools of a
-// server the environment (repo .mcp.json / plugin catalog) put in its
-// reach — the only other trace is a process log line.
+// Warn-level: the node is about to run, but without the tools of one of
+// its active servers — the only other trace is a process log line.
 func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedInfo) {
 	data := map[string]any{
 		"server": info.Server,
 		"source": info.Source,
+	}
+	// Who controls the server's definition, and whether anything is actually
+	// broken — as fields, so a reader of the timeline can tell a repository's
+	// `.mcp.json` from the bot's own declaration, and a refusal from a boot
+	// failure, without parsing the error text.
+	// Always present. An empty Origin means the producer could not name one
+	// — which is itself the answer a reader needs ("nobody vouched for this
+	// server"), and dropping the key made the timeline silent on precisely
+	// the unclassified case.
+	if info.Origin != "" {
+		data["origin"] = info.Origin
+	} else {
+		data["origin"] = mcp.OriginUnknown.String()
+	}
+	if info.Refused {
+		data["refused"] = true
+	}
+	// A refused server that was ALSO broken: `refused` alone would read as
+	// "nothing to fix here", and the health problem only exists in the
+	// error text.
+	if info.Cause != nil {
+		data["cause"] = info.Cause.Error()
 	}
 	if info.Err != nil {
 		data["error"] = info.Err.Error()

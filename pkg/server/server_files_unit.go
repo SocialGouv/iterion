@@ -1146,32 +1146,12 @@ func citeStoredMainWorkflow(stored, probe *unit.Unit) {
 }
 
 // relUnitDiagnostics rewrites a disk-loaded unit's diagnostics to the
-// unit's relative names, the way the loader's own messages already cite a
-// file (relOf) — for every unit whose diagnostics cross to a client: a
-// refusal's 422 body IS the diagnostic, and an open, an apply or an
-// example's answer carries them in a 200, so either forwarded as is
-// discloses the server's directory layout (#1918, #1934). On disk the
-// loader parses every file under its ABSOLUTE path — an include resolves
-// beside it — and every name a diagnostic of such a unit can carry is
-// Join(Root, Rel): LoadDir, LoadDirWithMain and LoadDirStaged name no file
-// otherwise, and a files map names by Rel already (Root "") — so cutting
-// the root answers the position field and every message that cites a name
-// verbatim, and no Name→Rel table maps a string the cut does not. The one
-// diagnostic text that ever carried an absolute name from OUTSIDE the root
-// — the confinement refusal's resolved path — names the import as written
-// since #1918, loader-side. Only the per-request load handed to a client
-// is rewritten; a unit the server keeps — what an operator's logs hold of
-// it — keeps its absolute names.
+// unit's relative names, for every unit whose diagnostics cross to a
+// client (#1918, #1934). The semantics — and the cut the launch and
+// publish paths apply to the errors that ride no diagnostic (#1970) —
+// live in unit.RelDiagnostics, so every boundary cuts with the one rule.
 func relUnitDiagnostics(u *unit.Unit) {
-	if u.Root == "" {
-		return // a files map names every file by its rel already
-	}
-	rootPrefix := u.Root + string(os.PathSeparator)
-	for i, d := range u.Diagnostics {
-		d.File = filepath.ToSlash(strings.TrimPrefix(d.File, rootPrefix))
-		d.Message = strings.ReplaceAll(d.Message, rootPrefix, "")
-		u.Diagnostics[i] = d
-	}
+	u.RelDiagnostics()
 }
 
 // finishClaimed validates the probe of a claimed file list against the

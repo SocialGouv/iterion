@@ -232,66 +232,83 @@ func (s *dispatcherCaptureSink) Capture(_ string, _ string, snapshot []byte) {
 	_ = s.dispatcher.write(env)
 }
 
-// makeProxyToolDefs builds [delegate.ToolDef] entries whose Execute
-// closures forward each tool call through the dispatcher to the
-// launcher. The launcher's [delegate.MultiplexerHandler.OnToolCall]
-// invokes the original Execute closure (which lives on the launcher
-// side and may close over the MCP manager, the engine's tool
-// registry, etc.) and returns the result back across the wire.
-func makeProxyToolDefs(defs []delegate.IOToolDef, d *proxyDispatcher) []delegate.ToolDef {
-	if len(defs) == 0 {
-		return nil
+// registerSandboxLocalTools fills reg with every tool
+// [tool.SandboxPlacementOf] classifies [tool.PlacementSandbox] — the ones
+// that start a process, reach a filesystem or open a model-supplied URL, and
+// so must run against the CONTAINER's resources rather than the launcher's.
+//
+// workspace is the runner's cwd (docker exec lands at the bind-mount target).
+//
+// bashExtraEnv is nil here on purpose: a sandboxed task carries no env
+// additions (delegate.Task.ExtraEnv is host-only, and IOTask has no such
+// field) — bash sees the container's environment, settled at its creation.
+func registerSandboxLocalTools(reg *tool.Registry, workspace string) error {
+	if err := tool.RegisterClawBuiltinsWithEnv(reg, workspace, nil); err != nil {
+		return err
 	}
-	out := make([]delegate.ToolDef, len(defs))
-	for i, td := range defs {
-		name := td.Name
-		out[i] = delegate.ToolDef{
-			Name:        name,
-			Description: td.Description,
-			InputSchema: td.InputSchema,
-			Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
-				return d.callTool(ctx, name, input)
-			},
-		}
+	if err := tool.RegisterClawWorkspaceDiagnostics(reg, workspace, nil); err != nil {
+		return err
 	}
-	return out
+	if err := tool.RegisterClawSimple(reg); err != nil {
+		return err
+	}
+	if err := tool.RegisterClawSkill(reg, workspace); err != nil {
+		return err
+	}
+	// No subagent runner: claw's metadata-only agent tool. One wired here
+	// would run its child conversation against this container's tools.
+	if err := tool.RegisterClawSubagents(reg, nil); err != nil {
+		return err
+	}
+	return tool.RegisterClawReadImage(reg)
 }
 
-// makeHybridToolDefs is makeProxyToolDefs's sandbox-aware sibling: for
-// each tool the launcher advertised, prefer in-runner LOCAL execution
-// when the name matches a builtin we can register against the
-// container's filesystem, and fall back to the IPC proxy otherwise.
+// makeHybridToolDefs builds the runner's tool set, routing each tool the
+// launcher advertised by its [tool.SandboxPlacement]:
 //
-// Why a hybrid: V2-2's pure-IPC proxy was correct for MCP routing
-// (only the launcher has those servers wired) but wrong for filesystem
-// builtins — a sandboxed `bash`/`read_file`/`file_edit` invoked from
-// the runner used to round-trip back to the launcher and execute on
-// the launcher's host cwd, blowing past the sandbox isolation entirely.
-// The post-mortem trash-clone of an LLM-driven `git clone` writing the
-// iterion repo into the operator's working directory was the failure
-// mode that made this a hard requirement.
+//   - PlacementSandbox → executed here, in the container, from the local
+//     registry. It MUST resolve; a miss is an error, never a proxy.
+//   - PlacementLauncher → an IPC proxy: the launcher's
+//     [delegate.MultiplexerHandler.OnToolCall] runs its own closure (ask_user,
+//     MCP, the in-memory registries) and sends the result back.
+//   - PlacementRefused (including every unclassified name) → an error.
 //
-// Builtins are registered locally with workspace = the runner's cwd
-// (docker exec sets it to the bind-mount target). Tools the launcher
-// advertised but whose names don't match the local builtin set keep
-// the IPC proxy: ask_user, MCP-prefixed tools, and any custom engine-
-// registered tool that depends on launcher state. Errors registering
-// the local set fall through to the all-proxy behaviour with a
-// stderr warning so the runner stays functional even if claw-code-go
-// adds a builtin we can't bind in this build.
-func makeHybridToolDefs(defs []delegate.IOToolDef, d *proxyDispatcher, workspace string, stderr io.Writer) []delegate.ToolDef {
+// A tool handed back to the launcher executes with the launcher's process,
+// cwd and filesystem, so every failure here is fatal rather than a fallback to
+// the proxy. The boundary itself is held on the launcher side, which refuses
+// any tool that is not launcher-placed whatever this routing asks for.
+func makeHybridToolDefs(defs []delegate.IOToolDef, d *proxyDispatcher, workspace string) ([]delegate.ToolDef, error) {
+	return buildHybridToolDefs(defs, d, workspace, registerSandboxLocalTools)
+}
+
+// buildHybridToolDefs is makeHybridToolDefs with the local registration
+// injected, so a test can drive the registration-failure and
+// missing-local-tool branches without a container.
+func buildHybridToolDefs(
+	defs []delegate.IOToolDef,
+	d *proxyDispatcher,
+	workspace string,
+	register func(*tool.Registry, string) error,
+) ([]delegate.ToolDef, error) {
 	if len(defs) == 0 {
-		return nil
+		return nil, nil
 	}
 	localReg := tool.NewRegistry()
-	if err := tool.RegisterClawBuiltins(localReg, workspace); err != nil {
-		fmt.Fprintf(stderr, "iterion-claw-runner: warn: register local builtins (workspace=%q): %v — falling back to all-proxy\n", workspace, err)
-		return makeProxyToolDefs(defs, d)
+	if err := register(localReg, workspace); err != nil {
+		return nil, fmt.Errorf("register the in-container tool set (workspace=%q): %w", workspace, err)
 	}
 	out := make([]delegate.ToolDef, len(defs))
 	for i, td := range defs {
 		name := td.Name
-		if local, err := localReg.Resolve(name); err == nil && local != nil && local.Origin.Kind == tool.OriginBuiltin {
+		placement, reason := tool.SandboxPlacementOf(name)
+		switch placement {
+		case tool.PlacementSandbox:
+			local, err := localReg.Resolve(name)
+			if err != nil || local == nil || local.Origin.Kind != tool.OriginBuiltin {
+				return nil, fmt.Errorf(
+					"tool %q must execute inside the sandbox (%s) but the runner has no local registration for it — "+
+						"proxying it would run it on the launcher's host", name, reason)
+			}
 			localExec := local.Execute
 			out[i] = delegate.ToolDef{
 				Name:        name,
@@ -301,16 +318,20 @@ func makeHybridToolDefs(defs []delegate.IOToolDef, d *proxyDispatcher, workspace
 					return localExec(ctx, input)
 				},
 			}
-			continue
-		}
-		out[i] = delegate.ToolDef{
-			Name:        name,
-			Description: td.Description,
-			InputSchema: td.InputSchema,
-			Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
-				return d.callTool(ctx, name, input)
-			},
+		case tool.PlacementLauncher:
+			out[i] = delegate.ToolDef{
+				Name:        name,
+				Description: td.Description,
+				InputSchema: td.InputSchema,
+				Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+					return d.callTool(ctx, name, input)
+				},
+			}
+		default:
+			return nil, fmt.Errorf(
+				"tool %q cannot be executed by a sandboxed runner (%s) — "+
+					"drop it, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)", name, reason)
 		}
 	}
-	return out
+	return out, nil
 }

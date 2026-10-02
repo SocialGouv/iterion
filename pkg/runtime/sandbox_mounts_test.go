@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/memory"
@@ -291,6 +293,172 @@ func TestApplyHostStateMounts_ReportsTheSharedStateDir(t *testing.T) {
 			t.Errorf("shared state dir = %q, want none — the workspace bind already covers it", got)
 		}
 	})
+}
+
+// The iterion home is bind-mounted read-write only when it is the one the
+// operator chose. A home a project `.env` planted would let a repository pick
+// a host directory the sandboxed agent can write — ~/.ssh, say — so it is not
+// mounted, not reported as shared state, and the audit event names it.
+func TestApplyHostStateMounts_MountsOnlyTheIterionHomeTheOperatorChose(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	planted := t.TempDir()
+	t.Setenv("ITERION_HOME", planted)
+	envtrust.MarkPlanted("ITERION_HOME")
+
+	var event map[string]any
+	emit := func(et store.EventType, data map[string]any) error {
+		if et == store.EventSandboxHostStateMounted {
+			event = data
+		}
+		return nil
+	}
+	spec := &sandbox.Spec{}
+	got := applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, emit, iterlog.Nop())
+	if got != "" {
+		t.Errorf("shared state dir = %q; a planted iterion home must not be mounted", got)
+	}
+	for _, m := range spec.Mounts {
+		if strings.Contains(m, "source="+planted+",") {
+			t.Fatalf("the planted iterion home %s was bind-mounted into the sandbox: %s", planted, m)
+		}
+	}
+	if event["iterion_home_not_mounted"] != planted {
+		t.Errorf("audit event iterion_home_not_mounted = %v, want %s", event["iterion_home_not_mounted"], planted)
+	}
+}
+
+// With no home dir, the iterion home the writers use is no home the operator
+// chose — the shared <tmp> fallback, or under go test the process's own — so
+// it is not mounted either. The directory exists, so only the guard keeps it
+// out.
+func TestApplyHostStateMounts_NoOperatorHomeIsNotMounted(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	t.Setenv("ITERION_HOME", "")
+	t.Setenv(store.HomeEnvName(), "")
+	writers := store.GlobalIterionDataDir()
+	if err := os.MkdirAll(writers, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var event map[string]any
+	emit := func(et store.EventType, data map[string]any) error {
+		if et == store.EventSandboxHostStateMounted {
+			event = data
+		}
+		return nil
+	}
+	spec := &sandbox.Spec{}
+	if got := applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, emit, iterlog.Nop()); got != "" {
+		t.Errorf("shared state dir = %q; with no home dir no iterion home is the operator's", got)
+	}
+	for _, m := range spec.Mounts {
+		if strings.Contains(m, "source="+writers+",") {
+			t.Fatalf("the writers' home %s was bind-mounted though the operator chose none: %s", writers, m)
+		}
+	}
+	if event["iterion_home_not_mounted"] != writers {
+		t.Errorf("audit event iterion_home_not_mounted = %v, want %s", event["iterion_home_not_mounted"], writers)
+	}
+}
+
+// A home dir a project `.env` set is not the operator's: nothing under it —
+// ~/.claude, ~/.claude.json, ~/.codex, ~/.gitconfig, the warm caches — is
+// bound into the sandbox, the container's HOME is not taken from it, and the
+// audit event names it.
+func TestApplyHostStateMounts_APlantedHomeDirBindsNothingUnderIt(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	home := t.TempDir()
+	for _, dir := range []string{".claude", ".codex", filepath.Join(".cache", "go-build")} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range []string{".claude.json", ".gitconfig"} {
+		if err := os.WriteFile(filepath.Join(home, file), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(store.HomeEnvName(), home)
+	envtrust.MarkPlanted(store.HomeEnvName())
+
+	var event map[string]any
+	emit := func(et store.EventType, data map[string]any) error {
+		if et == store.EventSandboxHostStateMounted {
+			event = data
+		}
+		return nil
+	}
+	spec := &sandbox.Spec{}
+	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, emit, iterlog.Nop())
+	for _, m := range spec.Mounts {
+		if strings.Contains(m, "source="+home+string(filepath.Separator)) {
+			t.Fatalf("bound from the planted home dir %s: %s", home, m)
+		}
+	}
+	if spec.Env["HOME"] == home {
+		t.Errorf("the container's HOME is the planted %s", home)
+	}
+	if event["home_not_mounted"] != home {
+		t.Errorf("audit event home_not_mounted = %v, want %s", event["home_not_mounted"], home)
+	}
+}
+
+// The scratch dir lives under the iterion home, so it is bound only when that
+// home is the one the operator chose: under a home a project `.env` planted —
+// through ITERION_HOME or HOME — or with no home at all, the bind source would
+// be the repository's choice, a committed symlink included. The scratch stays
+// container-local, and the event says why: never a silent degrade.
+func TestApplyScratchMount_SkippedUnderAHomeTheOperatorDidNotChoose(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T)
+	}{
+		{"a planted ITERION_HOME", func(t *testing.T) {
+			t.Setenv("ITERION_HOME", t.TempDir())
+			envtrust.MarkPlanted("ITERION_HOME")
+		}},
+		{"a planted home dir and no ITERION_HOME", func(t *testing.T) {
+			t.Setenv("ITERION_HOME", "")
+			t.Setenv(store.HomeEnvName(), t.TempDir())
+			envtrust.MarkPlanted(store.HomeEnvName())
+		}},
+		{"no home at all", func(t *testing.T) {
+			t.Setenv("ITERION_HOME", "")
+			t.Setenv(store.HomeEnvName(), "")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envtrust.ResetForTest()
+			t.Cleanup(envtrust.ResetForTest)
+			t.Setenv(envtrust.EnvPlantedNames, "")
+			tc.setup(t)
+
+			var events []map[string]any
+			emit := func(et store.EventType, data map[string]any) error {
+				if et == store.EventSandboxHostStateMounted {
+					events = append(events, data)
+				}
+				return nil
+			}
+			spec := activeScratchSpec()
+			if got := applyScratchMount(spec, t.TempDir(), t.TempDir(), true, emit, iterlog.Nop()); got != "" {
+				t.Errorf("scratch host dir = %q; want none", got)
+			}
+			if src, ok := scratchMountTarget(spec.Mounts); ok {
+				t.Fatalf("the scratch was bound from %s", src)
+			}
+			if len(events) != 1 || events[0]["enabled"] != false || events[0]["source"] != "scratch" ||
+				!strings.Contains(fmt.Sprint(events[0]["reason"]), "not the one the operator chose") {
+				t.Errorf("events = %v; want one scratch skip naming why", events)
+			}
+		})
+	}
 }
 
 // scratchMountTarget returns the host source bound onto the sandbox

@@ -65,7 +65,7 @@ func TestSwapWorkDir_LeavesOnePeriodicWorkerPerKind(t *testing.T) {
 	if srv.runs == nil {
 		t.Fatal("no run service was wired — the test would assert on nothing")
 	}
-	t.Cleanup(func() { srv.runs.Stop(context.Background()) })
+	shutdownOnCleanup(t, srv)
 
 	for i := 1; i <= 4; i++ {
 		next := filepath.Join(dir, "p"+string(rune('0'+i)))

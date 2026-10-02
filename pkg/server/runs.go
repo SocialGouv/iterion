@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -118,19 +117,25 @@ func (s *Server) registerRunRoutes() {
 }
 
 // resolveCrossStore inspects the `?store=` query parameter and, when
-// it's a permitted iterion store path under $HOME/.iterion/, returns a
-// fresh read-only RunStore rooted there. Used by the read-only run
+// it's a permitted iterion store path under the iterion home the operator
+// chose (store.InheritedIterionHome: the $ITERION_HOME they exported, else
+// ~/.iterion — never one a project `.env` planted), returns a fresh
+// read-only RunStore rooted there. Used by the read-only run
 // endpoints so the desktop banner can deep-link into a run living in a
-// different store (typically the global ~/.iterion/runs/ slot, or a
+// different store (typically the iterion home's own runs/ slot, or a
 // per-project store not currently attached) without spawning a
 // dedicated daemon.
 //
 // Returns (nil, "", nil) when ?store= is absent → callers fall through
 // to the daemon's primary s.runs Service.
 //
-// Security: the path MUST resolve under $HOME/.iterion/ after symlink
-// resolution; anything else is rejected with a clear error so a
-// malicious ?store=/etc/.. can't read arbitrary host paths.
+// Security: after symlink resolution the path MUST be the iterion home
+// itself or one of its projects/<key> — the stores the global view lists;
+// anything else is rejected with a clear error, so neither a
+// ?store=/etc/.. nor a run worktree or merge clone under the home (whose
+// content a repository wrote) is read. No resolvable
+// home is a refusal, never the shared temp fallback GlobalIterionDataDir
+// writes to.
 func (s *Server) resolveCrossStore(r *http.Request) (store.RunStore, string, error) {
 	raw := r.URL.Query().Get("store")
 	if raw == "" {
@@ -143,9 +148,9 @@ func (s *Server) resolveCrossStore(r *http.Request) (store.RunStore, string, err
 	if s.cfg.Mode == "cloud" {
 		return nil, "", fmt.Errorf("cross-store: not available on a cloud instance")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil, "", fmt.Errorf("cross-store: $HOME not resolvable")
+	iterionHome, err := store.InheritedIterionHome()
+	if err != nil {
+		return nil, "", fmt.Errorf("cross-store: %w", err)
 	}
 	abs, err := filepath.Abs(raw)
 	if err != nil {
@@ -156,12 +161,19 @@ func (s *Server) resolveCrossStore(r *http.Request) (store.RunStore, string, err
 	if err != nil {
 		return nil, "", fmt.Errorf("cross-store: resolve %s: %w", abs, err)
 	}
-	allowedRoot, err := filepath.EvalSymlinks(filepath.Join(home, ".iterion"))
+	allowedRoot, err := filepath.EvalSymlinks(iterionHome)
 	if err != nil {
 		return nil, "", fmt.Errorf("cross-store: resolve allowed root: %w", err)
 	}
 	if resolved != allowedRoot && !strings.HasPrefix(resolved, allowedRoot+string(filepath.Separator)) {
-		return nil, "", fmt.Errorf("cross-store: %q is outside $HOME/.iterion/ — refused", raw)
+		return nil, "", fmt.Errorf("cross-store: %q is outside the iterion home %s — refused", raw, iterionHome)
+	}
+	// Only the stores the global view lists: the home's own slot, or one of
+	// its projects/<key>. Anything else under the home — a run worktree, a
+	// merge clone, a scratch dir — holds repository content: a committed
+	// run.json, or a symlink, the store's reads would follow out of the home.
+	if resolved != allowedRoot && filepath.Dir(resolved) != filepath.Join(allowedRoot, "projects") {
+		return nil, "", fmt.Errorf("cross-store: %q is not a store of the iterion home (the home itself or one of its projects/<key>) — refused", raw)
 	}
 	rs, err := store.New(resolved)
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 	// log timestamps and time.Local then honour the operator's timezone.
 	_ "time/tzdata"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -251,6 +252,15 @@ func applyDotEnv(path string) bool {
 		if key == "" {
 			continue
 		}
+		// A key no shell could export is refused, not set. One carrying the
+		// planted-names separator would reach a child as two names, the extra
+		// one denying the OPERATOR's own environment its authority there; one
+		// outside ASCII is folded by Windows in ways envtrust.CanonicalName
+		// cannot mirror, so it could be recorded as planted under the name of
+		// a variable it never set. Such a line is malformed anyway.
+		if !envtrust.Exportable(key) {
+			continue
+		}
 		val := strings.TrimSpace(line[eq+1:])
 		// Strip a single surrounding pair of matching quotes.
 		if len(val) >= 2 {
@@ -259,8 +269,24 @@ func applyDotEnv(path string) bool {
 				val = val[1 : len(val)-1]
 			}
 		}
+		// The provenance record is not a value a repository gets to write.
+		// Without this, one `.env` line naming ITERION_DOTENV_PLANTED seeded
+		// the whole planted set from the file itself — marking the
+		// OPERATOR's own variables as planted, and stripping every plugin
+		// they installed of its authority. A marker can then only ever be
+		// what an ancestor process exported — in any case on Windows, where
+		// the variable is the same one whatever the case of its name.
+		if envtrust.CanonicalName(key) == envtrust.EnvPlantedNames {
+			continue
+		}
 		if _, exists := os.LookupEnv(key); !exists {
 			_ = os.Setenv(key, val)
+			// A `.env` sits in a repository — including one under review — so
+			// what it plants must not later speak for the operator. The value
+			// is used exactly as before; only questions of AUTHORITY consult
+			// this (see internal/envtrust), and the record travels to child
+			// processes so a fork cannot launder it.
+			envtrust.MarkPlanted(key)
 		}
 	}
 	return true

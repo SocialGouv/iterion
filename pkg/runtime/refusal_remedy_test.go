@@ -111,7 +111,7 @@ func TestResume_aLossOnlyTheRestoreFindsNamesItsConsentOnTheRun(t *testing.T) {
 				}
 				return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
 			})
-			if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+			if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 				t.Fatalf("Run: want ErrRunPaused, got %v", err)
 			}
 			e := New(scratchWorkflow(), s, x, WithLogger(iterlog.Nop()), WithSandboxOverride("none"))

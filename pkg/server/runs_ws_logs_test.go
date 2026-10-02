@@ -227,16 +227,13 @@ func TestRunsWSLogs_ActiveExternalRunStreamsLive(t *testing.T) {
 	}
 }
 
-// newCrossStore provisions a foreign store under a fake $HOME/.iterion
-// (the only root resolveCrossStore accepts) and returns it with its path.
+// newCrossStore provisions a foreign store as the iterion home
+// (ITERION_HOME, the only root resolveCrossStore accepts) and returns it
+// with its path.
 func newCrossStore(t *testing.T) (*store.FilesystemRunStore, string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".iterion")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir foreign store: %v", err)
-	}
+	dir := t.TempDir()
+	t.Setenv("ITERION_HOME", dir)
 	st, err := store.New(dir)
 	if err != nil {
 		t.Fatalf("open foreign store: %v", err)

@@ -29,7 +29,7 @@ dsl: 2
 vars:
   ## ${PROJECT_DIR} resolves to the run worktree under worktree: auto
   ## (do NOT override with a literal repo root — that aims agents at
-  ## the main checkout; see CLAUDE.md dogfood note).
+  ## the main checkout; see docs/agents dogfood).
   workspace_dir: string = "${PROJECT_DIR}"
   ## The feature / change request. Required — no default.
   brief: string

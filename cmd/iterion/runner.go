@@ -229,6 +229,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](
 		platformcfg.NewMongoBotVars(st.DB()), logger.Warn)
 	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
+	// Workflow text never reads a credential-shaped name from this process's
+	// environment: it holds the platform's credentials, not the tenant's.
+	ir.SetProcessEnvPolicy(platformcfg.CloudProcessEnvPolicy())
 	// The schema is ensured unconditionally: a cap disabled in env can be
 	// armed at runtime through the settings record, and the readings
 	// ledger must exist by then.
@@ -334,6 +337,12 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch superseded while bootstrapping — staying live but non-ready; no queue consumer started")
 		<-rootCtx.Done()
 		return nil
+	}
+
+	// Every boot reader of the deployment's own credentials is done: none of
+	// them stays in the environment the runs and their children see.
+	if err := iterconfig.ScrubPlatformSecrets(); err != nil {
+		return fmt.Errorf("runner: %w", err)
 	}
 
 	// SIGTERM handling: stop fetching, then drain per DrainMode — lame-duck

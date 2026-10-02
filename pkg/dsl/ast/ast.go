@@ -640,6 +640,7 @@ type LLMDecl struct {
 	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory        string           // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	AmbientContext    string           // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Allow             []string         // node-level permission allow rules; a non-empty list REPLACES the workflow's allow: (empty = inherit)
 	Ask               []string         // node-level permission ask rules; a non-empty list REPLACES the workflow's ask: (empty = inherit)
@@ -978,6 +979,7 @@ type WorkflowDecl struct {
 	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
 	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
 	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	AmbientContext string            // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset → ITERION_AMBIENT_CONTEXT → workspace)
 	// LoopBudgetGuard switches the back-edge affordability guard: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string

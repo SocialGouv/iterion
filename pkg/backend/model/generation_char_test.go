@@ -213,7 +213,7 @@ func TestGenerateTextDirect_ToolUseBlocksWithNonToolUseStopReason(t *testing.T) 
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "noop"}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{}`}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(events)
@@ -250,7 +250,7 @@ func TestGenerateTextDirect_ToolUseStopReasonWithoutBlocks(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "hmm"}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(events)
@@ -333,7 +333,7 @@ func TestGenerateTextDirect_TurnCaptureSnapshots(t *testing.T) {
 func TestGenerateTextDirect_TurnCaptureFinalStepEmptyText(t *testing.T) {
 	events := []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 5},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 1}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 1}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(events)
@@ -549,7 +549,7 @@ func TestGenerateTextDirect_UsageAccumulationAcrossSteps(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "noop"}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{}`}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 30}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 30}},
 		{Type: api.EventMessageStop},
 	}
 	step2 := []api.StreamEvent{
@@ -557,7 +557,7 @@ func TestGenerateTextDirect_UsageAccumulationAcrossSteps(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "done"}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 20}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 20}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(step1, step2)
@@ -601,7 +601,7 @@ func TestGenerateTextDirect_EmptyToolInputQuirks(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "noop"}},
 		// No input_json_delta at all → PartialJSON stays "".
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(events, textEvents("recovered", 10, 5))

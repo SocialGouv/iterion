@@ -105,21 +105,25 @@ func TestTheDocumentedConsequencesOfAnEmptyToolListAreTrue(t *testing.T) {
 		t.Errorf("claude_code disallows %d names, the docs say fourteen: %v", len(disallowed), disallowed)
 	}
 
-	// "Agent, TaskOutput and Monitor survive it, and so does every MCP tool"
-	// — the claim the whole `tools: []` narrative rests on, and the reason
-	// the parallel-branch scheduler does NOT read such a node as read-only.
+	// "Agent, TaskOutput and Monitor are not on the roster, and neither is any
+	// MCP tool" — the claim the whole `tools: []` narrative rests on, and the
+	// reason the parallel-branch scheduler does NOT read such a node as
+	// read-only: what survives is decided by the CLI, not by this list.
 	for _, survivor := range []string{"Agent", "TaskOutput", "Monitor", "mcp__srv__anything"} {
 		if slices.Contains(disallowed, survivor) {
-			t.Errorf("%q is disallowed — the docs say it survives `tools: []`, and the scheduler's pessimism is justified by that", survivor)
+			t.Errorf("%q is disallowed — the docs say the roster does not name it, and the scheduler's pessimism is justified by that", survivor)
 		}
 	}
 
-	// "Workflow is withheld separately, from every NON-ultracode node
-	// whatever its list; an ultracode node with `tools: []` keeps it." The
-	// roster is the wrong place to look for it, which is exactly what the
-	// first two attempts at this sentence got wrong.
+	// "Workflow is withheld separately, from every spawn whatever its list,
+	// ultracode included." The roster is the wrong place to look for it,
+	// which is exactly what the first two attempts at this sentence got wrong.
 	if slices.Contains(disallowed, "Workflow") {
-		t.Error("Workflow is on the native disallow list — the docs say it is withheld by a separate, ultracode-keyed rule")
+		t.Error("Workflow is on the native disallow list — the docs say it is withheld by a separate rule")
+	}
+	ultraEmpty := Task{AllowedTools: []string{}, ToolsDeclared: true, Ultracode: true}
+	if !slices.Contains(claudeSpawnBoundWithheld(ultraEmpty), "Workflow") {
+		t.Error("an ultracode node with `tools: []` keeps Workflow — the docs say every spawn withholds it")
 	}
 
 	// "codex drops to the read-only sandbox"

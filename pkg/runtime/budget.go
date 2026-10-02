@@ -67,6 +67,11 @@ type SharedBudget struct {
 	// out loud that it is only seeing part of the run.
 	unpricedTokens int
 	unpricedNodes  int
+
+	// unreportedCalls counts the LLM calls whose usage the provider did not
+	// report in full. Their tokens and cost reached the counters above as a
+	// lower bound at most, so neither ceiling sees all of them.
+	unreportedCalls int
 }
 
 const (
@@ -87,14 +92,15 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		// run/env (e.g. a longer max_duration for remediation on a large
 		// repo) without editing the .bot — the budget block, unlike the
 		// effort/model fields, was not previously env-resolved.
-		parsed, err := time.ParseDuration(ir.ExpandEnvWithDefault(b.MaxDuration))
+		expanded := ir.ExpandEnvWithDefault(b.MaxDuration)
+		parsed, err := time.ParseDuration(expanded)
 		if err == nil {
 			maxDur = parsed
 		} else if logger != nil {
 			// An unparseable max_duration must not silently ship a run
 			// with NO time budget — a "2h3Om" typo would otherwise
 			// disable the cap without a trace.
-			logger.Warn("budget: max_duration %q does not parse (%v) — the duration cap is NOT ENFORCED for this run", b.MaxDuration, err)
+			logger.Warn("budget: max_duration %q does not parse (%s) — the duration cap is NOT ENFORCED for this run", b.MaxDuration, ir.DurationParseReason(b.MaxDuration, expanded, err))
 		}
 	}
 
@@ -167,11 +173,13 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 		// is still invisible to it — otherwise the operator re-budgets on a
 		// figure they were told once, long ago, was partial.
 		delete(b.warningsEmitted, "cost_usd_unpriced")
+		delete(b.warningsEmitted, "usage_unreported")
 		raised = true
 	}
 	if b.maxTokens > 0 && o.MaxTokens > b.maxTokens {
 		b.maxTokens = o.MaxTokens
 		delete(b.warningsEmitted, "tokens")
+		delete(b.warningsEmitted, "usage_unreported")
 		raised = true
 	}
 	if b.maxIterations > 0 && o.MaxIterations > b.maxIterations {
@@ -248,13 +256,13 @@ func (b *SharedBudget) capsLocked() ir.BudgetOverrides {
 // they can be persisted in a checkpoint and restored on resume. Safe on a nil
 // budget (returns zeros). elapsed is the run's age by the budget's clock at
 // call time.
-func (b *SharedBudget) Snapshot() (tokens int, cost float64, iterations int, elapsed time.Duration, unpricedTokens, unpricedNodes int) {
+func (b *SharedBudget) Snapshot() (tokens int, cost float64, iterations int, elapsed time.Duration, unpricedTokens, unpricedNodes, unreportedCalls int) {
 	if b == nil {
-		return 0, 0, 0, 0, 0, 0
+		return 0, 0, 0, 0, 0, 0, 0
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.tokensUsed, b.costUsed, b.iterationsUsed, b.elapsed(), b.unpricedTokens, b.unpricedNodes
+	return b.tokensUsed, b.costUsed, b.iterationsUsed, b.elapsed(), b.unpricedTokens, b.unpricedNodes, b.unreportedCalls
 }
 
 // Restore seeds a freshly-built budget with consumption carried over from a
@@ -262,7 +270,7 @@ func (b *SharedBudget) Snapshot() (tokens int, cost float64, iterations int, ela
 // with a full allowance. elapsed shifts startedAt back so the duration budget
 // counts prior active time (the pause gap itself is excluded). Safe on a nil
 // budget (no-op). Called once, before the resumed run executes any node.
-func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed time.Duration, unpricedTokens, unpricedNodes int) {
+func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed time.Duration, unpricedTokens, unpricedNodes, unreportedCalls int) {
 	if b == nil {
 		return
 	}
@@ -276,6 +284,7 @@ func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed
 	// nodes that ran after the pause.
 	b.unpricedTokens = unpricedTokens
 	b.unpricedNodes = unpricedNodes
+	b.unreportedCalls = unreportedCalls
 	if elapsed > 0 {
 		b.startedAt = b.clockNow().Add(-elapsed)
 	}
@@ -335,10 +344,12 @@ func (b *SharedBudget) takeExceeded() *budgetCheckResult {
 	return exc
 }
 
-func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckResult {
+func (b *SharedBudget) RecordUsage(spend nodeSpend) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	tokens, costUSD := spend.tokens, spend.costUSD
+	b.unreportedCalls += spend.unreportedCalls
 	b.iterationsUsed++
 	b.tokensUsed += tokens
 	if costUSD > 0 {
@@ -355,6 +366,9 @@ func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckRes
 	if w, ok := b.unpricedWarningLocked(); ok {
 		checks = append(checks, w)
 	}
+	if w, ok := b.unreportedWarningLocked(); ok {
+		checks = append(checks, w)
+	}
 
 	// Log a warning when soft enforcement allows significant overage.
 	for _, c := range checks {
@@ -368,6 +382,24 @@ func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckRes
 	}
 
 	return checks
+}
+
+// noteUnreported counts n calls whose usage went unreported and books
+// nothing else — no tokens, no cost, no iteration. It serves the exits that
+// carry no spend of their own: an attempt the engine retries in place, and a
+// failed node whose only spend is that count. Returns the advisory warning
+// when this note is the one that raises it.
+func (b *SharedBudget) noteUnreported(n int) []budgetCheckResult {
+	if b == nil || n <= 0 {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.unreportedCalls += n
+	if w, ok := b.unreportedWarningLocked(); ok {
+		return []budgetCheckResult{w}
+	}
+	return nil
 }
 
 // Check checks current budget status without recording usage.
@@ -649,6 +681,26 @@ func (b *SharedBudget) unpricedWarningLocked() (budgetCheckResult, bool) {
 	}, true
 }
 
+// unreportedWarningLocked reports, once per ceiling, that a declared tokens
+// or cost ceiling cannot see all of the run's spend: some LLM calls ended
+// without the provider reporting their usage, so what they consumed reached
+// the counters as a lower bound at most. Advisory, raised from RecordUsage
+// and noteUnreported, and worded as a floor — for the reasons
+// unpricedWarningLocked gives.
+func (b *SharedBudget) unreportedWarningLocked() (budgetCheckResult, bool) {
+	if (b.maxTokens <= 0 && b.maxCostUSD <= 0) || b.unreportedCalls == 0 || b.warningsEmitted["usage_unreported"] {
+		return budgetCheckResult{}, false
+	}
+	b.warningsEmitted["usage_unreported"] = true
+	return budgetCheckResult{
+		warning: true, advisory: true, dimension: "usage_unreported",
+		detail: fmt.Sprintf(
+			"the budget is only counting part of this run: as of this node, %d LLM call(s) ended without the provider reporting their usage, so what they consumed is at most a lower bound and partly invisible to max_tokens and max_cost_usd. Raised once per ceiling — the count keeps growing after this.",
+			b.unreportedCalls,
+		),
+	}, true
+}
+
 // findBudgetCheck returns the first result matching pick, or nil.
 func findBudgetCheck(results []budgetCheckResult, pick func(*budgetCheckResult) bool) *budgetCheckResult {
 	for i := range results {
@@ -804,11 +856,14 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 // nothing does not. That asymmetry is deliberate: the guard below is what
 // keeps a spendless tool failure from writing a phantom zero row, and an
 // attempt that burned a session did do the work the iterations axis counts.
+// A failure whose only spend is a count of unreported calls is noted, not
+// booked: it moved no counter an iteration could stand for.
 // It cannot end a run on its own — the deferring variant only NOTES an
 // overrun, and the note is taken at a success boundary no failure exit
 // reaches.
 func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[string]any) {
-	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
+	spend := extractSpend(output)
+	if spend.empty() {
 		return
 	}
 	// DEFERRING variant, and that is the whole contract: the immediate one
@@ -833,8 +888,24 @@ func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[s
 	// handleContextDoneWithCheckpoint uses for its own last writes.
 	ctx, cancel := detachedBookingCtx(rs.ctx)
 	defer cancel()
+	if spend.onlyUnreported() {
+		e.noteUnreportedCalls(ctx, rs, nodeID, spend.unreportedCalls)
+		return
+	}
 	if err := e.recordBudgetOn(ctx, rs, nodeID, output, true); err != nil {
 		e.logger.Debug("budget: booking node %q's spend after its failure: %v", nodeID, err)
+	}
+}
+
+// noteUnreportedCalls adds n unreported calls to the run budget and emits the
+// advisory warning when the note raises it. No ledger write: the count
+// carries no cost.
+func (e *Engine) noteUnreportedCalls(ctx context.Context, rs *runState, nodeID string, n int) {
+	if rs.budget == nil {
+		return
+	}
+	for _, w := range rs.budget.noteUnreported(n) {
+		_ = e.emit(ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
 	}
 }
 
@@ -867,7 +938,8 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 // land the ledger entry (see recordFailedNodeSpend). Everything else — the
 // in-memory totals, the exceeded decision — is context-free.
 func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
-	tokens, costUSD := extractUsage(output)
+	spend := extractSpend(output)
+	costUSD := spend.costUSD
 
 	// Daily spend cap accounting (independent of the per-run budget so it
 	// works for workflows with no budget: block). We only record — the
@@ -884,7 +956,7 @@ func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string
 		return nil
 	}
 
-	checks := rs.budget.RecordUsage(tokens, costUSD)
+	checks := rs.budget.RecordUsage(spend)
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {

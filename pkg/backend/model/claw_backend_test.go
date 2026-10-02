@@ -42,7 +42,7 @@ func TestClawBackend_StructuredOutput(t *testing.T) {
 		ch <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: "tool_use",
-			Usage:      api.UsageDelta{OutputTokens: 25},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 25},
 		}
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
 	}()
@@ -647,7 +647,7 @@ func (c *requestCapturingClient) StreamResponse(_ context.Context, req api.Creat
 	ch <- api.StreamEvent{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}}
 	ch <- api.StreamEvent{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "ok"}}
 	ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
-	ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 5}}
+	ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}}
 	ch <- api.StreamEvent{Type: api.EventMessageStop}
 	close(ch)
 	return ch, nil
@@ -947,7 +947,7 @@ func TestClawBackend_MultiPauseAccumulatesHistory(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_q1", Name: "ask_user"}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"question":"Which env? Q1"}`}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}},
 		{Type: api.EventMessageStop},
 	}
 	// Second call (after resume with A1): model issues tool_use(ask_user, Q2).
@@ -956,7 +956,7 @@ func TestClawBackend_MultiPauseAccumulatesHistory(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_q2", Name: "ask_user"}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"question":"Which region? Q2"}`}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}},
 		{Type: api.EventMessageStop},
 	}
 

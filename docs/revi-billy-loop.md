@@ -6,8 +6,8 @@
 > build+test (~10 min a pass), drawn from the shared forfait / platform
 > credential — too expensive until the team spends its own BYOK key. Findings
 > are the developer's to fix, through the local loop:
-> [agents/review-and-merge.md](agents/review-and-merge.md) +
-> [agents/adversarial-review-loop.md](agents/adversarial-review-loop.md).
+> [agents/workflow/review-and-merge.md](agents/workflow/review-and-merge.md) +
+> [agents/workflow/adversarial-review-loop.md](agents/workflow/adversarial-review-loop.md).
 >
 > **This file stays current and worth reading** — for a pass someone chooses
 > to pay for (`/billy` still answers), and for re-arming the lane. Where it
@@ -53,7 +53,7 @@ a red gate launches the fixer by itself,
 2026-08-28 and is **off since 2026-09-15**: it was spending a full campaign on
 the shared credential with nobody typing a command. Re-arming it, and the
 `repo-bots` PATCH that does it, is in
-[agents/review-and-merge.md](agents/review-and-merge.md#billy-is-paused). One
+[agents/workflow/billy.md#billy-is-paused](agents/workflow/billy.md#billy-is-paused). One
 gotcha when flipping the flag either way: the `repo-bots` PATCH requires the
 FULL `bot_ids` list in the payload (omitting it is a 400, not "keep as is"),
 and an omitted `auto_fix_on_gate_failure` means "leave the current choice

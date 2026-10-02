@@ -94,12 +94,15 @@ func (s *Server) forgeBotInvocations(ctx context.Context, teamID, botID string) 
 // hop re-enters the guarded dialer, unlike the preview proxy which must not.
 //
 // Built once (outboundStrict() is startup-fixed) so its transport's connection
-// pool is reused across forge operations.
+// pool is reused across forge operations. Every request it sends is counted
+// (forgeRequestTally): the forge bills requests, and every call made with a
+// forge connection's credential leaves through this client.
 func (s *Server) forgeHTTPClient() *http.Client {
 	s.forgeHTTPOnce.Do(func() {
+		s.forgeRequests = newForgeRequestTally(time.Now, s.infof)
 		s.forgeHTTP = &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: httpdial.SafeTransport(s.outboundStrict()),
+			Transport: countingTransport{base: httpdial.SafeTransport(s.outboundStrict()), tally: s.forgeRequests},
 		}
 	})
 	return s.forgeHTTP

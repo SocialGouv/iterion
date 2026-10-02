@@ -1,6 +1,7 @@
 package model
 
 import (
+	"slices"
 	"sort"
 	"testing"
 
@@ -387,5 +388,84 @@ func TestEffectiveProviders_TemplatedHintFailsOpen(t *testing.T) {
 	}
 	if !slicesEqual(got.Unknown, []string{"{{vars.p}}"}) {
 		t.Fatalf("the templated hint must be recorded as unknown, got %+v", got)
+	}
+}
+
+// OnlyEnvFunded is #2038's predicate: true when every LLM route of the run
+// resolved to the openai_compatible gateway — the runner's environment funds
+// it — and false the moment one route names a bundle-funded provider, or one
+// route cannot resolve. An env-dependent hint counts as unresolved, never as
+// env-funded: ${ROUTE} may resolve to the gateway here and to Anthropic on
+// the runner.
+func TestEffectiveProviders_OnlyEnvFunded(t *testing.T) {
+	nodeOf := func(backend, provider, mdl string) *ir.AgentNode {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: mdl}}
+	}
+	rows := []struct {
+		name string
+		wf   *ir.Workflow
+		want bool
+	}{
+		{"every route on the gateway", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claw", "", "openai_compatible/team/m"),
+			"b": nodeOf("claw", "openai_compatible", "openai_compatible/team/n"),
+		}}, true},
+		{"one bundle-funded route: mixed", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claw", "", "openai_compatible/team/m"),
+			"b": nodeOf("claw", "anthropic", "claude-opus-5"),
+		}}, false},
+		{"an env-dependent hint is unresolved", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claw", "${GATEWAY_PROVIDER}", "openai_compatible/team/m"),
+		}}, false},
+		{"an env-dependent model is unresolved", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claw", "openai_compatible", "${GATEWAY_MODEL}"),
+		}}, false},
+		{"a bare claude route", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claude_code", "", "claude-opus-5"),
+		}}, false},
+		// A gateway hint over a BARE model is not the gateway route: the
+		// backends that do not honour the hint spend a process-held
+		// credential (claude_code's bundle precedence, claw's detector), so
+		// the run widens — exactly as it did before the predicate existed.
+		{"gateway hint, bare model: widens", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claw", "openai_compatible", "claude-opus-5"),
+		}}, false},
+		{"gateway hint, no model: widens", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claude_code", "openai_compatible", ""),
+		}}, false},
+		{"no LLM route at all", &ir.Workflow{Nodes: map[string]ir.Node{
+			"a": nodeOf("claw", "", "openai_compatible/team/m"),
+		}}, false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			wf := row.wf
+			if row.name == "no LLM route at all" {
+				// A tool-only workflow: no node uses a model.
+				wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": nodeOf("", "", "")}}
+				wf.Nodes["a"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}}
+			}
+			got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+			if got.OnlyEnvFunded() != row.want {
+				t.Fatalf("OnlyEnvFunded = %v (providers=%v narrow=%v unknown=%v), want %v",
+					got.OnlyEnvFunded(), got.Providers, got.NarrowSafe, got.Unknown, row.want)
+			}
+		})
+	}
+	// The gateway route must not widen anything either: narrow-safe, no
+	// unknown name, no provider.
+	got := EffectiveProviders(&ir.Workflow{Nodes: map[string]ir.Node{
+		"a": nodeOf("claw", "", "openai_compatible/team/m"),
+	}}, ModelOverrides{}, nil, knownForTest)
+	if !got.NarrowSafe || len(got.Providers) != 0 || len(got.Unknown) != 0 {
+		t.Fatalf("an all-gateway walk widened: %+v", got)
+	}
+	// ... and the bare-model spelling widens as an unknown name, the
+	// fail-open the fill reads before the predicate existed.
+	got = EffectiveProviders(&ir.Workflow{Nodes: map[string]ir.Node{
+		"a": nodeOf("claw", "openai_compatible", "claude-opus-5"),
+	}}, ModelOverrides{}, nil, knownForTest)
+	if got.NarrowSafe || !slices.Contains(got.Unknown, "openai_compatible") {
+		t.Fatalf("a gateway hint over a bare model did not widen: %+v", got)
 	}
 }

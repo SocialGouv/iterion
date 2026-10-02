@@ -28,6 +28,10 @@ vars:
   COMMIT:
     sh: git rev-parse --short HEAD 2>/dev/null || echo ""
   LDFLAGS: -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v{{.VERSION}} -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit={{.COMMIT}}
+  # The cloud:* tasks name their compose project: a COMPOSE_PROJECT_NAME in
+  # the shell or in .env would otherwise aim them — `down -v
+  # --remove-orphans` included — at another project.
+  CLOUD_COMPOSE: docker compose -p iterion-cloud -f docker-compose.cloud.yml
 
 tasks:
   default:
@@ -171,6 +175,16 @@ tasks:
     desc: Compile every -tags=live test in the repo without running anything (build-gate the paid live suite for free). Uses ./... so any future live-tagged file outside ./e2e is covered automatically — a live-tagged test file elsewhere in pkg/ would otherwise bit-rot invisibly.
     cmds:
       - go test -tags live -count=1 -run '^$' ./...
+
+  test:clilive:
+    desc: Free real-CLI proofs of the ADR-119 ambient context, against the installed claude and codex CLIs (each skips when absent). Needs a route to api.anthropic.com / api.openai.com; a deliberately invalid key fails once the CLI has assembled its context, so nothing is spent.
+    cmds:
+      - go test -tags clilive -count=1 -run TestCLILive -v ./pkg/backend/delegate/...
+
+  test:clilive:compile:
+    desc: Compile every -tags=clilive test without running anything, so the real-CLI proofs cannot bit-rot unseen
+    cmds:
+      - go test -tags clilive -count=1 -run '^$' ./...
 
   test:live:status:
     desc: Answer "do the live e2e still pass?" without spending — reads e2e/testdata/live/ledger.json + Taskfile.yml and prints every test:live target with its last verdict or `never`, sorted by staleness. No credential, no network. See #1422.
@@ -1137,24 +1151,34 @@ tasks:
 
   # --- Cloud-mode docker-compose (plan §F T-38, T-39) -------------
   cloud:up:
-    desc: Bring up the cloud-mode local stack (Mongo + NATS + MinIO + iterion)
+    desc: Bring up the cloud-mode local stack (Mongo + NATS + SeaweedFS + iterion)
     cmds:
-      - docker compose -f docker-compose.cloud.yml up -d --build
+      - '{{.CLOUD_COMPOSE}} up -d --build'
 
   cloud:down:
     desc: Tear down the cloud-mode stack including volumes
     cmds:
-      - docker compose -f docker-compose.cloud.yml down -v
+      # --remove-orphans: also the containers of services the file no
+      # longer declares (the MinIO of a stack started before SeaweedFS).
+      - '{{.CLOUD_COMPOSE}} down -v --remove-orphans'
 
   cloud:logs:
     desc: Tail logs from every cloud-mode service
     cmds:
-      - docker compose -f docker-compose.cloud.yml logs -f --tail=100
+      - '{{.CLOUD_COMPOSE}} logs -f --tail=100'
 
   cloud:up:deps:
-    desc: Bring up only the backing services (Mongo + NATS + MinIO) without iterion
+    desc: Bring up only the backing services (Mongo + NATS + SeaweedFS) without iterion
     cmds:
-      - docker compose -f docker-compose.cloud.yml up -d mongo nats minio minio-init
+      - '{{.CLOUD_COMPOSE}} up -d mongo nats seaweedfs s3-init'
+
+  cloud:test:s3:
+    desc: Run the S3 gateway compatibility bench against the local stack's SeaweedFS, in its own bucket (after task cloud:up:deps)
+    cmds:
+      # Inline rather than under env: — an ITERION_TEST_S3_* exported in the
+      # shell wins over a task's env: and would aim the bench, which writes
+      # and deletes objects, at another gateway.
+      - ITERION_TEST_S3_ENDPOINT=http://127.0.0.1:8333 ITERION_TEST_S3_ENDPOINT_B= ITERION_TEST_S3_ACCESS_KEY_ID=iterion-dev ITERION_TEST_S3_SECRET_ACCESS_KEY=iterion-dev-secret ITERION_TEST_S3_BUCKET=iterion-compat-bench ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS= go test -count=1 -run TestGatewayCompat -v ./pkg/store/blob/
 
   cloud:dev:
     desc: Hot-reload iterion in the cloud stack via watchexec rebuild + container restart
@@ -1162,7 +1186,7 @@ tasks:
     cmds:
       # Single quoted arg, not `sh -c '...'` — see studio:dev:backend note
       # (watchexec's default shell re-shells `sh -c`, losing the quoting).
-      - watchexec -r -e go -w cmd -w pkg -- 'docker compose -f docker-compose.cloud.yml up -d --build iterion-server'
+      - watchexec -r -e go -w cmd -w pkg -- '{{.CLOUD_COMPOSE}} up -d --build iterion-server'
 
   changelog:gen:
     desc: Rebuild CHANGELOG.md (current major) + docs/changelog/ archives from git history

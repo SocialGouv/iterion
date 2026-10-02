@@ -134,7 +134,12 @@ import (
 // stale runner dropping it reads an amputated payload as the whole
 // declaration and prunes a still-enabled plugin's launch-pass mirrors on the
 // first resume, so it must reject.
-const SchemaVersion = 20
+// v=21: ambient_context (ADR-119). A launch-time override rides the new
+// AmbientContext field, and the compiled IR may carry node and workflow
+// policies. A stale runner ignores both and applies its own default — for
+// claude_code the operator's whole personal setup — so a run launched or
+// declared with `none` would receive everything: it must reject.
+const SchemaVersion = 21
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -233,6 +238,9 @@ type RunMessage struct {
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
 	AutoMemory string `json:"auto_memory,omitempty"`
+	// AmbientContext is the launch-time ambient-context override (ADR-119).
+	// Empty means the caller expressed nothing and the workflow/env decide.
+	AmbientContext string `json:"ambient_context,omitempty"`
 	// LoopBudgetGuard is the launch-time back-edge affordability override —
 	// the wire half of that knob's strongest precedence level. Empty means
 	// the caller expressed nothing and the workflow/env decide.

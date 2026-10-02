@@ -109,9 +109,13 @@ func scratchWorkflow() *ir.Workflow {
 	}
 }
 
-func scratchEngine(s store.RunStore, exec *stubExecutor, d *podDriver) *Engine {
+func scratchEngine(t *testing.T, s store.RunStore, exec *stubExecutor, d *podDriver) *Engine {
 	return New(scratchWorkflow(), s, exec,
 		WithLogger(iterlog.Nop()),
+		// An explicit workDir: the skill mirror refuses to materialise
+		// into the test process's cwd (main's guard), and these tests run
+		// with the package directory as the cwd.
+		WithWorkDir(t.TempDir()),
 		WithSandboxDrivers(map[string]sandbox.DriverConstructor{
 			"docker": func() (sandbox.Driver, error) { return d, nil },
 		}),
@@ -180,7 +184,7 @@ func TestResume_restoresTheScratchItsParkBanked(t *testing.T) {
 		return map[string]any{}, nil
 	})
 
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	banked := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
@@ -188,7 +192,7 @@ func TestResume_restoresTheScratchItsParkBanked(t *testing.T) {
 		t.Fatalf("the park did not bank the scratch: %+v", banked)
 	}
 
-	if err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+	if err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	if len(d.pods) != 2 {
@@ -217,7 +221,7 @@ func TestResume_refusesARunWhoseScratchWasNotBanked(t *testing.T) {
 	x := newStubExecutor()
 	x.on("measure", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
@@ -226,7 +230,7 @@ func TestResume_refusesARunWhoseScratchWasNotBanked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
+	err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
 	var rt *RuntimeError
 	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(rt.Message, "past the 256 MiB cap") {
 		t.Fatalf("Resume: want SCRATCH_NOT_PORTABLE naming the cause, got %v", err)
@@ -235,12 +239,12 @@ func TestResume_refusesARunWhoseScratchWasNotBanked(t *testing.T) {
 		t.Fatalf("the refused resume claimed the run: status %s", r.Status)
 	}
 
-	forced := scratchEngine(s, x, d)
+	forced := scratchEngine(t, s, x, d)
 	forced.forceResume = true
 	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
 		t.Fatalf("Resume --force: %v, want the scratch's loss still refused", err)
 	}
-	accepting := scratchEngine(s, x, d)
+	accepting := scratchEngine(t, s, x, d)
 	accepting.acceptScratchLoss = true
 	if err := accepting.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("Resume accepting the scratch's loss: %v", err)
@@ -438,7 +442,7 @@ func TestResume_aRestoreThatFailsKeepsTheBank(t *testing.T) {
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
 	})
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	bs := store.AsScratchBankStore(s)
@@ -448,7 +452,7 @@ func TestResume_aRestoreThatFailsKeepsTheBank(t *testing.T) {
 	}
 	before := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked))
 
-	err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
+	err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
 	var rt *RuntimeError
 	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
 		t.Fatalf("Resume on a corrupt bank: want SCRATCH_NOT_PORTABLE, got %v", err)
@@ -813,7 +817,7 @@ func TestResume_aBankReadThatFailsOnTheWayIsRetried(t *testing.T) {
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
 	})
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	// Twice without --force: the first attempt's answered human node
@@ -821,7 +825,7 @@ func TestResume_aBankReadThatFailsOnTheWayIsRetried(t *testing.T) {
 	// moved past its bank.
 	for _, force := range []bool{false, false, true} {
 		before := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked))
-		e := scratchEngine(flakyBankStore{s}, x, d)
+		e := scratchEngine(t, flakyBankStore{s}, x, d)
 		e.forceResume = force
 		err := e.Resume(ctx, runID, map[string]any{"ok": true})
 		var rt *RuntimeError
@@ -875,20 +879,20 @@ func TestResume_refusesABankTheRunHasMovedPast(t *testing.T) {
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "ledger.json"), []byte(`{"round": 1}`), 0o644)
 	})
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeFinished, NodeID: "gate"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := scratchEngine(s, x, d).refuseResumeLosingScratch(ctx, mustLoadRun(t, s, runID)); err != nil {
+	if err := scratchEngine(t, s, x, d).refuseResumeLosingScratch(ctx, mustLoadRun(t, s, runID)); err != nil {
 		t.Fatalf("an answered human node was read as a run past its bank: %v", err)
 	}
 	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeFinished, NodeID: "report"}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
+	err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
 	var rt *RuntimeError
 	if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(rt.Message, "revert") {
 		t.Fatalf("Resume past a stale bank: want SCRATCH_NOT_PORTABLE naming the revert, got %v", err)
@@ -896,12 +900,12 @@ func TestResume_refusesABankTheRunHasMovedPast(t *testing.T) {
 	if r, _ := s.LoadRun(ctx, runID); r.Status != store.RunStatusPausedWaitingHuman {
 		t.Fatalf("the refused resume claimed the run: status %s", r.Status)
 	}
-	forced := scratchEngine(s, x, d)
+	forced := scratchEngine(t, s, x, d)
 	forced.forceResume = true
 	if err := forced.Resume(ctx, runID, map[string]any{"ok": true}); !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
 		t.Fatalf("Resume --force: %v, want the stale bank still refused", err)
 	}
-	accepting := scratchEngine(s, x, d)
+	accepting := scratchEngine(t, s, x, d)
 	accepting.acceptScratchLoss = true
 	if err := accepting.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("Resume accepting the stale bank: %v", err)
@@ -936,18 +940,18 @@ func TestResume_twoFailedRestoresThenAHealthyOneIsNotRefused(t *testing.T) {
 		read = err == nil
 		return map[string]any{}, err
 	})
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := scratchEngine(flakyBankStore{s}, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err == nil {
+		if err := scratchEngine(t, flakyBankStore{s}, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err == nil {
 			t.Fatalf("resume %d on a flaky bank read succeeded — this proves nothing", i+1)
 		}
 		if err := s.SaveRun(ctx, resumable(t, s, runID)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+	if err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("the healthy resume after two failed reads: %v", err)
 	}
 	if !read {
@@ -1005,12 +1009,12 @@ func TestResume_aBankCutOffMidStreamIsRetried(t *testing.T) {
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "clone.bin"), noise, 0o644)
 	})
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	banked := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
 	for _, force := range []bool{false, true} {
-		e := scratchEngine(cutOffBankStore{s}, x, d)
+		e := scratchEngine(t, cutOffBankStore{s}, x, d)
 		e.forceResume = force
 		err := e.Resume(ctx, runID, map[string]any{"ok": true})
 		var rt *RuntimeError
@@ -1057,7 +1061,7 @@ func TestResume_anAcceptedLossPastABankThatDoesNotExtractStartsEmpty(t *testing.
 		}
 		return map[string]any{}, nil
 	})
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	bs := store.AsScratchBankStore(s)
@@ -1074,7 +1078,7 @@ func TestResume_anAcceptedLossPastABankThatDoesNotExtractStartsEmpty(t *testing.
 	if err := bs.PutScratchBank(ctx, runID, bytes.NewReader(truncated), int64(len(truncated))); err != nil {
 		t.Fatal(err)
 	}
-	e := scratchEngine(s, x, d)
+	e := scratchEngine(t, s, x, d)
 	e.acceptScratchLoss = true
 	if err := e.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("Resume accepting the loss of a bank that does not extract: %v", err)
@@ -1102,7 +1106,7 @@ func TestResume_aBankedRunResumedWithoutASandboxIsRefused(t *testing.T) {
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
 	})
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	unsandboxed := func(force, accept bool) *Engine {
@@ -1140,17 +1144,17 @@ func TestResume_aScratchTheTeardownCouldNotReadIsNotRefused(t *testing.T) {
 	x := newStubExecutor()
 	x.on("measure", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
-	e := scratchEngine(s, x, d)
+	e := scratchEngine(t, s, x, d)
 	e.scratchBankRetryPause = time.Millisecond
 	e.bankScratchOnCleanup(ctx, runID, &activeSandbox{run: failingListRun{}})
 	got := eventsOf(t, s, runID, store.EventSandboxScratchBanked)
 	if last := got[len(got)-1]; last.Data["unknown"] != true || last.Data["banked"] != false {
 		t.Fatalf("an unlistable scratch was recorded %v, want unknown and not banked", last.Data)
 	}
-	if err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+	if err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("Resume after a teardown that could not read the scratch: %v", err)
 	}
 	restored := eventsOf(t, s, runID, store.EventSandboxScratchRestored)
@@ -1278,7 +1282,7 @@ func TestResume_aStreamThatBreaksInTheSandboxIsRetried(t *testing.T) {
 		return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
 	})
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	before := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked))
@@ -1374,7 +1378,7 @@ func TestResume_aBankTheSandboxRefusesIsRefusedByName(t *testing.T) {
 				reportRan = true
 				return map[string]any{}, nil
 			})
-			if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+			if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 				t.Fatalf("Run: want ErrRunPaused, got %v", err)
 			}
 			before := len(eventsOf(t, s, runID, store.EventSandboxScratchBanked))
@@ -1452,7 +1456,7 @@ func TestResume_aLongSandboxRefusalKeepsItsRemedy(t *testing.T) {
 				}
 				return map[string]any{}, os.WriteFile(filepath.Join(d.scratch(), "facts.json"), []byte("{}"), 0o644)
 			})
-			if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+			if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 				t.Fatalf("Run: want ErrRunPaused, got %v", err)
 			}
 			refusing := refusingSandboxDriver{podDriver: d, failingTar: bin}

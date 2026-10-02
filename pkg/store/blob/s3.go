@@ -25,6 +25,11 @@ import (
 // errors.
 var ErrArtifactNotFound = errors.New("blob: artifact not found")
 
+// ErrListingOutsidePrefix is returned when a listing asked for a prefix
+// returns a key outside it: the S3 gateway ignored the prefix, so the key
+// belongs to someone else. Listings fail on it; sweeps never delete it.
+var ErrListingOutsidePrefix = errors.New("blob: the S3 gateway listed a key outside the requested prefix")
+
 // S3Client is the AWS-S3-compatible blob backend. It speaks v4 SigV4
 // to AWS S3 directly when Endpoint is empty, and to a generic S3
 // gateway (MinIO, Wasabi, etc.) when Endpoint is set with
@@ -72,6 +77,16 @@ func NewS3(ctx context.Context, cfg Config) (*S3Client, error) {
 			o.UsePathStyle = true
 		})
 	}
+	// An object stored without a checksum — copied by a store migration
+	// (rclone sends none), or written before the SDK sent CRC32 by default —
+	// comes back without one, and the SDK then logs a WARN on stderr for
+	// every such GET (and one for a multipart checksum it does not
+	// validate). This drops those two lines only: whether a response that
+	// carries a checksum is validated stays the SDK's setting
+	// (AWS_RESPONSE_CHECKSUM_VALIDATION, validated by default).
+	clientOpts = append(clientOpts, func(o *s3.Options) {
+		o.DisableLogOutputChecksumValidationSkipped = true
+	})
 
 	return &S3Client{
 		client: s3.NewFromConfig(awsCfg, clientOpts...),
@@ -169,14 +184,22 @@ func (c *S3Client) ListArtifactVersions(ctx context.Context, runID, nodeID strin
 		Bucket: aws.String(c.bucket),
 		Prefix: aws.String(prefix),
 	})
+	prevToken := ""
 	for pager.HasMorePages() {
 		page, err := pager.NextPage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("blob: list %s: %w", prefix, err)
 		}
+		if err := listingStuck(prefix, page, prevToken); err != nil {
+			return nil, err
+		}
+		prevToken = aws.ToString(page.NextContinuationToken)
 		for _, obj := range page.Contents {
 			if obj.Key == nil {
 				continue
+			}
+			if !strings.HasPrefix(*obj.Key, prefix) {
+				return nil, fmt.Errorf("%w: listing %s returned a key outside it", ErrListingOutsidePrefix, prefix)
 			}
 			name := strings.TrimPrefix(*obj.Key, prefix)
 			name = strings.TrimSuffix(name, ".json")
@@ -197,84 +220,16 @@ func (c *S3Client) ListArtifactVersions(ctx context.Context, runID, nodeID strin
 	return versions, nil
 }
 
-// DeleteRun sweeps every artifact under artifacts/<runID>/. We page
-// through the list and batch-delete in chunks of 1000 (the S3
-// DeleteObjects ceiling). Best-effort: page list AND delete failures
-// are accumulated rather than aborting the sweep — a single transient
-// blip would otherwise leave thousands of orphaned objects.
-//
-// Returns the joined error if anything failed (callers can errors.Is
-// against ctx.Err to distinguish cancellation from backend errors).
-// Returns nil only when every page listed and every delete batch
-// succeeded.
+// DeleteRun sweeps every artifact under artifacts/<runID>/ through
+// deleteUnder: the joined error reports every failure (callers can
+// errors.Is against ctx.Err to distinguish cancellation from backend
+// errors), nil only when every listed object was deleted.
 func (c *S3Client) DeleteRun(ctx context.Context, runID string) error {
-	prefix := fmt.Sprintf("artifacts/%s/", runID)
-
-	var collected []error
-	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(c.bucket),
-		Prefix: aws.String(prefix),
-	})
-	for pager.HasMorePages() {
-		// Honour cancellation eagerly so a SIGTERM doesn't try to
-		// drain the entire prefix.
-		if err := ctx.Err(); err != nil {
-			collected = append(collected, err)
-			break
-		}
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
-			continue
-		}
-		if len(page.Contents) == 0 {
-			continue
-		}
-		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
-		for _, obj := range page.Contents {
-			if obj.Key == nil {
-				continue
-			}
-			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		// DeleteObjects returns 200 with a per-object error list rather
-		// than a top-level error for cases like governance / legal
-		// hold, eventual consistency, or slow replicas. With Quiet=true
-		// the response only contains errors. Capturing them into
-		// `collected` so the retention sweeper actually reports
-		// orphans instead of silently leaving blobs behind.
-		out, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(c.bucket),
-			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
-		})
-		if err != nil {
-			collected = append(collected, fmt.Errorf("blob: delete page under %s: %w", prefix, err))
-		}
-		if out != nil {
-			for _, oerr := range out.Errors {
-				key := ""
-				if oerr.Key != nil {
-					key = *oerr.Key
-				}
-				code := ""
-				if oerr.Code != nil {
-					code = *oerr.Code
-				}
-				msg := ""
-				if oerr.Message != nil {
-					msg = *oerr.Message
-				}
-				collected = append(collected, fmt.Errorf("blob: delete %s: %s (%s)", key, msg, code))
-			}
-		}
+	prefix, err := artifactRunPrefix(runID)
+	if err != nil {
+		return err
 	}
-	if len(collected) > 0 {
-		return errors.Join(collected...)
-	}
-	return nil
+	return c.deleteUnder(ctx, prefix, "artifact")
 }
 
 // isS3NotFound matches both the typed NoSuchKey error and the bare
@@ -392,53 +347,14 @@ func (c *S3Client) DeleteAttachment(ctx context.Context, runID, name, filename s
 	return nil
 }
 
-// DeleteRunAttachments sweeps every blob under attachments/<runID>/.
-// Mirrors DeleteRun's batched, best-effort semantics.
+// DeleteRunAttachments sweeps every blob under attachments/<runID>/, with
+// deleteUnder's batched, best-effort semantics.
 func (c *S3Client) DeleteRunAttachments(ctx context.Context, runID string) error {
 	prefix, err := attachmentRunPrefix(runID)
 	if err != nil {
 		return err
 	}
-
-	var collected []error
-	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(c.bucket),
-		Prefix: aws.String(prefix),
-	})
-	for pager.HasMorePages() {
-		if err := ctx.Err(); err != nil {
-			collected = append(collected, err)
-			break
-		}
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
-			continue
-		}
-		if len(page.Contents) == 0 {
-			continue
-		}
-		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
-		for _, obj := range page.Contents {
-			if obj.Key == nil {
-				continue
-			}
-			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(c.bucket),
-			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
-		}); err != nil {
-			collected = append(collected, fmt.Errorf("blob: delete attachment page under %s: %w", prefix, err))
-		}
-	}
-	if len(collected) > 0 {
-		return errors.Join(collected...)
-	}
-	return nil
+	return c.deleteUnder(ctx, prefix, "attachment")
 }
 
 // ---------------------------------------------------------------------------
@@ -641,94 +557,17 @@ func (c *S3Client) DeleteRunBackendSessions(ctx context.Context, runID string) e
 	if err != nil {
 		return err
 	}
-	var collected []error
-	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(c.bucket),
-		Prefix: aws.String(prefix),
-	})
-	for pager.HasMorePages() {
-		if err := ctx.Err(); err != nil {
-			collected = append(collected, err)
-			break
-		}
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
-			continue
-		}
-		if len(page.Contents) == 0 {
-			continue
-		}
-		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
-		for _, obj := range page.Contents {
-			if obj.Key == nil {
-				continue
-			}
-			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(c.bucket),
-			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
-		}); err != nil {
-			collected = append(collected, fmt.Errorf("blob: delete session page under %s: %w", prefix, err))
-		}
-	}
-	if len(collected) > 0 {
-		return errors.Join(collected...)
-	}
-	return nil
+	return c.deleteUnder(ctx, prefix, "session")
 }
 
-// DeleteRunToolBlobs sweeps every blob under tools/<runID>/. Mirrors
-// DeleteRunAttachments' batched, best-effort semantics.
+// DeleteRunToolBlobs sweeps every blob under tools/<runID>/, with
+// deleteUnder's batched, best-effort semantics.
 func (c *S3Client) DeleteRunToolBlobs(ctx context.Context, runID string) error {
 	prefix, err := toolBlobRunPrefix(runID)
 	if err != nil {
 		return err
 	}
-
-	var collected []error
-	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(c.bucket),
-		Prefix: aws.String(prefix),
-	})
-	for pager.HasMorePages() {
-		if err := ctx.Err(); err != nil {
-			collected = append(collected, err)
-			break
-		}
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
-			continue
-		}
-		if len(page.Contents) == 0 {
-			continue
-		}
-		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
-		for _, obj := range page.Contents {
-			if obj.Key == nil {
-				continue
-			}
-			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(c.bucket),
-			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
-		}); err != nil {
-			collected = append(collected, fmt.Errorf("blob: delete tool blob page under %s: %w", prefix, err))
-		}
-	}
-	if len(collected) > 0 {
-		return errors.Join(collected...)
-	}
-	return nil
+	return c.deleteUnder(ctx, prefix, "tool blob")
 }
 
 // ---------------------------------------------------------------------------
@@ -778,14 +617,22 @@ func (c *S3Client) ListRunFiles(ctx context.Context, runID string) ([]RunFileObj
 		Bucket: aws.String(c.bucket),
 		Prefix: aws.String(prefix),
 	})
+	prevToken := ""
 	for pager.HasMorePages() {
 		page, err := pager.NextPage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("blob: list run files %s: %w", prefix, err)
 		}
+		if err := listingStuck(prefix, page, prevToken); err != nil {
+			return nil, err
+		}
+		prevToken = aws.ToString(page.NextContinuationToken)
 		for _, obj := range page.Contents {
 			if obj.Key == nil {
 				continue
+			}
+			if !strings.HasPrefix(*obj.Key, prefix) {
+				return nil, fmt.Errorf("%w: listing %s returned a key outside it", ErrListingOutsidePrefix, prefix)
 			}
 			rel := strings.TrimPrefix(*obj.Key, prefix)
 			if rel == "" {
@@ -834,20 +681,38 @@ func (c *S3Client) GetRunFile(ctx context.Context, runID, relPath string) (io.Re
 	return out.Body, info, nil
 }
 
-// DeleteRunFiles sweeps every blob under runfiles/<runID>/. Mirrors
-// DeleteRunAttachments' batched, best-effort semantics.
+// DeleteRunFiles sweeps every blob under runfiles/<runID>/, with
+// deleteUnder's batched, best-effort semantics.
 func (c *S3Client) DeleteRunFiles(ctx context.Context, runID string) error {
 	prefix, err := runFileRunPrefix(runID)
 	if err != nil {
 		return err
 	}
+	return c.deleteUnder(ctx, prefix, "run file")
+}
 
+// deleteUnder batch-deletes every object listed under prefix, one
+// DeleteObjects call per listed page (at most 1000 keys, the S3 ceiling).
+// Delete failures are accumulated rather than aborting the sweep — a single
+// transient blip would otherwise leave thousands of orphaned objects — and
+// DeleteObjects' per-object error list (a 200: legal hold, replication
+// lag…) is reported too. The listing is what bounds the sweep, so the sweep
+// stops, reporting why, on a page it cannot trust or cannot get past: a page
+// that failed to list (the paginator does not move past it), a listed key
+// outside prefix (a gateway that ignored the prefix: ErrListingOutsidePrefix,
+// nothing of that page deleted), a truncated page that cannot advance.
+// Returns nil only when every page listed and every listed object was
+// deleted; ctx cancellation is joined into the error.
+func (c *S3Client) deleteUnder(ctx context.Context, prefix, what string) error {
 	var collected []error
+	prevToken := ""
 	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(c.bucket),
 		Prefix: aws.String(prefix),
 	})
 	for pager.HasMorePages() {
+		// Honour cancellation eagerly so a SIGTERM doesn't try to
+		// drain the entire prefix.
 		if err := ctx.Err(); err != nil {
 			collected = append(collected, err)
 			break
@@ -855,30 +720,66 @@ func (c *S3Client) DeleteRunFiles(ctx context.Context, runID string) error {
 		page, err := pager.NextPage(ctx)
 		if err != nil {
 			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
-			continue
-		}
-		if len(page.Contents) == 0 {
-			continue
+			break
 		}
 		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
+		foreign := 0
 		for _, obj := range page.Contents {
 			if obj.Key == nil {
 				continue
 			}
+			if !strings.HasPrefix(*obj.Key, prefix) {
+				foreign++
+				continue
+			}
 			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
 		}
-		if len(ids) == 0 {
-			continue
+		if foreign > 0 {
+			collected = append(collected, fmt.Errorf("%w: listing %s returned %d key(s) outside it; nothing of that page deleted", ErrListingOutsidePrefix, prefix, foreign))
+			break
 		}
-		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(c.bucket),
-			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
-		}); err != nil {
-			collected = append(collected, fmt.Errorf("blob: delete run file page under %s: %w", prefix, err))
+		stuck := listingStuck(prefix, page, prevToken)
+		prevToken = aws.ToString(page.NextContinuationToken)
+		if len(ids) > 0 {
+			out, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+				Bucket: aws.String(c.bucket),
+				Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
+			})
+			if err != nil {
+				collected = append(collected, fmt.Errorf("blob: delete %s page under %s: %w", what, prefix, err))
+			}
+			if out != nil {
+				for _, oerr := range out.Errors {
+					collected = append(collected, fmt.Errorf("blob: delete %s: %s (%s)", aws.ToString(oerr.Key), aws.ToString(oerr.Message), aws.ToString(oerr.Code)))
+				}
+			}
+		}
+		if stuck != nil {
+			collected = append(collected, stuck)
+			break
 		}
 	}
-	if len(collected) > 0 {
-		return errors.Join(collected...)
+	return errors.Join(collected...)
+}
+
+// listingStuck reports a truncated listing page that cannot move the
+// listing forward: one without a continuation token (the paginator would
+// end the listing early, as if complete) or one repeating the token of the
+// page before (the paginator would fetch the same page forever). A gateway
+// that ignored the token but minted a new one for every page would still
+// loop; no known S3 implementation does, and checking that keys advance
+// instead would misfire on S3 Express directory buckets, whose listings are
+// not sorted.
+func listingStuck(prefix string, page *s3.ListObjectsV2Output, prevToken string) error {
+	if !aws.ToBool(page.IsTruncated) {
+		return nil
+	}
+	tok := aws.ToString(page.NextContinuationToken)
+	if tok == "" {
+		return fmt.Errorf("blob: list %s: a truncated page came without a continuation token", prefix)
+	}
+	if tok == prevToken {
+		return fmt.Errorf("blob: list %s: the gateway repeated the continuation token of the page before", prefix)
 	}
 	return nil
 }

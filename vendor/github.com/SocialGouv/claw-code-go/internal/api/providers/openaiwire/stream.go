@@ -2,6 +2,7 @@ package openaiwire
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,15 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 	// partial content — a real source of silent data corruption.
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	// A read that ends — EOF or error — in the middle of a line still hands
+	// the scanner that line's head as a last token. unterminated marks it: it
+	// is what a cut connection left, never a frame the server sent.
+	var unterminated bool
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		advance, token, err := bufio.ScanLines(data, atEOF)
+		unterminated = atEOF && token != nil && bytes.IndexByte(data[:advance], '\n') < 0
+		return advance, token, err
+	})
 
 	// Guard against a stalled stream that delivers no bytes and no error,
 	// parking scanner.Scan() until an outer deadline. The watchdog closes
@@ -78,13 +88,37 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		finishReason string
 		outputTokens int
 		inputTokens  int
+		sawUsage     bool
 		sawDone      bool
+		// cut: the connection dropped inside a line, which may have been a
+		// later usage chunk — the usage seen is no final account. A drop
+		// exactly at a line boundary leaves no trace in the bytes: the usage
+		// seen then stands as reported.
+		cut bool
 	)
+	// soFar is the usage an error event carries: what the stream had
+	// reported before failing, which is no final account of the call.
+	soFar := func() api.UsageDelta {
+		return api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens}
+	}
 
+	// eventName is the current SSE event's `event:` field; a blank line ends
+	// the event and resets it.
+	var eventName string
 	for scanner.Scan() {
 		wd.Touch() // any received line (incl. comments/keepalives) = stream alive
 		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, "event:") {
+		if unterminated && !strings.HasPrefix(line, "data:") {
+			// The connection dropped inside a line that carried no data.
+			cut = true
+			break
+		}
+		if line == "" {
+			eventName = ""
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 			continue
 		}
 		// SSE spec (W3C, WHATWG) makes the space after `data:`
@@ -95,23 +129,73 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
+		// Prefix match, like the openai-python stream decoder.
+		if strings.HasPrefix(data, "[DONE]") {
 			sawDone = true
 			break
 		}
 
+		if data == "" {
+			if unterminated {
+				cut = true
+				break
+			}
+			continue // keepalive
+		}
+
+		// A failure reported inside the stream ends it: what came before is
+		// partial, and a [DONE] after it must not read as a clean finish.
+		// An event named "error" is one whatever its payload's shape; a data
+		// field that is no chunk is one too, unless its event is named
+		// otherwise (a server ping whose data is a timestamp).
 		var chunk Chunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+		var failure string
+		failed := false
+		decoded := json.Unmarshal([]byte(data), &chunk) == nil
+		if !decoded {
+			if unterminated && !json.Valid([]byte(data)) && eventName != "error" &&
+				(strings.HasPrefix(data, "{") || strings.HasPrefix("[DONE]", data)) {
+				// The connection was cut inside a chunk or the [DONE]
+				// sentinel: a truncated stream, reported below as one — not
+				// an unparseable frame. A line no chunk can start with is
+				// what the endpoint wrote, and an `event: error` the error
+				// it announces, what came of its data included.
+				cut = true
+				break
+			}
+			switch eventName {
+			case "error":
+				failure, failed = ErrorEventMessage(data), true
+			case "":
+				failure, failed = UnparsedFrameError(data)
+			}
+			if !failed {
+				continue
+			}
+		} else if failure, failed = chunk.ErrorMessage(); !failed && eventName == "error" {
+			failure, failed = ErrorEventMessage(data), true
 		}
 
 		// Capture usage from the final usage chunk (choices will be empty
 		// there). Both directions ride UsageDelta: this endpoint has no
 		// message_start-shaped frame to carry the prompt count on, so the
-		// terminal chunk is the only place it is ever reported.
-		if chunk.Usage != nil {
+		// terminal chunk is the only place it is ever reported. A usage
+		// object naming no counter reports nothing.
+		frameUsage := decoded && chunk.Usage.Counted()
+		if frameUsage {
 			outputTokens = chunk.Usage.CompletionTokens
 			inputTokens = chunk.Usage.PromptTokens
+			sawUsage = true
+		}
+		if failed {
+			usage := soFar()
+			usage.Reported = frameUsage
+			send(api.StreamEvent{
+				Type:         api.EventError,
+				ErrorMessage: "openai stream error: " + failure,
+				Usage:        usage,
+			})
+			return
 		}
 
 		for _, choice := range chunk.Choices {
@@ -168,6 +252,7 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		send(api.StreamEvent{
 			Type:         api.EventError,
 			ErrorMessage: fmt.Sprintf("openai stream stalled: no data for %s — aborting (retryable; tune via CLAW_STREAM_IDLE_TIMEOUT)", idle),
+			Usage:        soFar(),
 		})
 		return
 	}
@@ -180,6 +265,7 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		send(api.StreamEvent{
 			Type:         api.EventError,
 			ErrorMessage: fmt.Sprintf("openai stream read: %v", err),
+			Usage:        soFar(),
 		})
 		return
 	}
@@ -191,10 +277,22 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 	// below, which would let the caller commit a truncated response as if
 	// it were complete. (Providers that send [DONE] without a finish_reason,
 	// or vice-versa, are NOT flagged — only the both-absent truncation is.)
+	// A cut inside an `event: error` block is that error, whatever came of
+	// its data.
+	if cut && eventName == "error" {
+		send(api.StreamEvent{
+			Type:         api.EventError,
+			ErrorMessage: "openai stream error: error event with no data",
+			Usage:        soFar(),
+		})
+		return
+	}
+
 	if !sawDone && finishReason == "" {
 		send(api.StreamEvent{
 			Type:         api.EventError,
 			ErrorMessage: "openai stream truncated: closed without finish_reason or [DONE]",
+			Usage:        soFar(),
 		})
 		return
 	}
@@ -224,7 +322,7 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 	send(api.StreamEvent{
 		Type:       api.EventMessageDelta,
 		StopReason: stopReason,
-		Usage:      api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens},
+		Usage:      api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens, Reported: sawUsage && !cut},
 	})
 	send(api.StreamEvent{Type: api.EventMessageStop})
 }

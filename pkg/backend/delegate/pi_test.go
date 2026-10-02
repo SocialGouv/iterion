@@ -17,6 +17,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -184,16 +185,22 @@ func TestPiExtraArgsFor(t *testing.T) {
 		}
 	})
 
-	// Context files stay on for parity with claude_code, but they are the
-	// dominant per-call cost on a repo with a large CLAUDE.md (measured:
-	// 26,933 input tokens vs 448 on iterion's own tree), so the off switch
-	// must exist and must be off by default.
-	t.Run("context files on by default, with an off switch", func(t *testing.T) {
-		if slices.Contains(piExtraArgsFor(Task{}, nil), "--no-context-files") {
-			t.Error("context files must stay on by default (claude_code parity)")
+	// pi's own loading walks to the filesystem root and adds the agent dir's
+	// file: only `all` maps onto it. Every other policy turns it off and has
+	// iterion supply the allowed files (ADR-119; ADR-085 measured 26,933 input
+	// tokens vs 448 on a 103 KB CLAUDE.md). ITERION_PI_NO_CONTEXT_FILES=1
+	// stays the raw off switch, `all` included.
+	t.Run("context files follow the ambient-context policy", func(t *testing.T) {
+		for _, p := range []ambient.Policy{ambient.Workspace, ambient.Operator, ambient.None} {
+			if !slices.Contains(piExtraArgsFor(Task{AmbientContext: p}, nil), "--no-context-files") {
+				t.Errorf("%v: pi's unbounded loading must be off", p)
+			}
+		}
+		if slices.Contains(piExtraArgsFor(Task{AmbientContext: ambient.All}, nil), "--no-context-files") {
+			t.Error("all: pi's native loading is exactly workspace and operator, it must stay on")
 		}
 		t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "1")
-		if !slices.Contains(piExtraArgsFor(Task{}, nil), "--no-context-files") {
+		if !slices.Contains(piExtraArgsFor(Task{AmbientContext: ambient.All}, nil), "--no-context-files") {
 			t.Error("ITERION_PI_NO_CONTEXT_FILES=1 must suppress AGENTS.md/CLAUDE.md injection")
 		}
 	})

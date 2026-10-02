@@ -2516,7 +2516,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// wildcard resolves to zero tools (the firecrawl/repo-falcon plugins were
 	// silently inert in cloud runs). Fail loudly on a malformed catalog rather
 	// than run a bot missing the tools it declared.
-	if err := mcp.PrepareWorkflow(wf, workDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workDir, r.cfg.Logger); err != nil {
 		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
 	}
 
@@ -3190,9 +3190,7 @@ func applyCloudBudgetCeiling(wf *ir.Workflow, logger *iterlog.Logger) {
 	if wf.Budget == nil {
 		wf.Budget = &ir.Budget{}
 	}
-	before := *wf.Budget
-	wf.Budget.ClampToCeiling(ceiling)
-	if logger != nil && *wf.Budget != before {
+	if imposed := wf.Budget.ClampToCeiling(ceiling); logger != nil && imposed {
 		logger.Info("runner: clamped workflow budget to platform ceiling (iterations=%d tokens=%d cost=%.2f dur=%q)",
 			wf.Budget.MaxIterations, wf.Budget.MaxTokens, wf.Budget.MaxCostUSD, wf.Budget.MaxDuration)
 	}
@@ -3268,7 +3266,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		Workflow: wf,
 		Vars:     vars,
 		Store:    usage,
-		RunID:    msg.RunID,
+		// usage wraps the run store and loads no records: a resume message
+		// carries no launch vars, and the guard reads the grant from here.
+		Runs:        r.cfg.Store,
+		RunID:       msg.RunID,
+		ParentRunID: msg.ParentRunID,
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
 		// this seam — the declared-supervisor hub rides it.
 		EventObservers: hookObservers,
@@ -3284,6 +3286,9 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// environment, so an operator's `--auto-memory off` on a bot whose
 		// DSL says `on` would run with memory on — the knob failing open.
 		AutoMemory: msg.AutoMemory,
+		// Same failure direction for the ambient context: dropping it would hand
+		// the run the workflow's policy instead of the operator's explicit one.
+		AmbientContext: msg.AmbientContext,
 		// Keep this as the ExecutorSpec's run-level override: folding it into
 		// wf.Permission would let a node-level `off` beat an operator `deny`.
 		Permission: msg.Permission,
@@ -3307,7 +3312,10 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// that will run sandboxed, and sandboxed-or-not is this value's
 		// call for an inherit-everything node.
 		SandboxOverride: r.cfg.SandboxOverride,
-		SandboxDefault:  r.cfg.SandboxDefault,
+		// Both tiers come from the runner's own configuration — the same
+		// two the engine receives below.
+		SandboxTiersKnown: true,
+		SandboxDefault:    r.cfg.SandboxDefault,
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the

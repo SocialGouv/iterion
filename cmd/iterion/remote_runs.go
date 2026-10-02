@@ -53,6 +53,7 @@ var (
 	remoteLaunchBackend         string
 	remoteLaunchCompress        string
 	remoteLaunchAutoMemory      string
+	remoteLaunchAmbientContext  string
 	remoteLaunchLoopBudgetGuard string
 	remoteLaunchPermission      string
 	remoteLaunchReviewMode      string
@@ -99,6 +100,7 @@ var remoteRunsLaunchCmd = &cobra.Command{
 			Backend:            remoteLaunchBackend,
 			Compress:           remoteLaunchCompress,
 			AutoMemory:         remoteLaunchAutoMemory,
+			AmbientContext:     remoteLaunchAmbientContext,
 			LoopBudgetGuard:    remoteLaunchLoopBudgetGuard,
 			Permission:         remoteLaunchPermission,
 			ReviewMode:         remoteLaunchReviewMode,
@@ -555,6 +557,7 @@ func init() {
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchBackend, "backend", "", "Backend override (claude_code|claw|pi|kimi|grok|opencode|codex)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchCompress, "compress", "", "Compression override (on|ultra|off)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchAutoMemory, "auto-memory", "", "Auto-memory (MEMORY.md) override (on|off)")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchAmbientContext, "ambient-context", "", "Ambient-context override (none|workspace|operator|all, ADR-119)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchLoopBudgetGuard, "loop-budget-guard", "", "Loop back-edge affordability guard override (on|off): refuse a loop iteration the budget cannot fund so the run exits through its own tail")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchPermission, "permission", "", "Permission gate override (off|ask|deny)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchReviewMode, "review-mode", "", "Review topology (auto|mono|dual)")

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -29,7 +30,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -747,7 +750,7 @@ func workflowHasInteractiveNode(wf *ir.Workflow) bool {
 // ClawExecutor implements it; defining it here keeps the runtime
 // decoupled from pkg/backend/secretguard.
 type secretEgressRewriter interface {
-	MaterializeForHost(s, host string) string
+	MaterializeForHostWithin(s, host string, limit int) (string, bool)
 	ExfiltratesTo(s, host string) bool
 	SecretsInspectActive() bool
 }
@@ -768,6 +771,42 @@ func (e *Engine) resolveSecretRewriter() netproxy.SecretRewriter {
 		return nil
 	}
 	return rw
+}
+
+// sandboxModelHosts reads ITERION_SANDBOX_MODEL_HOSTS: the operator's own
+// model gateways (comma- or space-separated, in the network rules' syntax),
+// whose request bodies the inspecting proxy leaves in placeholder form like
+// a provider's. netproxy.New refuses an entry that is not a host pattern.
+func sandboxModelHosts() []string {
+	return strings.FieldsFunc(os.Getenv("ITERION_SANDBOX_MODEL_HOSTS"), func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+}
+
+// sandboxInspectMaxBody reads ITERION_SANDBOX_INSPECT_MAX_BODY: the bound of
+// the request body the egress proxy holds to inspect — a byte count, or one
+// with a KiB/MiB/GiB suffix (e.g. 256MiB). Unset is 0, the proxy's default
+// (64 MiB); a value that is no positive size fails the run's start.
+func sandboxInspectMaxBody() (int64, error) {
+	raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_INSPECT_MAX_BODY"))
+	if raw == "" {
+		return 0, nil
+	}
+	num, mult := raw, int64(1)
+	for _, u := range []struct {
+		suffix string
+		mult   int64
+	}{{"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"B", 1}} {
+		if len(raw) > len(u.suffix) && strings.EqualFold(raw[len(raw)-len(u.suffix):], u.suffix) {
+			num, mult = strings.TrimSpace(raw[:len(raw)-len(u.suffix)]), u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("ITERION_SANDBOX_INSPECT_MAX_BODY=%q: want a positive byte count (e.g. 268435456 or 256MiB)", raw)
+	}
+	return n * mult, nil
 }
 
 // sandboxTLSInspectEnabled reports the ITERION_SANDBOX_TLS_INSPECT
@@ -803,8 +842,8 @@ func startNetworkProxy(
 
 	// TLS inspection needs the driver to inject the per-run CA into the
 	// container trust store; drivers advertise that via
-	// Capabilities.SupportsTLSInspection. Where it's unsupported (k8s,
-	// noop), enabling inspection would mint leaves the container can't
+	// Capabilities.SupportsTLSInspection. Where it's unsupported (noop),
+	// enabling inspection would mint leaves the container can't
 	// trust and break every TLS call — degrade to a transparent proxy
 	// (Layer 1 + redaction + allowlist still apply). See docs/secrets.md.
 	if rewriter != nil && !driver.Capabilities().SupportsTLSInspection {
@@ -835,9 +874,15 @@ func startNetworkProxy(
 		return nil, "", nil, fmt.Errorf("driver proxy config: %w", err)
 	}
 
+	maxBody, err := sandboxInspectMaxBody()
+	if err != nil {
+		return nil, "", nil, err
+	}
 	opts := netproxy.Options{
-		Policy: policy,
-		Token:  token,
+		Policy:           policy,
+		Token:            token,
+		ModelHosts:       sandboxModelHosts(),
+		MaxInspectedBody: maxBody,
 		OnBlocked: func(host, reason string) {
 			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
 				"host":   host,
@@ -1326,19 +1371,26 @@ func parseUserUID(user string) (int, bool) {
 }
 
 // resolveHostHomeDir returns the host user's home directory, normalised
-// to an absolute path. Empty string when the host has no usable HOME
-// (CI containers without HOME, distroless, etc.) — callers treat that
-// as "host_state cannot fire, skip silently".
-func resolveHostHomeDir() string {
+// to an absolute path. Empty when the host has no usable HOME (CI
+// containers without HOME, distroless, etc.), and empty with planted=true
+// when a project `.env` set it — the caller binds nothing under it and
+// says why.
+func resolveHostHomeDir() (dir string, planted bool) {
+	// A home dir a project `.env` set is not the operator's: the state under
+	// it — ~/.claude, ~/.codex, ~/.gitconfig, the caches — would be the
+	// repository's choice of what the sandbox binds read-write.
+	if envtrust.Planted(store.HomeEnvName()) {
+		return "", true
+	}
 	h, err := os.UserHomeDir()
 	if err != nil || h == "" {
-		return ""
+		return "", false
 	}
 	abs, err := filepath.Abs(h)
 	if err != nil {
-		return h
+		return h, false
 	}
-	return abs
+	return abs, false
 }
 
 // fromIRSpec converts the IR-level SandboxSpec to the runtime-level
@@ -1809,6 +1861,16 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	e.activeShare = nil
 	if active != nil {
 		e.attachmentsContainerDir = active.attachmentsDir
+	}
+	if active == nil || active.run == nil {
+		// Settled WITHOUT a sandbox — the declared one degraded (no
+		// container runtime), or none was declared. Say so, rather than
+		// leaving the executor unable to tell "no sandbox" from "not
+		// settled yet": a guard that must fail closed while the question
+		// is open needs to hear the answer even when it is "no".
+		if s, ok := e.executor.(sandboxSetter); ok {
+			s.SetSandbox(nil)
+		}
 	}
 	if active != nil && active.run != nil {
 		// The facts a subbot child needs to execute in this sandbox.

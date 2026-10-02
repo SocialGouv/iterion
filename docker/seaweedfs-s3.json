@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "iterion",
+      "credentials": [
+        {
+          "accessKey": "iterion-dev",
+          "secretKey": "iterion-dev-secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}

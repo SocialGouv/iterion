@@ -32,7 +32,11 @@ human node — a human node IS the blocking question). `await_answers`
 requires a positive `timeout:` (C241); a `from:` naming a missing or
 non-async node warns C242 (the await could only ever time out).
 
-Supported backends are **claw**, **claude_code**, and **pi using RPC**.
+Supported backends are **claw**, **claude_code**, and **pi using RPC** —
+claw in-process only: a sandboxed claw node runs its loop in the container,
+where the async pair is not bound to the run's question channel yet, so it
+is refused by type when the node executes (`CAPABILITY_UNSUPPORTED`), and a
+fallback route on another backend can serve it.
 A statically selected `codex`, `kimi`, `grok`, or `opencode` backend on an
 async node is refused at compile time with **C267**, including explicit
 fallbacks.

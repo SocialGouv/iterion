@@ -13,7 +13,10 @@ import (
 
 // LLMRequestInfo describes an LLM request, passed to the OnLLMRequest hook.
 type LLMRequestInfo struct {
+	// Model is the routing spec; WireModel the id the request carried when
+	// it differs from Model ("" for a bare spec).
 	Model           string
+	WireModel       string
 	MessageCount    int
 	ToolCount       int
 	ReasoningEffort string
@@ -54,6 +57,9 @@ type LLMStepInfo struct {
 	// in thinking blocks. Both are 0 when the step produced no thinking.
 	ReasoningTokens int
 	ThinkingMs      int
+	// UsageUnreported marks a step whose provider did not report its usage
+	// in full: the token counts above are a lower bound, not a measurement.
+	UsageUnreported bool
 	// Thinking is the extended-thinking text for this step (empty when the
 	// step produced no thinking).
 	Thinking string
@@ -250,6 +256,7 @@ func (i LLMTurnCaptureInfo) MarshalConversation() json.RawMessage {
 func toLLMRequestInfo(info RequestInfo) LLMRequestInfo {
 	return LLMRequestInfo{
 		Model:           info.Model,
+		WireModel:       info.WireModel,
 		MessageCount:    info.MessageCount,
 		ToolCount:       info.ToolCount,
 		ReasoningEffort: info.ReasoningEffort,
@@ -289,6 +296,7 @@ func toLLMStepInfo(step StepResult) LLMStepInfo {
 		CacheWriteTokens: step.Usage.CacheWriteTokens,
 		ReasoningTokens:  step.Usage.ReasoningTokens,
 		ThinkingMs:       step.Usage.ThinkingMs,
+		UsageUnreported:  step.Usage.UnreportedCalls > 0,
 		Thinking:         step.Thinking,
 	}
 }

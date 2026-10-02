@@ -407,8 +407,6 @@ func TestGatedExternalHookBackendSilentWhenSandboxDeclined(t *testing.T) {
 	cases := map[string]string{
 		"workflow-level": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n  permission: deny\n" +
 			"\nprompt p:\n  hi\n\nworkflow w:\n  sandbox: none\n  entry: x\n  x -> done\n",
-		"node-level": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n  permission: deny\n  sandbox: none\n" +
-			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
 		"gate off": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n" +
 			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
 	}
@@ -419,6 +417,51 @@ func TestGatedExternalHookBackendSilentWhenSandboxDeclined(t *testing.T) {
 				t.Fatalf("C136 fired although the run can reach the host-side hook: %+v", cr.Diagnostics)
 			}
 		})
+	}
+}
+
+// A node-level `sandbox: none` is not honoured at run time — the node shares
+// the workflow's sandbox — so it cannot bring the host-side hook within reach,
+// and C136 still warns; the node-level declaration draws C128 with a hint
+// that says it is ineffective, never the generic opt-out hint.
+//
+// Reddens on the mutation that lets the node-level spec silence C136 again,
+// and on the one that emits the node-level C128 with the catalog hint.
+func TestGatedExternalHookBackendNodeLevelSandboxNoneDoesNotSilenceIt(t *testing.T) {
+	src := "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n  permission: deny\n  sandbox: none\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+		t.Errorf("C136 stayed silent for a node-level sandbox: none, which leaves the node sandboxed: %+v", cr.Diagnostics)
+	}
+	var nodeC128 *Diagnostic
+	for i := range cr.Diagnostics {
+		if cr.Diagnostics[i].Code == DiagSandboxOptOut && cr.Diagnostics[i].NodeID == "x" {
+			nodeC128 = &cr.Diagnostics[i]
+		}
+	}
+	if nodeC128 == nil {
+		t.Fatalf("no C128 on the node-level sandbox: none: %+v", cr.Diagnostics)
+	}
+	if !strings.Contains(nodeC128.Hint, "not honoured") || nodeC128.Hint == HintFor(DiagSandboxOptOut) {
+		t.Errorf("node-level C128 hint = %q; want the node-level one, not the workflow opt-out hint", nodeC128.Hint)
+	}
+}
+
+// Under a workflow that already opted out, a node-level `sandbox: none` is
+// redundant, not ineffective: the node does run on the host. It draws no
+// node-level C128 claiming the opposite.
+//
+// Reddens on the mutation that keeps checking nodes after the workflow-level
+// opt-out.
+func TestSandboxOptOutNodeLevelSilentUnderAWorkflowOptOut(t *testing.T) {
+	src := "agent x:\n  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  system: p\n  sandbox: none\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  sandbox: none\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	for _, d := range cr.Diagnostics {
+		if d.Code == DiagSandboxOptOut && d.NodeID == "x" {
+			t.Errorf("node-level C128 under a workflow opt-out claims the node stays sandboxed: %q", d.Message)
+		}
 	}
 }
 

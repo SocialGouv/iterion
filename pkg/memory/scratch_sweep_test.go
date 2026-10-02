@@ -3,6 +3,7 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -172,4 +173,22 @@ func names(es []ScratchEntry) []string {
 		out = append(out, e.Name)
 	}
 	return out
+}
+
+// A scratch root that is a symlink is refused, not followed: the sweep — at
+// a run's exit and in `iterion clean` — would remove the stale entries
+// wherever it points, outside the store.
+func TestSweepScratchRefusesASymlinkedRoot(t *testing.T) {
+	now := time.Now()
+	target := mkScratch(t, map[string]time.Duration{"old": 30 * 24 * time.Hour}, now)
+	root := filepath.Join(t.TempDir(), "scratch")
+	if err := os.Symlink(target, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := SweepScratch(root, 7*24*time.Hour, now, false); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("SweepScratch through a symlinked root: err = %v, want a refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "old")); err != nil {
+		t.Fatalf("the entry behind the symlinked root was touched: %v", err)
+	}
 }

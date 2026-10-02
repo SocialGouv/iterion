@@ -355,8 +355,8 @@ export interface BudgetEventData {
   used?: number;
   limit?: number;
   // Set on dimensions that carry no used/limit ratio (cost_usd_unpriced,
-  // a declined loop edge), where it is the whole message rather than a
-  // supplement to one.
+  // usage_unreported, a declined loop edge), where it is the whole message
+  // rather than a supplement to one.
   detail?: string;
   [key: string]: unknown;
 }

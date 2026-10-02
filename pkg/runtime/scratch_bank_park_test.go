@@ -637,12 +637,12 @@ func TestResume_aHostWithoutItsTemporaryDirectoryIsRetried(t *testing.T) {
 		read = err == nil
 		return map[string]any{}, err
 	})
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	host := os.Getenv("TMPDIR")
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-	err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
+	err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true})
 	if err == nil || !strings.Contains(err.Error(), "no host temporary file for the bank") {
 		t.Fatalf("precondition: want the resume stopped on the host's temporary file, got %v — this proves nothing", err)
 	}
@@ -657,7 +657,7 @@ func TestResume_aHostWithoutItsTemporaryDirectoryIsRetried(t *testing.T) {
 	if err := s.SaveRun(ctx, resumable(t, s, runID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := scratchEngine(s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
+	if err := scratchEngine(t, s, x, d).Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("the resume on a whole host: %v", err)
 	}
 	if !read {
@@ -1734,7 +1734,7 @@ func TestResume_acceptedPastAnUnbankedScratchIsRecorded(t *testing.T) {
 	x := newStubExecutor()
 	x.on("measure", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 	x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
-	if err := scratchEngine(s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+	if err := scratchEngine(t, s, x, d).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)
 	}
 	if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
@@ -1742,7 +1742,7 @@ func TestResume_acceptedPastAnUnbankedScratchIsRecorded(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	accepting := scratchEngine(s, x, d)
+	accepting := scratchEngine(t, s, x, d)
 	accepting.acceptScratchLoss = true
 	if err := accepting.Resume(ctx, runID, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("Resume accepting the scratch's loss: %v", err)
@@ -1775,7 +1775,7 @@ func TestResume_scratchAndLineageRefusalsComeBeforeTheSourceCheck(t *testing.T) 
 		x.on("measure", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 		x.on("report", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
 		eng := func(hash string) *Engine {
-			e := scratchEngine(s, x, d)
+			e := scratchEngine(t, s, x, d)
 			e.workflowHash = hash
 			return e
 		}

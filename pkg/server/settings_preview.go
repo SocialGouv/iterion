@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -125,21 +126,24 @@ func buildEffectiveSettings(wf *ir.Workflow) *previewEffectiveSettings {
 		return nil
 	}
 	eff := &previewEffectiveSettings{
-		Compress:   resolveKnob(wf.Compress, os.Getenv("ITERION_COMPRESS"), "auto"),
-		AutoMemory: resolveKnob(wf.AutoMemory, normalizedAutoMemoryEnv(), "off"),
-		Permission: resolveKnob(wf.Permission, os.Getenv("ITERION_PERMISSION"), "off"),
-		Backend:    resolveKnob(wf.DefaultBackend, os.Getenv("ITERION_DEFAULT_BACKEND"), "auto"),
+		Compress:       resolveKnob(wf.Compress, os.Getenv("ITERION_COMPRESS"), "auto"),
+		AutoMemory:     resolveKnob(wf.AutoMemory, normalizedAutoMemoryEnv(), "off"),
+		AmbientContext: resolveKnob(wf.AmbientContext, normalizedAmbientContextEnv(), ambient.Workspace.String()),
+		Permission:     resolveKnob(wf.Permission, os.Getenv("ITERION_PERMISSION"), "off"),
+		Backend:        resolveKnob(wf.DefaultBackend, os.Getenv("ITERION_DEFAULT_BACKEND"), "auto"),
 	}
 	for _, node := range wf.Nodes {
 		switch n := node.(type) {
 		case *ir.AgentNode:
 			eff.Compress.NodePinned = eff.Compress.NodePinned || n.Compress != ""
 			eff.AutoMemory.NodePinned = eff.AutoMemory.NodePinned || n.AutoMemory != ""
+			eff.AmbientContext.NodePinned = eff.AmbientContext.NodePinned || n.AmbientContext != ""
 			eff.Permission.NodePinned = eff.Permission.NodePinned || n.Permission != ""
 			eff.Backend.NodePinned = eff.Backend.NodePinned || n.Backend != ""
 		case *ir.JudgeNode:
 			eff.Compress.NodePinned = eff.Compress.NodePinned || n.Compress != ""
 			eff.AutoMemory.NodePinned = eff.AutoMemory.NodePinned || n.AutoMemory != ""
+			eff.AmbientContext.NodePinned = eff.AmbientContext.NodePinned || n.AmbientContext != ""
 			eff.Permission.NodePinned = eff.Permission.NodePinned || n.Permission != ""
 			eff.Backend.NodePinned = eff.Backend.NodePinned || n.Backend != ""
 		case *ir.ToolNode:
@@ -180,4 +184,17 @@ func normalizedAutoMemoryEnv() string {
 		return ""
 	}
 	return automemory.ParseMode(raw).String()
+}
+
+// normalizedAmbientContextEnv reports what ITERION_AMBIENT_CONTEXT will
+// ACTUALLY mean to a run: its canonical spelling when valid, and "" when unset
+// or invalid. ambient.ResolveSourced ignores an invalid value, so the run
+// falls back to the default, and the preview attributes it to the default
+// rather than captioning a value no run would ever use.
+func normalizedAmbientContextEnv() string {
+	p, ok := ambient.Parse(os.Getenv(ambient.PolicyEnv))
+	if !ok {
+		return ""
+	}
+	return p.String()
 }

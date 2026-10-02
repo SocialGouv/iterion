@@ -127,8 +127,20 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var stderrCapture codexStderrCapture
 	// Keep credential setup in one helper: structured-output formatting starts a
 	// second CLI process and must use the exact same per-run auth source.
-	if envOverride := codexCredEnvForCLI(ctx); len(envOverride) > 0 {
-		opts = append(opts, codexsdk.WithEnv(envOverride))
+	// The same environment carries the ambient-context policy's CODEX_HOME
+	// (codexSpawnEnv), computed once so both passes see the same home and the
+	// formatting pass resumes the session the work pass wrote.
+	spawnEnv, releaseHome, err := codexSpawnEnv(ctx, task)
+	if err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
+	defer func() {
+		if rerr := releaseHome(); rerr != nil {
+			b.Logger.Warn("[%s#%d/codex] %v", task.NodeID, task.Iteration, rerr)
+		}
+	}()
+	if len(spawnEnv) > 0 {
+		opts = append(opts, codexsdk.WithEnv(spawnEnv))
 	}
 
 	opts = append(opts, codexsdk.WithStderr(func(line string) {
@@ -194,7 +206,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		const maxFmtAttempts = 2
 		for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 			b.Logger.Debug("codex [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, resultMsg.SessionID)
-			fmtRM, fmtDuration, fmtErr := b.formatOutput(ctx, task, resultMsg.SessionID, codexCLIPath)
+			fmtRM, fmtDuration, fmtErr := b.formatOutput(ctx, task, resultMsg.SessionID, codexCLIPath, spawnEnv)
 			result.Duration += fmtDuration
 			if fmtErr != nil {
 				if attempt < maxFmtAttempts {
@@ -356,7 +368,7 @@ func codexQueryContent(prompt string, images []string) codexsdk.UserMessageConte
 // formatOutput performs a second pass: resumes the work-pass session with
 // WithOutputSchema and a tight formatting prompt. Sandbox is forced to
 // read-only so the pass cannot mutate state while rendering the final JSON.
-func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, codexCLIPath string) (*codexsdk.ResultMessage, time.Duration, error) {
+func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, codexCLIPath string, spawnEnv map[string]string) (*codexsdk.ResultMessage, time.Duration, error) {
 	var stderrCapture codexStderrCapture
 	opts := []codexsdk.Option{
 		codexsdk.WithResume(sessionID),
@@ -365,7 +377,7 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, c
 		codexsdk.WithPermissionMode("bypassPermissions"),
 		// Formatting is intentionally tool-free work. Do not inherit Codex's
 		// cached-search default (or the work pass's live-search capability).
-		codexsdk.WithConfig(map[string]string{"web_search": codexWebSearchModeDisabled}),
+		codexsdk.WithConfig(codexConfig(task, codexWebSearchModeDisabled)),
 		codexsdk.WithStderr(func(line string) {
 			stderrCapture.AppendLine(line)
 			if line != "" {
@@ -381,8 +393,8 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, c
 	if task.ReasoningEffort != "" {
 		opts = append(opts, codexsdk.WithEffort(mapReasoningEffort(task.ReasoningEffort)))
 	}
-	if envOverride := codexCredEnvForCLI(ctx); len(envOverride) > 0 {
-		opts = append(opts, codexsdk.WithEnv(envOverride))
+	if len(spawnEnv) > 0 {
+		opts = append(opts, codexsdk.WithEnv(spawnEnv))
 	}
 
 	prompt := "Format your complete findings as JSON matching the required output schema. Do not call any tools; just return the JSON."

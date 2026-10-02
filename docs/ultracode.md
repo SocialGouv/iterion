@@ -28,23 +28,30 @@ When a node declares `reasoning_effort: ultracode`, iterion:
 2. **Grants the orchestration prerogative.** A `## Workflow Orchestration`
    section is appended to the system prompt giving standing consent to
    decompose substantial work across parallel subagents (via the `agent`
-   tool) and to verify findings adversarially — without asking first. It
-   also states the rule a non-interactive session imposes: a subagent run in
-   the background is collected (`TaskOutput` in Claude Code) before the
-   final output, since nothing reaches the model after it.
+   tool) and to verify findings adversarially — without asking first. The
+   section is backend-neutral: how a subagent's report comes back is the
+   backend's to state.
 3. **Makes the subagent tool available.** On the `claw` backend, the `agent`
    subagent tool is added to the node's allowlist when the node restricts its
    tools (an unrestricted set already exposes the claw builtins). The
-   `claude_code` backend orchestrates through its native subagent mechanism,
-   and its multi-agent `Workflow` tool is withheld from every node that is
-   NOT ultracode: the harness arms that tool on the word `ultracode` anywhere
-   in the prompt, content included, so only the effort may grant it (see
+   `claude_code` backend orchestrates through its native `Agent` tool, and
+   every subagent runs in the **foreground**: each spawn sets
+   `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so an `Agent` call returns the
+   agent's report as its tool result. To parallelise, the model puts several
+   `Agent` calls in one message; they run concurrently. A
+   `## Subagents in this session` section states this on every spawn that
+   keeps the tool, ultracode or not. The session is one-shot, so a
+   background agent's report could only arrive while the turn was still
+   running. A model that ends its turn to wait for one ends the session with
+   it, and the findings are lost. The multi-agent `Workflow` tool is withheld
+   from every node, ultracode included: it only runs in the background, and
+   nothing in the session can wait on it (see
    [backends.md](backends.md#claude_code)).
 4. **Warns off Opus 4.8.** Compiling `ultracode` on a model that isn't
    `claude-opus-4-8` emits diagnostic **C089** (a warning, not an error): the
    orchestration half won't be reliable and the node runs as plain `xhigh`.
 
-Adaptive thinking is enabled automatically for Opus 4.8 by the claw backend
+Adaptive thinking comes from the claw backend's model profile — adaptive across the Opus 4.8/Claude 5 lines, required on `claude-opus-5-5`
 (`thinking: {type: "adaptive"}`), so ultracode gets extended thinking without
 extra configuration.
 

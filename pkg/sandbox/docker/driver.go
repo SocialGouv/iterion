@@ -243,14 +243,23 @@ func validateEnvVar(k, v string) error {
 // the host and cannot itself resolve host.docker.internal, so proxying
 // an MCP call would fail the connect. It also lets inner localhost-only
 // services (e.g. an inner devbox cache) bypass the proxy.
-func hostNetworkArgs(info sandbox.RunInfo) []string {
+func hostNetworkArgs(info sandbox.RunInfo, specEnv map[string]string) []string {
 	var args []string
+	// Both spellings, as the clone-guard proxy sets them: curl, wget and git
+	// (libcurl) read only the lower-case http_proxy for an http:// URL, and
+	// prefer the lower-case forms.
 	if info.ProxyEndpoint != "" {
-		args = append(args, "--env", "HTTPS_PROXY="+info.ProxyEndpoint)
-		args = append(args, "--env", "HTTP_PROXY="+info.ProxyEndpoint)
+		for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+			args = append(args, "--env", k+"="+info.ProxyEndpoint)
+		}
 	}
 	if info.ProxyEndpoint != "" || info.HostGatewayAlias {
-		args = append(args, "--env", "NO_PROXY=localhost,127.0.0.1,host.docker.internal")
+		// Both spellings get the union of what the spec carried under either,
+		// so an operator's exceptions survive and the two never disagree.
+		noProxy := sandbox.MergeNoProxy(specEnv["NO_PROXY"]+","+specEnv["no_proxy"], "host.docker.internal")
+		for _, k := range []string{"NO_PROXY", "no_proxy"} {
+			args = append(args, "--env", k+"="+noProxy)
+		}
 		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 	return args
@@ -364,7 +373,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		}
 		args = append(args, "--env", k+"="+v)
 	}
-	args = append(args, hostNetworkArgs(info)...)
+	args = append(args, hostNetworkArgs(info, p.spec.Env)...)
 
 	// Egress TLS-inspection CA (Layer 2 secret substitution): when the
 	// proxy runs in inspection mode it mints leaves the in-container

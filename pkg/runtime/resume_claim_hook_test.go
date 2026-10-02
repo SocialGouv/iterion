@@ -32,7 +32,7 @@ func TestResume_theClaimHookFiresAtTheClaim(t *testing.T) {
 		reportRan = true
 		return map[string]any{}, nil
 	})
-	first := scratchEngine(s, x, d)
+	first := scratchEngine(t, s, x, d)
 	first.workflowHash = "sha256:launch"
 	if err := first.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("Run: want ErrRunPaused, got %v", err)

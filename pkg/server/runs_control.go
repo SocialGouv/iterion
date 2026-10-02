@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -253,8 +254,38 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "fork: %v", err)
 		return
 	}
+	s.shareForkGrant(r.Context(), result.NewRunID)
 	w.WriteHeader(http.StatusCreated)
 	s.writeJSONFor(w, r, result)
+}
+
+// shareForkGrant marks the publish grant a fork inherited shared: the child
+// carries its parent's forge_publish_token, so two runs now publish with one
+// grant and neither's verdict nor end may cut it back. A grant already cut
+// back cannot be shared again, and one already gone cannot serve the child at
+// all — its publish will be refused — and the line says so, rather than the
+// child finding out at its publish step.
+func (s *Server) shareForkGrant(ctx context.Context, childID string) {
+	if s.cfg.Store == nil || s.forgePublishTokens == nil || childID == "" {
+		return
+	}
+	child, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), childID)
+	if err != nil || child == nil {
+		return
+	}
+	token := runInputString(child, forgePublishVarToken)
+	if token == "" {
+		return
+	}
+	cutBack, found, err := s.shareGrant(token)
+	switch {
+	case err != nil:
+		s.warnf("fork %s: could not mark its inherited publish grant shared — its parent's verdict or end may cut it back under it: %v", childID, err)
+	case !found:
+		s.warnf("fork %s: its inherited publish grant is expired or revoked — the fork's publish will be refused", childID)
+	case cutBack:
+		s.warnf("fork %s: its inherited publish grant was already cut back to the post-run grace — the fork's publish is refused once the %s grace runs out", childID, s.postRunGrace())
+	}
 }
 
 // rewindRunRequest is the body of POST /api/runs/{id}/rewind. Mirrors

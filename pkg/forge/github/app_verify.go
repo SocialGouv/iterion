@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // ErrInstallationNotOwned is returned by VerifyInstallationOwnership when the
@@ -121,10 +123,17 @@ func userCanAccessInstallation(ctx context.Context, httpClient *http.Client, api
 				ID int64 `json:"id"`
 			} `json:"installations"`
 		}
-		dErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out)
+		raw, rErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		if resp.StatusCode/100 != 2 {
+			if err := forge.RateLimitErr("github", "GET /user/installations", resp.StatusCode, resp.Header, raw); err != nil {
+				return err
+			}
 			return fmt.Errorf("github: GET /user/installations: HTTP %d", resp.StatusCode)
+		}
+		dErr := rErr
+		if dErr == nil {
+			dErr = json.Unmarshal(raw, &out)
 		}
 		if dErr != nil {
 			return fmt.Errorf("github: decode /user/installations: %w", dErr)

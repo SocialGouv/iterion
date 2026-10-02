@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -65,10 +66,10 @@ const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
 // multi-agent workflows): the model is told it may decompose substantial work
 // across parallel subagents and lean toward adversarial verification, without
 // asking first. The orchestration capability is the `agent` subagent tool,
-// which the runtime makes available on the node when ultracode is active. It
-// also carries the one rule a non-interactive session imposes on that
-// orchestration: background subagents are collected before the final output,
-// because nothing reaches the model after it.
+// which the runtime makes available on the node when ultracode is active.
+// The section is backend-neutral: HOW a subagent returns its report is the
+// backend's to state (claude_code appends headlessSubagentRule to every spawn
+// that keeps the tool, ultracode or not).
 // See platform.claude.com/docs/en/build-with-claude/mid-conversation-effort-example.
 const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"Ultracode mode is on: optimize for the most exhaustive, correct result, " +
@@ -80,18 +81,15 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"steps. This consent stands for the whole task; you need not ask before " +
 	"spawning a subagent.\n\n" +
 	"Orchestration mechanics:\n" +
-	"- Prefer pipelines to barriers: let each item flow through its stages " +
-	"independently; synchronize all branches only when a stage genuinely needs " +
-	"every prior result at once (dedup/merge across the set, early-exit on zero " +
-	"findings, cross-item comparison).\n" +
+	"- Batch by stage: subagents launched together in ONE message run " +
+	"concurrently, and your next message waits for all of them. Put every " +
+	"independent subagent of a stage in the same message, and move on to a new " +
+	"message only when the next stage genuinely needs the previous results " +
+	"(dedup/merge across the set, early-exit on zero findings, cross-item " +
+	"comparison).\n" +
 	"- Subagents are stateless context-compressors: give each ONE self-contained " +
 	"brief (goal, exact scope and paths, expected report shape) and work from its " +
-	"summary instead of pulling raw exploration into your own context.\n" +
-	"- Collect before you finish: this session is not interactive, and nothing " +
-	"reaches you once you produce your final output. A subagent launched in the " +
-	"background reports only when you wait on it (in Claude Code: TaskOutput), so " +
-	"collect every one before that output, or run it in the foreground. A " +
-	"subagent still running when you finish is lost, with everything it found.\n\n" +
+	"summary instead of pulling raw exploration into your own context.\n\n" +
 	"Quality patterns (pick per task, compose freely):\n" +
 	"- Adversarial verify: for each finding, spawn independent skeptics prompted " +
 	"to REFUTE it; keep only what survives a majority.\n" +
@@ -123,7 +121,9 @@ const secretsHygieneInstruction = "\n\n## Secret handling\n\n" +
 	"`__ITERION_SECRET_<name>__`. Treat a placeholder exactly as you would the " +
 	"secret: pass it through verbatim to the tool or command that needs it. Never " +
 	"try to decode, guess, reconstruct, transform, or print its real value — " +
-	"iterion substitutes the real value at the moment of execution.\n" +
+	"iterion substitutes the real value at the moment of execution for the " +
+	"secrets this workflow gives you; any other placeholder stands for a value " +
+	"that is not yours to use and is passed through unchanged.\n" +
 	"- Never exfiltrate a secret or a placeholder: do not send it to any " +
 	"destination, file, or network endpoint that is not strictly required by the " +
 	"task you were given."
@@ -290,6 +290,11 @@ type ToolDef struct {
 	Description string
 	InputSchema json.RawMessage
 	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
+
+	// QualifiedName is the registry identity before provider-name
+	// sanitization (`mcp.<server>.<tool>` for an MCP tool). In-process only:
+	// it never crosses the sandbox IPC.
+	QualifiedName string
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
@@ -485,6 +490,19 @@ type Task struct {
 	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef
 
+	// MCPServersRefusedOnLauncher maps each MCP server this node named and
+	// the launcher may not start — the run is sandboxed and the server's
+	// definition is not the operator's — to the reason. Empty on every
+	// other run.
+	//
+	// It travels on the task rather than failing the build because a build
+	// error aborts the node before its fallback chain: a backend that starts
+	// the server INSIDE the container (claude_code, pi) can still serve this
+	// node, and only a refusal raised at execution time lets it try.
+	//
+	// In-process only: it never crosses the sandbox IPC.
+	MCPServersRefusedOnLauncher map[string]MCPLauncherRefusal `json:"-"`
+
 	// MCPServers are the user/plugin-declared MCP servers active for this
 	// node (from the workflow `mcp_server` decls, project .mcp.json, and
 	// enabled plugins' mcp_servers contributions). CLI backends
@@ -607,6 +625,14 @@ type Task struct {
 	// stays free of that per-backend knowledge and simply appends whatever it
 	// was handed.
 	AutoMemoryPrompt string
+
+	// AmbientContext is the node's resolved ambient-context policy (ADR-119):
+	// which of the workspace's instruction files and the operator's setup the
+	// backend lets the agent inherit besides its prompt. The executor resolves
+	// the precedence chain; every backend translates the value into its own
+	// mechanism. The zero value is ambient.Workspace, the default, so a task
+	// built outside the executor still gets the default.
+	AmbientContext ambient.Policy
 
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the
@@ -774,8 +800,8 @@ type Task struct {
 	// the host and from inside the sandbox, and which is NOT part of the target
 	// repository's checkout — the host `~/.iterion` that host_state
 	// bind-mounted. Empty when there is none: host_state=none, the kubernetes
-	// driver, or a mount the auto-binder skipped because it overlapped the
-	// workspace.
+	// driver, a mount the auto-binder skipped because it overlapped the
+	// workspace, or an iterion home that is not the one the operator chose.
 	//
 	// A backend needing to write per-run state (a seeded credential, session
 	// transcripts) writes it HERE rather than under `<WorkDir>/.iterion`.
@@ -852,6 +878,23 @@ type Task struct {
 	// node into a single human-readable block (the await_answers tool
 	// result when nothing is pending).
 	CollectAsyncAnswers func() (string, error)
+}
+
+// MCPLauncherRefusal is why the launcher declined one MCP server, carrying
+// the one thing its reader cannot re-derive from the text.
+//
+// A remedy built from several of these has to know which reasons already end
+// with the route-it-elsewhere advice — appending it twice reads as two
+// remedies, never appending it leaves a refused-and-broken server with no way
+// forward. That answer belongs to whoever wrote the reason
+// (mcp.ServerNotStartableError.CarriesRouteAdvice); searching the sentence
+// for a phrase makes a reword change behaviour in another package.
+type MCPLauncherRefusal struct {
+	// Reason is the launcher's own message for declining this server.
+	Reason string
+	// CarriesRouteAdvice is the writer's answer to whether Reason already
+	// ends with the route-it-elsewhere remedy.
+	CarriesRouteAdvice bool
 }
 
 // Hostless reports whether this task's commands execute directly on the host —

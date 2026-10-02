@@ -42,11 +42,11 @@ func ToolsDeclared(tools []string) bool { return tools != nil }
 // and it is deliberately NOT a workspace-safety predicate. `claudeNativeTools`
 // is a hardcoded enumeration of a roster iterion does not own: the same
 // package's `orchestrationTools` (Agent, TaskOutput, Monitor) and
-// `workflowOrchestrationTools` name tools outside it — `Agent`, `TaskOutput`
-// and `Monitor` therefore survive a `tools: []`, and so does every MCP tool,
-// which is not on the roster either. (`Workflow` is withheld separately, from
-// every NON-ultracode node whatever its list; an ultracode node with
-// `tools: []` keeps it.) On claw the runtime's
+// `headlessWithheldTools` name tools outside it. Which of those survive a
+// `tools: []` is the CLI's call (the pinned one resolves the roster's legacy
+// `Task` to `Agent`; `Monitor` survives), and every MCP tool survives, being
+// on no roster. (`Workflow` is withheld separately, from every spawn whatever
+// its list.) On claw the runtime's
 // own interaction and auto-memory appends can put `write_file` back. Anything that must know what
 // a node can DO reads the effective surface, not this.
 //

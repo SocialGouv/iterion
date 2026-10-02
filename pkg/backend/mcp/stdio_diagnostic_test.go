@@ -58,7 +58,7 @@ func TestStdioStartupFailureSafeDiagnostics(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			client := newSDKClient(startupHelperConfig(tc.mode), clientInfo{Name: "test", Version: "1"})
+			client := newSDKClient(startupHelperConfig(tc.mode), clientInfo{Name: "test", Version: "1"}, nil, nil)
 			t.Cleanup(func() { _ = client.Close() })
 			_, err := client.ListTools(ctx)
 			assertSafeStartupError(t, err, tc.want...)
@@ -76,7 +76,7 @@ func TestStdioStartupCommandFailureDoesNotPrintCommand(t *testing.T) {
 		Name: "missing", Transport: TransportStdio,
 		Command: filepath.Join(t.TempDir(), startupTestSecret),
 		Args:    []string{startupTestAuthURL},
-	}, clientInfo{Name: "test", Version: "1"})
+	}, clientInfo{Name: "test", Version: "1"}, nil, nil)
 	_, err := client.ListTools(context.Background())
 	assertSafeStartupError(t, err, "reason=command_not_found", "exit_code=unavailable", "stderr_bytes=0")
 	if !errors.Is(err, os.ErrNotExist) {
@@ -106,7 +106,7 @@ func TestStdioStartupCancellation(t *testing.T) {
 				ctx, cancel = context.WithCancel(context.Background())
 			}
 			defer cancel()
-			client := newSDKClient(cfg, clientInfo{Name: "test", Version: "1"})
+			client := newSDKClient(cfg, clientInfo{Name: "test", Version: "1"}, nil, nil)
 			result := make(chan error, 1)
 			go func() { _, err := client.ListTools(ctx); result <- err }()
 			waitStartupHelperFile(t, ready)
@@ -146,7 +146,7 @@ func TestStdioStartupInheritedStderrIsBounded(t *testing.T) {
 			}
 		}
 	})
-	client := newSDKClient(cfg, clientInfo{Name: "test", Version: "1"})
+	client := newSDKClient(cfg, clientInfo{Name: "test", Version: "1"}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	started := time.Now()

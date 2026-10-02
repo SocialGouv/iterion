@@ -1,5 +1,9 @@
 ## Fixture : claw_tool_coverage
 ##
+## Lancement manuel : `iterion run … --sandbox none`. Sous sandbox (le défaut),
+## les nœuds qui déclarent worker_*, lsp, screenshot ou computer_use sont refusés :
+## ces outils n'ont aucune forme dans le conteneur (docs/sandbox.md).
+##
 ## But : prouver empiriquement par un VRAI run LLM que chaque famille
 ## de tools claw est exercée end-to-end (l'agent appelle réellement
 ## le tool, le résultat retourne dans son contexte, et l'EventToolCalled

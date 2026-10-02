@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
@@ -91,20 +92,29 @@ func (g *GraphQLErrors) Error() string {
 
 // HasType reports whether any entry carries the given GraphQL error type.
 func (g *GraphQLErrors) HasType(t string) bool {
+	_, ok := g.entry(t)
+	return ok
+}
+
+// entry is the first entry carrying the given GraphQL error type.
+func (g *GraphQLErrors) entry(t string) (graphQLError, bool) {
 	for _, e := range g.Errors {
 		if strings.EqualFold(e.Type, t) {
-			return true
+			return e, true
 		}
 	}
-	return false
+	return graphQLError{}, false
 }
 
 // GraphQL performs one GraphQL call and decodes `data` into out.
 //
 // It fails on THREE independent conditions, and conflating any of them is how
 // a board sync silently does nothing:
-//   - transport / non-2xx status → the usual forge sentinel (401 → ErrUnauthorized);
-//   - a non-empty `errors[]`, even alongside a populated `data` → *GraphQLErrors;
+//   - transport / non-2xx status → the usual forge sentinel (401 → ErrUnauthorized),
+//     or a rate-limited *forge.StatusError;
+//   - a non-empty `errors[]`, even alongside a populated `data` → *GraphQLErrors,
+//     or a rate-limited *forge.StatusError wrapping it when an entry says
+//     RATE_LIMITED;
 //   - a malformed body.
 //
 // out may be nil for a mutation whose result is not needed.
@@ -118,7 +128,7 @@ func (c *AdminClient) graphQLOp(ctx context.Context, op, query string, vars map[
 		Data   json.RawMessage `json:"data"`
 		Errors []graphQLError  `json:"errors"`
 	}
-	code, err := forge.DoJSON(ctx, c.HTTP, http.MethodPost, c.graphQLEndpoint(), "github",
+	code, _, hdr, err := forge.DoJSONFull(ctx, c.HTTP, http.MethodPost, c.graphQLEndpoint(), "github",
 		func(req *http.Request) {
 			req.Header.Set("Authorization", "Bearer "+c.Token)
 			req.Header.Set("Accept", "application/vnd.github+json")
@@ -126,13 +136,19 @@ func (c *AdminClient) graphQLOp(ctx context.Context, op, query string, vars map[
 		},
 		graphQLRequest{Query: query, Variables: vars}, &envelope)
 	if err != nil {
-		return err
+		return forge.WithOp(err, "POST "+op)
 	}
 	if code/100 != 2 {
 		return statusErr("POST "+op, code)
 	}
 	if len(envelope.Errors) > 0 {
-		return &GraphQLErrors{Op: op, Errors: envelope.Errors}
+		gerr := &GraphQLErrors{Op: op, Errors: envelope.Errors}
+		if limit, ok := gerr.entry("RATE_LIMITED"); ok {
+			// GitHub answers its GraphQL budget running out with a 200.
+			return &forge.StatusError{Provider: "github", Op: "POST " + op, Code: code,
+				ResetAt: forge.LimitResetAt(hdr, time.Now()), Limit: true, Detail: limit.Message, Cause: gerr}
+		}
+		return gerr
 	}
 	if out == nil {
 		return nil

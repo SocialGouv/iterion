@@ -22,7 +22,7 @@ func TestAmbientSecretGloballySafe(t *testing.T) {
 
 func TestBuildSecretGuard_DoesNotGloballyRedactShortAmbientPassword(t *testing.T) {
 	t.Setenv("ITERION_TEST_PASSWORD", "shorts")
-	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, nil)
+	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, nil, nil)
 	if got := g.Redact("shorts_pipeline/shorts and more shorts"); got != "shorts_pipeline/shorts and more shorts" {
 		t.Fatalf("short ambient password poisoned ordinary project text: %q", got)
 	}
@@ -31,7 +31,7 @@ func TestBuildSecretGuard_DoesNotGloballyRedactShortAmbientPassword(t *testing.T
 func TestBuildSecretGuard_RedactsDistinctiveAmbientSecret(t *testing.T) {
 	const value = "Abcdef1234!?"
 	t.Setenv("ITERION_TEST_PASSWORD", value)
-	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, nil)
+	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, nil, nil)
 	got := g.Redact("password=" + value)
 	if strings.Contains(got, value) || (!strings.Contains(got, "__ITERION_SECRET_env_ITERION_TEST_PASSWORD__") && !strings.Contains(got, "[redacted]")) {
 		t.Fatalf("distinctive ambient secret was not redacted: %q", got)

@@ -65,7 +65,7 @@
 ## common case for a gap: new tests, new helpers) actually lands; the
 ## deterministic verify gate then re-checks the committed tree.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): the gap spec + the repo define the work. No
 ## language / package-manager literal, and no iterion-specific target
 ## path, appears in any var default, command body, or schema.

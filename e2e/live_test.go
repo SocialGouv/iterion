@@ -2204,7 +2204,12 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 			Headers:   server.Headers,
 		}
 	}
-	mcpManager := mcp.NewManager(mcpCatalog, mcp.WithLogger(logger))
+	// These harnesses model an UNSANDBOXED live run: they execute the node in
+	// this process, against a test MCP server on this machine. The launcher
+	// start policy is therefore explicit — without it the manager's zero
+	// value (operator-installed servers only) would refuse this workflow's
+	// own server, and no CI job runs the live tags to say so.
+	mcpManager := mcp.NewManager(mcpCatalog, mcp.WithLogger(logger), mcp.WithStartPolicy(mcp.StartAllServers))
 
 	executor := model.NewClawExecutor(reg, wf,
 		model.WithBackendRegistry(backendReg),

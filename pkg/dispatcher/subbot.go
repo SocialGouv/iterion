@@ -115,10 +115,14 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			Ctx:      ctx,
 			Workflow: childWf,
 			Store:    s,
-			RunID:    childRunID,
-			Logger:   logger,
-			StoreDir: storeDir,
-			WorkDir:  childWorkDir,
+			// Same as the dispatcher's own runs: no tier is set on the
+			// child's engine, so the child workflow's block decides.
+			SandboxTiersKnown: true,
+			RunID:             childRunID,
+			ParentRunID:       req.ParentRunID,
+			Logger:            logger,
+			StoreDir:          storeDir,
+			WorkDir:           childWorkDir,
 			// A subbot is a DIFFERENT bot from its parent, so it keys its own
 			// bot-scoped memory — derived from the CHILD's path, exactly as the
 			// CLI and studio runners do. Without it the executor falls back to

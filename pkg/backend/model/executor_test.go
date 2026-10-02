@@ -47,7 +47,7 @@ func mockStreamEvents(text string, stopReason string) <-chan api.StreamEvent {
 		ch <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: stopReason,
-			Usage:      api.UsageDelta{OutputTokens: 50},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 50},
 		}
 		// message_stop
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
@@ -458,7 +458,7 @@ func TestExecuteLLMStructuredOutput(t *testing.T) {
 		ch <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: "tool_use",
-			Usage:      api.UsageDelta{OutputTokens: 30},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 30},
 		}
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
 	}()
@@ -1342,7 +1342,7 @@ func TestRetryOnStructuredOutput(t *testing.T) {
 		ch <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: "tool_use",
-			Usage:      api.UsageDelta{OutputTokens: 20},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 20},
 		}
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
 	}()
@@ -1458,7 +1458,7 @@ func missingFieldStream() <-chan api.StreamEvent {
 		ch <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: "tool_use",
-			Usage:      api.UsageDelta{OutputTokens: 20},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 20},
 		}
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
 	}()
@@ -1542,7 +1542,7 @@ func TestStructuredOutputMissingFieldRecoversOnRetry(t *testing.T) {
 		good <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: "tool_use",
-			Usage:      api.UsageDelta{OutputTokens: 20},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 20},
 		}
 		good <- api.StreamEvent{Type: api.EventMessageStop}
 	}()
@@ -1610,7 +1610,7 @@ func TestStructuredOutputWrongType(t *testing.T) {
 		ch <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: "tool_use",
-			Usage:      api.UsageDelta{OutputTokens: 20},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 20},
 		}
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
 	}()
@@ -1671,7 +1671,7 @@ func TestStructuredOutputInvalidEnum(t *testing.T) {
 		ch <- api.StreamEvent{
 			Type:       api.EventMessageDelta,
 			StopReason: "tool_use",
-			Usage:      api.UsageDelta{OutputTokens: 20},
+			Usage:      api.UsageDelta{Reported: true, OutputTokens: 20},
 		}
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
 	}()

@@ -81,18 +81,17 @@ func OwnedSkillsDir(workDir string) string {
 // refuseAnOwnedCopyOutsideTheWorkspace refuses a reset that would leave the
 // run's own tree.
 //
-// The directory is removed recursively on every mirror pass, and `.claude` is a
-// path the CHECKOUT supplies: committed as a symlink to somewhere else, it aims
-// that removal at a directory the engine never created, at a pathname the
-// repository under audit chose. Measured before this guard existed: a `.claude`
-// linked out of the workspace had `<target>/iterion-skills` removed with the
-// mirror reporting success.
-//
-// So the rule every destructive step here follows — resolve the symlinks,
-// require the target STRICTLY under the tree we own, then act. A workspace
-// REACHED through a symlink is fine: both sides resolve to the same tree. What
-// is refused is a `.claude` resolving out of it, and the run stops rather than
-// reading an owned copy it may not reset.
+// It is the backstop at the destructive step: since #1569 every `.claude`
+// symlink is refused EARLIER, before the first write, by refuseAClaudeSymlink
+// (mirrorBundleSkills) — a link to another top-level directory inside the
+// workspace routes the mirror's files to a path no tree-noise entry names,
+// which this guard used to accept. What remains here is the same rule the
+// pre-#1569 guard always stated, reached when the earlier check could not
+// answer (an Lstat failure): resolve the symlinks, require the target
+// STRICTLY under the tree we own, then act. A workspace REACHED through a
+// symlink is fine: both sides resolve to the same tree. What is refused is a
+// `.claude` resolving out of it, and the run stops rather than reading an
+// owned copy it may not reset.
 //
 // "Strictly" includes the workspace root itself, which is not a hair split:
 // `.claude` linked to the root puts the owned copy at `<workDir>/iterion-skills`.

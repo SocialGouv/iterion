@@ -4,6 +4,9 @@
 - **Date**: 2026-07-07
 - **Authors**: Adry
 - **Code**: [pkg/backend/delegate/delegate.go](../../pkg/backend/delegate/delegate.go) (`SystemPromptMode`, `SystemPromptModeForBackend`, `agenticOperatingPosture`, `Task.BuildSystemPrompt`)
+- **Amended by** [119-ambient-context-policy.md](119-ambient-context-policy.md): the
+  `user` setting scope left claude_code's default; the ambient-context policy
+  decides the scopes now
 
 ## Context
 

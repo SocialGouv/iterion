@@ -38,7 +38,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `claw` | 🟢 | Recommended in-process backend for direct provider calls and native Iterion tools. anthropic + openai validated; bedrock/vertex/foundry ship but are **untested**. | Automatic or explicit. |
 | `claude_code` | 🟢 | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
-| `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
+| `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
 | `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -210,13 +210,14 @@ The citations, per cell that is not self-evident from the table:
   pre-capability behaviour. The other backends have no workspace-command
   convention; a `/name` prompt reaches them as written.
 
-  On `claude_code` a workspace command resolves with `--setting-sources`
-  omitted entirely, and stops resolving under a list that names only `user`
-  — measured both ways. So the flag does not *enable* project commands, it
-  *scopes* them: iterion always passes it and its default is `user,project`
-  (`ITERION_CLAUDE_CODE_SETTING_SOURCES`), which keeps the project scope
-  that carries them and additionally gives a `claude_code` node the
-  operator's own `~/.claude/commands/` — a `claw` node never sees those.
+  On `claude_code` a workspace command resolves under the `project` scope
+  and stops resolving under a list that names only `user` — measured both
+  ways. So the flag does not *enable* project commands, it *scopes* them:
+  iterion always passes it, and the ambient-context policy (above) decides
+  which scopes accompany it. `workspace`, the default, keeps the project
+  scope that carries them; the operator's own `~/.claude/commands/` need
+  `all` — which also closes the old asymmetry where a `claude_code` node
+  saw them and a `claw` node never did (#1716).
 
 - **claw, five proven cells.** Structured output:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its
@@ -317,6 +318,59 @@ The open parity gaps, in one list: codex/kimi/grok/opencode MCP
 servers; kimi/grok/opencode session resume/fork (silent, unguarded); pi's print-mode
 runtime refusals without diagnostic codes; and every `unknown` cell,
 which is one live e2e away from proven.
+
+## Ambient context (ADR-119) — what a node inherits besides its prompt
+
+`ambient_context: none | workspace | operator | all` — on an agent/judge node
+or the workflow, with a run override (`--ambient-context`, launch
+`ambient_context`) and `ITERION_AMBIENT_CONTEXT` above the DSL. Default
+`workspace`. Two origins:
+
+- **workspace** — the repository's instruction files, from the working
+  directory up to the repository root, never above it: `CLAUDE.md`,
+  `.claude/rules/`, `AGENTS.md` … as each backend names them. The
+  repository's settings, skills, commands and hooks are NOT governed here:
+  they carry the engine's own mirrored skills and plugin contributions.
+- **operator** — the operator's personal agent setup (`~/.claude` or
+  `$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, pi's agent directory) and the
+  instruction files above the repository root. For a worktree nested in its
+  own main checkout, the main checkout counts as the repository.
+
+| backend | `none` | `workspace` (default) | `operator` | `all` |
+|---|---|---|---|---|
+| `claude_code` | `project` + every memory file excluded | `project` + the memory files above the root excluded | `user,project` + the repository's memory excluded | `user,project` |
+| `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on | the walk above the root + the user scope | everything |
+| `pi` | `--no-context-files` | `--no-context-files` + iterion supplies the allowed files, rendered in pi's own shape | the same, operator files | pi's native loading |
+| `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without its `AGENTS.md` | the same home | `project_doc_max_bytes=0` | unchanged |
+| `opencode`, `kimi`, `grok` | not enforced (C185 on an explicit value) | | | |
+
+Measured on Claude Code CLI 2.1.282 and codex-cli 0.156.1, each cell checked
+against the real tool with planted markers and an invalid key (no cost):
+
+- **Project memory walks up to `/`, not to the repository root.** With the
+  workspace under `$HOME`, `--setting-sources project` alone still loads
+  `~/.claude/CLAUDE.md` and `~/.claude/rules` — `~/.claude/` is an
+  ancestor's `.claude/`. Dropping the `user` scope does not keep the
+  operator out; iterion therefore also excludes the memory files of every
+  directory above the root (`CLAUDE.md`, `CLAUDE.local.md`,
+  `.claude/CLAUDE.md`, `.claude/rules/**` — never `.claude/**` whole, since
+  session worktrees live under a main checkout's `.claude/worktrees/`).
+- `claudeMdExcludes` is CONCATENATED across settings layers: the engine's
+  exclusions never remove one a repository or an operator set themselves.
+- A run worktree nested in the repository also loads the primary checkout's
+  `CLAUDE.md` through that walk — the policy removes the double-load.
+- The `project` scope always loads on `claude_code`: the engine's mirrored
+  skills and plugin contributions are only discovered under it
+  (`pkg/runtime/plugin_skills.go`).
+- Workspace `@imports` are confined: Claude Code does not follow an import
+  outside the repository in headless mode, and claw-code-go's loader (used
+  by `claw`) enforces the same for the workspace scope, symlinks included —
+  a pull request's `CLAUDE.md` cannot read `@/proc/self/environ` or
+  `@~/.ssh/id_rsa` into the prompt.
+
+The structured-output pass of a `claude_code` node follows its policy too;
+before ADR-119 it passed no `--setting-sources` at all, and so loaded every
+scope, `local` included.
 
 ## TL;DR
 
@@ -990,8 +1044,43 @@ mode `deny`).
 > so the combination fails CLOSED, never open. What cannot cross is an
 > **Ask decision** — nothing inside the container can pause the parent
 > run — so an ask-capable policy is refused loudly at dispatch (and
-> C136 warns at compile time). Run such a node unsandboxed, or route it
-> to `claude_code`.
+> C136 warns at compile time). Run the workflow unsandboxed
+> (`sandbox: none` / `--sandbox none` — a node-level `sandbox:` is not
+> honoured at run time), or route the node to `claude_code`.
+
+> **A sandboxed `claw` node also refuses a tool the container cannot
+> execute.** Tools the runner does not run locally are proxied back and
+> executed on the HOST, so the split is decided by an explicit placement
+> rather than by which names the runner happens to register — and the
+> launcher refuses every forwarded call for a tool that is not
+> launcher-placed, or that the run's `permission:` policy denies. The
+> tools that start a process, touch the workspace or a model-supplied
+> path, or open a model-supplied URL, and `agent`, run in-container;
+> launcher-owned state (MCP, `ask_user`, the `task_*` / `team_*` /
+> `cron_*` registries, `todo_write`, `config`, `tool_search`, plan mode,
+> the privacy pair, `web_search`) keeps the IPC proxy; and `lsp`,
+> `screenshot`, `computer_use` and the `worker_*` family have no
+> in-container form, so a sandboxed node declaring one is refused when it
+> executes (its `fallbacks:` still get their turn) — drop it, or run the
+> workflow unsandboxed (`sandbox: none` / `--sandbox none`). A
+> `tool_policy` allowlist is applied to the in-container tools when the
+> node is built: a tool it denies is not advertised at all. The full table
+> and its reasons: [sandbox.md](sandbox.md#claw-backend-in-sandbox).
+>
+> The same boundary applies to MCP SERVERS, which are processes rather
+> than tools. `claude_code` and pi start their own, so a sandboxed node's
+> servers run in the container; claw connects them in the launcher, so
+> under an active sandbox it starts only the operator's — a BUILTIN, or a
+> plugin installed under the iterion home the operator's own environment
+> names, and in both cases enabled and configured by the operator too
+> (three legs; see sandbox.md's table). Builtins are the normal case: every
+> MCP-contributing plugin shipped today is one. A server the node
+> inherited is dropped with an
+> `mcp_server_degraded` event; a server it names refuses the node when it
+> executes, so a `claude_code` or pi fallback — which starts that server
+> in the container — gets its turn. Origins, and the two rules that
+> travel with them:
+> [sandbox.md](sandbox.md#mcp-servers-under-a-sandbox).
 
 ## Transient-error & network resilience
 
@@ -1066,18 +1155,27 @@ subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
 restores host-config inheritance. Settings remain inherited independently
 (`--setting-sources`, above).
 
-**Ambient servers degrade per-server, on every backend.** A server a node
-never named — inherited from the target repo's `.mcp.json` or the plugin
-catalog — that fails to boot costs its OWN tools, never the run:
-claude_code's CLI skips a server it cannot start, pi bounds each connect
-with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process splice
-skips it with a Warn log plus a `mcp_server_degraded` run event (server,
-source, error), so the drop is in the run record, not just the process
-log. Typical case: a repo-scoped server needing a credential the
-execution host doesn't have (a token-less Sentry server on a cloud
-runner pod). A tool the node names EXPLICITLY on a dead server still
-fails loud at resolution — a declared dependency is never silently
-dropped.
+**Unnamed servers degrade per-server, on every backend.** A server whose
+tools the node does not name that fails to boot costs its OWN tools, never
+the run: claude_code's CLI skips a server it cannot start, pi bounds each
+connect with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process
+splice skips it with a Warn log plus a `mcp_server_degraded` run event, so
+the drop is in the run record, not just the process log. Typical case: a
+repo-scoped server needing a credential the execution host doesn't have (a
+token-less Sentry server on a cloud runner pod). A tool the node names
+EXPLICITLY on a dead server still fails loud at resolution — a declared
+dependency is never silently dropped, and no degrade event is emitted for
+it either, since the node is not about to run without those tools.
+
+The event's `source` says why the server was in that node's reach:
+`declared` when the node's own `mcp: servers:` named it, `ambient` when it
+was inherited from the repo's `.mcp.json`, the plugin catalog or the
+workflow. It is read from the node's declaration, because
+`ActiveMCPServers` — the resolved set the splice walks — holds both merged
+and cannot tell them apart. `origin` (project / workflow / plugin) is the
+other question: who controls the *definition*. A bot that declares a
+server whose tools it never names sees `source: declared` with the
+`origin` of wherever that server is defined.
 
 **Stdio MCP startup diagnostics.** The in-process MCP client drains stderr
 through the official SDK's command hook and retains only an 8 KiB tail during
@@ -1113,14 +1211,148 @@ deployment that would rather not expose the surface at all,
 default keeps that single-subagent surface — see
 [environment-variables.md](environment-variables.md)).
 
-The multi-agent **`Workflow`** tool is a different matter: it is withheld
-from every node that is not `reasoning_effort: ultracode`, knob or not.
-Claude Code arms that tool on the word `ultracode` anywhere in its prompt,
-and a node's prompt carries the content it works on — a PR whose title or
-diff mentions the mode would otherwise switch a reviewer into a background
-multi-agent orchestration the operator never asked for (measured on
-2026-09-05: four `revi/review` runs died at 3–5× their cost cap that way).
-The mode grants the tool; the effort is the escape hatch.
+**Subagents run in the foreground.** A claude_code session is one-shot. It
+ends with the node's final output, and nothing reaches the model after
+that: no completion notification, no scheduled wake-up. Every spawn
+therefore sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`: the main session,
+every structured-output pass, a resumed session, sandboxed or not. With it,
+the CLI runs each `Agent` call in the foreground and returns the agent's
+report as the tool result. It also drops `run_in_background` from the `Agent`
+and `Bash` schemas, and its own Agent guidance says the same. Parallelism
+still works: several `Agent` calls in one message run concurrently, and all
+of them return before the next step. Every spawn that keeps the subagent
+tool, ultracode or not, carries a `## Subagents in this session` section
+that says so. A process the node needs running while it works, such as a
+dev server, is started from the shell itself (`nohup … &`).
+
+A Bash command that outlives its timeout is now killed rather than moved to
+the background. So every spawn also pins `BASH_DEFAULT_TIMEOUT_MS` and
+`BASH_MAX_TIMEOUT_MS`, derived from this backend's own watchdogs. While a
+foreground command runs, the session is silent to them, because the SDK
+drops the CLI's progress lines. A command that outlived the hot idle tier or
+the no-progress tier would abort the whole session.
+
+- The maximum sits under the tighter of the two enabled watchdogs, by a
+  margin: a tenth of it, at least 30 s, at most half of it.
+- The default is half the maximum.
+
+With the defaults (15 min and 25 min) that makes 13 min 30 s and 6 min 45 s.
+With both watchdogs disabled, nothing can abort the session over a silent
+command, so both timeouts become one hour. The CLI's own 2-minute default
+would kill a long command for nothing.
+
+A pinned key set through the run's provisioning environment is ignored, with
+a warning that names it.
+
+Every pinned variable rides two layers, so that nothing lower can move it.
+There are four: the switch, the node's auto-memory decision
+(`CLAUDE_CODE_DISABLE_AUTO_MEMORY`), and the two Bash timeouts.
+
+- The process environment, which the run's provisioning environment cannot
+  override.
+- The one `--settings` object, merged with the auto-memory directory that
+  rides it. At startup the CLI copies the `env` block of every settings
+  source it loads into its environment, in the order user, project, local,
+  flag, policy, and reads these variables live afterwards. Without this
+  layer, a target repository's committed `.claude/settings.json` or the
+  operator's user settings could switch background work back on. They could
+  also turn auto-memory back on, against the operator's personal
+  `~/.claude/projects/<cwd>/memory/`. The flag layer comes after them; only
+  managed policy settings come later. The CLI applies those `env` blocks
+  again whenever a settings file changes during the session.
+
+**Routing is pinned too.** The same `env` blocks can set the variables that
+decide where the CLI sends its requests, and over which channel. A target
+repository's committed `.claude/settings.json` setting `ANTHROPIC_BASE_URL`
+would otherwise send every request of the run, with its API key or
+subscription token, to an endpoint the repository chose. Every spawn (the
+session, the structured-output pass, on the host and in a sandbox) therefore
+pins each variable of `ClaudeCodeRoutingEnv` in the flag layer:
+
+- the API endpoints (`ANTHROPIC_BASE_URL`, the Bedrock, Bedrock Mantle, Vertex,
+  Foundry, AWS and Google Cloud base URLs, `ANTHROPIC_FOUNDRY_RESOURCE`,
+  `CLAUDE_CODE_API_BASE_URL`), the provider switches (`CLAUDE_CODE_USE_*`) and
+  the companions the CLI groups with them (`CLAUDE_CODE_SKIP_*_AUTH`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL`);
+- the proxies, `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` under
+  both spellings;
+- the TLS trust: `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`,
+  `CLAUDE_CODE_CERT_STORE`.
+
+Each is pinned at the value the spawn's own environment holds, or `""` when
+it holds none: the CLI reads an empty routing variable as unset, and the empty
+value still outranks one a settings file sets. A proxy pair the spawn spells
+one way only is pinned to that value under both spellings, since the CLI's
+readers disagree on which spelling wins. The pinned values also reach the
+agent's own commands, like the rest of the CLI's environment: there, a
+routing variable the spawn left unset is set and empty. Most tools (curl,
+git, Node, Python's `urllib`) read an empty proxy or CA variable as unset.
+The Python Anthropic SDK does not: it takes an empty `ANTHROPIC_BASE_URL` as
+its base URL.
+
+The flag settings object travels as a file, never on argv, because a routing
+value can carry a credential: a proxy URL's userinfo, the sandbox egress
+proxy's token, a gateway header. On the host it is a 0600 file in a private
+temporary directory, removed when the pass ends. In a sandbox, the spawn
+writes it inside the container from the environment the CLI runs with there:
+the egress proxy and its CA are set when the container starts, and the host
+never sees them. The CLI keeps the content it read at startup, so a later
+write to the file does not move the pin, and it refuses to start when the file
+is missing.
+
+What the pin does not cover:
+
+- Credentials. They stay in the process environment and are never written to
+  the settings object. A settings file can still replace the key the CLI
+  sends, but only towards the pinned endpoint.
+- Settings that run commands (`hooks`, `apiKeyHelper` and the other auth or
+  header helpers): the pin only concerns the `env` block.
+- The cloud SDK variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`, metadata
+  endpoints). They only take effect once a provider switch selects that
+  cloud. They stay unpinned because the pinned `env` also reaches the agent's
+  own commands, and those SDKs read a set-but-empty variable differently from
+  an unset one.
+- `ANTHROPIC_UNIX_SOCKET`: the CLI already drops it from every settings source.
+- Managed policy settings, which outrank the flag layer by design.
+
+`ITERION_CLAUDE_CODE_SETTING_SOURCES=none` does not turn this off, and does not
+turn settings off either: it omits `--setting-sources`, and the CLI then loads
+every source, `local` included.
+
+Why this switch, and not a softer lever. With background work enabled, the
+CLI (2.1.280) runs an agent in the background:
+
+- whenever the call does not say `run_in_background: false`;
+- whenever the agent's definition says `background: true` (the operator's
+  `.claude/agents`, or the target repository's);
+- under its fork and coordinator modes.
+
+In all these cases it tells the model that the report "arrives in a separate
+turn", and it no longer has a tool that waits on a task (`TaskOutput` is
+gone). A documentation-campaign node took the CLI at its word. It launched
+its auditors, ended its turn to wait, and emitted its structured output with
+six of them unread. That happened pass after pass, until the run's budget
+ran out. Only `isolation: "remote"` stays asynchronous: that is a cloud
+agent, gated behind a claude.ai account.
+
+**Tools that hand work to a later turn are withheld from every spawn**,
+ultracode included:
+
+- **`Workflow`**: it only ever runs in the background, and nothing in the
+  session can wait on it. Claude Code also arms it on the word `ultracode`
+  anywhere in its prompt, and a node's prompt carries the content it works
+  on. A PR whose title or diff mentions the mode would switch a reviewer
+  into a background multi-agent orchestration (measured on 2026-09-05: four
+  `revi/review` runs died at 3–5× their cost cap that way).
+- **`ScheduleWakeup`** and **`CronCreate`/`CronDelete`/`CronList`**: they
+  schedule a prompt for a later turn of this session, which never comes. A
+  durable cron is written into the workspace's
+  `.claude/scheduled_tasks.json` instead.
+- **`RemoteTrigger`**: it schedules remote agents under the account the CLI
+  runs on.
+
+A name the running CLI does not register costs nothing on
+`--disallowedTools`.
 
 ### `codex`
 
@@ -1518,15 +1750,20 @@ workflow that depends on those tools.**
 
 #### Behaviour worth knowing
 
-- **`AGENTS.md` is read alongside `CLAUDE.md`, and it is the dominant
-  per-call cost.** pi walks up from the working directory and injects both.
+- **Context files are the dominant per-call cost.** Per directory pi loads
+  the FIRST existing file among `AGENTS.override.md`, `AGENTS.md`,
+  `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` — one file per directory, not both
+  (0.84.3, `resource-loader.js`) — walking up from the working directory to
+  `/`, plus the agent dir's own file. The ambient-context policy (above)
+  scopes this: every value but `all` turns pi's own loading off and has
+  iterion supply the allowed files, rendered exactly as pi renders its own.
   Two consequences:
   - If your repo carries an `AGENTS.md` meant for a different agent, it
     reaches pi nodes too.
-  - **Measure it before you budget.** On iterion's own tree (a 103 KB
-    `CLAUDE.md`) a one-word prompt costs **26,933 input tokens with context
-    files against 448 without** — sixty times the input, on every call,
-    before the node does any work. It stays on by default for parity with
+  - **Measure it before you budget.** When iterion's own `CLAUDE.md` was
+    103 KB, a one-word prompt cost **26,933 input tokens with context files
+    against 448 without** — sixty times the input, on every call, before the
+    node does any work ([ADR-085](adr/085-pi-as-execution-backend.md)). It stays on by default for parity with
     `claude_code`; set `ITERION_PI_NO_CONTEXT_FILES=1` to turn it off when a
     node does not need the repo's instructions.
 - **The target repo's `.pi/` directory is refused.** pi executes
@@ -1844,9 +2081,10 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
   short-circuits it. External hooks cannot pause the parent run, so `ask`
   (including explicit `ask:` rules under `deny`) is refused. Guarded sandbox
   runs are also refused because neither CLI currently carries its home and hook
-  binary into the container — so a gated node needs `sandbox: none` (the
-  shipped default is `auto`, and **C136** warns at compile time rather than
-  letting the run die at the agent node). Windows is refused: the hook command
+  binary into the container — so a gated node needs an unsandboxed run:
+  `sandbox: none` on the workflow, or `--sandbox none` (a node-level
+  `sandbox:` is not honoured; the shipped default is `auto`, and **C136**
+  warns at compile time rather than letting the run die at the agent node). Windows is refused: the hook command
   is POSIX-quoted and a spawn failure is an ALLOW.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).

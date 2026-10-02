@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
@@ -9,14 +12,36 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// envCloudScheduleGuards opts a cloud deployment into running schedule guards.
+const envCloudScheduleGuards = "ITERION_CLOUD_SCHEDULE_GUARDS"
+
+// cloudGuardRefusal says why a cloud schedule's guard may not run: a guard is
+// a shell command, and a cloud server runs it in its own pod — beside the
+// platform's service account, network and processes — on behalf of whoever
+// may manage a team's schedules. A deployment whose teams are its operators
+// opts in with ITERION_CLOUD_SCHEDULE_GUARDS=allow. Nil when the guard is
+// empty, the server is not a cloud one, or the deployment opted in.
+func (s *Server) cloudGuardRefusal(guard string) error {
+	if strings.TrimSpace(guard) == "" || s.cfg.Mode != "cloud" ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv(envCloudScheduleGuards)), "allow") {
+		return nil
+	}
+	return fmt.Errorf("a schedule guard is a shell command a cloud server would run in its own pod: refused unless the deployment sets %s=allow", envCloudScheduleGuards)
+}
+
 // cloudScheduleGate is the cloudsched.GateFunc: it runs the overlap
 // policy + guard for a slot THIS replica already won (the CAS is the
 // exactly-once authority; the gate only decides launch-vs-skip for the
 // consumed slot). The guard executes in the server pod's working
-// directory — cloud guards are for API-shaped checks (gh/curl); a
-// repo-local guard is a local-mode feature (the runner, not the
-// server, holds the clone).
+// directory, and only where the deployment opted in (cloudGuardRefusal);
+// a repo-local guard is a local-mode feature (the runner, not the server,
+// holds the clone).
 func (s *Server) cloudScheduleGate(ctx context.Context, sb cloudsched.ScheduledBot) (bool, string, schedgate.TickRecord) {
+	if err := s.cloudGuardRefusal(sb.Guard); err != nil {
+		rec := s.cloudTickRecord(sb, schedgate.TickGuardError)
+		rec.Reason = err.Error()
+		return false, "", rec
+	}
 	// The provenance query is tenant-scoped the same way the launch is;
 	// a nil store degrades to guard-only (Apply skips the overlap leg).
 	var lister schedgate.ScheduleRunLister

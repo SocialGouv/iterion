@@ -34,9 +34,10 @@ func (td *ToolDef) ToLLMTool() llmtypes.LLMTool {
 // execution contract consumed by the backend dispatch layer.
 func (td *ToolDef) ToDelegateDef() delegate.ToolDef {
 	return delegate.ToolDef{
-		Name:        td.sanitizedName(),
-		Description: td.Description,
-		InputSchema: td.InputSchema,
-		Execute:     td.Execute,
+		Name:          td.sanitizedName(),
+		Description:   td.Description,
+		InputSchema:   td.InputSchema,
+		Execute:       td.Execute,
+		QualifiedName: td.QualifiedName,
 	}
 }

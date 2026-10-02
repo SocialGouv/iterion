@@ -113,6 +113,18 @@ func openResumeBundle(path string) (*bundle.Bundle, func() error, error) {
 // prompt that points at a workspace_dir/scope_notes/etc. The engine
 // reloads vars from the checkpoint into rs.vars, but the executor
 // keeps its own copy for prompt rendering.
+// resumeSandboxOverride is the CLI-strength sandbox tier a resume runs
+// under: this attempt's flag when given, else the one the launch
+// recorded. The engine and the executor both read it HERE rather than
+// each computing it, so the mode the executor predicts is the mode the
+// engine resolves.
+func resumeSandboxOverride(opts ResumeOptions, r *store.Run) string {
+	if r == nil {
+		return opts.Sandbox
+	}
+	return pickString(opts.Sandbox, r.SandboxOverride)
+}
+
 func buildResumeExecutor(
 	opts ResumeOptions,
 	wf *ir.Workflow,
@@ -169,11 +181,18 @@ func buildResumeExecutor(
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
-		// Same tiers as `iterion run` — resume has no --sandbox flag, so
-		// the override tier is empty here by construction.
-		SandboxDefault: runtime.ResolveGlobalSandboxDefault(),
-		RunFallback:    []ir.Fallback{runFallback},
-		AutoMemory:     opts.AutoMemory,
+		// The same two tiers the resumed ENGINE resolves from
+		// (resume.go: pickString(opts.Sandbox, r.SandboxOverride) plus the
+		// global default). A resumed run re-resolves its sandbox, so the
+		// executor must predict from the same inputs — an executor that
+		// answered "no sandbox" while the engine started one would arm the
+		// MCP start policy against the run it is in.
+		SandboxOverride:   resumeSandboxOverride(opts, r),
+		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(),
+		SandboxTiersKnown: true,
+		RunFallback:       []ir.Fallback{runFallback},
+		AutoMemory:        opts.AutoMemory,
+		AmbientContext:    opts.AmbientContext,
 		// Same resolution the studio resume path uses, so the two surfaces
 		// key a bot's memory identically.
 		BotID:          runview.BotIDForRun(r),

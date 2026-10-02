@@ -114,6 +114,16 @@ func recipeKindOf(node *ir.ToolNode) recipeKind {
 	}
 }
 
+// toolNodeSetupError marks the sandbox refusal of a registry recipe: the
+// recipe can never run under this sandbox, so the Verified Action ladder
+// fails the node with it instead of treating it as a recipe run it may
+// repair, recover around, or waive under `policy: best_effort`. Every other
+// recipe failure stays a run failure for the ladder to judge.
+type toolNodeSetupError struct{ err error }
+
+func (s *toolNodeSetupError) Error() string { return s.err.Error() }
+func (s *toolNodeSetupError) Unwrap() error { return s.err }
+
 // executeToolNodeRecipe runs a tool node's recipe with exit-code = success
 // (the pre-ADR-044 behaviour). It is the rung-2 primitive of the Verified
 // Action ladder and the whole of the non-verified path.
@@ -155,6 +165,17 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 	}
 	if !ok {
 		return nil, fmt.Errorf("model: tool node %q references unregistered tool %q", node.ID, toolName)
+	}
+	// A sandboxed run executes a tool node's shell and script recipes in the
+	// container, but a registry tool is a closure in THIS process: only one
+	// whose home is the launcher's own state may run here.
+	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+		if placement, reason := tool.SandboxPlacementOf(resolved.QualifiedName); placement != tool.PlacementLauncher {
+			return nil, &toolNodeSetupError{fmt.Errorf(
+				"model: tool node %q: registry tool %q would execute on the host, outside the run's sandbox (placement %s: %s) — "+
+					"write it as a shell `command:`, which runs in the container, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)",
+				node.ID, toolName, placement, reason)}
+		}
 	}
 
 	inputJSON, err := json.Marshal(input)
@@ -1243,6 +1264,9 @@ func lookupToolEnv(name string) (string, bool) {
 		if v := ir.LookupEnv(name); v != "" {
 			return v, true
 		}
+	}
+	if !ir.ProcessEnvReadable(name) {
+		return "", false
 	}
 	return os.LookupEnv(name)
 }

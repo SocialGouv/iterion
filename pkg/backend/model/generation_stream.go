@@ -137,6 +137,15 @@ func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedR
 // as long as it remains observable.
 func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEvent, coldTimeout, hotTimeout time.Duration) aggregatedResponse {
 	var res aggregatedResponse
+	// The call's usage is unreported until the provider reports it: every
+	// exit short of that — a cut, a stall, a cancel, a failure frame naming
+	// no usage — leaves the counters a lower bound.
+	res.usage.UnreportedCalls = 1
+	// served turns true once the provider has visibly begun serving the
+	// request: a counter, a content block. The OpenAI wires open every stream
+	// with a placeholder message_start carrying none, so that frame alone is
+	// no sign.
+	served := false
 	blocks := make(map[int]*blockState)
 	drained := false
 	sawStop := false
@@ -240,8 +249,10 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				res.usage.InputTokens = event.InputTokens
 				res.usage.CacheReadTokens = event.CacheReadInputTokens
 				res.usage.CacheWriteTokens = event.CacheCreationInputTokens
+				served = served || event.InputTokens > 0 || event.CacheReadInputTokens > 0 || event.CacheCreationInputTokens > 0
 
 			case api.EventContentBlockStart:
+				served = true
 				bs := &blockState{blockType: event.ContentBlock.Type}
 				if event.ContentBlock.Type == "tool_use" {
 					bs.toolUse = toolUseBlock{
@@ -255,6 +266,7 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				blocks[event.ContentBlock.Index] = bs
 
 			case api.EventContentBlockDelta:
+				served = true
 				bs, ok := blocks[event.Index]
 				if !ok {
 					bs = &blockState{blockType: "text"}
@@ -294,6 +306,7 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				}
 
 			case api.EventMessageDelta:
+				served = true
 				res.usage.OutputTokens = event.Usage.OutputTokens
 				// The OpenAI endpoints have no message_start-shaped frame
 				// to carry a prompt count on — both learn it only in the
@@ -308,9 +321,29 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				// independent of thinking.display); 0 when the provider
 				// omits the breakdown.
 				res.usage.ReasoningTokens = event.Usage.OutputTokensDetails.ThinkingTokens
+				if event.Usage.Reported {
+					res.usage.UnreportedCalls = 0
+				}
 				res.stopReason = event.StopReason
 
 			case api.EventError:
+				// A failed call still spent what the provider served: the
+				// counters the error carries are what the stream had
+				// reported (a lower bound), and a failure frame carrying
+				// the provider's own account reports the call.
+				res.usage.InputTokens = max(res.usage.InputTokens, event.Usage.InputTokens)
+				res.usage.OutputTokens = max(res.usage.OutputTokens, event.Usage.OutputTokens)
+				res.usage.ReasoningTokens = max(res.usage.ReasoningTokens, event.Usage.OutputTokensDetails.ThinkingTokens)
+				served = served || res.usage.InputTokens > 0 || res.usage.OutputTokens > 0
+				switch {
+				case event.Usage.Reported:
+					res.usage.UnreportedCalls = 0
+				case !served && admissionRefused(event.ErrorMessage):
+					// Refused before any of it was served — a rate limit,
+					// an overload, an exhausted balance: no bill, so no
+					// usage went unreported.
+					res.usage.UnreportedCalls = 0
+				}
 				// Transport / truncation stream errors are classified
 				// retryable so the retry loop re-issues the request; a
 				// permanent provider error (quota, overflow) stays terminal.

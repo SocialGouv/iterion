@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -103,6 +104,11 @@ type RunOptions struct {
 	// ("", "on", "off"). "" inherits the workflow/node `auto_memory:` DSL
 	// then ITERION_AUTO_MEMORY; the default is off.
 	AutoMemory string
+	// AmbientContext is the run-level ambient-context override ("", "none",
+	// "workspace", "operator", "all"; ADR-119). "" inherits the workflow/node
+	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT; the default is
+	// workspace.
+	AmbientContext string
 	// LoopBudgetGuard is the run-level override for the back-edge
 	// affordability guard ("", "on", "off"). "" inherits the workflow's
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
@@ -197,6 +203,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	if err := automemory.ValidateMode(opts.AutoMemory); err != nil {
 		return UserInputError(fmt.Errorf("--auto-memory: %w", err))
+	}
+	if err := ambient.Validate(opts.AmbientContext); err != nil {
+		return UserInputError(fmt.Errorf("--ambient-context: %w", err))
 	}
 
 	if err := runtime.ValidateRepoDevboxMode(opts.RepoDevbox); err != nil {
@@ -338,7 +347,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks,
+	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, lineage{runID: runID}, storeDir, logger, exporterHooks,
 		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
 	if err != nil {
 		return err
@@ -521,11 +530,42 @@ func teeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID str
 // unless opts.Executor already supplies one (test path). Prometheus
 // hooks are wired in when the exporter started so the executor emits
 // the same per-turn metrics as the engine.
+// sandboxTiersClaim says whether the CLI's own sandbox tiers (--sandbox plus
+// the global default) are the tiers the ENGINE this executor serves will
+// receive. It is a named type rather than a bare bool because the two
+// answers are one token apart at the call site and only one of them is safe
+// to guess wrong: an executor that claims tiers its engine does not get
+// predicts the wrong sandbox, and the permissive direction starts a
+// workflow-controlled MCP server beside the launcher.
+type sandboxTiersClaim bool
+
+const (
+	// tiersMatchTheEngine: this executor's engine is built on the same path,
+	// from the same two tiers (the top-level `iterion run`).
+	tiersMatchTheEngine sandboxTiersClaim = true
+	// tiersUnknownToAChild: a subbot child may execute in its PARENT's
+	// sandbox, which no tier of its own expresses — its engine is built with
+	// WithSharedSandbox and neither tier. The executor stays fail-closed
+	// until that engine settles the question. Same answer, for the same
+	// reason, as runview's subbot runner.
+	tiersUnknownToAChild sandboxTiersClaim = false
+)
+
+// lineage names the run an executor is built for: its own id, and the parent
+// whose record holds the minted credentials this run may have been handed
+// under another name. A root run leaves parentRunID empty.
+type lineage struct {
+	runID       string
+	parentRunID string
+}
+
 func buildRunExecutor(
 	opts RunOptions,
+	tiers sandboxTiersClaim,
 	wf *ir.Workflow,
 	s store.RunStore,
-	runID, storeDir string,
+	ln lineage,
+	storeDir string,
 	logger *iterlog.Logger,
 	exporter exporterEventHooks,
 	botID string,
@@ -546,9 +586,18 @@ func buildRunExecutor(
 		Workflow: wf,
 		Vars:     opts.Vars,
 		Store:    s,
-		RunID:    runID,
-		Logger:   logger,
-		StoreDir: storeDir,
+		// Named explicitly rather than left to the Store type-assertion: a
+		// store wrapper that does not forward LoadRun would otherwise
+		// disable the lineage read in silence (pkg/runner's metrics wrapper
+		// is one).
+		Runs:  s,
+		RunID: ln.runID,
+		// A child's guard learns its lineage's minted credentials by VALUE,
+		// from the records: whatever name the `with:` gave them, they are
+		// redacted from this run's sinks and resolve from no placeholder.
+		ParentRunID: ln.parentRunID,
+		Logger:      logger,
+		StoreDir:    storeDir,
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire ONLY
 		// this seam — a declared supervisor's hub must ride it or its
 		// text monitors can never see the agent speak (the engine seam
@@ -556,6 +605,7 @@ func buildRunExecutor(
 		EventObservers: hookObservers,
 		Compress:       opts.Compress,
 		AutoMemory:     opts.AutoMemory,
+		AmbientContext: opts.AmbientContext,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.
@@ -568,9 +618,10 @@ func buildRunExecutor(
 		// The same tiers the engine resolves the sandbox from (see
 		// ExecutorSpec) — without them the codex screen is inert on the
 		// primary local surface while the run sandboxes two calls later.
-		SandboxOverride: opts.Sandbox,
-		SandboxDefault:  runtime.ResolveGlobalSandboxDefault(),
-		RunFallback:     []ir.Fallback{runFallback},
+		SandboxOverride:   opts.Sandbox,
+		SandboxTiersKnown: bool(tiers),
+		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(),
+		RunFallback:       []ir.Fallback{runFallback},
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
 		// future CLI chatbox) are drained at the agent's turn boundaries.
@@ -647,7 +698,17 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if childBundle != nil && childBundle.Manifest != nil {
 			bundleName = childBundle.Manifest.Name
 		}
-		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
+		// The child's engine below is built with WithSharedSandbox and
+		// neither sandbox tier: this executor must not predict from the
+		// PARENT's flags.
+		// The child's own vars are what its `with:` mapping hands it, seeded
+		// by its engine. The PARENT's launch vars are not the child's: a
+		// declared secret of the child resolving {{vars.X}} against them
+		// would hand it a credential its parent never passed.
+		childRunOpts := opts
+		childRunOpts.Vars = nil
+		childExec, err := buildRunExecutor(childRunOpts, tiersUnknownToAChild, childWf, s,
+			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, logger, nil,
 			runview.ResolveBotID("", bundleName, childPath), nil)
 		if err != nil {
 			return nil, err

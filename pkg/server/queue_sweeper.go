@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -347,7 +348,55 @@ func (s *Server) handleDLQPeek(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "dlq peek: %v", err)
 		return
 	}
-	writeJSON(w, map[string]any{"message": view, "payload": payload})
+	writeJSON(w, map[string]any{"message": view, "payload": redactDLQPayload(payload)})
+}
+
+// redactDLQPayload is a parked run message for the admin view: its launch
+// vars carry the run's publish grant in clear, masked here. A payload that is
+// not a run message is withheld — the vars it may hold cannot be told apart.
+func redactDLQPayload(payload json.RawMessage) json.RawMessage {
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		out, _ := json.Marshal(fmt.Sprintf("payload withheld: %d bytes that are not a run message (%v)", len(payload), err))
+		return out
+	}
+	var vars map[string]json.RawMessage
+	if raw, ok := msg["vars"]; !ok || json.Unmarshal(raw, &vars) != nil {
+		return payload
+	}
+	masked := false
+	for name, raw := range vars {
+		var v any
+		if !store.IsServerMintedSecretVar(name) || json.Unmarshal(raw, &v) != nil || !store.HasServerMintedSecret(map[string]any{name: v}) {
+			continue
+		}
+		vars[name], _ = json.Marshal(store.RedactedLaunchVar)
+		masked = true
+	}
+	if !masked {
+		return payload
+	}
+	// Every other value keeps its bytes: the view an admin reads is the
+	// message as parked, numbers and escapes included, minus the grant.
+	encode := func(v any) (json.RawMessage, error) {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(v); err != nil {
+			return nil, err
+		}
+		return bytes.TrimRight(b.Bytes(), "\n"), nil
+	}
+	rawVars, err := encode(vars)
+	if err == nil {
+		msg["vars"] = rawVars
+		payload, err = encode(msg)
+	}
+	if err != nil {
+		withheld, _ := json.Marshal(fmt.Sprintf("payload withheld: %v", err))
+		return withheld
+	}
+	return payload
 }
 
 // handleDLQReplay re-enqueues a parked message. The run's doc is read

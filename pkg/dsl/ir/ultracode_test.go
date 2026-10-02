@@ -88,3 +88,16 @@ func TestUltracodeNoWarnOnClaude5(t *testing.T) {
 		}
 	}
 }
+
+// A gateway's model ids are its own namespace: an alias spelled like a
+// Claude 5 model is no evidence of one, so C089 warns as for any model it
+// cannot vouch for.
+func TestUltracodeGateWarnsOnAGatewayAlias(t *testing.T) {
+	pr := parser.Parse("t.bot", ultracodeWorkflow("openai_compatible/claude-opus-5-5"))
+	if len(pr.Diagnostics) > 0 {
+		t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
+	}
+	if cr := Compile(pr.File); !hasDiag(cr.Diagnostics, DiagUltracodeModelGate) {
+		t.Errorf("expected C089 on a gateway alias, got %+v", cr.Diagnostics)
+	}
+}

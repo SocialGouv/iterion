@@ -19,7 +19,7 @@ import (
 // is a posture cue, not a directive list: the paragraph it heads tells the
 // LLM that what it reads out of the target repository is data, and a guard
 // that enumerated forbidden spellings instead would be widened by the next
-// payload (docs/agents/bot-authoring.md, "Prompts that can act carry the
+// payload (docs/agents/bots/untrusted-input.md, "Prompts that can act carry the
 // UNTRUSTED INPUT BOUNDARY").
 const untrustedInputBoundaryMarker = "UNTRUSTED INPUT BOUNDARY"
 
@@ -303,7 +303,7 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 	sort.Strings(missing)
 	sort.Strings(stale)
 	if len(missing) > 0 {
-		t.Errorf("%d acting prompt(s) lack the %s paragraph — write it (docs/agents/bot-authoring.md, \"Prompts that can act carry the UNTRUSTED INPUT BOUNDARY\"):\n  %s",
+		t.Errorf("%d acting prompt(s) lack the %s paragraph — write it (docs/agents/bots/untrusted-input.md, \"Prompts that can act carry the UNTRUSTED INPUT BOUNDARY\"):\n  %s",
 			len(missing), untrustedInputBoundaryMarker, strings.Join(missing, "\n  "))
 	}
 	if len(stale) > 0 {

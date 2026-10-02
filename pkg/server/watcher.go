@@ -64,7 +64,7 @@ func (w *Watcher) Start() {
 			if isSkippedDir(d.Name()) {
 				return filepath.SkipDir
 			}
-			if err := w.fsWatcher.Add(path); err != nil {
+			if err := fswatch.Add(w.fsWatcher, path); err != nil {
 				w.logger.Warn("watcher: cannot watch %s: %v", path, err)
 			}
 		}
@@ -138,7 +138,7 @@ func (w *Watcher) handleEvent(ev fsnotify.Event) {
 	if ev.Has(fsnotify.Create) {
 		if info, err := os.Stat(absPath); err == nil && info.IsDir() {
 			if !isSkippedDir(filepath.Base(absPath)) {
-				if err := w.fsWatcher.Add(absPath); err != nil {
+				if err := fswatch.Add(w.fsWatcher, absPath); err != nil {
 					w.logger.Warn("watcher: cannot watch new dir %s: %v", absPath, err)
 				}
 			}

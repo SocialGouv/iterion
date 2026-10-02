@@ -474,6 +474,39 @@ func TestLoadExampleAnswersDiagnosticsWithoutTheHostRoot(t *testing.T) {
 	}
 }
 
+// The 500 of the flat-program path — a catalog outside the working
+// directory whose unit loads clean but whose prompt's {{include}} names no
+// file — names the include as the prompt wrote it, never the absolute path
+// the server resolved it to: the catalog's directory is the server's
+// layout, not the client's. The path rides the include-inlining error, so
+// the diagnostics cut (#1934) never covered it; the error gets the same
+// root cut.
+func TestLoadExampleNamesAMissingIncludeWithoutTheHostRoot(t *testing.T) {
+	workDir := t.TempDir()
+	examples := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(examples, "x", unit.FragmentDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	main := "import \"" + unit.FragmentDir + "/nodes.bot\"\n\nprompt p:\n  {{include \"nope.md\"}}\n\nworkflow x:\n  entry: done\n"
+	if err := os.WriteFile(filepath.Join(examples, "x", "main.bot"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(examples, "x", unit.FragmentDir, "nodes.bot"), []byte("agent a:\n  model: \"m\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hs := exampleServer(t, workDir, examples)
+	code, body := getExampleJSON(t, hs.URL+"/api/examples/x/main.bot", nil)
+	if code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want the 500 of the include that resolves to nothing: %s", code, body)
+	}
+	if !strings.Contains(string(body), "nope.md") {
+		t.Errorf("the 500 does not name the missing include: %s", body)
+	}
+	if strings.Contains(string(body), examples) {
+		t.Errorf("the 500 discloses the server's directory layout: %s", body)
+	}
+}
+
 // A catalog file that is a symlink to another file of the working
 // directory is never bound to that other file's path: the studio would
 // open and save it under the example's name.

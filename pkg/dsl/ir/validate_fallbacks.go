@@ -153,8 +153,9 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 	if mode == "" || mode == "off" {
 		return
 	}
-	// nodeSandboxSpec (validate_sandbox.go) takes a Node; every LLMNode is one.
-	if sandboxOptsOut(nodeSandboxSpec(nn.(Node))) || sandboxOptsOut(w.Sandbox) {
+	// Only the workflow's opt-out counts: a node-level `sandbox:` is not
+	// honoured at run time, so it cannot take this node out of the sandbox.
+	if sandboxOptsOut(w.Sandbox) {
 		return
 	}
 	routes := []string{}

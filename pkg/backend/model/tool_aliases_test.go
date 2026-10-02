@@ -27,7 +27,7 @@ func TestToolAliasesAndPolicyUseTheSameMCPResolution(t *testing.T) {
 			for _, enabled := range []bool{false, true} {
 				ctx := tool.WithBuiltinAliases(context.Background(), enabled)
 				ex := newTestClawExecutor(NewRegistry(), wf, WithToolRegistry(registry), WithToolPolicy(tool.NewPolicy("Read")))
-				defs, err := ex.resolveToolsForNode(ctx, node, []string{"Read"})
+				defs, _, err := ex.resolveToolsForNode(ctx, node, []string{"Read"})
 				if count == 2 {
 					if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 						t.Fatalf("ambiguity: %v", err)
@@ -60,7 +60,7 @@ func TestToolAliasesAndPolicyUseTheSameMCPResolution(t *testing.T) {
 					t.Fatalf("execute: %q %v, want %s", result, err, want)
 				}
 				// An alias beside a unique MCP must not accidentally grant its builtin.
-				canonical, err := ex.resolveToolsForNode(ctx, node, []string{"read_file"})
+				canonical, _, err := ex.resolveToolsForNode(ctx, node, []string{"read_file"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -80,7 +80,7 @@ func TestAmbiguousAliasPolicyDeniesCanonicalTool(t *testing.T) {
 	_ = tr.RegisterMCP("b", "Read", "", nil, jsonExec("b"))
 	for _, checker := range []tool.ToolChecker{tool.NewPolicy("*", "Read"), tool.BuildChecker([]string{"*"}, map[string][]string{"x": {"*", "Read"}}, nil)} {
 		ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolRegistry(tr), WithToolPolicy(checker))
-		defs, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"read_file"})
+		defs, _, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"read_file"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func TestAliasAndCanonicalToolAreAdvertisedOnce(t *testing.T) {
 	tr := tool.NewRegistry()
 	_ = tr.RegisterBuiltin("read_file", "", nil, jsonExec("ok"))
 	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolRegistry(tr))
-	defs, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"Read", "read_file", "Read"})
+	defs, _, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"Read", "read_file", "Read"})
 	if err != nil || len(defs) != 1 || defs[0].Name != "read_file" {
 		t.Fatalf("duplicate provider schemas: %v %v", defs, err)
 	}
@@ -106,7 +106,7 @@ func TestAliasDedupDoesNotHideDifferentToolsWithTheSameProviderName(t *testing.T
 	_ = tr.RegisterMCP("a_b", "Read", "", nil, jsonExec("one"))
 	_ = tr.RegisterMCP("a", "b_Read", "", nil, jsonExec("two"))
 	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolRegistry(tr))
-	_, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"Read", "mcp.a.b_Read"})
+	_, _, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"Read", "mcp.a.b_Read"})
 	if err == nil || !strings.Contains(err.Error(), "same model tool name") {
 		t.Fatalf("provider-name collision hidden by dedup: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestAliasPolicyUsesRegistryIdentityNotProviderName(t *testing.T) {
 	_ = tr.RegisterMCP("one", "Read", "", nil, jsonExec("MCP"))
 	_ = tr.RegisterBuiltin("mcp_one_Read", "", nil, jsonExec("different builtin"))
 	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolRegistry(tr), WithToolPolicy(tool.NewPolicy("Read")))
-	defs, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"mcp_one_Read"})
+	defs, _, err := ex.resolveToolsForNode(tool.WithBuiltinAliases(context.Background(), true), &ir.AgentNode{BaseNode: ir.BaseNode{ID: "x"}}, []string{"mcp_one_Read"})
 	if err != nil {
 		t.Fatal(err)
 	}

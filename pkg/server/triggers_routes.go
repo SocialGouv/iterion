@@ -291,9 +291,23 @@ type triggerSubscriptionReq struct {
 	// (pkg/schedgate; validated on create/update).
 	Overlap       string `json:"overlap,omitempty"`
 	MaxConcurrent int    `json:"max_concurrent,omitempty"`
-	Guard         string `json:"guard,omitempty"`
-	GuardTimeout  string `json:"guard_timeout,omitempty"`
-	GuardVar      string `json:"guard_var,omitempty"`
+	// Pointers, like the schedule route's patch: a request that does not
+	// mention a guard leaves the stored one alone. With a plain string an
+	// edit that says nothing about the guard would silently drop it — and on
+	// a cloud deployment, where a stored guard is refused but kept, that is
+	// exactly the request an operator sends to disable such a trigger.
+	Guard        *string `json:"guard,omitempty"`
+	GuardTimeout *string `json:"guard_timeout,omitempty"`
+	GuardVar     *string `json:"guard_var,omitempty"`
+}
+
+// guardOf returns the guard this request asks for, and whether it says
+// anything about it at all.
+func (r triggerSubscriptionReq) guardOf(cur string) string {
+	if r.Guard == nil {
+		return cur
+	}
+	return *r.Guard
 }
 
 // validatePolicy rejects incoherent schedgate fields with a 400-worthy error.
@@ -301,9 +315,9 @@ func (r triggerSubscriptionReq) validatePolicy() error {
 	return schedgate.Validate(schedgate.Policy{
 		Overlap:       r.Overlap,
 		MaxConcurrent: r.MaxConcurrent,
-		Guard:         r.Guard,
-		GuardTimeout:  r.GuardTimeout,
-		GuardVar:      r.GuardVar,
+		Guard:         r.guardOf(""),
+		GuardTimeout:  deref(r.GuardTimeout),
+		GuardVar:      deref(r.GuardVar),
 	})
 }
 
@@ -363,6 +377,15 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// The same refusal the schedule routes carry: a trigger guard is the
+	// same shell command, stored through a route a cloud server mounts. Its
+	// executor is not wired in cloud today, so this refuses a guard that
+	// nothing would run yet — which is the point: the stored snippet must
+	// not be waiting for the wiring that runs it.
+	if err := s.cloudGuardRefusal(req.guardOf("")); err != nil {
+		dispatcher.WriteErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
 	now := time.Now().UTC()
 	sub := applyTriggerReq(trigger.Subscription{
 		ID:        uuid.NewString(),
@@ -399,6 +422,15 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	if err := req.validatePolicy(); err != nil {
 		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
+	}
+	// A guard the request CHANGES, not one it merely carries: the studio
+	// builds its payload from the stored subscription, guard included, so
+	// every toggle of a trigger that already holds one would be refused.
+	if g := req.guardOf(cur.Guard); strings.TrimSpace(g) != strings.TrimSpace(cur.Guard) {
+		if err := s.cloudGuardRefusal(g); err != nil {
+			dispatcher.WriteErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
 	}
 	cur = applyTriggerReq(cur, req)
 	cur.UpdatedAt = time.Now().UTC()
@@ -444,11 +476,23 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	base.Cron = req.Cron
 	base.Overlap = req.Overlap
 	base.MaxConcurrent = req.MaxConcurrent
-	base.Guard = req.Guard
-	base.GuardTimeout = req.GuardTimeout
-	base.GuardVar = req.GuardVar
+	base.Guard = req.guardOf(base.Guard)
+	if req.GuardTimeout != nil {
+		base.GuardTimeout = *req.GuardTimeout
+	}
+	if req.GuardVar != nil {
+		base.GuardVar = *req.GuardVar
+	}
 	if req.Enabled != nil {
 		base.Enabled = *req.Enabled
 	}
 	return base
+}
+
+// deref is the value of an optional request field, empty when absent.
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

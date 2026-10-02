@@ -45,6 +45,19 @@ type ClassifierChecker struct {
 	FailOpen   bool
 }
 
+// ModelConsultingChecker is implemented by a ToolChecker whose verdict may
+// come from a model reading the call's input. Such a verdict cannot be taken
+// ahead of the call, so a caller that can only check ahead of time — a
+// sandboxed runner executing a tool in-container — must know it is missing.
+type ModelConsultingChecker interface {
+	ConsultsModel() bool
+}
+
+// ConsultsModel reports whether a classifier is wired in.
+func (cc *ClassifierChecker) ConsultsModel() bool {
+	return cc != nil && cc.Classifier != nil
+}
+
 // CheckContext implements ToolChecker.
 func (cc *ClassifierChecker) CheckContext(pctx PolicyContext) error {
 	if cc == nil || cc.Classifier == nil {
