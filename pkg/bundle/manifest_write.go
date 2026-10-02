@@ -207,10 +207,10 @@ func manifestPatchReadBack(m *Manifest, patch ManifestPatch) error {
 	if patch.Triggers != nil && !slices.Equal(m.Triggers, *patch.Triggers) {
 		return fmt.Errorf("triggers read %v, patched %v", m.Triggers, *patch.Triggers)
 	}
-	if patch.Category != nil && m.Category != *patch.Category {
+	if patch.Category != nil && normalizeBotCategory(m.Category) != normalizeBotCategory(*patch.Category) {
 		return fmt.Errorf("category read %q, patched %q", m.Category, *patch.Category)
 	}
-	if patch.Tags != nil && !slices.Equal(m.Tags, *patch.Tags) {
+	if patch.Tags != nil && !slices.Equal(normalizeBotTagList(m.Tags), normalizeBotTagList(*patch.Tags)) {
 		return fmt.Errorf("tags read %v, patched %v", m.Tags, *patch.Tags)
 	}
 	if patch.Requires != nil {

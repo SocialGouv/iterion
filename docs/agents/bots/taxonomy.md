@@ -2,7 +2,7 @@
 
 Read it when touching a manifest's `category:` / `tags:`, adding a tag
 to the vocabulary, or wiring a new catalog surface to the spine
-([the vocabulary](../../pkg/bundle/vocab.go) is the source; the closed
+([the vocabulary](../../../pkg/bundle/vocab.go) is the source; the closed
 set is bundlelint's soft diagnostic, the fleet gate's hard one).
 
 ++ b/docs/agents/bot-authoring.md
@@ -14,7 +14,7 @@ the runtime never branches on them, discovery just carries them, and no
 surface may hide a bot for what they say.
 
 **`category` is a CLOSED, versioned set** — one of six slugs
-([pkg/bundle/vocab.go](../../pkg/bundle/vocab.go), mirrored by
+([pkg/bundle/vocab.go](../../../pkg/bundle/vocab.go), mirrored by
 `studio/src/lib/botTaxonomy.ts` under a Go parity test):
 
 | slug | reads as | fleet examples |
