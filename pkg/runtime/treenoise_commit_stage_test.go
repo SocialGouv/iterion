@@ -103,12 +103,12 @@ func TestCommitStageArgsStageTheDependencyWorkWhenTheMirrorIsIgnored(t *testing.
 // and the mirror beside it is still set aside.
 func TestCommitWorkPathsTreatALockOnlyBumpAsWork(t *testing.T) {
 	porcelain := " M devbox.lock\x00"
-	got := commitWorkPaths(porcelain)
+	got := commitWorkPaths("", porcelain)
 	if len(got) != 1 || got[0] != "devbox.lock" {
 		t.Fatalf("commitWorkPaths = %q, want [devbox.lock] — a lock-only bump is merge-destined work on this path", got)
 	}
 	porcelain = "?? .claude/settings.json\x00 M devbox.lock\x00"
-	got = commitWorkPaths(porcelain)
+	got = commitWorkPaths("", porcelain)
 	if len(got) != 1 || got[0] != "devbox.lock" {
 		t.Fatalf("mirror beside the lock = %q, want only the lock", got)
 	}

@@ -327,3 +327,63 @@ func TestChildResourcesHostDevboxIsPerRunAndBareFileHasNoBundle(t *testing.T) {
 		t.Fatalf("installs = %v, want parent + child only", rec.installs)
 	}
 }
+
+// A child in place borrows its parent's workspace BEFORE any mirror refusal
+// has run: beginRunResources' snapshot restore (RemoveAll + copy back) and
+// hideParentSkillCollisions' removals all descend into `.claude/`. Through a
+// symlink they would delete and rewrite in the link's TARGET. The refusal
+// fires at the head of the block, typed like the mirror's (#1569).
+func TestBeginRunResourcesRefusesAClaudeSymlink(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+	eng := &Engine{workDir: ws}
+
+	_, _, err := eng.beginRunResources(context.Background(), "run_child", true)
+	var linkErr *claudeSymlinkError
+	if !errors.As(err, &linkErr) {
+		t.Fatalf("beginRunResources with a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
+	}
+	assertLinkTargetUntouched(t, target)
+}
+
+// Defense in depth behind that refusal: the link swapped in mid-run, after
+// the snapshot was taken. The restore must fail loudly — never RemoveAll
+// through the link — and leave the backup for recovery.
+func TestSnapshotChildResourcesRestoreRefusesAMidRunSymlinkSwap(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".claude", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(ws, ".claude", "skills", "parent.md"), "the parent's own\n")
+	restore, backup, err := snapshotChildResources(ws)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	// The mid-run swap: `.claude` becomes a link to a sibling tree holding
+	// a witness the restore would otherwise delete.
+	target := filepath.Join(ws, "target-dir")
+	if err := os.MkdirAll(filepath.Join(target, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	witness := filepath.Join(target, "skills", "witness.md")
+	writeFile(t, witness, "not the run's to touch\n")
+	if err := os.RemoveAll(filepath.Join(ws, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target-dir", filepath.Join(ws, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+
+	restoreErr := restore()
+	var linkErr *claudeSymlinkError
+	if !errors.As(restoreErr, &linkErr) {
+		t.Fatalf("restore through a mid-run symlink swap = %v, want the typed *claudeSymlinkError", restoreErr)
+	}
+	if !strings.Contains(restoreErr.Error(), backup) {
+		t.Fatalf("the restore error must name the backup for recovery: %v", restoreErr)
+	}
+	raw, readErr := os.ReadFile(witness)
+	if readErr != nil || string(raw) != "not the run's to touch\n" {
+		t.Fatalf("the restore reached through the link: witness=%q, %v", raw, readErr)
+	}
+}

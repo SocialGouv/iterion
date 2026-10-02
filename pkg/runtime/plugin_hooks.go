@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,16 +29,39 @@ const pluginHooksSidecar = "plugin-hooks.json"
 // an error WITHOUT rewriting the file (callers downgrade to warn + skip, so a
 // run never fails — but the user's file is never destroyed either).
 // No-op when workDir is empty or nothing is (or was) injected.
-func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
+//
+// A `.claude` symlink gets the ambient writer's soft-fail (#2061, mirroring
+// mirrorPluginContributions' #2044 split): warn naming the link, skip the
+// merge, and report complete=false so the caller vetoes the orphan pruner —
+// the pruner walks `.claude/<kind>` itself and must not follow the link
+// into its target. complete stays true on every other outcome: a skipped or
+// failed hooks merge says nothing about skill orphans.
+//
+// A settings.json the merge CHANGES is recorded in the mirror manifest
+// with its new content hash only when the file as found was still the
+// mirror's (mirrorMayClaimSettings) — and a merge that changes nothing
+// writes nothing at all, mtime included. Both rules exist for the resume
+// paths: a previous segment's edit of a tracked settings.json must keep
+// reading as the run's work (#1571, R213476), while a repository TRACKING
+// the file with no edit in between must not see the engine's own injection
+// banked either (#1364).
+func mergePluginHooks(workDir string, logger *iterlog.Logger) (complete bool, err error) {
+	complete = true
 	if workDir == "" {
-		return nil
+		return complete, nil
+	}
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		if logger != nil {
+			logger.Warn("runtime/plugin: %v — skipping the hooks merge this pass", err)
+		}
+		return false, nil
 	}
 	reg, err := plugin.Load()
 	if err != nil {
 		if logger != nil {
 			logger.Warn("runtime: load plugins for hooks merge: %v — skipping", err)
 		}
-		return nil
+		return complete, nil
 	}
 
 	// newBlob: event -> []group, concatenated across every enabled plugin.
@@ -68,13 +92,24 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 	}
 
 	if len(newBlob) == 0 && len(prevBlob) == 0 {
-		return nil // nothing to do, and nothing was ever injected
+		return complete, nil // nothing to do, and nothing was ever injected
 	}
 
 	settings, err := readJSONObject(settingsPath)
 	if err != nil {
-		return fmt.Errorf("runtime/plugin: %w — refusing to rewrite %s", err, settingsPath)
+		return complete, fmt.Errorf("runtime/plugin: %w — refusing to rewrite %s", err, settingsPath)
 	}
+	// The canonical form of the file AS FOUND, before the merge mutates the
+	// map: the no-op detector below, and — via the manifest — the divergence
+	// test that decides whether the merge's result may be recorded as the
+	// mirror's own bytes. A semantic no-op (same injected hooks removed and
+	// re-added) must not touch the file at all: on a RESUME the previous
+	// segment's edits live in it, and rewriting + re-recording would
+	// reclassify the run's own deliverable as mirror noise and destroy it at
+	// finalize (#1571 on the resume paths, R213476). The marshal is
+	// deterministic (sorted keys), so an agent's mere reformatting also
+	// reads as no-op and survives uncanonicalized.
+	before, _ := json.Marshal(settings)
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
@@ -115,16 +150,58 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 		settings["hooks"] = hooks
 	}
 
+	after, _ := json.Marshal(settings)
+
 	if err := os.MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
-		return fmt.Errorf("runtime/plugin: mkdir managed dir: %w", err)
+		return complete, fmt.Errorf("runtime/plugin: mkdir managed dir: %w", err)
 	}
-	if err := writeJSONFile(settingsPath, settings); err != nil {
-		return fmt.Errorf("runtime/plugin: write settings.json: %w", err)
+	if !bytes.Equal(before, after) {
+		// Decided BEFORE the write, from the file as found: may the result be
+		// recorded as the mirror's own bytes?
+		record := mirrorMayClaimSettings(workDir, settingsPath)
+		if err := writeJSONFile(settingsPath, settings); err != nil {
+			return complete, fmt.Errorf("runtime/plugin: write settings.json: %w", err)
+		}
+		if record {
+			if h, herr := hashFile(settingsPath); herr == nil {
+				recordMirrorWrite(mirrorManifestPath(workDir), settingsPath, h, logger)
+			}
+		}
 	}
-	if err := writeJSONFile(sidecarPath, newBlob); err != nil {
-		return fmt.Errorf("runtime/plugin: write hooks sidecar: %w", err)
+	if !reflect.DeepEqual(prevBlob, newBlob) {
+		if err := writeJSONFile(sidecarPath, newBlob); err != nil {
+			return complete, fmt.Errorf("runtime/plugin: write hooks sidecar: %w", err)
+		}
 	}
-	return nil
+	return complete, nil
+}
+
+// mirrorMayClaimSettings reports whether a settings.json the hooks merge is
+// about to rewrite may be recorded in the mirror manifest as the mirror's
+// own bytes. Yes when the mirror never recorded the file (its first claim —
+// the pre-merge bytes are the repository's own, or nothing), or when the
+// current bytes still hash to what the manifest recorded (untouched since
+// the mirror last wrote). NO when the bytes diverged from the record: an
+// agent (or the operator, during a pause) edited the file after the mirror
+// laid it, and recording the merge result would reclassify that edit as the
+// mirror's own — the finalize probe would then call the run's deliverable
+// noise and the worktree removal would destroy it (#1571 on the resume
+// paths, R213476). The edit is not lost to the merge: it travels inside the
+// rewritten file, which — unrecorded — reads as the run's work and banks.
+// This is the hooks writer's twin of the skill funnel's divergence respect
+// (a shadow keeps its marker: the restore of exact mirror bytes reads as
+// still-ours, a divergence never gets re-claimed).
+func mirrorMayClaimSettings(workDir, settingsPath string) bool {
+	m := loadMirrorManifest(workDir)
+	if m == nil {
+		return true
+	}
+	recorded, ok := m.Files[settingsPath]
+	if !ok {
+		return true
+	}
+	cur, err := hashFile(settingsPath)
+	return err == nil && cur == recorded
 }
 
 func containsGroup(groups []any, g any) bool {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -225,6 +226,156 @@ func TestMirrorInjectedPluginFilesEmptyPayloadStillVetoesPruneOnAClaudeSymlink(t
 	}
 	if logs := buf.String(); !strings.Contains(logs, ".claude") {
 		t.Errorf("the skip warning does not name the link; logs = %q", logs)
+	}
+	assertLinkTargetUntouched(t, target)
+}
+
+// #2060: ClearMirroredTierMarkers runs BEFORE mirrorBundleSkills at every
+// run-start site, and its os.Remove of the `.tier` sidecars had no symlink
+// check — through a `.claude` link, the wipe deleted iterion bookkeeping in
+// the link's TARGET before the mirror's refusal could fire. The wipe now
+// short-circuits on the same refusal; the witness `.tier` in the target
+// must survive — and the skip WARNS, so a future caller sees it.
+func TestClearMirroredTierMarkersSkipsAClaudeSymlink(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+	markerDir := filepath.Join(target, "skills", bundleMirrorMarkerDir)
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	witness := filepath.Join(markerDir, "keep.md.sha256.tier")
+	writeFile(t, witness, "bundle")
+
+	var buf bytes.Buffer
+	ClearMirroredTierMarkers(ws, iterlog.New(iterlog.LevelWarn, &buf))
+
+	if _, err := os.Lstat(witness); err != nil {
+		t.Fatalf("the tier sidecar in the link's target was wiped through the symlink: %v", err)
+	}
+	if logs := buf.String(); !strings.Contains(logs, ".claude") || !strings.Contains(logs, "target-dir") {
+		t.Fatalf("the skip did not warn naming the link and its target; logs = %q", logs)
+	}
+}
+
+// #2061: mergePluginHooks writes `.claude/settings.json` and had no symlink
+// guard. Ambient writer, so the #2044 split gives it the soft-fail: a
+// warning naming the link, no error — and complete=false so the caller
+// vetoes the orphan pruner, which walks `.claude/<kind>` itself and must
+// not follow the link into the target.
+func TestMergePluginHooksSkipsAClaudeSymlink(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+
+	complete, err := mergePluginHooks(ws, logger)
+	if err != nil {
+		t.Fatalf("mergePluginHooks through a .claude symlink = %v, want a soft skip, not an error", err)
+	}
+	if complete {
+		t.Fatal("complete = true on a skipped merge — the pruner would walk .claude through the link")
+	}
+	logs := buf.String()
+	for _, want := range []string{".claude", "target-dir"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("the skip warning does not name %q; logs = %q", want, logs)
+		}
+	}
+	assertLinkTargetUntouched(t, target)
+}
+
+// #2061: the library mirror had no symlink guard at all, and in the
+// mid-sequence window it wrote through the link AND reported
+// libraryComplete=true. Library skills are `.bot`-declared — run-critical —
+// so a declared ref gets the typed refusal, and even with NO declared ref
+// the pass reports complete=false: the pruner must not walk the link.
+func TestMirrorLibrarySkillsRefusesAClaudeSymlinkWithDeclaredSkills(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+	wf := &ir.Workflow{Skills: []string{"some-skill"}}
+
+	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), wf, nil, nil, nil)
+	var linkErr *claudeSymlinkError
+	if !errors.As(err, &linkErr) {
+		t.Fatalf("mirrorLibrarySkills with declared skills through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
+	}
+	if complete {
+		t.Fatal("complete = true on a refused pass — the pruner would walk .claude through the link")
+	}
+	assertLinkTargetUntouched(t, target)
+}
+
+func TestMirrorLibrarySkillsSymlinkWithoutDeclaredSkillsVetoesThePruner(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+
+	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), &ir.Workflow{}, nil, nil, logger)
+	if err != nil {
+		t.Fatalf("mirrorLibrarySkills with no declared skills through a .claude symlink = %v, want a soft skip, not an error", err)
+	}
+	if complete {
+		t.Fatal("complete = true against a symlink — the pruner would walk .claude through the link")
+	}
+	if logs := buf.String(); !strings.Contains(logs, ".claude") {
+		t.Errorf("the skip warning does not name the link; logs = %q", logs)
+	}
+	assertLinkTargetUntouched(t, target)
+}
+
+// #2061: the cloud twin takes the typed refusal directly — the payload
+// carries skills the `.bot` declares, and before this guard it wrote
+// through the link and reported success.
+func TestMirrorInjectedLibrarySkillsRefusesAClaudeSymlink(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+
+	_, _, err := mirrorInjectedLibrarySkills(ws, []LibrarySkillFile{
+		{Name: "some-skill", Content: []byte("# an injected library skill\n")},
+	}, nil)
+	var linkErr *claudeSymlinkError
+	if !errors.As(err, &linkErr) {
+		t.Fatalf("mirrorInjectedLibrarySkills through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
+	}
+	assertLinkTargetUntouched(t, target)
+}
+
+// The pruner DELETES, so it carries the same in-function guard as the wipe
+// (#2060): called directly with a `.claude` symlink — whatever the
+// call-site vetoes forgot — it must not follow the link and delete in the
+// target. The fixture plants a prunable orphan (iterion-wrote sidecar,
+// marker-matching content, no fresh tier) in the target — and the skip
+// WARNS, so a future caller sees it.
+func TestPruneWorkspaceMirrorSkipsAClaudeSymlink(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+	orphan := filepath.Join(target, "skills", "gone.md")
+	installMirroredFile(t, orphan, filepath.Join(target, "skills", bundleMirrorMarkerDir, "gone.md.sha256"), "orphan\n", "")
+
+	var buf bytes.Buffer
+	pruneWorkspaceMirror(ws, true, iterlog.New(iterlog.LevelWarn, &buf))
+
+	raw, err := os.ReadFile(orphan)
+	if err != nil || string(raw) != "orphan\n" {
+		t.Fatalf("the pruner deleted through the symlink: orphan=%q, %v", raw, err)
+	}
+	if logs := buf.String(); !strings.Contains(logs, ".claude") || !strings.Contains(logs, "target-dir") {
+		t.Fatalf("the skip did not warn naming the link and its target; logs = %q", logs)
+	}
+}
+
+// The injected payload is authoritative on the cloud path: a workflow the
+// pod re-reads WITHOUT the refs the launching instance shipped must not
+// degrade the symlink refusal to a soft skip while the payload still
+// carries declared skills.
+func TestMirrorLibrarySkillsRefusesAClaudeSymlinkOnAnInjectedPayload(t *testing.T) {
+	ws, target := claudeSymlinkWorkspace(t)
+	inj := &Contributions{Library: []LibrarySkillFile{
+		{Name: "some-skill", Content: []byte("# shipped by the launching instance\n")},
+	}}
+
+	_, _, complete, err := mirrorLibrarySkills(ws, t.TempDir(), &ir.Workflow{}, nil, inj, nil)
+	var linkErr *claudeSymlinkError
+	if !errors.As(err, &linkErr) {
+		t.Fatalf("mirrorLibrarySkills with an injected payload through a .claude symlink = %v, want the typed *claudeSymlinkError refusal", err)
+	}
+	if complete {
+		t.Fatal("complete = true on a refused pass — the pruner would walk .claude through the link")
 	}
 	assertLinkTargetUntouched(t, target)
 }

@@ -37,7 +37,7 @@ func TestPorcelainPathsARenameSourceHoldingAnArrow(t *testing.T) {
 	}
 
 	t.Run("the destination of an arrowed source is not read as the mirror", func(t *testing.T) {
-		got := commitWorkPaths("R  z.md\x00x -> .claude/evil.md\x00")
+		got := commitWorkPaths("", "R  z.md\x00x -> .claude/evil.md\x00")
 		if len(got) != 1 || got[0] != "z.md" {
 			t.Fatalf("commitWorkPaths = %q, want [z.md] — the run's work refused as mirror noise is the #1577 consumer impact", got)
 		}
@@ -63,7 +63,7 @@ func TestRunOutputPathsARenameSourceHoldingAnArrowAgainstRealGit(t *testing.T) {
 	if !strings.HasPrefix(porcelain, "R  z.md\x00x -> y.md\x00") {
 		t.Fatalf("the -z record order is not destination-first on this git: %q", porcelain)
 	}
-	if got := runOutputPaths(porcelain); len(got) != 1 || got[0] != "z.md" {
+	if got := runOutputPaths(repo, porcelain); len(got) != 1 || got[0] != "z.md" {
 		t.Fatalf("runOutputPaths = %q, want [z.md]", got)
 	}
 }

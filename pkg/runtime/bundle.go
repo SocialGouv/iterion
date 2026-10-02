@@ -83,6 +83,14 @@ const (
 // mirrorBundleSkills (called once per skill at run start) so the
 // rules stay in lockstep. The caller has already prepared
 // markerDir/dest and resolved srcPath.
+//
+// Every branch that leaves the mirror's bytes at destPath also records the
+// destination and its content hash in the mirror manifest
+// (mirrorManifestPathForMarker), so the dirtiness probes can tell the
+// mirror's own rewrite of a TRACKED `.claude/**` file from the run's edit
+// of one (#1571). A diverged shadow keeps the entry — its hash already
+// mismatches the diverged content, and a later restore of the mirror's
+// exact bytes reads as still-ours, pruneWorkspaceMirror's doctrine.
 func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, logger *iterlog.Logger) (skillReconcileOutcome, error) {
 	srcHash, err := hashFile(srcPath)
 	if err != nil {
@@ -105,6 +113,7 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
+		recordMirrorWrite(mirrorManifestPathForMarker(markerPath), destPath, srcHash, logger)
 		return skillOutcomeMirrored, nil
 	case destErr != nil:
 		return skillOutcomeShadowed, fmt.Errorf("runtime/bundle: stat %s: %w", destPath, destErr)
@@ -123,6 +132,7 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
+		recordMirrorWrite(mirrorManifestPathForMarker(markerPath), destPath, srcHash, logger)
 		return skillOutcomeUpToDate, nil
 	}
 	if markerHash != "" && markerHash == destHash {
@@ -148,8 +158,15 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
+		recordMirrorWrite(mirrorManifestPathForMarker(markerPath), destPath, srcHash, logger)
 		return skillOutcomeRefreshed, nil
 	}
+	// The diverged shadow keeps its manifest entry, on purpose: the entry's
+	// hash no longer matches the diverged content, so the probe already
+	// reads the file as work — and if a later edit restores exactly what the
+	// mirror wrote, the hash matches again and the file reads as still-ours.
+	// That is pruneWorkspaceMirror's deliberate marker-keep doctrine (the
+	// restore is respected as still-ours), applied to the manifest.
 	if logger != nil {
 		logger.Warn("bundle skill %q shadowed by existing workspace entry at %s (workspace differs from both source and previous-mirror marker)", filepath.Base(srcPath), destPath)
 	}
@@ -211,7 +228,11 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 		if _, statErr := os.Stat(destPath); statErr == nil {
 			return nil
 		}
-		return copyDir(srcPath, destPath)
+		if err := copyDir(srcPath, destPath); err != nil {
+			return err
+		}
+		syncMirrorManifestTree(mirrorManifestPath(workDir), destPath, logger)
+		return nil
 	}
 	// File skill → directory form (native discovery) + flat alias (prompt
 	// Reads). Shared with mirrorBundleSkills via mirrorFileSkill.
@@ -453,6 +474,7 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 				if cmpErr == nil && same {
 					owned = append(owned, destPath)
 					uptodate++
+					syncMirrorManifestTree(mirrorManifestPath(workDir), destPath, logger)
 					continue
 				}
 				shadowed++
@@ -466,6 +488,7 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 			}
 			owned = append(owned, destPath)
 			mirrored++
+			syncMirrorManifestTree(mirrorManifestPath(workDir), destPath, logger)
 			continue
 		}
 		// Only .md files are skills. Anything else at the top level
@@ -703,7 +726,22 @@ var mirrorKindDirs = []string{"skills", "commands", "agents"}
 // THAT pass, and so the pruner can tell a fresh mirror (sidecar rewritten
 // by writeMarker) from an orphan (sidecar still absent at pass end).
 // Best-effort; a missing dir is simply a workspace that was never mirrored.
-func ClearMirroredTierMarkers(workDir string) {
+//
+// A `.claude` symlink short-circuits the wipe (#2060): the sidecars live
+// under the link's TARGET then, and the run-start mirror refuses the same
+// shape immediately after (refuseAClaudeSymlink is mirrorBundleSkills'
+// first check) — wiping first would delete iterion bookkeeping in another
+// tree before the refusal fires, and skipping the wipe loses nothing since
+// the pass it prepares never runs. The guard lives here rather than as a
+// reorder at the call sites so every present and future caller is covered —
+// and it WARNS, so that future caller sees the skip instead of nothing.
+func ClearMirroredTierMarkers(workDir string, logger *iterlog.Logger) {
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		if logger != nil {
+			logger.Warn("runtime/mirror: %v — skipping the tier-sidecar wipe this pass", err)
+		}
+		return
+	}
 	for _, kind := range mirrorKindDirs {
 		markerDir := filepath.Join(workDir, ".claude", kind, bundleMirrorMarkerDir)
 		entries, err := os.ReadDir(markerDir)
@@ -746,8 +784,20 @@ func ClearMirroredTierMarkers(workDir string) {
 //
 // Best-effort throughout: a prune failure is logged but never fails a run.
 // The sweep walks all three mirror kind dirs (skills / commands / agents).
+//
+// A `.claude` symlink short-circuits the sweep: the call-site vetoes
+// (#2044, #2061) protect the three run-start sequences, but the pruner
+// DELETES — through the link, in the link's target. The guard lives here
+// for the same reason ClearMirroredTierMarkers carries its own (#2060):
+// every present and future caller is covered, whatever gate it forgot.
 func pruneWorkspaceMirror(workDir string, isWorktreeOwned bool, logger *iterlog.Logger) {
 	if workDir == "" {
+		return
+	}
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		if logger != nil {
+			logger.Warn("runtime/mirror: %v — skipping the orphan prune this pass", err)
+		}
 		return
 	}
 	if !isWorktreeOwned && !envOptIn(os.Getenv("ITERION_PRUNE_MIRROR_IN_CHECKOUT")) {
@@ -836,6 +886,10 @@ func pruneWorkspaceMirror(workDir string, isWorktreeOwned bool, logger *iterlog.
 			if err := os.Remove(destPath); err == nil {
 				_ = os.Remove(markerPath)
 				_ = os.Remove(markerPath + iterionWroteSidecarSuffix)
+				// The deletion is the engine's own act: tombstone it so a
+				// TRACKED pruned file's ` D` reads as mirror noise, not as
+				// the run's work (#1571).
+				tombstoneMirrorWrite(mirrorManifestPath(workDir), destPath, logger)
 				// The prior directory-form of a skill leaves an empty
 				// <stem>/ around after we drop SKILL.md. It was ours to
 				// begin with — drop it too, best-effort (RemoveEmpty style).

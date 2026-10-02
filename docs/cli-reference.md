@@ -402,11 +402,22 @@ answering for some *enclosing* repository instead of that directory.
 What iterion mirrors into a run worktree at run start does not count as
 uncommitted work — it is written by iterion, not produced by the run. That
 is **untracked** content under `.claude/skills/`, `.claude/commands/`,
-`.claude/agents/` and `.claude/.iterion-managed/`, plus `.claude/settings.json`
-exactly. A *tracked* file's change under those directories came from the
-repository, so it is the run's work; `.claude/settings.json.orig` is a
-failed merge, not a mirror; and a `.claude/` nested deeper in the tree is
-the run's own scaffolding of a sub-project.
+`.claude/agents/`, plus `.claude/settings.json` exactly — and, **tracked or
+not**, the mirror's own bookkeeping: `.claude/.iterion-managed/` and an
+`.iterion-managed/` directly inside each of those three directories. The
+engine is more precise than the sweep about the rest: its mirror records
+every file it writes, with the content hash it wrote, in
+`.claude/.iterion-managed/mirror-manifest.json`, so a *tracked* file under
+`.claude/` is mirror noise only while its bytes still hash to what the
+manifest recorded (a deletion made by the mirror's own pruner reads the
+same way), and an edit by the run — or by anyone after the mirror — is the
+run's work. The sweep deliberately keeps the coarser reading and treats any
+tracked change under those directories as work, even the mirror's own
+refresh: a wrong "noise" verdict would delete a worktree, a wrong "work"
+verdict only keeps one longer (on a repository that versions the mirror's
+output, that is what `--level moderate` is for). `.claude/settings.json.orig`
+is a failed merge, not a mirror; and a `.claude/` nested deeper in the tree
+is the run's own scaffolding of a sub-project.
 
 Immediately before a deletion the whole verdict is derived again, because
 the classification is a photograph and a sweep runs for tens of seconds. A
