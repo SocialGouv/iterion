@@ -102,6 +102,11 @@ func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map
 	return script
 }
 
+// pwLedgerOff is commit_state's ledger input for tests that do not
+// exercise the bound: max_bytes 0 rotates nothing, whatever the ledgers
+// hold (keep 8 is the default, kept for the wiring's shape).
+func pwLedgerOff() map[string]any { return map[string]any{"max_bytes": 0, "keep": 8} }
+
 // runPyWhole runs a node script under python3 and parses the WHOLE stdout
 // as one JSON object — the engine's contract (parseToolNodeOutput), not
 // the last-line shortcut: a stray print before the object is a real bug
@@ -510,7 +515,8 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 	})
 	if notify["consume"] == true {
 		run("commit_state", map[string]any{"state_next_file": decide["state_next_file"], "alertlog_file": decide["alertlog_file"],
-			"tick_file": decide["tick_file"], "generation": decide["generation"], "state_commit": false, "workspace": h.ws, "state_dir": ".prod-watch"})
+			"tick_file": decide["tick_file"], "generation": decide["generation"], "state_commit": false, "workspace": h.ws, "state_dir": ".prod-watch",
+			"ledger": plan["ledger"]})
 	}
 	return outs
 }
@@ -2925,7 +2931,8 @@ func TestProdWatch_CommitStateRefusesAMissingStagedState(t *testing.T) {
 		"state_next_file": filepath.Join(h.scratch, "state_next-missingrun12.json"),
 		"alertlog_file":   filepath.Join(h.scratch, "alertlog_delta-missingrun12.jsonl"),
 		"tick_file":       filepath.Join(h.scratch, "tick-missingrun12.json"),
-		"generation":      -1, "state_commit": false, "workspace": h.ws, "state_dir": ".prod-watch"}, nil, nil))
+		"generation":      -1, "state_commit": false, "workspace": h.ws, "state_dir": ".prod-watch",
+		"ledger": pwLedgerOff()}, nil, nil))
 	if err == nil || !strings.Contains(stderr, "is missing") {
 		t.Fatalf("a missing staged state refuses by name: err=%v stderr=%s", err, stderr)
 	}
@@ -3034,7 +3041,7 @@ func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 		"notify": {"alerts": true, "overflow_count": true, "stale_sources": true, "sinks": true, "labels": true, "app": true, "sentry": true,
 			"release": true, "release_known": true, "dry_run": true, "max_message_chars": true, "deliver_by": true},
 		"commit_state": {"state_next_file": true, "alertlog_file": true, "tick_file": true, "generation": true,
-			"state_commit": true, "workspace": true, "state_dir": true},
+			"state_commit": true, "workspace": true, "state_dir": true, "ledger": true},
 	}
 	got := map[string]map[string]bool{}
 	for _, e := range wf.Edges {
@@ -3484,7 +3491,8 @@ func TestProdWatch_CommitStateGit(t *testing.T) {
 		_ = os.WriteFile(al, []byte(strings.Repeat(`{"at":"x","fp":"probe:api"}`+"\n", alerts)), 0o644)
 		tk := filepath.Join(h.scratch, "tick.json")
 		_ = os.WriteFile(tk, []byte(`{"at":"x","alerts":1}`), 0o644)
-		return map[string]any{"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": gen - 1, "state_commit": true, "workspace": h.ws, "state_dir": ".prod-watch"}
+		return map[string]any{"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": gen - 1, "state_commit": true,
+			"workspace": h.ws, "state_dir": ".prod-watch", "ledger": pwLedgerOff()}
 	}
 	run := func(in map[string]any) (map[string]any, string, error) {
 		// The node's own git subprocesses inherit the same scrubbed
@@ -3612,7 +3620,8 @@ func TestProdWatch_CommitStateSubdirWorkspace(t *testing.T) {
 	tk := filepath.Join(scratch, "tick.json")
 	_ = os.WriteFile(tk, []byte(`{"at":"x"}`), 0o644)
 	out, stderr, err := runPyEnv(t, ws, pwSub(t, pwTool(t, wf, "commit_state").Script, map[string]any{
-		"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": 0, "state_commit": true, "workspace": ws, "state_dir": ".prod-watch"},
+		"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": 0, "state_commit": true, "workspace": ws, "state_dir": ".prod-watch",
+		"ledger": pwLedgerOff()},
 		nil, nil), gittest.Env())
 	if err != nil || out["committed"] != true {
 		t.Fatalf("a subdirectory workspace under diff.relative=true must commit: %v %s %v", out, stderr, err)
