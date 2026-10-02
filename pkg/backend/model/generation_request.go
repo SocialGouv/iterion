@@ -226,6 +226,7 @@ func accumulateUsage(total *Usage, step Usage) {
 	total.CacheWriteTokens += step.CacheWriteTokens
 	total.ReasoningTokens += step.ReasoningTokens
 	total.ThinkingMs += step.ThinkingMs
+	total.UnreportedCalls += step.UnreportedCalls
 }
 
 // toolCallsFromBlocks converts aggregated tool_use blocks to ToolCall values.
@@ -302,6 +303,17 @@ func callAndAggregate(
 	coldTimeout := resolveClawStreamColdTimeout()
 	idleTimeout := resolveClawStreamIdleTimeout()
 	ch, err := startStreamWithColdWatchdog(ctx, requestCtx, client, req, coldTimeout)
+
+	// The cold allowance began before StreamResponse was entered. Carry its
+	// remaining time into aggregation instead of accidentally granting a
+	// second full cold window to a provider that returned a stream late.
+	coldRemaining := coldTimeout
+	if err == nil && coldTimeout > 0 {
+		coldRemaining = time.Until(start.Add(coldTimeout))
+		if coldRemaining <= 0 {
+			err = &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
+		}
+	}
 	if err != nil {
 		span.Finish(err)
 		if opts.OnResponse != nil {
@@ -310,23 +322,10 @@ func callAndAggregate(
 				Error:   err,
 			})
 		}
-		return nil, err
-	}
-
-	// The cold allowance began before StreamResponse was entered. Carry its
-	// remaining time into aggregation instead of accidentally granting a
-	// second full cold window to a provider that returned a stream late.
-	coldRemaining := coldTimeout
-	if coldTimeout > 0 {
-		coldRemaining = time.Until(start.Add(coldTimeout))
-		if coldRemaining <= 0 {
-			err := &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
-			span.Finish(err)
-			if opts.OnResponse != nil {
-				opts.OnResponse(ResponseInfo{Latency: time.Since(start), Error: err})
-			}
-			return nil, err
+		if errors.As(err, new(*StreamIdleError)) {
+			return abandonedCall(err), nil
 		}
+		return nil, err
 	}
 	agg := aggregateStreamWithIdleWatchdog(ctx, ch, coldRemaining, idleTimeout)
 	// aggregate receives the remaining cold allowance so its timer is exact,
@@ -363,4 +362,12 @@ func callAndAggregate(
 	}
 
 	return &agg, nil
+}
+
+// abandonedCall is the response of a request the cold watchdog gave up on:
+// it went out, and whatever the provider spent on it, nothing reported it.
+// A provider that answered with an error instead served nothing, and
+// callAndAggregate returns that error alone.
+func abandonedCall(err error) *aggregatedResponse {
+	return &aggregatedResponse{usage: Usage{UnreportedCalls: 1}, err: err}
 }

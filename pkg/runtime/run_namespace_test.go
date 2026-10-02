@@ -36,7 +36,7 @@ func TestRunNamespaceExposesBudget(t *testing.T) {
 	wf := budgetedWorkflow()
 	eng := New(wf, tmpStore(t), newStubExecutor())
 	rs := eng.newRunState("run-ns", nil)
-	rs.budget.RecordUsage(1_200, 3.25)
+	rs.budget.RecordUsage(spendOf(1_200, 3.25))
 
 	ctx := eng.exprContext(rs, nil)
 	if ctx.Run == nil {
@@ -133,7 +133,7 @@ func TestRunNamespaceReachesDataMappings(t *testing.T) {
 	wf := budgetedWorkflow()
 	eng := New(wf, tmpStore(t), newStubExecutor())
 	rs := eng.newRunState("run-map", nil)
-	rs.budget.RecordUsage(1_200, 3.25)
+	rs.budget.RecordUsage(spendOf(1_200, 3.25))
 
 	// One vocabulary, four consumers: every member the namespace publishes
 	// must resolve through the mapping path exactly as through the expr path.

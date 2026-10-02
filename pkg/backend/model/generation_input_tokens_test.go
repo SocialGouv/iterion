@@ -33,7 +33,7 @@ func TestAggregateStream_TakesInputTokensFromTheDeltaWhenThatIsWhereTheyAre(t *t
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "hi"}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{InputTokens: 4321, OutputTokens: 9}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, InputTokens: 4321, OutputTokens: 9}},
 		{Type: api.EventMessageStop},
 	})
 	if agg.usage.InputTokens != 4321 {
@@ -53,7 +53,7 @@ func TestAggregateStream_DeltaZeroDoesNotEraseTheMessageStartCount(t *testing.T)
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "hi"}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 20}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 20}},
 		{Type: api.EventMessageStop},
 	})
 	if agg.usage.InputTokens != 100 {

@@ -363,6 +363,7 @@ func foldSameSession(prev, next delegate.Result, sharedSession bool) bool {
 func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	pt, nt := prev.Tokens, next.Tokens
 	pc, nc := cost.USDFromOutput(prev.Output), cost.USDFromOutput(next.Output)
+	pu, nu := cost.UnreportedCalls(prev.Output), cost.UnreportedCalls(next.Output)
 
 	tokens := pt + nt
 	usd := pc + nc
@@ -391,7 +392,7 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	if next.SessionFingerprint == "" {
 		next.SessionFingerprint = prev.SessionFingerprint
 	}
-	if tokens == nt && usd == nc {
+	if tokens == nt && usd == nc && pu == 0 {
 		return next
 	}
 	next.Tokens = tokens
@@ -405,6 +406,7 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	if usd != nc {
 		next.Output["_cost_usd"] = usd
 	}
+	cost.SetUnreportedCalls(next.Output, pu+nu)
 	return next
 }
 
@@ -650,6 +652,9 @@ type chainSpend struct {
 	tokens   int
 	duration time.Duration
 	costUSD  float64
+	// unreported counts the failed routes' calls whose usage the provider
+	// did not report: their tokens and cost above are a lower bound.
+	unreported int
 }
 
 // spendLabel names the element a skip's folded spend is booked on.
@@ -661,6 +666,7 @@ func (s *chainSpend) add(r delegate.Result) {
 	s.tokens += r.Tokens
 	s.duration += r.Duration
 	s.costUSD += cost.USDFromOutput(r.Output)
+	s.unreported += cost.UnreportedCalls(r.Output)
 }
 
 // applyTo folds the accumulated spend into the winning result.
@@ -671,7 +677,7 @@ func (s *chainSpend) add(r delegate.Result) {
 // leaving the map at the last route's figure alone would under-report
 // the chain's true cost to max_cost_usd / org caps / donor ledgers.
 func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
-	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 {
+	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 && s.unreported == 0 {
 		return r
 	}
 	r.Tokens += s.tokens
@@ -681,7 +687,7 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 	// all: a last element that could not even spawn, folding a whole
 	// session's spend into a struct field nobody enforces on. Allocated
 	// here for the same reason typedFailure allocates it.
-	if r.Output == nil && (s.tokens > 0 || s.costUSD > 0) {
+	if r.Output == nil && (s.tokens > 0 || s.costUSD > 0 || s.unreported > 0) {
 		r.Output = map[string]any{}
 	}
 	if r.Output != nil {
@@ -691,6 +697,7 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 		if s.costUSD > 0 {
 			r.Output["_cost_usd"] = cost.USDFromOutput(r.Output) + s.costUSD
 		}
+		cost.SetUnreportedCalls(r.Output, cost.UnreportedCalls(r.Output)+s.unreported)
 	}
 	return r
 }

@@ -113,6 +113,9 @@ type routeTotals struct {
 	inputTokens     int64
 	outputTokens    int64
 	aggregateTokens int64
+	// unreportedCalls counts the route's calls whose usage the provider
+	// did not report in full: their tokens above are a lower bound.
+	unreportedCalls int64
 }
 
 // tokens is everything the route consumed. The three counters are disjoint —
@@ -394,6 +397,12 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			}
 		}
 		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
+		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
+			k := routeKey{backend: backend, model: modelName}
+			t := m.byRoute[k]
+			t.unreportedCalls++
+			m.byRoute[k] = t
+		}
 		m.mu.Unlock()
 
 		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])

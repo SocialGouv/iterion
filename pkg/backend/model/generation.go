@@ -104,6 +104,12 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		// killing the run.
 		agg, err := callWithContextRetry(ctx, client, opts, &messages, forcedInitialToolChoice(opts, toolCallsSoFar))
 		if err != nil {
+			// A call the provider served before failing was billed: its
+			// partial usage, reported or not, joins the total the failure
+			// path meters.
+			if agg != nil {
+				accumulateUsage(&totalUsage, agg.usage)
+			}
 			return result(), err
 		}
 

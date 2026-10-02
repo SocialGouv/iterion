@@ -57,6 +57,9 @@ type LLMStepInfo struct {
 	// in thinking blocks. Both are 0 when the step produced no thinking.
 	ReasoningTokens int
 	ThinkingMs      int
+	// UsageUnreported marks a step whose provider did not report its usage
+	// in full: the token counts above are a lower bound, not a measurement.
+	UsageUnreported bool
 	// Thinking is the extended-thinking text for this step (empty when the
 	// step produced no thinking).
 	Thinking string
@@ -293,6 +296,7 @@ func toLLMStepInfo(step StepResult) LLMStepInfo {
 		CacheWriteTokens: step.Usage.CacheWriteTokens,
 		ReasoningTokens:  step.Usage.ReasoningTokens,
 		ThinkingMs:       step.Usage.ThinkingMs,
+		UsageUnreported:  step.Usage.UnreportedCalls > 0,
 		Thinking:         step.Thinking,
 	}
 }

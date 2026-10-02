@@ -85,7 +85,7 @@ func TestFailedNodeSpendIsRecorded(t *testing.T) {
 	rs := &runState{budget: shared, loopBudgetMarks: make(map[string]loopBudgetMark)}
 
 	engine.recordFailedNodeSpend(rs, "agent", map[string]any{"_tokens": 4_000, "_cost_usd": 1.25})
-	tokens, cost, _, _, _, _ := shared.Snapshot()
+	tokens, cost, _, _, _, _, _ := shared.Snapshot()
 	if tokens != 4_000 {
 		t.Fatalf("the failed node's tokens never reached the run: %d", tokens)
 	}
@@ -97,7 +97,7 @@ func TestFailedNodeSpendIsRecorded(t *testing.T) {
 	// the run's, and raising a budget error here would replace a named cause
 	// with a generic one on a run that is already ending. It must still book.
 	engine.recordFailedNodeSpend(rs, "agent", map[string]any{"_tokens": 20_000})
-	if tokens, _, _, _, _, _ := shared.Snapshot(); tokens != 24_000 {
+	if tokens, _, _, _, _, _, _ := shared.Snapshot(); tokens != 24_000 {
 		t.Fatalf("an over-budget failure was not booked: %d", tokens)
 	}
 
@@ -108,10 +108,10 @@ func TestFailedNodeSpendIsRecorded(t *testing.T) {
 	// unconditionally, so a phantom row shows up there and only there — and
 	// that row is a max_iterations slot a spendless tool failure must not
 	// consume.
-	beforeTokens, _, beforeIters, _, _, _ := shared.Snapshot()
+	beforeTokens, _, beforeIters, _, _, _, _ := shared.Snapshot()
 	engine.recordFailedNodeSpend(rs, "tool", map[string]any{"ok": true})
 	engine.recordFailedNodeSpend(rs, "tool", nil)
-	afterTokens, _, afterIters, _, _, _ := shared.Snapshot()
+	afterTokens, _, afterIters, _, _, _, _ := shared.Snapshot()
 	if afterTokens != beforeTokens {
 		t.Fatalf("a spendless failure moved the totals: %d -> %d", beforeTokens, afterTokens)
 	}
@@ -613,7 +613,7 @@ func (narratingClawClient) StreamResponse(_ context.Context, _ api.CreateMessage
 		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "I would rather narrate."}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 50}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 50}},
 		{Type: api.EventMessageStop},
 	}
 	ch := make(chan api.StreamEvent, len(events))
@@ -796,7 +796,7 @@ func (c *proseOnlyClient) StreamResponse(context.Context, api.CreateMessageReque
 		ch <- api.StreamEvent{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}}
 		ch <- api.StreamEvent{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "I'd rather not answer in JSON."}}
 		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
-		ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 2_000}}
+		ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 2_000}}
 		ch <- api.StreamEvent{Type: api.EventMessageStop}
 	}()
 	return ch, nil

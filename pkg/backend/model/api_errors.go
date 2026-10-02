@@ -282,6 +282,56 @@ var permanentProviderCodes = map[string]bool{
 	"image_file_not_found": true,
 }
 
+// admissionRefused reports a stream error event the provider answered
+// with instead of serving the request: either a refusal named at
+// admission (a rate limit, an overload, an exhausted balance), or any
+// permanent condition no new request clears (context overflow, bad key,
+// unknown model) — billed nothing on every wire that names its verdict.
+// A refusal named only in prose is not recognised.
+func admissionRefused(msg string) bool {
+	d, ok := streamErrorDetail(msg)
+	if !ok {
+		return false
+	}
+	if admissionRefusalLabels[d.typ] || admissionRefusalLabels[d.code] {
+		return true
+	}
+	if permanentProviderError(d.typ, d.code) {
+		return true
+	}
+	status, _ := statusOf(d.code)
+	return status == 429 || status == 529
+}
+
+// streamErrorDetail parses a stream error event into the verdict its
+// provider named: the chat/Responses textual forms first, else a raw JSON
+// error frame passed through verbatim.
+func streamErrorDetail(msg string) (openAIStreamError, bool) {
+	if d, ok := openAIStreamErrorDetail(msg); ok {
+		return d, true
+	}
+	typ, code, _, isJSON := errorFrameFields(msg)
+	if !isJSON {
+		return openAIStreamError{}, false
+	}
+	return openAIStreamError{typ: typ, code: code}, true
+}
+
+// admissionRefusalLabels are the error types and codes providers give a
+// request they refuse to serve: OpenAI's and Anthropic's rate-limit,
+// overload and balance refusals, and the Responses API's.
+var admissionRefusalLabels = map[string]bool{
+	"rate_limit_exceeded": true, "rate_limit_error": true, "overloaded": true,
+	"overloaded_error": true, "server_is_overloaded": true, "slow_down": true,
+	"insufficient_quota": true, "credit_balance_exhausted": true, "billing_error": true,
+	"organization_spend_limit_exceeded": true, "project_spend_limit_exceeded": true,
+	"usage_not_included": true,
+	// Over-window and oversized-prompt refusals: the request is rejected
+	// before processing, so nothing is billed.
+	"context_length_exceeded": true, "prompt_too_long": true,
+	"request_too_large": true, "string_above_max_length": true,
+}
+
 func matchesStreamTransportMarker(msg string) bool {
 	return strutil.ContainsAnyFold(msg, streamTransportMarkers)
 }

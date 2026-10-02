@@ -134,6 +134,9 @@ type OutputCorrector interface {
 type OutputCorrectionUsage struct {
 	Tokens  int
 	CostUSD float64
+	// UnreportedCalls has no field yet because no implementer exists
+	// (the interface is test-only): when a second OutputCorrectorWithUsage
+	// appears, the correction call's unreported count comes with it.
 }
 
 // OutputCorrectorWithUsage extends OutputCorrector for executors that can
@@ -276,7 +279,7 @@ func (e *Engine) ActiveElapsed() time.Duration {
 	if b == nil {
 		return 0
 	}
-	_, _, _, elapsed, _, _ := b.Snapshot()
+	_, _, _, elapsed, _, _, _ := b.Snapshot()
 	return elapsed
 }
 

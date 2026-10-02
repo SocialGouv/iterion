@@ -1145,6 +1145,41 @@ warning fires, run `iterion models pricing` to see which source (if any)
 answers, then either add the model to the table or expect `max_cost_usd` to
 bind on the priced nodes only.
 
+#### Neither ceiling counts usage the provider never reported
+
+The budget counts what the provider reported. A claw call whose usage the
+provider did not report in full is counted apart. Two causes:
+
+- A provider that sends no usage at all. On the OpenAI chat wire, usage
+  is sent only when requested, and claw requests it from api.openai.com
+  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked,
+  so its calls count as unreported unless it sends usage anyway.
+- A call that ended before its final account: a cut, a stall, a failure
+  frame carrying none, or a request abandoned unanswered by the cold-stream
+  watchdog. A request the provider refused before serving any of it — a
+  rate limit, an overload, an exhausted balance, an over-window prompt, or
+  any condition no new request clears, named by the error's code or type —
+  is billed nothing and is not counted. The verdict is read on the chat and
+  Responses wires; the Anthropic wire forwards the frame's message only, so
+  a refusal named only in prose still counts there.
+
+Whatever the call consumed reaches the run as a lower bound at most: the
+tokens it streamed before failing, or nothing. The first such call under a
+declared `max_tokens` or `max_cost_usd` emits one advisory `budget_warning`
+on dimension `usage_unreported`. Its `detail` names how many calls went
+unreported so far. As for `cost_usd_unpriced`, this figure is a floor:
+the warning is raised once per ceiling and re-armed when a ceiling is
+raised. The count rides the checkpoint, so a resumed run keeps it — and
+raises the warning once more. A failed attempt counts too, retried or not;
+when that count is all it spent, it takes no `max_iterations` slot.
+
+Each node output carries the count under `_usage_unreported_calls`, and
+each completed claw step that went unreported carries
+`usage_unreported: true` on its `llm_step_finished` event. Outside a
+budget, the runner logs that fact once per attempt and per route — for
+the steps it saw: a failed call emits no `llm_step_finished`, so only the
+budget counts it.
+
 ### The target repo's toolchain — `repo_devbox:`
 
 Two `devbox.json` files can supply a run's binaries, and both are

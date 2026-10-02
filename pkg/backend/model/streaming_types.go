@@ -28,6 +28,11 @@ type Usage struct {
 	CacheReadTokens  int
 	CacheWriteTokens int
 	ThinkingMs       int // wall-clock spent in thinking blocks, milliseconds
+	// UnreportedCalls counts the calls whose usage the provider did not
+	// report in full — none at all, or a stream that ended before its
+	// final account. The counters above are then at most a lower bound for
+	// them, never a measured zero.
+	UnreportedCalls int
 }
 
 // ToolCall represents the model's request to invoke a tool.
