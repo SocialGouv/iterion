@@ -563,6 +563,151 @@ func TestAuthoringLocalControlExcludedFromGitBundlesAndDiscovery(t *testing.T) {
 		})
 	}
 }
+
+// A .git the exclusion walk finds at an ancestor but Git itself refuses as
+// a repository — an empty directory left by a scratch `git init`, a gitfile
+// whose gitdir is gone (the linked-worktree-removed race) — governs
+// nothing: no file beneath it can be tracked, so the exclusion is vacuously
+// satisfied and the save proceeds. Before #2048 that ancestor answered the
+// walk and failed the save with git's exit 128; on a shared host, one
+// transient .git at the temp root reddened every authoring test at once.
+func TestAuthoringLocalToleratesAnAncestorGitDirGitRefuses(t *testing.T) {
+	// A non-English locale would hand the matcher a translated diagnostic if
+	// runAuthoringGit did not force LC_ALL=C — on hosts with the translation
+	// installed; harmless where it is not.
+	t.Setenv("LANG", "fr_FR.UTF-8")
+	t.Setenv("LANGUAGE", "fr_FR.UTF-8")
+	for _, kind := range []string{"empty-dir", "dangling-gitfile", "empty-index"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			nested := filepath.Join(root, "nested")
+			if err := os.Mkdir(nested, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "empty-dir":
+				if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			case "dangling-gitfile":
+				if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+filepath.Join(root, "gone")+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "empty-index":
+				// The boundary of Size()>0: a zero-byte index stages nothing
+				// and is tolerated — killing the `>= 0` mutant. An index git
+				// actually wrote holds 32 header bytes even with zero entries
+				// and refuses; that false refusal is fail-closed, accepted.
+				if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, ".git", "index"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(nested, "file.txt")
+			if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			locks, err := acquireAuthoringLocalLocks(t.Context(), []string{path})
+			if err != nil {
+				t.Fatalf("a .git Git refuses governs nothing: %v", err)
+			}
+			defer closeAuthoringLocalLocks(locks)
+			tx, err := prepareAuthoringLocal(locks[0], authoringPreviewFile{Operation: "replace", Before: "before\n", After: "after\n"}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.close()
+			if err := tx.publish(); err != nil {
+				t.Fatal(err)
+			}
+			authoringBytes(t, path, "after\n")
+		})
+	}
+	// The posture toward a repository Git reads — one whose .git is a
+	// directory holding HEAD — is unchanged: the exclusion is verified.
+	root := t.TempDir()
+	gittest.Run(t, root, "init", "-q", "-b", "main")
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	locks, err := acquireAuthoringLocalLocks(t.Context(), []string{path})
+	if err != nil {
+		t.Fatalf("a healthy repository is verified, not tolerated: %v", err)
+	}
+	closeAuthoringLocalLocks(locks)
+}
+
+// The same exit 128, the opposite verdict: a .git whose HEAD is gone but
+// whose INDEX still stages files is not "no repository" — Git cannot answer
+// for it, and one restored HEAD line makes the staged files tracked again.
+// Tolerating it was the false negative of the first #2048 fix.
+func TestAuthoringLocalRefusesAnIndexGitCannotRead(t *testing.T) {
+	root := t.TempDir()
+	gittest.Run(t, root, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(root, "staged.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, root, "add", "staged.txt")
+	if err := os.Remove(filepath.Join(root, ".git", "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	locks, err := acquireAuthoringLocalLocks(t.Context(), []string{path})
+	if locks != nil {
+		closeAuthoringLocalLocks(locks)
+	}
+	if err == nil {
+		t.Fatal("a populated index Git cannot read was tolerated: its staged files become tracked the moment HEAD is restored")
+	}
+	if !strings.Contains(err.Error(), "verify authoring Git exclusion") || !strings.Contains(err.Error(), "index still stages files") {
+		t.Fatalf("refused, but not by the index-aware exclusion: %v", err)
+	}
+}
+
+// A linked worktree's .git is a FILE: its index lives in the pointed gitdir
+// (<main>/.git/worktrees/<name>), and breaking the gitdir's HEAD gets the
+// same "not a git repository" from Git while the index still stages files.
+// The pointer must be followed, or the refusal of
+// TestAuthoringLocalRefusesAnIndexGitCannotRead stops at the first
+// `git worktree add`.
+func TestAuthoringLocalRefusesALinkedWorktreeIndexGitCannotRead(t *testing.T) {
+	repo := gittest.SourceRepo(t)
+	linked := filepath.Join(t.TempDir(), "linked-wt")
+	gittest.Run(t, repo, "worktree", "add", "--detach", linked, "HEAD")
+	t.Cleanup(func() { gittest.RemoveWorktree(t, repo, linked) })
+	if err := os.WriteFile(filepath.Join(linked, "staged.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, linked, "add", "staged.txt")
+	heads, err := filepath.Glob(filepath.Join(repo, ".git", "worktrees", "*", "HEAD"))
+	if err != nil || len(heads) != 1 {
+		t.Fatalf("gitdir HEAD not found: %v %v", heads, err)
+	}
+	if err := os.Remove(heads[0]); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(linked, "file.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	locks, err := acquireAuthoringLocalLocks(t.Context(), []string{path})
+	if locks != nil {
+		closeAuthoringLocalLocks(locks)
+	}
+	if err == nil {
+		t.Fatal("a linked worktree's populated index Git cannot read was tolerated: its staged files become tracked the moment the gitdir's HEAD is restored")
+	}
+	if !strings.Contains(err.Error(), "verify authoring Git exclusion") || !strings.Contains(err.Error(), "index still stages files") {
+		t.Fatalf("refused, but not by the index-aware exclusion: %v", err)
+	}
+}
+
 func TestAuthoringLocalRefusesUnsafeControlLayout(t *testing.T) {
 	for _, kind := range []string{"symlink", "unexpected", "wrong-ignore", "tracked"} {
 		t.Run(kind, func(t *testing.T) {
