@@ -32,9 +32,5 @@ type IRBlobStore interface {
 // out-of-band IR blobs, or nil otherwise. Callers MUST nil-check
 // (filesystem / local stores return nil).
 func AsIRBlobStore(s RunStore) IRBlobStore {
-	if s == nil {
-		return nil
-	}
-	b, _ := s.(IRBlobStore)
-	return b
+	return capability[IRBlobStore](s)
 }

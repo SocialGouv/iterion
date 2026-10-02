@@ -28,10 +28,11 @@ import (
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
 //   - Deploy the server (producer) first by default. Both orders can park a
-//     message; only one park is replayable. Old runners rejecting the new
-//     version park messages a DLQ replay fixes once the fleet is upgraded;
-//     new runners rejecting a version below their MinSchemaVersion park
-//     messages a replay can never fix (it re-publishes the same bytes). Roll
+//     run, and a resume recovers it — not at the same moment. Old runners
+//     rejecting the new version park runs a resume recovers as soon as the
+//     fleet is upgraded; new runners rejecting a version below their
+//     MinSchemaVersion park runs a resume recovers only once the server
+//     publishes a version they accept. Roll
 //     the runners first only when nothing below MinSchemaVersion(new) can
 //     still be queued — automatic when the bump leaves MinSchemaVersion
 //     alone, otherwise a check against the queue, never against the old
@@ -204,6 +205,14 @@ type RunMessage struct {
 	AllowUnknownInputs bool   `json:"allow_unknown_inputs,omitempty"`
 	SecretsRef         string `json:"secrets_ref,omitempty"`
 	TimeoutSec         int    `json:"timeout_sec,omitempty"`
+	// PoolGrantless marks a publication that asked the credential pool and
+	// was granted nothing: the attempt runs on env/fallback credentials,
+	// holds no pool lease, and its spend report must never reach the
+	// broker — it would be charged to the lease of the attempt this
+	// publication took the run from. Inverted (grantless, not served) so
+	// publications older than the field read as pool-served, which is what
+	// they were.
+	PoolGrantless bool `json:"pool_grantless,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
@@ -479,6 +488,13 @@ type ResumeSpec struct {
 	// back to failed_resumable. A runner that predates it leaves the run
 	// queued, as it always did, so the field changes no operator intent.
 	PriorStatus store.RunStatus `json:"prior_status,omitempty"`
+	// AcceptScratchLoss is the operator's consent to resume although the
+	// run's scratch does not travel — Force never gives it. It is spent by
+	// the claim of this publication: a runner applies it only while the run
+	// is still queued for this message, never to a redelivery after that
+	// claim or an adoption, whose losses nobody was shown. Absent from an
+	// older publisher: no consent, the safe side.
+	AcceptScratchLoss bool `json:"accept_scratch_loss,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so

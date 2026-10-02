@@ -91,11 +91,7 @@ type RunGitMetaStore interface {
 // persists run git metadata, or nil otherwise. Both filesystem and
 // Mongo stores satisfy it.
 func AsRunGitMetaStore(s RunStore) RunGitMetaStore {
-	if s == nil {
-		return nil
-	}
-	g, _ := s.(RunGitMetaStore)
-	return g
+	return capability[RunGitMetaStore](s)
 }
 
 // BuildRunGitMeta computes a RunGitMeta snapshot from a live repo/worktree

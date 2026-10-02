@@ -79,11 +79,7 @@ type PlanStore interface {
 // so the capture hook and the HTTP surface are backend-agnostic. Callers
 // MUST nil-check (a store without the seam, or a nil store).
 func AsPlanStore(s RunStore) PlanStore {
-	if s == nil {
-		return nil
-	}
-	p, _ := s.(PlanStore)
-	return p
+	return capability[PlanStore](s)
 }
 
 // plansDir returns <root>/runs/<runID>/plans after validating runID.

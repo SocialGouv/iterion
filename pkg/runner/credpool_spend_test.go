@@ -315,3 +315,109 @@ func TestRecordPoolSpend_ordinaryFailureLeavesTheDonorAlone(t *testing.T) {
 		t.Errorf("auth failures = %d — a bot failing on its own logic blamed the donor's credential", p.ConsecutiveAuthFailures)
 	}
 }
+
+// TestRecordPoolSpend_aSupersededDeliveryLeavesTheNewerAttemptsLease: the
+// run's open lease belongs to the attempt the run was queued for since —
+// a superseded delivery ran nothing, and reporting would close that lease
+// under the newer attempt, and charge the donor nothing it spent.
+func TestRecordPoolSpend_aSupersededDeliveryLeavesTheNewerAttemptsLease(t *testing.T) {
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10, MaxConcurrentRuns: 1})
+	ctx := context.Background()
+	superseded := fmt.Errorf("%w: run run-1 was queued at T2, this delivery was published at T1", runtime.ErrResumeSuperseded)
+
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usageWith(1.5, 900), superseded, false)
+
+	hist, err := h.leases.ListByDonor(ctx, "donor", 10)
+	if err != nil || len(hist) != 1 {
+		t.Fatalf("donor history = (%d, %v), want 1 lease", len(hist), err)
+	}
+	if hist[0].Closed {
+		t.Fatal("a superseded delivery closed the run's lease, which is the newer attempt's")
+	}
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 0 {
+		t.Fatalf("donor charged %v by a delivery that ran nothing", day.CostUSD)
+	}
+}
+
+// TestRecordPoolSpend_aLateReportStaysOnItsAttemptInsideASupersedeWindow:
+// an attempt's teardown can take minutes, and an operator resume acquires
+// inside that window. The report the runner makes carries the delivery's
+// publication, so it lands on the attempt's own (superseded) lease —
+// charged once through the stamp — and the successor's lease stays open
+// for the successor, whose own spend reaches the donor's ledger too.
+func TestRecordPoolSpend_aLateReportStaysOnItsAttemptInsideASupersedeWindow(t *testing.T) {
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10, MaxConcurrentRuns: 1})
+	ctx := context.Background()
+
+	// The run's first delivery, published after its lease was acquired —
+	// stamped by store.PublishAt, never inside that millisecond.
+	open, err := h.leases.GetOpenByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("attempt A's lease: %v", err)
+	}
+	T_A := store.PublishAt(time.Now().UTC(), open.AcquiredAt)
+	msgA := &queue.RunMessage{RunID: "run-1", TenantID: "team-1", PublishedAtRFC: T_A.Format(time.RFC3339Nano)}
+
+	// The resume's acquisition supersedes A's lease and opens its own.
+	if _, err := h.broker.Acquire(ctx, credpool.Request{
+		RunID: "run-1", OrgID: "org-1", TenantID: "team-1", UserID: "requester",
+		Wants: []credpool.Credential{{Source: credpool.SourceOAuth, Ref: "claude_code"}},
+	}); err != nil {
+		t.Fatalf("resume acquire: %v", err)
+	}
+	successor, err := h.leases.GetOpenByRun(ctx, "run-1")
+	if err != nil || successor.ID == open.ID {
+		t.Fatalf("the resume's lease = (%+v, %v), want a new one", successor, err)
+	}
+
+	// A's teardown reports, through the production hook.
+	h.runner.recordPoolSpend(msgA, usageWith(3, 400), nil, false)
+	stamped, err := h.leases.Get(ctx, open.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stamped.Closed || stamped.Outcome != credpool.OutcomeSupersededReported || stamped.CostUSD != 3 {
+		t.Fatalf("A's lease after its report: closed=%v outcome=%q cost=%.2f acquiredAt=%v closedAt=%v pub=%v, want closed %q with $3", stamped.Closed, stamped.Outcome, stamped.CostUSD, stamped.AcquiredAt, stamped.ClosedAt, T_A, credpool.OutcomeSupersededReported)
+	}
+	if now, err := h.leases.GetOpenByRun(ctx, "run-1"); err != nil || now.ID != successor.ID {
+		t.Fatalf("the successor lease is not open for the successor: (%+v, %v)", now, err)
+	}
+
+	// The successor's own attempt reports through its lease.
+	msgB := &queue.RunMessage{RunID: "run-1", TenantID: "team-1", PublishedAtRFC: time.Now().UTC().Add(2 * time.Millisecond).Format(time.RFC3339Nano)}
+	h.runner.recordPoolSpend(msgB, usageWith(2, 100), nil, false)
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if day.CostUSD != 5 {
+		t.Fatalf("the donor's ledger records $%.2f, want 3+2", day.CostUSD)
+	}
+}
+
+// TestRecordPoolSpend_aGrantlessDeliveryNeverReachesTheBroker: a delivery
+// published without a pool grant runs on env credentials — its spend
+// belongs to no donor, and its report must never reach the broker, where
+// it would be charged to the lease of the attempt the grantless
+// publication took the run from.
+func TestRecordPoolSpend_aGrantlessDeliveryNeverReachesTheBroker(t *testing.T) {
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10, MaxConcurrentRuns: 1})
+	ctx := context.Background()
+	T_A := store.PublishAt(time.Now().UTC(), time.Now().UTC())
+	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-1", PoolGrantless: true, PublishedAtRFC: T_A.Format(time.RFC3339Nano)}
+	h.runner.recordPoolSpend(msg, usageWith(4, 400), nil, false)
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if day.CostUSD != 0 {
+		t.Fatalf("the donor was charged $%.2f for a grantless delivery", day.CostUSD)
+	}
+	if open, err := h.leases.GetOpenByRun(ctx, "run-1"); err != nil || open.Closed || open.Outcome != "" {
+		t.Fatalf("the grantless report touched the run's lease: (%+v, %v)", open, err)
+	}
+}

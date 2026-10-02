@@ -53,6 +53,7 @@ var resumeOpts struct {
 	maxParallelBranches int
 	unlimitedWorkflow   bool
 	autoResume          int
+	acceptScratchLoss   bool
 }
 
 var resumeCmd = &cobra.Command{
@@ -61,13 +62,14 @@ var resumeCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		opts := cli.ResumeOptions{
-			RunID:       resumeOpts.runID,
-			StoreDir:    resumeOpts.storeDir,
-			AnswersFile: resumeOpts.answersFile,
-			LogLevel:    resumeOpts.logLevel,
-			Force:       resumeOpts.force,
-			ForceStale:  resumeOpts.forceStale,
-			Background:  resumeOpts.background,
+			RunID:             resumeOpts.runID,
+			StoreDir:          resumeOpts.storeDir,
+			AnswersFile:       resumeOpts.answersFile,
+			LogLevel:          resumeOpts.logLevel,
+			Force:             resumeOpts.force,
+			AcceptScratchLoss: resumeOpts.acceptScratchLoss,
+			ForceStale:        resumeOpts.forceStale,
+			Background:        resumeOpts.background,
 
 			AutoMemory:          resumeOpts.autoMemory,
 			AmbientContext:      resumeOpts.ambientContext,
@@ -125,6 +127,7 @@ func init() {
 	f.StringArrayVar(&resumeOpts.answerFlags, "answer", nil, "Set answer (key=value, repeatable)")
 	f.StringVar(&resumeOpts.logLevel, "log-level", "", "Log verbosity: error, warn, info, debug, trace")
 	f.BoolVar(&resumeOpts.force, "force", false, "Resume even if workflow source has changed")
+	f.BoolVar(&resumeOpts.acceptScratchLoss, "accept-scratch-loss", false, "Resume although the run's scratch does not travel (SCRATCH_NOT_PORTABLE): without it, or with an older bank — --force does not accept that")
 	f.BoolVar(&resumeOpts.forceStale, "force-stale", false, "Resume a status=running run whose engine has died (requires events.jsonl mtime ≥ 60s — server boot does this automatically)")
 	f.BoolVar(&resumeOpts.background, "background", false, "Internal: managed-runner mode for the studio server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")

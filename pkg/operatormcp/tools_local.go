@@ -165,7 +165,8 @@ func localTools() []Tool {
     "run_id":    {"type": "string"},
     "file_path": {"type": "string", "description": "Workflow file override (defaults to the run's recorded file_path)."},
     "answers":   {"type": "object", "description": "Answers for a run paused on human input, keyed by question/field id.", "additionalProperties": {"type": "string"}},
-    "force":     {"type": "boolean", "description": "Allow resume when the .bot source changed since launch."}
+    "force":     {"type": "boolean", "description": "Allow resume when the .bot source changed since launch. It never accepts the loss of the run's scratch."},
+    "accept_scratch_loss": {"type": "boolean", "description": "Allow resume although the run's scratch does not travel (SCRATCH_NOT_PORTABLE): without it, or with an older bank. Give it only once the refusal was shown and the loss accepted."}
   },
   "required": ["run_id"],
   "additionalProperties": false
@@ -739,6 +740,8 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 		FilePath string            `json:"file_path"`
 		Answers  map[string]string `json:"answers"`
 		Force    bool              `json:"force"`
+		// AcceptScratchLoss is the consent Force never gives.
+		AcceptScratchLoss bool `json:"accept_scratch_loss"`
 	}
 	if err := s.unmarshalArgs("local_resume", raw, &args); err != nil {
 		return "", false, err
@@ -781,12 +784,13 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 	}
 
 	spec := runnerSpec{
-		Command:  runnerCommandResume,
-		RunID:    args.RunID,
-		FilePath: filePath,
-		StoreDir: s.StoreDir,
-		Answers:  args.Answers,
-		Force:    args.Force,
+		Command:           runnerCommandResume,
+		RunID:             args.RunID,
+		FilePath:          filePath,
+		StoreDir:          s.StoreDir,
+		Answers:           args.Answers,
+		Force:             args.Force,
+		AcceptScratchLoss: args.AcceptScratchLoss,
 	}
 	pid, warn, err := spawnDetachedRunner(st, spec)
 	if err != nil {

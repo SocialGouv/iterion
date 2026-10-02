@@ -123,14 +123,14 @@ func planAdmissionMismatch(kind admissionMismatchKind, mismatchErr error, delay 
 		delay:  delay,
 		final:  maxDeliver > 0 && delivered >= maxDeliver,
 		parkedRunError: fmt.Sprintf(
-			"schema version mismatch: %v (queue message v%d parked on DLQ — replay via /api/admin/dlq only once the runner fleet speaks schema v%d; otherwise resume this run, which re-publishes at the current schema version — see docs/cloud-queue-schema-rollout.md)",
-			mismatchErr, env.V, env.V,
+			"schema version mismatch: %v (queue message v%d parked on DLQ — resume this run once the runner fleet accepts the schema the server publishes: it re-publishes the run at that version; a replay of the parked copy is refused — see docs/cloud-queue-schema-rollout.md)",
+			mismatchErr, env.V,
 		),
 	}
 	if kind == admissionMismatchFutureEpoch {
 		plan.parkedRunError = fmt.Sprintf(
-			"runner epoch mismatch: %v (queue message epoch %d parked on DLQ — replay via /api/admin/dlq once the runner fleet accepts epoch %d; otherwise resume or relaunch this run at the current epoch — see docs/cloud-deployment.md)",
-			mismatchErr, env.RunnerEpoch, env.RunnerEpoch,
+			"runner epoch mismatch: %v (queue message epoch %d parked on DLQ — resume or relaunch this run at the current epoch; a replay of the parked copy is refused — see docs/cloud-deployment.md)",
+			mismatchErr, env.RunnerEpoch,
 		)
 	}
 	return plan
@@ -202,9 +202,9 @@ func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind admissio
 	if envErr != nil {
 		logger.Warn("runner: envelope decode on final delivery: %v — run document cannot be flipped", envErr)
 	}
-	// Direction-neutral guidance: replay only helps when the fleet speaks
-	// the parked message's version; in the other direction (or if nothing
-	// was parked) resuming/relaunching re-publishes at the CURRENT version.
+	// Direction-neutral guidance: a resume or a relaunch re-publishes at the
+	// CURRENT version; the parked copy itself is not replayed — the park
+	// marks the run DLQ_PARKED, which a runner drops on admission.
 	runErr := plan.parkedRunError
 	payloadParked := true
 	if perr := r.cfg.NATS.PublishDLQ(parkCtx, delivery, mismatchErr.Error()); perr != nil {
@@ -327,7 +327,7 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 	// abstention is logged: a filter miss here means the document's
 	// story and the queue's diverged.
 	if changed, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
-		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — replay via /api/admin/dlq)", err),
+		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — resume the run to retry it; a replay of the parked copy is refused)", err),
 		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal},
 		store.RunnerVerdictFromStatuses()); serr != nil {
 		logger.Warn("runner: DLQ status flip for %s: %v", msg.RunID, serr)

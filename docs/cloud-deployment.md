@@ -307,9 +307,9 @@ them:
 > the mixed-version window is governed by
 > [docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md). Read
 > its *Deploy ordering* section first. The default is **server-first**, which
-> keeps any parked message on the replayable side; a bump that leaves
+> keeps any parked run on the side a resume recovers first; a bump that leaves
 > `MinSchemaVersion` alone additionally allows runner-first, which rejects
-> nothing and needs neither a drained queue nor a DLQ replay.
+> nothing and needs neither a drained queue nor a resume of parked runs.
 
 ### Pinning the image
 

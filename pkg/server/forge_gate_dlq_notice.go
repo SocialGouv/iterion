@@ -44,7 +44,7 @@ func (s *Server) noticeGateDLQParked(ctx context.Context, run *store.Run) {
 		return
 	}
 	if s.logger != nil {
-		s.logger.Info("forge gate: run %s parked on the DLQ — operator notice posted on %s (the reconciler repairs the check; replay or discard via iterion remote admin dlq)",
+		s.logger.Info("forge gate: run %s parked on the DLQ — operator notice posted on %s (the reconciler repairs the check; resume the run with iterion remote runs resume, then discard the parked copy via iterion remote admin dlq)",
 			run.ID, target.prURL)
 	}
 }
@@ -138,7 +138,7 @@ func gateDLQNoticeBody(run *store.Run) string {
 	b.WriteString("\n⏸️ **Run parked on the dead-letter queue — automation has stopped for it.** Nothing is wrong with this pull request.\n\n")
 	b.WriteString("iterion exhausted its redelivery budget for this run and parked its message on the DLQ; nothing resumes it on a schedule. ")
 	b.WriteString("The check this run owed is marked **failed** on this head, and iterion relaunches the bot **once** on this head where the repository's automation allows it — that fresh run posts its own verdict. ")
-	b.WriteString("If no relaunch follows, or it dies too, an operator replays or discards the parked message with `iterion remote admin dlq`, or re-triggers the bot (push again, or comment its command).\n")
+	b.WriteString("If no relaunch follows, or it dies too, an operator resumes the run with `iterion remote runs resume` — a replay of the parked message is refused — then discards it with `iterion remote admin dlq`; or re-triggers the bot (push again, or comment its command).\n")
 	if cause := gatePauseCause(run); cause != "" {
 		fmt.Fprintf(&b, "\n> %s\n", cause)
 	}

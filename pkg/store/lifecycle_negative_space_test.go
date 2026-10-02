@@ -31,7 +31,7 @@ func TestNoHandRolledTerminalSets(t *testing.T) {
 	pkgs := []string{
 		"pkg/store", "pkg/supervise", "pkg/runview",
 		"pkg/runtime", "pkg/server/cloudpublisher", "pkg/dispatcher",
-		"pkg/cli", "pkg/notify", "pkg/worktreepool", "pkg/operatormcp", "pkg/runner",
+		"pkg/cli", "pkg/notify", "pkg/worktreepool", "pkg/operatormcp", "pkg/runner", "pkg/queue",
 	}
 
 	statusNames := map[string]bool{
@@ -255,8 +255,8 @@ func markLogicalDescendants(n ast.Node, marked map[ast.Node]bool) {
 var negativeSpaceAllowlist = map[string]allowEntry{
 	// -- pkg/store: transition machinery + harnesses.
 	"pkg/store/storetest/await_answers_wait.go :: Cancelled+Failed+Queued":                                                             {[]string{"RunAwaitAnswersWaitConformance"}, "test-only transition fixtures exercise distinct mutation APIs clearing wait proof, not a production status-classification set"},
-	"pkg/store/store_run.go :: Cancelled+Failed+FailedResumable+Finished":                                                              {[]string{"applyStatusTransitionOutcome"}, "FinishedAt-stamping side-effect switch (renamed by the outcome-bookkeeping merge)"},
-	"pkg/store/store_run.go :: PausedWaitingHuman+Running":                                                                             {[]string{"applyStatusTransitionOutcome"}, "FinishedAt-clear pair (resume paths un-freeze the duration ticker)"},
+	"pkg/store/store_run.go :: Cancelled+Failed+FailedResumable+Finished":                                                              {[]string{"transitionRunStatus"}, "FinishedAt-stamping side-effect switch (the in-memory half of applyStatusTransitionOutcome, shared with the resume's flip to queued)"},
+	"pkg/store/store_run.go :: PausedWaitingHuman+Running":                                                                             {[]string{"transitionRunStatus"}, "FinishedAt-clear pair (resume paths un-freeze the duration ticker)"},
 	"pkg/store/mongo/runs.go :: Cancelled+Failed+FailedResumable+Finished":                                                             {[]string{"ListNotifiableRuns", "SaveRun"}, "the notifiable-sweep terminal $in + SaveRun's terminal-arrival episode increment (a bson filter/pipeline cannot call a predicate; both are IsTerminal's set — the transition choke point itself now derives via predicates in statusTransitionSet)"},
 	"pkg/store/mongo/route_decisions.go :: Failed+FailedResumable+Finished":                                                            {[]string{"ListRoutableRuns"}, "the router's sweep set: deliberately NARROWER than IsTerminal — a cancelled run is an operator's stop and is never routed (design property, pinned by the router's cancelled fixture)"},
 	"pkg/store/store_route_decisions.go :: Failed+FailedResumable+Finished":                                                            {[]string{"ListRoutableRuns"}, "FS twin of the router's sweep set (same reason)"},
@@ -296,10 +296,12 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/cli/remote_runs.go :: Cancelled+Failed+FailedResumable+Finished":  {[]string{"followRemoteRun"}, "--follow stop set over the WIRE statuses (strings): IsTerminal's set; the paused non-exit is the known bug #3 follow-up card"},
 
 	// -- pkg/runner.
-	"pkg/runner/loop.go :: Failed+Finished":                    {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
-	"pkg/runner/loop.go :: Failed+Finished+PausedWaitingHuman": {[]string{"dispositionForStatus"}, "stale-delivery drop set: shapes a redelivery can never legitimately target (the admission switch, shared by the pre-lock pass and the under-lock re-read)"},
-	"pkg/runner/loop.go :: FailedResumable+PausedOperator":     {[]string{"dispositionForStatus"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes; same switch)"},
-	"pkg/runner/usage_cap.go :: Queued+Running":                {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
+	"pkg/runner/loop.go :: Failed+Finished":     {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
+	"pkg/runner/usage_cap.go :: Queued+Running": {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
+
+	// -- pkg/queue: the admission rule (runner and DLQ replay).
+	"pkg/queue/admission.go :: Failed+Finished+PausedWaitingHuman": {[]string{"Admit"}, "settled drop set: shapes a delivery can never legitimately target (the admission rule the runner's pre-lock pass, its under-lock re-read and the DLQ replay share)"},
+	"pkg/queue/admission.go :: FailedResumable+PausedOperator":     {[]string{"Admit"}, "redelivery auto-convert-to-Resume pair (dispatcher-parked shapes; same rule)"},
 
 	// -- pkg/worktreepool.
 	"pkg/worktreepool/classify.go :: PausedOperator+PausedWaitingHuman": {[]string{"isPausedResumable"}, "the paused pair guarding checkout sparing (GC policy nuance documented at the site)"},

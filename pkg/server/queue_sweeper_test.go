@@ -8,6 +8,7 @@ import (
 
 	cloudmetrics "github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runner"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 )
@@ -184,11 +185,16 @@ func TestQueuedSweepCutoff(t *testing.T) {
 		t.Fatalf("plain cutoff = %v, want fallback %v", got, sweepQueuedFallback)
 	}
 	// The fallback itself must exceed the shipped defaults' redelivery
-	// envelope — this is the drift the derivation exists to prevent
-	// (the old 20m constant silently fell behind a MaxDeliver/AckWait bump).
-	envelope := time.Duration(natsq.DefaultStreamMaxRetry) * natsq.DefaultAckWait
-	if sweepQueuedFallback <= envelope {
-		t.Fatalf("fallback %v does not exceed the default MaxDeliver × AckWait envelope (%v)", sweepQueuedFallback, envelope)
+	// envelope plus margin — this is the drift the derivation exists to
+	// prevent (the old 20m constant silently fell behind a
+	// MaxDeliver/AckWait bump; the 90m one behind the held lease's back-off).
+	envelope := natsq.Config{
+		MaxDeliver: natsq.DefaultStreamMaxRetry, AckWait: natsq.DefaultAckWait,
+		SchemaMismatchDelay: natsq.SchemaMismatchNakDelay, EpochMismatchDelay: natsq.EpochMismatchNakDelay,
+		LockTTL: natsq.DefaultLockTTL, LeaseUnwindCeiling: runner.LeaseUnwindCeiling,
+	}.RedeliveryWindow()
+	if sweepQueuedFallback < envelope+sweepQueuedMargin {
+		t.Fatalf("fallback %v does not exceed the default redelivery envelope (%v) plus margin", sweepQueuedFallback, envelope)
 	}
 }
 

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -13,6 +14,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// spendWriteTimeout bounds each accounting write the runner makes for an
+// attempt, detached from the run ctx.
+const spendWriteTimeout = 5 * time.Second
+
+// orgSpendBudget bounds recordOrgSpend: its three writes — the keys'
+// last use, the per-credential ledger, the org's bucket — one after the
+// other, each on its own bound.
+const orgSpendBudget = 3 * spendWriteTimeout
 
 // recordOrgSpend charges the run's accumulated LLM consumption to the
 // org's monthly usage bucket AND bumps `last_used_at` on every API key
@@ -61,7 +71,7 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 		if key == "" {
 			key = msg.TenantID
 		}
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 		if err := r.cfg.OrgUsage.AddSpend(bg, orgusage.OrgSubject(key), now, costUSD, in, out, aggregate); err != nil {
 			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
 		}
@@ -83,6 +93,18 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 // as exactly that, before a rotate or delete). A platform-tier or
 // pool-lent key is bumped WITHOUT a tenant filter: its row lives under the
 // platform sentinel or in the donor's tenant, and it serves every tenant.
+func (r *Runner) warnUnreportedUsage(msg *queue.RunMessage, usage *metricsEmitter) {
+	if r.cfg.Logger == nil {
+		return
+	}
+	for route, totals := range usage.RouteTotals() {
+		if totals.unreportedCalls > 0 {
+			r.cfg.Logger.Warn("runner: run %s made %d LLM call(s) on %s/%s whose usage the provider did not report — booked at %d tokens, a lower bound",
+				msg.RunID, totals.unreportedCalls, route.backend, route.model, totals.tokens())
+		}
+	}
+}
+
 func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMessage, at time.Time) {
 	if r.cfg.ApiKeys == nil {
 		return
@@ -111,7 +133,7 @@ func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMes
 	if len(fps) == 0 {
 		return
 	}
-	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
 	for _, fp := range fps {
 		bctx := bg
@@ -142,6 +164,18 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if r.cfg.CredPool == nil || usage == nil {
 		return
 	}
+	if errors.Is(execErr, runtime.ErrResumeSuperseded) {
+		// The run's open lease is the newer attempt's: this delivery ran
+		// nothing, and its report would close that lease under it.
+		return
+	}
+	if msg.PoolGrantless {
+		// A grantless delivery holds no pool lease: its spend belongs to
+		// no donor, and its report must never reach the broker — it would
+		// be charged to the lease of the attempt this publication took the
+		// run from.
+		return
+	}
 	costUSD, in, out, aggregate := usage.RunTotals()
 	condition, cooldownUntil := classifyPoolCondition(execErr, time.Now().UTC())
 	// An auth rejection the recovery machinery absorbed into a human pause
@@ -151,9 +185,17 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if condition == credpool.ConditionOK && usage.SawAuthFailure() {
 		condition = credpool.ConditionAuthFailed
 	}
-	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
-	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{
+	// The report carries this delivery's attempt identity — its
+	// publication — so a superseding acquisition's lease is never closed or
+	// charged by a previous attempt's late teardown report. A publication
+	// that cannot be read falls back to the open lease inside the broker.
+	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	if perr != nil {
+		publishedAt = time.Time{}
+	}
+	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
 		InputTokens:     in,
 		OutputTokens:    out,
@@ -199,20 +241,4 @@ func classifyPoolCondition(execErr error, now time.Time) (credpool.Condition, ti
 		return credpool.ConditionAuthFailed, time.Time{}
 	}
 	return credpool.ConditionOK, time.Time{}
-}
-
-// warnUnreportedUsage says, once per attempt and route, that the attempt made
-// LLM calls whose usage the provider did not report in full. Every ledger
-// this attempt charges booked them at a lower bound; this line is where that
-// is said on a runner with no budget ceiling to warn.
-func (r *Runner) warnUnreportedUsage(msg *queue.RunMessage, usage *metricsEmitter) {
-	if r.cfg.Logger == nil {
-		return
-	}
-	for route, totals := range usage.RouteTotals() {
-		if totals.unreportedCalls > 0 {
-			r.cfg.Logger.Warn("runner: run %s made %d LLM call(s) on %s/%s whose usage the provider did not report — booked at %d tokens, a lower bound",
-				msg.RunID, totals.unreportedCalls, route.backend, route.model, totals.tokens())
-		}
-	}
 }

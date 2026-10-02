@@ -49,6 +49,11 @@ const (
 // showing the operator a failure they did nothing to cause.
 const runNotResumableErrorCode = "run_not_resumable"
 
+// scratchNotPortableErrorCode tells a client that the run's scratch does not
+// travel: the resume needs accept_scratch_loss — force never gives it — and,
+// when also_needs_force is set, force too for a change it names.
+const scratchNotPortableErrorCode = "scratch_not_portable"
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -291,7 +296,10 @@ type resumeRunRequest struct {
 	Source  string         `json:"source,omitempty"`
 	Answers map[string]any `json:"answers,omitempty"`
 	Force   bool           `json:"force,omitempty"`
-	Timeout string         `json:"timeout,omitempty"`
+	// AcceptScratchLoss is the consent to resume although the run's scratch
+	// does not travel (error_code scratch_not_portable); force never gives it.
+	AcceptScratchLoss bool   `json:"accept_scratch_loss,omitempty"`
+	Timeout           string `json:"timeout,omitempty"`
 	// Attachments carries ad-hoc upload IDs (from POST /api/runs/uploads)
 	// the operator attached to this answer without the workflow declaring
 	// a `file` field — the "here is a diagram explaining my feedback"
@@ -887,11 +895,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// would already be gone. Only paid for on an upload-carrying
 		// resume — it compiles the workflow a second time.
 		pfSpec := runview.ResumeSpec{
-			RunID:    id,
-			FilePath: absPath,
-			Source:   req.Source,
-			Answers:  answers,
-			Force:    req.Force,
+			RunID:             id,
+			FilePath:          absPath,
+			Source:            req.Source,
+			Answers:           answers,
+			Force:             req.Force,
+			AcceptScratchLoss: req.AcceptScratchLoss,
 		}
 		if resumeLB != nil {
 			pfSpec.BundleDir, pfSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
@@ -917,13 +926,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resumeSpec := runview.ResumeSpec{
-		RunID:    id,
-		FilePath: absPath,
-		Source:   req.Source,
-		Answers:  answers,
-		Force:    req.Force,
-		Timeout:  timeout,
-		Budget:   budget,
+		RunID:             id,
+		FilePath:          absPath,
+		Source:            req.Source,
+		Answers:           answers,
+		Force:             req.Force,
+		AcceptScratchLoss: req.AcceptScratchLoss,
+		Timeout:           timeout,
+		Budget:            budget,
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {
@@ -972,8 +982,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 
 // writeResumeError preserves the normal human-readable error response and
 // adds a stable code for the resume failures the studio must ACT on rather
-// than merely display: a changed source (offer --force) and a run that is no
-// longer parked (re-route to queue-message).
+// than merely display: a scratch that does not travel (its own consent), a
+// changed source (offer --force) and a run that is no longer parked
+// (re-route to queue-message). A refusal that names its remedy answers it
+// too (hint, also_needs_force), read from the error as every record of it is.
 func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err error) {
 	if s.writeQueueOutageError(w, r, "resume", err) {
 		return
@@ -981,35 +993,26 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	if s.writeNoLLMCredentialError(w, r, "resume", err) {
 		return
 	}
-	if runtime.IsWorkflowSourceChanged(err) {
-		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": workflowSourceChangedErrorCode,
-		})
-		return
+	status, code := http.StatusBadRequest, ""
+	var rt *runtime.RuntimeError
+	switch {
+	case errors.As(err, &rt) && rt.Code == runtime.ErrCodeScratchNotPortable:
+		code = scratchNotPortableErrorCode
+	case runtime.IsWorkflowSourceChanged(err):
+		code = workflowSourceChangedErrorCode
+	case errors.Is(err, runtime.ErrArtifactContractUnavailable):
+		status, code = http.StatusServiceUnavailable, artifactContractUnavailableErrorCode
+	case errors.Is(err, runtime.ErrArtifactContractIncompatible):
+		code = artifactContractIncompatibleErrorCode
+	case errors.Is(err, runview.ErrRunNotResumable):
+		status, code = http.StatusConflict, runNotResumableErrorCode
 	}
-	if errors.Is(err, runtime.ErrArtifactContractUnavailable) {
-		s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": artifactContractUnavailableErrorCode,
-		})
-		return
+	body := map[string]any{"error": fmt.Sprintf("resume: %v", err)}
+	if code != "" {
+		body["error_code"] = code
 	}
-	if errors.Is(err, runtime.ErrArtifactContractIncompatible) {
-		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": artifactContractIncompatibleErrorCode,
-		})
-		return
-	}
-	if errors.Is(err, runview.ErrRunNotResumable) {
-		s.writeJSONError(w, r, http.StatusConflict, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", err),
-			"error_code": runNotResumableErrorCode,
-		})
-		return
-	}
-	s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
+	runtime.RemedyOf(err).Record(body)
+	s.writeJSONError(w, r, status, body)
 }
 
 // writeNoLLMCredentialError answers a launch or resume the cloud publisher

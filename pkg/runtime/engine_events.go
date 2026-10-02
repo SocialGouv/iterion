@@ -36,6 +36,9 @@ func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ sto
 	if scrubber, ok := e.executor.(SecretScrubber); ok && data != nil && typ != store.EventHumanAnswersRecorded {
 		data = scrubber.ScrubOutput(data)
 	}
+	if typ == store.EventNodeFinished && nodeID != "" {
+		data = withFinishStamps(data, nodeMayWriteScratch(e.workflow, nodeID), onCycle(e.workflow, nodeID))
+	}
 	evt := store.Event{
 		Type:     typ,
 		BranchID: branchID,
@@ -54,6 +57,32 @@ func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ sto
 	}
 	e.logEvent(typ, nodeID, branchID, data)
 	return nil
+}
+
+// withFinishStamps returns data with the facts a resume reads from a finish
+// — whether the executing workflow runs the node in the sandbox
+// (nodeFinishedInSandbox), whether the node lies on a cycle there
+// (nodeFinishedOnCycle) — leaving the caller's map untouched.
+func withFinishStamps(data map[string]any, inSandbox, cyclic bool) map[string]any {
+	out := make(map[string]any, len(data)+2)
+	for k, v := range data {
+		out[k] = v
+	}
+	out[nodeFinishedInSandbox] = inSandbox
+	out[nodeFinishedOnCycle] = cyclic
+	return out
+}
+
+// OnlyFinishStamps reports whether a node_finished event's data holds
+// nothing but the facts the engine stamps on every finish: the finish of a
+// node that produced nothing — a terminal node, a router, a gate.
+func OnlyFinishStamps(data map[string]any) bool {
+	for k := range data {
+		if k != nodeFinishedInSandbox && k != nodeFinishedOnCycle {
+			return false
+		}
+	}
+	return true
 }
 
 // logEvent writes a human-friendly console log for a given event type.

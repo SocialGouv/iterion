@@ -21,7 +21,9 @@ import (
 // The wrapper carries the FilesystemRunStore through type-assertion
 // methods (WriteAttachment, WriteToolBlob, TurnWriter) so the backend
 // hooks' capability probes still match — without these the tool blob
-// sidecars and turn snapshots silently degrade to inline-only.
+// sidecars and turn snapshots silently degrade to inline-only. The store
+// package's As* probes look through it (Unwrap) for every capability it
+// does not carry itself.
 type heartbeatStore struct {
 	store.RunStore
 	onEvent func(name string)
@@ -31,11 +33,15 @@ var (
 	_ store.QueuedMessageInsertOnceStore = (*heartbeatStore)(nil)
 	_ store.WatcherCursorStore           = (*heartbeatStore)(nil)
 	_ store.OutputCorrectionStore        = (*heartbeatStore)(nil)
+	_ store.Unwrapper                    = (*heartbeatStore)(nil)
 )
 
 func newHeartbeatStore(s store.RunStore, onEvent func(name string)) *heartbeatStore {
 	return &heartbeatStore{RunStore: s, onEvent: onEvent}
 }
+
+// Unwrap is the store the heartbeat decorates.
+func (h *heartbeatStore) Unwrap() store.RunStore { return h.RunStore }
 
 func (h *heartbeatStore) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
 	persisted, err := h.RunStore.AppendEvent(ctx, runID, evt)

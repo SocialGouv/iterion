@@ -11,9 +11,5 @@ type OutputCorrectionStore interface {
 }
 
 func AsOutputCorrectionStore(s RunStore) OutputCorrectionStore {
-	if s == nil {
-		return nil
-	}
-	c, _ := s.(OutputCorrectionStore)
-	return c
+	return capability[OutputCorrectionStore](s)
 }

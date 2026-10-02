@@ -460,23 +460,23 @@ func renderStrict(p *Printer, report *SandboxStrictReport) error {
 		return nil
 	}
 
-	fmt.Fprintln(p.W, "iterion sandbox — strict doctor")
-	fmt.Fprintln(p.W, "===============================")
-	fmt.Fprintf(p.W, "  host    : %s\n", report.Host)
+	p.Line("iterion sandbox — strict doctor")
+	p.Line("===============================")
+	p.Line("  host    : %s", report.Host)
 	if report.Target != "" {
-		fmt.Fprintf(p.W, "  target  : %s\n", report.Target)
+		p.Line("  target  : %s", report.Target)
 	}
 	if report.Driver != "" {
-		fmt.Fprintf(p.W, "  driver  : %s\n", report.Driver)
+		p.Line("  driver  : %s", report.Driver)
 	}
-	fmt.Fprintf(p.W, "  mode    : %s\n", report.Mode)
+	p.Line("  mode    : %s", report.Mode)
 	if report.Source != "" {
-		fmt.Fprintf(p.W, "  source  : %s\n", report.Source)
+		p.Line("  source  : %s", report.Source)
 	}
 	if report.Image != "" {
-		fmt.Fprintf(p.W, "  image   : %s\n", report.Image)
+		p.Line("  image   : %s", report.Image)
 	}
-	fmt.Fprintln(p.W)
+	p.Blank()
 
 	var pass, warn, fail int
 	for _, c := range report.Checks {
@@ -489,16 +489,16 @@ func renderStrict(p *Printer, report *SandboxStrictReport) error {
 		default:
 			pass++
 		}
-		fmt.Fprintf(p.W, "  %s %s\n", icon, c.Name)
+		p.Line("  %s %s", icon, c.Name)
 		if c.Detail != "" {
-			fmt.Fprintf(p.W, "         %s\n", c.Detail)
+			p.Line("         %s", c.Detail)
 		}
 		if c.Status != CheckPass && c.Remediation != "" {
-			fmt.Fprintf(p.W, "         hint: %s\n", c.Remediation)
+			p.Line("         hint: %s", c.Remediation)
 		}
 	}
-	fmt.Fprintln(p.W)
-	fmt.Fprintf(p.W, "  summary: %d passed, %d warning(s), %d failure(s)\n", pass, warn, fail)
+	p.Blank()
+	p.Line("  summary: %d passed, %d warning(s), %d failure(s)", pass, warn, fail)
 	if report.Failed() {
 		return errStrictSandboxChecks
 	}

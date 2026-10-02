@@ -73,6 +73,17 @@ func (q *fakeDLQQueue) park(seq uint64, runID, reason string) {
 	}
 }
 
+// parkPublished parks a message carrying its publication time, the field a
+// runner tells a stale delivery by.
+func (q *fakeDLQQueue) parkPublished(seq uint64, runID, reason string, published time.Time) {
+	q.park(seq, runID, reason)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	m := q.parked[seq]
+	m.payload = json.RawMessage(fmt.Sprintf(`{"run_id":%q,"schema_version":6,"published_at":%q}`, runID, published.UTC().Format(time.RFC3339Nano)))
+	q.parked[seq] = m
+}
+
 func (q *fakeDLQQueue) ListDLQ(_ context.Context, cursorSeq uint64, limit int) ([]natsq.DLQMessage, uint64, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -573,5 +584,139 @@ func TestDLQAdmin_ReplayWithAnUnreadableStoreFailsClosed(t *testing.T) {
 	}
 	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {
 		t.Fatalf("a refused replay must leave the message parked: republished=%v remaining=%d", republished, remaining)
+	}
+}
+
+// A message published before its run was last queued belongs to an attempt
+// that is over: a runner drops it on admission, whatever the run's status.
+// Its replay is refused when the operator acts; a message of the current
+// attempt is replayed.
+func TestDLQAdmin_ReplayOfASupersededMessageIsRefused(t *testing.T) {
+	w := newDLQAdminServer(t)
+	w.seedRun(t, "run-requeued", store.RunStatusQueued)
+	run, err := w.runs.LoadRun(context.Background(), "run-requeued")
+	if err != nil || run.QueuedAt == nil {
+		t.Fatalf("precondition: a queued run with its marker, got %v (%v)", run, err)
+	}
+	w.q.parkPublished(25, "run-requeued", "max deliver exhausted", run.QueuedAt.Add(-time.Hour))
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/25/replay", w.admin)
+	if code != http.StatusConflict || !strings.Contains(string(body), "queued again") {
+		t.Fatalf("replay of a superseded message: status=%d body=%s, want 409 naming the newer attempt", code, body)
+	}
+	// The run IS queued: a resume cannot be acted on, and the remedy says
+	// so instead of naming one.
+	if !strings.Contains(string(body), "nothing to do here") {
+		t.Fatalf("the queued refusal's remedy = %s, want the queued arm — a resume the run's state cannot take", body)
+	}
+	if republished, _, _ := w.q.snapshot(); len(republished) != 0 {
+		t.Fatalf("a refused replay republished %v", republished)
+	}
+	w.q.parkPublished(26, "run-requeued", "max deliver exhausted", run.QueuedAt.Add(time.Second))
+	if code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/26/replay", w.admin); code != http.StatusOK {
+		t.Fatalf("replay of the current attempt's message: status=%d body=%s, want 200", code, body)
+	}
+}
+
+// TestDLQAdmin_ReplayInsideARefusedFlipsWindowNamesTheQueuedArm: while a
+// refused resume's flip stands, the run is queued and the 409's remedy is
+// the queued arm — nothing to do here, the copy stays — and once the flip
+// is reverted the same copy replays, as the runner's admission admits it.
+func TestDLQAdmin_ReplayInsideARefusedFlipsWindowNamesTheQueuedArm(t *testing.T) {
+	w := newDLQAdminServer(t)
+	ctx := context.Background()
+	w.seedRun(t, "run-flip-window", store.RunStatusFailedResumable)
+	flip, ok, err := store.AsQueuedFlipper(w.runs).FlipToQueued(ctx, "run-flip-window", store.RunStatusFailedResumable, time.Now())
+	if err != nil || !ok {
+		t.Fatalf("flip: %v %v", ok, err)
+	}
+	w.q.parkPublished(31, "run-flip-window", "max deliver exhausted", flip.At.Add(-time.Second))
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/31/replay", w.admin)
+	if code != http.StatusConflict || !strings.Contains(string(body), "nothing to do here") {
+		t.Fatalf("inside the flip window: status=%d body=%s, want 409 with the queued arm", code, body)
+	}
+	if republished, _, _ := w.q.snapshot(); len(republished) != 0 {
+		t.Fatalf("a refused replay republished %v", republished)
+	}
+	if ok, err := store.AsQueuedFlipper(w.runs).RevertQueuedFlip(ctx, "run-flip-window", flip, "queue resume: refused"); err != nil || !ok {
+		t.Fatalf("revert: %v %v", ok, err)
+	}
+	if code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/31/replay", w.admin); code != http.StatusOK {
+		t.Fatalf("after the revert: status=%d body=%s, want 200 — the copy is the attempt's live redelivery again", code, body)
+	}
+}
+
+// TestDLQAdmin_ReplayIsRefusedForWhatARunnerDrops: a replay is only a
+// delivery, admitted against the run's document by the rule a runner applies
+// (queue.Admit). For every state a runner drops the message of the current
+// attempt in — a run finished, failed or waiting for an answer, parked on a
+// code no redelivery changes (the DLQ park's own, as the runner writes it),
+// rewound for an explicit resume — the replay is refused with the way out,
+// and the DLQ copy is kept. A run a redelivery resumes is replayed.
+func TestDLQAdmin_ReplayIsRefusedForWhatARunnerDrops(t *testing.T) {
+	ctx := context.Background()
+	for i, tc := range []struct {
+		name   string
+		status store.RunStatus
+		meta   store.RunOutcomeMeta
+		set    func(r *store.Run)
+		want   int
+		remedy string
+	}{
+		{name: "finished", status: store.RunStatusFinished, want: http.StatusConflict, remedy: "nothing to replay"},
+		{name: "failed", status: store.RunStatusFailed, want: http.StatusConflict, remedy: "relaunch"},
+		{name: "waiting for an answer", status: store.RunStatusPausedWaitingHuman, want: http.StatusConflict, remedy: "resume the run with its answers"},
+		{name: "parked on the DLQ by the runner", status: store.RunStatusFailedResumable,
+			meta: store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal}, want: http.StatusConflict, remedy: "resume the run"},
+		{name: "parked on a bot code", status: store.RunStatusFailedResumable, meta: store.RunOutcomeMeta{Code: "LOT_NOT_ACTIONABLE"}, want: http.StatusConflict, remedy: "resume the run"},
+		{name: "rewound for an explicit resume", status: store.RunStatusPausedOperator,
+			set: func(r *store.Run) { r.ResumeRequiresExplicit = true }, want: http.StatusConflict, remedy: "resume the run"},
+		{name: "orphaned (infrastructure)", status: store.RunStatusFailedResumable, meta: store.RunOutcomeMeta{Code: store.FailureProcessOrphaned}, want: http.StatusOK},
+		{name: "parked without a code", status: store.RunStatusFailedResumable, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newDLQAdminServer(t)
+			runID := fmt.Sprintf("run-drop-%d", i)
+			w.seedRun(t, runID, store.RunStatusRunning)
+			if ok, err := w.runs.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
+				t.Fatalf("the attempt's flip: %v %v", ok, err)
+			}
+			queued, err := w.runs.LoadRun(ctx, runID)
+			if err != nil || queued.QueuedAt == nil {
+				t.Fatalf("load: %v %v", queued, err)
+			}
+			// The message of the run's CURRENT attempt, parked.
+			seq := uint64(300 + i)
+			w.q.parkPublished(seq, runID, "max deliver exhausted", queued.QueuedAt.Add(3*time.Millisecond))
+			if ok, err := w.runs.UpdateRunOutcome(ctx, runID, tc.status, "boom", tc.meta, []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+				t.Fatalf("state: %v %v", ok, err)
+			}
+			if tc.set != nil {
+				r, err := w.runs.LoadRun(ctx, runID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tc.set(r)
+				if err := w.runs.SaveRun(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			code, body := dlqDo(t, w.hs, "POST", fmt.Sprintf("/api/admin/dlq/%d/replay", seq), w.admin)
+			republished, _, remaining := w.q.snapshot()
+			if code != tc.want {
+				t.Fatalf("replay answered %d %s, want %d", code, body, tc.want)
+			}
+			if tc.want == http.StatusOK {
+				if len(republished) != 1 || remaining != 0 {
+					t.Fatalf("a replay a runner admits: republished=%v remaining=%d", republished, remaining)
+				}
+				return
+			}
+			if !strings.Contains(string(body), tc.remedy) {
+				t.Fatalf("the refusal does not name its way out (%q): %s", tc.remedy, body)
+			}
+			if len(republished) != 0 || remaining != 1 {
+				t.Fatalf("a refused replay must keep the message parked: republished=%v remaining=%d", republished, remaining)
+			}
+		})
 	}
 }

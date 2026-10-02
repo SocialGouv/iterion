@@ -513,7 +513,6 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if envFunded {
 		// An env-funded run consults no tier, and the facade question is
 		// theirs: the probes stay unread.
-		policy.runNative = nil
 	} else {
 		tenantOwners := []string{ownerID}
 		if tenantID != "" {
@@ -524,13 +523,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		if orgID != "" {
 			orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
 		}
-		// `auto` is the RUN's question, not a tier's (#1998): a native credential
-		// ANY tier holds — the team's own forfait or key, the org tier's, the
-		// platform tier's — keeps every tier's facade key off the wire's default.
-		// The composite is asked through the policy value the fill, the restore
-		// and the platform stage all receive.
-		policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
 	}
+	// `auto` is the RUN's question, not a tier's (#1998): a native credential
+	// ANY tier holds — the team's own forfait or key, the org tier's, the
+	// platform tier's — keeps every tier's facade key off the wire's default.
+	// The composite is asked through the policy value the fill, the restore
+	// and the platform stage all receive.
+	policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
+
 	// Deferred, not called after the walk: a walk that returns an error exits
 	// before any trailing statement, and a launch that fails while a key was
 	// withheld is exactly when the reason matters most. Said once, whichever
@@ -2730,7 +2730,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
+		PoolGrantless:   creds.grant == nil,
+		PublishedAtRFC:  publishInstant(time.Now().UTC(), *r.QueuedAt, creds.grant).Format(time.RFC3339Nano),
 		TenantID:        tenantID,
 		OrgID:           orgID,
 		OwnerID:         ownerID,
@@ -2892,6 +2893,19 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
 // pattern in SubmitLaunch.
+// publishInstant composes the instants a publication must follow: never
+// inside the run marker's millisecond, never inside the millisecond of the
+// lease the pool grant opened — the identity comparisons that read the
+// pair (a delivery against its marker; a spend report against its lease)
+// never meet a tie.
+func publishInstant(now time.Time, marker time.Time, grant *credpool.Grant) time.Time {
+	pub := store.PublishAt(now, marker)
+	if grant != nil {
+		pub = store.PublishAt(pub, grant.AcquiredAt)
+	}
+	return pub
+}
+
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, cs *runview.CompiledSource) (retErr error) {
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
@@ -2936,9 +2950,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// Claim this resume BEFORE resolving credentials. The status CAS is the
 	// serialization point for double-clicks/client retries: only one request
 	// may create the next queue attempt, so only that request may acquire a
-	// credential-pool lease or publish. Transitioning to queued also refreshes
-	// QueuedAt, the durable attempt marker used to reject stale deliveries.
-	claimed, claimErr := p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+	// credential-pool lease or publish. Transitioning to queued also stamps
+	// QueuedAt, the durable attempt marker used to reject stale deliveries —
+	// and the flip hands back what it replaced, read in the same write, for
+	// the rollback below.
+	flipper := store.AsQueuedFlipper(p.store)
+	var flip store.QueuedFlip
+	var claimed bool
+	var claimErr error
+	if flipper != nil {
+		flip, claimed, claimErr = flipper.FlipToQueued(ctx, spec.RunID, priorStatus, time.Now())
+	} else {
+		claimed, claimErr = p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+	}
 	if claimErr != nil {
 		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, claimErr)
 	}
@@ -2950,28 +2974,51 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: resume raced for %s", spec.RunID)
 	}
 
-	// Any failure before a successful publish restores the exact resumable
-	// source status. The rollback itself is a queued-only CAS, so a concurrent
-	// cancel/runner transition is never overwritten.
+	// Any failure before a successful publish puts back what this resume's
+	// flip replaced — and only while the run is still queued for that flip:
+	// a cancel, a claim, or another resume's flip since is never undone.
+	// The pool grant the resume acquired (below) superseded the previous
+	// attempt's lease: reverted, the flip gives it back to that attempt,
+	// which goes on (credpool ReopenSuperseded); refused, a newer resume
+	// owns the run and the lease stays superseded.
 	republished := false
+	var grant *credpool.Grant
 	defer func() {
 		if republished {
 			return
 		}
-		// Restore the prior failure classification alongside its text —
-		// the queued claim cleared both. A publish failure gets its own
-		// text but keeps the prior code: the run is back in the state
-		// whose cause that code classifies.
-		runErr := prior.Error
+		// The run goes back to the state it was in — its failure code, its
+		// episode, its continuation, the previous attempt's marker (only a
+		// publication makes an attempt, so a delivery of that attempt still
+		// in flight is not superseded by a flip), the rewind baseline the
+		// source stamp below replaced — with the refusal as its text.
+		runErr := ""
 		if retErr != nil {
 			runErr = fmt.Sprintf("queue resume: %v", retErr)
 		}
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rollbackCancel()
+		if flipper != nil {
+			reverted, rbErr := flipper.RevertQueuedFlip(rollbackCtx, spec.RunID, flip, runErr)
+			if rbErr != nil {
+				p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+			}
+			if reverted {
+				p.credPool.ReopenSuperseded(rollbackCtx, grant)
+			}
+			return
+		}
+		if runErr == "" {
+			runErr = prior.Error
+		}
+		p.logger.Warn("cloudpublisher: rollback %s: this store cannot tell its own flip from another resume's, nor restore the attempt marker — a concurrent resume's queued attempt can be reverted, and a delivery of the previous attempt still in flight will read as superseded", spec.RunID)
 		rolledBack, rbErr := p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
 			[]store.RunStatus{store.RunStatusQueued})
 		if rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+		}
+		if rolledBack {
+			p.credPool.ReopenSuperseded(rollbackCtx, grant)
 		}
 		// The rewind baseline goes back with the status — and ONLY with it.
 		// The source is stamped just before the publish, so a publish that
@@ -3024,7 +3071,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// launched before the field existed — the pre-existing
 	// one-key-per-family fill, which is what those runs already had.
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust, prior.PinnedProviders)
-	// Armed before the error check — see SubmitLaunch.
+	grant = creds.grant
+	// Armed before the error check — see SubmitLaunch. Runs before the
+	// rollback above (defers unwind in reverse): the grant's own lease is
+	// closed before the one it superseded can be reopened.
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
@@ -3070,12 +3120,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		ExecutionContext: prior.ExecutionContext.Clone(),
 		IRCompiled:       body,
 		Resume: &queue.ResumeSpec{
-			Answers:        spec.Answers,
-			HostInputs:     spec.HostInputs,
-			Force:          spec.Force,
-			ExpectedStatus: spec.ExpectedStatus,
-			ReceiptID:      spec.ReceiptID,
-			PriorStatus:    priorStatus,
+			Answers:           spec.Answers,
+			HostInputs:        spec.HostInputs,
+			Force:             spec.Force,
+			ExpectedStatus:    spec.ExpectedStatus,
+			ReceiptID:         spec.ReceiptID,
+			PriorStatus:       priorStatus,
+			AcceptScratchLoss: spec.AcceptScratchLoss,
 		},
 		SecretsRef: creds.secretsRef,
 		// Re-resolved by the resume surface like credentials are re-sealed:
@@ -3103,9 +3154,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// A THIS-RESUME override is also persisted to the run doc below so
 		// a subsequent auto-retry keeps the raised cap rather than
 		// reverting to the launch ask that already killed the run.
-		Budget:         wire,
-		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+		Budget:        wire,
+		BackendConfig: queue.BackendConfig{Default: queue.BackendClaw},
+		PoolGrantless: creds.grant == nil,
+		// Never inside the millisecond of the instant this delivery's
+		// identity follows — the run's marker, or the lease its grant
+		// opened — so the identity comparisons that read the pair never
+		// meet a tie.
+		PublishedAtRFC: publishInstant(time.Now().UTC(), flip.At, creds.grant).Format(time.RFC3339Nano),
 		// The fallback chain is replayed from the doc for the same reason:
 		// the auto-retry that follows a usage-window park is exactly the
 		// publication that must still carry the rescue chain.
@@ -3180,6 +3236,21 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	republished = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
+	}
+	// Published: the previous attempt is over. A pool grant superseded its
+	// lease when it was acquired; without one — no donor, no pool asked —
+	// its lease is superseded now, or it would hold its donor's slot and
+	// allowance until the lease TTL. The close carries this publication's
+	// identity: a report of exactly it is the takeover's own, and stays
+	// silent on the lease.
+	if creds.grant == nil && p.credPool != nil {
+		supersedingPublishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+		if perr != nil {
+			supersedingPublishedAt = time.Time{}
+		}
+		if err := p.credPool.SupersedeRun(context.WithoutCancel(ctx), spec.RunID, prior.TenantID, supersedingPublishedAt); err != nil {
+			p.logger.Warn("cloudpublisher: supersede the previous attempt's pool lease of %s after its resume: %v", spec.RunID, err)
+		}
 	}
 	// E4 (#652 review round 1): persist the MERGED budget ask onto the
 	// run doc, so a subsequent unattended auto-retry (usage-window

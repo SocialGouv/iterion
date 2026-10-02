@@ -94,6 +94,7 @@ type ProviderResolution struct {
 	// "auto", an empty ${VAR}, a name the vocabulary does not know, a
 	// model-answering node without fields), and a run with no LLM route at
 	// all, all read false.
+
 	envFundedOnly bool
 	// AnthropicWireDefaultReads lists the anthropic-wire key slots some route
 	// may spend as the run's DEFAULT credential — through the delegates'
@@ -206,6 +207,7 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		// Nothing spends: nothing to narrow on, and nothing unresolved.
 		return ProviderResolution{NarrowSafe: true}
 	}
+	sawRoute := true
 	// The run-level chain (`--fallback` / spec.Fallback / prior.Fallback)
 	// lands on every agent node through ir.ApplyRunFallback — the same
 	// reasoning as an authored route.
@@ -222,7 +224,7 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		acc.backend = b
 		acc.resolveRoute(fb.Provider, fb.Model)
 	}
-	return acc.result()
+	return acc.result(sawRoute)
 }
 
 // llmFieldsOf returns the LLMFields a node resolves its route from: agent
@@ -257,14 +259,15 @@ type providerAccumulator struct {
 	envDependent bool
 }
 
-func (a *providerAccumulator) result() ProviderResolution {
+func (a *providerAccumulator) result(sawRoute bool) ProviderResolution {
 	res := ProviderResolution{NarrowSafe: a.narrowSafe}
 	// The widenings that matter here are narrowSafe's (an unresolvable or
 	// unknown route may spend anything), a recorded provider (some tier
 	// holds what it spends) and an env-dependent route (it may resolve to
 	// anything on the runner). An all-openai_compatible walk is none of
 	// those: narrow-safe, nameless, unknownless, resolved here.
-	res.envFundedOnly = a.narrowSafe && !a.envDependent && len(a.providers) == 0 && len(a.unknown) == 0
+	res.envFundedOnly = sawRoute && a.narrowSafe && !a.envDependent && len(a.providers) == 0 && len(a.unknown) == 0
+
 	for slot := range a.wireDefault {
 		res.AnthropicWireDefaultReads = append(res.AnthropicWireDefaultReads, slot)
 	}

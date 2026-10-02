@@ -203,7 +203,7 @@ func TestExecuteRun_GuardsTheEngineRequirement(t *testing.T) {
 		RunID: "run-wire", WorkflowName: "main", BotID: "needy", IRCompiled: body,
 		BotBundle: &queue.BotBundleRef{TenantID: botsource.PlatformTenantID, Slug: "needy", Version: created.Version},
 	}
-	execErr := r.executeRun(ctx, msg, nil)
+	execErr := r.executeRun(ctx, msg, nil, nil)
 	if !errors.Is(execErr, ErrBotRequiresNewerEngine) {
 		t.Fatalf("executeRun err = %v, want ErrBotRequiresNewerEngine — the guard is not on the path a run takes", execErr)
 	}

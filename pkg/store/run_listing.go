@@ -31,11 +31,7 @@ type RunListingStore interface {
 // AsRunListingStore returns s as RunListingStore, or nil when the backend
 // cannot project.
 func AsRunListingStore(s RunStore) RunListingStore {
-	if s == nil {
-		return nil
-	}
-	l, _ := s.(RunListingStore)
-	return l
+	return capability[RunListingStore](s)
 }
 
 // ErrRunProjected refuses a whole-document write of a record that came from a

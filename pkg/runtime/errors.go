@@ -34,6 +34,7 @@ const (
 	ErrCodeCancelled             = store.FailureCancelled
 	ErrCodeJoinFailed            = store.FailureJoinFailed
 	ErrCodeResumeInvalid         = store.FailureResumeInvalid
+	ErrCodeScratchNotPortable    = store.FailureScratchNotPortable
 	ErrCodeSchemaValidation      = store.FailureSchemaValidation
 	ErrCodeExpressionFailed      = store.FailureExpressionFailed
 	ErrCodeRateLimited           = store.FailureRateLimited
@@ -101,6 +102,10 @@ type RuntimeError struct {
 	NodeID  string    // node where the error originated (may be empty)
 	Hint    string    // suggested resolution for the user
 	Cause   error     // underlying error (may be nil)
+	// AlsoNeedsForce marks a refusal of its own consent that also names a
+	// change only --force accepts (WithSourceChange,
+	// WithArtifactContractChange): the resume needs both.
+	AlsoNeedsForce bool
 }
 
 func (e *RuntimeError) Error() string {
@@ -115,6 +120,78 @@ func (e *RuntimeError) Error() string {
 }
 
 func (e *RuntimeError) Unwrap() error { return e.Cause }
+
+// Remedy is what a record of a failure or a refusal tells the operator to do
+// about it: the hint of the RuntimeError the error carries, and whether a
+// resume needs --force besides. Error() leaves the hint out, so every
+// operator-facing record — the run document's error, run_failed,
+// run_retry_skipped, the HTTP refusal — reads it here instead of composing a
+// remedy of its own.
+type Remedy struct {
+	Hint           string
+	AlsoNeedsForce bool
+}
+
+// ErrResumeSuperseded is a resume whose run was queued again after its
+// delivery was published: the newer resume's own delivery runs it, with its
+// own answers and consents. Nothing of this resume happened — no answer
+// recorded, no claim — and there is nothing to retry.
+var ErrResumeSuperseded = errors.New("runtime: resume superseded — the run was queued again after this delivery was published")
+
+// RemedyOf is the remedy err carries: its RuntimeError's hint, else the one
+// that error's code names (CodeRemedy). Zero when err carries no RuntimeError.
+func RemedyOf(err error) Remedy {
+	var rt *RuntimeError
+	if !errors.As(err, &rt) || rt == nil {
+		return Remedy{}
+	}
+	if rt.Hint == "" {
+		return CodeRemedy(rt.Code)
+	}
+	return Remedy{Hint: rt.Hint, AlsoNeedsForce: rt.AlsoNeedsForce}
+}
+
+// CodeRemedy is the remedy a failure code names on its own, for a record that
+// kept the code but not the error (a run document read back). A code whose
+// remedy is a consent of its own — SCRATCH_NOT_PORTABLE, which --force never
+// gives — is never left to a writer's generic advice. Zero for every other
+// code.
+func CodeRemedy(code ErrorCode) Remedy {
+	if code == ErrCodeScratchNotPortable {
+		return Remedy{Hint: scratchLossHint}
+	}
+	return Remedy{}
+}
+
+// Annotate is text, a record's rendering of the failure, followed by the
+// hint: a run document keeps a single error string, which a reader that
+// bounds it clips on the failure's text (store.ClipRunError).
+func (r Remedy) Annotate(text string) string {
+	if r.Hint == "" {
+		return text
+	}
+	return text + store.RunErrorHintSeparator + r.Hint
+}
+
+// Record puts the remedy in an event's data under the keys the HTTP refusal
+// answers with: hint, and also_needs_force when --force is needed too.
+func (r Remedy) Record(data map[string]any) {
+	if r.Hint != "" {
+		data["hint"] = r.Hint
+	}
+	if r.AlsoNeedsForce {
+		data["also_needs_force"] = true
+	}
+}
+
+// OperatorMessage is err's text as an operator-facing record carries it:
+// Error() followed by the remedy err names.
+func OperatorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return RemedyOf(err).Annotate(err.Error())
+}
 
 // ---------------------------------------------------------------------------
 // Recovery dispatch surface

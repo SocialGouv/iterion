@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -46,6 +47,10 @@ type SharedSandbox struct {
 	BoardEndpoint   string
 	AskUserEndpoint string
 	AskUserToken    string
+	// ScratchContainerLocal: the sandbox's ${PROJECT_SCRATCH_DIR} lives in
+	// the container and dies with it. The parent's teardown banks it
+	// (ADR-106); a child resumed on its own starts a sandbox without it.
+	ScratchContainerLocal bool
 }
 
 // WithSharedSandbox makes the engine execute every node in the given
@@ -512,9 +517,51 @@ func WithRoutingPolicy(p *store.RoutingPolicy) EngineOption {
 
 // WithForceResume allows resuming a run even when the workflow source has
 // changed since the run was started. The hash mismatch is logged as a warning
-// instead of causing an error.
+// instead of causing an error. It accepts a changed source (and a changed
+// artifact contract), never the loss of the run's scratch:
+// WithAcceptScratchLoss is that consent.
 func WithForceResume(force bool) EngineOption {
 	return func(e *Engine) { e.forceResume = force }
+}
+
+// WithAcceptScratchLoss lets a resume go on although its scratch does not
+// travel (SCRATCH_NOT_PORTABLE): without it — a bank its teardown could not
+// write, a bank that is gone or does not extract, no sandbox to restore it
+// into, a subbot child resumed outside its parent's container-local scratch
+// — or on an older bank the run has moved past. Each is said on the run's
+// timeline. It is the operator's consent to that loss, given once they were
+// shown it, for this resume: a caller that re-executes the same request
+// (a redelivery, an adoption, an automatic retry) does not carry it over to
+// a loss that execution met.
+func WithAcceptScratchLoss(accept bool) EngineOption {
+	return func(e *Engine) { e.acceptScratchLoss = accept }
+}
+
+// WithOnResumeClaimed calls fn once, the moment a resume claims the run:
+// past every refusal the engine makes before its claim, before anything of
+// the run executes. A caller that hands the resume to a goroutine reads it
+// to tell a resume the engine refused — fn never called, the run where it
+// was — from one that started.
+func WithOnResumeClaimed(fn func()) EngineOption {
+	return func(e *Engine) { e.onResumeClaimed = fn }
+}
+
+// WithOnResumeAdmitted calls fn once, when a resume is past every refusal
+// the engine makes before its claim — before it waits for the workspace's
+// resources, which another run's node in the same directory can hold for as
+// long as that node runs. A caller that must hear those refusals, and must
+// not wait on another run, reads this rather than the claim.
+func WithOnResumeAdmitted(fn func()) EngineOption {
+	return func(e *Engine) { e.onResumeAdmitted = fn }
+}
+
+// WithQueuedAttempt makes the resume claim of a queued run the claim of one
+// attempt: the one queued no later than publishedAt, the publication of the
+// delivery this engine executes. A run queued again after it — a cancel, then
+// a new resume — is the newer delivery's to claim, with its own parameters (a
+// consent, --force, answers); this one refuses it.
+func WithQueuedAttempt(publishedAt time.Time) EngineOption {
+	return func(e *Engine) { e.queuedAttempt = publishedAt }
 }
 
 // WithExpectedResumeStatus narrows the resume claim to one exact source

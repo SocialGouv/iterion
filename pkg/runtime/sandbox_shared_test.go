@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,7 +295,8 @@ func TestStartSandboxShared_ExplicitNoneIsHonouredOrRefused(t *testing.T) {
 // TestStartSandboxShared_PausingChildRefusedOnCopyBasedParent: a child
 // that can park for an operator is resumed outside its parent — in a
 // sandbox of its own, a fresh copy — so under a copy-based parent it is
-// refused at the door; under a bind-mount parent it runs.
+// refused at the door, and so under a parent whose scratch dies with its
+// container; under a bind-mount parent with a host-backed scratch it runs.
 func TestStartSandboxShared_PausingChildRefusedOnCopyBasedParent(t *testing.T) {
 	wf := compileBot(t, `
 schema answer:
@@ -319,6 +321,14 @@ workflow child:
 		_, err := e.startSandbox(ctx, "run-gate-copy", e.workDir, "", nil)
 		if err == nil || !strings.Contains(err.Error(), "human gate") {
 			t.Fatalf("err = %v, want the typed refusal of a pausing child", err)
+		}
+	})
+	t.Run("bind-mount, container-local scratch: refused", func(t *testing.T) {
+		e, _, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: bindOnly{&sharedFakeRun{}}, WorkspaceFolder: "/workspace", ScratchContainerLocal: true})
+		_, _ = st.CreateRun(ctx, "run-gate-scratch", "child", nil)
+		_, err := e.startSandbox(ctx, "run-gate-scratch", e.workDir, "", nil)
+		if err == nil || !strings.Contains(err.Error(), "human gate") || !strings.Contains(err.Error(), "PROJECT_SCRATCH_DIR") {
+			t.Fatalf("err = %v, want the typed refusal naming the container-local scratch", err)
 		}
 	})
 	t.Run("bind-mount: adopted", func(t *testing.T) {
@@ -369,6 +379,48 @@ func TestRefuseResumeOfSharedChild(t *testing.T) {
 		var rt *RuntimeError
 		if !errors.As(err, &rt) || rt.Code != ErrCodeResumeInvalid || !strings.Contains(rt.Hint, "resume the parent") {
 			t.Fatalf("err = %v, want RESUME_INVALID naming the parent", err)
+		}
+	})
+	t.Run("container-local scratch lineage: refused, typed", func(t *testing.T) {
+		e, r := mk(t, "run-c6", map[string]any{"adopted": true, "copy_based": false, "scratch_container_local": true}, nil)
+		err := e.refuseResumeOfSharedChild(ctx, r)
+		var rt *RuntimeError
+		if !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable || !strings.Contains(rt.Hint, "resume the parent") {
+			t.Fatalf("err = %v, want SCRATCH_NOT_PORTABLE naming the parent", err)
+		}
+		e.forceResume = true
+		if err := e.refuseResumeOfSharedChild(ctx, r); !errors.As(err, &rt) || rt.Code != ErrCodeScratchNotPortable {
+			t.Fatalf("--force alone: err = %v, want the scratch's loss still refused", err)
+		}
+		e.forceResume, e.acceptScratchLoss = false, true
+		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
+			t.Fatalf("the scratch's loss accepted: err = %v, want the resume let through", err)
+		}
+	})
+	t.Run("copy-based and container-local lineage (a kubernetes parent): both consents", func(t *testing.T) {
+		e, r := mk(t, "run-c8", map[string]any{"adopted": true, "copy_based": true, "scratch_container_local": true}, nil)
+		for _, tc := range []struct {
+			force, accept bool
+			code          ErrorCode
+			alsoForce     bool
+		}{
+			{false, false, ErrCodeScratchNotPortable, true},
+			{true, false, ErrCodeScratchNotPortable, false},
+			{false, true, ErrCodeResumeInvalid, false},
+		} {
+			e.forceResume, e.acceptScratchLoss = tc.force, tc.accept
+			err := e.refuseResumeOfSharedChild(ctx, r)
+			var rt *RuntimeError
+			if !errors.As(err, &rt) || rt.Code != tc.code || rt.AlsoNeedsForce != tc.alsoForce {
+				t.Fatalf("force=%v accept=%v: err = %v, want %s (also needs force %v)", tc.force, tc.accept, err, tc.code, tc.alsoForce)
+			}
+		}
+		e.forceResume, e.acceptScratchLoss = true, true
+		if err := e.refuseResumeOfSharedChild(ctx, r); err != nil {
+			t.Fatalf("both consents: err = %v, want the resume let through", err)
+		}
+		if e.pendingForsake["forced"] != true || e.pendingForsake["accepted"] != true {
+			t.Fatalf("the forsake %v, want both consents recorded", e.pendingForsake)
 		}
 	})
 	t.Run("bind-mount lineage: resumes", func(t *testing.T) {
@@ -618,5 +670,66 @@ func TestSharedSandboxCopyBasedClassificationPinsEachDriver(t *testing.T) {
 	}
 	if sharedSandboxIsCopyBased((*docker.Run)(nil)) {
 		t.Fatal("the docker driver bind-mounts the workspace: not copy-based")
+	}
+}
+
+// TestStartSandboxShared_recordsAContainerLocalScratch: an adopted child
+// records whether its parent's scratch lives in the container — what its own
+// resume, after any pause, is refused over (refuseResumeOfSharedChild).
+func TestStartSandboxShared_recordsAContainerLocalScratch(t *testing.T) {
+	wf := &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{}}
+	ctx := context.Background()
+	for _, local := range []bool{true, false} {
+		e, _, st := sharedTestEngine(t, wf, t.TempDir(), &SharedSandbox{Run: bindOnly{&sharedFakeRun{}}, WorkspaceFolder: "/workspace", ScratchContainerLocal: local})
+		runID := fmt.Sprintf("run-scratch-local-%v", local)
+		if _, err := st.CreateRun(ctx, runID, "child", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.startSandbox(ctx, runID, e.workDir, "", nil); err != nil {
+			t.Fatalf("startSandbox: %v", err)
+		}
+		evs, err := st.LoadEvents(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got any
+		for _, ev := range evs {
+			if ev.Type == store.EventSandboxShared {
+				got = ev.Data["scratch_container_local"]
+			}
+		}
+		if got != local {
+			t.Fatalf("an adopted child under a scratch local=%v recorded %v", local, got)
+		}
+	}
+}
+
+// TestStartSandboxShared_aPermissionGateInAskModeIsAPause: a node whose
+// permission gate asks parks whatever its interaction mode — a child that
+// declares one is refused adoption where a parked child cannot resume with
+// its parent's sandbox.
+func TestStartSandboxShared_aPermissionGateInAskModeIsAPause(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		wf   *ir.Workflow
+	}{
+		{"on the node", &ir.Workflow{Name: "child", Nodes: map[string]ir.Node{"act": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "act"}, Permission: "ask"}}}},
+		{"on the workflow", &ir.Workflow{Name: "child", Permission: "ask", Nodes: map[string]ir.Node{"act": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "act"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !workflowHasPausingNode(tc.wf) {
+				t.Fatal("a permission gate in ask mode is not read as a pause")
+			}
+			e, _, st := sharedTestEngine(t, tc.wf, t.TempDir(), &SharedSandbox{Run: bindOnly{&sharedFakeRun{}}, WorkspaceFolder: "/workspace", ScratchContainerLocal: true})
+			_, _ = st.CreateRun(ctx, "run-permission-ask", "child", nil)
+			if _, err := e.startSandbox(ctx, "run-permission-ask", e.workDir, "", nil); err == nil || !strings.Contains(err.Error(), "PROJECT_SCRATCH_DIR") {
+				t.Fatalf("err = %v, want the adoption refused over the container-local scratch", err)
+			}
+		})
+	}
+	off := &ir.Workflow{Name: "child", Permission: "ask", Nodes: map[string]ir.Node{"act": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "act"}, Permission: "off"}}}
+	if workflowHasPausingNode(off) {
+		t.Fatal("a node that turns the workflow's gate off is read as a pause")
 	}
 }

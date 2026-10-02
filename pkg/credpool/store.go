@@ -47,7 +47,8 @@ type LeaseStore interface {
 	// Put inserts an attempt's lease. Leases are never reused: a finished
 	// attempt's record is the donor's evidence for the charge on their
 	// ledger, and re-opening it would both erase that and re-arm the close
-	// CAS that keeps a redelivered report from charging twice.
+	// CAS that keeps a redelivered report from charging twice. A superseded
+	// close is not a report (Reopen).
 	Put(ctx context.Context, l Lease) error
 	// Get returns one lease by id.
 	Get(ctx context.Context, leaseID string) (Lease, error)
@@ -70,9 +71,42 @@ type LeaseStore interface {
 	// which is what stops a redelivered report double-charging. costUSD is
 	// ADDED to whatever interim charges the lease already carries.
 	Close(ctx context.Context, leaseID string, costUSD float64, outcome string, when time.Time) (won bool, err error)
+	// Reopen undoes a supersede: it reopens the lease only while it is
+	// closed as superseded at exactly supersededAt — the close an acquisition
+	// made for a takeover that did not happen. That close is not a report: it
+	// charged nothing (a superseded close adds $0) and no report has closed
+	// the lease since, so reopening erases no charge, and the close CAS it
+	// re-arms is the one the attempt still running on the lease reports
+	// through. A lease reported, or closed at another instant, is left alone
+	// (false).
+	Reopen(ctx context.Context, leaseID string, supersededAt time.Time) (bool, error)
 	// AddCost accumulates an interim attempt's spend on a still-open lease,
 	// so a redelivered run's audit trail matches the donor's ledger.
 	AddCost(ctx context.Context, leaseID string, costUSD float64) error
+	// SetSupersededByPublication records, on a lease closed by a GRANTLESS
+	// takeover, the publication that takeover was published at: a report
+	// carrying exactly it is the takeover's own, and stays silent on the
+	// lease (ReportAttempt).
+	SetSupersededByPublication(ctx context.Context, leaseID string, publishedAt time.Time) error
+	// ListByRun returns every lease of a run, any state, newest acquired
+	// first — what an attempt-identified report reads to find the lease its
+	// attempt executed under. The pin compares ACQUISITION and publication
+	// at the millisecond both stores keep (a lease recorded inside the
+	// publication's own millisecond is the attempt's; one recorded in a
+	// later millisecond is a successor's), and a tie — rows written before
+	// the broker's acquisition floor kept a run's leases strictly ordered —
+	// is ordered by lease id, descending, so the pick is deterministic and
+	// the same in both stores.
+	ListByRun(ctx context.Context, runID string) ([]Lease, error)
+	// StampSupersededReport marks a superseded lease as reported by its own
+	// attempt and adds the spend to it: a CAS on a superseded close — the
+	// close that charged nothing, an acquisition's or a grantless
+	// takeover's — so exactly one report of the attempt charges, and a
+	// lease stamped this way no longer reads as a supersede (Reopen's CAS
+	// misses it, and a refused resume's rollback cannot reopen it). False
+	// when the lease is open, closed any other way, or already stamped;
+	// ErrNotFound when it does not exist.
+	StampSupersededReport(ctx context.Context, leaseID string, costUSD float64, when time.Time) (bool, error)
 	// LiveCommitment reports what a pledge currently has at stake: how many
 	// live (unclosed, unexpired) leases it holds, and the total allowance
 	// already handed to them. Derived from the leases rather than

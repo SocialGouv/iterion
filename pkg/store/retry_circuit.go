@@ -36,9 +36,5 @@ type RetryCircuitStore interface {
 
 // AsRetryCircuitStore returns the optional retry-circuit capability.
 func AsRetryCircuitStore(s RunStore) RetryCircuitStore {
-	if s == nil {
-		return nil
-	}
-	c, _ := s.(RetryCircuitStore)
-	return c
+	return capability[RetryCircuitStore](s)
 }

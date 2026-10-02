@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -437,8 +438,13 @@ workflow dispatcher_child:
 	if err := st.SaveRun(ctx, run); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
+	interactionID := runID + "_gate"
+	if err := st.WriteInteraction(ctx, &store.Interaction{ID: interactionID, RunID: runID, NodeID: "gate", RequestedAt: time.Now().UTC(), Questions: map[string]any{}}); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
 	if err := st.PauseRun(ctx, runID, &store.Checkpoint{
 		NodeID:           "gate",
+		InteractionID:    interactionID,
 		Outputs:          map[string]map[string]any{},
 		LoopCounters:     map[string]int{},
 		ArtifactVersions: map[string]int{},
@@ -460,5 +466,137 @@ workflow dispatcher_child:
 		var refusal map[string]any
 		decodeJSONResp(t, resp, &refusal)
 		t.Fatalf("status = %d, want %d; body = %#v", resp.StatusCode, http.StatusAccepted, refusal)
+	}
+}
+
+// TestWriteResumeError_ScratchLossNamesItsConsent: a refusal over the
+// scratch's loss answers scratch_not_portable — never workflow_source_changed,
+// whose force button does not accept that loss — with its hint, and says
+// when --force is needed too.
+func TestWriteResumeError_ScratchLossNamesItsConsent(t *testing.T) {
+	plain := &runtime.RuntimeError{Code: runtime.ErrCodeScratchNotPortable, Message: "run r1: its teardown could not bank the files", Hint: "resume it accepting the scratch's loss (--accept-scratch-loss)"}
+	for _, tc := range []struct {
+		name      string
+		err       error
+		needForce bool
+	}{
+		{"the loss alone", plain, false},
+		{"the loss and an edited source", runtime.WithSourceChange(plain), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			(&Server{}).writeResumeError(rec, httptest.NewRequest(http.MethodPost, "/api/runs/r1/resume", nil), tc.err)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			var body struct {
+				ErrorCode      string `json:"error_code"`
+				Hint           string `json:"hint"`
+				AlsoNeedsForce bool   `json:"also_needs_force"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.ErrorCode != scratchNotPortableErrorCode || !strings.Contains(body.Hint, "--accept-scratch-loss") || body.AlsoNeedsForce != tc.needForce {
+				t.Fatalf("body %s: want error_code %q, the hint naming the consent, also_needs_force %v", rec.Body.String(), scratchNotPortableErrorCode, tc.needForce)
+			}
+		})
+	}
+}
+
+// TestResumeRun_theScratchsLossNeedsItsOwnConsent: over HTTP, a run whose
+// last teardown could not bank its scratch is refused — scratch_not_portable
+// — for a plain resume and for a forced one alike; accept_scratch_loss
+// resumes it, and the run's timeline says it went on without the scratch.
+func TestResumeRun_theScratchsLossNeedsItsOwnConsent(t *testing.T) {
+	t.Setenv("ITERION_RUNS_DETACHED", "0")
+	srv, httpServer := newTestServer(t)
+	const source = `
+schema gate_out:
+  approved: bool
+
+prompt gate_prompt:
+  Approve?
+
+human gate:
+  instructions: gate_prompt
+  output: gate_out
+  interaction: human
+
+workflow scratch_consent:
+  entry: gate
+  gate -> done when approved
+  gate -> fail when not approved
+`
+	botPath := filepath.Join(srv.cfg.WorkDir, "scratch_consent.bot")
+	if err := os.WriteFile(botPath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, hash, err := runview.CompileWorkflowFromSource(botPath, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const runID = "run-scratch-consent-http"
+	if _, err := st.CreateRun(ctx, runID, "scratch_consent", nil); err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFailedResumable
+	run.FilePath = botPath
+	run.WorkflowHash = hash
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendEvent(ctx, runID, store.Event{Type: store.EventSandboxScratchBanked, Data: map[string]any{
+		"banked": false, "empty": false, "reason": "the scratch compresses past the 256 MiB cap",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(httpServer.URL+"/api/runs/"+runID+"/resume", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	for _, body := range []string{`{}`, `{"force": true}`} {
+		resp := post(body)
+		var refusal struct {
+			ErrorCode string `json:"error_code"`
+		}
+		decodeJSONResp(t, resp, &refusal)
+		if resp.StatusCode != http.StatusBadRequest || refusal.ErrorCode != scratchNotPortableErrorCode {
+			t.Fatalf("resume %s: status %d, error_code %q, want %d %q", body, resp.StatusCode, refusal.ErrorCode, http.StatusBadRequest, scratchNotPortableErrorCode)
+		}
+	}
+	resp := post(`{"accept_scratch_loss": true}`)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("resume accepting the scratch's loss: status %d", resp.StatusCode)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		evs, err := st.LoadEvents(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ev := range evs {
+			if ev.Type == store.EventSandboxScratchRestored && ev.Data["accepted"] == true && ev.Data["restored"] == false {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the accepting resume left no record that it went on without the scratch")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

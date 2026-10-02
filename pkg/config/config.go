@@ -352,7 +352,7 @@ type RunnerConfig struct {
 	// (mixed fleet during a rolling schema bump). It must be long enough
 	// that the MaxDeliver budget stretches over a rolling restart of the
 	// runner Deployment — an immediate Nak burns it in seconds and parks
-	// the message on the DLQ for manual replay (issue #481). Fleets with a
+	// the run on the DLQ for an operator's resume (issue #481). Fleets with a
 	// slow lame-duck turnover (long DrainTimeout) should raise it.
 	SchemaMismatchDelay time.Duration `yaml:"schema_mismatch_delay"`
 }

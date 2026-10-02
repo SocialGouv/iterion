@@ -62,6 +62,14 @@ type Driver interface {
 	Start(ctx context.Context, prepared PreparedSpec, info RunInfo) (Run, error)
 }
 
+// ProcessIsolated is a Run whose commands execute in a process namespace of
+// their own — a container's — so that a signal sent from one of them to
+// every process reaches only the sandbox's. A Run that does not implement
+// it may execute its commands on the host.
+type ProcessIsolated interface {
+	ProcessIsolated() bool
+}
+
 // Run is a live sandbox handle.
 //
 // Each Run corresponds to one iterion run; the engine creates it once

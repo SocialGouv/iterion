@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
@@ -476,10 +477,42 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		})
 }
 
+// resumeSourceRefusal is what the source check refuses without --force, nil
+// when the source is unchanged: a shared dependency whose identity changed,
+// else a workflow digest that changed. The bare digest of a run launched
+// before the promotion is accepted (legacy) only while the dependency's
+// identity matches, as the engine accepts it under its claim.
+func resumeSourceRefusal(r *store.Run, hash string, b *bundle.Bundle, identityErr error) (refusal error, legacy bool) {
+	if identityErr != nil {
+		return identityErr, false
+	}
+	err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, false)
+	if err == nil {
+		return nil, false
+	}
+	if b != nil && runtime.LegacyBareDigestMatches(r, b.IterPath) {
+		return nil, true
+	}
+	return err, false
+}
+
+// alsoNamingSourceChange is a scratch or lineage refusal that also names
+// the source check's refusal when there is one, as the engine's does: the
+// operator sees every consent the resume needs before giving any.
+func alsoNamingSourceChange(refusal, sourceRefusal error, forced bool) error {
+	if sourceRefusal == nil {
+		return refusal
+	}
+	if forced {
+		return runtime.WithSourceChangeForced(refusal)
+	}
+	return runtime.WithSourceChange(refusal)
+}
+
 // PreflightResume runs the checks Resume performs before it takes any
 // action, WITHOUT starting anything: the run must exist, be in a
-// resumable status, and (unless spec.Force) still hash-match the
-// workflow source.
+// resumable status, and (unless spec.Force) keep its scratch and its
+// lineage and still hash-match the workflow source.
 //
 // It exists for callers that must not perform an irreversible side
 // effect on a resume that is going to be rejected anyway. The HTTP layer
@@ -506,7 +539,8 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
-	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+	identityErr, err := resolveSharedResumeSpec(r, &spec)
+	if err != nil {
 		return err
 	}
 	spec.BundleDir = resumeBundleDir(r, spec)
@@ -514,19 +548,37 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err != nil {
 		return err
 	}
+	// A scratch or a lineage that does not travel is refused before the
+	// source check — the workflow's digest and a shared dependency's
+	// identity alike — as the engine does: a force offered for an edited
+	// source would otherwise waive a loss the operator was never shown.
 	hash := pfSources.Hash
-	legacy := false
-	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		// The bare digest of a run launched before the promotion is accepted
-		// here, as the engine accepts it under its claim; anything else
-		// stays a refusal.
-		if pfBundle == nil || !runtime.LegacyBareDigestMatches(r, pfBundle.IterPath) {
-			return err
-		}
-		legacy = true
+	sourceErr, legacy := resumeSourceRefusal(r, hash, pfBundle, identityErr)
+	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
+		return alsoNamingSourceChange(err, sourceErr, spec.Force)
+	}
+	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force, spec.AcceptScratchLoss); err != nil {
+		return alsoNamingSourceChange(err, sourceErr, spec.Force)
+	}
+	if sourceErr != nil && !spec.Force {
+		return s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
 	}
 	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
+	if errors.Is(err, runtime.ErrArtifactContractIncompatible) && !spec.Force {
+		return s.scratchBeforeForce(parent, r, wf, spec, runtime.WithArtifactContractChange, err)
+	}
 	return err
+}
+
+// scratchBeforeForce is a refusal --force accepts — a changed source, an
+// artifact contract — shown after any loss of the scratch, which --force
+// does not accept: judged even while the latest execution may still be
+// banking, so the operator sees every consent the resume needs at once.
+func (s *Service) scratchBeforeForce(ctx context.Context, r *store.Run, wf *ir.Workflow, spec ResumeSpec, naming func(error) error, forceable error) error {
+	if err := runtime.ResumeScratchRefusal(ctx, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
+		return naming(err)
+	}
+	return forceable
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -612,7 +664,8 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			defer cleanup()
 		}
 	}
-	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+	identityErr, err := resolveSharedResumeSpec(r, &spec)
+	if err != nil {
 		return nil, err
 	}
 	if s.resumePolicyFiller != nil {
@@ -637,18 +690,25 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err != nil {
 		return nil, err
 	}
+	// A scratch or a lineage that does not travel is refused here, before
+	// anything moves the run and before the source check — the workflow's
+	// digest and a shared dependency's identity alike: a force offered for
+	// an edited source would otherwise waive a loss the operator was never
+	// shown. The engine repeats both under its own boundary. A run launched
+	// before its bundle's prompts entered the digest recorded the bare
+	// main.bot's: accepted here and by the engine under its claim (which
+	// never rewrites the run — a whole-document save outside the claim
+	// would race every other writer).
 	hash := cs.Hash
-	legacy := false
-	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		// A run launched before its bundle's prompts entered the digest
-		// recorded the bare main.bot's: accepted here and by the engine
-		// under its claim (which never rewrites the run — a whole-document
-		// save outside the claim would race every other writer); any other
-		// mismatch stays a refusal.
-		if resumeBundle == nil || !runtime.LegacyBareDigestMatches(r, resumeBundle.IterPath) {
-			return nil, err
-		}
-		legacy = true
+	sourceErr, legacy := resumeSourceRefusal(r, hash, resumeBundle, identityErr)
+	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
+		return nil, alsoNamingSourceChange(err, sourceErr, spec.Force)
+	}
+	if err := runtime.ValidateResumeLineage(parent, s.store, r, spec.Force, spec.AcceptScratchLoss); err != nil {
+		return nil, alsoNamingSourceChange(err, sourceErr, spec.Force)
+	}
+	if sourceErr != nil && !spec.Force {
+		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
 	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
 	validateArtifacts := runtime.ValidateResumeArtifactsPreflight
@@ -662,6 +722,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// A legacy digest waives the revision the run's artifacts were published
 	// under, exactly as --force would: nothing else changed.
 	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
+	if errors.Is(err, runtime.ErrArtifactContractIncompatible) && !spec.Force {
+		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithArtifactContractChange, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -788,7 +851,8 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		mergeStrategy: r.MergeStrategy,
 		autoMerge:     r.AutoMerge,
 	}
-	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
+	claim := newResumeClaim()
+	res, err := s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
@@ -796,7 +860,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// operator-added skill survive the SECOND turn of a conversation:
 		// the dock drives one resume per message.
 		launchExtras{
-			loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors,
+			acceptScratchLoss: spec.AcceptScratchLoss,
+			onResumeAdmitted:  claim.admit,
+			onResumeClaimed:   claim.claim,
+			onOutcome:         claim.end,
+			loopBudgetGuard:   spec.LoopBudgetGuard, supervisors: spec.Supervisors,
 			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
 			artifactResumePreflight: artifactPreflight,
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
@@ -823,8 +891,93 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			if err := validateResumable(r2, spec.Answers, spec.Automatic); err != nil {
 				return err
 			}
-			return eng.ResumeWithHostInputs(ctx, spec.RunID, spec.Answers, spec.HostInputs)
+			err = eng.ResumeWithHostInputs(ctx, spec.RunID, spec.Answers, spec.HostInputs)
+			if err != nil && !claim.isClaimed() {
+				// Said where the run is read too: past the grace its caller
+				// was answered "started", and only this line tells it
+				// otherwise.
+				runLogger.Error("resume of run %s refused before it claimed the run: %s", spec.RunID, runtime.OperatorMessage(err))
+			}
+			return err
 		})
+	if err != nil {
+		return nil, err
+	}
+	return claim.await(parent, res)
+}
+
+// resumeRefusalGrace bounds how long an in-process resume's caller waits,
+// once its engine is past its own refusals, for the claim or a refusal of
+// the resume's path — an await gate's unanswered questions, a node the
+// workflow lost. They come within milliseconds unless the engine first
+// waits for the workspace's resources, which another run's node in the same
+// directory can hold for as long as it runs.
+const resumeRefusalGrace = time.Second
+
+// resumeClaim holds an in-process resume's caller until its engine claims
+// the run or ends before, so a refusal the engine makes before its claim is
+// the caller's error, as the surface's own refusals are. Past the engine's
+// own refusals (the admission) the hold lasts at most resumeRefusalGrace: a
+// claim behind another run's node is not waited for, and a refusal that
+// comes after the caller was answered is said in the run's log.
+type resumeClaim struct {
+	admitOnce, claimOnce sync.Once
+	admitted, claimed    chan struct{}
+	ended                chan struct{}
+	outcome              error // written by end, before ended closes
+}
+
+func newResumeClaim() *resumeClaim {
+	return &resumeClaim{admitted: make(chan struct{}), claimed: make(chan struct{}), ended: make(chan struct{})}
+}
+
+func (c *resumeClaim) admit() { c.admitOnce.Do(func() { close(c.admitted) }) }
+
+func (c *resumeClaim) claim() { c.claimOnce.Do(func() { close(c.claimed) }) }
+
+func (c *resumeClaim) isClaimed() bool {
+	select {
+	case <-c.claimed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *resumeClaim) end(err error) {
+	c.outcome = err
+	close(c.ended)
+}
+
+// await returns res once the engine claimed the run, the run's error when it
+// ended before its claim, and res when the grace after the admission runs
+// out first. A claim wins over an end seen with it: a resume that started,
+// then failed, is the run's outcome, not a refusal. A caller that goes away
+// first gets the resume as started: it goes on.
+func (c *resumeClaim) await(ctx context.Context, res *LaunchResult) (*LaunchResult, error) {
+	admitted := c.admitted
+	var grace <-chan time.Time
+	for ended := false; !ended; {
+		select {
+		case <-c.claimed:
+			return res, nil
+		case <-ctx.Done():
+			return res, nil
+		case <-grace:
+			return res, nil
+		case <-admitted:
+			grace, admitted = time.After(resumeRefusalGrace), nil
+		case <-c.ended:
+			ended = true
+		}
+	}
+	if c.isClaimed() {
+		return res, nil
+	}
+	if c.outcome != nil {
+		return nil, c.outcome
+	}
+	return res, nil
 }
 
 // resumeExecutorSpec is the executor a resume rebuilds for an EXISTING run.
@@ -1082,6 +1235,15 @@ func (s *Service) spawnRun(
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
 	}
+	if ex.acceptScratchLoss {
+		opts = append(opts, runtime.WithAcceptScratchLoss(true))
+	}
+	if ex.onResumeAdmitted != nil {
+		opts = append(opts, runtime.WithOnResumeAdmitted(ex.onResumeAdmitted))
+	}
+	if ex.onResumeClaimed != nil {
+		opts = append(opts, runtime.WithOnResumeClaimed(ex.onResumeClaimed))
+	}
 	if promote != nil {
 		opts = append(opts, runtime.WithAttachmentPromote(promote))
 	}
@@ -1259,6 +1421,9 @@ type finalizationOpts struct {
 // (s.workDir / s.dailyCap) when set; the zero value inherits it. Resume
 // and subbot launches pass the zero value.
 type launchExtras struct {
+	// acceptScratchLoss is a resume's consent to go on although the run's
+	// scratch does not travel (ResumeSpec.AcceptScratchLoss).
+	acceptScratchLoss bool
 	// compiled is what the launch's compile read — the unit's files — so
 	// the run records them from the same read as its identity: a studio
 	// run's FilePath is the store's copy of its main, beside which no
@@ -1277,6 +1442,12 @@ type launchExtras struct {
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.
 	onOutcome func(error)
+	// onResumeAdmitted is called once, when a resume's engine is past its
+	// refusals (runtime.WithOnResumeAdmitted).
+	onResumeAdmitted func()
+	// onResumeClaimed is called once, when a resume's engine claims the run
+	// (runtime.WithOnResumeClaimed).
+	onResumeClaimed func()
 	// observers mirrors LaunchSpec.ExtraObservers: fired on every
 	// engine-level event via runtime.WithEventObserver (the backend-hook
 	// half rides ExecutorSpec.EventObservers). Together they feed the
@@ -1598,7 +1769,7 @@ func (s *Service) logRunOutcome(runID string, err error) {
 	case errors.Is(err, runtime.ErrRunCancelled):
 		s.logger.Info("runview: run %s cancelled", runID)
 	default:
-		s.logger.Warn("runview: run %s failed: %v", runID, err)
+		s.logger.Warn("runview: run %s failed: %s", runID, runtime.OperatorMessage(err))
 	}
 }
 

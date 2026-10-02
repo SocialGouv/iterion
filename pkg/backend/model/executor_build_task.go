@@ -185,6 +185,24 @@ func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Pol
 	)
 }
 
+// GateCanAsk reports whether the permission gate this executor arms for node
+// can pause the run to ask a human: the policy it builds for the node's task
+// (resolvePermissionPolicy — the run's override, the node's and the
+// workflow's declarations, ITERION_PERMISSION, the run's rules) asked
+// CanAsk. A node the gate does not govern, or whose policy does not build
+// (the node then fails before asking), cannot ask.
+func (e *ClawExecutor) GateCanAsk(node ir.Node) bool {
+	if _, ok := node.(ir.LLMNode); !ok {
+		return false
+	}
+	f, err := extractBackendFields(node)
+	if err != nil {
+		return false
+	}
+	p, err := e.resolvePermissionPolicy(f)
+	return err == nil && p.CanAsk()
+}
+
 // stampDelegateOutputMeta writes per-call observability keys onto the
 // output map: _tokens, _backend, _session_id, plus the effective
 // model / context window / peak load / output cap (claude_code; left
@@ -1003,6 +1021,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	}
 	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
+	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
 	return out, meteredFailure(recoveryTask, obj.TotalUsage), true

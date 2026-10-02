@@ -8,8 +8,12 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // countingLease is a run lock whose refreshes are counted, and fail with
@@ -42,28 +46,28 @@ func (nopProgress) InProgress() error { return nil }
 // TestLeaseHeartbeat_holdsTheLeaseThroughACancelledRunsTeardown: a cancelled
 // run keeps refreshing its lease while its engine unwinds — the workspace
 // export and the scratch bank, minutes long — so a sibling that received the
-// redelivery stays on the lock; the refreshes stop once the engine returned.
+// redelivery stays on the lock; the refreshes stop once the hold ends.
 func TestLeaseHeartbeat_holdsTheLeaseThroughACancelledRunsTeardown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		lease := &countingLease{}
 		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
 		runCtx, runCancel := context.WithCancelCause(context.Background())
 		defer runCancel(nil)
-		stop := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
 		time.Sleep(30 * time.Second)
 		runCancel(runtime.ErrRunInterrupted)
 		atCancel := lease.count()
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
 		during := lease.count()
-		stop()
+		hold.stop()
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		if during-atCancel < 14 {
 			t.Fatalf("%d refresh(es) in the 5 minutes after the run's cancellation, want one per 20s tick: the lease lapses during the teardown", during-atCancel)
 		}
 		if after := lease.count(); after != during {
-			t.Fatalf("%d refresh(es) after the engine returned, want none", after-during)
+			t.Fatalf("%d refresh(es) after the hold ended, want none", after-during)
 		}
 	})
 }
@@ -77,8 +81,8 @@ func TestLeaseHeartbeat_aFailedRefreshInterruptsTheRun(t *testing.T) {
 		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
 		runCtx, runCancel := context.WithCancelCause(context.Background())
 		defer runCancel(nil)
-		stop := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
-		defer stop()
+		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		defer hold.stop()
 		time.Sleep(30 * time.Second)
 		synctest.Wait()
 		if !errors.Is(context.Cause(runCtx), runtime.ErrRunInterrupted) {
@@ -97,10 +101,10 @@ func TestLeaseHeartbeat_aStuckUnwindReleasesTheLeaseAtItsCeiling(t *testing.T) {
 		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
 		runCtx, runCancel := context.WithCancelCause(context.Background())
 		defer runCancel(nil)
-		stop := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
-		defer stop()
+		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		defer hold.stop()
 		runCancel(runtime.ErrRunInterrupted)
-		time.Sleep(unwindLeaseCeiling + time.Minute)
+		time.Sleep(engineUnwindCeiling + time.Minute)
 		synctest.Wait()
 		atCeiling := lease.count()
 		time.Sleep(10 * time.Minute)
@@ -112,4 +116,188 @@ func TestLeaseHeartbeat_aStuckUnwindReleasesTheLeaseAtItsCeiling(t *testing.T) {
 			t.Fatalf("%d refresh(es) past the ceiling of an unwind that never returns, want none", after-atCeiling)
 		}
 	})
+}
+
+// TestLeaseHeartbeat_anEngineReturnWithoutCancellationStartsTheCeiling: a
+// park — a human gate, a failed_resumable death — returns from the engine
+// without the run ctx ever being cancelled. From that return the lease is
+// held through the runner's post-engine steps, then let go at
+// postEngineCeiling as when a refresh fails: no longer refreshed, and the run
+// ctx interrupted so what still works under it stops.
+func TestLeaseHeartbeat_anEngineReturnWithoutCancellationStartsTheCeiling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lease := &countingLease{}
+		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
+		runCtx, runCancel := context.WithCancelCause(context.Background())
+		defer runCancel(nil)
+		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		defer hold.stop()
+		time.Sleep(30 * time.Second)
+		hold.engineReturned(true)
+		time.Sleep(postEngineCeiling - time.Minute)
+		synctest.Wait()
+		beforeCeiling := lease.count()
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		held := lease.count() - beforeCeiling
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		atCeiling := lease.count()
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if held == 0 {
+			t.Fatalf("no refresh in the minute before the post-engine ceiling (%s): the lease is let go while the post-engine steps may still run", postEngineCeiling)
+		}
+		if after := lease.count(); after != atCeiling {
+			t.Fatalf("%d refresh(es) past the post-engine ceiling of a run that was never cancelled, want none", after-atCeiling)
+		}
+		if !errors.Is(context.Cause(runCtx), runtime.ErrRunInterrupted) {
+			t.Fatalf("at the post-engine ceiling the run's cause is %v, want interrupted: what still works under the lease must stop", context.Cause(runCtx))
+		}
+	})
+}
+
+// TestLeaseHeartbeat_theEngineReturnHandsTheHoldToThePostEngineCeiling: once
+// a cancelled run's engine returned, the unwind's ceiling no longer applies —
+// the post-engine steps are held to their own, from the return — or a slow
+// teardown would leave them no lease at all.
+func TestLeaseHeartbeat_theEngineReturnHandsTheHoldToThePostEngineCeiling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lease := &countingLease{}
+		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
+		runCtx, runCancel := context.WithCancelCause(context.Background())
+		defer runCancel(nil)
+		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		defer hold.stop()
+		runCancel(runtime.ErrRunInterrupted)
+		time.Sleep(engineUnwindCeiling - time.Minute)
+		hold.engineReturned(true)
+		time.Sleep(5 * time.Minute)
+		synctest.Wait()
+		pastUnwind := lease.count()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if lease.count() == pastUnwind {
+			t.Fatalf("no refresh %s after the cancellation of a run whose engine returned at %s: the unwind's ceiling cut the post-engine steps' hold", engineUnwindCeiling+5*time.Minute, engineUnwindCeiling-time.Minute)
+		}
+		time.Sleep(postEngineCeiling)
+		synctest.Wait()
+		atCeiling := lease.count()
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if after := lease.count(); after != atCeiling {
+			t.Fatalf("%d refresh(es) past the post-engine ceiling, want none", after-atCeiling)
+		}
+	})
+}
+
+// TestLeaseHeartbeat_aFinishedRunKeepsItsLeaseThroughItsPostEngineSteps: a run
+// whose engine returned without error is waited on by no resume. Its
+// post-engine steps — the bank that makes it landable first — are not cut at
+// postEngineCeiling: the lease is still refreshed past it, and the run's
+// context is not interrupted.
+func TestLeaseHeartbeat_aFinishedRunKeepsItsLeaseThroughItsPostEngineSteps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lease := &countingLease{}
+		r := &Runner{cfg: Config{HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
+		runCtx, runCancel := context.WithCancelCause(context.Background())
+		defer runCancel(nil)
+		hold := r.startLeaseHeartbeat(runCtx, runCancel, "run-1", lease, nopProgress{})
+		defer hold.stop()
+		time.Sleep(30 * time.Second)
+		hold.engineReturned(false)
+		time.Sleep(postEngineCeiling + time.Minute)
+		synctest.Wait()
+		pastCeiling := lease.count()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if lease.count() == pastCeiling {
+			t.Fatalf("no refresh past the post-engine ceiling (%s) of a finished run: its bank would be cut", postEngineCeiling)
+		}
+		if cause := context.Cause(runCtx); cause != nil {
+			t.Fatalf("a finished run's context was cancelled (%v) past the post-engine ceiling: its bank would stop", cause)
+		}
+	})
+}
+
+// TestAwaitedAfterEngine_isWhatTheStoreSays: a resume can wait on a run the
+// store reads parked, paused (a review dialogue re-paused for its next
+// reply) or still running; only a run it reads finished is waited on by
+// nobody. A run that cannot be read is held as a park is.
+func TestAwaitedAfterEngine_isWhatTheStoreSays(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	for _, status := range []store.RunStatus{store.RunStatusFinished, store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusRunning} {
+		if err := st.SaveRun(ctx, &store.Run{ID: "run-" + string(status), TenantID: "team-1", OwnerID: "u1", Status: status}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	for _, tc := range []struct {
+		name  string
+		runID string
+		want  bool
+	}{
+		{"finished", "run-" + string(store.RunStatusFinished), false},
+		{"re-paused", "run-" + string(store.RunStatusPausedWaitingHuman), true},
+		{"parked", "run-" + string(store.RunStatusFailedResumable), true},
+		{"still running", "run-" + string(store.RunStatusRunning), true},
+		{"unreadable", "run-absent", true},
+	} {
+		if got := r.awaitedAfterEngine(ctx, tc.runID); got != tc.want {
+			t.Errorf("%s: awaitedAfterEngine = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// finishEventFails is a store whose run_finished event cannot be appended:
+// the engine has written the run finished, and returns that error.
+type finishEventFails struct{ store.RunStore }
+
+func (s finishEventFails) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	if evt.Type == store.EventRunFinished {
+		return nil, errors.New("the event log is unreachable")
+	}
+	return s.RunStore.AppendEvent(ctx, runID, evt)
+}
+
+func (s finishEventFails) Unwrap() store.RunStore { return s.RunStore }
+
+// TestExecuteRun_aRunFinishedPastAnEngineErrorIsAwaitedByNobody: the engine
+// wrote the run finished, then returned an error — its run_finished event
+// was not appended. What the store reads decides: nobody waits on a
+// finished run, so its post-engine steps are not held to a resume's
+// ceiling.
+func TestExecuteRun_aRunFinishedPastAnEngineErrorIsAwaitedByNobody(t *testing.T) {
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-finished-past-an-error"
+	if _, err := st.CreateRun(ctx, runID, "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+	body, err := ast.MarshalFile(pr.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Store: finishEventFails{st}, WorkDir: t.TempDir(), Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: runID, TenantID: "team-1", OwnerID: "u1", WorkflowName: "main", IRCompiled: body}
+	var awaited []bool
+	execErr := r.executeRun(ctx, msg, nil, func(a bool) { awaited = append(awaited, a) })
+	if execErr == nil {
+		t.Fatal("the engine returned no error: its run_finished event was appended")
+	}
+	if run, err := st.LoadRun(ctx, runID); err != nil || run.Status != store.RunStatusFinished {
+		t.Fatalf("run = %+v (%v), want it written finished before the engine's error", run, err)
+	}
+	if len(awaited) != 1 || awaited[0] {
+		t.Fatalf("a run the store reads finished is held as awaited (%v) because its engine returned %v", awaited, execErr)
+	}
 }

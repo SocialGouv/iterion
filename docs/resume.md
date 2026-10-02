@@ -146,12 +146,16 @@ into a fresh file and refreshes it when it is at or past its expiry lead,
 so the *effective* token can differ even though the sealed blob does not.
 
 When a surface declines to bring a run back, it says so on the timeline:
-**`run_retry_skipped {reason: deterministic, code, error, status?}`** — the
-counterpart of `run_retry_scheduled`. Without it a `failed_resumable` row
-whose redelivery was dropped on purpose reads exactly like one still
-waiting for a pod. Measured on run `01a07804` before the classification
-existed: seven resumes of one compute-expression failure in ten minutes,
-each a fresh pod, clone and sandbox.
+**`run_retry_skipped {reason: deterministic, code, error, hint, status?,
+also_needs_force?}`** — the counterpart of `run_retry_scheduled`. Without it a
+`failed_resumable` row whose redelivery was dropped on purpose reads exactly
+like one still waiting for a pod. Measured on run `01a07804` before the
+classification existed: seven resumes of one compute-expression failure in ten
+minutes, each a fresh pod, clone and sandbox. Its `hint` is the failure's own
+remedy when the failure names one — a scratch that did not travel names
+`--accept-scratch-loss`, never `--force` — and "fix the cause, then resume
+with `--force`" only otherwise; `also_needs_force` says the resume needs
+`--force` besides.
 
 A cloud resume refused **before anything claims the run** — by the engine (a
 copy-based subbot child resumed on its own, an incompatible artifact contract,
@@ -166,6 +170,8 @@ one its cancel, and the refusal is its `error` (its failure code on
 newer resume or a run the engine claimed is left alone. The event then
 carries `status`, the status the run is back to. The revision the refused
 resume stamped stays recorded: resume with that source, or with `--force`.
+The run's `error` ends with the refusal's remedy when it names one
+(`— hint: …`), which the error's own words leave out.
 
 ## CLI
 
@@ -286,6 +292,97 @@ mutating node, or have the persisting step verify against the tree rather than
 against the upstream node's claim (`dep-update-guard`'s `commit_check` is the
 worked example — it compares `align.applied` with the branch head and blocks on
 a contradiction). Git is the durable state; an uncommitted working tree is not.
+
+### The scratch travels in its own bank
+
+`${PROJECT_SCRATCH_DIR}` is not the workspace and no commit carries it. In a
+sandbox whose scratch is container-local (kubernetes always; docker without the
+host bind) it dies with the sandbox, and a resume starts a new one. So the
+teardown of every run but a finished one — a park, a failure, a failed run a
+rewind can bring back — streams the scratch, as a gzip'd tar capped at 256 MiB,
+into the run's **scratch bank**, and every resume path extracts it into the new
+sandbox before its first node
+([ADR-106](adr/106-resume-restores-the-scratch-banked-at-teardown.md)). The
+timeline shows both halves: `sandbox_scratch_banked` (`banked`, `empty`,
+`bytes`, or the `reason` it could not be banked) and `sandbox_scratch_restored`
+(`restored`, `bytes`; `accepted` and `reason` when a resume accepting the
+scratch's loss went on without it;
+`host_backed` when it was restored into a host directory, which keeps the
+scratch from then on — no bank is restored over it again).
+
+A run whose last teardown left a scratch it could **not** bank (past the cap, a
+tar or upload failure, a store that keeps no bank) is refused
+`SCRATCH_NOT_PORTABLE`: its next nodes would otherwise find the scratch empty
+and fail far from the cause. So is a run that moved past its bank — an agent,
+tool or subbot node finished after the last teardown banked, in a sandbox lost
+without a teardown (an OOM kill, a lost node): restored, the bank would revert
+what that node wrote. So is a subbot child that executed in its parent's
+sandbox while that sandbox's scratch lived in the container, resumed on its
+own. These refusals come before the check of the workflow source — its digest
+and a shared dependency's identity alike — and name it when the source
+changed: the resume then needs both consents, `--accept-scratch-loss` and
+`--force`. `--force` alone never accepts the scratch's loss: resumes send it
+without condition (a conversational turn, an assistant's), and the loss needs a
+consent of its own, given once the refusal was shown. That consent is the
+resume's: an automatic retry of the same engine, a redelivery after its claim
+or an adoption does not carry it. A surface about to refuse a resume for a
+reason `--force` accepts (a changed source, an artifact contract) shows the
+scratch's loss first, even while the latest execution may still be banking.
+Over HTTP the refusal answers `error_code: scratch_not_portable`, with its
+`hint` and `also_needs_force` when `--force` is needed too; `iterion remote
+runs resume` prints both. A refusal only the engine meets — after the surface
+deferred to it, or at the restore — names the same consent on the run's
+`error`, on `run_failed` (`hint`, `also_needs_force`) and on
+`run_retry_skipped`.
+The resume surface refuses from a record the run's
+latest execution wrote, before anything moves the run (the studio and the API
+answer at once; a cloud resume is never flipped to `queued`). A run reads
+paused or failed while its teardown still banks: when the latest execution
+wrote no record yet, the surface leaves the decision to the engine, which
+checks again under the run's lock, before its claim. Relaunch the run fresh,
+or resume with `--accept-scratch-loss` to continue as it stands — without the
+scratch, or with the older bank, marked `stale`. The node a resume records as finished by
+its answer (a human node, or an agent that asked) ran in no sandbox: it does
+not age the bank. A teardown that cannot even list the scratch (the sandbox is
+already gone) records it as `unknown`: after a bank, that bank — still stored
+— is what the next resume restores (or refuses as moved past); otherwise the
+resume goes on without it, as it always did, and says so. The teardown writes
+the bank and its record under the run's identity, after the run's
+cancellation. It tries again what another try may cure — a blip on the exec,
+a failed tar, a failed upload (on the same archive) — and retries the record
+until its budget runs out. Before tar reads the scratch, the sandbox's other
+processes are stopped — in a sandbox whose process namespace is its own: a
+kubernetes pod, a docker or podman container not sharing the host's — so no
+write tears the archive unseen, and they go on once it is taken. A sandbox not
+read as isolated, a quiesce that fails, and one that could not stop or check
+every process are recorded (`unquiesced`, repeated on the restore). tar runs untranslated
+(`LC_ALL=C`); a member it catches changing while it reads it may be archived
+torn or missing, so tar runs again while it races, and the last complete
+archive is banked — even when a later try fails — with the raced members
+named (`raced`, repeated on the restore).
+
+Only a node that ran in the sandbox and succeeded ages the bank — an agent, a
+judge, a tool, a subbot or an LLM router, as the workflow that executed it said
+(recorded on its finish, whatever an edited source says since); one that failed re-runs from the
+checkpoint, and a rewind takes back the nodes it dropped — those on no loop or
+foreach cycle, whose earlier passes it does not replay (a rewind across a loop
+or a fan-out is refused; `--accept-scratch-loss` resumes it on the bank). The
+scratch itself is not rewound. A resume that went on without the bank, its
+loss accepted, forsakes it; one that restored a stale bank makes it the run's
+scratch again.
+
+At resume, the bank is read onto the host and checked to extract before
+anything reaches the sandbox. A bank that is gone or does not extract — or a
+resume that runs without a sandbox — parks the run under the same code;
+`--accept-scratch-loss` continues without it. A read that fails on the way (the
+timeline, the bank's store, the stream into the sandbox) parks it with no code,
+so the resume is retried, whatever consent it carries, and the bank is kept for
+that attempt.
+
+Not banked: the host scratch of an unsandboxed run, or of a sandbox that binds
+it to a host directory. It survives a resume on the same host, and is lost on
+another one, which happens in the cloud runner's in-pod mode — and when the
+host state is switched off between two attempts.
 
 ### When the final bank push fails
 
@@ -413,7 +510,8 @@ The resume command accepts the same recovery-relevant controls as launch:
 | `--sandbox`, `--sandbox-default-image`, `--sandbox-host-state` | Replace the launch-time isolation choice persisted on the run. Empty inherits the launch's decision (a run launched with `--sandbox none` refuses docker on resume too); non-empty overrides it on purpose. |
 | `--merge-into`, `--branch-name`, `--merge-strategy`, `--auto-merge` | Replace the launch-time worktree-finalization choice persisted on the run. Empty inherits; non-empty overrides. |
 | `--auto-resume N` | Retry eligible transient/rate-limit failures, or budget/timeout failures when a larger cap was supplied, with bounded backoff and forfait-cap checks. |
-| `--force` | Permit a source-hash mismatch. |
+| `--force` | Permit a source-hash mismatch (or an artifact-contract change). Never the loss of the run's scratch. |
+| `--accept-scratch-loss` | Resume although the run's scratch does not travel (`SCRATCH_NOT_PORTABLE`): without it, or with an older bank. This resume's consent only. |
 | `--force-stale` | Take over an orphaned local `running` run after the staleness guard passes. |
 
 ### The launch's decisions travel with the run

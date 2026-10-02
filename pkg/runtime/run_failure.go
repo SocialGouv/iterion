@@ -25,14 +25,17 @@ func (e *Engine) failRun(ctx context.Context, runID, nodeID, reason string) erro
 func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr error) error {
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
-		if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, rtErr.Message, rtErr.Code); storeErr != nil {
+		remedy := RemedyOf(rtErr)
+		if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
 			e.logger.Error("failed to persist run failure status: %v", storeErr)
 			return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, rtErr.Message, storeErr)
 		}
-		if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]any{
+		data := map[string]any{
 			"error": rtErr.Message,
 			"code":  string(rtErr.Code),
-		}); err != nil {
+		}
+		remedy.Record(data)
+		if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, data); err != nil {
 			e.logger.Warn("failed to emit run_failed event: %v", err)
 		}
 		if rtErr.NodeID == "" {
@@ -47,22 +50,26 @@ func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr e
 // If the store update fails, the store error is returned instead of the runtime
 // error so callers know the failure state was not persisted.
 func (e *Engine) failRunWithCode(ctx context.Context, runID, nodeID, reason string, code ErrorCode, hint string) error {
-	if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, reason, code); storeErr != nil {
-		e.logger.Error("failed to persist run failure status: %v", storeErr)
-		return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, reason, storeErr)
-	}
-	if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]any{
-		"error": reason,
-		"code":  string(code),
-	}); err != nil {
-		e.logger.Warn("failed to emit run_failed event: %v", err)
-	}
-	return &RuntimeError{
+	rtErr := &RuntimeError{
 		Code:    code,
 		Message: reason,
 		NodeID:  nodeID,
 		Hint:    hint,
 	}
+	remedy := RemedyOf(rtErr)
+	if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, remedy.Annotate(reason), code); storeErr != nil {
+		e.logger.Error("failed to persist run failure status: %v", storeErr)
+		return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, reason, storeErr)
+	}
+	data := map[string]any{
+		"error": reason,
+		"code":  string(code),
+	}
+	remedy.Record(data)
+	if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, data); err != nil {
+		e.logger.Warn("failed to emit run_failed event: %v", err)
+	}
+	return rtErr
 }
 
 // ---------------------------------------------------------------------------
@@ -264,18 +271,21 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 		// failRunWithCheckpoint, which captures for itself.
 		e.captureFailureBoundary(rs, nodeID)
 		cp := buildCheckpoint(rs, nodeID)
-		if storeErr := e.store.FailRunResumable(rs.ctx, rs.runID, cp, rtErr.Message, rtErr.Code); storeErr != nil {
+		remedy := RemedyOf(rtErr)
+		if storeErr := e.store.FailRunResumable(rs.ctx, rs.runID, cp, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
 			e.logger.Error("failed to persist resumable failure: %v", storeErr)
 			return e.failRunErr(rs.ctx, rs.runID, nodeID, origErr)
 		}
 		// Preserve the original *RuntimeError identity so callers can
 		// errors.As back to the same value; the helper would otherwise
 		// allocate a fresh one.
-		if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, map[string]any{
+		data := map[string]any{
 			"error":     rtErr.Message,
 			"code":      string(rtErr.Code),
 			"resumable": true,
-		}); err != nil {
+		}
+		remedy.Record(data)
+		if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, data); err != nil {
 			e.logger.Warn("failed to emit run_failed event: %v", err)
 		}
 		if rtErr.NodeID == "" {

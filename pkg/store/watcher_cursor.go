@@ -10,9 +10,5 @@ type WatcherCursorStore interface {
 }
 
 func AsWatcherCursorStore(s RunStore) WatcherCursorStore {
-	if s == nil {
-		return nil
-	}
-	c, _ := s.(WatcherCursorStore)
-	return c
+	return capability[WatcherCursorStore](s)
 }

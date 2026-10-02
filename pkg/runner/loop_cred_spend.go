@@ -64,7 +64,7 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 		}
 		return
 	}
-	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
 	repoID := r.repoForSpend(bg, msg)
 	for route, totals := range routes {

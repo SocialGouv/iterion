@@ -427,9 +427,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 				" -Djavax.net.ssl.trustStorePassword="+netproxy.JavaTrustStorePassword)
 	}
 
-	// PID 1 is `sleep infinity` so the container stays alive while
-	// the run streams in N `docker exec` calls. We deliberately do
-	// not use the image's CMD/ENTRYPOINT — that would shadow our
+	// The container's command is `sleep infinity`, under the image's
+	// entrypoint when it declares one (tini in the sandbox images), so the
+	// container stays alive while the run streams in N `docker exec` calls.
+	// The image's CMD is deliberately replaced — it would shadow our
 	// "container as a long-lived ssh-like target" model.
 	args = append(args, p.spec.Image, "sleep", "infinity")
 
@@ -465,6 +466,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		inContainerWorkspace: inContainerWorkspace,
 		tempDirs:             tempDirs,
 		secretFiles:          secretLocs,
+		pidIsolated:          containerPIDIsolated(ctx, d.rt, containerID, d.logger),
 	}
 
 	if p.spec.PostCreate != "" {
@@ -526,6 +528,10 @@ type Run struct {
 	// backing its bind-mount, so RefreshSecretFile can rewrite it mid-run
 	// (a rotated short-lived token). Nil when the run has no file secrets.
 	secretFiles map[string]secretFileLoc
+
+	// pidIsolated: the container runs in a process namespace of its own,
+	// as read after its start (containerPIDIsolated).
+	pidIsolated bool
 
 	mu      sync.Mutex
 	stopped bool
@@ -711,6 +717,29 @@ func (r *Run) stop(ctx context.Context) error {
 		return fmt.Errorf("docker: stop %s: %w\noutput: %s", containerShortID(r.containerID), err, string(out))
 	}
 	return nil
+}
+
+// ProcessIsolated reports the process namespace read when the container
+// started (containerPIDIsolated).
+func (r *Run) ProcessIsolated() bool { return r.pidIsolated }
+
+// containerPIDIsolated reads the process namespace a started container runs
+// in. Its own — "" (docker's default) or "private" — isolates it; "host",
+// which podman's containers.conf may make every container's default, or
+// another container's, does not. What cannot be read is not isolated.
+func containerPIDIsolated(ctx context.Context, rt Runtime, id string, logger *iterlog.Logger) bool {
+	out, err := runtimeCmdContext(ctx, rt, "inspect", "--format", "{{.HostConfig.PidMode}}", id).Output()
+	if err != nil {
+		logger.Warn("sandbox: container %s: its process namespace could not be read (%v) — it is not treated as isolated", containerShortID(id), err)
+		return false
+	}
+	switch mode := strings.TrimSpace(string(out)); mode {
+	case "", "private":
+		return true
+	default:
+		logger.Warn("sandbox: container %s shares a process namespace (%s) — it is not treated as isolated", containerShortID(id), mode)
+		return false
+	}
 }
 
 // Cleanup ensures the container is gone. Containers were created with

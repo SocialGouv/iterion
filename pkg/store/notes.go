@@ -51,11 +51,7 @@ type RunNoteStore interface {
 // so the HTTP surface is backend-agnostic. Callers MUST nil-check (a
 // store without the seam, or a nil store).
 func AsRunNoteStore(s RunStore) RunNoteStore {
-	if s == nil {
-		return nil
-	}
-	n, _ := s.(RunNoteStore)
-	return n
+	return capability[RunNoteStore](s)
 }
 
 // notesDir returns <root>/runs/<runID>/notes after validating runID.

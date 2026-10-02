@@ -622,7 +622,7 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		plan.failedState = cfg.Agent.FailedState
 		plan.attemptCount = r.Attempt + 1
 		plan.runID = r.RunID
-		plan.runErrText = err.Error()
+		plan.runErrText = runtime.OperatorMessage(err)
 	default:
 		// Non-cancellation failure → retry, unless the attempt ceiling is
 		// reached. On exhaustion, give up: move the issue to a terminal
@@ -646,7 +646,7 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 			plan.attemptCount = r.Attempt + 1
 			plan.runID = r.RunID
 			if err != nil {
-				plan.runErrText = err.Error()
+				plan.runErrText = runtime.OperatorMessage(err)
 			}
 		} else {
 			plan.kind = finishRevert

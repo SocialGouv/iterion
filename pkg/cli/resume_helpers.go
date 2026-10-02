@@ -45,9 +45,14 @@ func buildResumeAnswers(opts ResumeOptions, resumingFromFailure bool) (map[strin
 // the in-bundle .bot path. Otherwise the .bot file is compiled
 // directly from disk.
 //
+// A shared dependency whose identity changed is not refused here: the
+// engine, handed the bundle, refuses it after the scratch and the lineage,
+// so their refusal names it and every consent the resume needs is shown at
+// once.
+//
 // The caller MUST defer the returned cleanup (no-op on the
 // non-bundle path).
-func resumeOpenWorkflow(r *store.Run, iterFile string, force bool) (*ir.Workflow, string, string, *bundle.Bundle, func() error, error) {
+func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, string, *bundle.Bundle, func() error, error) {
 	cleanup := func() error { return nil }
 	if r != nil && r.BundlePath != "" {
 		bundleHandle, bundleCleanup, openErr := openResumeBundle(r.BundlePath)
@@ -56,7 +61,7 @@ func resumeOpenWorkflow(r *store.Run, iterFile string, force bool) (*ir.Workflow
 		}
 		if bundleHandle != nil {
 			cleanup = bundleCleanup
-			bundleWorkflowPath, resolveErr := runtime.ResolveResumeBundleWorkflow(r, bundleHandle, iterFile, force)
+			bundleWorkflowPath, _, resolveErr := runtime.ResumeBundleWorkflow(r, bundleHandle, iterFile)
 			if resolveErr != nil {
 				return nil, "", iterFile, bundleHandle, cleanup, resolveErr
 			}

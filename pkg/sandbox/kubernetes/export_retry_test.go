@@ -19,7 +19,7 @@ import (
 // was still writing in the pod: tar's warning, then the trailer `kubectl exec`
 // adds for a remote exit 1. The fake kubectl reproduces it verbatim — a shim
 // that drops the trailer tests a predicate production never meets.
-const measuredRaceStderr = "tar: ./.git: file changed as we read it\n" + kubectlRemoteExit1
+const measuredRaceStderr = "tar: ./.git: file changed as we read it\n" + sandbox.KubectlRemoteExit1
 
 // exportShim puts a fake kubectl on PATH for ExportWorkspace. Each call archives
 // src the way the in-pod tar would and counts itself; the first failFor calls
@@ -275,10 +275,10 @@ func TestOnlyTarRaceWarnings(t *testing.T) {
 		want   bool
 	}{
 		{"the measured stderr, kubectl trailer included", exitWith(1), measuredRaceStderr, true},
-		{"a file listed then removed", exitWith(1), "tar: ./.git/index.lock: File removed before we read it\n" + kubectlRemoteExit1, true},
+		{"a file listed then removed", exitWith(1), "tar: ./.git/index.lock: File removed before we read it\n" + sandbox.KubectlRemoteExit1, true},
 		{"several racing writers", exitWith(1), "tar: ./.git: file changed as we read it\ntar: ./docs/page.md: file changed as we read it", true},
-		{"a racing writer and another tar error", exitWith(1), "tar: ./.git: file changed as we read it\ntar: ./x: Cannot open: Permission denied\n" + kubectlRemoteExit1, false},
-		{"the kubectl trailer alone", exitWith(1), kubectlRemoteExit1, false},
+		{"a racing writer and another tar error", exitWith(1), "tar: ./.git: file changed as we read it\ntar: ./x: Cannot open: Permission denied\n" + sandbox.KubectlRemoteExit1, false},
+		{"the kubectl trailer alone", exitWith(1), sandbox.KubectlRemoteExit1, false},
 		{"kubectl's own failure", exitWith(1), "error: unable to upgrade connection", false},
 		{"no stderr at all", exitWith(1), "", false},
 		{"a fatal tar exit", exitWith(2), measuredRaceStderr, false},
@@ -321,5 +321,42 @@ func TestDropRacedGitLeftoversNeverRemovesAnExcludedMember(t *testing.T) {
 	}
 	if _, err := os.Stat(stray); err == nil {
 		t.Error("the sweep kept a non-excluded leftover: the test proves nothing")
+	}
+}
+
+// exportShimRecording puts a fake kubectl on PATH that archives src once, and
+// returns what kubectl was called with.
+func exportShimRecording(t *testing.T, src string) (args func() string) {
+	t.Helper()
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not on PATH")
+	}
+	shimDir := t.TempDir()
+	argsFile := filepath.Join(shimDir, "args")
+	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + argsFile + "'\ntar -C '" + src + "' -cf - .\n"
+	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() string {
+		raw, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+}
+
+// TestExportWorkspace_RunsThePodTarUntranslated: the export reads the pod
+// tar's stderr for GNU tar's race warnings, which a translated tar would not
+// write in those words.
+func TestExportWorkspace_RunsThePodTarUntranslated(t *testing.T) {
+	ws := exportTarget(t)
+	args := exportShimRecording(t, podWork(t))
+	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	if got := args(); !strings.Contains(got, " -- env LC_ALL="+sandbox.TarLocale+" tar -C ") {
+		t.Fatalf("the pod tar does not run under LC_ALL=%s: kubectl %s", sandbox.TarLocale, got)
 	}
 }

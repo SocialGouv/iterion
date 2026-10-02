@@ -99,8 +99,8 @@ const (
 	// then drops it (issue #481). 30s stretches the 8-delivery budget over
 	// ~4 minutes of wall clock, which covers a rolling restart of the runner
 	// deployment; if the fleet still hasn't caught up, the exhausted message
-	// is parked on the DLQ with an actionable run status (recoverable via
-	// /api/admin/dlq) rather than silently dropped.
+	// is parked on the DLQ with an actionable run status (recovered by a
+	// resume of the run) rather than silently dropped.
 	SchemaMismatchNakDelay = 30 * time.Second
 	// EpochMismatchNakDelay gives a cold replacement fleet enough time to
 	// become ready before the shared consumer spends its delivery budget.
@@ -135,9 +135,16 @@ type Config struct {
 	// RedeliveryWindow input. Every process that connects must pass the SAME
 	// configured value: the bucket TTL is whatever the last connector wrote,
 	// and the sweeper's cutoff is read off the SERVER's connection.
-	LockTTL    time.Duration // default 60s
-	MaxPayload int           // default 0 → use server's negotiated MaxPayload
-	Logger     *iterlog.Logger
+	LockTTL time.Duration // default 60s
+	// LeaseUnwindCeiling is how long a run's lease may still be held once
+	// the run can be resumed — its engine's teardown, then the runner's
+	// post-engine steps: a delivery that meets a held lock spreads its
+	// retries over it (HeldLockRetryDelay), and RedeliveryWindow counts
+	// them. Every process that connects passes the same value; zero spreads
+	// nothing.
+	LeaseUnwindCeiling time.Duration
+	MaxPayload         int // default 0 → use server's negotiated MaxPayload
+	Logger             *iterlog.Logger
 }
 
 // Conn is the wired NATS layer. The publisher + consumer both consume
@@ -180,23 +187,53 @@ func (c *Conn) QueueBacklog(ctx context.Context) (uint64, error) {
 // explicit delay an operator may configure ABOVE AckWait — a schema
 // mismatch, an epoch mismatch, and a delivery that could not take the run
 // lock (which waits one lease interval, LockTTL, for a lease that is not
-// being refreshed to evaporate). The server's orphan sweeper derives its
-// queued-staleness cutoff from the largest of them, so it never flips a
-// message that is still legitimately waiting for redelivery. Every delay
-// must therefore be registered here: one that is not makes the sweeper
-// under-report the worst case by up to MaxDeliver × that delay.
-func (c *Conn) RedeliveryWindow() time.Duration {
-	interval := c.cfg.AckWait
-	if c.cfg.SchemaMismatchDelay > interval {
-		interval = c.cfg.SchemaMismatchDelay
+// being refreshed to evaporate — and, when the lease is held, a delay that
+// depends on the delivery's rank, HeldLockRetryDelay). Each of the
+// MaxDeliver deliveries is counted at the largest delay its rank can take,
+// so the server's orphan sweeper, whose queued-staleness cutoff derives from
+// this window, never flips a message that is still legitimately waiting for
+// redelivery. Every delay must therefore be registered here: one that is not
+// makes the sweeper under-report the worst case by up to MaxDeliver × that
+// delay.
+func (c *Conn) RedeliveryWindow() time.Duration { return c.cfg.RedeliveryWindow() }
+
+// RedeliveryWindow is Conn.RedeliveryWindow for a connection opened with cfg,
+// its defaults already applied.
+func (cfg Config) RedeliveryWindow() time.Duration {
+	interval := max(cfg.AckWait, cfg.SchemaMismatchDelay, cfg.EpochMismatchDelay, cfg.LockTTL)
+	if cfg.MaxDeliver < 1 {
+		return time.Duration(cfg.MaxDeliver) * interval
 	}
-	if c.cfg.EpochMismatchDelay > interval {
-		interval = c.cfg.EpochMismatchDelay
+	window := interval
+	for delivered := 1; delivered < cfg.MaxDeliver; delivered++ {
+		window += max(interval, HeldLockRetryDelay(cfg.LockTTL, cfg.LeaseUnwindCeiling, cfg.MaxDeliver, delivered))
 	}
-	if c.cfg.LockTTL > interval {
-		interval = c.cfg.LockTTL
+	return window
+}
+
+// HeldLockRetryDelay is the delayed-Nak interval of the delivered-th delivery
+// of a message that could not take the run lock because another holds it.
+// That lease may be held leaseUnwindCeiling once the run became resumable —
+// its engine's teardown, then the runner's post-engine steps — and then take
+// lockTTL to lapse; a resume published meanwhile (a gate answered right after
+// the park, a resume right after a cancel) must outlive the hold instead of
+// landing on the DLQ.
+//
+// The last delivery that may still Nak waits that whole hold, and the ones
+// before it back off towards it by halves, none sooner than lockTTL. So
+// whichever delivery first meets the lock — earlier ones may have been spent
+// elsewhere, an epoch Nak during a rollout — the delivery after the last
+// retry comes once the hold is over, while a lease released in seconds is
+// retried within one lease interval. With deliveries uncapped, lockTTL.
+func HeldLockRetryDelay(lockTTL, leaseUnwindCeiling time.Duration, maxDeliver, delivered int) time.Duration {
+	if maxDeliver < 2 {
+		return lockTTL
 	}
-	return time.Duration(c.cfg.MaxDeliver) * interval
+	delay := leaseUnwindCeiling + lockTTL
+	for rank := max(delivered, 1); rank < maxDeliver-1 && delay > lockTTL; rank++ {
+		delay /= 2
+	}
+	return max(lockTTL, delay)
 }
 
 // Connect opens the NATS connection, pins the stream + DLQ + KV

@@ -237,6 +237,81 @@ func (s *MemoryLeaseStore) Close(_ context.Context, leaseID string, costUSD floa
 	return true, nil
 }
 
+func (s *MemoryLeaseStore) Reopen(_ context.Context, leaseID string, supersededAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.m[leaseID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if !l.Closed || l.Outcome != OutcomeSuperseded || l.ClosedAt == nil || !l.ClosedAt.Equal(supersededAt) {
+		return false, nil
+	}
+	l.Closed = false
+	l.Outcome = ""
+	l.ClosedAt = nil
+	s.m[leaseID] = l
+	return true, nil
+}
+
+// ListByRun returns every lease of a run, any state, newest acquired
+// first — see LeaseStore.ListByRun.
+func (s *MemoryLeaseStore) ListByRun(_ context.Context, runID string) ([]Lease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Lease
+	for _, l := range s.m {
+		if l.RunID == runID {
+			out = append(out, l)
+		}
+	}
+	// Newest acquired first; a tie (rows written before the acquisition
+	// floor) is ordered by lease id, descending, so the report's pin is
+	// deterministic.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].AcquiredAt.Equal(out[j].AcquiredAt) {
+			return out[i].AcquiredAt.After(out[j].AcquiredAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, nil
+}
+
+// StampSupersededReport marks a superseded lease as reported by its own
+// attempt — see LeaseStore.StampSupersededReport.
+func (s *MemoryLeaseStore) StampSupersededReport(_ context.Context, leaseID string, costUSD float64, when time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.m[leaseID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if !l.Closed || (l.Outcome != OutcomeSuperseded && l.Outcome != OutcomeSupersededGrantless) {
+		return false, nil
+	}
+	l.Outcome = OutcomeSupersededReported
+	l.CostUSD += costUSD
+	t := when.UTC()
+	l.ClosedAt = &t
+	s.m[leaseID] = l
+	return true, nil
+}
+
+// SetSupersededByPublication records the publication a grantless takeover
+// was published at — see LeaseStore.SetSupersededByPublication.
+func (s *MemoryLeaseStore) SetSupersededByPublication(_ context.Context, leaseID string, publishedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.m[leaseID]
+	if !ok {
+		return ErrNotFound
+	}
+	t := publishedAt.UTC()
+	l.SupersededByPublishedAt = &t
+	s.m[leaseID] = l
+	return nil
+}
+
 func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

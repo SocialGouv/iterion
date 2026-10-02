@@ -477,6 +477,10 @@ type Lease struct {
 	Outcome    string     `bson:"outcome,omitempty" json:"outcome,omitempty"`
 	AcquiredAt time.Time  `bson:"acquired_at" json:"acquired_at"`
 	ClosedAt   *time.Time `bson:"closed_at,omitempty" json:"closed_at,omitempty"`
+	// SupersededByPublishedAt carries the publication a GRANTLESS takeover
+	// was published at (SupersedeRun): a report carrying exactly it is the
+	// takeover's own, and stays silent on this lease.
+	SupersededByPublishedAt *time.Time `bson:"superseded_by_published_at,omitempty" json:"superseded_by_published_at,omitempty"`
 	// ExpiresAt bounds an abandoned lease. A pod killed mid-run never
 	// reports, so without this the donor would lose a concurrency slot
 	// permanently; the sweeper closes anything past this instant.
@@ -492,6 +496,19 @@ const (
 	OutcomeAbandoned = "abandoned"
 	// OutcomeSuperseded — a later attempt of the same run took over.
 	OutcomeSuperseded = "superseded"
+	// OutcomeSupersededReported — a superseded lease its own attempt later
+	// reported against: the supersede charged nothing, the stamp's CAS let
+	// exactly one report charge, and the lease no longer reads as a plain
+	// supersede (Reopen's CAS misses it). HasServedAttempt reads it as
+	// SERVED — the attempt did run and pay — so a later acquisition of the
+	// run RENEWS the donor's allowance instead of reserving a unit, which
+	// is the renewal doctrine's own reading.
+	OutcomeSupersededReported = "superseded_reported"
+	// OutcomeSupersededGrantless — the run was taken over by a publication
+	// that held no pool grant (SupersedeRun): the attempt they served is
+	// over, and the takeover holds no lease of its own, so a report of the
+	// takeover must never charge this lease (ReportAttempt stays silent).
+	OutcomeSupersededGrantless = "superseded_grantless"
 	// OutcomeNotLaunched — the grant was returned; the run never started.
 	OutcomeNotLaunched = "not_launched"
 )

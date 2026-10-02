@@ -91,3 +91,19 @@ func TestBuildRunnerCmdForwardsEveryDetachedSpecKnob(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildRunnerCmdCarriesTheScratchsConsentOnResume: the detached resume
+// forwards the consent to the scratch's loss, and only when given.
+func TestBuildRunnerCmdCarriesTheScratchsConsentOnResume(t *testing.T) {
+	for _, accept := range []bool{false, true} {
+		cmd, err := buildRunnerCmd(context.Background(), "/bin/true", detachedSpec{
+			Command: runnerCommandResume, RunID: "run-1", FilePath: "wf.bot", Force: true, AcceptScratchLoss: accept,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(strings.Join(cmd.Args, " "), "--accept-scratch-loss"); got != accept {
+			t.Fatalf("accept=%v: args %q carry --accept-scratch-loss = %v", accept, cmd.Args, got)
+		}
+	}
+}

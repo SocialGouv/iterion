@@ -191,6 +191,53 @@ func TestRedeliveryWindowAccountsForAdmissionDelays(t *testing.T) {
 	}
 }
 
+// TestRedeliveryWindowAccountsForAHeldLease: a delivery that meets a held
+// lock retries on a delay set by its rank. Whichever delivery first meets the
+// lock — earlier ones may have been spent on an epoch Nak — the delivery after
+// the last retry comes once the longest hold is over (LeaseUnwindCeiling, then
+// the lease's lapse), no retry comes sooner than the lease's TTL, and the
+// window the sweeper's cutoff derives from counts every delivery at the
+// largest delay its rank can take.
+func TestRedeliveryWindowAccountsForAHeldLease(t *testing.T) {
+	const deliveries = 8
+	ceiling, lock := 56*time.Minute, time.Minute
+	c := &Conn{cfg: Config{MaxDeliver: deliveries, AckWait: 10 * time.Minute, SchemaMismatchDelay: 30 * time.Second, EpochMismatchDelay: 2 * time.Minute, LockTTL: lock, LeaseUnwindCeiling: ceiling}}
+	for first := 1; first < deliveries; first++ {
+		var waited time.Duration
+		for rank := first; rank < deliveries; rank++ {
+			d := HeldLockRetryDelay(lock, ceiling, deliveries, rank)
+			if d < lock {
+				t.Fatalf("delivery %d: HeldLockRetryDelay = %v, sooner than the lease's TTL %v", rank, d, lock)
+			}
+			waited += d
+		}
+		if hold := ceiling + lock; waited < hold {
+			t.Errorf("lock first met at delivery %d: the last delivery comes %v after it, before a lease held %v can have lapsed", first, waited, hold)
+		}
+	}
+	// The worst case a queued message can bounce: after each delivery that
+	// may still Nak, the longest gap any Nak of that rank opens; then the
+	// last delivery's own interval.
+	worst := c.cfg.AckWait
+	for rank := 1; rank < deliveries; rank++ {
+		worst += max(c.cfg.AckWait, c.cfg.SchemaMismatchDelay, c.cfg.EpochMismatchDelay, lock, HeldLockRetryDelay(lock, ceiling, deliveries, rank))
+	}
+	if got := c.RedeliveryWindow(); got < worst {
+		t.Fatalf("RedeliveryWindow() = %v, under the %v a held lock's retries and the other Naks can take", got, worst)
+	}
+	if d := HeldLockRetryDelay(lock, ceiling, deliveries, 1); d != lock {
+		t.Fatalf("first delivery: HeldLockRetryDelay = %v, want a lease released in seconds retried after one lease interval %v", d, lock)
+	}
+	if d := HeldLockRetryDelay(lock, ceiling, 0, 1); d != lock {
+		t.Fatalf("uncapped deliveries: HeldLockRetryDelay = %v, want the lease's TTL %v", d, lock)
+	}
+	for rank := 1; rank < deliveries; rank++ {
+		if d := HeldLockRetryDelay(lock, 0, deliveries, rank); d != lock {
+			t.Fatalf("no ceiling, delivery %d: HeldLockRetryDelay = %v, want the lease's TTL %v", rank, d, lock)
+		}
+	}
+}
+
 func TestRunMessageIDSeparatesLaunchAndResume(t *testing.T) {
 	launch := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:00:00Z"}
 	resume := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:01:00Z", Resume: &queue.ResumeSpec{}}

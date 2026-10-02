@@ -159,6 +159,9 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	return ctx, cleanup, nil
 }
 
+// runSecretsDeleteTimeout bounds deleteRunSecrets' single store call.
+const runSecretsDeleteTimeout = 5 * time.Second
+
 // deleteRunSecrets best-effort removes the persistent sealed bundle for
 // this run from the RunSecrets store. executeRun calls it ONLY on a
 // terminal-clean outcome (success or paused-for-resume) — never on a
@@ -171,7 +174,7 @@ func (r *Runner) deleteRunSecrets(msg *queue.RunMessage) {
 	if msg.SecretsRef == "" || r.cfg.RunSecrets == nil {
 		return
 	}
-	ctxDel, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctxDel, cancel := context.WithTimeout(context.Background(), runSecretsDeleteTimeout)
 	defer cancel()
 	if delErr := r.cfg.RunSecrets.Delete(ctxDel, msg.SecretsRef); delErr != nil {
 		r.cfg.Logger.Warn("runner: run_secrets delete for %s (ref=%s): %v", msg.RunID, msg.SecretsRef, delErr)

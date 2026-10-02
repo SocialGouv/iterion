@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // remoteRunSummary mirrors runview.RunSummary's CLI-visible fields.
@@ -582,18 +584,27 @@ func followRemoteRun(ctx context.Context, c *RemoteClient, p *Printer, id string
 }
 
 func printRemoteEvent(p *Printer, e remoteEvent) {
-	node := e.NodeID
+	node := terminalText(e.NodeID, 200)
 	if node != "" {
 		node = " " + node
 	}
+	// A failure's words are its error (run_failed, run_retry_skipped), and
+	// what to do about it its hint; a blank message says nothing.
 	detail := ""
-	if msg, ok := e.Data["message"].(string); ok && msg != "" {
-		detail = " — " + firstLine([]byte(msg))
+	for _, key := range []string{"message", "error"} {
+		if msg, ok := e.Data[key].(string); ok && strings.TrimSpace(msg) != "" {
+			detail = " — " + firstLine([]byte(msg))
+			break
+		}
 	}
-	p.Line("%s  %-22s%s%s", e.Timestamp.Format("15:04:05"), e.Type, node, detail)
+	if hint, ok := e.Data["hint"].(string); ok && strings.TrimSpace(hint) != "" {
+		detail += store.RunErrorHintSeparator + clipField(strings.TrimSpace(hint))
+	}
+	p.Line("%s  %-22s%s%s", e.Timestamp.Format("15:04:05"), terminalText(e.Type, 100), node, detail)
 }
 
-// RemoteRunsRaw streams a raw endpoint (log, workflow source) to output.
+// RemoteRunsRaw streams a raw endpoint (log, workflow source) to output as
+// the server sent it (Printer.Raw): the operator asked for those bytes.
 func RemoteRunsRaw(ctx context.Context, c *RemoteClient, p *Printer, id, endpoint string) error {
 	code, body, err := c.API(ctx, "GET", "/api/runs/"+id+endpoint, nil)
 	if err != nil {
@@ -602,7 +613,7 @@ func RemoteRunsRaw(ctx context.Context, c *RemoteClient, p *Printer, id, endpoin
 	if code/100 != 2 {
 		return &APIError{Status: code, Method: "GET", Path: "/api/runs/" + id + endpoint, Body: string(body)}
 	}
-	p.Line("%s", strings.TrimRight(string(body), "\n"))
+	p.Raw(append(bytes.TrimRight(body, "\n"), '\n'))
 	return nil
 }
 
@@ -711,7 +722,10 @@ type RemoteRunsResumeOptions struct {
 	AnswersFile string // JSON map of answers (@file semantics handled by caller)
 	FilePath    string // optionally push a modified workflow
 	Force       bool
-	Timeout     string
+	// AcceptScratchLoss sends the consent to resume although the run's
+	// scratch does not travel; Force does not give it.
+	AcceptScratchLoss bool
+	Timeout           string
 	// Budget overrides: non-zero fields beat the run doc's persisted
 	// launch ask on THIS resume — the "raise the cap + resume"
 	// recovery the local CLI has (`iterion resume --max-*`), extended
@@ -743,6 +757,9 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 		}
 		req["source"] = src
 		req["file_path"] = opts.FilePath
+	}
+	if opts.AcceptScratchLoss {
+		req["accept_scratch_loss"] = true
 	}
 	if opts.Force {
 		req["force"] = true

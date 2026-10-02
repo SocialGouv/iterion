@@ -35,6 +35,10 @@ type ResumeOptions struct {
 	Answers     map[string]string // --answer key=value overrides
 	LogLevel    string            // log level (default: "info", env: ITERION_LOG_LEVEL)
 	Force       bool              // allow resume despite workflow hash change
+	// AcceptScratchLoss is the operator's consent to resume although the
+	// run's scratch does not travel (SCRATCH_NOT_PORTABLE); Force never
+	// gives it.
+	AcceptScratchLoss bool
 	// ForceStale auto-promotes a status=running run to failed_resumable
 	// IFF its events.jsonl mtime is older than forceStaleStaleAfter.
 	// The server-boot sweep (pkg/store.PromoteStaleOrphans) covers the
@@ -255,7 +259,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	opts.Budget = mergePersistedResumeBudget(r.BudgetOverrides, opts.Budget)
 
-	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile, opts.Force)
+	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile)
 	// Install cleanup BEFORE the error check: resumeOpenWorkflow returns a
 	// live cleanup (the .botz temp-dir remover) even on a bundle compile
 	// error, so returning on err without deferring it leaks the extracted dir.
@@ -349,11 +353,14 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		autoMerge = *opts.AutoMerge
 	}
 
+	claimed := false
 	eng := runtime.New(wf, s, executor, append(resumeOpts,
+		runtime.WithOnResumeClaimed(func() { claimed = true }),
 		runtime.WithLogger(logger),
 		runtime.WithWorkflowHash(wfHash),
 		runtime.WithFilePath(iterFile),
 		runtime.WithForceResume(opts.Force),
+		runtime.WithAcceptScratchLoss(opts.AcceptScratchLoss),
 		// Sandbox-by-default: resumed runs re-resolve their sandbox with
 		// the same global default as `iterion run`, then apply the
 		// launch's persisted override so a run that refused a sandbox at
@@ -465,6 +472,12 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	err = eng.Resume(ctx, opts.RunID, answers)
+	if err != nil && !claimed && opts.Background {
+		// A managed runner's stdio goes nowhere, and a resume refused before
+		// its claim leaves the run where it was, its timeline untouched: the
+		// refusal is said where the studio reads the run, its log.
+		logger.Error("resume of run %s refused before it claimed the run, which stays %s: %s", opts.RunID, r.Status, runtime.OperatorMessage(err))
+	}
 	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget, opts.Retry), err, logger)
 	return reportResumeOutcome(p, s, opts.RunID, err, map[string]any{
 		"run_id":   opts.RunID,

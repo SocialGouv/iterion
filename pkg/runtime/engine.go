@@ -177,35 +177,48 @@ type Engine struct {
 	// workDirTemp is the throw-away directory defaultWorkDir created under
 	// `go test` when the process cwd was the package directory (#1803);
 	// releaseTempWorkDir removes it when Run or ResumeWithHostInputs returns.
-	workDirTemp              string
-	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
-	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
-	workflowHash             string                               // SHA-256 of the .bot source, set via WithWorkflowHash
-	workflowSource           string                               // .bot text at launch, set via WithWorkflowSource (else read from filePath)
-	compiledMain             string                               // the main's key in compiledFiles, set via WithCompiledSources
-	compiledFiles            map[string]string                    // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
-	executionContext         *store.ExecutionContext              // resolved launch/resume context contract, set via WithExecutionContext
-	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
-	filePath                 string                               // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
-	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions
-	trust                    store.RunTrust                       // who wrote the code in this run's workspace, set via WithTrust
-	repoSHAExpected          string                               // the commit the admission pinned, set via WithTrust
-	parentNodeID             string                               // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
-	preset                   string                               // in-source preset name selected at launch, set via WithPreset
-	runName                  string                               // deterministic human-friendly run label, set via WithRunName
-	source                   *store.RunSource                     // originating action metadata (dispatcher → issue ref), set via WithSource
-	mergeInto                string                               // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName               string                               // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
-	mergeStrategy            string                               // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
-	autoMerge                bool                                 // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
-	modelOverrides           []store.RunModelOverride             // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
-	routingPolicy            *store.RoutingPolicy                 // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
-	budgetAsk                *ir.BudgetOverrides                  // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
-	validateOutputs          bool                                 // when true, validate node outputs against declared schemas
-	outputCorrectionBudget   int                                  // bounded invalid-output correction calls per node episode
-	forceResume              bool                                 // when true, skip workflow hash check on resume
+	workDirTemp            string
+	onEvent                func(evt store.Event)    // optional observer fired after every successful append
+	recoveryDispatch       RecoveryDispatch         // optional; consulted on node execution failure
+	workflowHash           string                   // SHA-256 of the .bot source, set via WithWorkflowHash
+	workflowSource         string                   // .bot text at launch, set via WithWorkflowSource (else read from filePath)
+	compiledMain           string                   // the main's key in compiledFiles, set via WithCompiledSources
+	compiledFiles          map[string]string        // every file of the unit the launch compiled, by path from its root, set via WithCompiledSources
+	executionContext       *store.ExecutionContext  // resolved launch/resume context contract, set via WithExecutionContext
+	workspaceTracker       workspacetrack.Tracker   // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
+	filePath               string                   // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
+	parentRunID            string                   // immediate parent run, set via WithParentRunID for nested executions
+	trust                  store.RunTrust           // who wrote the code in this run's workspace, set via WithTrust
+	repoSHAExpected        string                   // the commit the admission pinned, set via WithTrust
+	parentNodeID           string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
+	preset                 string                   // in-source preset name selected at launch, set via WithPreset
+	runName                string                   // deterministic human-friendly run label, set via WithRunName
+	source                 *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
+	mergeInto              string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
+	branchName             string                   // worktree finalization: storage branch override ("" = iterion/run/<runID>, the stable key per #1366); set via WithBranchName
+	mergeStrategy          string                   // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
+	autoMerge              bool                     // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
+	modelOverrides         []store.RunModelOverride // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
+	routingPolicy          *store.RoutingPolicy     // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
+	budgetAsk              *ir.BudgetOverrides      // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
+	validateOutputs        bool                     // when true, validate node outputs against declared schemas
+	outputCorrectionBudget int                      // bounded invalid-output correction calls per node episode
+	forceResume            bool                     // when true, skip workflow hash check on resume
+	acceptScratchLoss      bool                     // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
+	// scratchBankHeld stops the current sandbox's teardown from banking its
+	// scratch: set when restoring the bank failed, so a partial scratch
+	// never replaces the bank a later resume will retry (ADR-106). Each
+	// sandbox starts without it (startSandbox).
+	scratchBankHeld          bool
+	scratchBankRetryPause    time.Duration                        // first pause between the teardown's banking attempts; zero is scratchBankRetryPauseDefault
+	pendingForsake           map[string]any                       // the lineage forsake a lone resume of a child records once it runs (recordPendingForsake)
+	recordWriteLimit         time.Duration                        // the budget of a record a resume decides from (recordWriteBudget); zero is scratchBankRecordBudget
+	recordRetryPause         time.Duration                        // first pause between tries at writing a record a resume decides from (emitRecord); zero is recordRetryPauseDefault
 	expectedResumeStatus     store.RunStatus                      // optional exact CAS source status for a durable host action
 	resumeReceiptID          string                               // durable host action correlation stamped on run_resumed
+	onResumeClaimed          func()                               // called once when a resume claims the run (WithOnResumeClaimed)
+	onResumeAdmitted         func()                               // called once when a resume is past its refusals (WithOnResumeAdmitted)
+	queuedAttempt            time.Time                            // the publication of the delivery a queued resume claims for (WithQueuedAttempt)
 	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision
 	artifactContractsChecked bool                                 // caller already ran the synchronous contract gate for this in-process resume
 	artifactResumePreflight  *ArtifactResumePreflight             // same-run snapshot from the synchronous in-process resume boundary
@@ -631,18 +644,19 @@ type resumeBackendState struct {
 func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
 	writeCtx := context.WithoutCancel(ctx)
 	status, msg, code := setupFailureStatus(ctx, phase, cause)
+	remedy := setupFailureRemedy(cause, code)
 	var err error
 	for attempt, delay := 0, 500*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*4 {
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
 		var changed bool
-		if changed, err = e.recordSetupOutcome(writeCtx, runID, status, msg, code); err == nil {
+		if changed, err = e.recordSetupOutcome(writeCtx, runID, status, remedy.Annotate(msg), code); err == nil {
 			if changed {
 				// Only the writer that RECORDED the stop announces it: a
 				// declined CAS means a peer got there first with its own
 				// reason, and a second event would contradict the document.
-				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code)
+				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code, remedy)
 			}
 			return
 		}
@@ -689,12 +703,14 @@ func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status st
 //
 // `phase` names the setup step, which is what an operator acts on: a
 // sandbox that would not start and a bundle skill that would not mirror are
-// the same status and a very different morning.
-func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, status store.RunStatus, reason string, code store.FailureCode) {
+// the same status and a very different morning. remedy is what the failure
+// tells the operator to do (setupFailureRemedy).
+func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, status store.RunStatus, reason string, code store.FailureCode, remedy Remedy) {
 	data := map[string]any{"error": reason, "phase": phase}
 	if code != "" {
 		data["code"] = string(code)
 	}
+	remedy.Record(data)
 	if status == store.RunStatusCancelled {
 		// The operator stopped it during setup: the same event the node
 		// loop writes for a cancel, so a consumer reads one vocabulary.
@@ -764,6 +780,17 @@ func setupFailureStatus(ctx context.Context, phase string, cause error) (store.R
 		return store.RunStatusCancelled, fmt.Sprintf("%s cancelled before the first node: %v", phase, cause), store.FailureCancelled
 	}
 	return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
+}
+
+// setupFailureRemedy is the remedy a setup failure's records carry: the
+// cause's own when the recorded code is the cause's verdict, none when
+// setupFailureStatus read the failure as a stall, a placement, a drain or a
+// cancel, whose remedy is not the cause's.
+func setupFailureRemedy(cause error, code store.FailureCode) Remedy {
+	if code == "" || code != setupFailureCode(cause) {
+		return Remedy{}
+	}
+	return RemedyOf(cause)
 }
 
 // setupFailureCode recovers a typed classification from a setup error

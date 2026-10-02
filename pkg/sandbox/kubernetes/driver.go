@@ -1054,6 +1054,10 @@ func (r *Run) cmdContext(ctx context.Context, args []string, streamPayload strin
 		c.Stdin = strings.NewReader(streamPayload)
 	}
 	proc.DetachProcessGroup(c)
+	// A cancelled context kills kubectl, not a child it spawned (the process
+	// group is detached): a credential plugin still holding the pipes would
+	// keep Wait blocked past the caller's deadline (kubectlCmdContext).
+	c.WaitDelay = 2 * time.Second
 	return c
 }
 
@@ -1064,6 +1068,9 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 	}
 	return sandbox.ExecCmd(r.Command(ctx, cmd, opts), opts)
 }
+
+// ProcessIsolated: the pod never shares the node's process namespace.
+func (r *Run) ProcessIsolated() bool { return true }
 
 // Cleanup deletes the sandbox pod. Idempotent — kubectl's
 // --ignore-not-found handles the second call cleanly. Errors here
@@ -1390,45 +1397,15 @@ func exportRetrySettings(logger *iterlog.Logger) (attempts int, pause time.Durat
 	return attempts, pause
 }
 
-// tarRaceWarnings are GNU tar's warnings for a tree that changed while it was
-// archived: a file rewritten, or listed and then removed. The archive is
-// complete; tar exits 1 ("some files differ").
-var tarRaceWarnings = []string{"file changed as we read it", "File removed before we read it"}
-
-// kubectlRemoteExit1 is the line `kubectl exec` itself adds to stderr when the
-// remote command exits 1.
-const kubectlRemoteExit1 = "command terminated with exit code 1"
-
 // onlyTarRaceWarnings reports whether err is an exit status 1 whose stderr
 // carries tar's race warnings and nothing else but kubectl's own exit-code
-// trailer — the one failure a retry can cure. kubectl reports its own failures
-// with exit 1 too, on other lines, so the stderr content tells them apart.
+// trailer (sandbox.OnlyTarRaceWarnings) — the one failure a retry can cure.
 func onlyTarRaceWarnings(err error, stderr string) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		return false
 	}
-	seen := false
-	for _, line := range strings.Split(stderr, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case line == "" || line == kubectlRemoteExit1:
-		case strings.HasPrefix(line, "tar: ") && hasAnySuffix(line, tarRaceWarnings):
-			seen = true
-		default:
-			return false
-		}
-	}
-	return seen
-}
-
-func hasAnySuffix(s string, suffixes []string) bool {
-	for _, suffix := range suffixes {
-		if strings.HasSuffix(s, suffix) {
-			return true
-		}
-	}
-	return false
+	return sandbox.OnlyTarRaceWarnings(stderr)
 }
 
 // gitDirFiles lists the regular files under gitDir, relative to it. The export
@@ -1489,7 +1466,7 @@ func (r *Run) dropRacedGitLeftovers(hostGit string, before, extracted map[string
 func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, extracted map[string]bool, err error) {
 	kubectlArgs := []string{"--namespace", r.namespace,
 		"exec", r.podName, "--container", "workload", "--",
-		"tar", "-C", r.prepared.workspace}
+		"env", "LC_ALL=" + sandbox.TarLocale, "tar", "-C", r.prepared.workspace}
 	kubectlArgs = append(kubectlArgs, tarExcludeArgs()...)
 	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
 	podTar := kubectlCmdContext(ctx, kubectlArgs...)
