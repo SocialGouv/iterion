@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.223.0](https://github.com/SocialGouv/iterion/compare/v3.222.0...v3.223.0) (2026-10-02)
+
+### Features
+
+* **budget:** a call whose usage the provider never reported is counted, not free ([#2028](https://github.com/SocialGouv/iterion/issues/2028)) ([#2094](https://github.com/SocialGouv/iterion/issues/2094)) ([407962f](https://github.com/SocialGouv/iterion/commit/407962f506c19301c823d72e677c5992b346fd56))
+
+    <details><summary>why</summary>
+
+    A claw call whose usage the provider did not report in full — a stream cut before its final account, a provider that sends no usage (a custom OPENAI_BASE_URL is not asked for it), a request the cold-stream watchdog abandoned unanswered — used to be booked as its lower bound at best, as nothing at worst. Its count now travels with the spend and the ceilings say so.
+
+    </details>
+* **credentials:** a run whose routes are all env-funded acquires no LLM credential ([#2038](https://github.com/SocialGouv/iterion/issues/2038)) ([#2109](https://github.com/SocialGouv/iterion/issues/2109)) ([e14a4ae](https://github.com/SocialGouv/iterion/commit/e14a4ae0b429715d8c3be5571daf54174b72384c))
+
+    <details><summary>why</summary>
+
+    A run whose model routes are ALL `openai_compatible` — the gateway funded by the runner's environment — still walked every credential tier: BYOK keys resolved for every provider, the pool leased a donor, everything sealed. The bundle was already populated when the guards in `wantsFor` and `spendableProviders` ran, and it shaped the review topology downstream.
+
+    </details>
+
+### Bug Fixes
+
+* **bots:** prod-watch — the Loki lane joins the minting-lane store cut ([#2057](https://github.com/SocialGouv/iterion/issues/2057)) ([#2112](https://github.com/SocialGouv/iterion/issues/2112)) ([4f6f2f3](https://github.com/SocialGouv/iterion/commit/4f6f2f3e6c1c19ef50c4273b6c9d46e84540c500)), references [#2042](https://github.com/SocialGouv/iterion/issues/2042)
+
+    <details><summary>why</summary>
+
+    Log lines carry user input, and `template()` mints one template per distinct value: the Loki lane's records grew without bound (the same defect #2042 fixed for the Sentry lane — ~134k records at the defaults, past GitHub's 100 MB state-file limit).
+
+    </details>
+
 ## [3.222.0](https://github.com/SocialGouv/iterion/compare/v3.221.1...v3.222.0) (2026-10-02)
 
 ### Features
