@@ -19,9 +19,15 @@ The operator's decision (2026-09-30, on epic #2000): routing becomes a **policy,
 
 ### 0. The form: a per-field fold, on the retrypolicy pattern
 
-`RoutingPolicy` resolves exactly the way `retrypolicy.Resolve` already does (field by field, the first level that sets a field wins, a **provenance map** answers "which level decided this", and the platform level can only **lower** what the levels below may do — on `triggers`, the platform ceiling prunes and never extends). List fields carry their own merge rule, stated per field in §1 — a reordered prefix of a longer list being a semantics trap, `pair_order` **replaces** at the highest level that sets it rather than merging. A field marked `locked` at a level stops the descent for that field: the one primitive cost governance has. The resolved policy is snapshotted onto the run document at launch, as retrypolicy already snapshots.
+`RoutingPolicy` resolves exactly the way `retrypolicy.Resolve` already does (field by field, the first level that sets a field wins, a **provenance map** answers "which level decided this", and the platform level can only **lower** what the levels below may do — on `triggers`, the platform ceiling prunes and never extends). The chain runs platform < org < team < shipped bot < bot binding < run: the binding outranks the shipped bot because deployment context decides what shipped content may spend on THIS tenant. List fields carry their own merge rule, stated per field in §1 — a reordered prefix of a longer list being a semantics trap, `pair_order` **replaces** at the highest level that sets it rather than merging. A field marked `locked` at a level stops the descent for that field: the one primitive cost governance has. The resolved policy is snapshotted onto the run document at launch, as retrypolicy already snapshots.
 
-**Levels and sequencing.** Platform (the settings record the facade and keys-first knobs already ride), bot (a `routing:` block in the manifest — orchestration, not workflow semantics, the same rule ADR-087's alternative 6 set for `retry:`), and run (launch fields) are delivery 1. Org and team are **delivery 2**: they are greenfield — `identity` records are directory entries, admission lists are not settings, and each level means a new collection, API routes, an RBAC answer to "who is an org admin", tenancy threading, CAS and preview support. Named, costed, sequenced — not smuggled into "four of them new".
+**Levels and sequencing.** Five sources, and TWO of them are about the bot, on purpose:
+
+- **platform** — the settings record the facade and keys-first knobs already ride;
+- **the shipped `.bot`** — a `routing:` block in the manifest (orchestration, not workflow semantics — the same rule ADR-087's alternative 6 set for `retry:`). Written by the AUTHOR, who may have tuned and tailored the bot to a model: this level is settable **and lockable by the author**;
+- **the bot binding** — the provisioned instance of that bot on a team/repo. Written by whoever provisions it, it overrides every UNLOCKED field of the shipped bot: deployment context outranks shipped content, and the author's lock is what stops it (the same gesture as `strict`). It rides the EXISTING bot-bindings store — no new collection;
+- **run** — launch fields;
+- org and team are **delivery 2**: they are greenfield — `identity` records are directory entries, admission lists are not settings, and each level means a new collection, API routes, an RBAC answer to "who is an org admin", tenancy threading, CAS and preview support. Named, costed, sequenced — not smuggled into "four of them new".
 
 Fields of the first delivery:
 
@@ -78,7 +84,7 @@ Resume classifies every policy field as **identity or volatile**: identity field
 - **Cost is automatic by default** — every allowed fallback is attempted, a subscription may spend as extra usage (claw on a Claude forfait), and the governing tool is the lock, not an opt-in. The operator's explicit stance, recorded.
 - **Every switch is said**: audit lines at launch selection and at each in-run de-order, the resolved pair and its provenance in the run document, the spend on the serving credential.
 - **The fold is pure; the walk is not**: the policy fold is table-testable; the resolution is tested by properties over injected probes — fill/restore/preview/launch-gate agreement, and `spendableProviders`/`wantsFor`/`derivePinnedProviders` reading the same rewritten program.
-- **Delivery 1 is platform + bot + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are.
+- **Delivery 1 is platform + the shipped bot + the bot binding + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are. The binding level rides the existing bot-bindings store.
 - **Testing obligation**: fold tables; pair-selection tests against seeded bundles; switch tests against window states; the parity property asserted for the policy-resolved answer; mutation-checked like #1998/#2038.
 
 ## Arbitrated (the operator, 2026-10-02)
