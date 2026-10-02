@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.226.0](https://github.com/SocialGouv/iterion/compare/v3.225.1...v3.226.0) (2026-10-02)
+
+### Features
+
+* **bots:** prod-watch — the ledgers rotate past a bound ([#2064](https://github.com/SocialGouv/iterion/issues/2064)) ([#2129](https://github.com/SocialGouv/iterion/issues/2129)) ([a6cb80d](https://github.com/SocialGouv/iterion/commit/a6cb80d1daaf3cf1f089fcdebcc03745ba754a60)), references [2093/#2112](https://github.com/SocialGouv/iterion/issues/2112)
+
+    <details><summary>why</summary>
+
+    alertlog.jsonl and ticks.jsonl grew for ever (a flooded fold note's line carries ~3 KB; ~50 MB a year in the tree AND in the ops repo's git history). A file past ledger.max_bytes (2 MB, 0 = off) is abandoned under a generation name (alertlog-<gen>.jsonl) and a fresh one starts the same tick; the newest ledger.keep (8, 0 = all) rotations stay in the working tree, older ones leave it — git history keeps every version, the pruning only untracks.
+
+    </details>
+
 ## [3.225.1](https://github.com/SocialGouv/iterion/compare/v3.225.0...v3.225.1) (2026-10-02)
 
 ### Bug Fixes
