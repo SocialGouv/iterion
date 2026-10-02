@@ -128,6 +128,20 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 				// is and flattens a plain error to its text.
 				return "", &RuntimeError{Code: ErrCodeExecutionFailed, NodeID: convergenceNodeID, Message: msg, Cause: cause}
 			}
+			// The branch whose failure stopped its siblings IS the run's
+			// root cause: attach it, so errors.Is on the run's end reaches
+			// it whatever order the branch goroutines delivered their
+			// results in — a flattened message made the sibling's
+			// cancellation the only fact a chain-walker could see (#1669).
+			// Typed for the same reason as above: failRunErrWithCheckpoint
+			// keeps a *RuntimeError's chain and flattens anything else.
+			// Only a failure with no classification of its own is
+			// attachable (rootCauseBranchErr): wrapping a typed code, a
+			// loop decline or a run-level sentinel would let the branch
+			// reclassify the aggregate through the chain.
+			if root := rootCauseBranchErr(ordered); root != nil {
+				return "", &RuntimeError{Code: ErrCodeExecutionFailed, NodeID: convergenceNodeID, Message: msg, Cause: root}
+			}
 			return "", fmt.Errorf("%s", msg)
 		}
 	case ir.AwaitBestEffort:
@@ -410,6 +424,54 @@ func quotedBranchError(ordered []*branchResult) error {
 		return deadline
 	}
 	return cancelled
+}
+
+// rootCauseBranchErr is the branch failure a wait_all aggregate wraps as its
+// cause: the first by branch id that failed by itself, so the answer does not
+// depend on the order the branches' goroutines finished in. Nil when every
+// failure is a stop (cancellations and deadlines carry no root cause of
+// their own) or when every own-failure carries a classification of its own —
+// see classifiesBranchErr: wrapping one would let the aggregate's chain
+// answer for a branch's typed code, loop decline or run-level sentinel, and
+// a death beside a ceiling would read as the ceiling (the aggregate stays
+// its own classification; the message already quotes that branch).
+func rootCauseBranchErr(ordered []*branchResult) error {
+	for _, r := range ordered {
+		if r.err == nil || stoppedBranch(r.err) || classifiesBranchErr(r.err) {
+			continue
+		}
+		return r.err
+	}
+	return nil
+}
+
+// classifiesBranchErr says the error's chain carries a signal a reader of
+// the run's end classifies on — a typed code, a loop decline, a run-level
+// sentinel (ErrBudgetExceeded for the runner's ack carve-out, ErrRunPaused
+// and ErrRunPausedOperator for the pause detections, ErrServerDraining and
+// ErrUsageCapped for the launch/quota refusals, ErrRunInterrupted for the
+// redelivery, ErrDeliberateFailure for the fail-node read, a deferred pause
+// marker subordinate to the elected sibling's fate). The last five are not
+// reachable from a branch TODAY — the guard is not defending a path the
+// current code can take, it is defending the invariant against the future
+// one: the day a branch failure can wrap one, the aggregate must still not
+// answer for it. Only a failure free of all of these — a store refusing a
+// write, an executor's plain error — may be wrapped as the aggregate's
+// cause without changing what the run's end answers to.
+func classifiesBranchErr(err error) bool {
+	if errors.Is(err, ErrBudgetExceeded) || errors.Is(err, ErrRunPaused) ||
+		errors.Is(err, ErrRunPausedOperator) || errors.Is(err, ErrServerDraining) ||
+		errors.Is(err, ErrUsageCapped) ||
+		errors.Is(err, ErrRunInterrupted) || errors.Is(err, ErrDeliberateFailure) ||
+		errors.Is(err, errBranchPauseDeferred) {
+		return true
+	}
+	var rt *RuntimeError
+	if errors.As(err, &rt) {
+		return true
+	}
+	var d *LoopDeclined
+	return errors.As(err, &d)
 }
 
 // stoppedBranch says a branch ended because the fan-out was stopped — a

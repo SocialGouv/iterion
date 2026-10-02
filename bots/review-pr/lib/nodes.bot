@@ -253,6 +253,52 @@ def git(*a):
         return subprocess.CompletedProcess(['git', *a], 1, '', 'timed out')
 base = os.environ.get('BASE', 'main')
 head = git('rev-parse', 'HEAD').stdout.strip()
+# A review workspace must equal the tree under review: a TRACKED file with
+# an uncommitted edit means it does not — an edit an earlier run left
+# behind, or a generator whose output differs from the committed file —
+# and git-diff against the base (the reviewers' scope) reads the working
+# tree, so that edit would be filed as a PR finding (#1666). Named here so
+# the reviewers scope it OUT and the publish step routes it as a workspace
+# anomaly. The read lists tracked files only (untracked entries never
+# enter that diff — and this bot's own .review-pr/ scratch is untracked by
+# design) and excludes the tree noise the engine and the tooling write
+# (the .claude mirror the engine rewrites, devbox.lock, script scratch),
+# which is not the workspace drifting either. Empty in base_ref: HEAD
+# mode — uncommitted work IS the object there, no anomaly. (No backticks
+# in these comments: the command string is backtick-delimited.)
+#
+# Read in -z: the line form C-quotes any name with a space or a non-ASCII
+# byte (quotepath), and the publish step's strip matches the finding's
+# plain path — a quoted name would slip PAST it and be posted as a PR
+# finding. NUL-terminated fields are never quoted. A rename/copy is TWO
+# fields (new, then old); the old path is skipped — a finding anchors to
+# the new one. The entries travel newline-joined to the publish step (the
+# scalar-substitution contract), so a name containing a literal newline
+# degrades to its FIRST line as the anomaly entry (the orphan fragment is
+# rejected at the publish parse) — such a file's own drift still escapes
+# the strip, an accepted residual. A FAILED read emits the '?' marker
+# rather than a clean tree: an empty value would disarm the publish
+# step's strip in silence, and the review would read as if the workspace
+# had been verified.
+noise = os.environ.get('ITERION_TREE_NOISE', '').split()
+porcelain = git('status', '--porcelain', '-z', '--untracked-files=no', '--', ':/', *noise)
+workspace_anomaly = ''
+if base != 'HEAD':
+    if porcelain.returncode != 0:
+        workspace_anomaly = '?'
+    else:
+        anomaly_entries = []
+        fields = porcelain.stdout.split('\0')
+        i = 0
+        while i < len(fields):
+            entry = fields[i]
+            i += 1
+            if not entry:
+                continue
+            anomaly_entries.append(entry)
+            if entry[0] in ('R', 'C'):
+                i += 1
+        workspace_anomaly = chr(10).join(anomaly_entries)
 base_is_current = False
 if base != 'HEAD' and git('fetch', '--quiet', 'origin', base).returncode == 0:
     fetched = git('rev-parse', 'FETCH_HEAD')
@@ -260,7 +306,7 @@ if base != 'HEAD' and git('fetch', '--quiet', 'origin', base).returncode == 0:
         base = fetched.stdout.strip()
         base_is_current = True
 def unresolved(b):
-    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': b, 'base_is_current': False})); raise SystemExit(0)
+    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': b, 'base_is_current': False, 'workspace_anomaly': workspace_anomaly})); raise SystemExit(0)
 mb = git('merge-base', base, 'HEAD').stdout.strip()
 if not mb:
     unresolved(base)
@@ -268,7 +314,7 @@ diff = git('diff', '--name-only', mb)
 if diff.returncode != 0:
     unresolved(mb)
 files = [f for f in diff.stdout.strip().splitlines() if f.strip()]
-print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head, 'base_sha': mb, 'base_is_current': base_is_current}))
+print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head, 'base_sha': mb, 'base_is_current': base_is_current, 'workspace_anomaly': workspace_anomaly}))
 "`
   output: diff_precheck_output
   ## Carries reviewed_sha, the revision the findings anchor to, and
@@ -322,7 +368,7 @@ print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'rev
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} python3 -I -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -432,6 +478,49 @@ if findings_parse_failed:
 questions = [q.strip() for q in (os.environ.get('QUESTIONS') or '').split(chr(10)) if q.strip()]
 # TICKET_CONFORMANCE follows the same scalar newline-joined contract.
 tickets = [t.strip() for t in (os.environ.get('TICKET_CONFORMANCE') or '').split(chr(10)) if t.strip()]
+# WORKSPACE ANOMALY routing (#1666): entries the precheck found uncommitted
+# are workspace state, never PR content -- the reviewers were told to scope
+# them out, and a finding anchored on one anyway judges an edit the pull
+# request does not contain. Strip it from the PR findings and report it
+# under the anomaly section below, so the review says the workspace drifted
+# instead of blaming the change under review. An unresolved template ref
+# reaches the shell as literal braces on a run wired before this input
+# existed and must read as a clean tree. The entries are porcelain -z
+# fields (never C-quoted, a rename reduced to its NEW path by the
+# precheck), one per line: the two status columns and their space come
+# off, the path is matched whole -- a quoted or off-by-one name would slip
+# past the strip and be posted as a PR finding.
+#
+# Two shapes are NOT entries. '?' alone: the precheck's status read FAILED
+# -- the strip has nothing to work with, and a silent clean tree would
+# disarm it without a trace, so the marker turns into a summary line
+# instead. And any line without the two status columns and their space:
+# the transport is newline-joined, so a filename holding a literal
+# newline arrives as its first line (a valid entry, kept -- the residual
+# documented at the precheck read) plus an orphan fragment that l[3:]
+# would mangle into a phantom path able to reclassify a LEGITIMATE
+# finding; the fragment is rejected.
+anomaly_raw = os.environ.get('WORKSPACE_ANOMALY') or ''
+if anomaly_raw.startswith(chr(123) * 2):
+    anomaly_raw = ''
+workspace_check_failed = anomaly_raw.strip() == '?'
+anomaly_lines = []
+if not workspace_check_failed:
+    for l in anomaly_raw.split(chr(10)):
+        if len(l) > 3 and l[2] == ' ' and l.strip():
+            anomaly_lines.append(l)
+anomaly_paths = set()
+for l in anomaly_lines:
+    anomaly_paths.add(l[3:].strip())
+anomaly_findings = []
+if anomaly_paths:
+    kept = []
+    for f in findings:
+        if isinstance(f, dict) and str(f.get('file') or '').strip() in anomaly_paths:
+            anomaly_findings.append(f)
+        else:
+            kept.append(f)
+    findings = kept
 if not url or not tok:
     emit(False, gate_requested=gate_enabled, gate_skipped_reason='no forge publish endpoint bound to this run', skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
@@ -478,7 +567,13 @@ elif findings:
     summary = ['**Revi — ' + str(len(findings)) + (' problème à corriger.**' if len(findings) == 1 else ' problèmes à corriger.**'), '',
                ' · '.join(str(counts[sev]) + ' ' + sev for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)))]
 else:
-    summary = ['**Revi — aucun problème détecté dans le périmètre revu.**']
+    if anomaly_findings:
+        # Never headline a clean review when the strip reclassified some:
+        # the verdict is about the PR, and the reclassified count says the
+        # workspace drifted — the details ride the anomaly section below.
+        summary = ['**Revi — aucun problème à corriger dans la PR ; ' + str(len(anomaly_findings)) + (' finding reclassé' if len(anomaly_findings) == 1 else ' findings reclassés') + ' en anomalie workspace (voir plus bas).**']
+    else:
+        summary = ['**Revi — aucun problème détecté dans le périmètre revu.**']
 if recovered_from_reviewers:
     summary.extend(['', chr(9888) + ' Revue dégradée : findings récupérés des reviewers ; seuil, limite et accord entre modèles non appliqués.'])
 elif findings_parse_failed:
@@ -506,6 +601,26 @@ if unanchored:
             # This is an unanchored replacement, never an apply-able suggestion.
             fence = chr(96) * (max([len(m[0]) for m in re.finditer(chr(96) + '+', c['suggestion'])] + [2]) + 1)
             summary.extend(['', 'Remplacement proposé :', fence, c['suggestion'], fence])
+if anomaly_lines:
+    # The workspace is not the pull request's tree: say so, name each drifted
+    # entry and the difference, and keep every finding those entries drew out
+    # of the PR's findings -- the change under review is not their author.
+    summary.extend(['', chr(9888) + ' **Anomalie workspace** — le checkout contient des modifications non commitées que la PR ne porte pas ; rapportées comme état du workspace, jamais comme findings :'])
+    summary.extend('- ' + l.strip() for l in anomaly_lines)
+    if ws:
+        try:
+            stat = subprocess.run(['git', '-C', ws, 'diff', '--stat', 'HEAD', '--'] + sorted(anomaly_paths), capture_output=True, text=True, timeout=30).stdout.strip()
+        except Exception:
+            stat = ''
+        if stat:
+            summary.extend(['', 'Différence constatée :', chr(96) * 3, stat, chr(96) * 3])
+    for f in anomaly_findings:
+        anchor = str(f.get('file') or '') + ':' + str(f.get('line') or '')
+        summary.extend(['', 'Finding reclassé ici (hors diff de la PR) — ' + anchor + ' — ' + str(f.get('title') or '')])
+if workspace_check_failed:
+    # The strip was disarmed by the failed status read: say so rather than
+    # letting the review read as if the workspace had been verified clean.
+    summary.extend(['', chr(9888) + ' **État du workspace non vérifié** — la lecture git status du precheck a échoué : la présence d\'éditions non commitées hors diff de la PR n\'a pas pu être contrôlée, et aucun finding n\'a été reclassé. Relancer la revue sur un workspace lisible.'])
 
 # Run telemetry is engine-owned: never ask a reviewer to self-report it.
 # Effort is expanded by the engine before entering the tool sandbox, using
@@ -730,6 +845,13 @@ if gate_enabled:
         if converge_fallback:
             served.append('the merge step ran on its fallback route (' + (ai_value('AI_CONVERGE_MODEL') or 'unnamed model') + ')')
         payload['gate']['note'] = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s); ' + ' and '.join(served) + ' because the primary credential could not serve'
+    if anomaly_findings:
+        # The strip must not read as approval by omission: the gate note
+        # says how many findings were reclassified as workspace state, so a
+        # green status still shows the workspace drifted.
+        extra = str(len(anomaly_findings)) + (' finding' if len(anomaly_findings) == 1 else ' findings') + ' reclassified as workspace anomaly (uncommitted edit outside the PR diff), not counted'
+        note = payload['gate'].get('note') or ''
+        payload['gate']['note'] = (note + '; ' + extra) if note else str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s); ' + extra
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                              headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
                              method='POST')
