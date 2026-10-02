@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.227.0](https://github.com/SocialGouv/iterion/compare/v3.226.0...v3.227.0) (2026-10-02)
+
+### Features
+
+* **runtime:** a resume restores the scratch its run banked at teardown ([#1972](https://github.com/SocialGouv/iterion/issues/1972)) ([e71a2a0](https://github.com/SocialGouv/iterion/commit/e71a2a0667bde5d4e93b2d61af75beac984782d6))
+
+    <details><summary>why</summary>
+
+    Nodes keep working state under ${PROJECT_SCRATCH_DIR}: the verify.sh an agent writes and a later gate runs (eleven catalog bots), a measurement a later node reads, source clones kept out of the judged tree. On kubernetes the scratch lives in the container and dies with it, a resume always starts a new pod, and at park only the workspace travels, as commits. Measured: an assessment run wrote its floor measurement, parked, resumed on a new pod and died MEASUREMENT_REFUSED on the file it had…
+
+    </details>
+
 ## [3.226.0](https://github.com/SocialGouv/iterion/compare/v3.225.1...v3.226.0) (2026-10-02)
 
 ### Features
