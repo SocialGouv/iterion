@@ -145,6 +145,38 @@ func TestBankUploadReachesTheRemote(t *testing.T) {
 	}
 }
 
+// A config read that FAILS is not an absence: a bank that cannot tell
+// whether its push carries Git LFS pointers is refused by name, never
+// silent.
+func TestBankRefusesWhenTheLFSConfigReadFails(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	lfsFixture(t, work)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "touch the tree so a bank is due")
+
+	// A git whose `config --get-regexp` fails with something other than
+	// exit 1 (no match): a real error, not an absence.
+	shimDir := t.TempDir()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	shim := "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = \"--get-regexp\" ]; then\n    echo 'shim: forced failure' >&2\n    exit 42\n  fi\ndone\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	if branch, err := gittest.Try(origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID); err == nil {
+		t.Fatalf("the bank pushed a branch (%s) without knowing whether its tree carries Git LFS pointers", branch)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranchError == "" || !strings.Contains(run.FinalBranchError, "cannot read the git config") {
+		t.Fatalf("FinalBranchError = %q, want a refusal naming the unreadable config", run.FinalBranchError)
+	}
+}
+
 func TestBankPushesWhenNothingInTheTreeIsLFSTracked(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 	gitOut(t, work, "config", "filter.lfs.clean", "git-lfs clean -- %f")

@@ -770,8 +770,17 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 // can check out. Nothing runs when the clone has no LFS filter configured, or
 // no tracked path declares one.
 func (r *Runner) pushLFSObjects(ctx context.Context, msg *queue.RunMessage, workDir, head string) string {
-	if _, err := r.runGitOutEnv(ctx, workDir, "", nil, "config", "--get-regexp", `^filter\.lfs\.`); err != nil {
-		return "" // no LFS filter configured in this clone: nothing could be a pointer
+	_, cfgErr := r.runGitOutEnv(ctx, workDir, "", nil, "config", "--get-regexp", `^filter\.lfs\.`)
+	if cfgErr != nil {
+		// Exit 1 is git's "no match": the clone has no LFS filter configured,
+		// nothing could be a pointer. Any other failure is not an absence —
+		// a bank that cannot tell whether its push carries pointers is
+		// refused, never silent.
+		var exitErr *exec.ExitError
+		if !errors.As(cfgErr, &exitErr) || exitErr.ExitCode() != 1 {
+			return fmt.Sprintf("bank refused: cannot read the git config to check for Git LFS filters: %v", cfgErr)
+		}
+		return ""
 	}
 	// -z, raw: a quoted path (`core.quotePath`) would not be the path
 	// check-attr answers for, and a non-ASCII name would be missed —
