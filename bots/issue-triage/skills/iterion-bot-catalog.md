@@ -107,7 +107,7 @@ dispatcher routes on it), never the persona.
 | ReArchi | `adr-rechallenge` | steer |
 | Appy | `app-dev` | build |
 | Themis | `arbitrate` | steer |
-| Assessy | `assessment` | — |
+| Assessy | `assessment` | verify |
 | Bmady | `bmady` | build |
 | Billy | `branch-improve-loop` | harden |
 | Campy | `campaign` | steer |
@@ -127,7 +127,7 @@ dispatcher routes on it), never the persona.
 | Morphy | `modernize` | harden |
 | Nested Subbots Demo | `nested-subbots-demo` | — |
 | Pipeline Board Demo | `pipeline-board-demo` | — |
-| Argus | `prod-watch` | — |
+| Argus | `prod-watch` | operate |
 | Prody | `product-docs` | document |
 | Revi (converse) | `revi-converse` | verify |
 | Envy | `review-env` | operate |
@@ -273,6 +273,47 @@ without re-architecting what already works.
 - **Path**: `bots/feature-gap-fill/main.bot`
 
 ### Verify — judge the code, touch nothing
+
+### `assessment` — Assessy
+
+Assesses a repository at the START of a modernisation campaign and writes
+the contract the execution bot then carries out: the state of the
+repository, the modernisation programme proposed for it, its measured
+size, and `.modernize/plan.yaml` itself.
+
+It holds NO knowledge of any language, build tool or runtime. An
+always-on agnostic floor measures what any git tree carries; everything
+stack-specific is declared in the bundle's `stack-*.md` skills, executed
+by a deterministic node for the stacks ONE adaptive agent names, and
+verified by a coverage gate that derives its expectations from those same
+skill blocks. Adding a stack is
+dropping a skill file — no DSL edit.
+
+Two properties are load-bearing and both are gates, never prose. Every
+declaration the survey agent writes is re-verified against the tree at a
+pinned commit: an unverifiable, duplicated or overlapping declaration is
+refused, because a declaration IS a number — declaring one artefact four
+times moves the published index a third of the way up the scale, and the
+band with it wherever a repository sits near one. And the size letter
+is published WITH the identifier and version of the measurement profile
+it is relative to; outside that profile's declared domain the bot
+publishes the raw measurements and "not applicable" rather than a letter
+that does not mean anything.
+
+- **Use when**:
+  Use at the beginning of a modernisation campaign, on a repository that
+  has no programme contract yet, to produce one. The bot needs a committed
+  BRIEF (`.modernize/brief.yaml`) carrying what no tree can state —
+  objectives, target versions, support policy, permitted changes, decisions
+  already taken. It refuses, named, when the brief is absent: guessing the
+  programme is the one thing the contract exists to prevent.
+  
+  Do NOT use it to EXECUTE the programme — that is the modernisation bot's
+  job, gate to gate, under a behavioural net. Do NOT expect an effort
+  projection from it: hours per class of lot are calibrated on a measured
+  campaign, and the first assessment has none.
+- **Vars**: `brief_path` (string), `bundle_skills_dir` (string), `gate_probe_timeout_s` (string), `out_dir` (string), `plan_path` (string), `profile_path` (string), `scratch_dir` (string), `survey_path` (string), `workspace_dir` (string)
+- **Path**: `bots/assessment/main.bot`
 
 ### `revi-converse` — Revi (converse)
 
@@ -1117,6 +1158,60 @@ Auto-fires via the trigger spine on cards carrying triage:auto
 - **Vars**: `issue_id` (string, required)
 - **Path**: `bots/issue-triage/main.bot`
 
+### `prod-watch` — Argus
+
+Production watchdog for ONE deployed application (a scheduled tick,
+zero LLM in this slice — the compiled workflow contains no agent or
+judge node, so a tick can neither spend a token nor show a log line to
+a model). One deterministic run mode over a git-versioned state in the
+target workspace (an ops repository, never the application's own):
+
+- Loki through the Grafana datasource proxy: the configured error query
+  and a full leak sweep, paged FORWARD over a frozen window with an
+  ingestion lag, a persisted cursor and an explicit "partial coverage"
+  flag whenever the window was truncated or a query failed.
+- Prometheus probes through the same proxy, each result typed
+  healthy | breached | no_data | error — an absent metric is never read
+  as a healthy one.
+- The application's own health URLs.
+- Sentry's issues for one project and environment, through the org-scoped
+  API: issues first processed since the cursor (NEW), regressed or
+  escalating ones dated by their own activity (posted whether tracked or
+  not), the alerted ones read back by id (sightings, resolution). A
+  silent bootstrap per lane identity; issue text is scrubbed like a log
+  line and never persisted; no event body is fetched.
+- A redaction scan that is the ONLY reader of the raw lines: secrets,
+  JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
+  (Luhn), emails and phone numbers are replaced before anything is
+  derived; error lines are fingerprinted into templates; raw values
+  never reach a node output, an artifact, a checkpoint or an error.
+- An incident lifecycle that runs EVERY tick: new / escalated /
+  reminder / not-observed, source-health staleness, a per-tick cap
+  with an explicit overflow, and a dead lane that never counts as an
+  absence of observation.
+- Deterministic delivery to Mattermost incoming webhooks with
+  per-sink severity thresholds and required/optional sinks; the state
+  advances only after delivery (at-least-once, never a silent loss).
+
+Universal by design: no host, namespace, metric name, language or
+channel is baked in — everything comes from the workspace config
+(prod-watch.json) plus the `webhooks`, `grafana_token` and
+`sentry_token` secrets.
+Requires python3 (stdlib only) on the execution host.
+
+- **Use when**:
+  Use to watch ONE production (or production-like) deployment of an
+  application from its logs (Loki), metrics (Prometheus), Sentry issues
+  and health endpoints, with deterministic alerting to chat and a git-backed
+  incident state — the "is prod healthy, and what just changed" tick.
+  Requires the target workspace (an ops repo) to carry a prod-watch.json
+  (see skills/argus-config.md) and a Grafana service-account token. Not a
+  vulnerability watch (use vuln-watch), not an editorial digest (use
+  feed-watch), not the instrumentation of the application itself (use
+  instrument); it never edits code.
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/prod-watch/main.bot`
+
 ### `review-env` — Envy
 
 Deploys the CURRENT workspace's already-CI-published image to the
@@ -1420,47 +1515,6 @@ destructive board changes.
 
 ### Uncategorized — visible, never hidden
 
-### `assessment` — Assessy
-
-Assesses a repository at the START of a modernisation campaign and writes
-the contract the execution bot then carries out: the state of the
-repository, the modernisation programme proposed for it, its measured
-size, and `.modernize/plan.yaml` itself.
-
-It holds NO knowledge of any language, build tool or runtime. An
-always-on agnostic floor measures what any git tree carries; everything
-stack-specific is declared in the bundle's `stack-*.md` skills, executed
-by a deterministic node for the stacks ONE adaptive agent names, and
-verified by a coverage gate that derives its expectations from those same
-skill blocks. Adding a stack is
-dropping a skill file — no DSL edit.
-
-Two properties are load-bearing and both are gates, never prose. Every
-declaration the survey agent writes is re-verified against the tree at a
-pinned commit: an unverifiable, duplicated or overlapping declaration is
-refused, because a declaration IS a number — declaring one artefact four
-times moves the published index a third of the way up the scale, and the
-band with it wherever a repository sits near one. And the size letter
-is published WITH the identifier and version of the measurement profile
-it is relative to; outside that profile's declared domain the bot
-publishes the raw measurements and "not applicable" rather than a letter
-that does not mean anything.
-
-- **Use when**:
-  Use at the beginning of a modernisation campaign, on a repository that
-  has no programme contract yet, to produce one. The bot needs a committed
-  BRIEF (`.modernize/brief.yaml`) carrying what no tree can state —
-  objectives, target versions, support policy, permitted changes, decisions
-  already taken. It refuses, named, when the brief is absent: guessing the
-  programme is the one thing the contract exists to prevent.
-  
-  Do NOT use it to EXECUTE the programme — that is the modernisation bot's
-  job, gate to gate, under a behavioural net. Do NOT expect an effort
-  projection from it: hours per class of lot are calibrated on a measured
-  campaign, and the first assessment has none.
-- **Vars**: `brief_path` (string), `bundle_skills_dir` (string), `gate_probe_timeout_s` (string), `out_dir` (string), `plan_path` (string), `profile_path` (string), `scratch_dir` (string), `survey_path` (string), `workspace_dir` (string)
-- **Path**: `bots/assessment/main.bot`
-
 ### `heartbeat` — Heartbeat (always-on demo)
 
 Tool-only demo of an always-on agent. Relaunched continuously by an
@@ -1502,60 +1556,6 @@ human / subbot only — no API keys, runs in seconds.
   produced-elements aggregation (image/audio preview) across the whole run
   tree. Not a production workflow.
 - **Path**: `examples/pipeline-board-demo/main.bot`
-
-### `prod-watch` — Argus
-
-Production watchdog for ONE deployed application (a scheduled tick,
-zero LLM in this slice — the compiled workflow contains no agent or
-judge node, so a tick can neither spend a token nor show a log line to
-a model). One deterministic run mode over a git-versioned state in the
-target workspace (an ops repository, never the application's own):
-
-- Loki through the Grafana datasource proxy: the configured error query
-  and a full leak sweep, paged FORWARD over a frozen window with an
-  ingestion lag, a persisted cursor and an explicit "partial coverage"
-  flag whenever the window was truncated or a query failed.
-- Prometheus probes through the same proxy, each result typed
-  healthy | breached | no_data | error — an absent metric is never read
-  as a healthy one.
-- The application's own health URLs.
-- Sentry's issues for one project and environment, through the org-scoped
-  API: issues first processed since the cursor (NEW), regressed or
-  escalating ones dated by their own activity (posted whether tracked or
-  not), the alerted ones read back by id (sightings, resolution). A
-  silent bootstrap per lane identity; issue text is scrubbed like a log
-  line and never persisted; no event body is fetched.
-- A redaction scan that is the ONLY reader of the raw lines: secrets,
-  JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
-  (Luhn), emails and phone numbers are replaced before anything is
-  derived; error lines are fingerprinted into templates; raw values
-  never reach a node output, an artifact, a checkpoint or an error.
-- An incident lifecycle that runs EVERY tick: new / escalated /
-  reminder / not-observed, source-health staleness, a per-tick cap
-  with an explicit overflow, and a dead lane that never counts as an
-  absence of observation.
-- Deterministic delivery to Mattermost incoming webhooks with
-  per-sink severity thresholds and required/optional sinks; the state
-  advances only after delivery (at-least-once, never a silent loss).
-
-Universal by design: no host, namespace, metric name, language or
-channel is baked in — everything comes from the workspace config
-(prod-watch.json) plus the `webhooks`, `grafana_token` and
-`sentry_token` secrets.
-Requires python3 (stdlib only) on the execution host.
-
-- **Use when**:
-  Use to watch ONE production (or production-like) deployment of an
-  application from its logs (Loki), metrics (Prometheus), Sentry issues
-  and health endpoints, with deterministic alerting to chat and a git-backed
-  incident state — the "is prod healthy, and what just changed" tick.
-  Requires the target workspace (an ops repo) to carry a prod-watch.json
-  (see skills/argus-config.md) and a Grafana service-account token. Not a
-  vulnerability watch (use vuln-watch), not an editorial digest (use
-  feed-watch), not the instrumentation of the application itself (use
-  instrument); it never edits code.
-- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
-- **Path**: `bots/prod-watch/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->
 

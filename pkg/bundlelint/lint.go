@@ -165,11 +165,11 @@ const (
 	// DiagBotCategoryUnknown: the manifest `category:` is not one of the
 	// six closed slugs (bundle.BotCategories) — usually a typo — so the
 	// bot lands in Uncategorized on every grouped surface.
-	DiagBotCategoryUnknown Code = "C270"
+	DiagBotCategoryUnknown Code = "C272"
 	// DiagBotTagUnknown: a manifest `tags:` entry is outside the curated
 	// seed (bundle.KnownBotTags). The set is open on purpose; the warning
 	// exists so a new facet is a deliberate act, not a drift.
-	DiagBotTagUnknown Code = "C271"
+	DiagBotTagUnknown Code = "C273"
 )
 
 // minRoutableDescription is the shortest `description:` the skill lint treats
