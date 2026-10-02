@@ -239,3 +239,26 @@ func TestCredentialPreviewMatchesTheEnvFundedRun(t *testing.T) {
 		t.Fatal("the live fill sealed credentials for an env-funded run")
 	}
 }
+
+// An env-templated route (${GW}/m) is UNRESOLVED in the publisher process:
+// the runner may expand it to any vendor. The pool's wants derivation must
+// fail open — narrowing on the run's resolved peers would drop the very
+// donation the templated route needs when the runner expands it elsewhere.
+func TestWantsFor_AnEnvTemplatedRouteFailsOpen(t *testing.T) {
+	t.Setenv("GW", "openai_compatible")
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"gw": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Provider: "openai_compatible", Model: "${GW}/m",
+		}},
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Provider: "anthropic", Model: "claude-opus-5",
+		}},
+	}}
+	wants, res := wantsFor(wf, model.ModelOverrides{}, nil)
+	if res.NarrowSafe {
+		t.Fatal("narrow-safe on an env-templated route: the pool would narrow on it")
+	}
+	if len(wants) != len(poolWantOrder) {
+		t.Fatalf("wants narrowed to %d of %d — the env-templated route dropped donations", len(wants), len(poolWantOrder))
+	}
+}
