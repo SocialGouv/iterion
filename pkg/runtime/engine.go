@@ -289,7 +289,7 @@ func (e *Engine) ActiveElapsed() time.Duration {
 	if b == nil {
 		return 0
 	}
-	_, _, _, elapsed, _, _ := b.Snapshot()
+	_, _, _, elapsed, _, _, _ := b.Snapshot()
 	return elapsed
 }
 

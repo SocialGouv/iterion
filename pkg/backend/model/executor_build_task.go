@@ -1020,6 +1020,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 		out.Output["_cost_usd"] = usd
 	}
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
+	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
 	return out, meteredFailure(recoveryTask, obj.TotalUsage), true

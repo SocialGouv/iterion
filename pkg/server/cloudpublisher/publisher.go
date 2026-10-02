@@ -480,6 +480,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		PoolSourced:        map[string]bool{},
 	}
 
+	// #2038: a run whose every LLM route is an openai_compatible route is
+	// funded by the RUNNER's environment — the walk acquires nothing for it:
+	// no BYOK, org or platform key, no forfait, no pool lease, no restore.
+	// Generic `secrets:` still resolve (their tier below is not skipped).
+	// An env-dependent route counts as UNRESOLVED, never env-funded: ${ROUTE}
+	// may resolve to the gateway on the publisher and to Anthropic on the
+	// runner. Mixed or unresolved runs keep today's behaviour.
+	envFunded := wf != nil && model.EffectiveProviders(wf, modelOverrides, runFallbacks, knownPoolProviders).OnlyEnvFunded()
+
 	// Refused-but-only keys, per provider, remembered across the tiers for
 	// the restore step — the api-key twin of skippedForfaits below.
 	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
@@ -499,15 +508,21 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// policy's `auto` asks each tier whether it holds an Anthropic-native
 	// credential, lazily — a tier the question never reaches costs no read.
 	policy := p.sharedTierPolicyFor(ctx)
-	tenantOwners := []string{ownerID}
-	if tenantID != "" {
-		tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
-	}
-	tenantNative := p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
-	platformNative := p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
-	var orgNative *tierNative
-	if orgID != "" {
-		orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+	// The probes stay unread for an env-funded run: no tier is consulted.
+	var tenantNative, orgNative, platformNative *tierNative
+	if envFunded {
+		// An env-funded run consults no tier, and the facade question is
+		// theirs: the probes stay unread.
+	} else {
+		tenantOwners := []string{ownerID}
+		if tenantID != "" {
+			tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
+		}
+		tenantNative = p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
+		platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
+		if orgID != "" {
+			orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+		}
 	}
 	// `auto` is the RUN's question, not a tier's (#1998): a native credential
 	// ANY tier holds — the team's own forfait or key, the org tier's, the
@@ -524,6 +539,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	res := credResolution{}
 	err := walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
 		func() bool { return res.grant != nil }, func(tier credentialTier) error {
+			if envFunded && tier != credentialTierGeneric {
+				// Nothing on this tier funds an openai_compatible route.
+				return nil
+			}
 			switch tier {
 			case credentialTierBYOK:
 				// 1. BYOK API keys.
@@ -1056,7 +1075,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// most common cloud shape, so gating the Warn on the whole bundle would
 	// silence it exactly where it matters.
 	noLLMCred := !holdsLLMCredential(bundle)
-	if noLLMCred && (wf == nil || wf.UsesLLM()) {
+	if envFunded {
+		if p.logger != nil {
+			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway; no LLM credential acquired", runID)
+		}
+	} else if noLLMCred && (wf == nil || wf.UsesLLM()) {
 		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, org, pool, platform; the runner falls back to its env or fails at the first LLM call",
 			runID, tenantID)
 	}

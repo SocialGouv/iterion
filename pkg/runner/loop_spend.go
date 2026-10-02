@@ -47,6 +47,7 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 	if usage == nil {
 		return
 	}
+	r.warnUnreportedUsage(msg, usage)
 	// The per-CREDENTIAL ledger, charged per (backend, model) route rather
 	// than from the run total — the same attempt, read by credential
 	// instead of by org (#641). Independent of the org gate below: a route
@@ -92,6 +93,19 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 // as exactly that, before a rotate or delete). A platform-tier or
 // pool-lent key is bumped WITHOUT a tenant filter: its row lives under the
 // platform sentinel or in the donor's tenant, and it serves every tenant.
+func (r *Runner) warnUnreportedUsage(msg *queue.RunMessage, usage *metricsEmitter) {
+	if r.cfg.Logger == nil {
+		return
+	}
+	for route, totals := range usage.RouteTotals() {
+		if totals.unreportedCalls > 0 {
+			r.cfg.Logger.Warn("runner: run %s made %d LLM call(s) on %s/%s whose usage the provider did not report — booked at %d tokens, a lower bound",
+				msg.RunID, totals.unreportedCalls, route.backend, route.model, totals.tokens())
+		}
+	}
+}
+
+
 func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMessage, at time.Time) {
 	if r.cfg.ApiKeys == nil {
 		return
