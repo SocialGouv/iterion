@@ -378,9 +378,11 @@ entries where every base entry survives equal. A rewrite, a delete, or a rename 
 loses) is the masking vector wearing an addition's name → refused, re-baseline ledger, human. An
 added entry no acted request claims is smuggling → refused. An added entry whose observation
 tuple equals an existing one is a COLLISION — the tuple is the `OBSERVATION_FIELDS` allowlist
-(`method`, `path`, `persona`, `surface`, `fields`, `steps`, `params`, `query`, `body`,
-`readback`, `no_redirect`, `csrf_field`), NOT "the entry minus its id": a distinguishing field
-outside the allowlist does not disambiguate, and absent and empty compare equal. Two references
+(`method`, `path`, `persona`, `surface`, `fields`, `json`, `steps`, `readback`, `no_redirect`,
+`csrf_field`, `csrf_from`, `csrf_cookie`, `csrf_header`, `csrf_header_meta`, `headers`,
+`static_prefix`, `template_prefix`, `probes`), NOT "the entry minus its id": a distinguishing
+field outside the allowlist does not disambiguate, and absent and empty compare equal — except
+`json`, a body by presence, where `{}` is not absence. Two references
 for one observation resolve later by a cleanup that picks the masking direction → refused. The
 ledger is append-only: an edited trail audits nothing.
 
@@ -427,6 +429,11 @@ Three rules, and each of them was learned by paying for it:
 3. **The payload is not decorative.** Put in it the shapes a migration or an
    upgrade is known to lose: semantic tags that render like presentational ones,
    attributes a renderer ignores, ordering. Those are what come back deformed.
+
+A write that sends a JSON body (`json`), or whose token travels in a header
+(`csrf_header`, `csrf_header_meta`, `csrf_cookie`), is declared as
+[[surface-discovery]] describes: the lookup order, the transport and the
+refusals are there.
 
 ### A field that is a FILE — uploads
 
