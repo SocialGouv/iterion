@@ -46,6 +46,14 @@ type UserView struct {
 	Status       string `json:"status"`
 	IsSuperAdmin bool   `json:"is_super_admin"`
 	CreatedAt    string `json:"created_at,omitempty"`
+	// UpdatedAt and LastLoginAt answer "is this account dormant, or was it
+	// never able to sign in at all?" — the first question an operator asks
+	// about an account that reports seeing nothing, and the one the admin
+	// console could not answer because the fields existed in the store and
+	// nothing exposed them. LastLoginAt is empty when the account has never
+	// completed a sign-in.
+	UpdatedAt   string `json:"updated_at,omitempty"`
+	LastLoginAt string `json:"last_login_at,omitempty"`
 }
 
 type MembershipView struct {
@@ -98,7 +106,7 @@ type adminUpdateUserReq struct {
 // ---- Helpers ----
 
 func (s *Server) toUserView(u identity.User) UserView {
-	return UserView{
+	v := UserView{
 		ID:           u.ID,
 		Email:        u.Email,
 		Name:         u.Name,
@@ -106,6 +114,15 @@ func (s *Server) toUserView(u identity.User) UserView {
 		IsSuperAdmin: u.IsSuperAdmin,
 		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
 	}
+	// A zero UpdatedAt renders as year 1 rather than as "unknown" — rows
+	// predating the field would read as edited in the year 1.
+	if !u.UpdatedAt.IsZero() {
+		v.UpdatedAt = u.UpdatedAt.Format(time.RFC3339)
+	}
+	if u.LastLoginAt != nil && !u.LastLoginAt.IsZero() {
+		v.LastLoginAt = u.LastLoginAt.Format(time.RFC3339)
+	}
+	return v
 }
 
 // isBrowserClient reports whether the caller is a browser. We use it

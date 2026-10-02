@@ -4,7 +4,7 @@ This is the readable inventory of the syntax accepted by the current parser. The
 
 The property tables on this page are **generated** from the parser's property registry ([`pkg/dsl/spec`](../../pkg/dsl/spec/spec.go), `task dsl:gen`), which a conformance test holds to the parser in both directions; the complete per-kind reference, blocks included, is [dsl-properties.md](dsl-properties.md).
 
-Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alternative. Indentation is significant; examples use two spaces. `#` comments (`##` is the same comment) and blank lines are ignored between constructs.
+Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alternative. Indentation is significant; examples use two spaces. `#` comments (`##` is the same comment) and blank lines are ignored between constructs — ignored by the GRAMMAR, that is: a comment is kept with the declaration it was written around and written back at its place by every rewrite.
 
 ## File declarations
 
@@ -43,9 +43,11 @@ Scalar declaration literals are strings, integers, floats, or booleans. JSON and
 ### Variables and presets
 
 ```ebnf
-vars = "vars:" INDENT { IDENT ":" type [ enum ] [ "=" literal ] } DEDENT ;
+vars = "vars:" INDENT { IDENT ":" type [ constraints ] [ "=" literal ] } DEDENT ;
+constraints = enum [ matching ] | matching [ enum ] ;   (* at most one of each *)
 type = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
 enum = "[enum:" STRING { "," STRING } "]" ;
+matching = "[matching:" STRING "]" ;   (* vars only; a non-empty RE2 pattern *)
 
 presets = "presets:" INDENT
             { IDENT ":" INDENT { IDENT ":" literal } DEDENT }
@@ -152,42 +154,46 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 |---|---|---|
 | `description` | string | Free-text description shown by the studio and the reports |
 | `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `command` | string | Executable that drives a CLI backend, overriding its default binary |
 | `input` | ident | Schema the node's input is validated against |
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
-| `system` | ident | Prompt declaration used as the system prompt |
-| `user` | ident | Prompt declaration used as the user message |
+| `system` | prompt name, or its text as a string | The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
+| `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
 | `session_slot` | ident | Named durable session slot; requires session: persist |
-| `tools` | tool list | Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend |
+| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
 | `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
 | `max_tokens` | int | Output-token cap per call |
-| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `reasoning_effort` | one of `none`, `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
 | `timeout` | string | Duration the node may run, e.g. "20m" |
 | `readonly` | bool | Declares the node mutates no workspace file, so it may run beside another branch |
 | `full_access` | bool | Grants the backend its full tool access |
 | `images` | string list | Image paths sent with the prompt |
-| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | How the node asks the operator (ADR-081) |
+| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212) |
 | `interaction_prompt` | ident | Prompt the llm interaction mode answers with in the operator's place |
 | `interaction_model` | string | Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
+| `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
+| `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
+| `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
+| `deny` | string list | Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111) |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
-| `fallbacks` | block → [fallback](#fallback) | Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused |
-| `mcp` | block → [mcp](#mcp) | MCP servers active for the node |
-| `compaction` | block → [compaction](#compaction) | Context-compaction thresholds of the node's session |
-| `memory` | block → [memory](#memory) | iterion's shared-memory tools and scopes for the node |
-| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
-| `cursors` | block → [cursors](#cursors) | Prompt-engineering dials activated on the node (docs/cursors.md) |
+| `fallbacks` | block → [fallbacks](dsl-properties.md#fallbacks) | Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused |
+| `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the node |
+| `compaction` | block → [compaction](dsl-properties.md#compaction) | Context-compaction thresholds of the node's session |
+| `memory` | block → [memory](dsl-properties.md#memory) | iterion's shared-memory tools and scopes for the node |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](dsl-properties.md#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `cursors` | block → [cursors](dsl-properties.md#cursors) | Prompt-engineering dials activated on the node (docs/cursors.md) |
 <!-- dsl-spec:end -->
 
 Nested blocks:
@@ -218,12 +224,12 @@ router_mode = "fan_out_all" | "fan_out_each" | "condition"
 | `description` | string | Free-text description shown by the studio and the reports |
 | `mode` | one of `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` | Routing mode |
 | `model` | string | llm mode only (C023 otherwise): Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
+| `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `provider` | string | Provider hint for credential resolution, e.g. "anthropic"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
-| `system` | ident | llm mode only (C023 otherwise): Prompt declaration used as the system prompt |
-| `user` | ident | llm mode only (C023 otherwise): Prompt declaration used as the user message |
+| `system` | prompt name, or its text as a string | llm mode only (C023 otherwise): The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
+| `user` | prompt name, or its text as a string | llm mode only (C023 otherwise): The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `multi` | bool | llm mode only (C023 otherwise): the model may select several outgoing edges |
-| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `reasoning_effort` | one of `none`, `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or a quoted `${VAR:-default}` string | llm mode only (C023 otherwise): Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
 | `over` | string | fan_out_each: expression naming the collection to iterate |
 | `as` | ident | fan_out_each: alias each item is bound to ({{each.<as>}}) |
 | `key` | ident | fan_out_each: item field that names each branch |
@@ -261,7 +267,7 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
-| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](dsl-properties.md#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `permission` | ident | Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
@@ -269,12 +275,12 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `goal` | string | Verified action: what the command is for, in one line |
 | `postcondition` | string | Verified action: command whose exit code is the truth oracle at every rung |
 | `policy` | ident — `required`, `recover`, `best_effort` | Verified action: required (default), recover or best_effort (C103–C106) |
-| `recovery` | block → [recovery](#recovery) | Verified action: the self-heal ladder's bounds |
-| `action` | ident | Connector operation to call, `connector.resource.verb` — exclusive with command:/script: (ADR-098, C260) |
-| `connection` | ident | The connection binding that authenticates the action (C261) |
-| `params` | block → [params](#params) | The action's arguments, by the operation's own parameter keys |
-| `retry` | string | Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266) |
-| `timeout` | string | Action: bound on one call, e.g. "30s" (C265). Inert without `action:` (C266) |
+| `recovery` | block → [recovery](dsl-properties.md#recovery) | Verified action: the self-heal ladder's bounds |
+| `action` | string\|ident | Connector operation to call, `connector.resource.verb`, bare or quoted — exclusive with command:/script: (ADR-098, C260) |
+| `connection` | string\|ident | The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261) |
+| `params` | block → [params](dsl-properties.md#params) | The action's arguments, by the operation's own parameter keys |
+| `retry` | string\|number | Action: how many EXTRA attempts, e.g. `3`; a duration is refused and empty means none (C265). Inert without `action:` (C266) |
+| `timeout` | string\|number | Action: bound on one call, e.g. `30s` (C265). Inert without `action:` (C266) |
 <!-- dsl-spec:end -->
 
 `command` and `script` are mutually exclusive. Recovery accepts `max_repair_attempts: INT`, `max_agent_attempts: INT`, `model: STRING`, and `agent_tools: tool_ref_list`.
@@ -333,19 +339,20 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 <!-- dsl-spec:begin table workflow -->
 | Property | Value | Meaning |
 |---|---|---|
-| `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
+| `entry` | dotted ident | Node the run starts at; a dotted name addresses a group instance's node |
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
-| `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
-| `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
-| `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |
-| `resources` | block → [resources](#resources) | Named semaphores and pools nodes lease with needs: |
-| `mcp` | block → [mcp](#mcp) | MCP servers active for the run |
-| `compaction` | block → [compaction](#compaction) | Default compaction thresholds |
-| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `vars` | block → [vars](dsl-properties.md#vars) | Workflow-scoped vars (merged with the file's) |
+| `attachments` | block → [attachments](dsl-properties.md#attachments) | Workflow-scoped attachments |
+| `budget` | block → [budget](dsl-properties.md#budget) | Run caps, each overridable by the matching run flag |
+| `resources` | block → [resources](dsl-properties.md#resources) | Named semaphores and pools nodes lease with needs: |
+| `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the run |
+| `compaction` | block → [compaction](dsl-properties.md#compaction) | Default compaction thresholds |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](dsl-properties.md#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
 | `worktree` | ident — `auto`, `none` | auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place |
 | `default_backend` | string | Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
+| `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185) |
 | `loop_budget_guard` | ident — `on`, `off` | Decline a loop's back-edge the budget cannot fund: on (default) or off (C133) |
 | `repo_devbox` | ident — `on`, `off` | Load the target repo's devbox.json toolchain: on (default) or off (C134) |
 | `workspace_checkpoint` | ident — `on`, `off` | Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139) |
@@ -356,7 +363,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `tool_policy` | tool list | Run-wide tool-policy entries |
 | `capabilities` | tool list | Run-wide board capabilities |
 | `skills` | skill list | Run-wide skill-library skills |
-| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | Default interaction mode for the run's nodes that set none |
+| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | Default interaction mode for the run's nodes that set none |
 <!-- dsl-spec:end -->
 
 Budget fields are `max_parallel_branches: INT`, `max_duration: STRING`, `max_cost_usd: NUMBER`, `max_tokens: INT`, `warn_tokens: INT` (advisory-only — crossing it emits a `budget_warning`), and `max_iterations: INT`.
@@ -388,7 +395,7 @@ json_value = "null" | bool_value | INT_LIT | FLOAT_LIT | STRING_LIT
            | "{" [ json_member { "," json_member } ] "}" ;
 ```
 
-A `contract` is the bot's public face — inputs, outputs, delivered files, deterministic criteria, visible effects — declared once at top level, named by the workflow's `contract:`, and checked against the program: an input is a declared var, required exactly when the var has no default (C300), an output names the node and field that produce it — `from: build.pr_url`, or `from: build` for a file (C301) — and a criterion names a port in the singular (`input.goal`, `output.pr_url`) and a registered `kind` (C302; an unregistered kind is declared, not evaluated, C303). `default:` and `params:` take **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word (unlike every string property), no signed number and no exponent, which the `.bot` text cannot write. The full productions are in [iterion_v1.ebnf](../grammar/iterion_v1.ebnf); the decision and its bounds in [ADR-099](../adr/099-public-contracts.md). A bare `contract` header, or a bare `inputs:` / `outputs:` / `criteria:` / `effects:` header and a port's bare `file:`, declares an empty one under the rule of every [empty declaration and block](#prompts-and-schemas): a blank line, the parent's dedent or the end of the file must follow the bare header. A comment survives a studio save only at the file's head, before the first declaration: written inside a contract, as inside any declaration, it is dropped when the studio writes the file back.
+A `contract` is the bot's public face — inputs, outputs, delivered files, deterministic criteria, visible effects — declared once at top level, named by the workflow's `contract:`, and checked against the program: an input is a declared var, required exactly when the var has no default (C300), an output names the node and field that produce it — `from: build.pr_url`, or `from: build` for a file (C301) — and a criterion names a port in the singular (`input.goal`, `output.pr_url`) and a registered `kind` (C302; an unregistered kind is declared, not evaluated, C303). `default:` and `params:` take **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word (unlike every string property), no signed number and no exponent, which the `.bot` text cannot write. The full productions are in [iterion_v1.ebnf](../grammar/iterion_v1.ebnf); the decision and its bounds in [ADR-099](../adr/099-public-contracts.md). A bare `contract` header, or a bare `inputs:` / `outputs:` / `criteria:` / `effects:` header and a port's bare `file:`, declares an empty one under the rule of every [empty declaration and block](#prompts-and-schemas): a blank line, the parent's dedent or the end of the file must follow the bare header. A comment survives a studio save where it was written — inside a contract as inside any declaration — carried by the declaration it was written around.
 
 ```iter
 vars:
@@ -437,10 +444,10 @@ workflow feature_dev:
 | `display_name` | string | Explicit human-readable name |
 | `responsibility` | string | The single responsibility this bot fulfils |
 | `version` | int | Public contract version, 1 or more (C300); defaults to 1 |
-| `inputs` | block → [contract.ports](#contractports) | Named typed values and files the bot takes; each one is a declared var (C300) |
-| `outputs` | block → [contract.ports](#contractports) | Named typed values and files the bot produces on success; each one names the node and field that produce it (C301) |
-| `criteria` | block → [contract.criteria](#contractcriteria) | Deterministic registered checks on a port; prose is not executable |
-| `effects` | block → [contract.effects](#contracteffects) | Visible effects, including paid operations |
+| `inputs` | block → [contract.ports](dsl-properties.md#contractports) | Named typed values and files the bot takes; each one is a declared var (C300) |
+| `outputs` | block → [contract.ports](dsl-properties.md#contractports) | Named typed values and files the bot produces on success; each one names the node and field that produce it (C301) |
+| `criteria` | block → [contract.criteria](dsl-properties.md#contractcriteria) | Deterministic registered checks on a port; prose is not executable |
+| `effects` | block → [contract.effects](dsl-properties.md#contracteffects) | Visible effects, including paid operations |
 <!-- dsl-spec:end -->
 
 A port (an `inputs:` / `outputs:` entry, `name: type`):
@@ -454,8 +461,8 @@ A port (an `inputs:` / `outputs:` entry, `name: type`):
 | `default` | json value | Typed default of an optional input: the var's default, read as the launch reads a value of its type (a `string[]` or `json` var's text as a list or an object) — written, it must be the var's (C300); omitted, the var's is the port's. One JSON value on one line — `"text"`, `12`, `true`, `null`, `[...]`, `{key: value}` — with no signed number and no exponent, which the text cannot write and the compiler refuses from a document (C302) |
 | `min_items` | int | Minimum array cardinality (C300 on an input, C301 on an output) |
 | `max_items` | int | Maximum array cardinality (C300 on an input, C301 on an output) |
-| `from` | ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
-| `file` | block → [contract.file](#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
+| `from` | dotted ident | Producer of an output: `node.field` for a value, `node` for a file (C301); refused on an input (C300) |
+| `file` | block → [contract.file](dsl-properties.md#contractfile) | Properties of a delivered or consumed file; existence and provenance are the runtime's checks |
 <!-- dsl-spec:end -->
 
 A port's `file:` block:
@@ -473,8 +480,8 @@ A criterion (a `criteria:` entry):
 <!-- dsl-spec:begin table contract.criterion -->
 | Property | Value | Meaning |
 |---|---|---|
-| `kind` | ident | Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303) |
-| `port` | ident | Checked port, singular: `input.<name>` or `output.<name>` (C302) |
+| `kind` | dotted ident | Registered deterministic validator (see the criteria table; a plugin's may be dotted); an unregistered kind is declared but not evaluated (C303) |
+| `port` | dotted ident | Checked port, singular: `input.<name>` or `output.<name>` (C302) |
 | `params` | json value | Parameters validated against the criterion's parameter declaration (C302): one JSON object on one line, e.g. `{min: 2}` |
 <!-- dsl-spec:end -->
 
@@ -546,7 +553,10 @@ add = multiply { ( "+" | "-" ) multiply } ;
 multiply = unary { ( "*" | "/" | "%" ) unary } ;
 unary = "-" unary | postfix ;
 postfix = primary { "[" expr "]" } ;
-primary = number | string | bool | path | call | lambda_call | "(" expr ")" ;
+primary = number | string | bool | list | object | path | call | lambda_call | "(" expr ")" ;
+list = "[" [ expr { "," expr } ] "]" ;
+object = "{" [ pair { "," pair } ] "}" ;
+pair = ( IDENT | string ) ":" expr ;
 path = IDENT { "." IDENT } ;
 call = IDENT "(" [ expr { "," expr } ] ")" ;
 lambda_call = ( "map" | "filter" ) "(" expr "," lambda ")"
@@ -554,7 +564,7 @@ lambda_call = ( "map" | "filter" ) "(" expr "," lambda ")"
 lambda = ( IDENT | "(" IDENT { "," IDENT } ")" ) "=>" expr ;
 ```
 
-Standard namespaces are `vars`, `input`, `outputs`, `artifacts`, `loop`, and `run`. Built-ins are `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, `round`, `map`, `filter`, and `reduce`. `min`/`max` accept either one array or two or more values (arguments are flattened one level). Lambdas are confined to finite combinators, expression depth is capped, and one evaluation may visit at most 100,000 elements.
+Standard namespaces are `vars`, `input`, `outputs`, `artifacts`, `loop`, and `run`. Built-ins are `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, `round`, `map`, `filter`, and `reduce`. `min`/`max` accept either one array or two or more values (arguments are flattened one level). A `list` literal evaluates to an array (an all-string one conforms to `string[]`), an `object` to a JSON object; a repeated object key is refused at parse, and neither form accepts a trailing comma. Lambdas are confined to finite combinators, expression depth is capped, and one evaluation may visit at most 100,000 elements.
 
 ## Template references
 

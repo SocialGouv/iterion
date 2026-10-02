@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/fix"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
@@ -27,13 +28,19 @@ import (
 
 // ValidateResult holds the outcome of a validate command.
 type ValidateResult struct {
-	File               string   `json:"file"`
-	Valid              bool     `json:"valid"`
-	WorkflowName       string   `json:"workflow_name,omitempty"`
-	NodeCount          int      `json:"node_count,omitempty"`
-	EdgeCount          int      `json:"edge_count,omitempty"`
-	BundleName         string   `json:"bundle_name,omitempty"`
-	BundleVersion      string   `json:"bundle_version,omitempty"`
+	File          string `json:"file"`
+	Valid         bool   `json:"valid"`
+	WorkflowName  string `json:"workflow_name,omitempty"`
+	NodeCount     int    `json:"node_count,omitempty"`
+	EdgeCount     int    `json:"edge_count,omitempty"`
+	BundleName    string `json:"bundle_name,omitempty"`
+	BundleVersion string `json:"bundle_version,omitempty"`
+	// SourceKind is "author" when the file validated is an author document
+	// — the YAML twin of a .bot (pkg/dsl/author) — read into the program it
+	// describes; BotPath is then the .bot it stands for, beside it, written
+	// or not. Both are empty for a .bot, a .botz or a bundle directory.
+	SourceKind         string   `json:"source_kind,omitempty"`
+	BotPath            string   `json:"bot_path,omitempty"`
 	ParseDiagnostics   []string `json:"parse_diagnostics,omitempty"`
 	CompileDiagnostics []string `json:"compile_diagnostics,omitempty"`
 	// BundleDiagnostics holds manifest↔workflow consistency findings
@@ -72,10 +79,12 @@ type ValidateOptions struct {
 	// included; zero is a minute. A pass that runs out of time is said so in
 	// the report (`timed_out`), apart from a death of the program.
 	ExecTimeout time.Duration
-	// Strict fails the command when the dry run's report is not clean —
-	// a pass died, or a reference, shell or fixture finding stands — the
-	// switch a CI gate flips; without it the exit code is the compiler's,
-	// and `exec.clean` in the JSON is the report's word.
+	// Strict fails the command when the dry run's report is failing — a
+	// pass died, or a reference, shell or fixture finding stands — the
+	// switch a CI gate flips; an expression the dry run could not decide
+	// on a shape (`inconclusive`) is printed, not failed. Without it the
+	// exit code is the compiler's, and `exec.clean` / `exec.failing` in
+	// the JSON are the report's word.
 	Strict   bool
 	Fixtures string
 	// Vars and Preset give the dry run its launch values — `--var k=v` and
@@ -200,12 +209,33 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		return err
 	}
 
-	// Bundle dispatch: detect .botz or directory bundles and unpack before
-	// validating, via the shared helper (same path as run/resume/doctor).
-	// Plain .bot paths fall through with a nil bundle.
-	bundleHandle, iterPath, kind, cleanup, err := openBundleOrFile(path)
-	if err != nil {
-		return fmt.Errorf("cannot open %s: %w", path, err)
+	// An author document — the YAML twin of a .bot (pkg/dsl/author) — is the
+	// one input here that no launcher takes: bundle.Detect refuses it by
+	// name for every door that would run it, and validate reads it — into
+	// the program it describes, positioned on the document, in the bundle
+	// of the .bot it stands for, written or not.
+	var doc *authorDocument
+	var bundleHandle *bundle.Bundle
+	var iterPath string
+	var kind bundle.Kind
+	cleanup := func() error { return nil }
+	if workflowfile.IsAuthorDocument(path) {
+		var err error
+		if doc, bundleHandle, err = openAuthorDocument(path); err != nil {
+			return err
+		}
+		iterPath = path
+		if bundleHandle != nil {
+			kind = bundle.KindBundleDir
+		}
+	} else {
+		// Bundle dispatch: detect .botz or directory bundles and unpack
+		// before validating, via the shared helper (same path as
+		// run/resume/doctor). Plain .bot paths fall through with a nil bundle.
+		var err error
+		if bundleHandle, iterPath, kind, cleanup, err = openBundleOrFile(path); err != nil {
+			return fmt.Errorf("cannot open %s: %w", path, err)
+		}
 	}
 	defer func() { _ = cleanup() }()
 
@@ -229,9 +259,14 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	}
 	path = iterPath
 
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("cannot read file: %w", err)
+	var src []byte
+	if doc != nil {
+		src = doc.src
+	} else {
+		var err error
+		if src, err = os.ReadFile(path); err != nil {
+			return fmt.Errorf("cannot read file: %w", err)
+		}
 	}
 
 	result := &ValidateResult{
@@ -239,6 +274,10 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		Valid:         true,
 		BundleName:    bundleName,
 		BundleVersion: bundleVersion,
+	}
+	if doc != nil {
+		result.SourceKind = "author"
+		result.BotPath = doc.botPath
 	}
 
 	// Parse — under the path in full: an include resolves beside the file
@@ -251,22 +290,26 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// The unit: this file as its main, the fragments its imports reach
 	// read beside it — a bot in several files is validated as the program
 	// it is, each file's diagnostics at its own path.
-	u := unit.LoadDirWithMain(parsePath, parsePath, src)
-	for _, d := range u.Diagnostics {
-		result.ParseDiagnostics = append(result.ParseDiagnostics, d.Error())
-		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
-			Source:   "parse",
-			Code:     string(d.Code),
-			Severity: d.Severity.String(),
-			File:     d.File,
-			Line:     d.Line,
-			Column:   d.Column,
-			Message:  d.Message,
-			Hint:     d.Hint,
-		})
-		if d.Severity == parser.SeverityError {
-			result.Valid = false
+	var u *unit.Unit
+	if doc != nil {
+		// The document, read into its AST by the converter, is the unit's
+		// main under the .bot's name: its fragments are read beside that
+		// .bot, and every position stays the document's own. The converter's
+		// diagnostics come first, then the loader's.
+		u = doc.loadUnit(doc.botPath)
+		for _, d := range doc.res.Diagnostics {
+			result.addParseDiagnostic(d)
 		}
+		if d := doc.noWrittenForm(); d != nil {
+			// An error (E054): an OK here followed by a refusal to write the
+			// .bot would be a lie.
+			result.addParseDiagnostic(*d)
+		}
+	} else {
+		u = unit.LoadDirWithMain(parsePath, parsePath, src)
+	}
+	for _, d := range u.Diagnostics {
+		result.addParseDiagnostic(d)
 	}
 
 	// The profile the file is read in must be a choice (C144): a headerless
@@ -308,17 +351,43 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	if u.Merged == nil || len(u.Merged.Workflows) == 0 {
 		result.Valid = false
 		why := "no workflow found"
+		hint := "a .bot carries its program in a `workflow \"name\" { … }` block: add one, or validate the bot's main if this file is one of its imports"
+		if doc != nil {
+			hint = "a document carries its program in a top-level `workflow:` key: add one, or validate the bot's main if this document is one of its imports"
+		}
 		// A file under lib/ is a fragment: a piece of the bot whose main
 		// imports it, and it holds no workflow by design. Validated alone
 		// it can only fail; the remedy is the main.
 		if filepath.Base(filepath.Dir(parsePath)) == unit.FragmentDir {
-			why = "no workflow found: " + filepath.Base(parsePath) + " is a fragment under " + unit.FragmentDir + "/, validated through the main that imports it"
+			fragment := filepath.Base(parsePath)
+			why = "no workflow found: " + fragment + " is a fragment under " + unit.FragmentDir + "/, validated through the main that imports it"
+			hint = "run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + fragment + "\"`)"
+			if doc != nil {
+				// A document is never a fragment: an import names a .bot. The
+				// remedy names the .bot the document stands for — which the
+				// parser accepts — not the document, which it refuses (E045).
+				bot := filepath.Base(doc.botPath)
+				why = "no workflow found: " + fragment + " is an author document under " + unit.FragmentDir + "/ — a document is never a fragment; the .bot it stands for (" + bot + ") is one, through the main that imports it"
+				hint = "write the .bot the document stands for, then run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + bot + "\"`)"
+			}
+		}
+		// A file that failed to PARSE has its cause named already: a second
+		// error saying no workflow was found would count one cause twice —
+		// the workflow is missing because the program did not parse.
+		parseErrored := false
+		for _, d := range result.Diagnostics {
+			if d.Severity == "error" {
+				parseErrored = true
+				break
+			}
+		}
+		if !parseErrored {
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
 				Source:   "parse",
 				Severity: "error",
 				File:     parsePath,
 				Message:  why,
-				Hint:     "run `iterion validate` on the bot's main file (the one with `import \"" + unit.FragmentDir + "/" + filepath.Base(parsePath) + "\"`)",
+				Hint:     hint,
 			})
 		}
 		sortValidateDiagnostics(result.Diagnostics)
@@ -352,9 +421,32 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			result.Valid = false
 		}
 	}
-	annotateEdits(result, u, cr.Diagnostics)
+	// The edits `fix` plans are positions in .bot text: the document's own
+	// file gets none — its text is YAML, and a folded scalar can spell a
+	// `tool t:` block PlanFor would find and edit at the wrong bytes —
+	// while the .bot fragments its imports name keep theirs.
+	annotateEdits(result, u, cr.Diagnostics, documentNameOf(doc))
 
 	if cr.Workflow != nil {
+		// A registry that cannot load takes every plugin MCP server off
+		// every node, which is not an invalid workflow — so it warns rather
+		// than failing — but it does mean the tool sets below are missing
+		// servers the same file would have on a healthy host. PrepareWorkflow
+		// says this through a logger that only the run path owns.
+		if err := mcp.PluginServersUnavailable(); err != nil {
+			// The structured list only. CompileDiagnostics is a list of
+			// compile PROBLEMS, and its consumers read "non-empty" as "this
+			// file does not validate clean" — TestBotsCreate_EveryTemplateValidates
+			// does exactly that, and putting an environmental warning there
+			// failed every bot template on a host with one stale plugin
+			// directory. Severity is what distinguishes a warning, and only
+			// the structured list carries it.
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "compile",
+				Severity: "warning",
+				Message:  err.Error() + " — the tool sets reported here omit them",
+			})
+		}
 		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
 			result.CompileDiagnostics = append(result.CompileDiagnostics, err.Error())
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
@@ -377,12 +469,19 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// stability). Only runs for bundles; plain .bot files have no manifest.
 	if bundleHandle != nil && cr.Workflow != nil {
 		syntax := bundle.MaxSyntaxRequirementsDir(bundleHandle.Dir)
+		if doc != nil {
+			// The document's own syntax counts — its profile, imports and
+			// contract, read off the .bot text it writes as — and a stale
+			// main.bot beside it is not read in its place.
+			syntax = bundle.MaxSyntaxRequirementsDirWithMain(bundleHandle.Dir, filepath.Base(doc.botPath), doc.text)
+		}
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
 			// still run, the manifest-side ones are skipped.
-			Manifest:    bundleHandle.Manifest,
-			Workflow:    cr.Workflow,
-			Frontmatter: bundle.ParseFrontmatter(src), // reuse the bytes already read
+			Manifest: bundleHandle.Manifest,
+			Workflow: cr.Workflow,
+			// A .bot's own bytes; for a document, the .bot text it writes as.
+			Frontmatter: bundle.ParseFrontmatter(frontmatterText(doc, src)),
 			DirName:     bundleDir,
 			Skills:      scanBundleSkills(bundleHandle.SkillsDir),
 			// The engine contract (C250/C251), held against THIS binary — the
@@ -420,7 +519,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// cannot read — leaves the file validated alone, and the verdict says
 	// why (C223): the one outcome that would otherwise be silent.
 	if bundleHandle == nil {
-		if m, why := bundle.ForeignManifestBeside(path); m != "" {
+		if m, why := bundle.ForeignManifestBeside(mainPathOf(doc, path)); m != "" {
 			msg := filepath.Base(m) + " beside main.bot was not read as this bundle's manifest: it " + why + " — the file was validated alone, without the prompts, presets and skills beside it"
 			result.BundleDiagnostics = append(result.BundleDiagnostics, "warning ["+string(bundlelint.DiagManifestNotRead)+"]: "+msg)
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
@@ -484,6 +583,9 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		p.JSON(result)
 	} else {
 		p.Header("Validate: " + path)
+		if doc != nil {
+			p.KV("Reads as", doc.botPath)
+		}
 		if bundleName != "" || bundleVersion != "" {
 			p.KV("Bundle", bundleName+" "+bundleVersion)
 		}
@@ -520,16 +622,17 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	if result.ExecError != "" {
 		return dryRunFailed(p, result.ExecError)
 	}
-	if opts.Strict && result.Exec != nil && !result.Exec.Clean() {
+	if opts.Strict && result.Exec != nil && result.Exec.Failing() {
 		return dryRunNotClean(p, result.Exec)
 	}
 	return nil
 }
 
-// dryRunNotClean is the error of a dry run whose report is not clean under
-// --strict, returned AFTER the result was printed: in JSON mode it is
-// marked ErrReported and the CLI prints nothing more. A pass that ran out
-// of time is named as the bound's doing, with the flag that raises it.
+// dryRunNotClean is the error of a dry run whose report is failing under
+// --strict — a death or a defect finding, never an inconclusive expression
+// alone — returned AFTER the result was printed: in JSON mode it is marked
+// ErrReported and the CLI prints nothing more. A pass that ran out of time
+// is named as the bound's doing, with the flag that raises it.
 func dryRunNotClean(p *Printer, report *dryrun.Report) error {
 	if p.Format == OutputJSON {
 		return fmt.Errorf("dry run not clean: %w", ErrReported)
@@ -558,8 +661,11 @@ func dryRunFailed(p *Printer, why string) error {
 // it remedies — the one whose message names the edit's property and one of
 // its references, never the next free one: a node's command and its
 // postcondition each carry their own.
-func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic) {
+func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic, skip string) {
 	for _, f := range u.Files {
+		if f.Name == skip {
+			continue // an author document: its text is not .bot text
+		}
 		var mine []ir.Diagnostic
 		for _, d := range diags {
 			if d.File == f.Name {
@@ -710,6 +816,9 @@ func describePublicPort(port *ir.PublicPort) string {
 		}
 		notes = append(notes, lo+".."+hi+" items")
 	}
+	if port.Matching != "" {
+		notes = append(notes, "matching "+port.Matching)
+	}
 	if len(port.EnumValues) > 0 {
 		notes = append(notes, "one of "+strings.Join(port.EnumValues, "|"))
 	}
@@ -803,7 +912,7 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
-	inputs, err := buildRunInputs(wf, opts.Preset, vars)
+	inputs, err := buildRunInputs(wf, opts.Preset, vars, false)
 	if err != nil {
 		return nil, err
 	}
@@ -850,15 +959,27 @@ func joinErrors(errs []error) string {
 	return strings.Join(parts, "; ")
 }
 
-// declaredVars lists the workflow's var names, sorted, for an error to name.
+// declaredVars lists the workflow's var names, sorted, for an error to
+// name — the shared helper's word.
 func declaredVars(wf *ir.Workflow) []string {
-	names := make([]string, 0, len(wf.Vars))
-	for name := range wf.Vars {
-		names = append(names, name)
+	return ir.DeclaredVarNames(wf)
+}
+
+// addParseDiagnostic records a parser diagnostic — the converter's, the unit
+// loader's — in both forms and lets an error decide the verdict.
+func (r *ValidateResult) addParseDiagnostic(d parser.Diagnostic) {
+	r.ParseDiagnostics = append(r.ParseDiagnostics, d.Error())
+	r.Diagnostics = append(r.Diagnostics, ValidateDiagnostic{
+		Source:   "parse",
+		Code:     string(d.Code),
+		Severity: d.Severity.String(),
+		File:     d.File,
+		Line:     d.Line,
+		Column:   d.Column,
+		Message:  d.Message,
+		Hint:     d.Hint,
+	})
+	if d.Severity == parser.SeverityError {
+		r.Valid = false
 	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		return []string{"none"}
-	}
-	return names
 }

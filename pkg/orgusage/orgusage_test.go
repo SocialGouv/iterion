@@ -17,12 +17,12 @@ func runCounterSuite(t *testing.T, c Counter) {
 
 	t.Run("unlimited still meters", func(t *testing.T) {
 		for i := 0; i < 3; i++ {
-			deny, err := c.AllowRun(ctx, "t-unlimited", now, 0, 0)
+			deny, err := c.AllowRun(ctx, OrgSubject("t-unlimited"), now, 0, 0)
 			if err != nil || deny != DenyNone {
 				t.Fatalf("AllowRun #%d: deny=%v err=%v", i, deny, err)
 			}
 		}
-		u, err := c.Usage(ctx, "t-unlimited", now)
+		u, err := c.Usage(ctx, OrgSubject("t-unlimited"), now)
 		if err != nil {
 			t.Fatalf("Usage: %v", err)
 		}
@@ -33,59 +33,59 @@ func runCounterSuite(t *testing.T, c Counter) {
 
 	t.Run("cap denies without consuming", func(t *testing.T) {
 		for i := 0; i < 2; i++ {
-			if deny, err := c.AllowRun(ctx, "t-capped", now, 2, 0); err != nil || deny != DenyNone {
+			if deny, err := c.AllowRun(ctx, OrgSubject("t-capped"), now, 2, 0); err != nil || deny != DenyNone {
 				t.Fatalf("AllowRun #%d: deny=%v err=%v", i, deny, err)
 			}
 		}
-		deny, err := c.AllowRun(ctx, "t-capped", now, 2, 0)
+		deny, err := c.AllowRun(ctx, OrgSubject("t-capped"), now, 2, 0)
 		if err != nil {
 			t.Fatalf("AllowRun denied: %v", err)
 		}
 		if deny != DenyRuns {
 			t.Fatalf("deny = %v, want DenyRuns past the cap", deny)
 		}
-		u, _ := c.Usage(ctx, "t-capped", now)
+		u, _ := c.Usage(ctx, OrgSubject("t-capped"), now)
 		if u.Runs != 2 {
 			t.Fatalf("denied call consumed quota: Runs = %d, want 2", u.Runs)
 		}
 	})
 
 	t.Run("months are disjoint buckets", func(t *testing.T) {
-		if deny, _ := c.AllowRun(ctx, "t-months", now, 1, 0); deny != DenyNone {
+		if deny, _ := c.AllowRun(ctx, OrgSubject("t-months"), now, 1, 0); deny != DenyNone {
 			t.Fatal("first month launch denied")
 		}
 		nextMonth := now.AddDate(0, 1, 0)
-		deny, err := c.AllowRun(ctx, "t-months", nextMonth, 1, 0)
+		deny, err := c.AllowRun(ctx, OrgSubject("t-months"), nextMonth, 1, 0)
 		if err != nil || deny != DenyNone {
 			t.Fatalf("next month launch: deny=%v err=%v", deny, err)
 		}
-		u, _ := c.Usage(ctx, "t-months", now)
+		u, _ := c.Usage(ctx, OrgSubject("t-months"), now)
 		if u.Runs != 1 {
 			t.Fatalf("first month Runs = %d, want 1", u.Runs)
 		}
 	})
 
 	t.Run("tenants are isolated", func(t *testing.T) {
-		if deny, _ := c.AllowRun(ctx, "t-a", now, 1, 0); deny != DenyNone {
+		if deny, _ := c.AllowRun(ctx, OrgSubject("t-a"), now, 1, 0); deny != DenyNone {
 			t.Fatal("t-a launch denied")
 		}
-		if deny, _ := c.AllowRun(ctx, "t-b", now, 1, 0); deny != DenyNone {
+		if deny, _ := c.AllowRun(ctx, OrgSubject("t-b"), now, 1, 0); deny != DenyNone {
 			t.Fatal("t-b denied by t-a's consumption")
 		}
 	})
 
 	t.Run("spend accumulates", func(t *testing.T) {
-		if err := c.AddSpend(ctx, "t-spend", now, 1.234, 1000, 200, 0); err != nil {
+		if err := c.AddSpend(ctx, OrgSubject("t-spend"), now, 1.234, 1000, 200, 0); err != nil {
 			t.Fatalf("AddSpend: %v", err)
 		}
-		if err := c.AddSpend(ctx, "t-spend", now, 0.766, 500, 100, 0); err != nil {
+		if err := c.AddSpend(ctx, OrgSubject("t-spend"), now, 0.766, 500, 100, 0); err != nil {
 			t.Fatalf("AddSpend: %v", err)
 		}
 		// Zero-valued spend must be a no-op, not an error.
-		if err := c.AddSpend(ctx, "t-spend", now, 0, 0, 0, 0); err != nil {
+		if err := c.AddSpend(ctx, OrgSubject("t-spend"), now, 0, 0, 0, 0); err != nil {
 			t.Fatalf("AddSpend zero: %v", err)
 		}
-		u, err := c.Usage(ctx, "t-spend", now)
+		u, err := c.Usage(ctx, OrgSubject("t-spend"), now)
 		if err != nil {
 			t.Fatalf("Usage: %v", err)
 		}
@@ -98,7 +98,7 @@ func runCounterSuite(t *testing.T, c Counter) {
 	})
 
 	t.Run("empty month reads zero", func(t *testing.T) {
-		u, err := c.Usage(ctx, "t-never-seen", now)
+		u, err := c.Usage(ctx, OrgSubject("t-never-seen"), now)
 		if err != nil {
 			t.Fatalf("Usage: %v", err)
 		}
@@ -111,10 +111,10 @@ func runCounterSuite(t *testing.T, c Counter) {
 	})
 
 	t.Run("cost cap denies new launches", func(t *testing.T) {
-		if err := c.AddSpend(ctx, "t-costcap", now, 5.0, 0, 0, 0); err != nil {
+		if err := c.AddSpend(ctx, OrgSubject("t-costcap"), now, 5.0, 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
-		deny, err := c.AllowRun(ctx, "t-costcap", now, 0, CostToMillis(5.0))
+		deny, err := c.AllowRun(ctx, OrgSubject("t-costcap"), now, 0, CostToMillis(5.0))
 		if err != nil {
 			t.Fatalf("AllowRun: %v", err)
 		}
@@ -122,12 +122,12 @@ func runCounterSuite(t *testing.T, c Counter) {
 			t.Fatalf("deny = %v, want DenyCost at the cap", deny)
 		}
 		// The denied launch must not have consumed a run increment.
-		u, _ := c.Usage(ctx, "t-costcap", now)
+		u, _ := c.Usage(ctx, OrgSubject("t-costcap"), now)
 		if u.Runs != 0 {
 			t.Fatalf("Runs = %d, want 0 after cost-cap denial", u.Runs)
 		}
 		// Under the cap → allowed.
-		deny, _ = c.AllowRun(ctx, "t-costcap", now, 0, CostToMillis(10.0))
+		deny, _ = c.AllowRun(ctx, OrgSubject("t-costcap"), now, 0, CostToMillis(10.0))
 		if deny != DenyNone {
 			t.Fatalf("deny = %v, want allowed under a higher cap", deny)
 		}
@@ -143,7 +143,7 @@ func runCounterSuite(t *testing.T, c Counter) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				deny, err := c.AllowRun(ctx, "t-race", now, cap, 0)
+				deny, err := c.AllowRun(ctx, OrgSubject("t-race"), now, cap, 0)
 				if err != nil {
 					t.Errorf("AllowRun: %v", err)
 					return
@@ -159,7 +159,7 @@ func runCounterSuite(t *testing.T, c Counter) {
 		if allowed > cap {
 			t.Fatalf("allowed %d launches past cap %d", allowed, cap)
 		}
-		u, _ := c.Usage(ctx, "t-race", now)
+		u, _ := c.Usage(ctx, OrgSubject("t-race"), now)
 		if u.Runs > cap {
 			t.Fatalf("metered Runs = %d past cap %d", u.Runs, cap)
 		}

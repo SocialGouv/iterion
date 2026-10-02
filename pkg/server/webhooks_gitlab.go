@@ -256,7 +256,18 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
-		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra)
+		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra,
+		// The MR lane refuses a PROVEN fork above (`p.IsFork()`), and
+		// deliberately lets a payload naming neither project through — its
+		// own comment says so, and the API-resolving lanes fail closed on
+		// that shape instead. So this stamps "trusted" on a head this lane
+		// did not prove, which is weaker than the GitHub site next door
+		// (forkGuardRefusal fails closed on a withheld or unnamed head).
+		// It matches today's behaviour exactly — origin/main carried no
+		// marker at all — but when the admission half lands, an unproven
+		// GitLab head must get a non-trusted class here rather than this
+		// default.
+		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a
 	// volley of pushes costs one review of the final head (a re-request
@@ -311,7 +322,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{})
 }
 
 // gitlabIssueLabeledVars composes the implementer-bot launch vars for a
@@ -482,7 +493,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, converseBot,
-		vars, gitlabHeadCloneURL(head, p), gitlabHeadBranch(head, p), payloadHash, srcIP)
+		vars, gitlabHeadCloneURL(head, p), gitlabHeadBranch(head, p), payloadHash, srcIP, launchProvenance{})
 }
 
 // resolveGitLabNoteHead resolves the merge request a note sits on through the
@@ -632,7 +643,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if surface == "issue" {
 		ref = p.DefaultBranch
 	}
-	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP, launchProvenance{})
 }
 
 // buildCommandVars composes the launch vars for a generic command on a GitLab
@@ -1170,7 +1181,78 @@ func (s *Server) updateWebhookDelivery(ctx context.Context, d webhooks.Delivery)
 	if s.webhookDeliveries == nil {
 		return
 	}
-	_ = s.webhookDeliveries.Update(ctx, d)
+	// A row that misses its update keeps its previous state — a launched run
+	// whose row never names it reads as a launch still in flight, then as one
+	// that died — so a failed write is tried again (a primary election, a
+	// dropped connection), then said, not swallowed.
+	//
+	// A write that failed may still have COMMITTED (a lost ack), and a
+	// concurrent redelivery may have claimed the row since: rewriting the
+	// stale copy would roll that claim back. So the row is read BEFORE the
+	// first write, and a retry happens only while the row still is what it
+	// was then — the write landed (a lost ack) and a concurrent writer each
+	// end the loop, the newer state standing.
+	pre, rerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, d.IdempotencyKey)
+	if rerr == nil && deliveryRowEquals(pre, d) {
+		return // the row already says what this write says
+	}
+	var err error
+loop:
+	for attempt := 1; attempt <= webhookDeliveryUpdateAttempts; attempt++ {
+		err = s.webhookDeliveries.Update(ctx, d)
+		if err == nil || errors.Is(err, webhooks.ErrNotFound) || attempt == webhookDeliveryUpdateAttempts {
+			break
+		}
+		if rerr != nil {
+			// The row's prior state is unknown: a retry cannot be guarded, so
+			// give up and say the write failed.
+			break
+		}
+		cur, cerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, d.IdempotencyKey)
+		switch {
+		case cerr != nil:
+			// The row cannot be told either: retrying blind may roll a
+			// concurrent claim back.
+			break loop
+		case deliveryRowEquals(cur, d):
+			// The write landed after all — a lost ack, not a lost write.
+			err = nil
+			break loop
+		case !deliveryRowEquals(cur, pre):
+			// A concurrent writer owns the row now; the newer state stands.
+			err = nil
+			break loop
+		}
+		select {
+		case <-ctx.Done():
+			break loop
+		case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+		}
+	}
+	if err != nil && s.logger != nil {
+		s.logger.Warn("webhooks: delivery %s (%s, run %q) was not recorded: %v", d.ID, d.Status, d.RunID, err)
+	}
+}
+
+// webhookDeliveryUpdateAttempts bounds the writes one row update tries.
+const webhookDeliveryUpdateAttempts = 3
+
+// deliveryRowEquals reports whether two rows read the same, field by field:
+// a round-trip through a store may move a time's location, never its instant.
+func deliveryRowEquals(a, b webhooks.Delivery) bool {
+	at := func(x, y *time.Time) bool {
+		return (x == nil) == (y == nil) && (x == nil || x.Equal(*y))
+	}
+	return a.ID == b.ID && a.TenantID == b.TenantID && a.WebhookID == b.WebhookID &&
+		a.EventKind == b.EventKind &&
+		a.ProjectPath == b.ProjectPath && a.SubjectID == b.SubjectID &&
+		a.SubjectSHA == b.SubjectSHA &&
+		a.PayloadHash == b.PayloadHash && a.Status == b.Status &&
+		a.BotID == b.BotID && a.RunID == b.RunID && a.Error == b.Error &&
+		a.SourceIP == b.SourceIP && a.IdempotencyKey == b.IdempotencyKey &&
+		a.Attempts == b.Attempts &&
+		a.ReceivedAt.Equal(b.ReceivedAt) && at(a.LaunchedAt, b.LaunchedAt) &&
+		at(a.FailedAt, b.FailedAt) && at(a.ClaimedAt, b.ClaimedAt)
 }
 
 // scheduledLaunchActor is the auth principal a cron tick launches under: the
@@ -1219,7 +1301,12 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		return deny.err()
 	}
 	if _, err = s.runs.Launch(ctx, spec); err != nil {
-		adm.rollback(s.logger)
+		// The slot follows the error's own fact (#1725): a launch proven
+		// not to have started hands the metered unit back; a publish that
+		// landed keeps it — the run it describes exists or may be claimed.
+		if !runview.RunMayHaveStarted(err) {
+			adm.rollback(s.logger)
+		}
 		return err
 	}
 	return nil
@@ -1267,12 +1354,17 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 // stamps the BotID for the publisher's credential-resolution path.
 func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy) runview.LaunchSpec {
 	return runview.LaunchSpec{
-		FilePath: path,
-		Source:   source,
-		BotID:    sb.BotID,
-		Vars:     sb.Vars,
-		RepoURL:  sb.RepoURL,
-		RepoRef:  sb.RepoRef,
+		// Tenant-configured vars ride blind (#1725's opt-out): the schedule
+		// editor owns them, the runview refusal is for operator-typed
+		// launches, and this warn-and-proceed keeps every scheduled bot
+		// launchable whether or not it declares each key.
+		AllowUnknownInputs: true,
+		FilePath:           path,
+		Source:             source,
+		BotID:              sb.BotID,
+		Vars:               sb.Vars,
+		RepoURL:            sb.RepoURL,
+		RepoRef:            sb.RepoRef,
 		// Resolved by the caller across the schedule row, the bot manifest
 		// and the machine default — the schedule is the layer an operator
 		// reaches for when one bot's cadence needs different retry limits
@@ -1289,18 +1381,22 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 }
 
 // webhookLauncherFor builds the production launch path for one inbound
-// webhook config. It is a closure rather than a plain method because the
-// launch needs the config's retry policy, which the seam's positional
-// signature does not carry.
-func (s *Server) webhookLauncherFor(cfg webhooks.Config) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+// webhook config and ONE target of it. It is a closure rather than a plain
+// method because the launch needs facts the seam's positional signature does
+// not carry: the config's retry policy, and the target's own trust and
+// admitted commit. Those last two ride the closure rather than two more
+// positional parameters because the seam has 149 test doubles — and because a
+// test double that stands in for the launcher is not the thing that builds a
+// LaunchSpec, so widening it would prove nothing it does not already prove.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
-		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides)
+		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA)
 	}
 }
 
 // launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher).
-func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -1310,10 +1406,22 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 	}
 	defer lb.Cleanup()
 	spec := runview.LaunchSpec{
-		Vars:            vars,
-		RepoURL:         repoURL,
-		RepoRef:         repoRef,
-		ProjectPath:     projectPath,
+		Vars:        vars,
+		RepoURL:     repoURL,
+		RepoRef:     repoRef,
+		ProjectPath: projectPath,
+		// This lane injects server-computed keys blindly (forge_publish_*,
+		// canonical PR vars — the contract forge_publish.go documents), so
+		// the #1757 unknown-input refusal does not apply to it: a launched
+		// bot that declares none of them is legitimate. The opt-out still
+		// says what rode (runview warns), and a TYPO in the webhook's own
+		// configured vars is caught by the config render upstream.
+		AllowUnknownInputs: true,
+		// Stamped onto the run document, which is what a resume, a
+		// usage-window retry and a forked child read their credentials
+		// from — this launch's verdict has to outlive this launch.
+		Trust:           trust,
+		RepoSHAExpected: expectedSHA,
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
 		// A webhook-launched run is often the one an author is waiting on,

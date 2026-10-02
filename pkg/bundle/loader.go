@@ -35,6 +35,16 @@ var botFileNames = []string{MainBotFile}
 // Detect classifies path as a plain `.bot` file, a `.botz` archive, or a
 // directory bundle.
 func Detect(path string) (Kind, error) {
+	// An author document is refused by its NAME, before the disk is looked
+	// at — one rule on every door: the launchers that cannot stat (the HTTP
+	// resolver before an inline source is materialised, Launch before the
+	// queue persists a run) refuse by name, so a path ending in .bot.yaml
+	// names a draft here too, directory or not. The caller that reads one
+	// (validate) tells the refusal with errors.Is and routes it; every
+	// launcher shows it as written.
+	if workflowfile.IsAuthorDocument(path) {
+		return KindBot, AuthorDocumentError(path)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return KindBot, fmt.Errorf("bundle: stat %s: %w", path, err)
@@ -46,13 +56,12 @@ func Detect(path string) (Kind, error) {
 				return KindBundleDir, nil
 			}
 		}
-		return KindBot, fmt.Errorf("bundle: %s is a directory but contains no main.bot at root", path)
+		return KindBot, fmt.Errorf("bundle: %s is a directory but contains no main.bot at root%s", path, noMainBotHint(path))
 	}
-	lower := strings.ToLower(path)
-	if strings.HasSuffix(lower, ".botz") {
+	if strings.HasSuffix(strings.ToLower(path), ".botz") {
 		return KindBundle, nil
 	}
-	if workflowfile.IsWorkflowFile(lower) {
+	if workflowfile.IsWorkflowFile(path) {
 		return KindBot, nil
 	}
 	return KindBot, fmt.Errorf("bundle: unsupported workflow extension for %s (expected .bot or .botz)", path)
@@ -168,7 +177,7 @@ func Open(path, cacheRoot string) (*Bundle, func() error, error) {
 		}
 	}
 
-	b, err := assembleBundle(cacheSlot)
+	b, err := assembleBundle(cacheSlot, "", "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -265,6 +274,29 @@ func extractArchiveBytes(data []byte, dest string) (int, error) {
 // OpenDir resolves an already-extracted bundle directory. Used by dev
 // workflows and tests where authoring happens in-place.
 func OpenDir(path string) (*Bundle, error) {
+	return openDir(path, "", "")
+}
+
+// OpenDirWithMain is OpenDir for a bundle whose main is handed over rather
+// than found on disk: mainPath is the `.bot` at the root of dir the caller
+// compiles — written or not. An author document (`main.bot.yaml`) validated
+// in its bundle is the case: the prompts/, skills/, presets/ and manifest
+// beside it are the bundle's whatever the state of the .bot it stands for,
+// and a manifest export naming the main is that main.
+func OpenDirWithMain(dir, mainPath string) (*Bundle, error) {
+	if mainPath == "" {
+		return nil, fmt.Errorf("bundle: %s: a main path is required", dir)
+	}
+	return openDir(dir, mainPath, mainPath)
+}
+
+// openDir opens the directory bundle at path. mainPath, when given, is its
+// main, handed over rather than found on disk; handedOver, when given, is
+// a workflow file of the bundle the caller compiles without reading it from
+// disk — the main handed over, or another workflow an author document
+// stands for — and a manifest export naming it is that workflow, written or
+// not, never a missing file.
+func openDir(path, mainPath, handedOver string) (*Bundle, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("bundle: resolve %s: %w", path, err)
@@ -276,7 +308,20 @@ func OpenDir(path string) (*Bundle, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("bundle: %s is not a directory", abs)
 	}
-	b, err := assembleBundle(abs)
+	if mainPath != "" {
+		if mainPath, err = filepath.Abs(mainPath); err != nil {
+			return nil, fmt.Errorf("bundle: resolve %s: %w", mainPath, err)
+		}
+		if filepath.Dir(mainPath) != abs {
+			return nil, fmt.Errorf("bundle: %s is not at the root of %s", mainPath, abs)
+		}
+	}
+	if handedOver != "" {
+		if handedOver, err = filepath.Abs(handedOver); err != nil {
+			return nil, fmt.Errorf("bundle: resolve %s: %w", handedOver, err)
+		}
+	}
+	b, err := assembleBundle(abs, mainPath, handedOver)
 	if err != nil {
 		return nil, err
 	}
@@ -285,20 +330,25 @@ func OpenDir(path string) (*Bundle, error) {
 	return b, nil
 }
 
-// assembleBundle scans dir for the workflow source, manifest, and
-// optional resource directories. Returns an error when no workflow
-// source is present at the bundle root.
-func assembleBundle(dir string) (*Bundle, error) {
-	b := &Bundle{Dir: dir}
-	for _, name := range botFileNames {
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); err == nil {
-			b.IterPath = p
-			break
+// assembleBundle scans dir for the workflow source — unless mainPath hands
+// it over (OpenDirWithMain) — the manifest, and the optional resource
+// directories. Returns an error when no workflow source is present at the
+// bundle root and none was handed over. Every workflow the manifest exports
+// is a file on disk, except handedOver (absolute, or ""): the caller
+// compiles it without reading it there.
+func assembleBundle(dir, mainPath, handedOver string) (*Bundle, error) {
+	b := &Bundle{Dir: dir, IterPath: mainPath}
+	if b.IterPath == "" {
+		for _, name := range botFileNames {
+			p := filepath.Join(dir, name)
+			if _, err := os.Stat(p); err == nil {
+				b.IterPath = p
+				break
+			}
 		}
 	}
 	if b.IterPath == "" {
-		return nil, fmt.Errorf("bundle: %s contains no main.bot at root", dir)
+		return nil, fmt.Errorf("bundle: %s contains no main.bot at root%s", dir, noMainBotHint(dir))
 	}
 	// Each layout dir resolves to its absolute path when present, "" when
 	// absent. Driven by a table so the names live only in bundle.go.
@@ -328,10 +378,19 @@ func assembleBundle(dir string) (*Bundle, error) {
 	}
 	b.Manifest = manifest
 	if manifest != nil {
+		// The workflow handed over is recognised as a file, not a spelling:
+		// an export may name it through a symlinked directory of the bundle.
+		handed := ""
+		if handedOver != "" {
+			handed = ResolvedPath(handedOver)
+		}
 		for _, exp := range manifest.Exports.Workflows {
 			path, joinErr := safeJoin(dir, exp.Path)
 			if joinErr != nil {
 				return nil, fmt.Errorf("bundle: export %q: %w", exp.ID, joinErr)
+			}
+			if handed != "" && ResolvedPath(path) == handed {
+				continue
 			}
 			info, statErr := os.Stat(path)
 			if statErr != nil {
@@ -343,6 +402,22 @@ func assembleBundle(dir string) (*Bundle, error) {
 		}
 	}
 	return b, nil
+}
+
+// ResolvedPath is where path lies once the symlinks of its existing part
+// are resolved: the file's own resolution when it is there; else its
+// directory's, its name joined — where a file not written yet, such as the
+// .bot an author document stands for, will lie; else path, cleaned. Two
+// spellings of one file, through a symlinked directory or not, resolve to
+// one path.
+func ResolvedPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	if realDir, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		return filepath.Join(realDir, filepath.Base(path))
+	}
+	return filepath.Clean(path)
 }
 
 // defaultCacheRoot returns the platform-specific cache directory for
@@ -369,4 +444,16 @@ func touch(path string) error {
 		return fmt.Errorf("bundle: touch %s: %w", path, err)
 	}
 	return f.Close()
+}
+
+// noMainBotHint names the author document standing for the missing main
+// when there is one: a `main.bot.yaml` is the main of no launch and of no
+// bundle — `iterion validate` reads it by its own name, and the .bot it
+// stands for is what a launch or a bundle wants.
+func noMainBotHint(dir string) string {
+	twin := filepath.Join(dir, MainBotFile+".yaml")
+	if info, err := os.Stat(twin); err != nil || info.IsDir() {
+		return ""
+	}
+	return " (a main.bot.yaml stands there: an author document, the main of no launch — `iterion validate " + twin + "` reads it, and the .bot it stands for is what a launch or a bundle wants)"
 }

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,7 @@ const workspaceReadMaxFileBytes = 64 * 1024 * 1024
 func workspaceReadFileTool() api.Tool {
 	t := clawtools.ReadFileTool()
 	t.Description = "Read a file inside the active workspace. Credential files and internal run stores are excluded. " +
+		"PDF files (.pdf) are returned as their extracted text (BT/ET content streams); a text-less PDF reads empty. " +
 		"Large files are returned in explicit line chunks; " +
 		"when the result is partial, call it again with the next start_line printed in the marker."
 	t.InputSchema.Properties["start_line"] = api.Property{
@@ -88,9 +90,32 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 
-	lines, total, err := workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
-	if err != nil {
-		return "", fmt.Errorf("read_file: %w", err)
+	// A PDF is binary: text-lines windowing would return mangled bytes.
+	// When the file really is one (magic — a misnamed text file reads as
+	// text), extract its text and window THE TEXT with the same chunk
+	// semantics. Parity with the claude_code backend, whose Read tool
+	// opens PDFs natively (docs/backends.md, the claw ↔ claude_code
+	// doctrine).
+	var lines []string
+	var total int
+	if strings.EqualFold(filepath.Ext(path), ".pdf") {
+		pdfLines, pdfTotal, isPDF, pdfErr := workspacePDFWindow(workspace, path, start, workspaceReadMaxBytes, workspaceReadMaxFileBytes)
+		if pdfErr != nil {
+			return "", fmt.Errorf("read_file: %w", pdfErr)
+		}
+		if isPDF {
+			lines, total = pdfLines, pdfTotal
+		} else {
+			lines, total, err = workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+			if err != nil {
+				return "", fmt.Errorf("read_file: %w", err)
+			}
+		}
+	} else {
+		lines, total, err = workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+		if err != nil {
+			return "", fmt.Errorf("read_file: %w", err)
+		}
 	}
 	if total == 0 {
 		return "", nil
@@ -132,6 +157,89 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 			start, end, total, reason, rawPath, end+1)
 	}
 	return out.String(), nil
+}
+
+// workspacePDFWindow windows a .pdf-suffixed file as its EXTRACTED TEXT,
+// reading the file exactly the way the regular path does — one
+// openWorkspaceFile open (O_NOFOLLOW|O_NONBLOCK: a FIFO substituted for
+// the .pdf cannot hang the call), one Stat, one bounded read, no re-open
+// for the extraction to race against. isPDF=false (nil err) means "not
+// actually a PDF" — a misnamed text file, or a non-regular file — and
+// the caller reads it as text instead, with the regular path's own
+// semantics. maxFile doubles as the extraction's INFLATION budget
+// (document-wide: any stream inflating past it, or the sum of streams
+// doing so, errors) — zlib holds ~1000:1, so a compressed bomb must
+// error, not allocate. Peak in-process memory is bounded at roughly
+// 3x maxFile (the bytes read + one inflated stream + the accumulated
+// text), all under the caller's own ceiling.
+func workspacePDFWindow(workspace, path string, start int, maxBytes, maxFile int64) (lines []string, total int, isPDF bool, err error) {
+	f, err := openWorkspaceFile(workspace, path)
+	if err != nil {
+		return nil, 0, false, nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, true, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, 0, false, nil
+	}
+	if info.Size() > maxFile {
+		return nil, 0, true, fmt.Errorf("%q is %d bytes, past the %d-byte read ceiling; search it with grep instead", filepath.Base(path), info.Size(), maxFile)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxFile+1))
+	if err != nil {
+		return nil, 0, true, err
+	}
+	if int64(len(data)) > maxFile {
+		// The descriptor can grow after Stat, same discipline as
+		// workspaceFileWindow's LimitedReader.
+		return nil, 0, true, fmt.Errorf("%q grew past the %d-byte read ceiling", filepath.Base(path), maxFile)
+	}
+	if !bytes.HasPrefix(data, []byte("%PDF-")) {
+		return nil, 0, false, nil
+	}
+	text, err := clawtools.ExtractPDFTextFromBytes(data, maxFile)
+	if err != nil {
+		return nil, 0, true, err
+	}
+	lines, total = textWindowLines(text, start, int(maxBytes))
+	return lines, total, true, nil
+}
+
+// textWindowLines returns the newline-kept lines of extracted PDF text
+// from `start` on, mirroring workspaceFileWindow's retention contract:
+// at most maxBytes+1 bytes retained overall, at most maxBytes+1 bytes of
+// any single line (the scraper only breaks lines on ' / " show
+// operators, so one physical stream line can extract arbitrarily long).
+// The scan is index-based ON PURPOSE: strings.SplitAfter would
+// materialize a slice header + string header per line — on adversarial
+// newline-heavy text under the budget that alone reaches gigabytes of
+// headers in-process.
+func textWindowLines(text string, start, maxBytes int) ([]string, int) {
+	var window []string
+	total, retained, pos := 0, 0, 0
+	for pos < len(text) {
+		end := strings.IndexByte(text[pos:], '\n')
+		var line string
+		if end < 0 {
+			line = text[pos:]
+			pos = len(text)
+		} else {
+			line = text[pos : pos+end+1]
+			pos += end + 1
+		}
+		total++
+		if total >= start && retained <= maxBytes {
+			if len(line) > maxBytes+1 {
+				line = line[:maxBytes+1]
+			}
+			window = append(window, line)
+			retained += len(line)
+		}
+	}
+	return window, total
 }
 
 // workspaceFileWindow streams path once and returns the lines from `start`

@@ -77,6 +77,14 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid version")
 		return
 	}
+	// Tenant scoping (see handleListArtifacts): the body is read by
+	// (run, node, version) from a store with no tenant awareness — the
+	// blob in cloud mode — so the run is loaded under the caller's
+	// context first.
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
 	a, err := s.runs.LoadArtifactCtx(r.Context(), id, node, version)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "artifact not found: %v", err)
@@ -115,9 +123,9 @@ func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "kind must be input or output")
 		return
 	}
-	// Tenant scoping (see handleListArtifacts): reject cross-tenant
-	// before reading the blob. Dormant today (mongo lacks ToolBlobStore
-	// → 503 below) but keeps the guard uniform for when it lands.
+	// Tenant scoping (see handleListArtifacts): the blob is read by
+	// (run, tool call) from a store with no tenant awareness — S3 in
+	// cloud mode — so the run is loaded under the caller's context first.
 	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return

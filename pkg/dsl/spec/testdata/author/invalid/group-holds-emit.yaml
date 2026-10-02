@@ -1,0 +1,10 @@
+# refused: a group holds agent, judge, router, human, tool and compute declarations, not an emit
+dsl: 2
+groups:
+  - group: g
+    nodes:
+      - emit: e
+        event: x
+workflow:
+  name: w
+  entry: a

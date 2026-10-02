@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -65,6 +66,9 @@ type ResumeOptions struct {
 	// bot whose DSL says `on` silently un-does a hermetic `--auto-memory off`
 	// launch.
 	AutoMemory string
+	// AmbientContext re-states the run-level ambient-context override on
+	// resume, for the same reason AutoMemory does.
+	AmbientContext string
 	// LoopBudgetGuard re-states the run-level loop_budget_guard override on
 	// resume, for the same reason AutoMemory does: it is not persisted, so a
 	// resume that says nothing falls back to the workflow's value.
@@ -156,6 +160,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
 		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
+	if err := ambient.Validate(opts.AmbientContext); err != nil {
+		return UserInputError(fmt.Errorf("--ambient-context: %w", err))
 	}
 
 	// Same anchor as run: a run must be resumable from the directory it was
@@ -331,7 +338,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// each on purpose. Same doctrine as MergeResumeBudgetAsk: the record
 	// is the source, the flag layers over it. Fixes the classes named in
 	// #1435 (sandbox mode) and #1366 (branch name / merge target).
-	sandboxOverride := pickString(opts.Sandbox, r.SandboxOverride)
+	sandboxOverride := resumeSandboxOverride(opts, r)
 	sandboxDefaultImage := pickString(opts.SandboxDefaultImage, r.SandboxDefaultImage)
 	sandboxHostStateOverride := pickString(opts.SandboxHostState, r.SandboxHostState)
 	mergeInto := pickString(opts.MergeInto, r.MergeInto)
@@ -389,6 +396,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			PermissionAsk:   opts.PermissionAsk,
 			PermissionDeny:  opts.PermissionDeny,
 			AutoMemory:      opts.AutoMemory,
+			AmbientContext:  opts.AmbientContext,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,

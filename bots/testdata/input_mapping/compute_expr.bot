@@ -1,4 +1,5 @@
 ## Guard fixture — a compute node's expression reads an input no incoming edge maps.
+
 dsl: 2
 
 vars:
@@ -23,6 +24,9 @@ compute leak:
     present: "input.never_mapped != null"
 
 workflow compute_expr:
+
   entry: classify
+
   classify -> leak
+
   leak -> done

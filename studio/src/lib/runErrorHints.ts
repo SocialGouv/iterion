@@ -11,8 +11,16 @@ export function parseErrorCode(err: string): string {
   return m ? m[1]! : "";
 }
 
-export function runErrorHint(code: string, run: RunHeaderType): string | null {
+export function runErrorCode(run: Pick<RunHeaderType, "failure_code" | "error">): string {
+  // The persisted classifier survives wrappers around the message. Only
+  // older runs need the legacy prefix parser.
+  return run.failure_code?.trim() || parseErrorCode(run.error ?? "");
+}
+
+export function runErrorHint(code: string, run: Pick<RunHeaderType, "error">): string | null {
   switch (code) {
+    case "SANDBOX_DRIVER_UNAVAILABLE":
+      return "Make the configured sandbox driver available on the runner: install Docker or Podman and check PATH locally, or check Kubernetes configuration and access in cloud. Then launch a new run — retrying the same setup will fail again.";
     case "BUDGET_EXCEEDED":
       return "Open Resume, expand Budget overrides to raise max_cost_usd / max_tokens / max_duration / max_iterations past the exhausted cap, then click Resume — the run continues from the failing node.";
     case "RATE_LIMITED":

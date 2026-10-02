@@ -212,3 +212,20 @@ workflow ungated:
 		})
 	}
 }
+
+// TestValidateModelOverridePermissionsReadsTheNodesOwnAskRules gives this
+// launch screen a witness for the per-node ask list: reverting its call site
+// to wf.PermissionAsk left the whole package green before this test.
+func TestValidateModelOverridePermissionsReadsTheNodesOwnAskRules(t *testing.T) {
+	wf := gatedOverrideWorkflow("deny", "")
+	agent := wf.Nodes["work"].(*ir.AgentNode)
+	agent.PermissionAsk = []string{"Bash(git push:*)"}
+	// The workflow declares none: only the node's list can produce the refusal.
+	if len(wf.PermissionAsk) != 0 {
+		t.Fatal("fixture must leave the workflow ask list empty")
+	}
+	err := ValidateModelOverridePermissions(wf, backendOverride("agent", "grok"), "")
+	if err == nil || !strings.Contains(err.Error(), "cannot pause") {
+		t.Fatalf("node-declared ask: override to grok: got %v, want a cannot-pause refusal", err)
+	}
+}

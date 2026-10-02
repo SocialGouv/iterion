@@ -121,7 +121,11 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 			return v, true
 		}
 	case "vars":
-		if v, ok := r.Vars[key]; ok {
+		// Drilled to the leaf, like input and outputs: `{{vars.cfg.on}}`
+		// is the member `on` of the `json` var cfg, not a var whose name
+		// contains a dot. A whole-key lookup answered nothing here while
+		// an expression and a tool body both answered the member.
+		if v, ok := drillTemplatePath(r.Vars, strings.Split(key, ".")); ok {
 			return v, true
 		}
 	case "secrets":
@@ -269,8 +273,12 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 // reference that resolves to nothing kept as written so the shell sees it,
 // and said to unresolved when a caller listens — the rendered text is not
 // the place to look for it, a value may carry braces of its own.
-func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) string {
-	return renderCommand(command, refs, input, vars, td, runID, nil, unresolved)
+//
+// shapes carries the workflow's own declarations (DeclaredShapes) so a
+// `json` value renders as one token and a `string[]` as argv words, exactly
+// as the run will render them; nil renders every reference undeclared.
+func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, shapes *Shapes, unresolved func(ref string)) string {
+	return renderCommand(command, refs, input, vars, td, runID, nil, shapes, unresolved)
 }
 
 // RenderScript renders a tool node's `script:` as the executor does before

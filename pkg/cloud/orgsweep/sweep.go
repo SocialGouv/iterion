@@ -122,9 +122,19 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	for _, coll := range orgScopedCollections {
 		deleted += p.deleteMany(ctx, coll, orgFilter)
 	}
-	// org_usage docs use a composite _id "org|<orgID>|<month>".
+	// org_usage holds TWO composite _id kinds, both second-segmented on the
+	// metering id: "org|<orgID>|<month>" (the org's own budget) and
+	// "forkauthor|<orgID>|<provider>|<authorID>|<month>" (one outside
+	// contributor's bound on the fork review lane — orgusage.ForkAuthorSubject).
+	// Both KINDS are purged for an org id. What is NOT reached either way is
+	// a row whose second segment is a TEAM id — gateMonthlyCaps falls back to
+	// the team when the org cannot be resolved, PurgeOrg is only ever called
+	// with an org id, and org_usage is not in teamScopedCollections. That
+	// residue predates this filter and is bounded by the collection's 400-day
+	// TTL; it is named here rather than left for the next reader to discover.
+	// A new kind added to this collection has to be added to the alternation.
 	deleted += p.deleteMany(ctx, "org_usage",
-		bson.M{"_id": bson.M{"$regex": "^org\\|" + regexp.QuoteMeta(orgID) + "\\|"}})
+		bson.M{"_id": bson.M{"$regex": "^(org|forkauthor)\\|" + regexp.QuoteMeta(orgID) + "\\|"}})
 	// Identity records last — this removes the teams + the org row itself.
 	if err := p.Cascade(ctx, orgID); err != nil {
 		return deleted, err

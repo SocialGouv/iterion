@@ -1,6 +1,6 @@
 # Settings precedence & provenance
 
-Four launch-relevant knobs share the same five-level precedence chain,
+Five launch-relevant knobs share the same five-level precedence chain,
 highest priority first:
 
 ```
@@ -11,6 +11,7 @@ run override  >  node DSL  >  workflow DSL  >  env  >  default
 |------|--------------|------------|----------------|-----|---------|
 | Compression | CLI `--compress` / studio select | `compress:` (agent/judge; tool nodes are opt-in only) | `compress:` | `ITERION_COMPRESS` | `on` when a rewriter plugin is enabled and its binary present, else `off` |
 | Auto-memory | CLI `--auto-memory` / studio select | `auto_memory:` (agent/judge) | `auto_memory:` | `ITERION_AUTO_MEMORY` | `off` (a run is hermetic by default — [memory-and-knowledge.md](memory-and-knowledge.md)) |
+| Ambient context | CLI `--ambient-context` / launch API `ambient_context` / studio select | `ambient_context:` (agent/judge) | `ambient_context:` | `ITERION_AMBIENT_CONTEXT` | `workspace`: the repository's instruction files, not the operator's setup ([ADR-119](adr/119-ambient-context-policy.md)) |
 | Permission gate | CLI `--permission` / studio select | `permission:` | `permission:` | `ITERION_PERMISSION` | `off` |
 | Backend | CLI `--backend` / studio select | `backend:` | `default_backend:` | `ITERION_DEFAULT_BACKEND` | credential auto-detection ([docs/backends.md](backends.md)) |
 
@@ -26,6 +27,15 @@ rather than raising. The preview normalizes before captioning
 (`normalizedAutoMemoryEnv`), so the dialog announces the mode the run
 will actually be in, and still distinguishes an unset variable (fall
 through to the default) from an explicit `off`.
+
+The ambient context does not raise either, in a different way: an invalid
+`ITERION_AMBIENT_CONTEXT` is IGNORED (`ambient.ResolveSourced` skips it, the
+executor logs it once), so the run falls through to the workflow or the
+`workspace` default. The preview normalizes it the same way
+(`normalizedAmbientContextEnv`) and attributes the result to the level that
+actually decided it. A typed run override is rejected outright by
+`runview.Launch`/`Resume` and by the CLI, and a DSL value by the compiler
+(C184).
 
 ## Where you see it
 
@@ -64,11 +74,12 @@ effective: claw · from workflow · some nodes pin their own (override won't aff
 
 ## Scope (lite)
 
-Provenance covers the four **mode** knobs. The permission
-`allow:`/`ask:`/`deny:` rule lists are additive across levels (workflow
-lists + run-level `--permission-allow/...`), not overridden, so they
-have no single "winning level" to report — rule-list provenance is a
-deliberate non-goal for now.
+Provenance covers the four **mode** knobs. A permission
+`allow:`/`ask:`/`deny:` rule list does have a winning level — an
+`agent`/`judge` node's list REPLACES the workflow's of the same kind, and
+the run-level `--permission-allow/...` append to whichever won
+([permissions.md](permissions.md)) — but the Launch dialog does not report
+it: rule-list provenance stays a deliberate non-goal for now.
 
 Related: [permissions.md](permissions.md) · [plugins.md](plugins.md)
 (compression) · [backends.md](backends.md) (auto-detection).

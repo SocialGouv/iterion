@@ -91,6 +91,14 @@ func NewLexer(filename, src string) *Lexer {
 		// meanwhile, never with a profile this build knows nothing of.
 		profile = 1
 	}
+	return newLexer(filename, src, profile, pre.StrictEscape || profile >= 2)
+}
+
+// newLexer is NewLexer with the profile and the escape mode decided by the
+// caller instead of read off the source's head: a fragment of text — an
+// edge line read on its own (ParseEdgeLine) — has no head to read them
+// from. src is already normalised.
+func newLexer(filename, src string, profile int, strictEscape bool) *Lexer {
 	l := &Lexer{
 		src:          []rune(src),
 		file:         filename,
@@ -98,7 +106,7 @@ func NewLexer(filename, src string) *Lexer {
 		col:          1,
 		indentStack:  []int{0},
 		atLineStart:  true,
-		strictEscape: pre.StrictEscape || profile >= 2,
+		strictEscape: strictEscape,
 		profile:      profile,
 	}
 	l.lineStarts = []int{0}
@@ -493,7 +501,10 @@ func (l *Lexer) scanComment(startLine int) {
 	if l.pos < len(l.src) {
 		l.advance() // consume '\n'
 	}
-	l.emit(TokenComment, strings.TrimSpace(string(buf)), startLine, startCol)
+	// The text is what the shared definition says it is — one space after
+	// the hashes removed and nothing more — so the indentation an author
+	// wrote inside a comment is part of it and a rewrite puts it back.
+	l.emit(TokenComment, workflowfile.CommentBody(string(buf)), startLine, startCol)
 	l.atLineStart = true
 }
 
@@ -599,7 +610,15 @@ func (l *Lexer) scanToken() {
 
 	default:
 		l.advance()
-		l.emitError(DiagUnexpectedToken, fmt.Sprintf("unexpected character %q", string(ch)), startLine, startCol)
+		msg := fmt.Sprintf("unexpected character %q", string(ch))
+		if strings.ContainsRune("&<>!?", ch) {
+			// The character of an operator, outside a string: what an
+			// author writes when a condition or an expression is left
+			// bare — the one shape the language has for it is quoted
+			// (measured on the authoring probe, both surfaces).
+			msg += ": an operator belongs in a quoted expression (`when \"a && b\"`, `expr: \"x > 1\"`)"
+		}
+		l.emitError(DiagUnexpectedToken, msg, startLine, startCol)
 	}
 }
 
@@ -889,7 +908,29 @@ func (l *Lexer) emit(tt TokenType, value string, line, col int) {
 	if line >= 1 && line <= len(l.lineStarts) {
 		offset = l.lineStarts[line-1] + col - 1
 	}
-	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col, Offset: offset, End: l.pos})
+	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col, Offset: offset, End: l.pos, EndLine: l.endLineOf(line, l.pos)})
+}
+
+// endLineOf is the line the token starting on line and ending at the
+// exclusive rune index end sits on last. Read off the line table, so a
+// value whose TEXT spans lines is measured by the text and one whose VALUE
+// does (an escaped "a\nb") is not.
+func (l *Lexer) endLineOf(line, end int) int {
+	if end <= 0 || line < 1 {
+		return line
+	}
+	last := end - 1
+	// A scanner that must look ahead to find its terminator — the block
+	// scalar reads the indentation of the line BELOW the block before it
+	// knows the block ended — leaves l.pos past the token's own text.
+	// Whitespace at the end is never part of a token's text.
+	for last > 0 && (l.src[last] == ' ' || l.src[last] == '\t') {
+		last--
+	}
+	for line < len(l.lineStarts) && l.lineStarts[line] <= last {
+		line++
+	}
+	return line
 }
 
 // skipRestOfString advances past the remainder of a quoted literal after an

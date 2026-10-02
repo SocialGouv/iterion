@@ -12,6 +12,14 @@
 ## Le test asserte qu'au moins greet et reverse ont ete appeles, et que
 ## la sortie finale de l'agent contient les chaines retournees par les
 ## tools (`Hello, Iterion!` et `setatS`).
+##
+## `testsrv` is WORKFLOW-controlled and claw connects it in the launcher
+## process, so an active sandbox refuses to start it: `mcp_caller` names
+## `mcp.testsrv.*` tools and declares no `fallbacks:`, so the node is
+## refused at execution and the run fails. TestLive_Lite_ClawMCP models
+## an unsandboxed run and says so explicitly (StartAllServers); running
+## this fixture by hand needs `--sandbox none`.
+## See docs/sandbox.md § MCP servers under a sandbox.
 
 mcp_server testsrv:
   transport: stdio
@@ -53,6 +61,7 @@ agent mcp_caller:
   ## claw direct + Anthropic Haiku 4.5; the tool list pulls in the MCP
   ## tools resolved by iterion's MCP manager and forwarded as ToolDefs
   ## to the claw backend's tool loop.
+  backend: "claw"
   model: "anthropic/claude-haiku-4-5-20251001"
   input: mcp_agent_input
   output: mcp_agent_output

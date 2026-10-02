@@ -171,13 +171,7 @@ func attachAnswerFile(
 			}
 		}
 	}
-	return map[string]any{
-		"attachment": written.Name,
-		"filename":   written.OriginalFilename,
-		"mime":       written.MIME,
-		"size":       written.Size,
-		"sha256":     written.SHA256,
-	}, nil
+	return written.AnswerDescriptor(), nil
 }
 
 // cliAttachmentName mirrors the HTTP layer's naming so a gate answered

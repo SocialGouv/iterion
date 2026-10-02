@@ -1,0 +1,8 @@
+# refused: a bare date reads as a timestamp, not as the string description wants — quote it
+dsl: 2
+nodes:
+  - agent: a
+    description: 2026-09-22
+workflow:
+  name: w
+  entry: a

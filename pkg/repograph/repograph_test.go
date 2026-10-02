@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/pkg/repograph"
 )
 
@@ -458,5 +459,106 @@ func TestABundleManifestMovesTheFingerprint(t *testing.T) {
 	}
 	if before == after {
 		t.Fatal("a bundle manifest changed and the fingerprint did not move — the builder reads it, so the cache must see it")
+	}
+}
+
+// A link a page QUOTES is not a link the page makes. A documentation
+// repository quotes link forms exactly when it documents links — in a fenced
+// example, in a diagnostic's text, in a code span — and an edge minted from
+// one makes `map path` answer that a route exists because a page printed it,
+// which is the corruption linkDocs's own doc comment refuses for a broken
+// target and used to allow for a quoted one.
+//
+// The mutation that reddens this: scan the raw body instead of the mask.
+func TestALinkQuotedInsideCodeMintsNoEdge(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.test/m\n\ngo 1.26\n",
+		"docs/a.md": "# A\n\nA real link to [b](b.md).\n\n" +
+			"An inline example: `[c](c.md)` is the form.\n\n" +
+			"```\n[d](d.md)\n```\n",
+		"docs/b.md": "# B\n",
+		"docs/c.md": "# C\n",
+		"docs/d.md": "# D\n",
+	})
+	g := build(t, root)
+
+	if !hasEdge(g, "doc:docs/a.md", "doc:docs/b.md", repograph.RelLinks) {
+		t.Error("the page's real link produced no edge — the mask hid a link instead of code")
+	}
+	for _, quoted := range []struct{ node, how string }{
+		{"doc:docs/c.md", "a code span"},
+		{"doc:docs/d.md", "a fenced block"},
+	} {
+		if hasEdge(g, "doc:docs/a.md", quoted.node, repograph.RelLinks) {
+			t.Errorf("%s quoted in %s became an edge — the page quotes the form, it does not link the file", quoted.node, quoted.how)
+		}
+	}
+}
+
+// A doc comment longer than the bound is truncated for a symbol's Node.Doc,
+// and the cut can land inside a code span. The stray backtick that leaves is
+// what every reader of the node shows for the rest of the line.
+//
+// The mutation that reddens this: drop CloseDanglingSpan from this package's
+// firstSentence.
+func TestATruncatedDocCommentDoesNotEndInsideACodeSpan(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.test/m\n\ngo 1.26\n",
+		"pkg/long/long.go": "package long\n\n" +
+			"// Thing has a doc comment that runs well past the bound, with a code span " +
+			"carrying spaces in it such as `the form ](../../x.md) and its neighbour ](../y.md)` " +
+			"which the cut lands inside.\nfunc Thing() {}\n",
+	})
+	g := build(t, root)
+
+	var doc string
+	for _, n := range g.Nodes {
+		if n.Kind == repograph.KindSymbol && n.Label == "Thing" {
+			doc = n.Doc
+		}
+	}
+	if doc == "" {
+		t.Fatal("no Doc on the symbol node — this test would prove nothing")
+	}
+	if !strings.Contains(doc, "…") {
+		t.Fatalf("the doc comment was not truncated, so the cut is not exercised: %q", doc)
+	}
+	spans := mdcode.Spans(doc)
+	for i := 0; i < len(doc); i++ {
+		if doc[i] != '`' {
+			continue
+		}
+		inside := false
+		for _, r := range spans {
+			if i >= r[0] && i < r[1] {
+				inside = true
+				break
+			}
+		}
+		if !inside {
+			t.Fatalf("Node.Doc carries a backtick outside any code span at byte %d: %q", i, doc)
+		}
+	}
+}
+
+// A `](target)` in a page's YAML front matter is configuration — a theme's
+// hero link — not a link the page makes. An edge minted from one makes
+// `map path` answer that a route exists because a config key named a file.
+//
+// The mutation that reddens this: mask code only, not the document.
+func TestALinkInFrontMatterMintsNoEdge(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.test/m\n\ngo 1.26\n",
+		"docs/a.md": "---\nlayout: home\nhero:\n  text: See [the editor](c.md)\n---\n\n" +
+			"# A\n\nA real link to [b](b.md).\n",
+		"docs/b.md": "# B\n",
+		"docs/c.md": "# C\n",
+	})
+	g := build(t, root)
+	if !hasEdge(g, "doc:docs/a.md", "doc:docs/b.md", repograph.RelLinks) {
+		t.Error("the page's real link produced no edge")
+	}
+	if hasEdge(g, "doc:docs/a.md", "doc:docs/c.md", repograph.RelLinks) {
+		t.Error("a link in the front matter became an edge")
 	}
 }

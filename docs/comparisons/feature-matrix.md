@@ -90,8 +90,7 @@ Documentation reviewed on September 11, 2026.
 
 ---
 
-## 🧠 What agent support actually covers {#agent-depth}
-
+## <a id="agent-depth"></a>🧠 What agent support actually covers
 Iterion's agent-centered design spans the workflow engine, execution backends and shared platform. Use these dimensions alongside the availability grid: two products can both support “agents” while assigning very different work to the application developer.
 
 <div class="comparison-table comparison-agent-depth" role="region" aria-label="Agent workflow capabilities and comparison criteria" tabindex="0">
@@ -236,8 +235,7 @@ Choose hosting, interfaces and team controls. Iterion's self-hosted platform inc
 </div>
 
 
-### 🏢 Team access and multi-tenancy {#team-access}
-
+### <a id="team-access"></a>🏢 Team access and multi-tenancy
 **Iterion includes organizations, teams and their access controls in its self-hosted platform.** Compare this with the exact edition and resource boundary of each alternative. A shared login, a shared folder and an organization boundary cover different needs.
 
 The availability row checks **team/project access controls on infrastructure you operate**. The table also records SaaS collaboration for context; Make and Zapier remain “no” for that self-hosted criterion.

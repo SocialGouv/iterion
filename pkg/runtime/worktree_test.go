@@ -925,6 +925,10 @@ func TestSetupWorktree_SingleCheckoutUnchanged(t *testing.T) {
 // finalize bank a wip commit, and a wip-banked HEAD is never merged — so a lot
 // whose gate converged does not land, because of files iterion itself mirrored
 // into the worktree at run start.
+//
+// The fixtures are the `-z` porcelain the production probes read (#1577):
+// NUL-separated records, paths raw, a rename carrying destination and source
+// as two fields.
 func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -933,25 +937,35 @@ func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
 	}{
 		{
 			name: "only the mirrored bundle scaffolding",
-			porcelain: "?? .claude/skills/modernize-lots.md\n" +
-				"?? .claude/skills/plan-contract/SKILL.md\n" +
-				"?? .claude/skills/.iterion-managed/plan-contract.md.sha256\n",
+			porcelain: "?? .claude/skills/modernize-lots.md\x00" +
+				"?? .claude/skills/plan-contract/SKILL.md\x00" +
+				"?? .claude/skills/.iterion-managed/plan-contract.md.sha256\x00",
 			want: nil,
 		},
 		{
 			name:      "real work is still seen",
-			porcelain: "?? .claude/skills/modernize-lots.md\n M build.gradle\n",
+			porcelain: "?? .claude/skills/modernize-lots.md\x00 M build.gradle\x00",
 			want:      []string{"build.gradle"},
 		},
 		{
 			name:      "a rename is judged on its destination",
-			porcelain: "R  old/name.txt -> src/new/name.txt\n",
+			porcelain: "R  src/new/name.txt\x00old/name.txt\x00",
 			want:      []string{"src/new/name.txt"},
 		},
 		{
-			name:      "a quoted non-ascii path survives the filter",
-			porcelain: "?? \"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf\"\n",
-			want:      []string{"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf"},
+			name:      "a rename whose SOURCE holds an arrow is judged on its destination (#1577)",
+			porcelain: "R  z.md\x00x -> y.md\x00",
+			want:      []string{"z.md"},
+		},
+		{
+			name:      "a rename whose source would have been C-quoted, destination first (#1577)",
+			porcelain: "R  z.md\x00x -> é.md\x00",
+			want:      []string{"z.md"},
+		},
+		{
+			name:      "a non-ascii path survives the filter, raw bytes",
+			porcelain: "?? src/main/resources/static/doc/fiche-résumé.pdf\x00",
+			want:      []string{"src/main/resources/static/doc/fiche-résumé.pdf"},
 		},
 		{
 			name:      "nothing at all",

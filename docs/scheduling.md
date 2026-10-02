@@ -123,7 +123,7 @@ crontab -l                                                # verify
 ```
 
 The audit bots label their findings `source:sec-audit-self` on the
-native board (see [the security self-audit page](agents/security-selfaudit.md)). They
+native board (see [the security self-audit page](agents/ops/security-selfaudit.md)). They
 pin the `iterion-sandbox-sec` image via `sandbox.image`, so the host
 needs that image present (CI publishes it; for a local loop, `docker
 tag` your build to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`).
@@ -240,6 +240,19 @@ launch, in the entry's `workdir`, with `ITERION_SCHEDULE` /
   audit — deliberately distinct from `guard_blocked`, so "the guard
   said no" never masks "the guard is broken".
 
+On a **cloud** deployment the guard would run in the server pod, on behalf of
+whoever manages the team's schedules: a cloud server refuses `guard:` (422)
+unless the deployment sets `ITERION_CLOUD_SCHEDULE_GUARDS=allow`, and a guard
+stored before does not run — its tick is recorded `guard_error`, with the
+reason, and that reason is raised on the schedule's own `last_error`, so a
+schedule that stopped producing runs says why where its operator reads it
+(`iterion remote schedules list`) rather than only in the audit trail; a later
+tick whose guard actually runs clears it again. The same refusal covers a
+trigger subscription's `guard:` — in both cases it is about a guard the
+request *sets*, so a stored one stays editable and the trigger can be
+disabled. See
+[environment-variables.md](environment-variables.md#platform-environment-isolation-cloud).
+
 Example — only run the fixer when ready-labeled issues exist, and pass
 them in:
 
@@ -351,6 +364,26 @@ Not covered by this: a budget cap (`max_cost_usd` and friends) still needs
 a human to raise the cap and resume — retrying the same cap would re-fail
 instantly. Nor an auth failure, which is a credential problem time does not
 fix.
+
+## Seeing cloud schedule failures
+
+In Studio, **Automations → Schedules** shows the last completed run's status,
+error code, message and link to the run. A refused launch is shown separately:
+it means the scheduler could not start a run, rather than that the run failed.
+The run detail uses the persisted failure code for its recovery hint, including
+when another error wraps the original message.
+
+A failure keeps the configured cadence. For example,
+`SANDBOX_DRIVER_UNAVAILABLE` requires fixing the configured sandbox driver:
+Docker/Podman installation and PATH on a local runner, or Kubernetes configuration
+and access on a cloud runner. The next scheduled run uses the repaired environment.
+Use **Pause** while making that repair if repeated launches are undesirable,
+then **Resume** when ready. A later successful run clears the failure advice.
+
+For CLI inspection, `iterion remote schedules list` returns the cloud record
+as JSON, including `last_run_status`, `last_run_error_code`, `last_run_error`
+and `last_error`. `iterion schedule list` lists the local cron manifest instead;
+it does not contain cloud run outcomes.
 
 ## Retention — pair recurring schedules with `iterion runs prune`
 

@@ -22,11 +22,15 @@ type testRewriter struct {
 	ph, real, host string
 }
 
-func (r testRewriter) MaterializeForHost(s, host string) string {
+func (r testRewriter) MaterializeForHostWithin(s, host string, limit int) (string, bool) {
+	out := s
 	if host == r.host {
-		return strings.ReplaceAll(s, r.ph, r.real)
+		out = strings.ReplaceAll(s, r.ph, r.real)
 	}
-	return s
+	if len(out) > limit {
+		return s, false
+	}
+	return out, true
 }
 
 func (r testRewriter) ExfiltratesTo(s, host string) bool {

@@ -1,0 +1,8 @@
+# refused: max_tokens is an integer, not a word
+dsl: 2
+nodes:
+  - agent: a
+    max_tokens: many
+workflow:
+  name: w
+  entry: a

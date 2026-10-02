@@ -6,7 +6,7 @@ import (
 )
 
 func TestClaudeNativeToolRestriction_ReadGlobReviewer(t *testing.T) {
-	disallowed := claudeNativeDisallowedTools([]string{"read_file", "glob"}, false)
+	disallowed := claudeNativeDisallowedTools([]string{"read_file", "glob"}, true, false)
 
 	for _, want := range []string{
 		"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Task", "WebFetch", "WebSearch",
@@ -23,12 +23,12 @@ func TestClaudeNativeToolRestriction_ReadGlobReviewer(t *testing.T) {
 }
 
 func TestClaudeNativeToolRestriction_DiagnosticShellOptIn(t *testing.T) {
-	withoutOptIn := claudeNativeDisallowedTools([]string{"diagnostic_shell"}, false)
+	withoutOptIn := claudeNativeDisallowedTools([]string{"diagnostic_shell"}, true, false)
 	if !slices.Contains(withoutOptIn, "Bash") {
 		t.Fatal("diagnostic_shell without the task opt-in leaves Bash available")
 	}
 
-	withOptIn := claudeNativeDisallowedTools([]string{"diagnostic_shell"}, true)
+	withOptIn := claudeNativeDisallowedTools([]string{"diagnostic_shell"}, true, true)
 	if slices.Contains(withOptIn, "Bash") {
 		t.Fatal("diagnostic-shell task opt-in disables the native Bash bridge")
 	}

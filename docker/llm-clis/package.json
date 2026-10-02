@@ -3,8 +3,8 @@
   "private": true,
   "description": "Pinned npm dependencies for the LLM CLIs baked into the iterion container image. Refresh via `task docker:pin-llm-clis` (T-39).",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.175",
+    "@anthropic-ai/claude-code": "2.1.280",
     "@earendil-works/pi-coding-agent": "0.84.3",
-    "@openai/codex": "0.154.0"
+    "@openai/codex": "0.156.1"
   }
 }

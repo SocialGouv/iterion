@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // sandboxScratchContainerPath is where ${PROJECT_SCRATCH_DIR} resolves
@@ -56,8 +57,9 @@ const sandboxScratchContainerPath = "/tmp/iterion-scratch"
 // Skipped, with an event, when the bind could not be made writable or
 // useful: no host bind mounts on the driver (kubernetes), host_state
 // off (the posture that keeps every ~/.iterion bind out of the
-// container), or an image pinning a UID that is not the host's — the
-// EACCES case the container-local path exists to serve.
+// container), an image pinning a UID that is not the host's — the
+// EACCES case the container-local path exists to serve — or an iterion
+// home that is not the one the operator chose (operatorsIterionHome).
 func applyScratchMount(
 	spec *sandbox.Spec,
 	repoRoot, workDir string,
@@ -95,6 +97,12 @@ func applyScratchMount(
 	}
 	if uid, ok := parseUserUID(spec.User); ok && uid != os.Getuid() {
 		return skip(fmt.Sprintf("container pins UID %d, host is %d", uid, os.Getuid()))
+	}
+	// The scratch dir lives under the iterion home, so it is the operator's
+	// only when that home is: under a home a project `.env` chose, the
+	// repository decides the bind source — symlinks included.
+	if _, notMounted := operatorsIterionHome(); notMounted != "" {
+		return skip("the iterion home is not the one the operator chose")
 	}
 	base := repoRoot
 	if base == "" {
@@ -268,8 +276,14 @@ func applyHostStateMounts(
 		spec.WorkspaceFolder = absWorkspace
 	}
 
-	homeDir := resolveHostHomeDir()
-	iterionHomeDir := store.GlobalIterionDataDir()
+	homeDir, homePlanted := resolveHostHomeDir()
+	if homePlanted {
+		logger.Warn("runtime: %s was set by a project .env, not by the operator — the host state under it (~/.claude, ~/.codex, ~/.gitconfig, caches) is not mounted into the sandbox", store.HomeEnvName())
+	}
+	iterionHomeDir, iterionHomeNotMounted := operatorsIterionHome()
+	if iterionHomeNotMounted != "" {
+		logger.Warn("runtime: the iterion home %s is not the one the operator chose — a project .env set it, or it is the shared <tmp> fallback — so it is not mounted into the sandbox", iterionHomeNotMounted)
+	}
 	var claudeDir, claudeConfigPath, codexDir, gitConfigPath string
 	if homeDir != "" {
 		claudeDir = filepath.Join(homeDir, ".claude")
@@ -429,13 +443,34 @@ func applyHostStateMounts(
 
 	applyHostUIDRemap(spec, emitEvent, logger)
 
-	_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
+	mounted := map[string]any{
 		"enabled":          true,
 		"source":           hsSource,
 		"workspace_folder": spec.WorkspaceFolder,
 		"mounts":           mountPairs,
-	})
+	}
+	if iterionHomeNotMounted != "" {
+		mounted["iterion_home_not_mounted"] = iterionHomeNotMounted
+	}
+	if homePlanted {
+		mounted["home_not_mounted"] = os.Getenv(store.HomeEnvName())
+	}
+	_ = emitEvent(store.EventSandboxHostStateMounted, mounted)
 	return sharedStateDir
+}
+
+// operatorsIterionHome returns the iterion home host_state may bind-mount
+// read-write into the sandbox: GlobalIterionDataDir, only when it is the home
+// the operator chose (store.InheritedIterionDataDir). A home a project `.env`
+// set, or the shared <tmp> fallback, would let a repository pick a host
+// directory the sandboxed agent can write; it comes back as notMounted
+// instead, for the audit event.
+func operatorsIterionHome() (dir, notMounted string) {
+	dir = store.GlobalIterionDataDir()
+	if chosen := store.InheritedIterionDataDir(); chosen == "" || filepath.Clean(chosen) != filepath.Clean(dir) {
+		return "", dir
+	}
+	return dir, ""
 }
 
 // homeNestedBindParents returns, for every bind mount in mounts whose
@@ -830,4 +865,26 @@ func seedDefaultLocale(spec *sandbox.Spec) {
 		return
 	}
 	spec.Env["LANG"] = "C.UTF-8"
+}
+
+// seedTreeNoiseEnv gives in-sandbox tool scripts the canonical tree-noise
+// pathspecs (pkg/treenoise) so a scope gate filters the tree with the
+// engine's list, not its own literal — the sandbox half of the host's
+// executor env (#1464). Like seedDefaultLocale it steps aside when the
+// operator or the workflow set the variable themselves.
+func seedTreeNoiseEnv(spec *sandbox.Spec) {
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	if value, set := spec.Env[treenoise.TreeNoiseEnvVar]; set && value != "" {
+		return
+	}
+	// The operator's own exported environment is a claim too: one rule
+	// everywhere — their list is honored in the container, never silently
+	// replaced by the canonical one (verdict 3).
+	if value, exported := os.LookupEnv(treenoise.TreeNoiseEnvVar); exported && value != "" {
+		spec.Env[treenoise.TreeNoiseEnvVar] = value
+		return
+	}
+	spec.Env[treenoise.TreeNoiseEnvVar] = treenoise.EnvValue()
 }

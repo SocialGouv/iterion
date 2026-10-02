@@ -1,0 +1,1687 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+)
+
+// A fragment the writer cannot reproduce: profile 2 escapes every string,
+// so the `command:` written over two lines would come back as one escaped
+// line — the shape #1612 named and `.fmt-refused` lists for the
+// `lib/nodes.bot` of BOTH multi-file bots in the catalogue.
+const foldMain = "import \"lib/nodes.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
+
+// foldNodes is a fragment the writer cannot reproduce: its `command:` is
+// written over several lines and holds a carriage return — a character no
+// multi-line form carries (the lexer folds CRLF before reading, so a lone
+// CR only survives an escape), so the render folds it onto one line — and
+// one folded value folds the whole file, all or nothing (#1612).
+const foldNodes = "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
+
+// A fragment of the same unit the writer CAN reproduce: the control that
+// keeps the refusal from reading as "a unit cannot be saved".
+const foldPlain = "prompt mission:\n  Do the thing.\n"
+
+const foldMainTwo = "import \"lib/nodes.bot\"\nimport \"lib/plain.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
+
+func unparseCall(t *testing.T, s *Server, body map[string]any) (*httptest.ResponseRecorder, unparseResponse) {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/unparse", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	s.handleUnparse(rec, req)
+	var out unparseResponse
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode unparse: %v\n%s", err, rec.Body.String())
+		}
+	}
+	return rec, out
+}
+
+func parseCall(t *testing.T, s *Server, body map[string]any) (*httptest.ResponseRecorder, parseResponse) {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/parse", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	s.handleParse(rec, req)
+	var out parseResponse
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode parse: %v\n%s", err, rec.Body.String())
+		}
+	}
+	return rec, out
+}
+
+// TestSavingAUnitLeavesAFileTheWriterWouldFoldExactlyAsItIs: a save that
+// would rewrite a fragment whose multi-line value the writer folds onto one
+// line is refused, naming the file — and the file keeps its bytes. Before
+// this the save answered 200 and wrote the folded text: the same program,
+// and not the same file.
+func TestSavingAUnitLeavesAFileTheWriterWouldFoldExactlyAsItIs(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": foldMain, "demo/lib/nodes.bot": foldNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	edited := editDocument(t, opened.Document, func(m map[string]any) {
+		tools, _ := m["tools"].([]any)
+		tools[0].(map[string]any)["description"] = "probe, edited"
+	})
+	rec, _ := savePath(t, s, "demo/main.bot", edited, opened.Unit.Revision)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save of a fragment the writer folds: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/nodes.bot") {
+		t.Fatalf("the refusal does not name the file: %s", rec.Body.String())
+	}
+	// The line named is the FILE's own (the `command:` line), never a line
+	// of the render — the writer reorders declarations, so a render line
+	// points at unrelated text.
+	if !strings.Contains(rec.Body.String(), "line 5") {
+		t.Fatalf("the refusal does not name the line the value is written on in the file: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != foldNodes {
+		t.Fatalf("the fragment was rewritten anyway:\n%s", got)
+	}
+}
+
+// TestSavingAUnitStillWritesTheFilesTheWriterCanReproduce is a CONTROL,
+// not a witness: it asserts a success, so no mutation that removes a
+// refusal can redden it. Its job is to keep the refusal from being read as
+// "a bot holding one such file cannot be saved at all" — the sibling is
+// left alone because its program did not change, and the edited one is
+// written because the writer can carry it.
+func TestSavingAUnitStillWritesTheFilesTheWriterCanReproduce(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      foldMainTwo,
+		"demo/lib/nodes.bot": foldNodes,
+		"demo/lib/plain.bot": foldPlain,
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	edited := editDocument(t, opened.Document, func(m map[string]any) {
+		prompts, _ := m["prompts"].([]any)
+		prompts[0].(map[string]any)["body"] = "Do the other thing."
+	})
+	rec, saved := savePath(t, s, "demo/main.bot", edited, opened.Unit.Revision)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save of a reproducible fragment: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(saved.Files) != 1 || saved.Files[0] != "lib/plain.bot" {
+		t.Fatalf("files written %v, want lib/plain.bot alone", saved.Files)
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != foldNodes {
+		t.Fatalf("the refused sibling was rewritten:\n%s", got)
+	}
+}
+
+// TestSavingOneFileLeavesItAsItIsWhenTheWriterWouldFoldIt: the same
+// refusal on the single-file save — 37 of the 39 files `.fmt-refused`
+// lists are bots in ONE file, opened straight on the canvas.
+func TestSavingOneFileLeavesItAsItIsWhenTheWriterWouldFoldIt(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"solo.bot": foldNodes + "\nworkflow w:\n  entry: t\n  t -> done\n"})
+	before := readFixture(t, workdir, "solo.bot")
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "solo.bot")
+	if opened.Unit != nil {
+		t.Fatal("a bot in one file opened as a unit")
+	}
+	edited := editDocument(t, opened.Document, func(m map[string]any) {
+		tools, _ := m["tools"].([]any)
+		tools[0].(map[string]any)["description"] = "probe, edited"
+	})
+	rec, _ := savePath(t, s, "solo.bot", edited, "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "solo.bot"); got != before {
+		t.Fatalf("the file was rewritten anyway:\n%s", got)
+	}
+}
+
+// TestTheSourceViewRendersOneFileOfTheUnit: the picker asks for ONE file
+// and gets that file's program — not the merged one, which is what the
+// view could show before and what no save can take apart.
+func TestTheSourceViewRendersOneFileOfTheUnit(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	rec, frag := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "demo/main.bot", "file": "lib/nodes.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render lib/nodes.bot: %d %s", rec.Code, rec.Body.String())
+	}
+	// The fragment's own declarations, and NOT the main's workflow: the
+	// forbidden alternative here is the merged program, not an empty text.
+	if !strings.Contains(frag.Source, "agent worker:") {
+		t.Fatalf("the fragment's own declaration is missing:\n%s", frag.Source)
+	}
+	if strings.Contains(frag.Source, "workflow w:") {
+		t.Fatalf("the merged program came back instead of the one file:\n%s", frag.Source)
+	}
+	if frag.Refused != "" {
+		t.Fatalf("a reproducible file was reported refused: %s", frag.Refused)
+	}
+
+	rec, main := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "demo/main.bot", "file": "main.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render main.bot: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(main.Source, "workflow w:") || strings.Contains(main.Source, "agent worker:") {
+		t.Fatalf("main.bot rendered as something else:\n%s", main.Source)
+	}
+	// The main keeps the import line that makes it a unit; the merged
+	// program has none.
+	if !strings.Contains(main.Source, "import \"lib/nodes.bot\"") {
+		t.Fatalf("the main lost its import line:\n%s", main.Source)
+	}
+}
+
+// TestTheSourceViewShowsAFoldedFileAsItIsOnDisk: for a file the writer
+// cannot reproduce, the view shows the FILE, with the reason. Rendering it
+// would show the author a text their file does not contain — the lie the
+// salvage path already refuses to tell.
+func TestTheSourceViewShowsAFoldedFileAsItIsOnDisk(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": foldMain, "demo/lib/nodes.bot": foldNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	rec, frag := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "demo/main.bot", "file": "lib/nodes.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render: %d %s", rec.Code, rec.Body.String())
+	}
+	if frag.Refused == "" {
+		t.Fatal("a file the writer folds was rendered with no reason given")
+	}
+	if frag.Source != foldNodes {
+		t.Fatalf("the view shows a text the file does not contain:\n%s", frag.Source)
+	}
+	// The forbidden alternative, named: the writer's own text, which puts
+	// the two lines on one.
+	if strings.Contains(frag.Source, "\\n") {
+		t.Fatalf("the folded render came back instead of the file:\n%s", frag.Source)
+	}
+}
+
+// TestApplyingOneFileReparsesTheUnitAndLeavesTheRevisionAlone: the picker's
+// Apply re-parses the unit with that file replaced, and answers NO
+// revision. A revision is a claim about the files at rest; an overlay
+// changed none. Answering the staged digest would make the very next save
+// a false conflict.
+func TestApplyingOneFileReparsesTheUnitAndLeavesTheRevisionAlone(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	editedFragment := strings.Replace(unitFixtureNodes, "anthropic/claude-opus-4-8", "anthropic/claude-opus-5", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": editedFragment})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	if applied.Unit == nil {
+		t.Fatal("the apply answered no unit")
+	}
+	if applied.Unit.Revision != "" {
+		t.Fatalf("the apply answered a revision (%q): the files at rest did not move", applied.Unit.Revision)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(applied.Document, &doc); err != nil {
+		t.Fatal(err)
+	}
+	agent, _ := agentsOf(doc)[0].(map[string]any)
+	if agent["model"] != "anthropic/claude-opus-5" || agent["file"] != "lib/nodes.bot" {
+		t.Fatalf("the edited fragment did not reach the merged document: %v", agent)
+	}
+
+	// The revision the document was OPENED at still saves: this is the
+	// assertion that reddens if the overlay ever hands back a staged digest.
+	rec, _ = savePath(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save after apply: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); !strings.Contains(got, "anthropic/claude-opus-5") {
+		t.Fatalf("the applied edit did not reach the file:\n%s", got)
+	}
+}
+
+// TestApplyingOneFileStillDetectsAFileMovedOnDisk: the counterweight to
+// the test above — leaving the revision alone must not mean ignoring it.
+// A fragment a colleague changed between the open and the save is still a
+// conflict, and the applied text does not land on top of it.
+func TestApplyingOneFileStillDetectsAFileMovedOnDisk(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	editedFragment := strings.Replace(unitFixtureNodes, "anthropic/claude-opus-4-8", "anthropic/claude-opus-5", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": editedFragment})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	onDisk := unitFixtureNodes + "\n## a colleague wrote this meanwhile\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/lib/nodes.bot": onDisk})
+
+	rec, _ = savePath(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("save over a file that moved on disk: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != onDisk {
+		t.Fatalf("the colleague's edit was overwritten:\n%s", got)
+	}
+}
+
+// TestApplyingAFileThatDoesNotParseIsRefused: a staged fragment the parser
+// can only salvage merges as the declarations it COULD read. A document
+// missing the rest writes that file back SHORT — 200, no diagnostic, the
+// author's declarations gone. The refusal is what the view shows instead.
+func TestApplyingAFileThatDoesNotParseIsRefused(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	openPath(t, s, "demo/main.bot")
+
+	broken := unitFixtureNodes + "\nagent \n  model\n"
+	rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": broken})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("apply of a fragment that does not parse: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/nodes.bot") {
+		t.Fatalf("the refusal does not name the file: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != unitFixtureNodes {
+		t.Fatalf("the file changed:\n%s", got)
+	}
+}
+
+// TestAPerFileRequestNamesAFileTheBotDoesNotHold: a stale or mistyped name
+// — a fragment deleted under the open picker, above all — is an error on
+// both new modes. Answering the whole unit, or answering unchanged, would
+// read as success and send the author's typed text to the bin.
+func TestAPerFileRequestNamesAFileTheBotDoesNotHold(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	for _, rel := range []string{"lib/gone.bot", "../escape.bot", "/etc/passwd"} {
+		rec, _ := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "demo/main.bot", "file": rel})
+		if rec.Code == http.StatusOK {
+			t.Fatalf("render %q answered 200: %s", rel, rec.Body.String())
+		}
+		rec, _ = parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": rel, "source": "prompt p:\n  hi\n"})
+		if rec.Code == http.StatusOK {
+			t.Fatalf("apply %q answered 200: %s", rel, rec.Body.String())
+		}
+	}
+}
+
+// TestAPerFileRequestOnACloudBundleReadsItsFilesMap: the picker works the
+// same on a bundle the client holds as a files map, where there is no path.
+func TestAPerFileRequestOnACloudBundleReadsItsFilesMap(t *testing.T) {
+	s := &Server{}
+	files := map[string]any{"main.bot": unitFixtureMain, "lib/nodes.bot": unitFixtureNodes}
+	rec, parsed := parseCall(t, s, map[string]any{"files": files, "main": "main.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("parse unit: %d %s", rec.Code, rec.Body.String())
+	}
+	rec, frag := unparseCall(t, s, map[string]any{"document": parsed.Document, "files": files, "main": "main.bot", "file": "lib/nodes.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(frag.Source, "agent worker:") || strings.Contains(frag.Source, "workflow w:") {
+		t.Fatalf("the cloud per-file render is not the one file:\n%s", frag.Source)
+	}
+	edited := strings.Replace(unitFixtureNodes, "anthropic/claude-opus-4-8", "anthropic/claude-opus-5", 1)
+	rec, applied := parseCall(t, s, map[string]any{"files": files, "main": "main.bot", "file": "lib/nodes.bot", "source": edited})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	if applied.Unit == nil || applied.Unit.Revision != "" {
+		t.Fatalf("the cloud apply answered a revision: %+v", applied.Unit)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(applied.Document, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if agentsOf(doc)[0].(map[string]any)["model"] != "anthropic/claude-opus-5" {
+		t.Fatal("the cloud apply did not carry the edit")
+	}
+}
+
+// TestAUnitAlwaysCarriesAFilesArray: executed, never read off the struct
+// tag — `Files []unitFileInfo` with no omitempty marshals a nil slice as
+// JSON `null`, and the studio's UnitFileInfo[] declares itself non-nullable
+// (#1581: the transport erases nil-from-empty, so prove the round trip).
+func TestAUnitAlwaysCarriesAFilesArray(t *testing.T) {
+	raw, err := json.Marshal(unitInfoOf(&unit.Unit{Main: "main.bot"}, "main.bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"files":[]`) {
+		t.Fatalf("a unit with no file marshals as %s", raw)
+	}
+	var back struct {
+		Files []unitFileInfo `json:"files"`
+	}
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Files == nil {
+		t.Fatalf("the round trip put the nil back: %s", raw)
+	}
+}
+
+// TestRenderingOneFileRefusesADocumentWithoutProvenance: the per-file render is
+// a projection of the open document, so a document whose declarations name
+// no file cannot be split — it would fold every file into the main.
+func TestRenderingOneFileRefusesADocumentWithoutProvenance(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+	stripped := editDocument(t, opened.Document, func(m map[string]any) { dropKey(m, "file") })
+	rec, _ := unparseCall(t, s, map[string]any{"document": stripped, "path": "demo/main.bot", "file": "lib/nodes.bot"})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("render from a document with no provenance: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// helper: the fixture parses, so a broken fixture fails here and not in a
+// test whose subject is something else.
+func TestPerFileFixturesParse(t *testing.T) {
+	for name, src := range map[string]string{"foldNodes": foldNodes, "foldMain": foldMain, "foldPlain": foldPlain, "foldMainTwo": foldMainTwo} {
+		pr := parser.Parse(name, src)
+		if parseHasErrors(pr.Diagnostics) {
+			t.Fatalf("%s: %v", name, pr.Diagnostics)
+		}
+	}
+	if _, err := ast.MarshalFile(parser.Parse("f", foldNodes).File); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue: the one
+// write a CLIENT performs — the cloud single-file save and the files
+// drawer — goes to a route that takes file CONTENT, not a document, so it
+// cannot ask the writer whether it could have produced it. It asks the two
+// texts it holds instead: would this write put on ONE line a value the
+// stored file writes over several?
+func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
+	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
+	s, editor, _ := newBotSourceTestServer(t)
+	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
+	edCtx := auth.WithIdentity(context.Background(), editor)
+	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
+	files := map[string]string{
+		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: t\n  t -> done\n",
+		"lib/nodes.bot": stored,
+		"manifest.yaml": "name: folded\nversion: 1.0.0\nrequires:\n  iterion: \">= " + parser.ImportSince + "\"\n",
+	}
+	body, _ := json.Marshal(botSourcePutReq{Files: files})
+	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/folded", strings.NewReader(string(body))).WithContext(edCtx)
+	r.SetPathValue("id", "t1")
+	r.SetPathValue("slug", "folded")
+	w := httptest.NewRecorder()
+	s.handlePutBotSource(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed: %d %s", w.Code, w.Body.String())
+	}
+	putFile := func(path, content string) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(map[string]any{"content": content})
+		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/folded/files/"+path, strings.NewReader(string(b))).WithContext(edCtx)
+		r.SetPathValue("id", "t1")
+		r.SetPathValue("slug", "folded")
+		r.SetPathValue("path", path)
+		w := httptest.NewRecorder()
+		s.handlePutBotSourceFile(w, r)
+		return w
+	}
+	// The same program, written with the two lines folded onto one: what
+	// the studio's own renderer produces for this file, and what the
+	// compile check happily accepts.
+	folded := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline\\r two\\n\"\n"
+	if w := putFile("lib/nodes.bot", folded); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a write that folds a stored value: %d %s", w.Code, w.Body.String())
+	}
+	after, err := s.botSources.GetBySlug(context.Background(), "t1", "folded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Files["lib/nodes.bot"] != stored {
+		t.Fatalf("the refused write landed anyway:\n%s", after.Files["lib/nodes.bot"])
+	}
+	// The control: an edit that keeps the value over its lines is written.
+	// Without it the test would pass just as well on a route that refuses
+	// every write.
+	kept := "dsl: 2\n\ntool t:\n  description: \"probe, edited\"\n  command: `line one\nline two`\n"
+	if w := putFile("lib/nodes.bot", kept); w.Code != http.StatusOK {
+		t.Fatalf("an edit that folds nothing was refused: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestRenderingABotInOneFileShowsTheFileWhenTheWriterWouldFoldIt: the
+// second member of the same class as the per-file render. The document is
+// rendered for DISPLAY, so the fold is reported rather than refused — but
+// the text handed back is the file's own. The view says "this is your
+// file" above it, and the writer's folded text is precisely the one thing
+// the author's file does not contain.
+func TestRenderingABotInOneFileShowsTheFileWhenTheWriterWouldFoldIt(t *testing.T) {
+	workdir := t.TempDir()
+	solo := foldNodes + "\nworkflow w:\n  entry: t\n  t -> done\n"
+	writeUnitFixture(t, workdir, map[string]string{"solo.bot": solo})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "solo.bot")
+
+	rec, out := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "solo.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render: %d %s", rec.Code, rec.Body.String())
+	}
+	if out.Refused == "" {
+		t.Fatal("a file the writer folds was rendered with no reason given")
+	}
+	if out.Source != solo {
+		t.Fatalf("the answer is not the file's own text:\n%s", out.Source)
+	}
+	// The forbidden alternative, named: the writer's text, which puts the
+	// two lines on one.
+	if strings.Contains(out.Source, "\\n") {
+		t.Fatalf("the folded render came back instead of the file:\n%s", out.Source)
+	}
+
+	// The BEFORE is the server's own read of the file, never a text the
+	// client supplies: an unbound buffer has no file to be about, so
+	// nothing is claimed rather than something being claimed wrongly.
+	rec, unbound := unparseCall(t, s, map[string]any{"document": opened.Document})
+	if rec.Code != http.StatusOK || unbound.Refused != "" {
+		t.Fatalf("a document with no file claimed a fold: %d %q", rec.Code, unbound.Refused)
+	}
+}
+
+// TestPuttingAWholeBundleRefusesAWriteThatFoldsAStoredValue: the cloud
+// save of a bot in SEVERAL files lands here, as one versioned PUT of the
+// whole bundle — so the refusal the per-file route makes has to be made
+// here too, or the class is fixed at one site of two.
+func TestPuttingAWholeBundleRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
+	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
+	s, editor, _ := newBotSourceTestServer(t)
+	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
+	edCtx := auth.WithIdentity(context.Background(), editor)
+	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
+	files := map[string]string{
+		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: t\n  t -> done\n",
+		"lib/nodes.bot": stored,
+		"manifest.yaml": "name: whole\nversion: 1.0.0\nrequires:\n  iterion: \">= " + parser.ImportSince + "\"\n",
+	}
+	put := func(f map[string]string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(botSourcePutReq{Files: f})
+		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/whole", strings.NewReader(string(body))).WithContext(edCtx)
+		r.SetPathValue("id", "t1")
+		r.SetPathValue("slug", "whole")
+		w := httptest.NewRecorder()
+		s.handlePutBotSource(w, r)
+		return w
+	}
+	// A slug with nothing stored is a creation: no before, no claim — and
+	// a bundle whose own files hold multi-line values must still be
+	// pushable, or no refused bot could ever reach the cloud.
+	if w := put(files); w.Code != http.StatusOK {
+		t.Fatalf("seed: %d %s", w.Code, w.Body.String())
+	}
+	folded := map[string]string{}
+	for k, v := range files {
+		folded[k] = v
+	}
+	folded["lib/nodes.bot"] = "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline\\r two\\n\"\n"
+	if w := put(folded); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a whole-bundle write that folds a stored value: %d %s", w.Code, w.Body.String())
+	}
+	after, err := s.botSources.GetBySlug(context.Background(), "t1", "whole")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Files["lib/nodes.bot"] != stored {
+		t.Fatalf("the refused write landed anyway:\n%s", after.Files["lib/nodes.bot"])
+	}
+	// The control: a push that folds nothing still goes through.
+	kept := map[string]string{}
+	for k, v := range files {
+		kept[k] = v
+	}
+	kept["lib/nodes.bot"] = "dsl: 2\n\ntool t:\n  description: \"probe, edited\"\n  command: `line one\nline two`\n"
+	if w := put(kept); w.Code != http.StatusOK {
+		t.Fatalf("a push that folds nothing was refused: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestEditingTheValueTheWriterFoldsDoesNotUnlockTheSave: the refusal must
+// not be keyed on which values the file and the render have in COMMON.
+// Keyed that way, the one value it missed was the one being EDITED — the
+// `command:` script the author opened the file to change — so touching it
+// wrote the whole file folded and answered 200, while leaving it alone
+// answered 422. The control below is the half that makes this bite.
+func TestEditingTheValueTheWriterFoldsDoesNotUnlockTheSave(t *testing.T) {
+	workdir := t.TempDir()
+	solo := foldNodes + "\nworkflow w:\n  entry: t\n  t -> done\n"
+	writeUnitFixture(t, workdir, map[string]string{"solo.bot": solo})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "solo.bot")
+
+	// The author edits the multi-line command itself.
+	edited := editDocument(t, opened.Document, func(m map[string]any) {
+		tools, _ := m["tools"].([]any)
+		tools[0].(map[string]any)["command"] = "line one\nline\r two\nline three"
+	})
+	rec, _ := savePath(t, s, "solo.bot", edited, "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save after editing the folded value: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "solo.bot"); got != solo {
+		t.Fatalf("the file was rewritten anyway:\n%s", got)
+	}
+	// The control: a file the writer CAN reproduce still saves after the
+	// same kind of edit, so the refusal is not "no save ever succeeds".
+	writeUnitFixture(t, workdir, map[string]string{"plain.bot": "tool t:\n  description: \"probe\"\n  command: `line one\nline two`\n\nworkflow w:\n  entry: t\n  t -> done\n"})
+	_, plain := openPath(t, s, "plain.bot")
+	plainEdit := editDocument(t, plain.Document, func(m map[string]any) {
+		tools, _ := m["tools"].([]any)
+		tools[0].(map[string]any)["command"] = "line one\nline two\nline three"
+	})
+	if rec, _ := savePath(t, s, "plain.bot", plainEdit, ""); rec.Code != http.StatusOK {
+		t.Fatalf("a profile-1 file the writer keeps over its lines was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "plain.bot"); !strings.Contains(got, "line three") || strings.Contains(got, "\\n") {
+		t.Fatalf("the profile-1 edit did not land over its lines:\n%s", got)
+	}
+}
+
+// TestRenderingAgainstAPathStaysInsideTheWorkspaceAndOnWorkflowFiles: a
+// refusal echoes the text the server read, so the path it reads has the
+// same two bounds every other route that reads a bot applies. A path that
+// cannot be resolved is an error, never a quiet "nothing to compare" —
+// that is how a guard stops firing without anyone seeing it.
+func TestRenderingAgainstAPathStaysInsideTheWorkspaceAndOnWorkflowFiles(t *testing.T) {
+	workdir := t.TempDir()
+	solo := foldNodes + "\nworkflow w:\n  entry: t\n  t -> done\n"
+	writeUnitFixture(t, workdir, map[string]string{
+		"solo.bot":  solo,
+		"notes.txt": "secret: a\nb: `one\ntwo`\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "solo.bot")
+
+	// Not a workflow file: refused before anything is read, so its content
+	// is never echoed back.
+	rec, out := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "notes.txt"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a non-.bot path: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret") || strings.Contains(out.Source, "secret") {
+		t.Fatalf("the answer carried the file's content: %s", rec.Body.String())
+	}
+	// A traversal is CONFINED, not rejected: safePathWithin cleans it back
+	// inside the workdir (the same audited boundary Save uses), so the file
+	// outside is never read and its text never comes back.
+	outside := filepath.Join(filepath.Dir(workdir), "outside.bot")
+	if err := os.WriteFile(outside, []byte("tool leaked:\n  command: `one\ntwo`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+	rec, escaped := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "../outside.bot"})
+	if strings.Contains(rec.Body.String(), "leaked") || strings.Contains(escaped.Source, "leaked") {
+		t.Fatalf("a file outside the workspace was read: %s", rec.Body.String())
+	}
+	// A path the buffer is headed for but that is not written yet is a
+	// legitimate absence: no before, no claim, and no error.
+	rec, fresh := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "new.bot"})
+	if rec.Code != http.StatusOK || fresh.Refused != "" {
+		t.Fatalf("a path not written yet: %d refused=%q", rec.Code, fresh.Refused)
+	}
+}
+
+// TestThePerFileEditorCarriesAnAddedImport: an `import` line added in the
+// per-file editor is APPLIED — the staged text's imports decide the unit's
+// membership — and SAVED: the document's claim (unit_files) hands the new
+// header to the save, which writes the main with both import lines and
+// leaves the newly imported fragment byte for byte as it is (its program
+// did not change). The forbidden alternative is the one the refusal
+// protected against: a 200 whose save silently dropped the import.
+func TestThePerFileEditorCarriesAnAddedImport(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adding an import: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(applied.Unit.Files) != 3 || applied.Unit.Files[2].Rel != "lib/more.bot" {
+		t.Fatalf("the applied unit does not hold the new fragment: %+v", applied.Unit.Files)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(applied.Document, &doc); err != nil {
+		t.Fatal(err)
+	}
+	prompts, _ := doc["prompts"].([]any)
+	var extra map[string]any
+	for _, p := range prompts {
+		if pm, _ := p.(map[string]any); pm["name"] == "extra" {
+			extra = pm
+		}
+	}
+	if extra == nil || extra["file"] != "lib/more.bot" {
+		t.Fatalf("the new fragment's declaration did not reach the document with its provenance: %v", prompts)
+	}
+
+	// The render between the apply and the save shows the CLAIMED header —
+	// the stored main has no second import line, and showing it would hand
+	// the author a text whose re-apply silently reverts the edit.
+	rec, main := unparseCall(t, s, map[string]any{"document": applied.Document, "path": "demo/main.bot", "file": "main.bot", "unit_files": applied.Unit.Files})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render after the apply: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(main.Source, "import \"lib/more.bot\"") {
+		t.Fatalf("the render dropped the applied import line:\n%s", main.Source)
+	}
+
+	rec, saved := savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save after adding an import: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(saved.Files) != 1 || saved.Files[0] != "main.bot" {
+		t.Fatalf("files written %v, want the main alone", saved.Files)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); !strings.Contains(got, "import \"lib/more.bot\"") {
+		t.Fatalf("the import was dropped by the save:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != "prompt extra:\n  More.\n" {
+		t.Fatalf("the newly imported fragment was rewritten:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != unitFixtureNodes {
+		t.Fatalf("the untouched fragment was rewritten:\n%s", got)
+	}
+	// The saved unit holds three files now: the revision moved, and covers
+	// the fragment the import joined.
+	if want := unit.LoadDir(filepath.Join(workdir, "demo", "main.bot")).Digest; saved.Revision != want || saved.Revision == opened.Unit.Revision {
+		t.Fatalf("revision after save %q, want the new unit's digest %q", saved.Revision, want)
+	}
+}
+
+// TestASaveRefusesAnAddedFileClaimedWithoutItsDigest: the digest is the
+// ONLY staleness guard for a file the unit's revision never covered, so a
+// claim that omits it is refused — not trusted. Measured before the
+// refusal existed: the same save with the digest stripped answered 200 and
+// wrote the document's stale declarations over a colleague's edit.
+func TestASaveRefusesAnAddedFileClaimedWithoutItsDigest(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	// A colleague edits the fragment while the overlay is unsaved, and the
+	// author edits what the fragment declares from the canvas, so the save
+	// WOULD rewrite it — this is what makes the missing guard an overwrite
+	// and not a no-op.
+	onDisk := "prompt extra:\n  A colleague wrote this meanwhile.\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/lib/more.bot": onDisk})
+	edited := editDocument(t, applied.Document, func(m map[string]any) {
+		for _, p := range m["prompts"].([]any) {
+			if pm, _ := p.(map[string]any); pm["name"] == "extra" {
+				pm["body"] = "Edited from the canvas on the stale read."
+			}
+		}
+	})
+	stripped := make([]unitFileInfo, len(applied.Unit.Files))
+	copy(stripped, applied.Unit.Files)
+	for i := range stripped {
+		if stripped[i].Rel == "lib/more.bot" {
+			stripped[i].Digest = ""
+		}
+	}
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, stripped)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save of an added file claimed without its digest: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/more.bot") {
+		t.Fatalf("the refusal does not name the file: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != onDisk {
+		t.Fatalf("the colleague's edit was overwritten:\n%s", got)
+	}
+	// The control: the same save WITH the digest is the conflict the guard
+	// exists to be — 409, named, nothing written.
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("save with the digest over a moved file: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != onDisk {
+		t.Fatalf("the colleague's edit was overwritten:\n%s", got)
+	}
+}
+
+// TestTheRenderFollowsTheClaimPastAStaleAddedFile: the per-file render
+// writes nothing, so a fragment that moved on disk since the apply is not
+// the render's to judge — refusing it (409) would strand the unsaved
+// header edit behind a verdict only a save needs: the buffer would show
+// the stored header, and a re-apply of that text would silently revert
+// the edit. The render follows the claim; the save makes the conflict,
+// when it runs.
+func TestTheRenderFollowsTheClaimPastAStaleAddedFile(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	writeUnitFixture(t, workdir, map[string]string{"demo/lib/more.bot": "prompt extra:\n  A colleague wrote this meanwhile.\n"})
+
+	rec, main := unparseCall(t, s, map[string]any{"document": applied.Document, "path": "demo/main.bot", "file": "main.bot", "unit_files": applied.Unit.Files})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render over a stale added file: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(main.Source, "import \"lib/more.bot\"") {
+		t.Fatalf("the render dropped the claimed header:\n%s", main.Source)
+	}
+}
+
+// TestTheProbeStubKeepsTheRealWorkflowsName: the claim's probe stages the
+// main as its claimed header plus a STUB workflow (so a main below a lib/
+// directory keeps its main-ness). An error that names the stub — a newly
+// imported file declaring a workflow of its own meets E010 — must name
+// the author's workflow AND cite its real position: the stub sits wherever
+// the claim's import lines leave it, and before the citation was taken
+// from the stored main the message pointed at main.bot:4 — a line the
+// author's file does not have, shifting with the claim's import count.
+func TestTheProbeStubKeepsTheRealWorkflowsName(t *testing.T) {
+	workdir := t.TempDir()
+	// Probe C: the fragment declares a workflow of the SAME name as the
+	// main's (`w`, at main.bot:3 in the fixture).
+	full := "workflow w:\n  entry: done\n"
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/full.bot":  full,
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	// The apply refuses this import already (a second workflow is a new
+	// load error); the probe's wording is what the SAVE's own re-derivation
+	// surfaces, so drive the save directly with the claim the apply would
+	// have answered — with TWO claimed imports (the stub lands on the
+	// synthetic header's line 4) and with ONE (line 3): the citation must
+	// be the real main.bot:3 in both shapes.
+	claimWith := func(imports ...string) []unitFileInfo {
+		claimed := []unitFileInfo{{Rel: "main.bot", Imports: imports, Digest: opened.Unit.Files[0].Digest}}
+		claimed = append(claimed, unitFileInfo{Rel: "lib/full.bot", Digest: fileDigest([]byte(full))})
+		if len(imports) > 1 {
+			claimed = append(claimed, opened.Unit.Files[1])
+		}
+		return claimed
+	}
+	for _, claimed := range [][]unitFileInfo{
+		claimWith("lib/full.bot"),
+		claimWith("lib/nodes.bot", "lib/full.bot"),
+	} {
+		rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimed)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("importing a file that declares a second workflow (%v): %d %s", claimed[0].Imports, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "probe") {
+			t.Fatalf("the refusal names the probe's stub instead of the author's workflow: %s", body)
+		}
+		if !strings.Contains(body, `\"w\"`) {
+			t.Fatalf("the refusal does not name the main's own workflow: %s", body)
+		}
+		// The real main declares `workflow w:` at line 3; the stub's line in
+		// the synthetic header (3 or 4, per the claim's import count) is a
+		// place the author's file does not have.
+		if !strings.Contains(body, "main.bot:3") {
+			t.Fatalf("the refusal does not cite the real workflow position (%v): %s", claimed[0].Imports, body)
+		}
+		if strings.Contains(body, "main.bot:4") {
+			t.Fatalf("the refusal cites the stub's synthetic line (%v): %s", claimed[0].Imports, body)
+		}
+	}
+}
+
+// TestAProbeRefusalNeverNamesTheWorkspaceRoot: the probe parses every file
+// under its ABSOLUTE path, and a claim it refuses is answered 422 with the
+// diagnostic — which before the rel-mapping disclosed the server's
+// directory layout to any studio client (#1918). The body cites the
+// fragment by its unit-relative path, in the position prefix as in the
+// message, and never names the workspace. The stored unit's diagnostics —
+// what the operator's logs hold — are untouched.
+func TestAProbeRefusalNeverNamesTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	full := "workflow w:\n  entry: done\n"
+	broken := "prompt p:\n  hi\n\nagent \n  model\n"
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":       unitFixtureMain,
+		"demo/lib/nodes.bot":  unitFixtureNodes,
+		"demo/lib/full.bot":   full,
+		"demo/lib/broken.bot": broken,
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	claimAdding := func(rel, source string) []unitFileInfo {
+		return []unitFileInfo{
+			{Rel: "main.bot", Imports: []string{rel}, Digest: opened.Unit.Files[0].Digest},
+			{Rel: rel, Digest: fileDigest([]byte(source))},
+		}
+	}
+	for _, tc := range []struct {
+		name, rel, source, want string
+	}{
+		// E010, the ticket's case: the loader's own diagnostic, positioned
+		// at the fragment's workflow — absolute in the position field.
+		{"a second workflow", "lib/full.bot", full, "lib/full.bot:1:1"},
+		// A parse error in a fragment the claim adds: the parser's own
+		// diagnostic, positioned under the fragment's absolute name.
+		{"a fragment that does not parse", "lib/broken.bot", broken, "lib/broken.bot:"},
+	} {
+		rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimAdding(tc.rel, tc.source))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: %d %s", tc.name, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, tc.want) {
+			t.Fatalf("%s: the refusal does not cite the fragment by its relative path (%q): %s", tc.name, tc.want, body)
+		}
+		if strings.Contains(body, workdir) {
+			t.Fatalf("%s: the refusal discloses the server's directory layout: %s", tc.name, body)
+		}
+	}
+
+	// A fragment reached through a SYMLINKED directory resolves outside the
+	// unit: the confinement refusal must name the import as written, never
+	// the resolved host path — the one absolute name the root-relative
+	// mapping cannot take away, since it lies outside the root.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "x.bot"), []byte("agent z:\n  description: \"z\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workdir, "demo", "lib", "ext")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	rec, _ := savePathClaimed(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision, claimAdding("lib/ext/x.bot", "agent z:\n  description: \"z\"\n"))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a fragment resolving outside the unit: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "lib/ext/x.bot") {
+		t.Fatalf("the refusal does not name the import as written: %s", body)
+	}
+	if strings.Contains(body, outside) || strings.Contains(body, workdir) {
+		t.Fatalf("the refusal discloses a host path: %s", body)
+	}
+}
+
+// TestRelUnitDiagnosticsStripsTheUnitRoot: the rel-mapping itself. Every
+// name a disk-loaded unit's diagnostic can carry is Join(Root, Rel), so
+// the position field and a message citing a name verbatim are both
+// answered by cutting the root — kind, line and column untouched. A
+// files-map unit (Root "", every name already the rel) is left alone.
+func TestRelUnitDiagnosticsStripsTheUnitRoot(t *testing.T) {
+	sep := string(os.PathSeparator)
+	root := sep + filepath.Join("home", "operator", "project", "demo")
+	abs := func(rel string) string { return root + sep + filepath.FromSlash(rel) }
+	probe := &unit.Unit{
+		Root: root,
+		Diagnostics: []parser.Diagnostic{
+			{Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError, File: abs("lib/full.bot"), Line: 1, Column: 1, Message: "a unit has one workflow: \"w\" here and \"w\" at main.bot:3"},
+			// An unreadable file's os error cites the absolute name
+			// verbatim in the message text.
+			{Code: parser.DiagImportUnreadable, Severity: parser.SeverityError, File: abs("main.bot"), Line: 1, Column: 1, Message: "cannot read main.bot: open " + abs("main.bot") + ": permission denied"},
+		},
+	}
+	relUnitDiagnostics(probe)
+	for _, d := range probe.Diagnostics {
+		if strings.Contains(d.File, root) || strings.Contains(d.Message, root) {
+			t.Fatalf("an absolute path survived the mapping: %v", d)
+		}
+	}
+	if d := probe.Diagnostics[0]; d.File != "lib/full.bot" || d.Line != 1 || d.Column != 1 || d.Code != parser.DiagDuplicateDecl || d.Severity != parser.SeverityError {
+		t.Fatalf("the position was not cut to the rel (kind, line and column untouched): %+v", d)
+	}
+	if d := probe.Diagnostics[1]; d.Message != "cannot read main.bot: open main.bot: permission denied" {
+		t.Fatalf("the message still cites the absolute name: %q", d.Message)
+	}
+
+	mapped := &unit.Unit{
+		Diagnostics: []parser.Diagnostic{{Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError, File: "main.bot", Line: 3, Column: 1, Message: "declared twice"}},
+	}
+	relUnitDiagnostics(mapped)
+	if d := mapped.Diagnostics[0]; d.File != "main.bot" || d.Message != "declared twice" {
+		t.Fatalf("a files-map probe was rewritten: %v", d)
+	}
+}
+
+// TestAnApplyNeverNamesTheWorkspaceRoot: the apply re-loads the unit from
+// DISK with the edited file staged, and its diagnostics are positioned
+// under absolute paths — the loader's. Both ways they cross to the client
+// are cut to the unit's relative names (#1934): an `import` the loader
+// cannot follow is a 422 whose body quotes the diagnostic, and an error
+// the edit introduces in a file the bot already holds rides the 200's
+// diagnostics.
+func TestAnApplyNeverNamesTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+
+	missing := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"", "import \"lib/nodes.bot\"\nimport \"lib/missing.bot\"", 1)
+	rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": missing})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an apply whose import does not resolve: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "lib/missing.bot") {
+		t.Fatalf("the refusal does not name the import as written: %s", body)
+	}
+	if strings.Contains(body, workdir) {
+		t.Fatalf("the refusal discloses the server's directory layout: %s", body)
+	}
+
+	dup := unitFixtureMain + "\nagent worker:\n  description: \"again\"\n"
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": dup})
+	if rec.Code != http.StatusOK || len(applied.Diagnostics) == 0 {
+		t.Fatalf("the duplicate is not the case under test: %d %s", rec.Code, rec.Body.String())
+	}
+	joined := strings.Join(applied.Diagnostics, "\n")
+	if !strings.Contains(joined, "main.bot:") {
+		t.Fatalf("the diagnostics do not cite the main by its relative path: %s", joined)
+	}
+	if strings.Contains(joined, workdir) {
+		t.Fatalf("the diagnostics disclose the server's directory layout: %s", joined)
+	}
+}
+
+// TestThePerFileEditorCarriesARemovedImport: an `import` line removed in
+// the per-file editor applies and saves: the main is written without it,
+// and the fragment it named is LEFT ALONE — the measured pre-#1680 failure
+// rewrote it as the empty string with a 200.
+func TestThePerFileEditorCarriesARemovedImport(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	// The control, first: an edit to the main that leaves the imports alone
+	// applies, so the carry below is not "the main cannot be edited".
+	edited := strings.Replace(unitFixtureMain, "entry: worker", "entry: worker\n  ## a note", 1)
+	if rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": edited}); rec.Code != http.StatusOK {
+		t.Fatalf("an edit that keeps the imports was refused: %d %s", rec.Code, rec.Body.String())
+	}
+
+	without := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n\n", "", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": without})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("removing an import: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(applied.Unit.Files) != 1 || applied.Unit.Files[0].Rel != "main.bot" {
+		t.Fatalf("the applied unit still holds the dropped fragment: %+v", applied.Unit.Files)
+	}
+	rec, saved := savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save after removing an import: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(saved.Files) != 1 || saved.Files[0] != "main.bot" {
+		t.Fatalf("files written %v, want the main alone", saved.Files)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); strings.Contains(got, "import") {
+		t.Fatalf("the removed import survived the save:\n%s", got)
+	}
+	// The forbidden alternative, named: the fragment rewritten as the empty
+	// string. It is no longer a file of this bot; nothing writes it.
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != unitFixtureNodes {
+		t.Fatalf("the orphaned fragment was touched:\n%q", got)
+	}
+}
+
+// TestAddingAnImportOfAFragmentThatIsNotThereIsRefused: the one import
+// change the editor still cannot carry, refused BY NAME at the apply: a
+// fragment that does not exist would merge as nothing, and the save would
+// have to invent it.
+func TestAddingAnImportOfAFragmentThatIsNotThereIsRefused(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/missing.bot\"\n", 1)
+	rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("adding an import of a fragment that is not there: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/missing.bot") {
+		t.Fatalf("the refusal does not name the fragment: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); got != unitFixtureMain {
+		t.Fatalf("the main changed:\n%s", got)
+	}
+	// A path outside the bot's lib/ directory is the same refusal, named.
+	outside := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"../other.bot\"\n", 1)
+	if rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": outside}); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("adding an import outside lib/: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAddingAnImportOfAFragmentThatDoesNotParseIsRefused: the fragment
+// EXISTS, but the parser can only salvage it — its declarations would
+// merge as what could be read of them, and a save would write the file
+// back short. Refused by name at the apply, like the staged file's own
+// salvage.
+func TestAddingAnImportOfAFragmentThatDoesNotParseIsRefused(t *testing.T) {
+	workdir := t.TempDir()
+	broken := "prompt p:\n  hi\n\nagent \n  model\n"
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":       unitFixtureMain,
+		"demo/lib/nodes.bot":  unitFixtureNodes,
+		"demo/lib/broken.bot": broken,
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/broken.bot\"\n", 1)
+	rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("adding an import of a fragment that does not parse: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "broken.bot") {
+		t.Fatalf("the refusal does not name the fragment: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/broken.bot"); got != broken {
+		t.Fatalf("the fragment changed:\n%s", got)
+	}
+}
+
+// TestApplyingOneFileOfABotWhoseMainIsItselfAFragment: a companion
+// workflow under lib/ that imports its siblings opens as a unit of its
+// own. The staged map is keyed the way the loader keys it — from the
+// directory of the main — and a mismatched key reads as "no staged text":
+// the loader falls back to disk and the route answers 200 with the
+// author's edit gone, which is the one failure a save cannot catch.
+func TestApplyingOneFileOfABotWhoseMainIsItselfAFragment(t *testing.T) {
+	workdir := t.TempDir()
+	// A fragment — a file declaring no workflow — under lib/, importing a
+	// sibling: loaded alone it is read from the bot's root under its lib/
+	// name, so its rels are `lib/…` while its own directory is `demo/lib`.
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/lib/a.bot": "import \"b.bot\"\n\nagent worker:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  system: mission\n  output: out\n",
+		"demo/lib/b.bot": "prompt mission:\n  Do the thing.\n\nschema out:\n  ok: bool\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	rec, opened := openPath(t, s, "demo/lib/a.bot")
+	if rec.Code != http.StatusOK || opened.Unit == nil {
+		t.Fatalf("open: %d unit=%+v", rec.Code, opened.Unit)
+	}
+
+	edited := "prompt mission:\n  EDITED BY THE AUTHOR\n\nschema out:\n  ok: bool\n"
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/lib/a.bot", "file": "lib/b.bot", "source": edited})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(applied.Document, &doc); err != nil {
+		t.Fatal(err)
+	}
+	prompts, _ := doc["prompts"].([]any)
+	if len(prompts) == 0 {
+		t.Fatal("the answered document holds no prompt")
+	}
+	// The forbidden alternative, named: the text ON DISK, answered with
+	// 200 as though the edit had been applied.
+	if body := prompts[0].(map[string]any)["body"]; body != "EDITED BY THE AUTHOR" {
+		t.Fatalf("the author's edit was dropped and the on-disk text answered instead: %v", body)
+	}
+}
+
+// TestThePerFileEditorCarriesAnImportAddedToAFragment: the added import
+// need not be the main's. A fragment gains an `import` of a sibling
+// (written relative to its own directory, as fragments write them), the
+// apply's membership reaches the sibling through it, and the save writes
+// the fragment with its new import line — main and sibling untouched.
+// This is the path where the claim rebuilds membership over TWO levels of
+// synthetic headers.
+func TestThePerFileEditorCarriesAnImportAddedToAFragment(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/extra.bot": "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	withImport := "import \"extra.bot\"\n\n" + unitFixtureNodes
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": withImport})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adding an import to a fragment: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(applied.Unit.Files) != 3 || applied.Unit.Files[2].Rel != "lib/extra.bot" {
+		t.Fatalf("the applied unit did not reach the sibling through the fragment: %+v", applied.Unit.Files)
+	}
+	rec, saved := savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save after adding an import to a fragment: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(saved.Files) != 1 || saved.Files[0] != "lib/nodes.bot" {
+		t.Fatalf("files written %v, want the fragment alone", saved.Files)
+	}
+	got := readFixture(t, workdir, "demo/lib/nodes.bot")
+	if !strings.HasPrefix(got, "import \"extra.bot\"\n") {
+		t.Fatalf("the fragment's new import was dropped by the save:\n%s", got)
+	}
+	if !strings.Contains(got, "agent worker:") {
+		t.Fatalf("the fragment's declarations did not survive the save:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/lib/extra.bot"); got != "prompt extra:\n  More.\n" {
+		t.Fatalf("the newly imported sibling was rewritten:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); got != unitFixtureMain {
+		t.Fatalf("the main was rewritten:\n%s", got)
+	}
+}
+
+// TestTheMergedViewSpeaksAboutTheTextItHandsOver: a fold in the MERGED
+// program is a different question from a fold in any one file. Asked per
+// file it answered both the wrong way round: it blocked a download that was
+// byte-faithful, and stayed silent on one that was not. Since #1612 both
+// profiles keep a carriable value over its lines, so the split is no
+// longer the profile: it is whether the value has a multi-line form at all
+// — a carriage return has none.
+func TestTheMergedViewSpeaksAboutTheTextItHandsOver(t *testing.T) {
+	workdir := t.TempDir()
+	// The fragment's spread value holds a carriage return: no form carries
+	// it, the merged render folds the whole program, and the download says
+	// so, naming the file.
+	strictMain := "dsl: 2\n\nimport \"lib/nodes.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
+	writeUnitFixture(t, workdir, map[string]string{"folds/main.bot": strictMain, "folds/lib/nodes.bot": foldNodes})
+	// And a unit whose fragment's spread value the writer carries: the
+	// merged program keeps it over its lines — the download is faithful
+	// and must not be blocked.
+	faithfulMain := "dsl: 2\n\nimport \"lib/nodes.bot\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
+	faithfulFrag := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line two\n"
+	writeUnitFixture(t, workdir, map[string]string{"faithful/main.bot": faithfulMain, "faithful/lib/nodes.bot": faithfulFrag})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+
+	_, folding := openPath(t, s, "folds/main.bot")
+	rec, out := unparseCall(t, s, map[string]any{"document": folding.Document, "path": "folds/main.bot", "flatten": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("flatten: %d %s", rec.Code, rec.Body.String())
+	}
+	if out.Refused == "" {
+		t.Fatalf("the merged program folds a value and said nothing:\n%s", out.Source)
+	}
+	if !strings.Contains(out.Refused, "lib/nodes.bot") {
+		t.Fatalf("the reason does not name the file it is about: %q", out.Refused)
+	}
+	// It ANNOTATES: the merged program still comes back.
+	if !strings.Contains(out.Source, "tool t:") {
+		t.Fatalf("the merged program is missing:\n%s", out.Source)
+	}
+
+	_, faithful := openPath(t, s, "faithful/main.bot")
+	rec, clean := unparseCall(t, s, map[string]any{"document": faithful.Document, "path": "faithful/main.bot", "flatten": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("flatten: %d %s", rec.Code, rec.Body.String())
+	}
+	// The forbidden alternative, named: a refusal on a download whose
+	// bytes carry the value exactly as its author wrote it.
+	if clean.Refused != "" {
+		t.Fatalf("a faithful merged program was flagged: %q\n%s", clean.Refused, clean.Source)
+	}
+	if !strings.Contains(clean.Source, "command: |\n") {
+		t.Fatalf("the fixture does not separate the two cases — its merged text folds too:\n%s", clean.Source)
+	}
+}
+
+// TestRepairingAMainWhoseBreakSwallowedAnImport: a main whose unreadable
+// region sat between two `import` lines opens as a SALVAGE, and the unit
+// it opens as is missing the fragment the lost line named. The repair in
+// the buffer now APPLIES — the repaired text parses whole, and the
+// recovered import loads the fragment it names into the staged unit — but
+// the save re-derives the unit from the files as they are ON DISK and
+// refuses one that does not load, so the repair still belongs where the
+// bot's files live. What the apply accepting changes is only WHERE the
+// author is told.
+func TestRepairingAMainWhoseBreakSwallowedAnImport(t *testing.T) {
+	workdir := t.TempDir()
+	broken := "import \"lib/nodes.bot\"\n@@@\nimport \"lib/extra.bot\"\n\nworkflow w:\n  entry: worker\n  worker -> done\n"
+	repaired := "import \"lib/nodes.bot\"\nimport \"lib/extra.bot\"\n\nworkflow w:\n  entry: worker\n  worker -> done\n"
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      broken,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/extra.bot": "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	rec, opened := openPath(t, s, "demo/main.bot")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open: %d %s", rec.Code, rec.Body.String())
+	}
+	if opened.Bindable {
+		t.Fatal("a main that did not parse opened as bindable")
+	}
+	// The unit the studio holds is missing the fragment the lost line named.
+	if len(opened.Unit.Files) != 2 {
+		t.Fatalf("unit files %v, want the main and the fragment the salvage could still reach", opened.Unit.Files)
+	}
+
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": repaired})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("repairing a swallowed import: %d %s", rec.Code, rec.Body.String())
+	}
+	// The recovered fragment is in the applied unit, with its declarations
+	// — the repair is real, not salvaged.
+	if len(applied.Unit.Files) != 3 || !applied.Bindable {
+		t.Fatalf("the applied unit: files %v bindable %v", applied.Unit.Files, applied.Bindable)
+	}
+	// The save is where the repair is refused: the files ON DISK still do
+	// not load as one unit, and the refusal names the remedy — which is
+	// what salvageRefusal tells the author before they try.
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("saving a main repaired only in the buffer: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "on disk") {
+		t.Fatalf("the refusal names no reachable remedy: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); got != broken {
+		t.Fatalf("the main changed:\n%s", got)
+	}
+
+	// The control: the SAME repair on a main whose break left both imports
+	// readable is ACCEPTED by the apply — and refused by the save the same
+	// way — so what separates the two is which fragments the salvage could
+	// still reach, not the salvage itself.
+	writeUnitFixture(t, workdir, map[string]string{
+		"ok/main.bot":      "import \"lib/nodes.bot\"\n\n@@@\n\nworkflow w:\n  entry: worker\n  worker -> done\n",
+		"ok/lib/nodes.bot": unitFixtureNodes,
+	})
+	_, salvaged := openPath(t, s, "ok/main.bot")
+	if salvaged.Bindable {
+		t.Fatal("the control's main parsed: it cannot witness a salvage")
+	}
+	fixed := "import \"lib/nodes.bot\"\n\nworkflow w:\n  entry: worker\n  worker -> done\n"
+	rec, applied = parseCall(t, s, map[string]any{"path": "ok/main.bot", "file": "main.bot", "source": fixed})
+	if rec.Code != http.StatusOK || !applied.Bindable {
+		t.Fatalf("repairing a main whose imports survived: %d bindable=%v %s", rec.Code, applied.Bindable, rec.Body.String())
+	}
+}
+
+// TestASalvagedUnitIsRepairedWhereTheSaveReadsIt: the apply answering 200
+// is the SITE, not the guarantee. A save of a bot in several files
+// re-derives the unit from the files as they are ON DISK and refuses one
+// that does not load — so a main repaired only in the buffer never reaches
+// the file it repairs, whatever the apply said. This is what
+// `salvageRefusal` tells the author before they try, and it is why the
+// message names the disk and not the Source view.
+func TestASalvagedUnitIsRepairedWhereTheSaveReadsIt(t *testing.T) {
+	workdir := t.TempDir()
+	// The unreadable region swallows no import: this is exactly the case a
+	// carve-out for the import would have called repairable.
+	broken := "import \"lib/nodes.bot\"\n@@@\n\nworkflow w:\n  entry: worker\n  worker -> done\n"
+	repaired := "import \"lib/nodes.bot\"\n\nworkflow w:\n  entry: worker\n  worker -> done\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": broken, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+	if opened.Bindable {
+		t.Fatal("the fixture's main parsed: it cannot witness a salvage")
+	}
+
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": repaired})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	rec, _ = savePath(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save after repairing a salvaged main in the buffer: %d %s", rec.Code, rec.Body.String())
+	}
+	// And it says where the repair belongs, which is what the studio's own
+	// refusal says before the author types.
+	if !strings.Contains(rec.Body.String(), "on disk") {
+		t.Fatalf("the refusal names no reachable remedy: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); got != broken {
+		t.Fatalf("the main changed:\n%s", got)
+	}
+
+	// The control changes ONE thing — the main is repaired where the bot's
+	// files live — and everything else stays: same directory, same files,
+	// same edit. That is what isolates the salvage as the cause, and it is
+	// the executable proof of what the studio's refusal tells the author
+	// to do ("repair the main where this bot's files live, then reopen").
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": repaired})
+	_, reopened := openPath(t, s, "demo/main.bot")
+	if !reopened.Bindable {
+		t.Fatalf("the main repaired where the files live still does not parse")
+	}
+	edited := strings.Replace(unitFixtureNodes, "Do the thing.", "Do the other thing.", 1)
+	rec, ap := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": edited})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply after the repair: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec, _ := savePath(t, s, "demo/main.bot", ap.Document, reopened.Unit.Revision); rec.Code != http.StatusOK {
+		t.Fatalf("save after the repair: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); !strings.Contains(got, "Do the other thing.") {
+		t.Fatalf("the edit did not reach the file after the repair:\n%s", got)
+	}
+}
+
+// TestTheCloudUnitWriteBackRefusesAFileTheWriterWouldFold: the cloud twin
+// of saveUnit. It is one of the four write sites the fold refusal covers,
+// and nothing in this package asserted it — restoring the pre-#1612
+// behaviour there was invisible to every test.
+func TestTheCloudUnitWriteBackRefusesAFileTheWriterWouldFold(t *testing.T) {
+	s := &Server{}
+	files := map[string]any{"main.bot": foldMain, "lib/nodes.bot": foldNodes}
+	rec, parsed := parseCall(t, s, map[string]any{"files": files, "main": "main.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("parse unit: %d %s", rec.Code, rec.Body.String())
+	}
+	edited := editDocument(t, parsed.Document, func(m map[string]any) {
+		tools, _ := m["tools"].([]any)
+		tools[0].(map[string]any)["description"] = "probe, edited"
+	})
+	rec, out := unparseCall(t, s, map[string]any{
+		"document": edited, "files": files, "main": "main.bot", "revision": parsed.Unit.Revision,
+	})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("cloud write-back of a fragment the writer folds: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/nodes.bot") {
+		t.Fatalf("the refusal does not name the file: %s", rec.Body.String())
+	}
+	// The forbidden alternative, named — read off the REFUSAL's own body,
+	// which is the only place it could appear: unparseCall decodes on 200
+	// alone, so asserting on `out` here would be asserting on a zero value.
+	if strings.Contains(rec.Body.String(), "\\nline\\r two") {
+		t.Fatalf("the folded fragment came back to be written:\n%s", rec.Body.String())
+	}
+	_ = out
+
+	// The control: a fragment the writer CAN reproduce still comes back, so
+	// the refusal is not "no cloud unit can be saved".
+	ok := map[string]any{"main.bot": unitFixtureMain, "lib/nodes.bot": unitFixtureNodes}
+	rec, fine := parseCall(t, s, map[string]any{"files": ok, "main": "main.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("parse control unit: %d %s", rec.Code, rec.Body.String())
+	}
+	fineEdit := editDocument(t, fine.Document, func(m map[string]any) {
+		agentsOf(m)[0].(map[string]any)["model"] = "anthropic/claude-opus-5"
+	})
+	rec, wrote := unparseCall(t, s, map[string]any{
+		"document": fineEdit, "files": ok, "main": "main.bot", "revision": fine.Unit.Revision,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("control write-back: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(wrote.Files["lib/nodes.bot"], "anthropic/claude-opus-5") {
+		t.Fatalf("the control's edit did not come back:\n%v", wrote.Files)
+	}
+}
+
+// TestRenderingAFragmentThatDoesNotParse: a unit's `bindable` is the
+// MAIN's parse alone, so a FRAGMENT with a syntax error leaves the buffer
+// unsalvaged and the per-file view on. The loader keeps that file's
+// partial AST, so the part handed to the render is missing everything
+// after the error — rendered back it is a text the author's file does not
+// contain, with the lines they have to fix gone.
+func TestRenderingAFragmentThatDoesNotParse(t *testing.T) {
+	workdir := t.TempDir()
+	broken := unitFixtureNodes + "\nagent \n  model\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": broken})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	rec, opened := openPath(t, s, "demo/main.bot")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open: %d %s", rec.Code, rec.Body.String())
+	}
+	if !opened.Bindable {
+		t.Fatal("the MAIN parses: this fixture must leave the buffer unsalvaged")
+	}
+
+	rec, out := unparseCall(t, s, map[string]any{"document": opened.Document, "path": "demo/main.bot", "file": "lib/nodes.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render: %d %s", rec.Code, rec.Body.String())
+	}
+	if out.Refused == "" {
+		t.Fatal("a fragment the parser could only salvage was rendered with no reason given")
+	}
+	// The forbidden alternative, named: the writer's text for the partial
+	// AST — the file MINUS the region the parser could not read.
+	if out.Source != broken {
+		t.Fatalf("the view shows a text the file does not contain:\n%s", out.Source)
+	}
+}
+
+// TestThePerFileEditorCarriesAChangeToTheProfile: a `dsl:` line changed in
+// the per-file editor applies — the file's declarations are re-read under
+// the new profile — and SAVES: the claim (unit_files) hands the profile to
+// the save, whose skeleton writes the file under it. unparse.Verify asserts
+// the header survives the round trip, so the guard underneath is that
+// every declaration of the part was parsed under the profile being
+// written — which is exactly what the apply's re-parse did.
+func TestThePerFileEditorCarriesAChangeToTheProfile(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	raised := "dsl: 2\n\n" + unitFixtureNodes
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": raised})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("raising the profile of one file: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(applied.Unit.Files) != 2 || applied.Unit.Files[1].Profile != 2 {
+		t.Fatalf("the applied unit does not carry the new profile: %+v", applied.Unit.Files)
+	}
+
+	// The render shows the CLAIMED header: the stored file has no `dsl:`
+	// line, and showing it as stored would invite a re-apply that reverts
+	// the change.
+	rec, frag := unparseCall(t, s, map[string]any{"document": applied.Document, "path": "demo/main.bot", "file": "lib/nodes.bot", "unit_files": applied.Unit.Files})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("render after the apply: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.HasPrefix(frag.Source, "dsl: 2\n") {
+		t.Fatalf("the render dropped the applied profile:\n%s", frag.Source)
+	}
+
+	rec, saved := savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save after raising a profile: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(saved.Files) != 1 || saved.Files[0] != "lib/nodes.bot" {
+		t.Fatalf("files written %v, want the fragment alone", saved.Files)
+	}
+	got := readFixture(t, workdir, "demo/lib/nodes.bot")
+	if !strings.HasPrefix(got, "dsl: 2\n") {
+		t.Fatalf("the profile change was dropped by the save:\n%s", got)
+	}
+	if !strings.Contains(got, "agent worker:") {
+		t.Fatalf("the fragment's declarations did not survive the save:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); got != unitFixtureMain {
+		t.Fatalf("the main was rewritten:\n%s", got)
+	}
+
+	// The control: an edit that leaves the profile alone still applies.
+	plain := strings.Replace(unitFixtureNodes, "Do the thing.", "Do the other thing.", 1)
+	if rec, _ := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "lib/nodes.bot", "source": plain}); rec.Code != http.StatusOK {
+		t.Fatalf("an edit that keeps the profile was refused: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSavingANewlyImportedFragmentDetectsItMovedOnDisk: the unit's
+// revision covers the files the unit HELD at the open; a fragment the edit
+// newly imports is none of them. Its claim carries the digest of the read
+// the document was built from, and the save compares — a colleague's edit
+// since is a conflict, never overwritten.
+func TestSavingANewlyImportedFragmentDetectsItMovedOnDisk(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	onDisk := "prompt extra:\n  A colleague wrote this meanwhile.\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/lib/more.bot": onDisk})
+
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("save over a newly imported fragment that moved on disk: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/more.bot") {
+		t.Fatalf("the conflict does not name the file: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != onDisk {
+		t.Fatalf("the colleague's edit was overwritten:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); got != unitFixtureMain {
+		t.Fatalf("the main changed:\n%s", got)
+	}
+}
+
+// TestASaveRefusesAClaimThatDisagreesWithItself: the claim is the save's
+// whole picture of the header change, so one that does not load as the
+// unit it describes — a file listed that no import reaches, an import
+// reached that is not listed — is refused by name rather than reconciled
+// by a guess.
+func TestASaveRefusesAClaimThatDisagreesWithItself(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	edited := editDocument(t, opened.Document, func(m map[string]any) {
+		agentsOf(m)[0].(map[string]any)["model"] = "anthropic/claude-opus-5"
+	})
+	// A file no import of the claim reaches.
+	orphan := append(append([]unitFileInfo{}, opened.Unit.Files...), unitFileInfo{Rel: "lib/orphan.bot"})
+	rec, _ := savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, orphan)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "lib/orphan.bot") {
+		t.Fatalf("a claimed file no import reaches: %d %s", rec.Code, rec.Body.String())
+	}
+	// A claim that drops a file the stored imports still reach.
+	dropped := opened.Unit.Files[:1]
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, dropped)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "lib/nodes.bot") {
+		t.Fatalf("a claim missing a reached file: %d %s", rec.Code, rec.Body.String())
+	}
+	// And one without the main at all.
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, opened.Unit.Files[1:])
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "main.bot") {
+		t.Fatalf("a claim without the main: %d %s", rec.Code, rec.Body.String())
+	}
+	if readFixture(t, workdir, "demo/lib/nodes.bot") != unitFixtureNodes || readFixture(t, workdir, "demo/main.bot") != unitFixtureMain {
+		t.Fatal("a refused claim wrote files")
+	}
+}
+
+// TestTheCloudUnitWriteBackCarriesAHeaderChange: the cloud twin of the two
+// carries above — the bundle write-back takes the same claim and answers
+// the main with its new import line, and the fragment with its new
+// profile; files whose program did not change are absent from the answer.
+func TestTheCloudUnitWriteBackCarriesAHeaderChange(t *testing.T) {
+	s := &Server{}
+	files := map[string]any{
+		"main.bot":      unitFixtureMain,
+		"lib/nodes.bot": unitFixtureNodes,
+		"lib/more.bot":  "prompt extra:\n  More.\n",
+	}
+	rec, parsed := parseCall(t, s, map[string]any{"files": files, "main": "main.bot"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("parse unit: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Add the import through the per-file apply.
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"files": files, "main": "main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	rec, wrote := unparseCall(t, s, map[string]any{
+		"document": applied.Document, "files": files, "main": "main.bot",
+		"revision": parsed.Unit.Revision, "unit_files": applied.Unit.Files,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("write-back after adding an import: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(wrote.Files["main.bot"], "import \"lib/more.bot\"") {
+		t.Fatalf("the written main dropped the import:\n%v", wrote.Files)
+	}
+	if _, ok := wrote.Files["lib/more.bot"]; ok {
+		t.Fatalf("the newly imported fragment's program did not change, and it came back rewritten: %v", wrote.Files)
+	}
+
+	// Raise a fragment's profile the same way.
+	raised := "dsl: 2\n\n" + unitFixtureNodes
+	rec, applied = parseCall(t, s, map[string]any{"files": files, "main": "main.bot", "file": "lib/nodes.bot", "source": raised})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	rec, wrote = unparseCall(t, s, map[string]any{
+		"document": applied.Document, "files": files, "main": "main.bot",
+		"revision": parsed.Unit.Revision, "unit_files": applied.Unit.Files,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("write-back after raising a profile: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.HasPrefix(wrote.Files["lib/nodes.bot"], "dsl: 2\n") {
+		t.Fatalf("the written fragment dropped the profile:\n%v", wrote.Files)
+	}
+}

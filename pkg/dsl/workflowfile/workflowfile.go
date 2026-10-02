@@ -11,14 +11,43 @@ import "strings"
 var Extensions = []string{".bot"}
 
 // IsWorkflowFile reports whether path ends with one of the accepted
-// workflow file extensions.
+// workflow file extensions, case-folded as bundle.Detect folds `.BOT` and
+// `.BOTZ`: one rule for every door that names a workflow file — launch,
+// the walks, `fmt`, the storage routes, the import door and the repo
+// graph — so a file the launcher takes is not refused by a reader that
+// spells the same predicate differently. A scaffold's layout checks stay
+// literal by design: they validate the names a scaffold GENERATES.
 func IsWorkflowFile(path string) bool {
 	for _, ext := range Extensions {
-		if strings.HasSuffix(path, ext) {
+		if hasSuffixFold(path, ext) {
 			return true
 		}
 	}
 	return false
+}
+
+// hasSuffixFold reports whether path ends with ext, case-folded, without
+// allocating a lowered copy of the path.
+func hasSuffixFold(path, ext string) bool {
+	return len(path) >= len(ext) && strings.EqualFold(path[len(path)-len(ext):], ext)
+}
+
+// AuthorExtension is the suffix of an author document — the YAML twin a
+// `.bot` can be written as (pkg/dsl/author) — a way of WRITING a workflow
+// file, never one. It is deliberately not an entry of Extensions:
+// IsWorkflowFile stays false for it, so no surface that launches, lists,
+// packs or stores a workflow takes a draft for the truth; the readers that
+// accept one (validate, fmt, diagram, the MCP validate tool) ask
+// IsAuthorDocument by name, and every launcher refuses it by name.
+const AuthorExtension = ".bot.yaml"
+
+// IsAuthorDocument reports whether path names an author document. The
+// suffix is matched case-folded, as bundle.Detect folds `.BOT` and
+// `.BOTZ`: every door asks this one predicate on the path as written,
+// so a `DRAFT.BOT.YAML` is refused at the first door rather than read as
+// a parse error at the last.
+func IsAuthorDocument(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), AuthorExtension)
 }
 
 // CommentText reports whether line is a comment line of a workflow source —
@@ -42,8 +71,31 @@ func CommentText(line string) (text string, ok bool) {
 	}
 	t = strings.TrimPrefix(t, "#")
 	t = strings.TrimPrefix(t, "#")
-	t = strings.TrimPrefix(t, " ")
-	return strings.TrimRight(t, " \t\r"), true
+	return CommentBody(t), true
+}
+
+// CommentBody is a comment's text once its hashes are off: one following
+// space removed — the one the writer puts back — and nothing else, so the
+// indentation an author wrote INSIDE the comment (`##   - item`, a wrapped
+// line aligned under a bullet) is part of the text and survives a rewrite.
+// The lexer reads the same rule off this function, which is what keeps the
+// two from drifting.
+func CommentBody(afterHashes string) string {
+	return strings.TrimRight(strings.TrimPrefix(afterHashes, " "), " \t\r")
+}
+
+// SkipWalkDir reports a directory a walk over a source tree does not
+// descend into: hidden trees hold other checkouts (`.claude/worktrees`,
+// `.works`, `.repos`), the run store and the VCS; `vendor` and
+// `node_modules` hold someone else's sources. A `.bot` under one of them is
+// reached only by naming it as a path.
+//
+// It is the ONE definition of that rule, shared by every walk: `iterion
+// fmt`'s collector and the guards that check the same tree have to
+// enumerate the same files, or a `.bot` one sees and the other does not
+// puts them in a disagreement no list can settle.
+func SkipWalkDir(name string) bool {
+	return strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules"
 }
 
 // FrontmatterFence is the text of the comment line that opens and closes a

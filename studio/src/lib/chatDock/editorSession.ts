@@ -87,7 +87,7 @@ export async function captureActiveEditorDocument(
 
   // Unparse the AST snapshot, not currentSource: currentSource is a cache of
   // the last open/save/source-edit operation and can lag canvas mutations.
-  const source = await api.unparse(state.document);
+  const { source } = await api.unparse(state.document);
   const complete = source.length <= activeEditorSourceLimit();
   const sessionId = tokenForTab(tabId);
   let authoring: AssistantAuthoringSnapshot | undefined;
@@ -124,7 +124,7 @@ export async function captureActiveEditorDocument(
     file: state.currentFilePath,
     complete,
     sourceLength: source.length,
-    dirty: state.isDirty(),
+    dirty: state.hasUnsavedWork(),
     ...(complete ? { source } : {}),
     ...(authoring ? { authoring } : {}),
     ...(sharedBundle ? { sharedBundle } : {}),

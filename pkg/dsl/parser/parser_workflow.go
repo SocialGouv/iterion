@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strconv"
+
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -91,6 +93,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			p.next() // consume "auto_memory"
 			p.expect(TokenColon)
 			wd.AutoMemory = p.expectIdent()
+			p.skipNewlines()
+
+		case TokenAmbientContext:
+			p.next() // consume "ambient_context"
+			p.expect(TokenColon)
+			wd.AmbientContext = p.expectIdent()
 			p.skipNewlines()
 
 		case TokenLoopBudgetGuard:
@@ -188,7 +196,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 				p.backup()
 				wd.Edges = append(wd.Edges, p.parseEdge()...)
 			} else {
-				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in workflow")
+				p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in workflow")
 				p.next()
 			}
 		}

@@ -1850,7 +1850,11 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// passes the fork guard at CLAIM time: a head repo can vanish between
 	// carding and claiming. A proven fork or invalid grant is terminal;
 	// inability to resolve the PR context is a retryable pre-launch failure.
-	lc.Vars, err = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
+	var minted mintedGrant
+	lc.Vars, err = s.withoutCardGrant(tenant, lc.Vars)
+	if err == nil {
+		lc.Vars, minted, err = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
+	}
 	if err != nil {
 		if errors.Is(err, errPRLaunchForkGuard) || errors.Is(err, errForgePublishGrantTenant) {
 			return fmt.Errorf("card %s: %w", iss.ID, err)
@@ -1858,11 +1862,14 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
 	spec := runview.LaunchSpec{
-		Vars:            lc.Vars,
-		RepoURL:         lc.RepoURL,
-		RepoRef:         lc.RepoRef,
-		KeyOverrides:    lc.KeyOverrides,
-		SecretOverrides: lc.SecretOverrides,
+		Vars: lc.Vars,
+		// Same warn-and-proceed contract as pipeline admission: the
+		// unknown-key warning was emitted upstream, the launch proceeds.
+		AllowUnknownInputs: true,
+		RepoURL:            lc.RepoURL,
+		RepoRef:            lc.RepoRef,
+		KeyOverrides:       lc.KeyOverrides,
+		SecretOverrides:    lc.SecretOverrides,
 		// Stamp the card onto the run record (ADR-046 SourceRef) — the
 		// card→run edge SetLastRun writes below is not enough: the
 		// fork-adoption sweep resolves an issue's runs through the indexed
@@ -1887,13 +1894,20 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// run that never started consumes no monthly slot.
 	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}))
 	if deny != nil {
+		s.revokeUnlaunchedGrant(minted)
 		return &launchRefusal{cardID: iss.ID, cause: deny.err()}
 	}
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
-		adm.rollback(s.logger)
-		// Every error out of Launch means no run was started — the class is
-		// decidable here, at the boundary, without reading the error's text.
+		// The fact travels on the error (RunPersistedError, or a queue
+		// publish that landed and then reported failure — the publisher
+		// leaves that doc flipped to a terminal `failed`): a run that
+		// exists or may be claimed keeps its metered slot. Only a run
+		// proven not to have started hands the slot back.
+		if !runview.RunMayHaveStarted(err) {
+			adm.rollback(s.logger)
+			s.revokeUnlaunchedGrant(minted)
+		}
 		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
 	runID := res.RunID

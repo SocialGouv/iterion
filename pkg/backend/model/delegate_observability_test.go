@@ -40,6 +40,7 @@ func TestDelegateModelReachesStore(t *testing.T) {
 		Duration:        1500 * time.Millisecond,
 		Tokens:          42,
 		CostUSD:         0.12,
+		Fingerprint:     "facade:zai:https://api.z.ai/api/anthropic",
 	}
 	hooks.OnDelegateStarted("campaign", DelegateInfo{
 		BackendName:   info.BackendName,
@@ -72,6 +73,8 @@ func TestDelegateModelReachesStore(t *testing.T) {
 		"max_output_tokens": 8192,
 		"context_used":      120_000,
 		"cost_usd":          0.12,
+		// The credential route the per-credential ledger books the spend on.
+		"fingerprint": "facade:zai:https://api.z.ai/api/anthropic",
 	} {
 		if got := finished.Data[key]; !eventValueEqual(got, want) {
 			t.Errorf("delegate_finished[%q] = %v (%T), want %v (%T)", key, got, got, want, want)

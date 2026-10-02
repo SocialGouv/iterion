@@ -12,7 +12,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -144,7 +146,7 @@ type wsErrorPayload struct {
 // state-bound, while the Hub broadcasts one stream to N clients.
 //
 // Cross-store mode: when `?store=<path>` is present (and valid under
-// $HOME/.iterion/**), the subscription reads snapshots + tails events
+// the iterion home, store.IterionHome), the subscription reads snapshots + tails events
 // from THAT store instead of the daemon's primary. State-changing
 // commands (cancel, resume, answer) are rejected with cross_store_readonly
 // in this mode since we don't drive the foreign run's engine — its
@@ -185,7 +187,7 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	// us from accounting WSConnections for forbidden subscriptions.
 	// Cross-store mode skips this — the foreign FS store has no
 	// tenant scoping and the resolveCrossStore() above already
-	// gated the path under $HOME/.iterion/**.
+	// gated the path under the iterion home.
 	if xStore == nil {
 		if _, lerr := s.runs.LoadRunCtx(r.Context(), runID); lerr != nil {
 			http.Error(w, "run not found", http.StatusNotFound)
@@ -354,7 +356,28 @@ func (c *runConn) readPump() {
 	}
 }
 
+// runWSMutatingTypes are the envelopes that change the run (the review's
+// R571177): the ladder's act rung applies to them exactly as it would to
+// the same command over HTTP — a read-only viewer connection cannot
+// cancel, pause, answer or steer the run through the event socket.
+var runWSMutatingTypes = map[string]bool{
+	wsTypeCancel:              true,
+	wsTypePause:               true,
+	wsTypeAnswer:              true,
+	wsTypeQueueMessage:        true,
+	wsTypeCancelQueuedMessage: true,
+	wsTypeBumpLoop:            true,
+	wsTypeRaiseBudget:         true,
+}
+
 func (c *runConn) dispatch(env runWSEnvelope) {
+	// A zero Role means no auth context at all (local/desktop mode, where
+	// the run console runs trusted): the gate guards AUTHENTICATED
+	// surfaces.
+	if runWSMutatingTypes[env.Type] && c.identity.Role != "" && !c.identity.Role.AtLeast(identity.RoleMember) {
+		c.sendError("forbidden", "your role in the run's team does not allow this action", env.AckID)
+		return
+	}
 	switch env.Type {
 	case wsTypeSubscribe:
 		c.handleSubscribe(env)
@@ -590,10 +613,24 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// enforce. The auth identity is the one snapshotted at upgrade, NOT
 	// authCtx() (which only carries the store tenant tag) — re-stamped
 	// here so gateLaunch sees it.
-	if _, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity)); d != nil {
+	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity))
+	if d != nil {
 		c.sendError(d.reason, d.detail, env.AckID)
 		return
 	}
+	// The gate's run-quota increment IS the metering, so the returns between
+	// here and the resume below abandon an admitted launch and hand the unit
+	// back (a bad payload, an empty answer set, a run this connection cannot
+	// load). Past the resume the slot is spent unless the run service reports
+	// that nothing started — a publish can report failure after the runner
+	// claimed the message, and that case keeps its unit. Same rule as
+	// handleLaunchRun / handleResumeRun.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(c.server.logger)
+		}
+	}()
 	var req wsAnswerRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		c.sendError("bad_payload", err.Error(), env.AckID)
@@ -618,7 +655,11 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	}
 	absPath, err := c.server.resolveWorkflowPath(filePath, req.Source)
 	if err != nil {
-		c.sendError("invalid_file_path", err.Error(), env.AckID)
+		code := "invalid_file_path"
+		if errors.Is(err, bundle.ErrAuthorDocument) {
+			code = "author_document"
+		}
+		c.sendError(code, err.Error(), env.AckID)
 		return
 	}
 	hostInputs, err := c.server.assistantChatHostInputs(c.authCtx(), runMeta)
@@ -629,6 +670,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// Use authCtx (Background-derived, carries tenant/user identity) so
 	// closing the browser tab doesn't cancel the resume but the mongo
 	// tenant_id filter still applies on writes.
+	runMayExist = true
 	if _, err := c.server.runs.Resume(c.authCtx(), runview.ResumeSpec{
 		RunID:      c.runID,
 		FilePath:   absPath,
@@ -636,6 +678,12 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		Answers:    req.Answers,
 		HostInputs: hostInputs,
 	}); err != nil {
+		// The callee reports whether anything durable happened — see
+		// handleLaunchRun. ErrRunNotResumable carries no marker, so the
+		// routine lost race below gives its unit back.
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		// A parked gate has two legitimate resumers — the operator and the
 		// assistant-watch coordinator delivering an event. The loser of that
 		// race did nothing wrong, so name the case instead of surfacing a

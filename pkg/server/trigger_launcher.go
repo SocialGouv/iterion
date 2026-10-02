@@ -72,6 +72,11 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		SecretOverrides: plan.SecretOverrides,
 		SourceRef:       plan.SourceRef,
 		RetryPolicy:     l.retryPolicyFor(ctx, plan),
+		// The spine's vars are subscription-computed and may blind-carry
+		// keys (an ArgsVar payload, forge plumbing) the launched bot does
+		// not declare — the #1725 opt-out is the wiring for that (#1872
+		// review). Operator-typed launches keep the default refusal.
+		AllowUnknownInputs: true,
 	}
 	if l.resolveBot == nil {
 		return "", errors.New("trigger: no bot resolver wired for direct launch")
@@ -99,9 +104,16 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	}
 	res, err := l.runs.Launch(ctx, spec)
 	if err != nil {
-		// Every error out of Launch means no run started, so the metered slot
-		// goes back — as the HTTP handler does.
-		adm.rollback(l.logger)
+		// The fact travels on the error, never inferred from err != nil:
+		// a cloud publish can report failure after the message LANDED (the
+		// publisher then leaves a doc flipped to a terminal `failed`, so
+		// the run is real and accounted), and a local spawn can fail after
+		// persisting the document. A run that exists or may be claimed
+		// keeps its metered slot; only one PROVEN not to have started
+		// hands the slot back.
+		if !runview.RunMayHaveStarted(err) {
+			adm.rollback(l.logger)
+		}
 		return "", err
 	}
 	return res.RunID, nil

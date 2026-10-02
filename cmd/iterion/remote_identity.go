@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
@@ -31,13 +34,88 @@ func scopeWord(prefix string) string {
 	return "team"
 }
 
+// memberPath appends a user id to a members collection URL.
+//
+// PathEscape is load-bearing: an id is operator input reaching a URL PATH,
+// and Go's ServeMux cleans dot-segments and answers 307, which the client
+// follows preserving method AND body. Concatenated raw, `../../t-other/
+// members/u-9` silently retargets the write to another tenant and the CLI
+// reports success. The server re-authorises against the post-redirect path,
+// so nothing is granted that the caller did not already hold — but a write
+// landing somewhere the operator did not name, under exit 0, is its own
+// defect.
+func memberPath(base, userID string) string {
+	return base + "/" + url.PathEscape(userID)
+}
+
+// jsonBody encodes a flat string body with a real JSON encoder.
+//
+// fmt.Sprintf("%q") emits GO string syntax, which is not JSON: `\a`, `\v` and
+// `\xNN` are valid Go and invalid JSON, so an argument carrying a control
+// byte produced a malformed body and the operator read the server's decode
+// failure instead of "invalid role" / "invalid status". No injection was ever
+// possible — quote and backslash are escaped correctly by both — the point is
+// the diagnostic.
+//
+// The UTF-8 check is NOT decoration. json.Marshal does not fail on invalid
+// UTF-8: it substitutes U+FFFD, so `remote labels rename <from> <to>` with a
+// stray byte in argv would send a DIFFERENT string than the operator typed
+// and exit 0. Trading an explicit error for a silent substitution is the one
+// way this helper could be worse than the `%q` it replaced.
+//
+// One helper rather than a `%q` template per command: the hand-built form was
+// copied to seven call sites across four files, and the eighth would have
+// been copied too.
+func jsonBody(fields map[string]string) ([]byte, error) {
+	for k, v := range fields {
+		if !utf8.ValidString(v) {
+			return nil, fmt.Errorf("%s is not valid UTF-8 — it would be silently rewritten on the way out", k)
+		}
+	}
+	b, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode request body: %w", err)
+	}
+	return b, nil
+}
+
+func roleBody(role string) ([]byte, error) { return jsonBody(map[string]string{"role": role}) }
+
+// rolesHint names the role vocabulary of a tenancy scope, for help text.
+// The server is the authority; this only spares a round trip to find out.
+func rolesHint(prefix string) string {
+	if prefix == "/api/orgs" {
+		return "member|admin|owner"
+	}
+	return "viewer|member|admin|owner|config_editor"
+}
+
 // membersCmd builds the members command for a tenancy scope; prefix is
 // "/api/teams" or "/api/orgs" and resolve yields the scoped id.
+//
+// `add` lives here rather than next to one scope so both gain it at once:
+// the org half was missing for as long as this helper carried only
+// set-role and remove, which left the PREREQUISITE of a team grant — an
+// org membership — reachable only through the `remote api` escape hatch.
 func membersCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, error), prefix string) *cobra.Command {
+	usage := "usage: members [add <user-id> <role>|set-role <user-id> <role>|remove <user-id>]"
 	return &cobra.Command{
-		Use:   "members [set-role <user-id> <role>|remove <user-id>]",
+		Use:   "members [add <user-id> <role>|set-role <user-id> <role>|remove <user-id>]",
 		Short: "List or manage " + scopeWord(prefix) + " members",
-		Args:  cobra.MaximumNArgs(3),
+		Long: "Roles: " + rolesHint(prefix) + ".\n\n" +
+			"`add` places an account that ALREADY EXISTS, idempotently — the direct\n" +
+			"counterpart of an email invitation, for the case the invitation cannot\n" +
+			"serve. `set-role` updates an EXISTING membership and fails when there is\n" +
+			"none; `add` creates or updates.\n\n" +
+			"A team grant requires the user to already be a member of the team's org,\n" +
+			"so for someone new to the org the order is: `orgs members add`, then\n" +
+			"`teams members add`.\n\n" +
+			"`orgs members add` is SUPER-ADMIN only: naming an account id is not the\n" +
+			"same right as naming an address its owner answers at. An org admin adds\n" +
+			"someone with `orgs invitations` and keeps `set-role`/`remove` over the\n" +
+			"members they already hold. `teams members add` stays open to them — its\n" +
+			"candidates are already in the org.",
+		Args: cobra.MaximumNArgs(3),
 		RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 			id, err := resolve(cmd, c)
 			if err != nil {
@@ -47,13 +125,22 @@ func membersCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, error),
 			switch {
 			case len(args) == 0:
 				return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+			case args[0] == "add" && len(args) == 3:
+				body, err := roleBody(args[2])
+				if err != nil {
+					return err
+				}
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", memberPath(base, args[1]), body)
 			case args[0] == "set-role" && len(args) == 3:
-				body := fmt.Sprintf(`{"role":%q}`, args[2])
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", base+"/"+args[1], []byte(body))
+				body, err := roleBody(args[2])
+				if err != nil {
+					return err
+				}
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", memberPath(base, args[1]), body)
 			case args[0] == "remove" && len(args) == 2:
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", memberPath(base, args[1]), nil)
 			default:
-				return fmt.Errorf("usage: members [set-role <user-id> <role>|remove <user-id>]")
+				return fmt.Errorf("%s", usage)
 			}
 		}),
 	}
@@ -80,10 +167,13 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 				if role == "" {
 					role = "member"
 				}
-				body := fmt.Sprintf(`{"email":%q,"role":%q}`, args[1], role)
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, []byte(body))
+				body, err := json.Marshal(map[string]string{"email": args[1], "role": role})
+				if err != nil {
+					return fmt.Errorf("encode invitation: %w", err)
+				}
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
 			case args[0] == "delete" && len(args) == 2:
-				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
+				return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+url.PathEscape(args[1]), nil)
 			default:
 				return fmt.Errorf("usage: invitations [create <email>|delete <invite-id>]")
 			}
@@ -196,8 +286,11 @@ var remoteOrgsTeamsCmd = &cobra.Command{
 		case len(args) == 0:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case args[0] == "create" && len(args) == 2:
-			body := fmt.Sprintf(`{"name":%q}`, args[1])
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, []byte(body))
+			body, err := jsonBody(map[string]string{"name": args[1]})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
 		default:
 			return fmt.Errorf("usage: teams [create <name>]")
 		}

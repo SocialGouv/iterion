@@ -240,13 +240,11 @@ func envFlagEnabled(name string, def bool) bool {
 	}
 }
 
-// DefaultCachePath is where the fetched table is persisted between processes.
+// DefaultCachePath is where the fetched table is persisted between processes:
+// under the iterion home ($ITERION_HOME, else ~/.iterion — a test process's
+// own home under go test).
 func DefaultCachePath() string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".iterion", "model-specs-cache.json")
-	}
-	// Fall back to a relative path; a failed write degrades silently anyway.
-	return filepath.Join(".iterion", "model-specs-cache.json")
+	return filepath.Join(store.GlobalIterionDataDir(), "model-specs-cache.json")
 }
 
 // ---------------------------------------------------------------------------

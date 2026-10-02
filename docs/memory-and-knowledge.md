@@ -182,8 +182,8 @@ It is NOT persisted on the run, though: `iterion resume --auto-memory` has to
 re-state it.
 
 Diagnostics: **C131** (invalid value) and **C132** (`on` on a backend that
-ignores it — `claude_code`, `claw` and `pi` consume it; kimi, grok and the
-Codex do not). C132 fires per node on an explicit node-level `on`, and
+ignores it — `claude_code`, `claw` and `pi` consume it; kimi, grok,
+opencode and the Codex do not). C132 fires per node on an explicit node-level `on`, and
 once for the workflow when a workflow-level `on` is inert because *nothing* in
 the graph can honour it.
 
@@ -270,7 +270,7 @@ Three properties worth knowing:
   Docker (bind mount) and unsandboxed runs are unaffected.
 
   A cloud run is NOT automatically exempt, whatever the sandbox section of
-  [agents/backends-and-execution.md](agents/backends-and-execution.md) still
+  [agents/backends](agents/backends/README.md) still
   says about the runner pinning `ITERION_SANDBOX_OVERRIDE=none`.
   Measured on the production instance (2026-08-05): the runner's config carries
   `ITERION_SANDBOX_DEFAULT=auto`, `ITERION_SANDBOX_HOST_STATE=none` and an EMPTY

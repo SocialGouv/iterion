@@ -10,9 +10,9 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -28,25 +28,31 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"github.com/SocialGouv/iterion/pkg/subbotsource"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // RunOptions holds the configuration for the run command.
 type RunOptions struct {
-	File          string               // .bot file path or .botz bundle path
-	Recipe        string               // recipe JSON file path (alternative to File)
-	BundleDir     string               // the bundle File belongs to when it is not at its main.bot path (a studio buffer materialised under the store): the detached runner hands over both, so the subprocess compiles what the pre-flight admitted
-	Vars          map[string]string    // --var key=value overrides
-	Preset        string               // --preset <name>: applies an in-source named preset before --var
-	Skills        []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
-	RunID         string               // explicit run ID (auto-generated if empty)
-	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
-	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
-	Timeout       time.Duration        // maximum run duration (0 = no limit)
-	LogLevel      string               // log level (default: "info", env: ITERION_LOG_LEVEL)
-	NoInteractive bool                 // disable interactive TTY prompting on human pause
-	Executor      runtime.NodeExecutor // pluggable executor (nil = stub)
+	File      string            // .bot file path or .botz bundle path
+	Recipe    string            // recipe JSON file path (alternative to File)
+	BundleDir string            // the bundle File belongs to when it is not at its main.bot path (a studio buffer materialised under the store): the detached runner hands over both, so the subprocess compiles what the pre-flight admitted
+	Vars      map[string]string // --var key=value overrides
+	// AllowUnknownInputs passes --allow-unknown-inputs: an input that names
+	// no declared var rides the launch instead of refusing it (#1757) — the
+	// forwarding channel a parent's undeclared payload key rides to a subbot
+	// ({{input.extra}} in a node's `with:`) is its legitimate user.
+	AllowUnknownInputs bool
+	Preset             string               // --preset <name>: applies an in-source named preset before --var
+	Skills             []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
+	RunID              string               // explicit run ID (auto-generated if empty)
+	Source             *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
+	StoreDir           string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
+	Timeout            time.Duration        // maximum run duration (0 = no limit)
+	LogLevel           string               // log level (default: "info", env: ITERION_LOG_LEVEL)
+	NoInteractive      bool                 // disable interactive TTY prompting on human pause
+	Executor           runtime.NodeExecutor // pluggable executor (nil = stub)
 	// Background marks this invocation as a managed-runner subprocess
 	// spawned by the studio server. The CLI writes a .pid file so the
 	// server can detect liveness across its own restart, and forces
@@ -98,6 +104,11 @@ type RunOptions struct {
 	// ("", "on", "off"). "" inherits the workflow/node `auto_memory:` DSL
 	// then ITERION_AUTO_MEMORY; the default is off.
 	AutoMemory string
+	// AmbientContext is the run-level ambient-context override ("", "none",
+	// "workspace", "operator", "all"; ADR-119). "" inherits the workflow/node
+	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT; the default is
+	// workspace.
+	AmbientContext string
 	// LoopBudgetGuard is the run-level override for the back-edge
 	// affordability guard ("", "on", "off"). "" inherits the workflow's
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
@@ -192,6 +203,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	if err := automemory.ValidateMode(opts.AutoMemory); err != nil {
 		return UserInputError(fmt.Errorf("--auto-memory: %w", err))
+	}
+	if err := ambient.Validate(opts.AmbientContext); err != nil {
+		return UserInputError(fmt.Errorf("--ambient-context: %w", err))
 	}
 
 	if err := runtime.ValidateRepoDevboxMode(opts.RepoDevbox); err != nil {
@@ -333,7 +347,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks,
+	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, lineage{runID: runID}, storeDir, logger, exporterHooks,
 		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
 	if err != nil {
 		return err
@@ -390,7 +404,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// backstop and logs any malformed preset files.
 	runtime.MergeBundlePresets(wf, bundleHandle, nil)
 
-	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars)
+	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars, opts.AllowUnknownInputs)
 	if err != nil {
 		return err
 	}
@@ -516,11 +530,42 @@ func teeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID str
 // unless opts.Executor already supplies one (test path). Prometheus
 // hooks are wired in when the exporter started so the executor emits
 // the same per-turn metrics as the engine.
+// sandboxTiersClaim says whether the CLI's own sandbox tiers (--sandbox plus
+// the global default) are the tiers the ENGINE this executor serves will
+// receive. It is a named type rather than a bare bool because the two
+// answers are one token apart at the call site and only one of them is safe
+// to guess wrong: an executor that claims tiers its engine does not get
+// predicts the wrong sandbox, and the permissive direction starts a
+// workflow-controlled MCP server beside the launcher.
+type sandboxTiersClaim bool
+
+const (
+	// tiersMatchTheEngine: this executor's engine is built on the same path,
+	// from the same two tiers (the top-level `iterion run`).
+	tiersMatchTheEngine sandboxTiersClaim = true
+	// tiersUnknownToAChild: a subbot child may execute in its PARENT's
+	// sandbox, which no tier of its own expresses — its engine is built with
+	// WithSharedSandbox and neither tier. The executor stays fail-closed
+	// until that engine settles the question. Same answer, for the same
+	// reason, as runview's subbot runner.
+	tiersUnknownToAChild sandboxTiersClaim = false
+)
+
+// lineage names the run an executor is built for: its own id, and the parent
+// whose record holds the minted credentials this run may have been handed
+// under another name. A root run leaves parentRunID empty.
+type lineage struct {
+	runID       string
+	parentRunID string
+}
+
 func buildRunExecutor(
 	opts RunOptions,
+	tiers sandboxTiersClaim,
 	wf *ir.Workflow,
 	s store.RunStore,
-	runID, storeDir string,
+	ln lineage,
+	storeDir string,
 	logger *iterlog.Logger,
 	exporter exporterEventHooks,
 	botID string,
@@ -541,9 +586,18 @@ func buildRunExecutor(
 		Workflow: wf,
 		Vars:     opts.Vars,
 		Store:    s,
-		RunID:    runID,
-		Logger:   logger,
-		StoreDir: storeDir,
+		// Named explicitly rather than left to the Store type-assertion: a
+		// store wrapper that does not forward LoadRun would otherwise
+		// disable the lineage read in silence (pkg/runner's metrics wrapper
+		// is one).
+		Runs:  s,
+		RunID: ln.runID,
+		// A child's guard learns its lineage's minted credentials by VALUE,
+		// from the records: whatever name the `with:` gave them, they are
+		// redacted from this run's sinks and resolve from no placeholder.
+		ParentRunID: ln.parentRunID,
+		Logger:      logger,
+		StoreDir:    storeDir,
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire ONLY
 		// this seam — a declared supervisor's hub must ride it or its
 		// text monitors can never see the agent speak (the engine seam
@@ -551,6 +605,7 @@ func buildRunExecutor(
 		EventObservers: hookObservers,
 		Compress:       opts.Compress,
 		AutoMemory:     opts.AutoMemory,
+		AmbientContext: opts.AmbientContext,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.
@@ -563,9 +618,10 @@ func buildRunExecutor(
 		// The same tiers the engine resolves the sandbox from (see
 		// ExecutorSpec) — without them the codex screen is inert on the
 		// primary local surface while the run sandboxes two calls later.
-		SandboxOverride: opts.Sandbox,
-		SandboxDefault:  runtime.ResolveGlobalSandboxDefault(),
-		RunFallback:     []ir.Fallback{runFallback},
+		SandboxOverride:   opts.Sandbox,
+		SandboxTiersKnown: bool(tiers),
+		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(),
+		RunFallback:       []ir.Fallback{runFallback},
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
 		// future CLI chatbox) are drained at the agent's turn boundaries.
@@ -642,7 +698,17 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if childBundle != nil && childBundle.Manifest != nil {
 			bundleName = childBundle.Manifest.Name
 		}
-		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
+		// The child's engine below is built with WithSharedSandbox and
+		// neither sandbox tier: this executor must not predict from the
+		// PARENT's flags.
+		// The child's own vars are what its `with:` mapping hands it, seeded
+		// by its engine. The PARENT's launch vars are not the child's: a
+		// declared secret of the child resolving {{vars.X}} against them
+		// would hand it a credential its parent never passed.
+		childRunOpts := opts
+		childRunOpts.Vars = nil
+		childExec, err := buildRunExecutor(childRunOpts, tiersUnknownToAChild, childWf, s,
+			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, logger, nil,
 			runview.ResolveBotID("", bundleName, childPath), nil)
 		if err != nil {
 			return nil, err
@@ -651,13 +717,12 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			defer func() { _ = c.Close() }()
 		}
 
-		// Capture the child's terminal-node output (the last node before Done)
-		// as the subbot's result. The callback fires concurrently when the
-		// child fans out parallel branches, so the capture is mutex-guarded.
-		var (
-			lastMu sync.Mutex
-			last   map[string]any
-		)
+		// Capture what the child emits — the terminal-node output (the last
+		// node before Done) a contractless subbot returns, plus the per-node
+		// outputs a contract's projection reads (#1280). The callback fires
+		// concurrently when the child fans out parallel branches, so the
+		// capture is mutex-guarded.
+		var capture runview.SubbotOutputCapture
 		var childContextSeed *store.ExecutionContext
 		if parent, loadErr := s.LoadRun(ctx, req.ParentRunID); loadErr == nil && parent != nil {
 			childContextSeed = parent.ExecutionContext.Clone()
@@ -692,12 +757,8 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// subbots died with "no SubbotRunner is wired" even though the
 			// depth guard below exists precisely to bound that recursion.
 			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
-			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
-				if out != nil {
-					lastMu.Lock()
-					last = out
-					lastMu.Unlock()
-				}
+			runtime.WithOnNodeFinished(func(_ context.Context, _, nodeID string, out map[string]any) {
+				capture.Record(nodeID, out)
 			}),
 		}
 		// The child works in the parent's EFFECTIVE workdir (its worktree when
@@ -748,7 +809,10 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, s, req)
-		return last, nil
+		if contract := childWf.Contract; contract != nil {
+			return subbotcontracts.ProjectOutput(contract, capture.ByNode()), nil
+		}
+		return capture.Terminal(), nil
 	}
 }
 

@@ -127,6 +127,8 @@ ENV PATH="/opt/iterion/llm-clis/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
 #               build JSON note payloads with `jq -nc --arg`; without it
 #               every cloud converse/review run burned an LLM round-trip
 #               on exit-127 before falling back to python3.
+#   libatomic1 — Node 26's shared-library dependency, not carried over when
+#                copying only the node binary from the llm-clis stage.
 # apt cache mounts keep the downloaded .deb archives + package lists warm on
 # the operator daemon (dropping docker-clean so apt doesn't purge them). Both
 # dirs are cache mounts, so they never land in the final image layer — no need
@@ -143,7 +145,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         curl \
         passwd \
         python3 \
-        jq
+        jq \
+        libatomic1
 
 # glab (GitLab CLI) — review-pr (Revi) runs WITHOUT a sandbox, so in
 # cloud it executes inside the runner pod and posts code reviews onto
@@ -249,6 +252,10 @@ RUN git config --system user.email "iterion-runner@bot.iterion.invalid" \
 
 USER iterion
 WORKDIR /home/iterion
+
+# Exercise the final runtime, including its copied binaries, library closure
+# and non-root permissions. This runs on each architecture before publication.
+RUN node --version && claude --version && codex --version
 
 # Default exposed port matches the server bind. Helm chart overrides
 # via `--port`. /healthz and /readyz are served on the same port so

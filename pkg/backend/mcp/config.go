@@ -6,10 +6,13 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 const (
@@ -17,7 +20,28 @@ const (
 	EnvAutoLoad = "ITERION_MCP_AUTOLOAD"
 	// EnvHealthCheck controls MCP pre-execution health checks (default: enabled).
 	EnvHealthCheck = "ITERION_MCP_HEALTHCHECK"
+	// EnvExpandUntrustedEnv is the operator's opt-in to expanding `${VAR}`
+	// in a WORKFLOW-CONTROLLED server's config against the launcher's
+	// environment — the behaviour before the launcher started refusing it.
+	//
+	// The restriction is load-bearing rather than absolute: an operator
+	// running their OWN repository locally may legitimately keep a token in
+	// their shell and name it in `.mcp.json`. It is off by default because
+	// the same file, in a repository under review, reads whatever the
+	// launcher holds.
+	EnvExpandUntrustedEnv = "ITERION_MCP_EXPAND_UNTRUSTED_ENV"
 )
+
+// ExpandUntrustedEnvEnabled reports whether the operator opted back into
+// expanding workflow-controlled configs against the launcher's environment.
+func ExpandUntrustedEnvEnabled() bool {
+	// Read as INHERITED, not live: this is the operator's decision to hand a
+	// workflow-controlled config the launcher's environment, and a `.env` in
+	// the repository that config comes from must not be able to make it. The
+	// warning this knob silences even prints its own name to the author who
+	// would set it.
+	return strings.EqualFold(strings.TrimSpace(envtrust.Inherited(EnvExpandUntrustedEnv)), "true")
+}
 
 // HealthCheckEnabled returns true unless ITERION_MCP_HEALTHCHECK is "false" or "0".
 func HealthCheckEnabled() bool {
@@ -44,6 +68,21 @@ type ServerConfig struct {
 	WorkDir   string            // working directory for stdio server processes
 	Env       map[string]string // extra environment variables for stdio server processes
 	Auth      *AuthConfig       // authentication (OAuth2, etc.) for SSE/HTTP servers
+
+	// Origin records who controls this definition (see origin.go). It
+	// decides whether the launcher may start the server while a sandbox
+	// is active. The zero value is untrusted.
+	Origin Origin
+
+	// StartErr, when set, is a reason known at catalog-build time for
+	// why this server cannot start — today, a malformed `auth:` block on
+	// a workflow-controlled server. The manager returns it instead of
+	// starting, so the failure lands on the node that asked for the
+	// server rather than on the whole run.
+	//
+	// Excluded from JSON serialization for the same reason as AuthFunc:
+	// the cache fingerprint must stay stable.
+	StartErr error `json:"-"`
 
 	// AuthFunc, when set, is invoked on every outbound HTTP request
 	// to obtain a fresh "Authorization" header value. Populated by
@@ -85,7 +124,11 @@ func FromIRAuth(auth *ir.MCPAuth) *AuthConfig {
 // PrepareWorkflow resolves the final MCP catalog and active server sets for a
 // compiled workflow. It merges project .mcp.json, top-level `mcp_server`
 // declarations, and built-in presets, then applies workflow/node filters.
-func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
+// The optional logger carries the one failure this function otherwise
+// swallows: a plugin registry that cannot load takes EVERY plugin MCP server
+// off every node of the run, and that must not look like "no plugins are
+// enabled". Callers that have a run-scoped logger should pass it.
+func PrepareWorkflow(wf *ir.Workflow, projectDir string, logger ...*iterlog.Logger) error {
 	if wf == nil {
 		return nil
 	}
@@ -100,7 +143,11 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 	// servers — exactly like project .mcp.json entries — so every agent/judge
 	// node gets their tools unless it filters MCP explicitly. This is the
 	// runtime half of the plugin "mcp" contribution kind.
-	for name, cfg := range loadPluginServers(projectDir) {
+	var log *iterlog.Logger
+	if len(logger) > 0 {
+		log = logger[0]
+	}
+	for name, cfg := range loadPluginServers(projectDir, log) {
 		if _, clash := projectServers[name]; clash {
 			continue // a project .mcp.json entry of the same name wins
 		}
@@ -123,6 +170,7 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 	for name, cfg := range catalog {
 		wf.ResolvedMCPServers[name] = &ir.MCPServer{
 			Name:      cfg.Name,
+			Origin:    string(cfg.Origin),
 			Transport: toIRTransport(cfg.Transport),
 			Command:   cfg.Command,
 			Args:      append([]string(nil), cfg.Args...),
@@ -204,11 +252,15 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 		return nil, nil, fmt.Errorf("mcp: parse %s: %w", path, err)
 	}
 
-	names := make([]string, 0, len(file.MCPServers))
+	// In name order: of several invalid servers, the refusal names the
+	// same one on every run.
+	names := slices.Sorted(maps.Keys(file.MCPServers))
 	servers := make(map[string]*ServerConfig, len(file.MCPServers))
-	for name, raw := range file.MCPServers {
+	for _, name := range names {
+		raw := file.MCPServers[name]
 		cfg := &ServerConfig{
 			Name:      name,
+			Origin:    OriginProject,
 			Transport: normalizeTransport(raw.Type, raw.Transport, raw.Command, raw.URL),
 			Command:   raw.Command,
 			Args:      append([]string(nil), raw.Args...),
@@ -228,10 +280,8 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 		if err := validateServerConfig(cfg); err != nil {
 			return nil, nil, fmt.Errorf("mcp: project server %q: %w", name, err)
 		}
-		names = append(names, name)
 		servers[name] = cfg
 	}
-	sort.Strings(names)
 	return servers, names, nil
 }
 
@@ -241,8 +291,16 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 		catalog[name] = cloneServerConfig(cfg)
 	}
 	for name, cfg := range explicit {
+		if cfg == nil {
+			catalog[name] = nil
+			continue
+		}
+		// "Explicit wins" carries the winner's origin with it: a DSL
+		// declaration shadowing a project or plugin name is the bot
+		// author's, whatever it displaced.
 		catalog[name] = &ServerConfig{
 			Name:      cfg.Name,
+			Origin:    OriginWorkflow,
 			Transport: FromIRTransport(cfg.Transport),
 			Command:   cfg.Command,
 			Args:      append([]string(nil), cfg.Args...),
@@ -252,8 +310,19 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 		}
 	}
 
-	for name, cfg := range catalog {
-		if err := validateServerConfig(cfg); err != nil {
+	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		cfg := catalog[name]
+		if cfg == nil {
+			return nil, fmt.Errorf("mcp: server %q has no configuration", name)
+		}
+		// The key selects the catalog entry, but CLI adapters forward Name.
+		// Validate both identities before any resolved workflow is published.
+		for _, identity := range []string{name, cfg.Name} {
+			if permission.IsReservedMCPServerName(identity) {
+				return nil, fmt.Errorf("mcp: server %q uses reserved internal name %q; rename the custom MCP server", name, identity)
+			}
+		}
+		if err := validateServerConfig(catalog[name]); err != nil {
 			return nil, fmt.Errorf("mcp: server %q: %w", name, err)
 		}
 	}
@@ -414,6 +483,8 @@ func cloneServerConfig(cfg *ServerConfig) *ServerConfig {
 		Env:       cloneStringMap(cfg.Env),
 		Auth:      cloneAuthConfig(cfg.Auth),
 		AuthFunc:  cfg.AuthFunc,
+		Origin:    cfg.Origin,
+		StartErr:  cfg.StartErr,
 	}
 }
 
@@ -453,20 +524,47 @@ func authConfigToIR(a *AuthConfig) *ir.MCPAuth {
 //
 // Pass nil broker to disable OAuth wiring entirely (returns nil).
 func PrepareAuth(catalog map[string]*ServerConfig, broker *OAuthBroker) error {
+	errs := PrepareAuthPerServer(catalog, broker)
+	// In name order: of several malformed servers, the refusal names the
+	// same one on every run.
+	for _, name := range slices.Sorted(maps.Keys(errs)) {
+		return fmt.Errorf("mcp: prepare auth for %q: %w", name, errs[name])
+	}
+	return nil
+}
+
+// PrepareAuthPerServer is PrepareAuth without the all-or-nothing verdict:
+// it wires AuthFunc on every server it can and returns one error per
+// server it could not, keyed by name.
+//
+// Callers that must distinguish whose mistake it is use this one. A
+// malformed block on a server the operator installed deserves to fail the
+// run; the same block on a server the workflow declares must fail only
+// that server — otherwise a file inside the target repository decides
+// whether the run starts at all.
+//
+// Pass nil broker to disable OAuth wiring entirely (returns nothing).
+func PrepareAuthPerServer(catalog map[string]*ServerConfig, broker *OAuthBroker) map[string]error {
 	if broker == nil {
 		return nil
 	}
-	for name, cfg := range catalog {
+	var errs map[string]error
+	for _, name := range slices.Sorted(maps.Keys(catalog)) {
+		cfg := catalog[name]
 		if cfg == nil || cfg.Auth == nil {
 			continue
 		}
 		fn, err := broker.AuthFuncFor(cfg.Auth, name)
 		if err != nil {
-			return fmt.Errorf("mcp: prepare auth for %q: %w", name, err)
+			if errs == nil {
+				errs = map[string]error{}
+			}
+			errs[name] = err
+			continue
 		}
 		cfg.AuthFunc = fn
 	}
-	return nil
+	return errs
 }
 
 func cloneStringMap(src map[string]string) map[string]string {

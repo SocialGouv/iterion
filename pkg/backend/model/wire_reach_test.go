@@ -36,6 +36,11 @@ func TestAnthropicWireReachable(t *testing.T) {
 		{"claw + openai model prefix only", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai/gpt-5"}}), false},
 		{"claw + anthropic provider", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "anthropic"}}), true},
 		{"claw + zai facade", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "${RESCUE_PROVIDER:-zai}"}}), true},
+		// The Moonshot facade rides the same wire, so a node pinned to it
+		// CAN spend the metered subscription's sibling credential — the
+		// pre-flight must stay armed for it exactly as for z.ai.
+		{"claw + moonshot facade", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "moonshot"}}), true},
+		{"claw + moonshot/ model prefix", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "moonshot/kimi-k2"}}), true},
 		// A provider the executor resolves from the run's vars is unknown
 		// to this walk: it defers, like "auto", and the wire stays reachable.
 		{"claw + templated provider defers", wfOf(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "{{vars.p}}"}}), true},
@@ -129,5 +134,55 @@ func TestAnthropicWireReachable_Overrides(t *testing.T) {
 	agentOnly.SetProvider("oracle_campaign", "openai")
 	if !AnthropicWireReachable(wf, agentOnly) {
 		t.Fatal("the judge still resolves to claude_code")
+	}
+}
+
+// AnthropicWireRoutes reads each route's FIRST chain element, the way the
+// executor builds it — what the run spends before any rescue — and says when
+// it cannot read it: the pre-flight then judges the route on the run's default
+// credential.
+func TestAnthropicWireRoutesReadsThePrimaryElement(t *testing.T) {
+	t.Setenv("PRIMARY_PROVIDER", "")
+	node := func(id, backend, provider, model string) ir.Node {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: model}}
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"e-chain":    node("e-chain", "claude_code", "zai:glm-5.3,anthropic", "claude-opus-5-5"),
+		"d-auto":     node("d-auto", "claude_code", "auto,zai", "claude-opus-5-5"),
+		"c-env":      node("c-env", "claude_code", "${PRIMARY_PROVIDER:-moonshot}", "kimi-k2"),
+		"b-var":      node("b-var", "claude_code", "{{vars.p}}", "claude-opus-5-5"),
+		"a-dispatch": node("a-dispatch", "{{vars.b}}", "", "claude-opus-5-5"),
+		"f-model":    node("f-model", "claw", "", "{{vars.m}}"),
+		"g-off":      node("g-off", "codex", "", "openai/gpt-6"),
+	}}
+	got := AnthropicWireRoutes(wf, ModelOverrides{})
+	want := []WireRoute{
+		{NodeID: "a-dispatch", Backend: "", Hint: "", Model: "claude-opus-5-5", Readable: false},
+		{NodeID: "b-var", Backend: "claude_code", Hint: "{{vars.p}}", Model: "claude-opus-5-5", Readable: false},
+		{NodeID: "c-env", Backend: "claude_code", Hint: "moonshot", Model: "kimi-k2", Readable: true},
+		{NodeID: "d-auto", Backend: "claude_code", Hint: "", Model: "claude-opus-5-5", Readable: true},
+		{NodeID: "e-chain", Backend: "claude_code", Hint: "zai", Model: "glm-5.3", Readable: true},
+		{NodeID: "f-model", Backend: "claw", Hint: "", Model: "{{vars.m}}", Readable: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("routes = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("route %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// A launch-time provider override IS the chain, element and all.
+	var ov ModelOverrides
+	ov.SetProvider("e-chain", "anthropic")
+	for _, r := range AnthropicWireRoutes(wf, ov) {
+		if r.NodeID == "e-chain" && (r.Hint != "anthropic" || r.Model != "claude-opus-5-5") {
+			t.Errorf("overridden route = %+v, want the override's hint over the node's model", r)
+		}
+	}
+
+	if got := AnthropicWireRoutes(nil, ModelOverrides{}); len(got) != 1 || got[0].Readable {
+		t.Errorf("nil workflow routes = %+v, want one unreadable route", got)
 	}
 }

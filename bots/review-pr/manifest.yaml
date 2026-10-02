@@ -1,7 +1,80 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.5
+version: 0.9.12
+## 0.9.12 — the z.ai pin (0.9.6) is LIFTED. The pin existed because a
+## capped forfait parked the whole review. That holds only when nothing else
+## can take the wire: with a second anthropic-wire credential admitted to the
+## run (the platform's z.ai key), the publisher's skip of a forfait whose
+## window is closed (forfaitWindowClosed: a provider refusal, or an operator
+## usage cap, soft or hard) hands the wire over and the run is admitted. The four reviewer nodes return to their ${ENV:-default} dials:
+## claude-opus-5-5 on claude_code (both tiers — the catalog ships no other
+## Anthropic default; glance's frugality stays in effort/caps),
+## openai/gpt-6-astra (guard) / openai/gpt-6-luna (glance) on claw. The GLM
+## rescue dial (ITERION_VIBE_MODEL_CLAUDE_FALLBACK) defaults to glm-5.3.
+## Every claude_code node on a claude id — both claude reviewers AND
+## converge — pins its provider to `anthropic` through a dial
+## (ITERION_VIBE_PROVIDER_CLAUDE / ITERION_VIBE_PROVIDER_EMIT): the wire's
+## credential order puts facade keys first, and a z.ai key holding the wire
+## ACCEPTS a claude id and serves GLM in silence, under the claude label (PR
+## #1924's gpt slot did exactly that). Pinned, the primary spends the sealed
+## Anthropic credential, else the runner's ambient Anthropic auth, else fails
+## "Not logged in" and the GLM route takes it, stamped. converge gained that
+## same route: it is on every path. The gpt slot gained a provider dial
+## (ITERION_VIBE_PROVIDER_GPT, empty by default) so pointing it at the claude
+## family can carry the same hint. The merge-gate note names a
+## fallback-served merge step like it names a fallback-served reviewer. The
+## published run table labels each row with the family that SERVED — the
+## session's routing label first (a z.ai facade → GLM, whatever id it was
+## sent), then the model — instead of the slot's name; the Synthèse row
+## carries its family too. Only the family is published, never the label.
+## 0.9.9 — the lost-gate guard sees EVERY exit. 0.9.8 filled
+## gate_requested on the success emit only, so the three failure exits (no
+## endpoint bound, endpoint HTTP error, endpoint unreachable) left it at its
+## False default — and publish_health is blind wherever it is false. On a clean
+## review the inline-anchor predicate is false too, so a run whose check never
+## landed printed "forge publish OK" over a pull request nobody can merge: the
+## exact failure 0.9.8 claimed to close, on the paths where it matters most.
+## GATE_ENABLED is now read beside PUB_URL rather than in the gate block 200
+## lines down, which is why it was out of scope at the first exit.
+## Witnessed by driving publish_review's unreachable-endpoint exit and reading
+## what it emits — a test that drives publish_health alone stayed green on the
+## mutation, which is how the gap got in.
+## 0.9.8 — the gate's outcome travels STRUCTURED, so a check that never landed
+## cannot read as a healthy run. 0.9.7 pinned the verdict to the revision it
+## judged, and the server refuses a stale pin — but `publish_health` only ever
+## saw `total_findings` / `comments_posted`, so a head that moved during the
+## review cost `revi/review` entirely while the run reported "forge publish OK".
+## That is the defect 0.5.6 was written for, re-entered by another door: its own
+## words are "when the guard legitimately fires, it costs the inline anchors
+## only: the publish still happens, carrying the gate, because a required status
+## that never lands blocks a PR for good". `publish_output` now carries
+## gate_requested / gate_posted / gate_skipped_reason, the edge threads them,
+## and publish_health raises MERGE GATE NOT POSTED with the reason and the
+## recovery — the same predicate Vetty's feedback_health already used.
+## 0.9.7 — the verdict is PINNED to the revision it judged: the publish
+## payload carries `audited_sha` (the same `REVIEWED_SHA` the node already
+## compared against the worktree HEAD to annotate a stale anchor — it was
+## reported in the comment and never enforced on the gate), and the server
+## refuses a pin that is no longer the head instead of retargeting the status.
+## 0.9.6 — the whole reviewer fleet is pinned to z.ai's GLM: `provider:
+## "zai"` + `model: "glm-5.3"` on all four reviewer nodes, because this
+## deployment's Anthropic forfait is capped and the merge gate must
+## still review. The gpt slot's backend moves WITH the pin (claw →
+## claude_code): `provider:` is a hint honoured on claude_code only —
+## claw derives its provider from the model-spec prefix and rejects a
+## bare GLM id with `invalid spec` — so a zai pin declared on claw is
+## inert at best and dead at worst. "gpt" stays a slot label: the
+## reviewer self-reports `family: "gpt"` from its prompt, which is all
+## merge_reviews keys on, so in dual/audit the cross-confirmation is
+## same-model while the pin holds. The claude slot keeps its glm-5.2
+## fallback route byte-for-byte — same provider now, older id, tried
+## only when glm-5.3 itself hard-fails. Glance's frugality is its
+## reasoning_effort and tier caps, not the model. Parked with the pin:
+## ITERION_VIBE_MODEL_CLAUDE, _CLAUDE_GLANCE, ITERION_VIBE_BACKEND_GPT,
+## ITERION_VIBE_MODEL_GPT, ITERION_VIBE_BACKEND_GPT_GLANCE,
+## ITERION_VIBE_MODEL_GPT_GLANCE — they return when the pin lifts; the
+## effort dials and ITERION_VIBE_MODEL_CLAUDE_FALLBACK stay live.
 ## 0.9.5 — the claude slot has somewhere to go. Both its nodes
 ## (reviewer_claude and its glance twin) declare a GLM fallback route,
 ## so an instance whose Anthropic credential is spent, expired or unable

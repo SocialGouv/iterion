@@ -101,7 +101,7 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 // triggers: the run-outcome event (immediate) and the periodic sweep (the net
 // under it). `via` names which one — the same discriminator the reconciler
 // carries, and for the same reason: the sweep re-offers every terminal run in
-// its lookback ONCE A MINUTE, per process, so anything here that is not
+// its lookback ONCE A MINUTE, so anything here that is not
 // idempotent must be event-only. The launch path is idempotent by its
 // per-head claim; a COMMENT is not, and has no claim to hide behind.
 //
@@ -148,8 +148,8 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	// The notice is posted on the EVENT path only. A declined run is terminal
 	// and its updated_at never moves, so the sweep re-offers it every minute
 	// for the whole lookback — dozens of identical comments on one pull
-	// request, per replica. Same guard, for the same reason, as the pause and
-	// DLQ notices next door (R69a603).
+	// request. Same guard, for the same reason, as the pause and DLQ notices
+	// next door (R69a603).
 	if run.FailureCode == declinedFailureCode {
 		if via == gateTriggerEvent {
 			s.noticeFixerDeclined(ctx, run)
@@ -179,6 +179,12 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	if !s.runOwnsGrant(run, grant, "gate auto-fix") {
 		return nil
 	}
+	// A verdict waiting to be posted (deferGateVerdict) means the budget every
+	// read below would spend may be exhausted, and the head does not show this
+	// run's verdict yet: nothing to read until then.
+	if d := grant.Deferred; d != nil && s.gateNow().Before(d.RetryAt) {
+		return nil
+	}
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		return nil
@@ -193,8 +199,8 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	}
 
 	// The per-head claim probe comes BEFORE every forge round-trip: the
-	// sweep re-offers each gating run ~once a minute for an hour, on every
-	// replica, and without this exit each offer costs GetPullRequest +
+	// sweep re-offers each gating run ~once a minute for an hour, and
+	// without this exit each offer costs GetPullRequest +
 	// ListCommitStatuses (+ GetIssue with hold labels) against the same App
 	// quota the merge-gate reconciler lives on — the net would starve the
 	// gate it backs. `reviewed` is the only sha a launch is possible for
@@ -388,6 +394,13 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 		// escalated when it is spent; the sweep's next offers carry the
 		// retries. A denial keeps its own recovery (the forge is told, the
 		// org quota resets on its own horizon).
+		// A refusal says nothing today — the same silence the relaunch lane
+		// had. It is not a failed start and must not escalate, but an
+		// operator who flipped a subscription's lane kind needs to see WHY
+		// the fixer never ran.
+		if res.Status == webhooks.StatusFiltered && s.logger != nil {
+			s.logger.Info("gate autofix: %s#%d refused: %s", repo, number, strings.TrimSpace(res.Error))
+		}
 		if res.Status == webhooks.StatusLaunchError && res.denial == nil {
 			why := strings.TrimSpace(res.Error)
 			switch {

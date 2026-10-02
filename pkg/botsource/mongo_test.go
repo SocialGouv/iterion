@@ -1,6 +1,7 @@
 package botsource
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -14,17 +15,17 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// TestMongoStore runs the bot-source store against a real Mongo (same env gating
-// as the other Mongo conformance suites). It proves the cloud store honors
-// tenant isolation, (tenant, slug) uniqueness, and version-guarded updates —
-// the invariants the memory store test asserts, but on the durable backend.
-func TestMongoStore(t *testing.T) {
+// newMongoStoreForTest opens a throwaway Mongo-backed store (same env gating
+// as the other Mongo conformance suites) and returns it with the base ctx and
+// two tenant-scoped contexts.
+func newMongoStoreForTest(t *testing.T) (st *MongoStore, ctx, t1, t2 context.Context) {
+	t.Helper()
 	uri := os.Getenv("ITERION_TEST_MONGO_URI")
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo botsource suite")
 	}
 	ctx, cancel := mongotest.Ctx(t)
-	defer cancel()
+	t.Cleanup(cancel)
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
 		t.Fatalf("mongo connect: %v", err)
@@ -39,16 +40,22 @@ func TestMongoStore(t *testing.T) {
 		_ = client.Disconnect(drop)
 	})
 
-	st := NewMongoStore(db)
+	st = NewMongoStore(db)
 	if err := st.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema: %v", err)
 	}
 	if err := st.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema (idempotent): %v", err)
 	}
+	return st, ctx, store.WithTenant(ctx, "team-1"), store.WithTenant(ctx, "team-2")
+}
 
-	t1 := store.WithTenant(ctx, "team-1")
-	t2 := store.WithTenant(ctx, "team-2")
+// TestMongoStore runs the bot-source store against a real Mongo (same env gating
+// as the other Mongo conformance suites). It proves the cloud store honors
+// tenant isolation, (tenant, slug) uniqueness, and version-guarded updates —
+// the invariants the memory store test asserts, but on the durable backend.
+func TestMongoStore(t *testing.T) {
+	st, ctx, t1, t2 := newMongoStoreForTest(t)
 
 	created, err := st.Create(t1, validSource("team-1", "reviewer"))
 	if err != nil {
@@ -104,10 +111,55 @@ func TestMongoStore(t *testing.T) {
 		t.Fatalf("ListByTenant team-1: %v len=%d", err, len(list))
 	}
 
+	// The by-version accessor (#1381) against the durable backend: the same
+	// contract the memory twin pins, on real Mongo.
+	assertVersionHistoryContract(t, st, ctx, "team-1")
+
 	if err := st.Delete(t1, created.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := st.Get(t1, created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound after delete, got %v", err)
+	}
+}
+
+// The Create ordering (version snapshot BEFORE the row) means a failed
+// create — here the slug conflict the second insert raises — leaves only an
+// orphan snapshot for an id the caller never sees: dead data no pin can
+// name. The reverse order reported a failure for a row that existed and
+// wedged the slug's retry on ErrSlugConflict. The slug and its history stay
+// untouched, and a retry mints a fresh identity that works end to end.
+func TestMongoStore_FailedCreateLeavesTheSlugUntouched(t *testing.T) {
+	st, _, t1, _ := newMongoStoreForTest(t)
+
+	v1, err := st.Create(t1, validSource("team-1", "order-keeper"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The second create fails on its ROW insert — its own version snapshot
+	// has already landed under a freshly minted, never-returned id.
+	if _, err := st.Create(t1, validSource("team-1", "order-keeper")); !errors.Is(err, ErrSlugConflict) {
+		t.Fatalf("want ErrSlugConflict, got %v", err)
+	}
+
+	// The original row and its history are untouched.
+	cur, err := st.GetBySlug(t1, "team-1", "order-keeper")
+	if err != nil || cur.ID != v1.ID || cur.Version != 1 {
+		t.Fatalf("GetBySlug after the failed create: (%v, %+v)", err, cur)
+	}
+	got, err := st.GetByVersion(t1, "team-1", v1.ID, 1)
+	if err != nil || got.ID != v1.ID {
+		t.Fatalf("GetByVersion on the surviving row: %v id=%q", err, got.ID)
+	}
+
+	// A retry under a fresh slug mints a fresh identity that works.
+	retry, err := st.Create(t1, validSource("team-1", "order-retry"))
+	if err != nil {
+		t.Fatalf("retry Create: %v", err)
+	}
+	gotRetry, err := st.GetByVersion(t1, "team-1", retry.ID, 1)
+	if err != nil || gotRetry.ID != retry.ID {
+		t.Fatalf("GetByVersion on the retried row: %v id=%q", err, gotRetry.ID)
 	}
 }

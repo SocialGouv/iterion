@@ -57,7 +57,7 @@ cursor ambition:                  # optional prompt-engineering dial (see docs/c
 
 agent worker:
   backend: "claw"
-  model:   "openai/gpt-5.5"
+  model:   "openai/gpt-6-sol"
   system:  my_system
   output:  verdict
 
@@ -134,8 +134,8 @@ deliberate refusal only changes verdict when an operator changes something.
 
 ```iter fragment
 agent w:
-  backend: "claw"               # or claude_code / codex / pi / kimi / grok
-  model:   "openai/gpt-5.5"     # claw with openai/* prefix
+  backend: "claw"               # or claude_code / codex / pi / kimi / grok / opencode
+  model:   "openai/gpt-6-sol"     # claw with openai/* prefix
   reasoning_effort: high        # low | medium | high | xhigh | max | ultracode
                                 # ultracode = xhigh + multi-agent orchestration prerogative;
                                 # reliable on Opus 4.8 and the Claude 5 family only (else warns C089, runs as xhigh)
@@ -160,7 +160,7 @@ agent w:
   readonly: true                # runtime-blocks mutation tools
   interaction: human            # surfaces ask_user via MCP
   interaction_prompt: ask_msg   # used when interaction is llm or llm_or_human
-  interaction_model: "openai/gpt-5.5"
+  interaction_model: "openai/gpt-6-sol"
   capabilities: [board.read, board.create, board.move]   # opens MCP-gated tools
   skills: ["changelog-writer", "house-style"]   # skill-library refs (quote kebab names);
                                 # mirrored into .claude/skills/ + listed under a ## Skills
@@ -192,7 +192,7 @@ Backend rules:
   retries the runtime falls through to the next provider
   transparently (generalises `RESCUE_PROVIDER`). Each element may
   pin its own model with `provider:model`
-  (`provider: "zai:glm-5.2,anthropic:claude-opus-4-8"`) so the
+  (`provider: "zai:glm-5.3,anthropic:claude-opus-5-5"`) so the
   fall-through swaps BOTH the hint and the wire model; a model-less
   element inherits the node `model:`. Honoured by `claude_code`
   (same-API family); `claw`/`codex` use only the first hint
@@ -206,12 +206,12 @@ Backend rules:
   ```iter fragment
   agent implement:
     backend: "claude_code"
-    model: "claude-opus-5"
+    model: "claude-opus-5-5"
     tools: [read_file, bash]
     fallbacks:
       api:
         backend: "claw"
-        model: "anthropic/claude-opus-5"
+        model: "anthropic/claude-opus-5-5"
         on: [usage_window]
   ```
 
@@ -255,55 +255,56 @@ parser). A name absent from a kind's line is refused with E012 and the
 closest accepted name.
 
 <!-- dsl-spec:begin skill -->
-Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `"a|b"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
+Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string or one bare word · `id` bare name · `id.id` bare name, dotted for a group instance's node or a node's field · `str|id` either · `str|num` a string or a bare number (`30s`, `3`) · `prompt` a prompt's name, or its text as a string · `int` `num` `bool` literals · `a|b` one of, bare or quoted · `a|b|"${VAR}"` one of, or a quoted env string · `"a|b"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
 
-- `prompt` — entries `indented text lines`
-- `schema` — entries `field: string | bool | int | float | json | string[] | file [enum: "a", "b"]`
+- `prompt` — body: free text
+- `schema` — entries `<field>: string | bool | int | float | json | string[] | file [enum: "a", "b"]`
 - `cursor` — description str · values {cursor.values} · bands {cursor.bands}
-- `cursor.values` (`values:` in cursor) — entries `name: "prompt fragment"`
-- `cursor.bands` (`bands:` in cursor) — entries `"lo..hi": "prompt fragment"`
-- `supervisor` — watches [id] · model str · system id · cooldown str · max_evals int · monitors [str]
+- `cursor.values` (`values:` in cursor) — entries `<name>: "prompt fragment"`
+- `cursor.bands` (`bands:` in cursor) — entries `"<lo..hi>": "prompt fragment"`
+- `supervisor` — watches [id] · model str · system prompt · cooldown str · max_evals int · monitors [str]
 - `mcp_server` — transport stdio|http|sse · command str · args [str] · url str · auth {auth}
 - `auth` (`auth:` in mcp_server) — type str · auth_url str · token_url str · revoke_url str · client_id str · scopes [str]
-- `group` — entries `node declarations and edges (src -> dst)`
-- `use` — entries `use g as p with { param: "value" }`
-- `vars` (`vars:` in the file, workflow) — entries `name: type [enum: "a", "b"] [= default]`
-- `presets` (`presets:` in the file) — entries `name: (indented) var: literal`
-- `attachments` (`attachments:` in the file, workflow) — entries `name: file | image`
+- `group` — `group <name>(<param>, …):` — body: agent/judge/router/human/tool/compute declarations and edges
+- `use` — `use <group> as <prefix> [with { <param>: "value", … }]`
+- `vars` (`vars:` in the file, workflow) — entries `<name>: string | bool | int | float | json | string[] [enum: "a", "b"] [matching: "<re>"] [= <default>]`
+- `presets` (`presets:` in the file) — entries `<name>: (indented) <var>: <literal>`
+- `attachments` (`attachments:` in the file, workflow) — entries `<name>: file | image`
 - `attachment` (`attachments:` in attachments) — description str · accept_mime [str] · required bool
-- `secrets` (`secrets:` in the file) — entries `name: "value"`
+- `secrets` (`secrets:` in the file) — entries `<name>: ["value"]`
 - `secret` (`secrets:` in secrets) — value str · as value|file · mount_path str · env str|id · optional bool · hosts [str] · description str
-- `agent` / `judge` — description str · model str · backend str · provider str · command str · input id · output id · publish id · artifact_labels [tool] · system id · user id · session fresh|inherit|inherit_if_available|fork|artifacts_only|persist · session_slot id · tools [tool] · tool_policy [tool] · capabilities [tool] · skills [skill] · tool_max_steps int · max_tokens int · reasoning_effort low|medium|high|xhigh|max|ultracode · timeout str · readonly bool · full_access bool · images [str] · interaction none|human|llm|llm_or_human|review|async · interaction_prompt id · interaction_model str · await wait_all|best_effort · compress on|ultra|off · auto_memory on|off · permission off|ask|deny · needs id|[id] · fallbacks {fallback} · mcp {mcp} · compaction {compaction} · memory {memory} · sandbox none|auto|{sandbox} · cursors {cursors}
-- `router` — description str · mode fan_out_all|fan_out_each|condition|round_robin|llm · model str · backend str · provider str · system id · user id · multi bool · reasoning_effort low|medium|high|xhigh|max|ultracode · over str · as id · key id · depends_on id · needs id|[id]
-- `human` — description str · input id · output id · publish id · artifact_labels [tool] · instructions id · system id · model str · interaction none|human|llm|llm_or_human|review|async · interaction_prompt id · interaction_model str · min_answers int · await wait_all|best_effort · review_url str · posture human_required|agent_verdict_ok · merge_strategy squash|merge · merge_into str|id · max_turns int
-- `tool` — description str · command str · script str · language js|node|py|python|python3|sh|bash · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · sandbox none|auto|{sandbox} · compress on|ultra|off · permission id · needs id|[id] · parallel_safe bool · goal str · postcondition str · policy required|recover|best_effort · recovery {recovery} · action id · connection id · params {params} · retry str · timeout str
-- `params` (`params:` in tool) — entries `key: "value"`
+- `agent` / `judge` — description str · model str · backend str · provider str · command str · input id · output id · publish id · artifact_labels [tool] · system prompt · user prompt · session fresh|inherit|inherit_if_available|fork|artifacts_only|persist · session_slot id · tools [tool] · tool_policy [tool] · capabilities [tool] · skills [skill] · tool_max_steps int · max_tokens int · reasoning_effort none|low|medium|high|xhigh|max|ultracode|"${VAR}" · timeout str · readonly bool · full_access bool · images [str] · interaction none|human|llm|llm_or_human|review|async|human_or_host · interaction_prompt id · interaction_model str · await wait_all|best_effort · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · permission off|ask|deny · allow [str] · ask [str] · deny [str] · needs id|[id] · fallbacks {fallbacks} · mcp {mcp} · compaction {compaction} · memory {memory} · sandbox none|auto|{sandbox} · cursors {cursors}
+- `router` — description str · mode fan_out_all|fan_out_each|condition|round_robin|llm · model str · backend str · provider str · system prompt · user prompt · multi bool · reasoning_effort none|low|medium|high|xhigh|max|ultracode|"${VAR}" · over str · as id · key id · depends_on id · needs id|[id]
+- `human` — description str · input id · output id · publish id · artifact_labels [tool] · instructions prompt · system prompt · model str · interaction none|human|llm|llm_or_human|review|async|human_or_host · interaction_prompt id · interaction_model str · min_answers int · await wait_all|best_effort · review_url str · posture human_required|agent_verdict_ok · merge_strategy squash|merge · merge_into str|id · max_turns int
+- `tool` — description str · command str · script str · language js|node|py|python|python3|sh|bash · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · sandbox none|auto|{sandbox} · compress on|ultra|off · permission id · needs id|[id] · parallel_safe bool · goal str · postcondition str · policy required|recover|best_effort · recovery {recovery} · action str|id · connection str|id · params {params} · retry str|num · timeout str|num
+- `params` (`params:` in tool) — entries `<key>: "value"`
 - `recovery` (`recovery:` in tool) — max_repair_attempts int · max_agent_attempts int · model str · agent_tools [tool]
 - `compute` — description str · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · expr {expr}
-- `expr` (`expr:` in compute) — entries `field: "expression"`
+- `expr` (`expr:` in compute) — entries `<field>: "expression"`
 - `subbot` — description str · source str · with with{} · output id · needs id|[id] · isolated bool
 - `emit` — description str · event str · with with{}
 - `wait` — description str · event str · timeout str · output id
 - `await_answers` — description str · from str|id · timeout str
 - `fail` — description str · code str|id · message str · resumable bool
-- `workflow` — entry id · contract id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async
+- `workflow` — entry id.id · contract id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async|human_or_host
 - `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int
-- `resources` (`resources:` in workflow) — entries `name: <int> | ["member-a", "member-b"]`
+- `resources` (`resources:` in workflow) — entries `<name>: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
 - `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool (profile ≤1) · visibility "bot|project|cross_project|user|org|global"
 - `mcp` (`mcp:` in workflow, agent, judge) — autoload_project bool · inherit bool · servers [id] · disable [id]
 - `sandbox` (`sandbox:` in workflow, agent, judge, tool) — mode none|auto|inline · image str · build {sandbox.build} · user str · workspace_folder str · host_state auto|none · post_create str · env map · mounts [str|id] · network {sandbox.network}
 - `sandbox.build` (`build:` in sandbox) — dockerfile str · context str · args map
 - `sandbox.network` (`network:` in sandbox) — mode open|allowlist|denylist · preset str|id · inherit replace|append · rules [str|id]
-- `cursors` (`cursors:` in agent, judge) — enabled bool — entries `cursor_name: ident | number | "string"`
-- `fallback` (`fallbacks:` in agent, judge) — backend str · model str · provider str · on [id] · metered bool · action skip · when str
+- `cursors` (`cursors:` in agent, judge) — enabled bool — entries `<cursor_name>: ident | number | "string"`
+- `fallbacks` (`fallbacks:` in agent, judge) — entries `<route>:`
+- `fallback` (`fallbacks:` in fallbacks) — backend str · model str · provider str · on [id] · metered bool · action skip · when str
 - `contract` — display_name str · responsibility str · version int · inputs {contract.ports} · outputs {contract.ports} · criteria {contract.criteria} · effects {contract.effects}
-- `contract.ports` (`inputs / outputs:` in contract) — entries `name: type [optional indented properties]`
-- `contract.port` (`inputs / outputs:` in contract.ports) — description str · required bool · nullable bool · default json · min_items int · max_items int · from id · file {contract.file}
+- `contract.ports` (`inputs / outputs:` in contract) — entries `<name>: <type>`
+- `contract.port` (`inputs / outputs:` in contract.ports) — description str · required bool · nullable bool · default json · min_items int · max_items int · from id.id · file {contract.file}
 - `contract.file` (`file:` in contract.port) — media_type str · min_bytes int · schema id
-- `contract.criteria` (`criteria:` in contract) — entries `name: [indented criterion properties]`
-- `contract.criterion` (`criteria:` in contract.criteria) — kind id · port id · params json
-- `contract.effects` (`effects:` in contract) — entries `name: [indented effect properties]`
+- `contract.criteria` (`criteria:` in contract) — entries `<name>:`
+- `contract.criterion` (`criteria:` in contract.criteria) — kind id.id · port id.id · params json
+- `contract.effects` (`effects:` in contract) — entries `<name>:`
 - `contract.effect` (`effects:` in contract.effects) — description str · paid bool
 - Public criteria (deterministic; parameters are JSON data; an unregistered kind is declared, not evaluated): `min_length` `min:int` · `pattern` `pattern:string`.
 <!-- dsl-spec:end -->
@@ -348,7 +349,7 @@ human ask_priorities:
   instructions: ask_priorities_prompt    # shown to the human
   interaction: human                     # human | llm | llm_or_human
   interaction_prompt: ask_priorities_llm # prompt used in llm-auto mode
-  interaction_model: "openai/gpt-5.5"    # model used in llm-auto mode
+  interaction_model: "openai/gpt-6-sol"    # model used in llm-auto mode
   min_answers: 1
 ```
 
@@ -437,7 +438,7 @@ commits when approved. Reference: `examples/review-merge-gate.bot`,
 
 ```iter fragment
 tool commit_changes:
-  command: `git add -A -- ':/' ':(exclude,top).claude' && git commit -m {{input.msg}}`   # one string, run through `bash -c`
+  command: `git add -A -- ':/' $ITERION_TREE_NOISE && git commit -m {{input.msg}}`   # one string, run through `bash -c`
   input:   commit_request         # schema declaring `msg: string`
   output:  commit_result          # the command prints JSON matching this schema on stdout
   await:   wait_all               # only when the node has multiple incoming edges
@@ -522,9 +523,9 @@ hard-blocking. Add the optional quad — `goal` + recipe (`command`/`script`)
 
 ```iter fragment
 tool commit_changes:
-  command: `git add -A -- ':/' ':(exclude,top).claude' && git commit -F - <<< {{input.msg}}`
+  command: `git add -A -- ':/' $ITERION_TREE_NOISE && git commit -F - <<< {{input.msg}}`
   goal: "Commit the upgrade; working tree clean except known caches."
-  postcondition: `cd {{input.workspace_dir}} && ! git status --porcelain -- ':/' ':(exclude,top).claude' | grep -q . && printf '{"sha":"%s"}' "$(git rev-parse HEAD)"`
+  postcondition: `cd {{input.workspace_dir}} && ! git status --porcelain -- ':/' $ITERION_TREE_NOISE | grep -q . && printf '{"sha":"%s"}' "$(git rev-parse HEAD)"`
   policy: recover            # required | recover | best_effort
   recovery:
     max_repair_attempts: 2   # rung 3 (self-repair) bound
@@ -627,8 +628,9 @@ shipped bots, so they are written here:
 - **The `run.*` namespace, in a `compute` expr or a quoted `when`:**
   `run.elapsed_seconds`, `run.max_duration_seconds`, `run.cost_usd`,
   `run.max_cost_usd`, `run.tokens`, `run.max_tokens`, `run.iterations`,
-  `run.max_iterations`, `run.id` — the run's own consumption and its
-  EFFECTIVE caps (after `--max-*`, the recipe, the platform ceiling). A cap
+  `run.max_iterations`, `run.id`, `run.tree_noise` — the run's own
+  consumption and its EFFECTIVE caps (after `--max-*`, the recipe, the
+  platform ceiling). A cap
   of 0 means UNBOUNDED, so guard a ratio with `run.max_duration_seconds > 0`
   first, and a workflow with no `budget:` block has no caps to read at all.
 - **A prompt reference to a node that has not run yet renders as its literal
@@ -657,9 +659,10 @@ shipped bots, so they are written here:
   parallel branch — it takes `.git/index.lock` and is FATAL when the
   sibling holds it (`git diff`'s own stat refresh just skips), and the
   loser's empty findings read as an approve. Read untracked files with
-  `git ls-files --others --exclude-standard -z | xargs -0 -I{} git diff
-  --no-index -- /dev/null {}` (exit 1 per file, 123 for the batch: a diff,
-  not a failure). A `router` and a `fail` node take no `output:`.
+  `git ls-files --others --exclude-standard $ITERION_TREE_NOISE -z |
+  xargs -0 -I{} git diff --no-index -- /dev/null {}` (exit 1 per file, 123
+  for the batch: a diff, not a failure; the env carries the engine's
+  tree-noise exclusion — the .claude/ mirror is not pending work). A `router` and a `fail` node take no `output:`.
 - **A `worktree: auto` run starts from the anchor COMMIT, and only what it
   COMMITS reaches your checkout**: staged, unstaged and untracked work is
   not in the worktree (that is the isolation), and at the end a dirty tree
@@ -697,6 +700,7 @@ shipped bots, so they are written here:
 | `{{artifacts.name}}` | published artifact |
 | `${ENV_VAR}` | compile-time env substitution |
 | `{{run.id}}` | the run id |
+| `{{run.tree_noise}}` | the canonical tree-noise pathspecs, pre-quoted for a git command line an AGENT pastes — a prompt-side form only. In a tool `command:`/`script:`/`postcondition:` it shell-escapes to ONE inert argument (C153): executable bodies read `$ITERION_TREE_NOISE` unquoted instead |
 | `{{run.elapsed_seconds}}` `{{run.cost_usd}}` `{{run.tokens}}` `{{run.iterations}}` | the run's own consumption so far |
 | `{{run.max_duration_seconds}}` `{{run.max_cost_usd}}` `{{run.max_tokens}}` `{{run.max_iterations}}` | the caps IN FORCE (after `--max-*` flags, recipe, platform ceiling, `raise_budget`). `0` = unbounded on that axis. No `budget:` block ⇒ no tracker: consumption and caps read `0`, only `elapsed_seconds` advances |
 
@@ -884,7 +888,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | Template | Shape |
 |---|---|
 | `campaign-loop` | an entry gate (unset `verify_command` = typed refusal) → one agent in passes → a `tool` running the repo's own checks (needs `jq`, pinned in the bundle's `devbox.json` for any image that ships devbox; every iterion image ships both) → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
-| `review-fanout` | a `tool` scope gate (empty scope = typed refusal) → `router fan_out_all` → two read-only reviewers under `permission: deny` with a read-only allow list → a `compute` with `await: wait_all` → a typed blocked verdict |
+| `review-fanout` | a `tool` scope gate (empty scope = typed refusal; the gate excludes the engine's tree noise via `$ITERION_TREE_NOISE`) → `router fan_out_all` → two read-only reviewers under `permission: deny` with a read-only allow list → a `compute` with `await: wait_all` → a typed blocked verdict |
 | `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
 | `scheduled-digest` | collect (`tool`, needs `jq`, pinned in the bundle's `devbox.json`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |
 | `per-ticket-subbots` | list (`tool`) → `fan_out_each` → an isolated `subbot` per item → `compute` fan-in |
@@ -892,10 +896,30 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
 | `library` | the graph in `main.bot` (and its vars, when the spec has any), the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
+| `contract` | an entry gate (unset `goal` = typed refusal) → one agent with a typed, published output → a `contract` bound to the workflow: an input mirroring a var, outputs naming their producer (`from: work.summary`; a file port `from: work`), criteria on ports, effects |
 
 `blank`, `daily-digest`, `code-reviewer`, `docs-writer` and `issue-triager`
 render the single-agent workflow (one adaptive agent carrying the mission).
 More complete workflows to copy from: `docs/references/patterns.md`.
+
+### Writing the twin in YAML
+
+A `.bot` can be written as an author document, `x.bot.yaml`: the same
+declarations under the same names, `dsl:` required, in YAML's own values
+(`nodes:` items are `- <kind>: <name>` with that kind's properties). It is
+a draft of `x.bot`, never a program: every launcher refuses it by name.
+Loop: write it, `iterion validate x.bot.yaml` (findings at the document's
+lines, `--exec` too), then `iterion fmt --to bot x.bot.yaml` writes `x.bot`,
+which is what you commit and run. Three rules the `.bot` does not have:
+quote a value that holds `: ` or ` #`, or starts with `{`, `[`, `!` or
+another character YAML reserves (a `{{…}}` template unquoted is a YAML
+mapping) — in single quotes, as double quotes read backslash escapes
+(`"\t"` is a tab); write each edge as one `.bot` edge line — quoted whole in single
+quotes when it holds `: `, the `.bot`'s double quotes inside, a `'` written
+twice; write numbers as digits without a leading 0 (YAML reads `010` as
+the octal 8, `0x10` and `1e2` otherwise: refused). Keys and value forms:
+`iterion dsl spec --region author`; the reasons: `docs/dsl.md`, section
+"Writing the twin in YAML".
 
 ## What you do NOT do
 

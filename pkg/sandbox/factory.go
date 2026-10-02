@@ -150,7 +150,15 @@ func (f *Factory) Driver() (Driver, error) {
 	if f.preferred != "" {
 		d, err = f.tryDriverLocked(f.preferred)
 		if err != nil {
-			f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("preferred driver %q: %w", f.preferred, err), true
+			// Chain-wrap the underlying driver error AND the typed
+			// sentinel, so a caller that pinned a PreferredDriver gets
+			// the same `errors.Is(err, ErrDriverUnavailable)` answer as
+			// the preference walk below. Without the wrap a pinned
+			// driver's failure reaches the runtime as an untyped error
+			// and parks the run under EXECUTION_FAILED, where the
+			// schedule's non-retry contract (#1426) cannot see it.
+			cause := fmt.Errorf("%w: %w", ErrDriverUnavailable, err)
+			f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("preferred driver %q: %w", f.preferred, cause), true
 			return f.cached, f.cachedErr
 		}
 		f.cached, f.cachedErr, f.cacheValid = d, nil, true
@@ -165,7 +173,12 @@ func (f *Factory) Driver() (Driver, error) {
 		}
 	}
 
-	f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("no usable sandbox driver found (registry: %v)", f.availableLocked()), true
+	// Same sentinel as the preferred-driver branch above, so every way
+	// this factory can fail to produce a driver answers one
+	// `errors.Is`. Reached only when the registry has no constructible
+	// driver at all — noop is always constructible, so a caller has to
+	// hand in a registry without it.
+	f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("%w: no usable sandbox driver found (registry: %v)", ErrDriverUnavailable, f.availableLocked()), true
 	return f.cached, f.cachedErr
 }
 
@@ -177,19 +190,26 @@ func (f *Factory) tryDriverLocked(name string) (Driver, error) {
 	return ctor()
 }
 
-// DriverForSpec is the spec-aware variant of [Factory.Driver]. When
-// spec.Mode is active (ModeAuto or ModeInline) and the selection would
-// otherwise fall through to the noop driver, this returns an explicit
-// error instead of silently degrading. That matches user intent: the
-// workflow asked for a sandbox; the only honest answer when no
-// container runtime is available is "I cannot do that" so the operator
-// can install Docker/Podman (or downgrade the workflow to
-// `sandbox: none`) — not "I will pretend, hope you noticed the
-// EventSandboxSkipped, and run unsandboxed anyway."
+// DriverForSpec is the spec-aware variant of [Factory.Driver]: it
+// answers whether THIS HOST can honour an active sandbox mode
+// (ModeAuto or ModeInline). When the selection would otherwise fall
+// through to noop — a driver that starts no container at all — it
+// returns [ErrDriverUnavailable] rather than a driver that cannot do
+// the job.
 //
-// An explicit `--sandbox-driver=noop` (PreferredDriver) bypasses this
-// refusal so power users can intentionally opt back into the soft path
-// for local dev iterations.
+// That answer is a CAPABILITY report, never a policy. What an absent
+// driver MEANS for a run is decided in exactly one place,
+// runtime.resolveAndStartSandbox: `sandbox: auto` degrades to an
+// unsandboxed run with a visible `sandbox_skipped` event, an explicit
+// `sandbox: { mode: inline, image/build: … }` parks the run with
+// FailureCode SANDBOX_DRIVER_UNAVAILABLE (#1425). Keeping the policy
+// out of here is what keeps the other readers of this answer honest:
+// `iterion sandbox doctor --strict` and the launch pre-flight
+// (pkg/cli/sandbox_strict.go) must keep reading "this host cannot
+// isolate", which is true whatever the run then chooses to do.
+//
+// A PreferredDriver of "noop" bypasses the refusal: a caller that
+// selected the passthrough driver on purpose gets it.
 func (f *Factory) DriverForSpec(spec *Spec) (Driver, error) {
 	d, err := f.Driver()
 	if err != nil {
@@ -202,7 +222,7 @@ func (f *Factory) DriverForSpec(spec *Spec) (Driver, error) {
 		return d, nil
 	}
 	if d != nil && d.Name() == "noop" {
-		return nil, fmt.Errorf("sandbox: mode %q requested but no container runtime is available (install Docker or Podman, set --sandbox-driver=noop to bypass)", spec.Mode)
+		return nil, fmt.Errorf("sandbox: mode %q requested but no container runtime is available (install Docker or Podman, or run with --sandbox none to execute on the host): %w", spec.Mode, ErrDriverUnavailable)
 	}
 	return d, nil
 }

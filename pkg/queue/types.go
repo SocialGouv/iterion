@@ -128,7 +128,17 @@ import (
 // runner cannot compile this AST semantics and must reject before admission.
 // v=19: literal template delimiters require the new renderer. A pre-v19
 // runner must reject before compiling or executing their source text.
-const SchemaVersion = 19
+// v=20: Contributions.Degraded flags a payload the publisher could not fully
+// enumerate (broken plugin.yaml, unreadable home, degraded team source). A
+// stale runner dropping it reads an amputated payload as the whole
+// declaration and prunes a still-enabled plugin's launch-pass mirrors on the
+// first resume, so it must reject.
+// v=21: ambient_context (ADR-119). A launch-time override rides the new
+// AmbientContext field, and the compiled IR may carry node and workflow
+// policies. A stale runner ignores both and applies its own default — for
+// claude_code the operator's whole personal setup — so a run launched or
+// declared with `none` would receive everything: it must reject.
+const SchemaVersion = 21
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -156,6 +166,18 @@ type RunMessage struct {
 	IRRef            *IRRef                  `json:"ir_ref,omitempty"`
 	RepoURL          string                  `json:"repo_url,omitempty"`
 	RepoSHA          string                  `json:"repo_sha,omitempty"`
+	// RepoSHAExpected is the commit the LAUNCH admitted, when RepoSHA is a
+	// ref an untrusted party can move between the admission and this
+	// message being consumed (a fork pull request's head). The runner
+	// fetches RepoSHA and refuses the run when what arrived is not this
+	// commit. It rides the wire — not only the run document — because the
+	// comparison happens in the runner pod, before it has any reason to
+	// load the document. Empty disables the comparison.
+	RepoSHAExpected string `json:"repo_sha_expected,omitempty"`
+	// Trust is the run document's RunTrust, mirrored onto the wire so the
+	// runner can withhold workspace-level capabilities without a document
+	// read. Empty is the trusted default.
+	Trust store.RunTrust `json:"trust,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`
@@ -164,13 +186,24 @@ type RunMessage struct {
 	// wire mirror of runtime.Contributions). A runner pod's iterion home is
 	// ephemeral and empty, so without this an operator-installed plugin's
 	// skill — or a DSL `skills:` library reference — silently never reaches
-	// the workspace and only compiled-in builtins do. Nil (a message from
-	// before this field, or a non-cloud publisher) makes the runner fall back
-	// to local resolution, which is a no-op on a pod.
+	// the workspace and only compiled-in builtins do. The publisher ships the
+	// field on every dispatch, possibly EMPTY (a statement: "nothing enabled
+	// on the launching instance"). Nil means the field did not arrive (an
+	// anomaly — a lost field or a pre-payload publisher); the runner never
+	// reads it as "nothing enabled" and the engine treats the ambient
+	// declaration as unverifiable, so the orphan pruner is skipped for that
+	// pass instead of deleting still-declared files.
 	Contributions *Contributions `json:"contributions,omitempty"`
 	Vars          map[string]any `json:"vars,omitempty"`
-	SecretsRef    string         `json:"secrets_ref,omitempty"`
-	TimeoutSec    int            `json:"timeout_sec,omitempty"`
+	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
+	// input check (CLI --allow-unknown-inputs, the dispatcher's warn-and-
+	// proceed contract): inputs that name no declared var ride the launch
+	// instead of refusing it. It rides the wire because the runner
+	// re-applies the check before engine.Run — a queued run cannot skip it
+	// by having been admitted on an older build. False = the check runs.
+	AllowUnknownInputs bool   `json:"allow_unknown_inputs,omitempty"`
+	SecretsRef         string `json:"secrets_ref,omitempty"`
+	TimeoutSec         int    `json:"timeout_sec,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
@@ -196,6 +229,9 @@ type RunMessage struct {
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
 	AutoMemory string `json:"auto_memory,omitempty"`
+	// AmbientContext is the launch-time ambient-context override (ADR-119).
+	// Empty means the caller expressed nothing and the workflow/env decide.
+	AmbientContext string `json:"ambient_context,omitempty"`
 	// LoopBudgetGuard is the launch-time back-edge affordability override —
 	// the wire half of that knob's strongest precedence level. Empty means
 	// the caller expressed nothing and the workflow/env decide.
@@ -283,6 +319,17 @@ type BotBundleRef struct {
 type Contributions struct {
 	Plugin  []ContributionFile `json:"plugin,omitempty"`
 	Library []LibrarySkillFile `json:"library,omitempty"`
+	// Degraded flags a payload the publisher could NOT fully enumerate: a
+	// plugin whose plugin.yaml is broken (skipped by the registry, invisible
+	// to Enabled()), an unreadable iterion home, or a team-scoped source that
+	// failed to materialise. The runner pod cannot distinguish an amputated
+	// payload from a complete one by inspecting it — the missing entries are
+	// missing — so the publisher says so on the wire. The mirror pass reads
+	// it as "the declaration is partial": nothing beyond the carried files is
+	// verified, the pass reports incomplete, and the orphan pruner is
+	// skipped so a still-enabled plugin's launch-pass mirrors survive
+	// (the cloud twin of the local path's Registry.LoadSkips veto).
+	Degraded bool `json:"degraded,omitempty"`
 }
 
 // ContributionFile is one plugin markdown file bound for
@@ -408,6 +455,7 @@ const (
 	BackendKimi       Backend = "kimi"
 	BackendGrok       Backend = "grok"
 	BackendPi         Backend = "pi"
+	BackendOpenCode   Backend = "opencode"
 )
 
 // BackendConfig carries the LLM backend selection per run.
@@ -424,6 +472,13 @@ type ResumeSpec struct {
 	Force          bool            `json:"force"`
 	ExpectedStatus store.RunStatus `json:"expected_status,omitempty"`
 	ReceiptID      string          `json:"receipt_id,omitempty"`
+	// PriorStatus is the status the publisher's claim moved the run from
+	// to queued. When the engine refuses the resume before claiming it —
+	// nothing ran, and the refusal is acked, never redelivered — the runner
+	// puts the run back there. Empty from an older publisher: the run goes
+	// back to failed_resumable. A runner that predates it leaves the run
+	// queued, as it always did, so the field changes no operator intent.
+	PriorStatus store.RunStatus `json:"prior_status,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so

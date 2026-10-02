@@ -94,58 +94,48 @@ Iteration limits, per-call output caps and account quotas serve different scopes
 - **Iterion: managed service on request — subject to assessment.** Self-hosting is available. Managed scope, terms and support commitments are defined during assessment; no standard SLA is specified.
 - **Flowise: Cloud still listed after announced end of life.** The [product-site record](#conditions-flowise) retains its Cloud listing; the [maintainer announcement](https://github.com/FlowiseAI/Flowise/discussions/6727) dates repository archiving to August 13 and the end of the core team's official Discord/GitHub presence to August 31, 2026. The conditional cell reflects this availability risk.
 
-## Recorded access conditions {#plan-conditions}
-
+## <a id="plan-conditions"></a>Recorded access conditions
 The edition, hosting and billing conditions below come from official pages reviewed on **September 11, 2026**. Each commercial source is identified by its exact title and URL in plain code, followed by the relevant facts observed; technical documentation is linked directly. These are dated observations, not archived copies or contractual commitments. Unversioned pages may change.
 
-### n8n {#conditions-n8n}
-
+### <a id="conditions-n8n"></a>n8n
 **Source record:** “n8n Plans and Pricing - n8n.io” · `https://n8n.io/pricing/` · reviewed September 11, 2026.
 
 Paid plans use workflow executions; Git, environments, SSO and governance vary by edition. The Community edition supports user accounts but excludes projects and workflow/credential sharing: a workflow or credential is accessible to its creator and the instance owner. Iterion's self-hosted platform instead provides native organizations, teams and tenant-scoped resources. See [Community feature scope](https://github.com/n8n-io/n8n-docs/blob/main/docs/deploy/host-n8n/community-edition-features.md), [user management](https://github.com/n8n-io/n8n-docs/blob/main/docs/administer/manage-users-and-access/README.md) and [Iterion multi-tenancy](feature-inventory.md#e01).
 
-### Make {#conditions-make}
-
+### <a id="conditions-make"></a>Make
 **Source record:** “Pricing & Subscription Packages | Make” · `https://www.make.com/en/pricing` · reviewed September 11, 2026.
 
 Hosted service with credit-based consumption. [Multiple teams and team roles](https://help.make.com/teams) require Teams or above. [Make Code](https://help.make.com/the-make-code-app-is-available) requires a paid plan; [SSO](https://help.make.com/single-sign-on) and [audit logs](https://help.make.com/audit-logs) require Enterprise. The [on-premise agent](https://help.make.com/on-premise-agent) connects the service to a local network; its documented architecture does not supply a self-hosted workflow engine.
 
-### Zapier {#conditions-zapier}
-
+### <a id="conditions-zapier"></a>Zapier
 **Source record:** “Plans & Pricing | Zapier” · `https://zapier.com/pricing` · reviewed September 11, 2026.
 
 Hosted service with task-based consumption and action-specific rules. Tool-using AI by Zapier requires Professional or above and an Advanced/Premium model, including with BYOK; human approval requires Professional or above; JSON export/import requires Team/Enterprise; governance and SSO depend on plan. Shared folders require Team/Enterprise, while multiple workspaces require Enterprise. [Workspace scope](https://help.zapier.com/hc/en-us/articles/34713530114573-Zapier-account-organization-and-workspaces); [feature-specific technical sources](feature-matrix.md#sources).
 
-### Activepieces {#conditions-activepieces}
-
+### <a id="conditions-activepieces"></a>Activepieces
 **Source record:** “Pricing | Activepieces” · `https://www.activepieces.com/pricing` · reviewed September 11, 2026.
 
 Projects, standard roles and SSO start at Team; audit logs, external secrets and Git releases are listed for Ultimate. Community is the automation core. The standalone Agents/Chat product must be distinguished from Run Agent steps inside flows; its commercial Free plan is also distinct from Community Edition. This distinction does not justify claiming that Community cannot run any AI agent. [Project scope](https://www.activepieces.com/docs/admin-guide/guides/structure-projects), [agent product changes](https://www.activepieces.com/docs/about/changelog).
 
-### Dify {#conditions-dify}
-
+### <a id="conditions-dify"></a>Dify
 **Source record:** “Dify Enterprise - Infrastructure for Building Agentic AI at Enterprise Scale” · `https://dify.ai/dify-enterprise` · reviewed September 11, 2026.
 
 The Community/Enterprise comparison lists one workspace for self-hosted Community; multiple workspaces and enterprise management require Enterprise. SSO, RBAC and audit logging are listed in the Enterprise section. Basic roles within one workspace do not establish multi-workspace availability.
 
-### CrewAI {#conditions-crewai}
-
+### <a id="conditions-crewai"></a>CrewAI
 **Source record:** “Pricing | CrewAI” · `https://crewai.com/pricing` · reviewed September 11, 2026.
 
 Basic is free and includes Studio's visual editor on CrewAI infrastructure. SSO, RBAC and customer-infrastructure deployment are listed for Enterprise. The platform and Python framework are separate scopes.
 
-### Flowise {#conditions-flowise}
-
+### <a id="conditions-flowise"></a>Flowise
 **Source record:** “Flowise - Build AI Agents, Visually” · `https://flowiseai.com/` · reviewed September 11, 2026.
 
 The site displays a sunsetting banner alongside Cloud plans. The [maintainer announcement](https://github.com/FlowiseAI/Flowise/discussions/6727) dates repository archival to August 13, 2026 and the end of the core team's official Discord/GitHub presence to August 31. This does not establish a shutdown date for every hosted service or availability of new contracts. Evaluate existing deployments with this lifecycle constraint.
 
-### Windmill {#conditions-windmill}
-
+### <a id="conditions-windmill"></a>Windmill
 Sources: official [roles documentation](https://www.windmill.dev/docs/core_concepts/roles_and_permissions) and [deployment stages](https://www.windmill.dev/docs/advanced/canonical_deployment_setups). Community provides workspace roles and resource access controls, with a three-workspace limit. Git sync is available in Community for workspaces with up to two users; broader deployment controls depend on edition.
 
-### LangGraph and associated LangSmith {#conditions-langgraph}
-
+### <a id="conditions-langgraph"></a>LangGraph and associated LangSmith
 LangGraph's runtime is separate from the platform that operates it. [LangSmith RBAC](https://docs.langchain.com/langsmith/user-management) and [self-hosted LangSmith](https://docs.langchain.com/langsmith/self-hosted) require Enterprise. These operator controls are not the same as authorization implemented inside an application using LangGraph.
 
 ## Criterion scope

@@ -289,6 +289,31 @@ func TestMermaid_Compact_LoopWorkflow(t *testing.T) {
 	}
 }
 
+// The same workflow is the same diagram, whatever run draws it: the class
+// lines follow the node kinds' order — agent, router, human, done, fail
+// here — and twenty renders in each view are one text. A map's order
+// rotated them from one run to the next.
+func TestMermaid_IsDeterministic(t *testing.T) {
+	wf := compileTestWorkflow(t, complexDSL)
+	for _, view := range []ir.MermaidView{ir.MermaidCompact, ir.MermaidDetailed, ir.MermaidFull} {
+		first := wf.ToMermaid(view)
+		var kinds []string
+		for _, line := range strings.Split(first, "\n") {
+			if f := strings.Fields(line); len(f) == 3 && f[0] == "class" {
+				kinds = append(kinds, f[2])
+			}
+		}
+		if got, want := strings.Join(kinds, " "), "agent router human done fail"; got != want {
+			t.Fatalf("view %v: class lines in the order %q, want the kinds' order %q", view, got, want)
+		}
+		for i := 0; i < 20; i++ {
+			if again := wf.ToMermaid(view); again != first {
+				t.Fatalf("view %v: render %d differs from the first:\n%s\nwant\n%s", view, i+2, again, first)
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Golden output test — compact view of minimal workflow
 // ---------------------------------------------------------------------------

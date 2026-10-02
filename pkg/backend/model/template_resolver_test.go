@@ -46,7 +46,7 @@ func TestCommandsResolveEveryNamespaceAPromptDoes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := RenderCommand(command, refs, nil, nil, td, "r1", nil)
+	got := RenderCommand(command, refs, nil, nil, td, "r1", nil, nil)
 	for _, want := range []string{"/tmp/spec.md", "text/markdown", "2", "https://x", "{{attachments.nope}}"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the command lacks %q: %s", want, got)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { IterDocument, UnitInfo } from "@/api/types";
-import { createDocumentStore } from "@/store/document";
+import { createDocumentStore, stampEditor, stampHolds } from "@/store/document";
 
 import { applyOpenedFile } from "./openedFile";
 import { salvageRefusal } from "./salvage";
@@ -11,6 +11,18 @@ const document = { workflows: [] } as unknown as IterDocument;
 // The real store, not a double: its setCurrentFilePath clears the unit and
 // the salvage flag, which is the coupling that decides what survives a bind.
 describe("applyOpenedFile", () => {
+  // Whoever asked for it: an answer asked about the document before — a
+  // save or a Save As still in flight — settles nothing on what it put there.
+  it("is a replacement", () => {
+    const store = createDocumentStore();
+    store.getState().setCurrentFilePath("bots/x/main.bot");
+    const asked = stampEditor(store.getState());
+    applyOpenedFile({ source: "x\n", document, diagnostics: [], path: "bots/x/main.bot" }, store.getState());
+    const holds = stampHolds(asked, store.getState());
+    expect(holds.path).toBe(true);
+    expect(holds.replaced).toBe(false);
+  });
+
   it("binds the path and the unit the server named", () => {
     const unit: UnitInfo = {
       root: "bots/x",

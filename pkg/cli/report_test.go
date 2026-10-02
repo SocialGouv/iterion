@@ -74,3 +74,55 @@ func TestReportNoVerifyCommand(t *testing.T) {
 		t.Fatalf("rendered report should have no verify line:\n%s", md)
 	}
 }
+
+// TestReportRendersSandboxSkipped: a run that executed WITHOUT the
+// isolation its workflow asked for must say so in the chronological
+// report, both when `auto` degraded and when an explicit container was
+// refused. The default renderer prints `sandbox_skipped [<node id>]`,
+// and this event is run-scoped — so the reason, which is the whole
+// content, was dropped on the one surface an operator reads after a
+// run (#1425).
+//
+// Mutation: remove the EventSandboxSkipped case from summarize() → the
+// default arm renders "sandbox_skipped []" → red on both sub-cases.
+func TestReportRendersSandboxSkipped(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		data map[string]any
+		want string
+	}{
+		{
+			name: "auto degraded",
+			data: map[string]any{
+				"mode":   "auto",
+				"source": "workflow sandbox: block",
+				"reason": "sandbox: auto degraded to unsandboxed: no container-runtime driver available",
+			},
+			want: "NOT isolated",
+		},
+		{
+			name: "inline refused",
+			data: map[string]any{
+				"mode":       "inline",
+				"refused":    true,
+				"error_code": string(store.FailureSandboxDriverUnavailable),
+				"reason":     "no container-runtime driver available",
+			},
+			want: "Sandbox refused [SANDBOX_DRIVER_UNAVAILABLE]",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rb := &reportBuilder{}
+			var step reportStep
+			if !rb.summarize(&store.Event{Type: store.EventSandboxSkipped, Data: c.data}, &step) {
+				t.Fatal("the step must be appended: a run that lost its isolation is not a detail to skip")
+			}
+			if !strings.Contains(step.Summary, c.want) {
+				t.Fatalf("summary = %q, want it to contain %q", step.Summary, c.want)
+			}
+			if reason, _ := c.data["reason"].(string); !strings.Contains(step.Summary, reason) {
+				t.Fatalf("summary = %q dropped the reason %q — the event's whole content", step.Summary, reason)
+			}
+		})
+	}
+}

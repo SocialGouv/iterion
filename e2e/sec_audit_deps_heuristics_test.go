@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterruntime "github.com/SocialGouv/iterion/pkg/runtime"
 )
 
 // depHeuristicOut mirrors the heuristic_output schema: {packages, errors}.
@@ -69,6 +70,11 @@ func runDepHeuristic(t *testing.T, nodeID, scannerFile, fixture string) depHeuri
 	cmd := tool.Command
 	cmd = strings.ReplaceAll(cmd, "{{vars.scan_dir}}", scanDir)
 	cmd = strings.ReplaceAll(cmd, "{{vars.workspace_dir}}", wsDir)
+	// The heuristics blocks come from the engine's own copy of the bundle's
+	// skills, and the node refuses a value that is not an absolute path — an
+	// unsubstituted reference among them. The path is asked of the engine
+	// rather than respelled here.
+	cmd = strings.ReplaceAll(cmd, "{{vars.bundle_skills_dir}}", iterruntime.OwnedSkillsDir(wsDir))
 	// run_eco_heuristics dispatches scanners on {{input.ecosystems}}, but its
 	// parser reads scan_dir/*.json unconditionally — an empty list no-ops the
 	// scanner-run loop so the parse path runs against exactly the seeded
@@ -136,6 +142,7 @@ func runGenericHeuristic(t *testing.T, wsDir string) depHeuristicOut {
 	cmd := tool.Command
 	cmd = strings.ReplaceAll(cmd, "{{vars.scan_dir}}", t.TempDir())
 	cmd = strings.ReplaceAll(cmd, "{{vars.workspace_dir}}", wsDir)
+	cmd = strings.ReplaceAll(cmd, "{{vars.bundle_skills_dir}}", iterruntime.OwnedSkillsDir(wsDir))
 	out, err := exec.Command("sh", "-c", cmd).Output()
 	if err != nil {
 		t.Fatalf("run_generic_heuristics failed: %v", err)

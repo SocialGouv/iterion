@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
 	apikit "github.com/SocialGouv/claw-code-go/pkg/apikit"
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -33,8 +35,34 @@ type effortCapabilitiesResponse struct {
 }
 
 // codexEffortFallback is the static list emitted when the Codex CLI is
-// unavailable. Mirrors the codex SDK's Effort constants (low/medium/high/max).
+// unavailable. Mirrors the codex SDK's Effort constants every codex model
+// accepts (low/medium/high/max — the SDK's "minimal" has no iterion
+// spelling). "none" is NOT in this list: only known none-carriers get it,
+// see codexEffortFallbackFor.
 var codexEffortFallback = []string{"low", "medium", "high", "max"}
+
+// codexModelCarriesNone reports whether the model is a known none-carrier.
+// The claw registry (apikit) is the catalogue of record for which models
+// carry none — and it agrees with the runtime: codex accepts none for
+// GPT-6 Sol/Luna (and 400s it elsewhere) even though the CLI's model/list
+// response omits the level (verified on codex 0.156.1).
+func codexModelCarriesNone(model string) bool {
+	supported, _ := apikit.EffortCapabilities(model)
+	return slices.Contains(supported, "none")
+}
+
+// codexEffortFallbackFor is codexEffortFallback plus "none" when the model
+// is a known none-carrier. The live list comes from the CLI's per-model
+// capabilities; the fallback path exists precisely because that CLI is
+// unreachable, so the per-model truth it carries is unavailable — and
+// offering none for every codex model would promise a level the CLI refuses
+// at run time.
+func codexEffortFallbackFor(model string) []string {
+	if codexModelCarriesNone(model) {
+		return append([]string{"none"}, codexEffortFallback...)
+	}
+	return codexEffortFallback
+}
 
 // codexCacheTTL is how long a Codex ListModels response is reused before
 // re-querying the CLI. Codex doesn't change models mid-session in
@@ -69,7 +97,7 @@ func fetchCodexModels(ctx context.Context) ([]codexsdk.ModelInfo, error) {
 }
 
 // codexCapabilities resolves the effort matrix for a Codex model by name.
-// Falls back to codexEffortFallback when the CLI is unreachable or the
+// Falls back to codexEffortFallbackFor when the CLI is unreachable or the
 // model is not listed.
 func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesResponse, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -78,7 +106,7 @@ func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesRes
 	models, err := fetchCodexModels(queryCtx)
 	if err != nil {
 		return effortCapabilitiesResponse{
-			Supported: codexEffortFallback,
+			Supported: codexEffortFallbackFor(model),
 			Source:    "codex-fallback",
 		}, nil
 	}
@@ -87,9 +115,15 @@ func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesRes
 		if m.ID != model && m.Model != model {
 			continue
 		}
-		supported := make([]string, 0, len(m.SupportedReasoningEfforts))
+		supported := make([]string, 0, len(m.SupportedReasoningEfforts)+1)
 		for _, opt := range m.SupportedReasoningEfforts {
 			supported = append(supported, opt.Value)
+		}
+		// The CLI's model/list omits none even for the models that accept
+		// it (codex 0.156.1); union it in from the catalogue of record so
+		// the live path and the fallback agree with the runtime.
+		if codexModelCarriesNone(model) && !slices.Contains(supported, "none") {
+			supported = append([]string{"none"}, supported...)
 		}
 		return effortCapabilitiesResponse{
 			Supported: supported,
@@ -101,7 +135,7 @@ func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesRes
 	// Model not in the live list — return fallback rather than empty so
 	// the studio still shows something sensible.
 	return effortCapabilitiesResponse{
-		Supported: codexEffortFallback,
+		Supported: codexEffortFallbackFor(model),
 		Source:    "codex-fallback",
 	}, nil
 }
@@ -199,7 +233,10 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 
 	switch backend {
 	case "claude_code", "claw":
-		supported, def := apikit.EffortCapabilities(model)
+		// The registry knows vendor ids, never a routing prefix: a node's
+		// spec ("anthropic/claude-opus-5-5") is looked up on its capability
+		// id, the id claw clamps the node's effort on.
+		supported, def := apikit.EffortCapabilities(modelroute.Parse(model).CapabilityID())
 		// Surface the "ultracode" mode (xhigh + workflow-orchestration
 		// prerogative) only on the models that carry its orchestration half
 		// (Opus 4.8, the Claude 5 family) — the same predicate the compiler's
@@ -216,13 +253,30 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 		})
 	case "pi":
 		// pi's own dial is off|minimal|low|medium|high|xhigh|max — a strict
-		// superset of iterion's, minus the two levels iterion has no way to
-		// express. It is model-independent: pi maps the level onto each
+		// superset of iterion's, minus the level iterion has no way to
+		// express (minimal; iterion's none maps onto pi's off — see
+		// piMapEffort). It is model-independent: pi maps the level onto each
 		// provider's own thinking budget, so there is nothing to look up.
 		writeJSON(w, effortCapabilitiesResponse{
-			Supported: []string{"low", "medium", "high", "xhigh", "max"},
+			Supported: []string{"none", "low", "medium", "high", "xhigh", "max"},
 			Default:   "medium",
 			Source:    "pi-thinking",
+		})
+	case "opencode":
+		// opencode's dial is `--variant`, and the accepted names are
+		// per-MODEL: it derives them from the model's own reasoning
+		// options, so there is no static set to look up. These are the
+		// levels iterion PASSES THROUGH verbatim (xhigh and ultracode
+		// collapse onto high before argv, so offering them here would
+		// promise a level the backend silently substitutes). Measured on
+		// opencode 1.1.19: a variant the model does not carry is dropped in
+		// silence, so offering a level is never a promise it took effect.
+		writeJSON(w, effortCapabilitiesResponse{
+			Supported: []string{"low", "medium", "high", "max"},
+			// No documented default: with no --variant, the model's own
+			// setting applies and iterion has nothing to name.
+			Default: "",
+			Source:  "opencode-variant",
 		})
 	case "codex":
 		resp, err := codexCapabilities(r.Context(), model)

@@ -518,7 +518,29 @@ func RegisterClawMCPResources(reg *Registry, provider clawmcp.Provider) error {
 	if provider == nil {
 		return fmt.Errorf("register mcp resources: provider is nil")
 	}
-	return registerClawSpecs(reg, []clawBuiltinSpec{
+	return registerClawSpecs(reg, mcpServerNamingSpecs(provider))
+}
+
+// MCPServerNamingTools are the builtins that take an MCP server's NAME as an
+// argument the MODEL writes, instead of belonging to one server the way every
+// `mcp.<server>.<tool>` does.
+//
+// They are named here, beside the registrar that creates them, because which
+// MCP server a node may reach is the node's own declaration and these three
+// are the only tools that can sidestep it. A consumer enforcing that needs
+// the same list, and a second hand-written copy of it is a list that will one
+// day be shorter than this one — silently, for exactly one new tool.
+func MCPServerNamingTools() []string {
+	specs := mcpServerNamingSpecs(nil)
+	names := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		names = append(names, spec.tool.Name)
+	}
+	return names
+}
+
+func mcpServerNamingSpecs(provider clawmcp.Provider) []clawBuiltinSpec {
+	return []clawBuiltinSpec{
 		{tool: clawtools.ListMcpResourcesTool(), exec: func(ctx context.Context, in map[string]any) (string, error) {
 			return clawtools.ExecuteListMcpResources(ctx, in, provider)
 		}},
@@ -528,7 +550,7 @@ func RegisterClawMCPResources(reg *Registry, provider clawmcp.Provider) error {
 		{tool: clawtools.McpAuthTool(), exec: func(ctx context.Context, in map[string]any) (string, error) {
 			return clawtools.ExecuteMcpAuth(ctx, in, provider)
 		}},
-	})
+	}
 }
 
 // ClawDefaults bundles the registries and per-session state the

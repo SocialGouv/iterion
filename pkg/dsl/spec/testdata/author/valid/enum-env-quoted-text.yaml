@@ -1,0 +1,11 @@
+# A quoted reasoning effort outside the list is any string, kept as written
+# for a run-time substitution — as the .bot takes it, bare words for the
+# list and anything else quoted: the document says quoted with a quoted
+# scalar (the plain word outside the list is the lax fixture's refusal).
+dsl: 2
+nodes:
+  - agent: a
+    reasoning_effort: "very high"
+workflow:
+  name: w
+  entry: a

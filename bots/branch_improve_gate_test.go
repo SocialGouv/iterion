@@ -31,7 +31,7 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		Summary string         `json:"summary"`
 		Gate    map[string]any `json:"gate"`
 	}
-	runBanked := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped, banked, take string) (published, bool) {
+	runBanked := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped, verifyPassed, banked, take string) (published, bool) {
 		t.Helper()
 		var got published
 		var posted bool
@@ -60,6 +60,7 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 			"{{input.superseded}}":         "false",
 			"{{input.verify_ok}}":          verifyOK,
 			"{{input.verify_skipped}}":     verifySkipped,
+			"{{input.verify_passed}}":      verifyPassed,
 			"{{vars.gate_enabled}}":        "true",
 			"{{vars.gate_context}}":        "iterion/review",
 		} {
@@ -79,9 +80,15 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		return got, posted
 	}
 
+	// Everywhere but the split case below, the build verdict tracks convergence.
 	runWith := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped string) (published, bool) {
 		t.Helper()
-		return runBanked(t, ledger, clean, pushed, verifyOK, verifySkipped, "", "")
+		return runBanked(t, ledger, clean, pushed, verifyOK, verifySkipped, verifyOK, "", "")
+	}
+	// The one case where they must differ: the build passed and the review did not.
+	runSplit := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped, verifyPassed string) (published, bool) {
+		t.Helper()
+		return runBanked(t, ledger, clean, pushed, verifyOK, verifySkipped, verifyPassed, "", "")
 	}
 	run := func(t *testing.T, ledger, clean, pushed, verifyOK string) (published, bool) {
 		return runWith(t, ledger, clean, pushed, verifyOK, "false")
@@ -167,12 +174,58 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		}
 	})
 
-	// verify_run reports passed=true when it SKIPPED. Tolerable as a loop
-	// signal; on a required check it claims a build that never ran.
+	// A skipped build arrives as verify_ok=false too: verify_ok is
+	// gate.converged, which reads verify_run.passed, and a missing verify.sh is
+	// a refusal (#1598). "true/true" is therefore not a state this node can be
+	// handed any more — the realistic pair is false/true.
 	t.Run("a skipped build is not a green build", func(t *testing.T) {
-		got, _ := runWith(t, allFixed, "true", "true", "true", "true")
+		got, _ := runWith(t, allFixed, "true", "true", "false", "true")
 		if n := blocking(t, got.Gate); n < 1 {
 			t.Errorf("blocking_count = %v with a build that never ran", n)
+		}
+	})
+
+	// The required check is read by a human deciding what to do next, so the
+	// note must not send them after a build failure that never happened. The
+	// skip is the MORE SPECIFIC case and has to be tested first: verify_ok is
+	// false on a skip as well, so an `if not verify_ok` written first makes the
+	// skip branch unreachable and the status says "red" about a build that
+	// never ran.
+	t.Run("a skipped build is diagnosed as never run, not as red", func(t *testing.T) {
+		got, _ := runWith(t, allFixed, "true", "true", "false", "true")
+		note, _ := got.Gate["note"].(string)
+		if !strings.Contains(note, "never ran") {
+			t.Errorf("note = %q, want it to say the build never ran", note)
+		}
+		if strings.Contains(note, "build/tests red") {
+			t.Errorf("note = %q — it accuses a build failure that never happened", note)
+		}
+	})
+
+	t.Run("a genuinely red build is still diagnosed as red", func(t *testing.T) {
+		got, _ := runWith(t, allFixed, "true", "true", "false", "false")
+		note, _ := got.Gate["note"].(string)
+		if !strings.Contains(note, "build/tests red") {
+			t.Errorf("note = %q, want it to name the red build", note)
+		}
+		if strings.Contains(note, "never ran") {
+			t.Errorf("note = %q — a red build did run", note)
+		}
+	})
+
+	// `verify_ok` is gate.converged — build AND clean tree AND clean review — so it
+	// is false whenever ANY of the three is, including on a green build whose review
+	// found issues. That is the dominant blocking state for a review-and-improve
+	// bot, and deriving the note from it accuses a build failure that did not
+	// happen. The build verdict travels on its own input for exactly this case.
+	t.Run("a green build with an unclean review is not accused of being red", func(t *testing.T) {
+		got, _ := runSplit(t, allFixed, "false", "true", "false", "false", "true")
+		note, _ := got.Gate["note"].(string)
+		if strings.Contains(note, "build/tests red") {
+			t.Errorf("note = %q — the build passed; only the review was unclean", note)
+		}
+		if !strings.Contains(note, "issues remain in the diff") {
+			t.Errorf("note = %q, want it to name the unclean review", note)
 		}
 	})
 
@@ -204,7 +257,7 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 	// readers had no way to reach them.
 	t.Run("a banked branch is always named, even with nothing pushed", func(t *testing.T) {
 		const branch = "iterion/banked/feature-x-1234567890ab"
-		got, posted := runBanked(t, `[]`, "true", "false", "true", "false",
+		got, posted := runBanked(t, `[]`, "true", "false", "true", "false", "true",
 			branch, "git fetch origin "+branch+" && git cherry-pick abcdef123456..FETCH_HEAD")
 		if !posted {
 			t.Fatal("work banked on a branch nobody is told about is work nobody has")

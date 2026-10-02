@@ -19,31 +19,45 @@ func (p *parser) parseReasoningEffort() string {
 	}
 	value := tokenAsIdent(t)
 	switch value {
-	case "low", "medium", "high", "xhigh", "max", "ultracode":
+	case "none", "low", "medium", "high", "xhigh", "max", "ultracode":
 		return value
 	default:
-		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, xhigh, max, ultracode) or a quoted env-substituted string, got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected reasoning effort (none, low, medium, high, xhigh, max, ultracode) or a quoted env-substituted string, got "+strconv.Quote(t.Value))
 		return ""
 	}
 }
 
+// enumWord is the word an enum-valued property names — bare, as every listed
+// value is written, or quoted: `session: "fresh"` is `session: fresh`, as
+// `backend: "claw"` is `backend: claw`. Every enum reader takes its word
+// here, so the two spellings hold for the whole class rather than for the
+// one reader that happened to compare values instead of token types. Empty
+// when the token is neither a word nor a string; the reader's own
+// diagnostic then names the accepted words.
+func enumWord(t Token) string {
+	if t.Type == TokenString {
+		return t.Value
+	}
+	return tokenAsIdent(t)
+}
+
 func (p *parser) parseSessionMode() ast.SessionMode {
 	t := p.next()
-	switch t.Type {
-	case TokenFresh:
+	switch enumWord(t) {
+	case "fresh":
 		return ast.SessionFresh
-	case TokenInherit:
+	case "inherit":
 		return ast.SessionInherit
-	case TokenInheritIfAvailable:
+	case "inherit_if_available":
 		return ast.SessionInheritIfAvailable
-	case TokenArtifactsOnly:
+	case "artifacts_only":
 		return ast.SessionArtifactsOnly
-	case TokenFork:
+	case "fork":
 		return ast.SessionFork
-	case TokenPersist:
+	case "persist":
 		return ast.SessionPersist
 	default:
-		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only, persist), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only, persist), got "+strconv.Quote(t.Value))
 		return ast.SessionFresh
 	}
 }
@@ -81,24 +95,209 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 	if lineEnds(p.peek()) {
 		return p.parseDashList(parseElem)
 	}
-	p.expect(TokenLBrack)
-	var out []string
-	appendElem := func() {
-		if v, ok := parseElem(); ok {
-			out = append(out, v)
-		}
+	if _, ok := p.expect(TokenLBrack); !ok {
+		// The value is not a list: the offending token is consumed and
+		// said, and the rest of its line goes with it, so the NEXT property
+		// is never read as the list's elements.
+		p.skipToNewline()
+		return nil
 	}
 	if p.peek().Type == TokenRBrack {
 		p.next()
+		return nil
+	}
+	return p.parseBracketElems(parseElem)
+}
+
+// parseBracketElems reads the elements of an inline list whose `[` is already
+// consumed, through the closing `]`. It is shared with parseDeclaredToolList,
+// the one list whose empty inline form is a value rather than an absence —
+// which also reaches it on a `[` that was NOT read, so the first token may
+// already end the line; appendElem refuses it there rather than hand it to an
+// element reader.
+func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []string {
+	var out []string
+	unterminated := func(t Token) bool { return t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t) }
+	// The property whose value the list is, for the resync below: the tokens
+	// just consumed are `<name> : [` on both paths into this loop, and the
+	// name's column is the indentation a sibling property shares. On
+	// parseDeclaredToolList's fall-through path the `[` was NOT read (the
+	// offending token stands where it would be), the shape check fails, and
+	// the give-up keeps its old recovery — the one the line-end tests pin.
+	propTok, propOk := Token{}, false
+	if toks, ti := p.lex.tokens, p.lex.ti; ti >= 3 && toks[ti-1].Type == TokenLBrack && toks[ti-2].Type == TokenColon {
+		propTok, propOk = toks[ti-3], true
+	}
+	// appendElem reads one element and reports whether the list goes on. The
+	// element reader is never handed the token that ends the line: every
+	// element reader consumes at least one token, so it would eat the line
+	// end and the loop would read the next property's tokens as elements.
+	appendElem := func() bool {
+		first := p.peek()
+		if unterminated(first) {
+			p.expectFailed(first, TokenRBrack, "expected ] to close the list, got "+first.Type.String())
+			if propOk && lineEnds(first) {
+				p.resyncBrokenBracketList(propTok)
+			}
+			return false
+		}
+		if v, ok := parseElem(); ok {
+			out = append(out, v)
+		} else {
+			p.resyncListElement(first)
+		}
+		return true
+	}
+	if !appendElem() {
 		return out
 	}
-	appendElem()
-	for p.peek().Type == TokenComma {
-		p.next() // consume ,
-		appendElem()
+	for {
+		t := p.peek()
+		switch {
+		case t.Type == TokenComma:
+			p.next()
+			if p.peek().Type == TokenRBrack {
+				// A trailing comma closes the list, as it does in the JSON
+				// value form; handed to the element reader, the `]` was
+				// refused as an element and then missed as the closer.
+				p.next()
+				return out
+			}
+			if !appendElem() {
+				return out
+			}
+		case t.Type == TokenRBrack:
+			p.next()
+			return out
+		case unterminated(t):
+			p.expectFailed(t, TokenRBrack, "expected ] to close the list, got "+t.Type.String())
+			if propOk && lineEnds(t) {
+				p.resyncBrokenBracketList(propTok)
+			}
+			return out
+		default:
+			// Another element with no comma before it, or a stray token:
+			// said once, then read as the next element — a stray is refused
+			// by the element reader, which consumes it — so the list keeps
+			// its shape and nothing runs into the next property. Every
+			// iteration consumes at least one token.
+			p.addErrorHint(DiagExpectedToken, t, "expected `,` or `]` after a list element, got "+t.Type.String(), "Separate the elements with commas: `[a, b]`.")
+			if !appendElem() {
+				return out
+			}
+		}
 	}
-	p.expect(TokenRBrack)
-	return out
+}
+
+// resyncListElement drops what remains of a refused inline element that
+// OPENED a bracket, brace or paren — `[[a], bash]` — so the nested text is
+// skipped whole and the next element is read; the element reader consumed
+// the refused token, so the bracket it opened counts as open. A refused
+// token that opened nothing leaves the rest of the list to the list loop:
+// the token after it is either the comma, the closer, or another element
+// the loop reads — never eaten in silence. The diagnostic is the reader's.
+func (p *parser) resyncListElement(refused Token) {
+	depth := 0
+	if opensBracket(refused) {
+		depth = 1
+	}
+	for depth > 0 {
+		t := p.peek()
+		switch {
+		case t.Type == TokenEOF || t.Type == TokenDedent || lineEnds(t):
+			return
+		case opensBracket(t):
+			depth++
+		case t.Type == TokenRBrack || t.Type == TokenRBrace || t.Type == TokenRParen:
+			depth--
+		}
+		p.next()
+	}
+}
+
+func opensBracket(t Token) bool {
+	return t.Type == TokenLBrack || t.Type == TokenLBrace || t.Type == TokenLParen
+}
+
+// resyncBrokenBracketList is the recovery of an inline list left open at the
+// end of its line, the closer — or the rest of the elements — written on a
+// line of its own (`tools: [bash,` then `]` below): the first text an author
+// with YAML habits writes. The give-up is said where it stands; what would
+// otherwise happen is the broken line's DEDENT escaping to the enclosing
+// block's property loop, which closes the block on it — the orphaned closer
+// then reads as a top-level stray and the property AFTER the list is lost to
+// the top-level skip (#1630). The broken list's remainder is everything up
+// to the next line that starts at the list's own indentation — a sibling
+// property — so the remainder is consumed here (a lexer diagnosis it holds
+// is still said, the way skipIndentedBlock says one) and the cursor lands on
+// the sibling. Nothing is consumed when no such line follows: a remainder
+// that runs out of file, or reaches a line an outer block or the top level
+// owns, is left to the ordinary recovery, which needs the dedents as they
+// are. The list's own indentation is propTok's column; a same-column `]` is
+// left for the block loop, which already refuses it in place.
+//
+// The bail keeps the broken text, it does not rescue it: for a list nested
+// two blocks deep or more whose next property lives in an ANCESTOR block
+// (a `rules:` broken under `network:` with `image:` following under
+// `sandbox:`), the dedents close the blocks as before and that outer
+// property is still lost to the top-level skip. Saving it wants a level the
+// tokens no longer carry — a design decision, not a resync tweak. An
+// off-stack dedent bails for the opposite reason: the lexer pops to a level
+// it does not re-push past its E003, so landing on the sibling there would
+// eat the only DEDENTs the enclosing block can close on, and every
+// declaration after the block would read as its property — the sibling is
+// lost instead, until a lexer-side re-push exists (Error arm below).
+func (p *parser) resyncBrokenBracketList(propTok Token) {
+	i := 0
+	lineStart := false
+	dedent := false // a DEDENT since the last line end
+	for {
+		t := p.lex.PeekAt(i)
+		switch {
+		case t.Type == TokenEOF:
+			return
+		case lineEnds(t):
+			lineStart, dedent = true, false
+			i++
+		case t.Type == TokenIndent:
+			i++
+		case t.Type == TokenDedent:
+			dedent = true
+			i++
+		case t.Type == TokenError:
+			if dedent {
+				// An off-stack dedent: the lexer popped to a level it does
+				// NOT re-push — no INDENT follows the Error, and no DEDENT
+				// comes before the next top-level line. Landing on a sibling
+				// past this Error would consume the pop-DEDENTs and leave the
+				// enclosing block unclosable (its loop closes on DEDENT/EOF
+				// only): every following declaration would read as a property
+				// of the broken block — strictly worse than losing the
+				// sibling. Bail, keeping main's behavior; the rescue for this
+				// shape wants a lexer-side re-push of the errored level, a
+				// design decision of its own.
+				return
+			}
+			// Any other lexer diagnosis — a tab-indented line, a mid-line
+			// one — popped nothing: it is not the line's content, and it is
+			// said when the span is consumed below. Read past it, or the
+			// sibling it precedes is never found.
+			i++
+		case lineStart && t.Column == propTok.Column:
+			for ; i > 0; i-- {
+				if tok := p.next(); tok.Type == TokenError {
+					p.lexerError(tok)
+				}
+			}
+			return
+		case lineStart && t.Column < propTok.Column && tokenAsIdent(t) != "":
+			// A line an outer block or the top level owns.
+			return
+		default:
+			lineStart = false
+			i++
+		}
+	}
 }
 
 // parseDashList parses the YAML-style form of a list: after the property's
@@ -127,11 +326,17 @@ func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []strin
 				p.addErrorHint(DiagExpectedToken, n, "expected an element after `-`: a dash with nothing on its line is not an empty item", "Delete the bare `-`, or write the element after it.")
 				continue
 			}
-			if v, ok := parseElem(); ok {
+			v, ok := parseElem()
+			if ok {
 				out = append(out, v)
 			}
 			if n := p.peek(); n.Type != TokenNewline && n.Type != TokenComment && n.Type != TokenDedent && n.Type != TokenEOF {
-				p.addError(DiagUnexpectedToken, n, "one `- item` per line: nothing may follow the element but a comment")
+				// Residue after a GOOD element is a mistake of its own;
+				// after a refused one it is the same mistake, already
+				// said — the reader consumed the token that opened it.
+				if ok {
+					p.addError(DiagUnexpectedToken, n, "one `- item` per line: nothing may follow the element but a comment")
+				}
 				p.skipToNewline()
 			}
 		case TokenNewline, TokenComment:
@@ -153,13 +358,36 @@ func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []strin
 
 func (p *parser) parseIdentList() []string {
 	return p.parseBracketList(func() (string, bool) {
-		id := tokenAsIdent(p.next())
+		t := p.next()
+		id := tokenAsIdent(t)
+		if id == "" {
+			p.listElementRefused(t, "a bare name")
+		}
 		return id, id != ""
 	})
 }
 
+// listElementRefused says that an element of a list of names is not one —
+// a quoted string, a number — instead of leaving it out: a `servers:
+// ["forge"]` used to read as an empty list, and the server was never wired,
+// without a word. The element is consumed; the rest of the list is read.
+func (p *parser) listElementRefused(t Token, want string) {
+	hint := "Every element of this list is a name; delete the element or write a name."
+	if t.Type == TokenString {
+		hint = "Write the name without quotes: a quoted element is a string, and this list holds names."
+	}
+	p.addErrorHint(DiagExpectedToken, t, "expected "+want+" in the list, got "+t.Type.String(), hint)
+}
+
 func (p *parser) parseStringList() []string {
 	return p.parseBracketList(func() (string, bool) {
+		if t := p.peek(); t.Type != TokenString && tokenAsIdent(t) == "" {
+			// A refused element is not an element: without this, the
+			// token's text (`1`) was appended as a string beside the
+			// diagnostic.
+			p.listElementRefused(p.next(), "a string")
+			return "", false
+		}
 		return p.expectString(), true
 	})
 }
@@ -171,61 +399,85 @@ func (p *parser) parseStringList() []string {
 // has to take, and the form the unparser writes for it; without it the
 // element was dropped in silence and such a document could never be saved.
 func (p *parser) parseToolList() []string {
-	return p.parseBracketList(func() (string, bool) {
-		if p.peek().Type == TokenString {
-			v := p.next().Value
-			return v, v != ""
-		}
-		name := p.parseToolRef()
-		return name, name != ""
-	})
+	return p.parseBracketList(p.refListElem)
+}
+
+// parseDeclaredToolList parses an agent/judge `tools:` — the one list whose
+// EMPTY inline form is a value rather than an absence. `tools: []` is the
+// author saying "this node has no tools"; no `tools:` line at all leaves the
+// surface undeclared, which the CLI backends read as "no restriction". The
+// two are told apart by nilness from here down, through the ONE predicate
+// toolcatalog.ToolsDeclared.
+//
+// Every other bracket list keeps parseBracketList's nil: `capabilities: []`
+// in particular must stay indistinguishable from an absent one, because a nil
+// capability list is what makes a node inherit the workflow's.
+//
+// The `- item` form cannot express an empty list — an indented block with no
+// item is a parse error — so it never yields a declared-empty surface.
+func (p *parser) parseDeclaredToolList() []string {
+	if lineEnds(p.peek()) {
+		return p.parseDashList(p.refListElem)
+	}
+	// Only a `[` that was really read can open a declaration: `expect`
+	// consumes the offending token on a mismatch, so `tools: x]` would
+	// otherwise land on the `]` arm and salvage a broken line into a binding
+	// `tools: []` that the studio then writes back.
+	if _, ok := p.expect(TokenLBrack); !ok {
+		return p.parseBracketElems(p.refListElem)
+	}
+	if p.peek().Type == TokenRBrack {
+		p.next()
+		return []string{}
+	}
+	// A non-empty bracket from which NOTHING was read is refused loudly.
+	// Silence would have to pick a side and both are wrong: nil reads as an
+	// absent list — the CLI backend's whole toolset, the inversion #1615 is
+	// about — and an empty slice turns `tools: [*]` into "this node has no
+	// tools", rewrites the author's line to `tools: []` on the next `fmt`,
+	// and raises the bundle's engine floor off a typo. `[]` is the ONE way
+	// to declare an empty surface, and it is spelled with nothing between
+	// the brackets.
+	at := p.peek()
+	out := p.parseBracketElems(p.refListElem)
+	if out == nil {
+		p.addErrorHint(DiagExpectedToken, at,
+			"no tool name was read from this list: every element was refused",
+			"Write `tools: []` for a node with no tools, or name the tools.")
+	}
+	return out
 }
 
 // parseSkillList parses a `skills: [...]` list. Each element is either a
 // quoted string (required for kebab-case names like "changelog-writer", since
 // the lexer does not treat '-' as an identifier part) or a bare dotted ident
-// (e.g. house_style). Empty list [] is allowed.
+// (e.g. house_style) — the grammar of a tool list, read by the one list
+// reader every list goes through. Empty list [] is allowed.
 func (p *parser) parseSkillList() []string {
-	if lineEnds(p.peek()) {
-		return p.parseDashList(func() (string, bool) {
-			if p.peek().Type == TokenString {
-				v := p.next().Value
-				return v, v != ""
-			}
-			name := p.parseToolRef()
-			return name, name != ""
-		})
+	return p.parseBracketList(p.refListElem)
+}
+
+// refListElem reads one element of a tool or skill list: a quoted literal,
+// or a bare dotted reference.
+func (p *parser) refListElem() (string, bool) {
+	if p.peek().Type == TokenString {
+		v := p.next().Value
+		return v, v != ""
 	}
-	p.expect(TokenLBrack)
-	var names []string
-	if p.peek().Type == TokenRBrack {
-		p.next()
-		return names
-	}
-	appendRef := func() {
-		if p.peek().Type == TokenString {
-			names = append(names, p.next().Value)
-			return
-		}
-		if name := p.parseToolRef(); name != "" {
-			names = append(names, name)
-		}
-	}
-	appendRef()
-	for p.peek().Type == TokenComma {
-		p.next() // consume ,
-		appendRef()
-	}
-	p.expect(TokenRBrack)
-	return names
+	name := p.parseToolRef()
+	return name, name != ""
 }
 
 // parseToolRef parses a single tool reference: IDENT { "." IDENT } or
 // IDENT { "." IDENT } "." "*" for MCP server wildcards (e.g. mcp.claude_code.*).
+// A token that cannot open a name (a number, a bracket) is refused where it
+// stands — the callers read a quoted element before coming here, so a
+// string never reaches this point.
 func (p *parser) parseToolRef() string {
 	t := p.next()
 	id := tokenAsIdent(t)
 	if id == "" {
+		p.listElementRefused(t, "a name — a bare identifier, dotted for a server's tools (mcp.server.*), or a quoted literal —")
 		return ""
 	}
 	for p.peek().Type == TokenDot {

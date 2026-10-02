@@ -11,11 +11,19 @@ import (
 
 // TestPermissionRoundTrip exercises parse → unparse → re-parse → re-compile on
 // a workflow that uses the permission gate at every supported site: the scalar
-// mode + allow/ask/deny rule lists at workflow level, and a per-node permission
-// mode override on an agent, a judge, and a tool node. Unparse must emit the
-// scalar mode as a bareword (no quotes, like compress/worktree) and the rule lists as
-// quoted-string arrays (like capabilities/hosts), and the re-compiled IR must
-// preserve every value verbatim.
+// mode + allow/ask/deny rule lists at workflow level, a per-node permission
+// mode override on an agent, a judge and a tool node, and per-node allow/deny
+// (agent) and ask (judge) rule lists. Unparse must emit the scalar mode as a
+// bareword (no quotes, like compress/worktree) and every rule list as a
+// quoted-string array (like capabilities/hosts), and the re-compiled IR must
+// preserve every value verbatim — a node list dropped by the writer or by the
+// AST↔JSON seam would come back as the workflow's, which reads as success.
+//
+// All THREE lists sit on BOTH node kinds on purpose: the writer has six
+// (kind x node-kind) arms, and a fixture covering three of them left the
+// other three blind to a mutation that silently dropped them. `iterion fmt`
+// rewrites the author's file in place, so a dropped `deny:` writes a
+// weakened gate into the source.
 func TestPermissionRoundTrip(t *testing.T) {
 	src := `
 schema empty:
@@ -25,11 +33,17 @@ agent start:
   model: "test-model"
   output: empty
   permission: deny
+  allow: ["Read(pkg/**)"]
+  ask: ["Bash(git push:*)"]
+  deny: ["Bash"]
 
 judge gate:
   model: "test-model"
   output: empty
   permission: ask
+  allow: ["Glob(**)"]
+  ask: ["WebFetch"]
+  deny: ["Write"]
 
 tool ship:
   command: "true"
@@ -62,6 +76,12 @@ workflow minimal:
 		`allow: ["Read(**)"]`,
 		`ask: ["Bash(go build:*)"]`,
 		`deny: ["Bash(rm:*)"]`,
+		`allow: ["Read(pkg/**)"]`,
+		`ask: ["Bash(git push:*)"]`,
+		`deny: ["Bash"]`,
+		`allow: ["Glob(**)"]`,
+		`ask: ["WebFetch"]`,
+		`deny: ["Write"]`,
 	} {
 		if !strings.Contains(unparsed, want) {
 			t.Fatalf("unparse missing %q:\n%s", want, unparsed)
@@ -96,11 +116,34 @@ workflow minimal:
 	if got := w.PermissionDeny; len(got) != 1 || got[0] != "Bash(rm:*)" {
 		t.Errorf("roundtrip workflow.PermissionDeny = %v, want [Bash(rm:*)]", got)
 	}
-	if a, ok := w.Nodes["start"].(*ir.AgentNode); !ok || a.Permission != "deny" {
-		t.Errorf("roundtrip start agent.Permission = %q, want deny", agentPermission(w.Nodes["start"]))
+	a, ok := w.Nodes["start"].(*ir.AgentNode)
+	if !ok || a.Permission != "deny" {
+		t.Fatalf("roundtrip start agent.Permission = %q, want deny", agentPermission(w.Nodes["start"]))
 	}
-	if j, ok := w.Nodes["gate"].(*ir.JudgeNode); !ok || j.Permission != "ask" {
-		t.Errorf("roundtrip gate judge.Permission = %q, want ask", judgePermission(w.Nodes["gate"]))
+	// The node's own lists must survive as the NODE's, distinct from the
+	// workflow's: equality with the workflow list would pass on a writer
+	// that silently dropped them.
+	if got := a.PermissionAllow; len(got) != 1 || got[0] != "Read(pkg/**)" {
+		t.Errorf("roundtrip start agent.PermissionAllow = %v, want [Read(pkg/**)]", got)
+	}
+	if got := a.PermissionDeny; len(got) != 1 || got[0] != "Bash" {
+		t.Errorf("roundtrip start agent.PermissionDeny = %v, want [Bash]", got)
+	}
+	if got := a.PermissionAsk; len(got) != 1 || got[0] != "Bash(git push:*)" {
+		t.Errorf("roundtrip start agent.PermissionAsk = %v, want [Bash(git push:*)]", got)
+	}
+	j, ok := w.Nodes["gate"].(*ir.JudgeNode)
+	if !ok || j.Permission != "ask" {
+		t.Fatalf("roundtrip gate judge.Permission = %q, want ask", judgePermission(w.Nodes["gate"]))
+	}
+	if got := j.PermissionAsk; len(got) != 1 || got[0] != "WebFetch" {
+		t.Errorf("roundtrip gate judge.PermissionAsk = %v, want [WebFetch]", got)
+	}
+	if got := j.PermissionAllow; len(got) != 1 || got[0] != "Glob(**)" {
+		t.Errorf("roundtrip gate judge.PermissionAllow = %v, want [Glob(**)]", got)
+	}
+	if got := j.PermissionDeny; len(got) != 1 || got[0] != "Write" {
+		t.Errorf("roundtrip gate judge.PermissionDeny = %v, want [Write]", got)
 	}
 	if tn, ok := w.Nodes["ship"].(*ir.ToolNode); !ok || tn.Permission != "off" {
 		t.Errorf("roundtrip ship tool.Permission = %q, want off", toolPermission(w.Nodes["ship"]))

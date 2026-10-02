@@ -77,7 +77,7 @@ func (e *Engine) execSpecialNode(
 		return "", err
 	}
 	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
+		e.onNodeFinished(rs.ctx, rs.runID, nodeID, output)
 	}
 	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
 		e.logger.Error("failed to save checkpoint after %s %q: %v", kind, nodeID, err)
@@ -176,6 +176,19 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 	for _, ce := range cn.Exprs {
 		v, err := evalComputeExpr(ce.AST, exprCtx)
 		if err != nil {
+			// A simulation may know the failure rests on a value it made
+			// up: the field takes the stand-in and the node goes on, so
+			// the pass reads what lies past it.
+			if standIn, inconclusive := e.inconclusiveExpression(ExpressionFailure{
+				NodeID: nodeID,
+				Field:  ce.Key,
+				Source: ce.Raw,
+				Refs:   ce.AST.Refs(),
+				Err:    err,
+			}); inconclusive {
+				output[ce.Key] = standIn
+				continue
+			}
 			// EXPRESSION_FAILED, not EXECUTION_FAILED: a compute node runs
 			// no LLM and no shell, and its inputs come from a checkpoint
 			// that does not move, so re-executing it reaches the same

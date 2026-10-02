@@ -21,13 +21,22 @@ import (
 // in the pod's home.
 const CollectionName = "bot_sources"
 
+// VersionsCollectionName holds one snapshot per written version of each
+// row, so a pinned version — the assistant mission's rewind preview,
+// #1381 — resolves to the exact content it certified even after newer
+// writes. Snapshots are append-only, retained across Delete by design,
+// and keyed by the row's identity (see snapshotVersion), so a
+// delete-and-recreate of one slug never aliases incarnations.
+const VersionsCollectionName = "bot_source_versions"
+
 // MongoStore is the cloud-mode Store.
 type MongoStore struct {
-	coll *mongo.Collection
+	coll     *mongo.Collection
+	versions *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
-	return &MongoStore{coll: db.Collection(CollectionName)}
+	return &MongoStore{coll: db.Collection(CollectionName), versions: db.Collection(VersionsCollectionName)}
 }
 
 func (s *MongoStore) EnsureSchema(ctx context.Context) error {
@@ -39,6 +48,25 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("botsource: ensure %s indexes: %w", CollectionName, err)
+	}
+	return nil
+}
+
+// snapshotVersion appends one version snapshot to the history collection.
+// The snapshot document's _id is "<row id>:<version>" — injective (the
+// version suffix is the final ':'-segment and a version is an int), so a
+// re-driven snapshot insert is an idempotent no-op on duplicate key, and a
+// row's snapshots can never be overwritten by a recreated slug: a new row
+// carries a new id. The tenant stays in the document and in every read's
+// filter.
+func (s *MongoStore) snapshotVersion(ctx context.Context, bs BotSource) error {
+	snap := bs
+	snap.ID = fmt.Sprintf("%s:%d", bs.ID, bs.Version)
+	if _, err := s.versions.InsertOne(ctx, snap); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
+		return fmt.Errorf("botsource: snapshot version %d of %s/%s: %w", bs.Version, bs.TenantID, bs.Slug, err)
 	}
 	return nil
 }
@@ -67,14 +95,24 @@ func (s *MongoStore) Create(ctx context.Context, bs BotSource) (BotSource, error
 	if err := bs.Validate(); err != nil {
 		return BotSource{}, err
 	}
-	if bs.ID == "" {
-		bs.ID = uuid.NewString()
-	}
+	// The store MINTS identity on create, unconditionally: a caller-supplied
+	// id could recycle a deleted row's id and alias its version history —
+	// the one shape a recreated slug must never produce. Update is the only
+	// write that names an existing row.
+	bs.ID = uuid.NewString()
 	now := time.Now().UTC()
 	bs.CreatedAt, bs.UpdatedAt = now, now
 	bs.Version = 1
 	if bs.Origin == "" {
 		bs.Origin = "tenant"
+	}
+	// The snapshot lands BEFORE the row: the id is freshly minted and the
+	// version is always 1, so an insert that fails after a landed snapshot
+	// (a slug conflict, a blip) leaves only an orphan snapshot — dead data
+	// no pin can ever name — while the reverse order would report a failure
+	// for a row that exists and wedge the slug's retry on ErrSlugConflict.
+	if err := s.snapshotVersion(ctx, bs); err != nil {
+		return BotSource{}, err
 	}
 	if _, err := s.coll.InsertOne(ctx, bs); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -108,6 +146,35 @@ func (s *MongoStore) GetBySlug(ctx context.Context, tenantID, slug string) (BotS
 		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
 	}
 	return s.findOne(ctx, bson.M{"tenant_id": tenantID, "slug": slug})
+}
+
+// GetByVersion reads one PAST version of one row from the snapshot
+// collection, with GetBySlug's sentinel-scoping defense. The snapshot's _id
+// is "<row id>:<version>" (see snapshotVersion), so the read pins the row's
+// identity: a recreated slug never serves for an older row's pin.
+func (s *MongoStore) GetByVersion(ctx context.Context, tenantID, id string, version int) (BotSource, error) {
+	if tenantID == "" {
+		return BotSource{}, ErrTenantMissing
+	}
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
+	}
+	if version <= 0 {
+		return BotSource{}, fmt.Errorf("botsource: version %d: %w", version, ErrNotFound)
+	}
+	var out BotSource
+	filter := bson.M{"_id": fmt.Sprintf("%s:%d", id, version), "tenant_id": tenantID}
+	if err := s.versions.FindOne(ctx, filter).Decode(&out); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return BotSource{}, ErrNotFound
+		}
+		return BotSource{}, fmt.Errorf("botsource: get version: %w", err)
+	}
+	// The snapshot's STORED _id is the composite; the struct field means the
+	// row id. Restoring it here keeps the returned row usable as a row —
+	// and identical to what the memory twin returns for the same read.
+	out.ID = id
+	return out, nil
 }
 
 func (s *MongoStore) findOne(ctx context.Context, filter bson.M) (BotSource, error) {
@@ -167,7 +234,14 @@ func (s *MongoStore) Update(ctx context.Context, bs BotSource) (BotSource, error
 		}
 		return BotSource{}, ErrVersionConflict
 	}
-	return s.Get(ctx, bs.ID)
+	updated, err := s.Get(ctx, bs.ID)
+	if err != nil {
+		return BotSource{}, err
+	}
+	if err := s.snapshotVersion(ctx, updated); err != nil {
+		return BotSource{}, err
+	}
+	return updated, nil
 }
 
 func (s *MongoStore) Delete(ctx context.Context, id string) error {

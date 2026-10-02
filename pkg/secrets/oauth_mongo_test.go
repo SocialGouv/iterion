@@ -49,6 +49,28 @@ func mongoOAuthStore(t *testing.T) (*MongoOAuthStore, context.Context) {
 	return s, ctx
 }
 
+// GetByID reaches ONE link whatever its rank on the production store — the
+// record a run was sealed with, which a runner follows while the refresh
+// worker rotates it.
+func TestMongoOAuth_GetByIDReachesOneLink(t *testing.T) {
+	s, ctx := mongoOAuthStore(t)
+	for _, rec := range []OAuthRecord{
+		{UserID: "org:acme", Kind: OAuthKindClaudeCode, Rank: 0, SealedPayload: []byte("primary")},
+		{UserID: "org:acme", Kind: OAuthKindClaudeCode, Rank: 1, SealedPayload: []byte("fallback")},
+	} {
+		if err := s.Upsert(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.GetByID(ctx, OAuthRecordID("org:acme", OAuthKindClaudeCode, 1))
+	if err != nil || got.Rank != 1 || string(got.SealedPayload) != "fallback" {
+		t.Fatalf("GetByID(rank 1) = rank %d %q, %v — want the fallback link itself", got.Rank, got.SealedPayload, err)
+	}
+	if _, err := s.GetByID(ctx, "org:acme|claude_code|9"); !errors.Is(err, ErrOAuthNotFound) {
+		t.Fatalf("a missing id answered %v, want ErrOAuthNotFound", err)
+	}
+}
+
 // Clearing the label must clear it on the wire the production store uses:
 // with a bson omitempty on the field, the $set body carried no key for an
 // empty label and the API reported a clear that never happened.

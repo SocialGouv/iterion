@@ -16,6 +16,18 @@
 //   - ONE ARTIFACT, TWO AUDIENCES. A file in the tree needs no protocol:
 //     a session reads it, and so does a bot that checked the repo out
 //     inside a container.
+//   - MERGEABLE ACROSS ENTRIES. A row renders its own entry and nothing
+//     else, and no line sums up the tree — no totals, no per-row counts.
+//     Two pull requests that each add a page would both edit such a count
+//     the same way, git would merge them clean, and the combined tree would
+//     be stale: the merge queue fails that twenty minutes into CI. Without
+//     them, branches that change DIFFERENT entries merge into exactly the
+//     regenerated map, and neighbouring rows conflict where a reader sees
+//     it; merge_test.go holds this. Two branches that change sources of the
+//     SAME entry — two files of one package, two paragraphs of one page, a
+//     bundle's manifest and one of its skills — can still merge clean and
+//     stale; the fail-fast freshness step at the head of CI's `test` job is
+//     the net for that.
 //
 // Why these three extractors and not one: a seam with a single
 // implementation is a promise, not a seam. Go packages, markdown docs and
@@ -35,6 +47,9 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/SocialGouv/iterion/internal/mdcode"
+	"github.com/SocialGouv/iterion/internal/treeskip"
 )
 
 // Extractor renders one generated map from a repository tree.
@@ -56,6 +71,35 @@ func Extractors() []Extractor {
 
 // OutputDir is where the committed maps live, relative to the repo root.
 const OutputDir = "docs/references"
+
+// linkTarget renders a repository-root-relative path as the link target a
+// generated map writes. Every link a map emits goes through it, so no two
+// columns can spell the same rule differently.
+//
+// The rule is one rewrite: the path relative to OutputDir. The documentation
+// site's root is docs/, so a target that climbs to the repository root —
+// `../../docs/quickstart.md` — leaves the site and names nothing there, while
+// rendering fine on github.com; written from docs/references/ instead,
+// `../quickstart.md` resolves on both. A target outside docs/ keeps climbing
+// (`../../pkg/runtime/pause.go`): the site rewrites it to a github.com blob
+// URL, which docs/scripts/check-links.mjs then resolves against the real tree.
+func linkTarget(repoRelPath string) (string, error) {
+	// The input is a path from the repository root. One that names the root
+	// itself, or climbs above it, reaches no file a reader of the map can
+	// open, and rewriting it only makes it climb further: refuse, naming it,
+	// rather than write it down. Cleaning first tests the property rather
+	// than an orthography — `./`, `a/..` and `docs/..` are that same root.
+	repoRelPath = filepath.ToSlash(filepath.Clean(repoRelPath))
+	if repoRelPath == "." || repoRelPath == ".." || strings.HasPrefix(repoRelPath, "../") {
+		return "", fmt.Errorf("repomap: %q leaves the repository — the page that quotes it has a broken link", repoRelPath)
+	}
+	rel, err := filepath.Rel(OutputDir, repoRelPath)
+	if err != nil {
+		return "", fmt.Errorf("repomap: link from %s to %s: %w", OutputDir, repoRelPath, err)
+	}
+	// filepath separators are the host's; a markdown target is always slashes.
+	return filepath.ToSlash(rel), nil
+}
 
 // Path returns an extractor's artifact path relative to the repo root.
 func Path(e Extractor) string {
@@ -135,21 +179,6 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// skipDir names the trees no map ever describes: vendored or installed
-// third-party code, sibling worktrees, and the engine's own run scratch.
-// A map that indexed vendor/ would be mostly vendor/.
-// `testdata` is here for the same reason the Go toolchain ignores it:
-// it is where a parser project keeps DELIBERATELY broken fixtures. A
-// `.go` file that does not parse is a hard error in this package, so
-// without this entry a fixture nobody intended to compile turns the
-// repository's required `test` check red.
-var skipDir = map[string]bool{
-	"vendor": true, "node_modules": true, ".git": true, ".works": true,
-	".repos": true, ".iterion": true, ".devbox": true, "graphify-out": true,
-	".claude": true, ".task": true, "dist": true, ".pnpm-store": true,
-	"testdata": true,
-}
-
 // walkDirs visits every directory under root that is not skipped,
 // calling fn with the directory's repo-relative path ("." for root).
 func walkDirs(root string, fn func(rel string, entries []os.DirEntry) error) error {
@@ -164,7 +193,7 @@ func walkDirs(root string, fn func(rel string, entries []os.DirEntry) error) err
 		if relErr != nil {
 			return relErr
 		}
-		if rel != "." && skipDir[d.Name()] {
+		if rel != "." && treeskip.Dir(d.Name()) {
 			return filepath.SkipDir
 		}
 		entries, readErr := os.ReadDir(abs)
@@ -197,7 +226,12 @@ func firstSentence(text string, max int) string {
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		text = strings.TrimSpace(text[:cut]) + "…"
+		// Then close a code span the cut opened and did not finish. A half
+		// span renders a stray backtick, and — the reason this is here
+		// rather than in the renderer — every scanner downstream then reads
+		// the text the span was quoting as prose, so a link form the page
+		// only QUOTED is rewritten or refused as a link.
+		text = strings.TrimSpace(mdcode.CloseDanglingSpan(text[:cut])) + "…"
 	}
 	return strings.ReplaceAll(text, "|", `\|`)
 }

@@ -1,0 +1,25 @@
+## Multi-file studio-UI fixture: the main imports three fragments, one of
+## which the writer cannot reproduce (#1612). `dsl: 2` makes the MERGED
+## program strict too, so merging that value folds it and the merge is
+## refused — see studio/e2e/specs/source-view.spec.ts.
+
+dsl: 2
+
+import "lib/schemas.bot"
+import "lib/nodes.bot"
+import "lib/refused.bot"
+
+workflow ui_unit_fixture:
+  worktree: none
+  sandbox: none
+
+  entry: collect_facts
+
+  budget:
+    max_iterations: 5
+
+  collect_facts -> decide
+
+  decide -> done when ok
+
+  decide -> fail

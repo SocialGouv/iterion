@@ -1,0 +1,11 @@
+# refused: a var's default is a scalar literal (a json or string[] default is a quoted JSON text)
+dsl: 2
+vars:
+  x: {type: "string[]", default: [a, b]}
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

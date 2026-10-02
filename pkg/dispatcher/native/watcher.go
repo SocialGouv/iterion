@@ -10,6 +10,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/SocialGouv/iterion/internal/fswatch"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
 
@@ -18,12 +19,16 @@ import (
 // like every seam in this package — see fireSeam.
 var newFSWatcher atomic.Pointer[func() (*fsnotify.Watcher, error)]
 
-// fsWatcherCtor is fsnotify's own constructor unless a test installed one.
+// fsWatcherCtor returns fswatch's constructor — whose refusal carries the
+// resource evidence store.go logs — unless a test installed one. The Add
+// below goes through fswatch.Add for the same evidence: a spent
+// max_user_watches budget is reported by inotify_add_watch, not by the
+// constructor's inotify_init1 (#1554).
 func fsWatcherCtor() func() (*fsnotify.Watcher, error) {
 	if f := newFSWatcher.Load(); f != nil {
 		return *f
 	}
-	return fsnotify.NewWatcher
+	return fswatch.NewWatcher
 }
 
 // indexWatcher watches <root>/issues/ for filesystem changes made by
@@ -69,7 +74,7 @@ func startIndexWatcher(s *Store) (*indexWatcher, error) {
 		return nil, err
 	}
 	issuesPath := filepath.Join(s.root, issuesDir)
-	if err := w.Add(issuesPath); err != nil {
+	if err := fswatch.Add(w, issuesPath); err != nil {
 		_ = w.Close()
 		// Missing directory shouldn't be fatal: NewStore already
 		// ensured it exists, but a hostile filesystem (read-only

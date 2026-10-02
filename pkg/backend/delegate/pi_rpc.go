@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/piext"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -77,17 +78,15 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
-	// Same rule as the print transport: ITERION_PI_BIN is a HOST path, so it
-	// must not become argv[0] inside a container.
-	binary := b.Command
-	if binary == "" && task.Hostless() {
-		binary = strings.TrimSpace(os.Getenv(piProtocol.HostBinaryEnv))
-	}
-	if binary == "" {
-		binary = piProtocol.DefaultBinary
+	// The SAME derivation as the print transport, not a copy of its rule:
+	// both transports read ITERION_PI_BIN, so a rule applied in one
+	// derivation only is a rule the DEFAULT transport does not have.
+	binary, err := resolveCLIBinary(piProtocol, b.Command, task)
+	if err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
 
-	systemPrompt := task.BuildSystemPrompt()
+	systemPrompt := piComposeSystemPrompt(task)
 	promptFile, cleanupPrompt, err := piWriteSystemPrompt(ctx, task, systemPrompt)
 	if err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
@@ -571,16 +570,6 @@ type piMCPServerSpec struct {
 //
 // Sandboxed stdio servers inherit the claude_code caveat: the command is
 // resolved inside the container, so a host-only binary is unreachable there.
-// isReservedMCPServerName reports whether a server name would land its tools
-// inside iterion's permission-exempt namespace. Separators are normalised the
-// same way permission.IsInfrastructureTool does, so iterion-board, iterion.x
-// and iterion_board are all caught.
-func isReservedMCPServerName(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	n = strings.NewReplacer("-", "_", ".", "_").Replace(n)
-	return strings.HasPrefix(n, "iterion")
-}
-
 func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 	var out []piMCPServerSpec
 	warn := func(format string, args ...any) {
@@ -664,7 +653,7 @@ func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 		// would therefore have every one of its calls allowed, even under
 		// `permission: deny`. The board is named by iterion itself and is
 		// added above, outside this loop.
-		if isReservedMCPServerName(s.Name) {
+		if permission.IsReservedMCPServerName(s.Name) {
 			warn("[%s#%d/%s] MCP server %q: the iterion* namespace is reserved for iterion's own servers "+
 				"(its tools would be permission-exempt); skipped — rename it",
 				task.NodeID, task.Iteration, BackendPi, s.Name)

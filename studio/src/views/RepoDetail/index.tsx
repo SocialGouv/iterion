@@ -127,7 +127,7 @@ function connectionStatusMeta(
 }
 
 function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
-  const canManage = useCanManageTeam();
+  const canManage = useCanManageTeam(teamID);
   const { confirm, dialog } = useConfirm();
   const action = useAsyncAction();
   const qc = useQueryClient();

@@ -25,8 +25,8 @@ func NewMemoryCounter() *MemoryCounter {
 	return &MemoryCounter{usage: make(map[string]*memUsage)}
 }
 
-func (c *MemoryCounter) get(tenantID string, when time.Time) *memUsage {
-	key := usageKey(tenantID, when)
+func (c *MemoryCounter) get(subject Subject, when time.Time) *memUsage {
+	key := usageKey(subject, when)
 	u, ok := c.usage[key]
 	if !ok {
 		u = &memUsage{}
@@ -35,10 +35,10 @@ func (c *MemoryCounter) get(tenantID string, when time.Time) *memUsage {
 	return u
 }
 
-func (c *MemoryCounter) AllowRun(_ context.Context, tenantID string, when time.Time, maxRuns int, maxCostMillis int64) (DenyReason, error) {
+func (c *MemoryCounter) AllowRun(_ context.Context, subject Subject, when time.Time, maxRuns int, maxCostMillis int64) (DenyReason, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	u := c.get(tenantID, when)
+	u := c.get(subject, when)
 	if maxRuns > 0 && u.runs+1 > maxRuns {
 		return DenyRuns, nil
 	}
@@ -49,19 +49,19 @@ func (c *MemoryCounter) AllowRun(_ context.Context, tenantID string, when time.T
 	return DenyNone, nil
 }
 
-func (c *MemoryCounter) ReleaseRun(_ context.Context, tenantID string, when time.Time) error {
+func (c *MemoryCounter) ReleaseRun(_ context.Context, subject Subject, when time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if u, ok := c.usage[usageKey(tenantID, when)]; ok && u.runs > 0 {
+	if u, ok := c.usage[usageKey(subject, when)]; ok && u.runs > 0 {
 		u.runs--
 	}
 	return nil
 }
 
-func (c *MemoryCounter) AddSpend(_ context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error {
+func (c *MemoryCounter) AddSpend(_ context.Context, subject Subject, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	u := c.get(tenantID, when)
+	u := c.get(subject, when)
 	u.costUSDMillis += CostToMillis(costUSD)
 	if inputTokens > 0 {
 		u.inputTokens += inputTokens
@@ -75,11 +75,11 @@ func (c *MemoryCounter) AddSpend(_ context.Context, tenantID string, when time.T
 	return nil
 }
 
-func (c *MemoryCounter) Usage(_ context.Context, tenantID string, when time.Time) (MonthlyUsage, error) {
+func (c *MemoryCounter) Usage(_ context.Context, subject Subject, when time.Time) (MonthlyUsage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := MonthlyUsage{Month: monthKey(when)}
-	if u, ok := c.usage[usageKey(tenantID, when)]; ok {
+	if u, ok := c.usage[usageKey(subject, when)]; ok {
 		out.Runs = u.runs
 		out.CostUSD = millisToCost(u.costUSDMillis)
 		out.InputTokens = u.inputTokens

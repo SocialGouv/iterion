@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -197,9 +199,11 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // rather than escaping to the host. The unsandboxed path below is
 // the historical in-process implementation.
 //
-// V1 limitations of the sandbox-routed path are documented on
-// [delegate.IOTask] and in docs/sandbox.md: no MCP servers, no
-// mid-tool-loop ask_user resume.
+// On the sandbox-routed path each tool runs where its
+// [tool.SandboxPlacementOf] says: in the container, proxied back to the
+// launcher, or not at all — docs/sandbox.md lists the refusals (tools with
+// no in-container form, Ask-capable permission policies, async interaction,
+// and an MCP server this launcher may not start for a sandboxed run).
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result delegate.Result, err error) {
 	defer func() {
 		if err == nil && task.SessionSlot != "" {
@@ -232,13 +236,47 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// forwarded env, and it is built with no logger — so a guard placed after
 	// the dispatch would neither refuse nor warn on the default path, silently
 	// spending the balance the operator just closed.
-	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" {
+	//
+	// A GLM id on this provider is z.ai's (GLMOnAnthropicWire): it spends the
+	// z.ai key, never the subscription, so neither the refusal nor the notice
+	// concerns it — beside a Claude forfait it would refuse a node that was
+	// never going to touch the forfait.
+	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" && !GLMOnAnthropicWire(task.Model) {
 		if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 		}
 		if b.logger != nil && secrets.SubscriptionOAuthOnly(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) {
 			b.logger.Warn("[%s#%d/claw] %s", task.NodeID, task.Iteration,
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
+		}
+	}
+
+	// A continued conversation is the executor's tool-less schema re-ask:
+	// it runs in-process by design (see Task.ContinueConversation) and is
+	// refused rather than forwarded to a runner that may predate the field.
+	if len(task.ContinueConversation) > 0 && task.Sandbox != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: node %q: a continued conversation runs in-process, never through the sandbox runner", task.NodeID)
+	}
+
+	// Outside the sandbox arm, deliberately. Resolution DROPS a refused
+	// server's tools whatever the run's sandbox is, so the refusal that
+	// compensates for the drop has to read the same fact: gated on
+	// `task.Sandbox != nil` instead, the two disagreed whenever the policy
+	// refused without a live sandbox — the manager's undecided state, which
+	// is where a subbot child's executor starts — and the node's declared
+	// MCP tool then vanished with no error, no event and no fallback.
+	//
+	// A populated map can only mean this launcher declined to start a server
+	// the node asked for, which is a reason to refuse the ROUTE whether or
+	// not a sandbox is why.
+	if len(task.MCPServersRefusedOnLauncher) > 0 {
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: "MCP " + refusedMCPServerSummary(task.MCPServersRefusedOnLauncher),
+			// No tail appended: ServerNotStartableError.Error() already ends
+			// with this exact advice, and saying it twice in one message
+			// reads as two different remedies.
+			Remedy: refusedMCPRemedy(task.MCPServersRefusedOnLauncher),
 		}
 	}
 
@@ -255,8 +293,20 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// same combination as fail-not-degrade.
 		if task.Permission.CanAsk() {
 			return delegate.Result{}, fmt.Errorf(
-				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run this node unsandboxed, or route it to claude_code",
+				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run the workflow unsandboxed (`sandbox: none` / `--sandbox none`), or route the node to claude_code",
 				task.NodeID, task.Permission.Mode)
+		}
+		// The async question pair is served by the launcher, which does not
+		// bind it to the run's question channel on this path: a task wired
+		// to post async questions is refused by type — here, as one route's
+		// failure, so the node's fallbacks can serve it.
+		if task.PostAsyncQuestion != nil {
+			return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+				NodeID: task.NodeID, Backend: delegate.BackendClaw, Capability: "interaction: async in a sandboxed run"}
+		}
+		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
+		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
+			return delegate.Result{}, err
 		}
 		return b.executeViaSandboxRunner(ctx, task)
 	}
@@ -270,19 +320,17 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
 
-	// Strip the "provider/" prefix so the request body carries the bare
-	// model ID. Provider routing is already done at this point (via
-	// Resolve), and provider APIs (Anthropic, OpenAI) don't recognize the
-	// prefixed form in the JSON body — Anthropic returns 404, OpenAI may
-	// silently coerce or also reject depending on the model.
-	_, modelID, err := ParseModelSpec(task.Model)
-	if err != nil {
+	// The spec must name a provider; the prefix itself comes off in
+	// buildRequest (wireModelID), exactly once — stripping it here too cut a
+	// model id that holds slashes of its own ("meta-llama/…") short.
+	if _, _, err := ParseModelSpec(task.Model); err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
+	route := modelroute.Parse(task.Model)
 
 	// Build GenerationOptions.
 	opts := GenerationOptions{
-		Model:                 modelID,
+		Model:                 task.Model,
 		MaxTokens:             task.MaxTokens,
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
@@ -293,7 +341,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// supported matrix — claw-code-go does NOT clamp on its own, so a
 	// recipe asking for "max" on an OpenAI model would otherwise reach
 	// the API with an unsupported value and bounce as 400.
-	if effort := coerceEffortForModel(task.ReasoningEffort, modelID); effort != "" {
+	if effort := coerceEffortForModel(task.ReasoningEffort, route.CapabilityID()); effort != "" {
 		opts.ProviderOptions = providerOptsForNode(effort)
 	}
 
@@ -306,6 +354,14 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			Text:         systemText,
 			CacheControl: api.EphemeralCacheControl(),
 		}}
+	}
+
+	// The ambient-context policy (ADR-119): the instruction files the node
+	// inherits, rendered by claw-code-go's own loader. Appended before the
+	// memory blocks, whose cache_control re-mark covers the last block — this
+	// one included, and it is as stable as they are.
+	if ctx := clawAmbientSystemContext(task); ctx != "" {
+		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: ctx})
 	}
 
 	// User message.
@@ -416,6 +472,30 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			}.ToContentBlock()},
 		})
 		opts.Messages = prior
+	}
+
+	// Continuation: a COMPLETED conversation the executor asks one more
+	// question of — its schema re-ask. The prior messages are replayed as
+	// they ended and the user text becomes the next turn; nothing is
+	// pending, so it cannot combine with the resume form above (which
+	// answers a pending tool_use). The store prepend is skipped for both
+	// forms (applySessionMessagesForTask): they already carry the history
+	// the store holds.
+	if len(task.ContinueConversation) > 0 {
+		if len(task.ResumeConversation) > 0 {
+			return delegate.Result{}, fmt.Errorf("claw backend: node %q carries both a paused and a completed conversation", task.NodeID)
+		}
+		var prior []api.Message
+		if err := json.Unmarshal(task.ContinueConversation, &prior); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: decode continued conversation: %w", err)
+		}
+		if strings.TrimSpace(userText) == "" {
+			return delegate.Result{}, fmt.Errorf("claw backend: node %q continues a conversation with an empty user turn", task.NodeID)
+		}
+		opts.Messages = append(prior, api.Message{
+			Role:    "user",
+			Content: []api.ContentBlock{{Type: "text", Text: userText}},
+		})
 	}
 
 	// Tools.
@@ -630,13 +710,14 @@ func askUserResult(err error) (delegate.Result, bool) {
 //
 // Zero usage yields the zero Result: an empty output map with a `_tokens: 0`
 // stamp would read as an output rather than as a bill, and the engine's own
-// guard already skips a spendless failure.
+// guard already skips a spendless failure. A call whose usage went
+// unreported is no such zero: its bill is unknown, and the map says so.
 func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.UnreportedCalls == 0 {
 		return delegate.Result{}
 	}
 	output := map[string]any{}
-	tokens := cost.Annotate(output, task.Model, usage.InputTokens, usage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, usage)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,
@@ -644,6 +725,14 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 		ThinkingTokens: usage.ReasoningTokens,
 		ThinkingMs:     usage.ThinkingMs,
 	}
+}
+
+// annotateUsage stamps a generation's usage onto its output: the `_tokens` /
+// `_model` / `_cost_usd` keys, and the count of calls whose usage the
+// provider did not report, for which those figures are a lower bound.
+func annotateUsage(output map[string]any, model string, u Usage) int {
+	cost.SetUnreportedCalls(output, u.UnreportedCalls)
+	return cost.Annotate(output, model, u.InputTokens, u.OutputTokens)
 }
 
 // partialUsage reads the usage off a best-effort partial result, tolerating
@@ -667,7 +756,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 	// Set the explicit schema for structured output.
 	genOpts := opts
 	genOpts.ExplicitSchema = task.OutputSchema
-	genOpts = applySessionMessages(ctx, taskSessionKey(task), genOpts)
+	genOpts = applySessionMessagesForTask(ctx, task, genOpts)
 
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
@@ -683,7 +772,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		output = make(map[string]any)
 	}
 
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
 		Output:         output,
@@ -701,7 +790,7 @@ func (b *ClawBackend) generateTextWithRetry(ctx context.Context, client api.APIC
 }
 
 func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
-	opts = applySessionMessages(ctx, taskSessionKey(task), opts)
+	opts = applySessionMessagesForTask(ctx, task, opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
@@ -712,7 +801,7 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 	}
 
 	output := map[string]any{"text": result.Text}
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
 		Output:         output,
@@ -798,7 +887,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchemaRetry(ctx context.Context, c
 }
 
 func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
-	opts = applySessionMessages(ctx, taskSessionKey(task), opts)
+	opts = applySessionMessagesForTask(ctx, task, opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
@@ -827,6 +916,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if b.hooks.OnLLMRequest != nil {
 			b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
 				Model:        task.Model,
+				WireModel:    wireModelIfDistinct(task.Model),
 				MessageCount: len(nudged.Messages),
 				Timestamp:    time.Now(),
 			})
@@ -859,6 +949,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				accumulateUsage(&abandoned, partialUsage(reRun))
 				return meteredFailure(task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
 			}
+			// Falling through to recovery: the nudge was billed too, so its
+			// partial usage rides the first pass's into every exit below.
+			accumulateUsage(&result.TotalUsage, partialUsage(reRun))
 		}
 	}
 
@@ -870,7 +963,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text != "" {
 		var output map[string]any
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
-			tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+			tokens := annotateUsage(output, task.Model, result.TotalUsage)
 			return delegate.Result{
 				Output:         output,
 				Tokens:         tokens,
@@ -905,15 +998,16 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if b.hooks.OnLLMRequest != nil {
 		b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
 			Model:        task.Model,
+			WireModel:    wireModelIfDistinct(task.Model),
 			MessageCount: len(recoveryOpts.Messages),
 			Timestamp:    time.Now(),
 		})
 	}
 	obj, recErr := GenerateObjectDirect[map[string]any](ctx, client, recoveryOpts)
 	if recErr == nil && obj != nil && obj.Object != nil {
-		tokens := cost.Annotate(obj.Object, task.Model,
-			result.TotalUsage.InputTokens+obj.TotalUsage.InputTokens,
-			result.TotalUsage.OutputTokens+obj.TotalUsage.OutputTokens)
+		both := result.TotalUsage
+		accumulateUsage(&both, obj.TotalUsage)
+		tokens := annotateUsage(obj.Object, task.Model, both)
 		return delegate.Result{
 			Output:             obj.Object,
 			Tokens:             tokens,
@@ -947,7 +1041,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
 	output := map[string]any{"text": text}
-	tokens := cost.Annotate(output, task.Model, billed.InputTokens, billed.OutputTokens)
+	tokens := annotateUsage(output, task.Model, billed)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,
@@ -1164,6 +1258,18 @@ var providerCredentialEnvVars = []string{
 	// existing ClaudeCodeSandboxConfigDir mount (mirroring CODEX_HOME) is the
 	// shape that closes it.
 	"ZAI_API_KEY",
+	// Moonshot's factory reads BOTH the key and the base URL that decides
+	// WHICH gateway it is spent on (registry.go moonshotBaseURL: the .cn
+	// endpoint, an operator proxy). A missing key is loud — the in-container
+	// factory refuses by name — but a missing base URL is not: the node keeps
+	// working against the published endpoint while the host talks to the
+	// operator's, one node on two vendors' infrastructure with nothing said.
+	"MOONSHOT_API_KEY",
+	"MOONSHOT_BASE_URL",
+	// The OpenAI twin: the endpoint a key is spent on, and the one setting
+	// that keeps a ChatGPT forfait off a third-party gateway
+	// (openAIOAuthAllowed) — the host and the container must read the same.
+	"OPENAI_BASE_URL",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
 	// key, which is METERED and billed to its lender.
@@ -1212,6 +1318,7 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderAnthropic: "ANTHROPIC_API_KEY",
 	secrets.ProviderAzure:     "AZURE_OPENAI_API_KEY",
 	secrets.ProviderZAI:       "ZAI_API_KEY",
+	secrets.ProviderMoonshot:  "MOONSHOT_API_KEY",
 	secrets.ProviderXAI:       "XAI_API_KEY",
 }
 
@@ -1260,6 +1367,23 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			env[name] = key
 		}
 	}
+	// A PINNED key (secrets.RunBundle.PinnedAPIKeys) crosses only for the
+	// node that names its provider in its model spec — `moonshot/kimi-k2`
+	// carries MOONSHOT_API_KEY into the container, an `anthropic/…` node in
+	// the same run does not see it. That spec IS the pin on this backend
+	// (claw has no `provider:` hint of its own), so it is the licence the
+	// key travels on; forwarding it to every node would put a credential
+	// provisioned for one route into the environment of all of them. After
+	// the run's own key of that provider, never over it: a tenant's
+	// instrument outranks the deployment's, as it does in process
+	// (APIKeyForRoute).
+	if prov := clawPinnedProvider(model); prov != "" && creds.APIKey(prov) == "" {
+		if k := creds.PinnedAPIKey(prov); k != "" {
+			if name := byokEnvVar[prov]; name != "" {
+				env[name] = k
+			}
+		}
+	}
 	// A resolved ChatGPT forfait (the tenant's own, or one lent through the
 	// credential pool) is delivered into the sandbox as a file by
 	// runtime.addCodexOAuthSecretFile. Point the in-container runner at it
@@ -1278,36 +1402,132 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// …and never against the operator's explicit kill switch:
 		// ITERION_OPENAI_USE_OAUTH=0 is a machine-wide refusal to spend any
 		// subscription, which a per-run credential does not get to overrule.
-		if creds.APIKeys[secrets.ProviderOpenAI] == "" && os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" {
+		// The run's DEFAULT openai key only: a key a shared tier sealed for
+		// the route alone comes after the ChatGPT forfait, which claw spends
+		// on its plan — the order ResolveWithContext applies in process,
+		// under the same openAIOAuthAllowed.
+		nodeOwnKey := creds.APIKeys[secrets.ProviderOpenAI]
+		if nodeOwnKey == "" && openAIOAuthAllowed() {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
+	// The refusal crosses whatever the run holds — the in-container factory
+	// would otherwise spend the forfait the host was told never to. Only the
+	// refusal: a host-wide "1" forces the forfait over the ENV key, and here
+	// the run's own key crosses as that env key.
+	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
+		env["ITERION_OPENAI_USE_OAUTH"] = "0"
+	}
 	// The Anthropic twin (#736), and only for a node the forfait can actually
-	// serve. A z.ai/GLM model rides claw's ANTHROPIC provider too — it arrives
-	// as "anthropic/glm-X" and registry.go SYNTHESISES z.ai's base URL from a
-	// bare ZAI_API_KEY — so the wire check below cannot see it: there is no
-	// ANTHROPIC_BASE_URL to inspect. Clearing ZAI_API_KEY for such a node would
-	// remove its only credential channel and leave the forfait bearer asking
-	// api.anthropic.com for a GLM model it cannot serve, breaking exactly the
-	// forfait-carrying tenants this change is for.
-	if !modelServedByZAI(model) {
-		if err := applyForfaitAcrossSandbox(env, creds); err != nil {
+	// serve: a claude model on claw's anthropic provider. A z.ai/GLM model
+	// rides that provider too — it arrives as "anthropic/glm-X" and registry.go
+	// SYNTHESISES z.ai's base URL from a bare ZAI_API_KEY — so the wire check
+	// below cannot see it: there is no ANTHROPIC_BASE_URL to inspect. Clearing
+	// ZAI_API_KEY for such a node would remove its only credential channel and
+	// leave the forfait bearer asking api.anthropic.com for a GLM model it
+	// cannot serve; a node on another provider (openrouter/…) has no use for
+	// the Claude forfait at all, and an expired one must not fail it.
+	// clawPinnedProvider answers both: zai for a GLM spec, the spec's own
+	// provider otherwise.
+	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
+		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
 			return nil, err
 		}
 	}
 	return env, nil
 }
 
+// claw declares no forfait-first provider (delegate.RegisterForfaitFirst).
+// On `openai/…` it does spend the ChatGPT forfait before a key pinned for the
+// route — but only while the RUNNER lets it (openAIOAuthAllowed, a
+// ChatGPT-mode blob), which the server's accounting cannot see; a declaration
+// there would leave a key the runner spends unstamped. On `anthropic/…` the
+// key comes first: a Claude forfait on claw is billed as extra usage.
+
+// clawPinnedProvider names the provider a claw model spec PINS — the
+// `<provider>/` prefix, lower-cased — or "" when the spec carries none or
+// names something no credential slot answers to. It is deliberately strict:
+// it gates a credential, so an unreadable spec must yield nothing rather
+// than a guess.
+func clawPinnedProvider(model string) secrets.Provider {
+	name, _, err := ParseModelSpec(strings.TrimSpace(model))
+	if err != nil {
+		return ""
+	}
+	// `anthropic/glm-*` rides claw's anthropic provider but is served by
+	// z.ai: the key its route is funded with is z.ai's (prefixOrWiden pins
+	// zai for it), and ZAI_API_KEY is what the in-container registry
+	// synthesises z.ai's base URL from.
+	if GLMOnAnthropicWire(model) {
+		return secrets.ProviderZAI
+	}
+	prov := secrets.Provider(strings.ToLower(strings.TrimSpace(name)))
+	if !prov.Valid() {
+		return ""
+	}
+	return prov
+}
+
 // modelServedByZAI reports whether a model pinned on claw's anthropic provider
 // is actually served by z.ai's Anthropic-compatible endpoint. Same predicate
-// anthropicCapabilities uses to split the two families apart.
+// anthropicCapabilities uses to split the two families apart. It reads a model
+// ID, not a spec: GLMOnAnthropicWire is the spec-level question.
 func modelServedByZAI(model string) bool {
 	return strings.Contains(strings.ToLower(model), "glm")
 }
 
+// GLMOnAnthropicWire reports whether a model spec names a GLM model on the
+// anthropic wire — bare (`glm-5.3`, as claude_code and pi take it) or on
+// claw's anthropic provider (`anthropic/glm-5.3`). z.ai serves exactly those,
+// through its Anthropic-compatible endpoint, so the credential they spend is
+// the z.ai key whatever holds the wire. A spec naming another provider
+// (`openrouter/z-ai/glm-4.6`) is that provider's route and stays its own.
+func GLMOnAnthropicWire(spec string) bool {
+	spec = strings.TrimSpace(spec)
+	if prefix, id, cut := strings.Cut(spec, "/"); cut {
+		if !strings.EqualFold(strings.TrimSpace(prefix), string(secrets.ProviderAnthropic)) {
+			return false
+		}
+		spec = id
+	}
+	return modelServedByZAI(spec)
+}
+
+// zaiKeyReachable reports whether a route naming zai has a key to spend: the
+// run's own (default, or pinned for the route) or the process's ZAI_API_KEY —
+// the sources the delegates' zai branches read, in that order.
+func zaiKeyReachable(ctx context.Context) bool {
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok && creds.APIKeyForRoute(secrets.ProviderZAI) != "" {
+		return true
+	}
+	return os.Getenv("ZAI_API_KEY") != ""
+}
+
+// RouteProviderHint is the provider hint the executor hands a delegate for
+// one chain element: the element's own, except that a GLM id on the anthropic
+// wire with no hint goes to z.ai on claude_code and pi when a z.ai key is
+// reachable. With no hint the wire's default precedence would hand it to
+// whatever holds the family, and a Claude forfait sends it to
+// api.anthropic.com, which does not serve it; without a reachable key the
+// zai branch would refuse the node before it spawns and leave the ambient
+// z.ai setup (ANTHROPIC_BASE_URL on api.z.ai + ANTHROPIC_AUTH_TOKEN, what
+// z.ai documents for Claude Code) untried, which the default path inherits.
+//
+// The dispatch and the usage-cap pre-flight both ask it, so the pre-flight
+// reads the ledger of the credential the session will actually spend.
+func RouteProviderHint(ctx context.Context, backend, hint, model string) string {
+	h := strings.ToLower(strings.TrimSpace(hint))
+	if (h == "" || h == "auto") &&
+		(backend == delegate.BackendClaudeCode || backend == delegate.BackendPi) &&
+		GLMOnAnthropicWire(model) && zaiKeyReachable(ctx) {
+		return string(secrets.ProviderZAI)
+	}
+	return hint
+}
+
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
 // the model gate above reads as one line.
-func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials) error {
+func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials, model string) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -1324,14 +1544,28 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 	// against the platform account, and does so invisibly, because the ambient
 	// key works.
 	//
-	// Two limits, both deliberate: a BYOK anthropic or z.ai key is the tenant's
-	// own explicit instrument and keeps precedence (otherwise the same run
-	// would spend a different one depending on whether it happened to be
-	// sandboxed); and a redirected wire is a destination the operator chose, so
-	// a bearer carrying the whole Claude account does not travel there.
+	// Two limits, both deliberate: a BYOK key claw's anthropic provider would
+	// spend — the Anthropic one, or z.ai's, which the env factory synthesises
+	// onto z.ai's base URL — is the tenant's own explicit instrument and keeps
+	// precedence (otherwise the same run would spend a different one depending
+	// on whether it happened to be sandboxed); and a redirected wire is a
+	// destination the operator chose, so a bearer carrying the whole Claude
+	// account does not travel there. clawAnthropicProviderSlots says which keys
+	// those are.
+	// A key pinned for THIS node's own route is as held as a BYOK slot: the
+	// pinned-key block above injected it into the env, and applying the
+	// forfait here deleted it right back — the container spent the forfait
+	// while the in-process path spent the pin, and an expired forfait
+	// refused a node whose key was good. The route-less predicate below
+	// stays pin-blind on purpose (#736): a pin for ANOTHER route must not
+	// keep the forfait out of an unpinned node.
+	for _, slot := range clawAnthropicProviderSlots {
+		if slot == clawPinnedProvider(model) && creds.PinnedAPIKey(slot) != "" {
+			return nil
+		}
+	}
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-		creds.APIKeys[secrets.ProviderAnthropic] == "" &&
-		creds.APIKeys[secrets.ProviderZAI] == "" &&
+		!heldAnthropicWireAPIKey(creds) &&
 		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
 		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
 		// Validate BEFORE clearing. Once the shadows are gone the forfait is
@@ -1345,8 +1579,205 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials)
 			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
 		}
 		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
-		for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+		for _, shadow := range anthropicWireShadowEnv() {
 			delete(env, shadow)
+		}
+	}
+	return nil
+}
+
+// clawAnthropicProviderSlots are the BYOK slots whose key claw's `anthropic`
+// provider spends: the Anthropic key, and z.ai's, which the registry's env
+// factory reads when no Anthropic credential precedes it and points at z.ai's
+// base URL. They are the keys that outrank the forfait inside the container,
+// and so the only ones that decide the forfait crossing.
+//
+// NOT every slot of secrets.AnthropicWireSlotOrder. That list is the claude_code
+// delegate's precedence, where each facade key reroutes the CLI. claw names
+// its provider in the model spec instead, and a facade with a provider of its
+// own — moonshot, reached as `moonshot/…` — funds no `anthropic/…` node: the
+// env factory never reads its key. Counting it here kept a tenant's forfait
+// out of its sandboxed anthropic nodes whenever the tenant also held a
+// Moonshot key, so the platform's ambient Anthropic key served them; and
+// listing its variable as a shadow deleted the key a moonshot node needs.
+// TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends holds this list to
+// the factory.
+var clawAnthropicProviderSlots = []secrets.Provider{
+	secrets.ProviderAnthropic,
+	secrets.ProviderZAI,
+}
+
+// heldAnthropicWireAPIKey reports whether the run carries a BYOK key claw's
+// anthropic provider would spend (clawAnthropicProviderSlots).
+func heldAnthropicWireAPIKey(creds secrets.Credentials) bool {
+	for _, slot := range clawAnthropicProviderSlots {
+		if creds.APIKeys[slot] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// anthropicWireShadowEnv names the ambient variables that would outrank the
+// forfait inside the container: the two Anthropic-flavoured ones the env
+// factory reads directly, plus the forwarded key of every other slot it
+// spends.
+func anthropicWireShadowEnv() []string {
+	shadows := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+	for _, slot := range clawAnthropicProviderSlots {
+		if name := byokEnvVar[slot]; name != "" && name != "ANTHROPIC_API_KEY" {
+			shadows = append(shadows, name)
+		}
+	}
+	return shadows
+}
+
+// forwardedToolSpellings lists the names the permission gate may know one
+// tool by: the name it was advertised under and, for an MCP tool, the
+// claude_code FQN (`mcp__<server>__<tool>`) that rules are commonly written in
+// and that a model may emit.
+func forwardedToolSpellings(td delegate.ToolDef) []string {
+	spellings := []string{td.Name}
+	if rest, ok := strings.CutPrefix(td.QualifiedName, "mcp."); ok {
+		if server, name, found := strings.Cut(rest, "."); found && server != "" && name != "" {
+			spellings = append(spellings, "mcp__"+server+"__"+name)
+		}
+	}
+	return spellings
+}
+
+// evaluateForwardedCall gates a forwarded call on the tool's identity. The
+// runner gates the spelling the model emitted and forwards the advertised
+// one, and rules match spellings literally, so one spelling is not enough:
+// an explicit deny on ANY spelling denies — a forged call cannot pick the
+// spelling no deny names — and otherwise an allow on any spelling allows, so
+// an honest call the runner allowed through the FQN form is not refused here.
+// Otherwise the first spelling's verdict (the mode default) holds. The
+// returned spelling is the one the verdict was taken on.
+func evaluateForwardedCall(p *permission.Policy, spellings []string, args map[string]any) (permission.Decision, string, string) {
+	first, firstRule := p.Evaluate(spellings[0], args)
+	if first == permission.Deny && firstRule != "" {
+		return first, firstRule, spellings[0]
+	}
+	verdict, rule, spelling := first, firstRule, spellings[0]
+	for _, s := range spellings[1:] {
+		dec, r := p.Evaluate(s, args)
+		if dec == permission.Deny && r != "" {
+			return dec, r, s
+		}
+		if dec == permission.Allow && verdict != permission.Allow {
+			verdict, rule, spelling = dec, r, s
+		}
+	}
+	return verdict, rule, spelling
+}
+
+// refuseForwardedCall records a forwarded tool call the launcher refuses and
+// returns err. The refusal happens on the host's side of the boundary, so it
+// is logged and emitted from here — not left to the runner's event relay,
+// which whatever forged the call also controls.
+func (b *ClawBackend) refuseForwardedCall(task delegate.Task, name string, err error) error {
+	if b.logger != nil {
+		b.logger.Warn("[%s/claw] %v", task.NodeID, err)
+	}
+	if b.hooks.OnToolCall != nil {
+		b.hooks.OnToolCall(task.NodeID, LLMToolCallInfo{ToolName: name, Error: err})
+	}
+	return err
+}
+
+// withoutUnplaceableToolsThePolicyDenies drops a tool no side of the sandbox
+// can serve when the run's permission policy denies it outright: the node
+// could never have called it, so it neither refuses the node nor reaches the
+// runner, which stops on any tool it cannot place. The tool_policy
+// counterpart withholds such a tool at resolution.
+func withoutUnplaceableToolsThePolicyDenies(task delegate.Task) []delegate.ToolDef {
+	if !task.Permission.Enabled() {
+		return task.ToolDefs
+	}
+	kept := make([]delegate.ToolDef, 0, len(task.ToolDefs))
+	for _, td := range task.ToolDefs {
+		if placement, _ := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused && task.Permission.HasExplicitDeny(td.Name, nil) {
+			continue
+		}
+		kept = append(kept, td)
+	}
+	return kept
+}
+
+// refusedMCPServerSummary names the refused servers in a stable order, so
+// the capability string a fallback decision is logged under does not change
+// from run to run over one map's iteration order.
+func refusedMCPServerSummary(refused map[string]delegate.MCPLauncherRefusal) string {
+	names := make([]string, 0, len(refused))
+	for name := range refused {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 1 {
+		return fmt.Sprintf("server %q", names[0])
+	}
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	return "servers " + strings.Join(quoted, ", ")
+}
+
+// refuseToolsWithNoSandboxPlacement refuses a sandboxed task carrying a tool
+// neither side of the sandbox may serve: the container has no form of it and
+// the launcher would run it on the host (tool.PlacementRefused, which every
+// unclassified name falls into). It runs in Execute, beside the Ask refusal,
+// so the node's `fallbacks:` still get their turn; the build-time effects
+// (llm_prompt, board token) have fired, but no runner starts and no token is
+// spent.
+// refusedMCPRemedy opens the remedy with the launcher's OWN reason for
+// declining, in a stable order. Asserting "outside this run's sandbox"
+// instead was wrong wherever the policy refuses without one.
+func refusedMCPRemedy(refused map[string]delegate.MCPLauncherRefusal) string {
+	names := make([]string, 0, len(refused))
+	for name := range refused {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "this launcher declined to start the MCP servers this node asked for"
+	}
+	// EVERY reason, not the alphabetically first. A node with no fallback
+	// shows this text and nothing else (see delegate.ErrCapabilityUnsupported),
+	// so a second server refused for a different reason — or carrying its own
+	// health `Cause` — had no other way to reach the operator.
+	reasons := make([]string, 0, len(names))
+	carriesAdvice := false
+	for _, name := range names {
+		reasons = append(reasons, refused[name].Reason)
+		if refused[name].CarriesRouteAdvice {
+			carriesAdvice = true
+		}
+	}
+	remedy := "claw connects MCP servers in the launcher process, and " + strings.Join(reasons, "; ")
+	// The typed refusal ends with the route-it-elsewhere advice — but only
+	// when it has no cause to report instead. So append it when no reason
+	// carried it, and never when one did: saying it twice reads as two
+	// remedies, and saying it never leaves a refused-AND-broken server with
+	// no way forward at all.
+	//
+	// The flag comes from the refusal's writer. Searching the reason for
+	// "inside the container" put this branch at the mercy of a reword in
+	// another package, with nothing to fail if it happened.
+	if !carriesAdvice {
+		remedy += "; route the node to a backend that starts them inside the container (claude_code, pi), " +
+			"or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)"
+	}
+	return remedy
+}
+
+func refuseToolsWithNoSandboxPlacement(task delegate.Task) error {
+	for _, td := range task.ToolDefs {
+		if placement, reason := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused {
+			return fmt.Errorf(
+				"claw backend: node %q declares tool %q, which a sandboxed runner cannot execute in-container (%s) — "+
+					"drop it, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)", task.NodeID, td.Name, reason)
 		}
 	}
 	return nil
@@ -1378,11 +1809,12 @@ func canonicalMCPToolName(name string) string {
 // for a specific task.
 //
 //   - V2-2: OnToolCall dispatches via the task's ToolDefs map. The
-//     runner emits a tool_call envelope for each LLM-driven tool
-//     invocation; the launcher invokes the original closure (which has
-//     access to the engine's tool registry, MCP manager, ask_user
-//     channel, etc.) and forwards the result. *ErrAskUser returns are
-//     preserved typed by the multiplexer (V2-3).
+//     runner emits a tool_call envelope for each call to a
+//     launcher-placed tool; the launcher checks the call (advertised
+//     name, placement, permission gate), invokes the original closure
+//     (which has access to the engine's tool registry, MCP manager,
+//     ask_user channel, etc.) and forwards the result. *ErrAskUser
+//     returns are preserved typed by the multiplexer (V2-3).
 //   - V2-4: OnSessionCapture mirrors runner-emitted session snapshots
 //     into the host's nodeSessionStore so CompactAndRetry compacts the
 //     latest history. Pre-spawn, the launcher seeds a session_replay
@@ -1397,15 +1829,39 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	hostRunID, hostStore := runtimeContextFrom(ctx)
 	return delegate.MultiplexerHandler{
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
-			// The runner forwards the model's tool name verbatim, which
-			// may be the claude_code double-underscore FQN even though
-			// ToolDefs are keyed by the sanitized name; bridge the two.
+			// A runner forwards the name the tool was advertised under — its
+			// proxy closure captures it — so any other spelling is not one an
+			// honest runner sends, and is refused rather than mapped.
 			td, ok := toolByName[name]
 			if !ok {
-				td, ok = toolByName[canonicalMCPToolName(name)]
+				return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q was not advertised to this node", name))
 			}
-			if !ok {
-				return "", fmt.Errorf("launcher: tool %q not in task.ToolDefs (runner asked for an unknown tool)", name)
+			// The sandbox boundary is held on THIS side. The runner is the
+			// contained process — possibly an older binary baked into the
+			// sandbox image, and its IPC stdout is writable by anything in the
+			// container running as the same uid — so its routing is a request,
+			// never a verdict: only a tool whose home is the launcher's own
+			// state executes here.
+			if placement, reason := tool.SandboxPlacementOf(td.Name); placement != tool.PlacementLauncher {
+				return "", b.refuseForwardedCall(task, name, fmt.Errorf(
+					"launcher: refusing to execute tool %q on the host for a sandboxed node: its placement is %s (%s) — "+
+						"a current runner never forwards it: either the sandbox image carries an older iterion, or something else in the container wrote this call",
+					name, placement, reason))
+			}
+			// The permission gate the runner applies before forwarding is applied
+			// again here: a call that reached this handler without passing it —
+			// an older runner, a forged envelope — is gated all the same, on the
+			// tool's identity rather than on one spelling of it.
+			if task.Permission.Enabled() {
+				var args map[string]any
+				if len(input) > 0 {
+					if err := json.Unmarshal(input, &args); err != nil {
+						return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q: decode input for the permission gate: %w", name, err))
+					}
+				}
+				if dec, rule, spelling := evaluateForwardedCall(task.Permission, forwardedToolSpellings(td), args); dec != permission.Allow {
+					return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: %s", permission.DenyMessage(spelling, args, rule)))
+				}
 			}
 			if td.Execute == nil {
 				return "", fmt.Errorf("launcher: tool %q has no Execute closure (engine misconfiguration)", name)

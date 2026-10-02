@@ -169,11 +169,6 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	// User message.
 	userText := e.buildUserMessage(node.UserPrompt, cleanInput, td)
 
-	// Emit prompt content for observability.
-	if e.hooks.OnLLMPrompt != nil {
-		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
-	}
-
 	// Auto-generate schema from candidates.
 	schema := buildRouterSchema(node, candidates)
 	jsonSchema, err := SchemaToJSON(schema)
@@ -198,13 +193,38 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	// route with NO operating posture at all (claw has no native system
 	// prompt to append to). A wrong route is a silently wrong RUN, not a
 	// failed node.
+	// The same build session the agent path uses: it claims the one prompt
+	// event, remembers the text that event recorded, and lets
+	// describeDivergence report when the element that SERVED received
+	// something else. A router's chain comes from resolveProviderChain,
+	// which never sets chainElement.Backend, so it cannot cross backends
+	// today and its elements produce identical text — one shape on both
+	// paths is what keeps that from being a silent assumption the day it
+	// can.
+	sess := &nodeBuildSession{}
 	assemble := func(ctx context.Context, bn string) (*delegate.Task, error) {
+		// A router prompt may invoke a workspace `.claude/commands/`
+		// command too. Resolved per backend, inside assemble, because the
+		// substitution is claw's alone — claude_code expands it natively.
+		routerText, _ := expandWorkspaceSlashCommand(userText, e.workDir, bn, node.ID, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+		// ONE prompt event, emitted here rather than before the chain, and
+		// carrying the text this backend actually receives. Before the
+		// chain it could only carry the invocation; emitting a second,
+		// corrected event instead would make every reader that starts a
+		// step per `llm_prompt` (iterion inspect --node, iterion report,
+		// the studio's LLM Trace) render two LLM steps for one call, the
+		// first stuck pending forever. That is the same invariant
+		// nodeBuildSession.claimPrompt keeps on the agent path, for the
+		// same reason.
+		if sess.claimPrompt(routerText, bn) && e.hooks.OnLLMPrompt != nil {
+			e.hooks.OnLLMPrompt(node.ID, systemText, routerText)
+		}
 		return &delegate.Task{
 			NodeID:           node.ID,
 			Iteration:        LoopIterationFromContext(ctx),
 			SystemPrompt:     systemText,
 			SystemPromptMode: delegate.SystemPromptModeForBackend(bn),
-			UserPrompt:       userText,
+			UserPrompt:       routerText,
 			OutputSchema:     jsonSchema,
 			Model:            expanded,
 			WorkDir:          e.workDir,
@@ -220,7 +240,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
-		e.newElementBuilder(node.ID, backendName, backend, assemble))
+		e.newElementBuilder(node.ID, backendName, backend, assemble), sess)
 	if err != nil {
 		// The other seam that spends: an LLM router is a model call, and a
 		// router that burned a fallback chain's worth of routes before
@@ -232,36 +252,56 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	}
 	result := out.Result
 
-	output := result.Output
-
-	// If structured output parsing fell back to text wrapper, attempt JSON
-	// extraction from the text. Routers must produce structured output.
+	// A text answer that IS a JSON object is the structured answer: keep
+	// the parsed map as the output. Anything else stays a parse fallback,
+	// which the schema re-ask below treats as one more ask before the
+	// router fails — routers must produce structured output.
 	if result.ParseFallback {
-		if textVal, ok := output["text"].(string); ok {
+		if textVal, ok := result.Output["text"].(string); ok {
 			var parsed map[string]any
 			if json.Unmarshal([]byte(textVal), &parsed) == nil {
-				output = parsed
-			} else {
-				// Same bill as the dispatch failure above, and a surer
-				// one: the generation SUCCEEDED and was paid for — only
-				// its shape is unusable. Metered from out.Result rather
-				// than the local `output`, which this very block may
-				// already have replaced with a fresh `parsed` map that
-				// never carried the delegate's stamps.
-				return meteredFailureOutput(out, backendName), fmt.Errorf("model: llm router %q: backend returned unstructured text, cannot determine route selection", node.ID)
+				result.Output = parsed
+				result.ParseFallback = false
 			}
 		}
 	}
 
-	// Strict validation against the router schema.
-	if err := ValidateOutput(output, schema); err != nil {
-		return meteredFailureOutput(out, backendName), fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
+	// Everything below acts on the element that SERVED, which is the
+	// router's own backend unless the chain fell through — the reading
+	// executeBackend takes, so the stamps and the re-ask name the route
+	// that actually answered.
+	servingBackendName := firstNonEmpty(out.BackendName, backendName)
+	servingBackend := out.Backend
+	if servingBackend == nil {
+		servingBackend = backend
+	}
+	servingTask := out.Task
+	if servingTask == nil {
+		built, err := assemble(ctx, servingBackendName)
+		if err != nil {
+			return meteredFailureOutput(out, servingBackendName), fmt.Errorf("model: llm router %q: %w", node.ID, err)
+		}
+		servingTask = built
 	}
 
-	// Attach metadata.
-	stampDelegateOutputMeta(output, result, backendName)
+	// Strict validation against the router schema — with the same single
+	// re-ask an agent's schema failure gets: a run lost to a missing field
+	// the model could have supplied in one more turn is the same loss on a
+	// router as on an agent.
+	validated, err := e.validateAndRetry(ctx, backendFields{id: node.ID, kind: "llm router"}, servingBackendName, servingBackend, servingTask, result, schema)
+	if err != nil {
+		// The generation SUCCEEDED and was paid for — only its shape is
+		// unusable. validateAndRetry hands back the metered result on every
+		// error exit, so the engine books the whole bill.
+		out.Result = validated
+		return meteredFailureOutput(out, servingBackendName), err
+	}
+	result = validated
 
-	return output, nil
+	// Attach metadata.
+	stampDelegateOutputMeta(result.Output, result, servingBackendName)
+
+	return result.Output, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +319,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 //
 //	router -> agent with {_reasoning_effort: "high"}
 //
-// Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, xhigh, max.
+// Valid values are defined in ir.ValidReasoningEfforts: none, low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
 func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
 	if v, ok := input["_reasoning_effort"]; ok {

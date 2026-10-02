@@ -1,0 +1,13 @@
+# lax: an edge is any string to the schema; `entry: b` is not an edge line — read into a workflow body it would set the entry — and the converter refuses it where it stands (E002)
+dsl: 2
+nodes:
+  - agent: a
+    model: m
+  - agent: b
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges:
+    - a -> b
+    - "entry: b"

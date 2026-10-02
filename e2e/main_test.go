@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
@@ -23,9 +24,10 @@ import (
 //	-parallel 8          100.7 s   green
 //	-parallel 32 (= GOMAXPROCS)  204.7 s   two await-answers rows timed out
 //
-// 8 is where the curve flattens. CI's 4-vCPU runner never reaches the cap
-// (GOMAXPROCS = 4 there), so this only bites on a developer's or a
-// self-hosted machine.
+// 8 is where the curve flattens. A GitHub-hosted runner (GOMAXPROCS = 4)
+// stays under it; the organisation's self-hosted runners, which run `test`
+// and `race` with no CPU limit, see all their node's CPUs (8 or 16 measured)
+// and run at the cap.
 const e2eParallelCap = 8
 
 // ITERION_E2E_PARALLEL overrides the cap; an explicit `-parallel` on the
@@ -40,9 +42,14 @@ const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 // 1 773 dead entries / 2.5 GB after two days of parallel agent work (#870),
 // and 66 more per full `go test ./...`. gittest.NoWorktreeLeaks fails the
 // package when that count moves, and names the test that moved it.
+// hometest keeps the suite off the operator's iterion home, and the
+// directory it owns doubles as processScratch.
 func TestMain(m *testing.M) {
 	capParallelism()
-	os.Exit(proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) }))
+	os.Exit(hometest.Isolate(func() int {
+		processScratch = os.Getenv("ITERION_HOME")
+		return proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })
+	}))
 }
 
 // capParallelism lowers `-parallel` to e2eParallelCap when the operator left

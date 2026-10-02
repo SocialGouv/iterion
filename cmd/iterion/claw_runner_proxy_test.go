@@ -12,11 +12,29 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
+
+// launcherProxies builds the runner's ToolDefs through the production
+// constructor. Every name given must be launcher-placed, so each one comes
+// back as an IPC proxy — any other would run a real local tool here.
+func launcherProxies(t *testing.T, d *proxyDispatcher, defs ...delegate.IOToolDef) []delegate.ToolDef {
+	t.Helper()
+	for _, def := range defs {
+		if placement, _ := tool.SandboxPlacementOf(def.Name); placement != tool.PlacementLauncher {
+			t.Fatalf("launcherProxies(%q): placement %s — only launcher-placed tools come back as proxies", def.Name, placement)
+		}
+	}
+	out, err := makeHybridToolDefs(defs, d, t.TempDir())
+	if err != nil {
+		t.Fatalf("makeHybridToolDefs: %v", err)
+	}
+	return out
+}
 
 // TestProxyDispatcher_RoundTripsToolCall is the V2-2 acceptance-level
 // test. It proves the runner-side proxy infrastructure round-trips a
-// tool execution across the IPC: makeProxyToolDefs → callTool →
+// tool execution across the IPC: makeHybridToolDefs → callTool →
 // EnvelopeToolCall → matching EnvelopeToolResult → Output returned to
 // the LLM loop's caller.
 //
@@ -32,9 +50,9 @@ func TestProxyDispatcher_RoundTripsToolCall(t *testing.T) {
 	dispatcher.start()
 
 	// Build proxy ToolDefs from a single IOToolDef.
-	proxies := makeProxyToolDefs([]delegate.IOToolDef{
-		{Name: "Bash", Description: "run shell", InputSchema: json.RawMessage(`{"type":"object"}`)},
-	}, dispatcher)
+	proxies := launcherProxies(t, dispatcher,
+		delegate.IOToolDef{Name: "mcp_github_create_issue", Description: "create an issue", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	)
 	if len(proxies) != 1 {
 		t.Fatalf("len(proxies) = %d, want 1", len(proxies))
 	}
@@ -105,8 +123,8 @@ func TestProxyDispatcher_RoundTripsToolCall(t *testing.T) {
 		if err != nil {
 			t.Errorf("call %d returned error: %v", i, err)
 		}
-		if results[i] != "result-of-Bash" {
-			t.Errorf("call %d output = %q, want result-of-Bash", i, results[i])
+		if results[i] != "result-of-mcp_github_create_issue" {
+			t.Errorf("call %d output = %q, want result-of-mcp_github_create_issue", i, results[i])
 		}
 	}
 
@@ -137,7 +155,7 @@ func TestProxyDispatcher_SurfacesLauncherErrorAsToolError(t *testing.T) {
 	dispatcher := newProxyDispatcher(runnerStdinR, runnerStdoutW)
 	dispatcher.start()
 
-	proxies := makeProxyToolDefs([]delegate.IOToolDef{{Name: "Bash"}}, dispatcher)
+	proxies := launcherProxies(t, dispatcher, delegate.IOToolDef{Name: "mcp_github_create_issue"})
 
 	go func() {
 		reader := delegate.NewEnvelopeReader(runnerStdoutR)
@@ -171,7 +189,7 @@ func TestProxyDispatcher_PreservesErrAskUserAcrossWire(t *testing.T) {
 	dispatcher := newProxyDispatcher(runnerStdinR, runnerStdoutW)
 	dispatcher.start()
 
-	proxies := makeProxyToolDefs([]delegate.IOToolDef{{Name: "ask_user"}}, dispatcher)
+	proxies := launcherProxies(t, dispatcher, delegate.IOToolDef{Name: "ask_user"})
 
 	// "Launcher" half: drives the multiplexer with an OnToolCall that
 	// returns a typed *ErrAskUser, exactly as the engine's real
@@ -302,7 +320,7 @@ func TestProxyDispatcher_FailsAllPendingOnReaderEOF(t *testing.T) {
 	dispatcher := newProxyDispatcher(runnerStdinR, runnerStdoutW)
 	dispatcher.start()
 
-	proxies := makeProxyToolDefs([]delegate.IOToolDef{{Name: "Bash"}}, dispatcher)
+	proxies := launcherProxies(t, dispatcher, delegate.IOToolDef{Name: "mcp_github_create_issue"})
 
 	// Close the runner's stdin from the launcher side immediately.
 	// The reader goroutine sees EOF and propagates the failure.

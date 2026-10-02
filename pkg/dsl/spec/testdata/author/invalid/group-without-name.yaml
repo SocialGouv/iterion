@@ -1,0 +1,7 @@
+# refused: a group carries its name under the group key
+dsl: 2
+groups:
+  - params: [a]
+workflow:
+  name: w
+  entry: a

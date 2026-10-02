@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -56,14 +58,21 @@ type ClawExecutor struct {
 	cursors         map[string]*ir.CursorDef
 	imageAttachs    map[string]bool // names of image-typed attachments declared in the workflow
 	vars            map[string]any
-	presetPrompt    string   // selected preset's "## Focus" bias, {{vars}}-templated per node
-	presetSkills    []string // selected preset's relevant-skill hint names
-	hooks           EventHooks
-	retry           RetryPolicy
-	logger          *iterlog.Logger
-	workDir         string // working directory for backend subprocesses
-	repoRoot        string // source-of-truth repo path (project-rooted memory uses this)
-	defaultBackend  string // workflow-level default backend (empty = use "claw")
+	// wfShapes are the workflow's declarations that do not depend on which
+	// node renders — the `vars:` block and every node's `output:` schema —
+	// kept for their TYPES: a `json` value and a `string[]` one reach a tool
+	// body as the same []any, and only the declaration separates the
+	// document from the argv list (see value_shape.go). Read-only after
+	// construction; each node layers its own `input:` schema on top.
+	wfShapes       *Shapes
+	presetPrompt   string   // selected preset's "## Focus" bias, {{vars}}-templated per node
+	presetSkills   []string // selected preset's relevant-skill hint names
+	hooks          EventHooks
+	retry          RetryPolicy
+	logger         *iterlog.Logger
+	workDir        string // working directory for backend subprocesses
+	repoRoot       string // source-of-truth repo path (project-rooted memory uses this)
+	defaultBackend string // workflow-level default backend (empty = use "claw")
 	// modelOverrides are launch-time per-node/-group backend+model+provider
 	// overrides (studio Launch dropdowns, CLI --model/--backend). They sit at
 	// the TOP of the resolution chain — above the node's DSL backend:/model: —
@@ -73,6 +82,12 @@ type ClawExecutor struct {
 	wfCompaction   *ir.Compaction
 	wfCapabilities []string // workflow-level default host capabilities (nil = none)
 	wfSkills       []string // workflow-level default skill-library references (nil = none)
+	// wfMCP is the workflow's own `mcp:` block. A server it names is one the
+	// BOT asked for, and PrepareWorkflow folds it into every node's active
+	// set while leaving the node's own MCP config nil — so without this, the
+	// degrade event calls a server the bot declared "ambient" and sends its
+	// author to read the target repository's `.mcp.json`.
+	wfMCP *ir.MCPConfig
 	// skillHints maps a skill-library name to its description for every skill
 	// referenced by the workflow that RESOLVED in the library at run start
 	// (set by SetSkillHints from the runtime mirror). Per-node, the executor
@@ -82,6 +97,10 @@ type ClawExecutor struct {
 	// workspace this run (SetMirroredSkills), as opposed to whatever the
 	// target repo ships at the same path.
 	mirroredSkills []string
+
+	// slashWarnedOnce keeps a workspace-command divergence notice to one
+	// line per command file per run, across nodes and parallel branches.
+	slashWarnedOnce slashWarnOnce
 	// sharedStateDir is a directory reachable at the same absolute path from
 	// the host and the sandbox that is NOT in the target repo's checkout
 	// (SetSharedStateDir); empty when there is none.
@@ -121,6 +140,13 @@ type ClawExecutor struct {
 	autoMemoryOverride   string
 	autoMemoryEnvDefault string
 	autoMemStore         knowledge.MemoryStore
+
+	// Ambient context (ADR-119): what a node inherits besides its prompt. Same
+	// precedence shape: run override (CLI --ambient-context / launch API) >
+	// node DSL > workflow DSL > ITERION_AMBIENT_CONTEXT > workspace.
+	wfAmbientContext         string
+	ambientContextOverride   string
+	ambientContextEnvDefault string
 	// The space, its materialisation directory and the state-root guards are
 	// fixed for the whole run, so they are resolved on the first node that
 	// needs them and reused — including a failure, so a refused state root
@@ -135,8 +161,9 @@ type ClawExecutor struct {
 	// values; permOverride / permRuleOverride are the run-level CLI/studio
 	// override (--permission, --permission-allow/ask/deny); permEnvDefault
 	// is ITERION_PERMISSION read once at construction. Mode precedence:
-	// override > node DSL > workflow DSL > env > off. Rule lists are
-	// additive (workflow + override). See resolvePermissionPolicy.
+	// override > node DSL > workflow DSL > env > off. A rule list is the
+	// node's own when it declares one and the workflow's otherwise, with
+	// the override list appended either way. See resolvePermissionPolicy.
 	wfPermission   string
 	wfPermAllow    []string
 	wfPermAsk      []string
@@ -223,6 +250,10 @@ type ClawExecutor struct {
 	// codex OAuth, ANTHROPIC_API_KEY, …) so resolveBackendName can
 	// auto-select a backend when neither node nor workflow specifies one.
 	detector *detect.CachedDetector
+	// staticProgramOnly marks an executor built to answer questions ABOUT A
+	// PROGRAM rather than to run one: it reads the .bot and the workflow and
+	// never the host. See NewProgramExecutor.
+	staticProgramOnly bool
 
 	// inbox is the operator-chatbox binder. When set, every Task built
 	// by this executor gets an InboxDrain closure so CLI-based backends
@@ -345,12 +376,26 @@ func mergeProcessEnv(base, overlay []string) []string {
 
 // SetSandbox installs the live sandbox handle on the executor. The
 // engine calls this once per run, after [resolveAndStartSandbox]
-// returns. Subsequent tool node and backend invocations consult the
-// handle to route through the sandbox transparently.
+// returns — with the handle when a sandbox started, with nil when the
+// run settled without one. Subsequent tool node and backend invocations
+// consult the handle to route through the sandbox transparently.
 //
-// Passing nil clears the previous handle (used between runs).
+// It is also where the MCP manager learns the SETTLED answer to "may an
+// MCP server's process run beside this launcher". Until this call the
+// manager holds a prediction from the launch surface, which is not
+// always available and can be wrong in the permissive direction (a
+// sandbox-by-default run degrades to the host when no container runtime
+// is there). Both directions matter: the call tightens a run that turned
+// out sandboxed, and opens a run that turned out not to be.
 func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 	e.sandbox = run
+	if e.mcpManager != nil {
+		if run != nil {
+			e.mcpManager.SetStartPolicy(mcp.StartOperatorServersOnly)
+		} else {
+			e.mcpManager.SetStartPolicy(mcp.StartAllServers)
+		}
+	}
 }
 
 // SetSharedStateDir records a directory reachable at the SAME absolute path
@@ -510,6 +555,13 @@ func WithAutoMemoryOverride(mode string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.autoMemoryOverride = mode }
 }
 
+// WithAmbientContextOverride sets the run-level ambient-context override (CLI
+// --ambient-context / launch API): none|workspace|operator|all, or "" for
+// "unset, defer to DSL/env". Highest-priority input to ambient.ResolveSourced.
+func WithAmbientContextOverride(policy string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.ambientContextOverride = policy }
+}
+
 // WithAutoMemoryStore injects the knowledge store the auto-memory mirror
 // persists through. nil leaves the local filesystem default; cloud runners
 // pass the Mongo store, which is what makes MEMORY.md survive the pod.
@@ -608,10 +660,11 @@ func (e *ClawExecutor) ScrubOutput(output map[string]any) map[string]any {
 }
 
 // secretMaterializer returns the placeholder→value substitution used to
-// populate Task.MaterializeSecrets. Returns nil when no known secrets
-// are registered so backends skip the work entirely.
+// populate Task.MaterializeSecrets. Returns nil when no registered secret is
+// materialisable (secretguard.Guard.Materializes) so backends skip the work
+// entirely.
 func (e *ClawExecutor) secretMaterializer() func(string) string {
-	if e.secretGuard == nil || !e.secretGuard.HasKnownSecrets() {
+	if !e.secretGuard.Materializes() {
 		return nil
 	}
 	return e.secretGuard.Materialize
@@ -632,12 +685,20 @@ func (e *ClawExecutor) secretFileHints() []delegate.SecretFileHint {
 	return out
 }
 
-// MaterializeForHost / ExfiltratesTo / SecretsInspectActive let the
+// MaterializeForHost is MaterializeForHostWithin unbounded, for callers that
+// check whether a placeholder resolves rather than hold the result: the
+// proxy, which holds every substitution, uses the bounded call.
+func (e *ClawExecutor) MaterializeForHost(s, host string) string {
+	out, _ := e.MaterializeForHostWithin(s, host, math.MaxInt)
+	return out
+}
+
+// MaterializeForHostWithin / ExfiltratesTo / SecretsInspectActive let the
 // engine use the executor's guard as the egress rewriter for the
 // sandbox proxy's TLS-inspection mode (Layer 2), via a structural
 // interface — so the runtime needn't import pkg/backend/secretguard.
-func (e *ClawExecutor) MaterializeForHost(s, host string) string {
-	return e.secretGuard.MaterializeForHost(s, host)
+func (e *ClawExecutor) MaterializeForHostWithin(s, host string, limit int) (string, bool) {
+	return e.secretGuard.MaterializeForHostWithin(s, host, limit)
 }
 
 func (e *ClawExecutor) ExfiltratesTo(s, host string) bool {
@@ -785,9 +846,21 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 	if len(wf.Vars) > 0 {
 		seed = make(map[string]any, len(wf.Vars))
 		for name, vr := range wf.Vars {
-			if vr.HasDefault {
-				seed[name] = vr.Default
+			if !vr.HasDefault {
+				continue
 			}
+			// The same reading the engine gives an override, so a var a host
+			// never overrides does not start the run as the compiler's raw
+			// text while the same var supplied on the command line starts it
+			// as a list (#1285). The engine's own lookup (${PROJECT_DIR},
+			// ${BUNDLE_DIR}) is not reachable from here; SetVars overwrites
+			// this seed with the engine's reading before Execute.
+			resolved, err := ir.ResolveVarText(vr.Default, vr.Type, nil)
+			if err != nil {
+				seed[name] = vr.Default
+				continue
+			}
+			seed[name] = resolved
 		}
 	}
 	imageAttachs := map[string]bool{}
@@ -800,23 +873,27 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		registry:           registry,
 		prompts:            wf.Prompts,
 		schemas:            wf.Schemas,
+		wfShapes:           WorkflowShapes(wf),
 		cursors:            wf.Cursors,
 		imageAttachs:       imageAttachs,
 		defaultBackend:     wf.DefaultBackend,
 		wfCompress:         wf.Compress,
 		compressEnvDefault: os.Getenv(rewrite.ModeEnv),
 
-		wfAutoMemory:         wf.AutoMemory,
-		autoMemoryEnvDefault: os.Getenv(automemory.ModeEnv),
-		wfPermission:         wf.Permission,
-		wfPermAllow:          wf.PermissionAllow,
-		wfPermAsk:            wf.PermissionAsk,
-		wfPermDeny:           wf.PermissionDeny,
-		permEnvDefault:       os.Getenv("ITERION_PERMISSION"),
-		wfCompaction:         wf.Compaction,
-		wfCapabilities:       wf.Capabilities,
-		wfSkills:             wf.Skills,
-		botID:                wf.Name,
+		wfAutoMemory:             wf.AutoMemory,
+		autoMemoryEnvDefault:     os.Getenv(automemory.ModeEnv),
+		wfAmbientContext:         wf.AmbientContext,
+		ambientContextEnvDefault: os.Getenv(ambient.PolicyEnv),
+		wfPermission:             wf.Permission,
+		wfPermAllow:              wf.PermissionAllow,
+		wfPermAsk:                wf.PermissionAsk,
+		wfPermDeny:               wf.PermissionDeny,
+		permEnvDefault:           os.Getenv("ITERION_PERMISSION"),
+		wfCompaction:             wf.Compaction,
+		wfCapabilities:           wf.Capabilities,
+		wfSkills:                 wf.Skills,
+		wfMCP:                    wf.MCP,
+		botID:                    wf.Name,
 		routeCooldowns: routeCooldownLedger{
 			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),
 		},
@@ -830,6 +907,10 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 
 	if e.backendRegistry == nil {
 		e.backendRegistry = delegate.NewRegistry()
+	}
+	if ambient.InvalidEnv(e.ambientContextEnvDefault) && e.logger != nil {
+		e.logger.Warn("%s=%q is not one of %s: ignored, nodes fall back to their DSL or the workspace default",
+			ambient.PolicyEnv, e.ambientContextEnvDefault, strings.Join(ambient.Values, ", "))
 	}
 
 	return e

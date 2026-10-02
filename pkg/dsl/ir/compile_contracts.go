@@ -283,6 +283,7 @@ func (c *compiler) bindInput(contract string, p *ast.PortDecl, pp *PublicPort, v
 		c.errorfAtSpan(DiagContractInput, p.Span, "contract %q: input %q is %s, the var %s is %s — the port takes the var's type", contract, p.Name, p.Type, p.Name, v.Type.String())
 	}
 	pp.EnumValues = v.EnumValues
+	pp.Matching = v.Matching
 	switch {
 	case v.HasDefault:
 		pp.Required = false
@@ -318,16 +319,32 @@ func isJSONNull(raw json.RawMessage) bool {
 	return err == nil && value == nil
 }
 
-// seededDefault is a var's default as the launch reads a value of its
-// type — a `string[]` or `json` var's text as a list or an object, the
-// reading an override gets (CoerceVarValue); a scalar is typed already.
+// seededDefault is a var's default as a RUN reads it — ResolveVarText, the
+// one reading every host gives a var's text: the env forms expanded, then
+// the text narrowed to the declared type.
+//
+// Read AS WRITTEN, and that is the whole difference from the engine's
+// call: a published contract must say the same thing on every machine that
+// compiles it. `${VAR:-default}` has an answer with no environment and
+// resolves; `${PROJECT_DIR}/audits` has none and stays as written, because
+// publishing `/audits` would advertise a path at the filesystem root that
+// is neither the source text nor any run's value. Reading it with the
+// narrowing but no expansion at all made the port advertise
+// `["${LIST:-a", "b}"]` for a var the run seeds as `["a","b"]` — and C300
+// then refused the author's correct default.
 func seededDefault(v *Var) any {
-	seeded, err := CoerceVarValue(v.Default, v.Type)
+	seeded, err := resolveVarTextAsWritten(v.Default, v.Type)
 	if err != nil {
 		return v.Default
 	}
 	return seeded
 }
+
+// noEnvLookup is the reading a COMPILE-TIME view of a value takes: the
+// host's environment is not part of the source, so a diagnostic or a
+// published contract that consulted it would say different things on two
+// machines.
+func noEnvLookup(string) string { return "" }
 
 // varDefaultJSON is a var's default as the canonical JSON the public view
 // carries: a number without an exponent, as the text writes one, a

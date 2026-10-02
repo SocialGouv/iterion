@@ -7,7 +7,7 @@ import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { documentToGraph, getTopologyKey, generateLayerNodes, applyGroups } from "@/lib/documentToGraph";
 import { expandSubbots, getSubbotExpansionKey } from "@/lib/subbotGraph";
 import { useSubbotDocuments } from "@/hooks/useSubbotDocuments";
-import { parseGroups } from "@/lib/groups";
+import { documentGroups } from "@/lib/groups";
 import { generateNodeDetailGraph } from "@/lib/nodeDetailGraph";
 import { autoLayout } from "@/lib/autoLayout";
 import { computeEdgeHandles } from "@/lib/computeEdgeHandles";
@@ -34,11 +34,9 @@ export function useCanvasLayout() {
   // Current sub-node view target (top of stack)
   const subNodeViewId = subNodeViewStack.length > 0 ? subNodeViewStack[subNodeViewStack.length - 1]! : null;
 
-  // Parse groups from document comments
-  const groups = useMemo(() => {
-    if (!document) return [];
-    return parseGroups(document.comments ?? []);
-  }, [document]);
+  // Every @group annotation of the document, wherever its comment was
+  // written — the head of the file, or the declaration that carries it.
+  const groups = useMemo(() => documentGroups(document), [document]);
 
   // Macro view: collapse/expand all groups when toggled
   useEffect(() => {

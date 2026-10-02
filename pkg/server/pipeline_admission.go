@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -634,6 +635,21 @@ func (s *Server) pipelineBotEntry(ctx context.Context, botID string, lb *launchB
 // ctx scopes the bot RESOLUTION (a store read in cloud, where this endpoint
 // is reachable); the launch itself keeps its own background context, so a
 // client that hangs up mid-request cannot cancel a run already in flight.
+// errTicketPRLaunchContext marks a ticket launch refused while composing its
+// pull-request launch context (the card's grant, the fork guard, the grant
+// mint): the launch-now route answers prLaunchContextStatus, not its 409.
+var errTicketPRLaunchContext = errors.New("ticket launch refused")
+
+// refuseLiveClaim refuses a ticket whose claim is held under a live lease: its
+// launcher is already on it. A claim with no lease is admitted — that is what
+// a release N-1 binary writes, and it has no release path.
+func (s *Server) refuseLiveClaim(id string, cur *native.Issue, board native.BoardStore) error {
+	if cur == nil || cur.Claim == "" || cur.ClaimLeaseUntil.IsZero() || !cur.ClaimLeaseUntil.After(s.boardNow(board)) {
+		return nil
+	}
+	return fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", id, cur.Claim)
+}
+
 func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
 	// A ticket held under a LIVE claim already has a launcher — the
 	// dispatcher wins with the CLAIM, and its move out of Ready is
@@ -668,8 +684,8 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	if err != nil {
 		return "", fmt.Errorf("read ticket: %w", err)
 	}
-	if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(s.boardNow(board)) {
-		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
+	if err := s.refuseLiveClaim(iss.ID, cur, board); err != nil {
+		return "", err
 	}
 	bot, found, err := s.resolvePipelineBot(ctx, teamID, iss.Bot)
 	if err != nil {
@@ -712,6 +728,37 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		}
 		return "", fmt.Errorf("bot %q is disabled", iss.Bot)
 	}
+	// The board dispatcher's composition (processBoardCard): the grant a card
+	// carries is dropped or, when it is another team's, refused; a card that
+	// targets a pull request gets the repo's launch policy and a grant of its
+	// own. Before the claim below, so a refused launch-now leaves the card
+	// where it was (the local admission loop claims earlier, through
+	// ClaimForLaunch, but a local server holds no grant registry and refuses
+	// nothing here). On a copy: both steps write into the vars they are given.
+	var minted mintedGrant
+	launchVars, err := s.withoutCardGrant(teamID, cloneStringMap(iss.BotArgs))
+	if err == nil && teamID != "" {
+		launchVars, minted, err = s.applyPRLaunchContext(ctx, teamID, "", iss.Bot, launchVars, nil)
+	}
+	if err != nil {
+		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, err)
+		return "", fmt.Errorf("%w: %w", errTicketPRLaunchContext, err)
+	}
+	// The composition above asks the forge (the fork guard's pull-request
+	// read, the connection lookup) and mints: round trips during which the
+	// board dispatcher — which claims a card WITHOUT moving its state, so
+	// the CAS below would not see it — can take this card. The claim read
+	// before them is a snapshot of a state this call then spent time away
+	// from; re-read it against what is true now.
+	// The CLAIM only: `cur` stays the state this call decided on, because the
+	// CAS below is what refuses a card that moved. Re-anchoring it on a fresh
+	// read would accept exactly the drift that fence exists to catch.
+	if fresh, ferr := board.Get(iss.ID); ferr == nil {
+		if err := s.refuseLiveClaim(iss.ID, fresh, board); err != nil {
+			s.revokeUnlaunchedGrant(minted)
+			return "", err
+		}
+	}
 	// Leave the launch column BEFORE launching so the next tick won't
 	// re-pick this ticket while Launch is in flight. StateInProgress is not
 	// StateReady, so admitReadyPipelines skips it; the run's status then
@@ -737,15 +784,21 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	if sourceState != native.StateInProgress {
 		_, changed, err := board.SetStateFrom(iss.ID, sourceState, native.StateInProgress)
 		if err != nil {
+			s.revokeUnlaunchedGrant(minted)
 			s.logger.Warn("pipeline admission: claim ticket %s: %v", iss.ID, err)
 			return "", fmt.Errorf("claim ticket: %w", err)
 		}
 		if !changed {
+			s.revokeUnlaunchedGrant(minted)
 			return "", fmt.Errorf("ticket %s moved out of %q while it was being launched — nothing was started; re-read the board and retry", iss.ID, sourceState)
 		}
 	}
 	spec := runview.LaunchSpec{
-		Vars: iss.BotArgs,
+		Vars: launchVars,
+		// The dispatcher's shipped contract: an unknown bot_arg is warned
+		// about (pkg/dispatcher/loop.go) and the launch proceeds — the
+		// #1757 refusal would turn a typo'd card into a failed launch.
+		AllowUnknownInputs: true,
 		// Stamp the ticket onto the run IMMEDIATELY. Without this the run is
 		// undiscoverable from its ticket until SetLastRun lands below — and
 		// between the SetState above and that stamp sit compileForLaunch,
@@ -771,6 +824,9 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	bot.Launch.Stamp(&spec)
 	res, err := runs.Launch(context.Background(), spec)
 	if err != nil {
+		if !runview.RunMayHaveStarted(err) {
+			s.revokeUnlaunchedGrant(minted)
+		}
 		s.logger.Warn("pipeline admission: launch ticket %s: %v", iss.ID, err)
 		// Put the ticket back where it came FROM, not in a fixed column: a
 		// card launched from blocked/waiting_deps that failed to start is

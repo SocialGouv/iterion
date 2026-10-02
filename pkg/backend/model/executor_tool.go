@@ -16,9 +16,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,6 +114,16 @@ func recipeKindOf(node *ir.ToolNode) recipeKind {
 	}
 }
 
+// toolNodeSetupError marks the sandbox refusal of a registry recipe: the
+// recipe can never run under this sandbox, so the Verified Action ladder
+// fails the node with it instead of treating it as a recipe run it may
+// repair, recover around, or waive under `policy: best_effort`. Every other
+// recipe failure stays a run failure for the ladder to judge.
+type toolNodeSetupError struct{ err error }
+
+func (s *toolNodeSetupError) Error() string { return s.err.Error() }
+func (s *toolNodeSetupError) Unwrap() error { return s.err }
+
 // executeToolNodeRecipe runs a tool node's recipe with exit-code = success
 // (the pre-ADR-044 behaviour). It is the rung-2 primitive of the Verified
 // Action ladder and the whole of the non-verified path.
@@ -132,8 +144,18 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 
 	toolName := node.Command
 
-	// Policy check before resolution — fail fast on denied tools.
-	if err := e.checkToolNodePolicy(ctx, node, toolName); err != nil {
+	// Policy check before resolution — fail fast on denied tools, and never
+	// pay an MCP boot for one. The check matches on the tool's IDENTITY for
+	// alias spellings: a policy allowlisting `read_file` covers
+	// `command: Read`, and a policy naming `Read` covers the canonical
+	// spelling it resolves to — the same canonical name guardTool checks on
+	// the agent path. The walk is the ALIAS tier only: a bare MCP shorthand
+	// or an mcp__ FQN keeps the spelling it wrote, so a policy verdict never
+	// depends on whether an unrelated node happened to boot that server
+	// earlier in the run. The denial event and message name the RAW
+	// spelling, what the node actually asked for.
+	policyName, policyQualified := e.toolNodePolicyIdentity(ctx, toolName)
+	if err := e.checkToolNodePolicy(ctx, node, policyName, policyQualified, toolName); err != nil {
 		return nil, err
 	}
 
@@ -143,6 +165,17 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 	}
 	if !ok {
 		return nil, fmt.Errorf("model: tool node %q references unregistered tool %q", node.ID, toolName)
+	}
+	// A sandboxed run executes a tool node's shell and script recipes in the
+	// container, but a registry tool is a closure in THIS process: only one
+	// whose home is the launcher's own state may run here.
+	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+		if placement, reason := tool.SandboxPlacementOf(resolved.QualifiedName); placement != tool.PlacementLauncher {
+			return nil, &toolNodeSetupError{fmt.Errorf(
+				"model: tool node %q: registry tool %q would execute on the host, outside the run's sandbox (placement %s: %s) — "+
+					"write it as a shell `command:`, which runs in the container, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)",
+				node.ID, toolName, placement, reason)}
+		}
 	}
 
 	inputJSON, err := json.Marshal(input)
@@ -171,17 +204,20 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 	start := time.Now()
 	outputStr, err := resolved.Execute(ctx, inputJSON)
 	duration := time.Since(start)
+	// Redacted before either hook, not between them: both feed the
+	// persisted event log, so the output travels in one shape only.
+	outputForEvent := outputStr
+	if toolName == privacy.UnfilterToolName {
+		outputForEvent = string(redactJSONTextField([]byte(outputStr)))
+	}
 	if e.hooks.OnToolCall != nil {
 		e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
 			ToolName:  toolName,
 			InputSize: len(inputJSON),
 			Duration:  duration,
+			Output:    outputForEvent,
 			Error:     err,
 		})
-	}
-	outputForEvent := outputStr
-	if toolName == privacy.UnfilterToolName {
-		outputForEvent = string(redactJSONTextField([]byte(outputStr)))
 	}
 	// Emit detailed tool I/O via the prompt hook (reused for tool node logging).
 	if e.hooks.OnToolNodeResult != nil {
@@ -218,19 +254,27 @@ func (e *ClawExecutor) emitToolNodeStarted(nodeID, toolName string, inputSize in
 // path uses a different payload shape (single combined output stream,
 // privacy-redacted variants) and intentionally does not use this helper.
 func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, stderr string, dur time.Duration, runErr error) {
+	// Both streams concatenated, stdout first so the structured payload is
+	// visible at the top of long stderr dumps from yarn/npm/git.
+	logged := combineStreamsForLog(stdout, stderr)
 	if e.hooks.OnToolCall != nil {
 		e.hooks.OnToolCall(nodeID, LLMToolCallInfo{
 			ToolName: toolName,
 			Duration: dur,
-			Error:    runErr,
+			// The same output the run log gets, on the event the
+			// failure is audited from. Tool nodes are where the
+			// deterministic gates live, and a gate whose event says
+			// only "exit status 1" is a verdict nobody can read —
+			// measured on a gate killed at a 4-hour wall that then had
+			// to be resized without ever knowing what had spent it.
+			// Same reason the LLM tool path keeps its output. Bounded
+			// by the hooks layer: inline when small, sidecar blob or
+			// capped preview when not.
+			Output: logged,
+			Error:  runErr,
 		})
 	}
 	if e.hooks.OnToolNodeResult != nil {
-		// Log both streams concatenated so run.log still surfaces what
-		// the operator would see in an interactive shell. Stdout first
-		// so the structured payload is visible at the top of long
-		// stderr dumps from yarn/npm/git.
-		logged := combineStreamsForLog(stdout, stderr)
 		e.hooks.OnToolNodeResult(nodeID, toolName, []byte(resolved), logged, dur, runErr)
 	}
 }
@@ -317,7 +361,7 @@ func (e *ClawExecutor) runToolNodeCore(
 	resolve func() string,
 	buildCmd func(resolved string) (cmd *exec.Cmd, cleanup func(), err error),
 ) (recipeResult, error) {
-	if err := e.checkToolNodePolicy(ctx, node, toolName); err != nil {
+	if err := e.checkToolNodePolicy(ctx, node, toolName, toolName, toolName); err != nil {
 		return recipeResult{}, err
 	}
 
@@ -388,7 +432,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// from. {{run.*}} and {{outputs.*}} resolve beside {{input.*}},
 			// under the same shell escaping and the same missing-value rule.
 			td := TemplateDataFromContext(ctx)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, td, RunIDFromContext(ctx), e.secretGuard)
+			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -440,35 +484,59 @@ func scriptToolNodeToolName(node *ir.ToolNode) string {
 }
 
 // checkToolNodePolicy applies the executor tool policy to all tool-node
-// execution modes: registry tools and direct virtual shell/script tools. On
-// denial it emits OnToolCall with the policy error, matching failed executed
-// tool calls, and returns an error wrapped with node and tool context.
-func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNode, toolName string) error {
+// execution modes: registry tools and direct virtual shell/script tools.
+// toolName and qualifiedName are the spelling the check matches on and the
+// identity it matches as — the same values on every recipe that does not
+// resolve an alias. On denial it emits OnToolCall with the policy error,
+// matching failed executed tool calls, and returns an error wrapped with
+// node and tool context.
+func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNode, matchName, qualifiedName, rawName string) error {
 	if e.toolPolicy == nil {
 		return nil
 	}
 	pctx := tool.PolicyContext{
-		Ctx:      ctx,
-		NodeID:   node.ID,
-		NodeKind: ir.NodeTool.String(),
-		ToolName: toolName,
-		Vars:     e.vars,
+		Ctx:               ctx,
+		NodeID:            node.ID,
+		NodeKind:          ir.NodeTool.String(),
+		ToolName:          matchName,
+		QualifiedToolName: qualifiedName,
+		Vars:              e.vars,
 		// Derived from the NODE rather than passed by each call site: this
 		// function is the single check every recipe goes through, so reading
 		// the property here is what makes a future recipe inherit the rule
 		// instead of having to remember it.
-		Deterministic: node.Action != "",
+		Deterministic:  node.Action != "",
+		ResolvePattern: e.policyPatternResolver(ctx, node),
 	}
 	if err := e.toolPolicy.CheckContext(pctx); err != nil {
 		if e.hooks.OnToolCall != nil {
 			e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
-				ToolName: toolName,
+				ToolName: rawName,
 				Error:    err,
 			})
 		}
-		return fmt.Errorf("model: tool node %q: tool %q denied: %w", node.ID, toolName, err)
+		return fmt.Errorf("model: tool node %q: tool %q denied: %w", node.ID, rawName, err)
 	}
 	return nil
+}
+
+// toolNodePolicyIdentity resolves the identity a tool node's policy check
+// matches on for an ALIAS spelling: the canonical name the alias tier
+// resolves it to. Every other spelling — a canonical name, a bare MCP
+// shorthand, an mcp__ FQN — compares exactly as written, so a policy
+// verdict never depends on unrelated registry state (which MCP servers
+// happened to boot earlier in the run). Read-only: it never boots an MCP
+// server; the policy gate runs before the real resolution so a denied tool
+// never pays a server boot.
+func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) (string, string) {
+	if e.toolRegistry == nil || !tool.BuiltinAliasesEnabled(ctx) || toolcatalog.BuiltinAlias(name) == "" {
+		return name, name
+	}
+	td, err := e.toolRegistry.ResolveWithAliases(name)
+	if err != nil || td == nil {
+		return name, name
+	}
+	return td.QualifiedName, td.QualifiedName
 }
 
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
@@ -536,7 +604,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
 			interp, ext := scriptInterpreter(node.Language)
-			if interp == "" {
+			if len(interp) == 0 {
 				return nil, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
 			}
 			// The script file must be reachable from where the interpreter
@@ -614,33 +682,42 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 		}
 }
 
-// scriptInterpreter maps a `language:` token to the executable name on
-// PATH and a file extension hint (extension is informational, not
-// required by any interpreter). An empty language defaults to sh.
-func scriptInterpreter(language string) (cmd string, ext string) {
+// scriptInterpreter maps a `language:` token to the interpreter argv (the
+// executable on PATH, then its flags) and a file extension hint (extension
+// is informational, not required by any interpreter). An empty language
+// defaults to sh.
+//
+// Python runs isolated (-I). Without it, python puts the script's directory
+// first on sys.path, and the script file can land in the workspace (a
+// copy-based sandbox): a json.py the judged tree carries would replace the
+// standard module inside the node. -I also ignores PYTHON* variables and
+// the user site, so a script body reaches the standard library and the
+// system site-packages only.
+func scriptInterpreter(language string) (argv []string, ext string) {
 	switch language {
 	case "", "sh":
-		return "sh", ".sh"
+		return []string{"sh"}, ".sh"
 	case "bash":
-		return "bash", ".sh"
+		return []string{"bash"}, ".sh"
 	case "js", "node":
-		return "node", ".js"
+		return []string{"node"}, ".js"
 	case "py", "python", "python3":
-		return "python3", ".py"
+		return []string{"python3", "-I"}, ".py"
 	default:
-		return "", ""
+		return nil, ""
 	}
 }
 
 // toolNodeScriptCommand returns a configured *exec.Cmd that invokes the
-// interpreter on the basename of the script temp file. Mirrors
+// interpreter argv (scriptInterpreter) on the script temp file. Mirrors
 // toolNodeCommand for the script-mode path: sandbox-routed if a sandbox
 // is active and the node has not opted out.
-func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, scriptBasename string) *exec.Cmd {
+func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) *exec.Cmd {
+	argv := append(append([]string{}, interpreter...), script)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
+		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{})
 	}
-	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
 	// its lifetime ends with the node's context the same way — see
 	// toolNodeCommand.
@@ -649,16 +726,52 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	// container env (the same dir is bind-mounted there). The run-level
 	// env (the launch surface's layer plus the engine's PATH composition)
 	// is appended after the inherited env so on a duplicate key it wins.
+	cmd.Env = os.Environ()
 	if runLevelEnv := e.processExtraEnv(); e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
-		cmd.Env = append(os.Environ(), runLevelEnv...)
+		cmd.Env = append(cmd.Env, runLevelEnv...)
 		if e.artifactFilesDir != "" {
 			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 		}
 	}
+	// The canonical tree-noise pathspecs, engine-owned: a run without a
+	// devbox.json carries them just the same (#1464) — but the operator,
+	// the run or the node wins when they set the variable themselves, as
+	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(nil)...)
+
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
 	return cmd
+}
+
+// treeNoiseEnvAppend returns the ITERION_TREE_NOISE entry to append to a
+// host tool command's environment: the canonical list — unless the
+// variable is already set by the node's env map (MaterializeShellEnv's
+// output; no DSL surface carries this name), the run's env, or the
+// operator's own environment, in which case nothing is appended: an
+// explicit choice is never silently replaced (verdicts 2-3, #1464).
+func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
+	if value, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set && value != "" {
+		return nil
+	}
+	if value, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited && value != "" {
+		return nil
+	}
+	for _, entry := range e.runExtraEnv {
+		// An explicitly EMPTY run-level value is not a claim (verdict 9
+		// on its fourth surface): the node-env, operator and sandbox
+		// branches all treat empty as no-claim, and a launch projecting
+		// the variable empty must not silence the host gate while the
+		// same launch sandboxed gets the canonical list.
+		if entry == treenoise.TreeNoiseEnvVar+"=" {
+			continue
+		}
+		if strings.HasPrefix(entry, treenoise.TreeNoiseEnvVar+"=") {
+			return nil
+		}
+	}
+	return []string{treenoise.TreeNoiseEnvVar + "=" + treenoise.EnvValue()}
 }
 
 // toolNodeCommand returns a configured *exec.Cmd for a tool node's
@@ -716,21 +829,24 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	proc.TerminateGroupOnCancel(cmd)
 	cmd.Stdin = stdin
 	runLevelEnv := e.processExtraEnv()
-	if len(env) > 0 || e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
-		cmd.Env = os.Environ()
-		// Run-level env (the launch surface's layer plus the engine's
-		// PATH composition) — appended after the inherited env so on a
-		// duplicate key it wins.
-		cmd.Env = append(cmd.Env, runLevelEnv...)
-		// Host path only: sandboxed commands already see the variable from
-		// the container env (the same dir is bind-mounted there).
-		if e.artifactFilesDir != "" {
-			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
-		}
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	cmd.Env = os.Environ()
+	// Run-level env (the launch surface's layer plus the engine's
+	// PATH composition) — appended after the inherited env so on a
+	// duplicate key it wins.
+	cmd.Env = append(cmd.Env, runLevelEnv...)
+	// Host path only: sandboxed commands already see the variable from
+	// the container env (the same dir is bind-mounted there).
+	if e.artifactFilesDir != "" {
+		cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
 	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	// The canonical tree-noise pathspecs, engine-owned: a run without a
+	// devbox.json carries them just the same (#1464) — but the operator,
+	// the run or the node wins when they set the variable themselves, as
+	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
@@ -783,7 +899,7 @@ func looksLikeShellCommand(cmd string) bool {
 // command line that the wrapping tool needs to RE-INTERPRET as shell, not
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
-func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, shapes *Shapes, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -797,7 +913,7 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return renderCommand(command, refs, input, vars, td, ctxRunID, guard, nil)
+	return renderCommand(command, refs, input, vars, td, ctxRunID, guard, shapes, nil)
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -830,12 +946,16 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 // shell-escaped values with a hole kept as written, JSON literals with a
 // hole as null — named once each so the production path and a dry run
 // cannot choose differently.
-func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shellEscapeValue, false, unresolved)
+func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string)) string {
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, shellEscapeValue, false, unresolved)
 }
 
+// A script body carries no declared shape: every namespace renders as a
+// JSON literal there, which is already what both list types mean to a
+// JS/Python/Ruby parser — `["a","b"]` for a `string[]`, the parsed document
+// for a `json`. Passing the declarations would be wiring nothing reads.
 func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, jsonLiteralValue, true, unresolved)
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, jsonLiteralValue, true, unresolved)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -860,7 +980,7 @@ func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td 
 // text is never re-read for braces, since a value may carry `{{…}}` of its
 // own and that is the value, not a reference. The production callers
 // listen to none; a dry run names them.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool, unresolved func(ref string)) string {
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string)) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -873,17 +993,22 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			continue
 		}
 		var val any
-		var handled bool
+		var handled, present bool
 		switch {
 		case ref.Kind == ir.RefInput && len(ref.Path) > 0:
 			// Drilled to the leaf, as a prompt reads it: `{{input.a.b}}` is
 			// the field b of a, not the whole of a — one reading of a
 			// reference, whichever body holds it. A missing leaf is nil and
 			// takes the missing-value rule below.
-			val, _ = drillTemplatePath(input, ref.Path)
+			val, present = drillTemplatePath(input, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
-			val = vars[ref.Path[0]]
+			// Drilled to the leaf, like input and outputs: `{{vars.cfg.on}}`
+			// is the member `on` of the `json` var cfg. Reading only
+			// vars[path[0]] answered the whole document here while an
+			// expression on the same text answered the member — one
+			// reference, three surfaces, three values.
+			val, present = drillTemplatePath(vars, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefOutputs && len(ref.Path) > 0:
 			// The snapshot the prompts render from. An output not yet
@@ -891,7 +1016,7 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// same missing-value rule as an absent input below — the
 			// placeholder in a shell body, `null` in a script body — so
 			// the two namespaces cannot disagree about a hole.
-			val, _ = outputsTemplateValue(td, ref.Path)
+			val, present = outputsTemplateValue(td, ref.Path)
 			handled = true
 		case ref.Kind == ir.RefRun && len(ref.Path) > 0:
 			// The engine's `run.*` namespace — identity plus the run's
@@ -942,13 +1067,23 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			}
 			continue
 		}
-		// substituteNil controls whether a recognised-but-nil ref gets
-		// rendered or left as raw template text. Shell contexts keep
-		// the raw `{{input.X}}` placeholder so a missing wiring is
-		// visible; script contexts MUST render (renderer turns nil into
-		// "null") because a JS/Python/Ruby parser otherwise crashes on
-		// the literal braces before any script logic runs.
-		if val == nil {
+		shape := shapes.Of(ref)
+		// A `json` slot whose value is PRESENT and null holds a value —
+		// JSON null — not a hole, and `null` is its text.
+		//
+		// A `string[]` one does NOT take that rule: an empty list renders
+		// no token, which is right for a list the author wrote empty and
+		// wrong for a producer that had nothing to say — the argument
+		// would vanish and the next one shift into its place, in the one
+		// configuration where the author DECLARED the slot. Null there is
+		// the missing-value case and keeps its placeholder.
+		//
+		// substituteNil controls what the missing-value rule does: shell
+		// contexts keep the raw `{{input.X}}` placeholder so a missing
+		// wiring is visible; script contexts MUST render (the renderer
+		// turns nil into "null") because a JS/Python/Ruby parser otherwise
+		// crashes on the literal braces before any script logic runs.
+		if val == nil && (!present || shape != ShapeJSON) {
 			if unresolved != nil {
 				unresolved(refExpr(ref))
 			}
@@ -957,9 +1092,9 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			}
 		}
 		if ref.Unquoted {
-			subs[ref.Raw] = rawTemplateValue(val)
+			subs[ref.Raw] = rawTemplateValue(val, ShapeUndeclared)
 		} else {
-			subs[ref.Raw] = defaultRender(val)
+			subs[ref.Raw] = defaultRender(val, shape)
 		}
 	}
 	if len(subs) == 0 {
@@ -1004,7 +1139,7 @@ func refExpr(ref *ir.Ref) string {
 // rendered as JSON's natural form. The result is a valid expression
 // in JavaScript, Python, Ruby, and any modern language that accepts
 // JSON-superset literal syntax — no further wrapping needed.
-func jsonLiteralValue(val any) string {
+func jsonLiteralValue(val any, _ ValueShape) string {
 	b, err := json.Marshal(val)
 	if err != nil {
 		// json.Marshal effectively never fails on values we accept
@@ -1020,7 +1155,7 @@ func jsonLiteralValue(val any) string {
 // the {{!ref}} raw substitution mode. Strings pass through; complex types
 // are JSON-encoded (matches formatValue's prompt-rendering convention so
 // authors can reason about both contexts uniformly).
-func rawTemplateValue(val any) string {
+func rawTemplateValue(val any, _ ValueShape) string {
 	if val == nil {
 		return "null"
 	}
@@ -1111,8 +1246,29 @@ func bracedEnvWouldExpand(body string) bool {
 	if idx := strings.Index(body, ":-"); idx != -1 {
 		name = body[:idx]
 	}
-	_, ok := os.LookupEnv(name)
+	_, ok := lookupToolEnv(name)
 	return ok
+}
+
+// lookupToolEnv resolves a tool command's `${NAME}` through the same
+// overlay-then-process chain as every other `${ITERION_*:-default}` of the
+// DSL (ir.LookupEnv, ADR-093): a bot-var setting must reach the command that
+// reads it, not only the node fields beside it — a review table reading
+// ${ITERION_VIBE_EFFORT_CLAUDE:-high} published "high" while the reviewer ran
+// at the stored "max". Presence keeps the process semantics (a set-but-empty
+// variable is present), because it decides whether `${body}` is an env ref or
+// a script template left verbatim; an empty overlay value counts as unset,
+// as it does everywhere else.
+func lookupToolEnv(name string) (string, bool) {
+	if strings.HasPrefix(name, "ITERION_") {
+		if v := ir.LookupEnv(name); v != "" {
+			return v, true
+		}
+	}
+	if !ir.ProcessEnvReadable(name) {
+		return "", false
+	}
+	return os.LookupEnv(name)
 }
 
 // looksLikeEnvRef reports whether body matches the shell convention
@@ -1157,7 +1313,7 @@ func resolveBracedEnvBody(body string) string {
 		defaultVal = body[idx+2:]
 		hasDefault = true
 	}
-	if v, ok := os.LookupEnv(name); ok {
+	if v, ok := lookupToolEnv(name); ok {
 		return v
 	}
 	if hasDefault {
@@ -1166,75 +1322,15 @@ func resolveBracedEnvBody(body string) string {
 	return ""
 }
 
-// jsonFieldsAsText pre-encodes every input value whose schema field is
-// declared `json` into its compact JSON text, so shell substitution
-// renders it as ONE token.
-//
-// Without it, a `json` field holding an all-string list reaches
-// shellEscapeValue's scalar-slice arm and space-joins:
-//
-//	QUICK={{input.quick_replies}} python3 -c "json.loads(os.environ['QUICK'])"
-//
-// resolves to `QUICK='Go' 'TypeScript' python3 …`, so sh reads only the
-// first word as the assignment and runs `TypeScript` as the command —
-// exit 127, with a fragment of model-authored prose as the error. The
-// author declared `json` and parses JSON; the space-join silently
-// contradicts both.
-//
-// Scoped to `json`-declared fields on purpose. The scalar-slice
-// space-join is load-bearing for `string[]` fields — `git add --
-// {{input.files}}` and friends need one shell word per element — and an
-// agent's structured output arrives as []any either way, so the declared
-// type is the only thing that distinguishes the two intents. Values
-// already textual (string, nil) and fields the schema does not declare
-// are returned untouched, and the input map is only copied when a field
-// actually changes.
-//
-// Shell command bodies only: `script:` contexts JSON-encode values
-// themselves, and pre-encoding here would double-encode them.
-func (e *ClawExecutor) jsonFieldsAsText(node *ir.ToolNode, input map[string]any) map[string]any {
-	if node == nil || node.InputSchema == "" || len(input) == 0 {
-		return input
-	}
-	schema := e.schemas[node.InputSchema]
-	if schema == nil {
-		return input
-	}
-	out := input
-	copied := false
-	for _, f := range schema.Fields {
-		if f == nil || f.Type != ir.FieldTypeJSON {
-			continue
-		}
-		v, ok := out[f.Name]
-		if !ok {
-			continue
-		}
-		switch v.(type) {
-		case nil, string:
-			// Already a single token; re-encoding would add quotes the
-			// author never wrote.
-			continue
-		}
-		b, err := json.Marshal(v)
-		if err != nil {
-			// Unmarshalable value — leave the existing behaviour rather
-			// than dropping the field.
-			continue
-		}
-		if !copied {
-			cloned := make(map[string]any, len(input))
-			for k, val := range input {
-				cloned[k] = val
-			}
-			out, copied = cloned, true
-		}
-		out[f.Name] = string(b)
-	}
-	return out
-}
-
 // shellEscapeValue formats val for safe interpolation into a sh -c command.
+//
+// shape is what the WORKFLOW declares about the slot val came from, and it
+// decides first: a `json` var or field is one token of compact JSON text, a
+// `string[]` one shell word per element (see value_shape.go). Both arrive
+// here as []any, so nothing about the value itself could separate them.
+//
+// Undeclared — an `outputs.*` field, a key an edge delivers to a node with
+// no `input:` schema, a drilled path — falls to the value's own shape:
 //
 // Homogeneous scalar slices ([]string, or []interface{} of strings /
 // numbers / bools) become a space-separated list of individually-shell-
@@ -1257,7 +1353,13 @@ func (e *ClawExecutor) jsonFieldsAsText(node *ir.ToolNode, input map[string]any)
 //
 // Scalars fall back to fmt.Sprint + shellEscape, preserving the prior
 // single-value behaviour for strings, numbers, and booleans.
-func shellEscapeValue(val any) string {
+func shellEscapeValue(val any, shape ValueShape) string {
+	switch shape {
+	case ShapeJSON:
+		return shellJSONToken(val)
+	case ShapeWords:
+		return shellWords(val)
+	}
 	if val == nil {
 		return ""
 	}
@@ -1275,19 +1377,16 @@ func shellEscapeValue(val any) string {
 		if len(v) == 0 {
 			return ""
 		}
-		// An all-string []interface{} space-joins here. That is correct for a
-		// `string[]` field — `git add -- {{input.files}}` needs one shell word
-		// per element — and wrong for a `json` one, where the author writes
-		// `KEY={{input.langs}} … python3 json.loads(KEY)` and gets
-		// `KEY=Go TypeScript`, so sh runs `TypeScript` (exit 127). Both shapes
-		// arrive as []any, so this function cannot tell them apart.
-		// RESOLVED one frame up instead of here: jsonFieldsAsText pre-encodes
-		// the values whose schema field is declared `json`, on both shell
-		// command bodies (shellRecipe and runPostcondition), leaving this
-		// arm's space-join intact for `string[]`. Object arrays keep
-		// JSON-encoding below regardless of the declaration.
-		// Still uncovered: `{{vars.x}}` on a `json`-declared var, and input
-		// keys an edge delivers to a node that declares no `input:` schema.
+		// An all-string []interface{} space-joins here. That is the
+		// `string[]` reading — `git add -- {{input.files}}` needs one shell
+		// word per element — and the wrong one for a `json` value, where the
+		// author writes `KEY={{input.langs}} … python3 json.loads(KEY)` and a
+		// space-join gives `KEY=Go TypeScript`, so sh runs `TypeScript`
+		// (exit 127). Both arrive as []any, so this arm cannot separate them
+		// and does not try: a DECLARED slot took the shape branch above, and
+		// what reaches here carries no declaration. The space-join is the
+		// reading that keeps an argv position working, which is what an
+		// undeclared list at a shell site most often is.
 		if sliceHasComplexElement(v) {
 			// Mixed or complex slice → JSON-encode as a single shell token.
 			b, err := json.Marshal(v)

@@ -38,7 +38,7 @@ type Entry struct {
 	Model string `json:"model"`
 	// CredentialProvider is the detect provider whose credential unlocks this
 	// spec. It differs from Provider for façade endpoints — the GLM family is
-	// served over the Anthropic-compatible API, so `anthropic/glm-5.2` needs a
+	// served over the Anthropic-compatible API, so `anthropic/glm-5.3` needs a
 	// "zai" credential, not an Anthropic one.
 	CredentialProvider string `json:"credential_provider"`
 	// Source is where the capability values came from: "aggregator" (models.dev)
@@ -344,6 +344,15 @@ func availability(report detect.Report, specProvider, modelID, credProvider stri
 			// Both resolve a provider credential from the environment, so
 			// they can drive whatever the detected provider unlocks.
 			if prov.Available {
+				backends = append(backends, name)
+			}
+		case detect.BackendOpenCode:
+			// opencode resolves from the environment too, but not from the
+			// same variables iterion probes: it reads ZHIPU_API_KEY where
+			// iterion reads ZAI_API_KEY. Offering a model on a credential
+			// opencode cannot read would pair the studio's picker with a call
+			// that always fails, so the pairing asks detect's own predicate.
+			if prov.Available && detect.OpenCodeReadsSource(prov.Source) {
 				backends = append(backends, name)
 			}
 		}

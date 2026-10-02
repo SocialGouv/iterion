@@ -1,3 +1,4 @@
+import { useDropEditorTab } from "@/hooks/useDropEditorTab";
 import { Pencil2Icon } from "@radix-ui/react-icons";
 import { useCallback, useEffect, useMemo } from "react";
 import { useLocation, useSearch } from "wouter";
@@ -23,6 +24,7 @@ import {
 // loop because wouter's setLocation reference and the persist
 // middleware's hydration can each invalidate the deps array.
 export default function EditorTabsView() {
+  const { guardDroppingEditorTab, dialog: discardSourceDialog } = useDropEditorTab();
   const search = useSearch();
   const [, setLocation] = useLocation();
   // useShallow lets Zustand compare the filtered array element-by-element
@@ -57,9 +59,16 @@ export default function EditorTabsView() {
   // tab exists and is active. Match on the file key alone — a draft tab
   // that was saved-as carries both `draft` and `file`, and paramsEqual
   // against `{file}` would miss it and open a duplicate.
+  //
+  // Two tabs may legally name the same file (the picker opens a tab per
+  // pick). The tab ON SCREEN naming X is the URL's tab — preferring an
+  // older tab with the same key would yank the author off the tab they
+  // opened the file in the moment its binding landed.
   useEffect(() => {
     if (!fileParam) return;
-    const existing = tabs.find((t) => t.params.file === fileParam);
+    const existing =
+      tabs.find((t) => t.id === activeTabId && t.params.file === fileParam) ??
+      tabs.find((t) => t.params.file === fileParam);
     if (existing) {
       ensureActive(existing.id);
       return;
@@ -70,10 +79,13 @@ export default function EditorTabsView() {
   // Same contract as `?file=`, keyed on `draft` so a tab that has since
   // been bound to a file (`{draft, file}`) is still THIS draft, not a
   // second "Draft" tab. Once bound, rewrite the URL to `?file=` so the
-  // file effect owns the rest of the session.
+  // file effect owns the rest of the session. The on-screen tab is
+  // preferred for the same reason as above.
   useEffect(() => {
     if (!draftParam || fileParam) return;
-    const existing = tabs.find((t) => t.params.draft === draftParam);
+    const existing =
+      tabs.find((t) => t.id === activeTabId && t.params.draft === draftParam) ??
+      tabs.find((t) => t.params.draft === draftParam);
     if (existing) {
       ensureActive(existing.id);
       const file = existing.params.file;
@@ -137,17 +149,21 @@ export default function EditorTabsView() {
   }, [setLocation]);
 
   // Close: dispose the tab + sync URL to the new active tab (or
-  // /editor if none remain).
+  // /editor if none remain). Disposing takes the tab's store — the document
+  // AND the Source view's un-applied text — so it asks first, like every
+  // other path that drops that text.
   const handleClose = useCallback(
     (id: string) => {
-      useTabsStore.getState().closeTab(id);
-      const next = useTabsStore.getState();
-      const newActive = next.tabs.find((t) => t.id === next.activeEditorTabId);
-      const file = newActive?.params.file ?? "";
-      const target = file ? `/editor?file=${encodeURIComponent(file)}` : "/editor";
-      setLocation(target, { replace: true });
+      void guardDroppingEditorTab(() => {
+        useTabsStore.getState().closeTab(id);
+        const next = useTabsStore.getState();
+        const newActive = next.tabs.find((t) => t.id === next.activeEditorTabId);
+        const file = newActive?.params.file ?? "";
+        const target = file ? `/editor?file=${encodeURIComponent(file)}` : "/editor";
+        setLocation(target, { replace: true });
+      }, id);
     },
-    [setLocation],
+    [setLocation, guardDroppingEditorTab],
   );
 
   // The editor "home" (welcome + recent files) shows whenever no tab is active
@@ -159,6 +175,7 @@ export default function EditorTabsView() {
 
   return (
     <div className="h-full flex flex-col">
+      {discardSourceDialog}
       <InnerTabBar
         tabs={tabs}
         activeTabId={showHome ? null : activeTabId}

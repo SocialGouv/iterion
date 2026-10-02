@@ -19,7 +19,7 @@ func (p *parser) parseBool() *bool {
 		v := false
 		return &v
 	default:
-		p.addError(DiagInvalidValue, t, "expected true or false, got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected true or false, got "+strconv.Quote(t.Value))
 		return nil
 	}
 }
@@ -66,12 +66,9 @@ func (p *parser) parseVarField() *ast.VarField {
 	p.expect(TokenColon)
 	te := p.parseTypeExpr()
 
-	// Optional enum constraint between the type and the default, same
-	// syntax as a schema field's: `mode: string [enum: "a", "b"] = "a"`.
-	var enumVals []string
-	if p.peek().Type == TokenLBrack {
-		enumVals = p.parseEnumConstraint()
-	}
+	// Optional constraints between the type and the default:
+	// `mode: string [enum: "a", "b"] [matching: "^[a-z]+$"] = "a"`.
+	enumVals, matching := p.parseVarConstraints()
 
 	var def *ast.Literal
 	if p.peek().Type == TokenEquals {
@@ -84,6 +81,7 @@ func (p *parser) parseVarField() *ast.VarField {
 		Name:       name,
 		Type:       te,
 		EnumValues: enumVals,
+		Matching:   matching,
 		Default:    def,
 		Span:       ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
 	}
@@ -341,11 +339,11 @@ func (p *parser) parseSecretField() *ast.SecretField {
 		case "value":
 			sf.Value = p.expectString()
 		case "as":
-			sf.As = p.expectStringOrIdent()
+			sf.As = p.expectStringOrIdentLine()
 		case "mount_path":
 			sf.MountPath = p.expectString()
 		case "env":
-			sf.Env = p.expectStringOrIdent()
+			sf.Env = p.expectStringOrIdentLine()
 		case "optional":
 			if v := p.parseBool(); v != nil {
 				sf.Optional = *v
@@ -371,7 +369,7 @@ func (p *parser) parseAttachmentType() ast.AttachmentTypeExpr {
 	case TokenTypeImage:
 		return ast.AttachmentTypeImage
 	default:
-		p.addError(DiagInvalidType, t, "expected attachment type (file, image), got '"+t.Value+"'")
+		p.addError(DiagInvalidType, t, "expected attachment type (file, image), got "+strconv.Quote(t.Value))
 		return ast.AttachmentTypeFile
 	}
 }
@@ -392,7 +390,7 @@ func (p *parser) parseTypeExpr() ast.TypeExpr {
 	case TokenTypeStringArray:
 		return ast.TypeStringArray
 	default:
-		p.addError(DiagInvalidType, t, "expected type (string, bool, int, float, json, string[]), got '"+t.Value+"'")
+		p.addError(DiagInvalidType, t, "expected type (string, bool, int, float, json, string[]), got "+strconv.Quote(t.Value))
 		return ast.TypeString
 	}
 }
@@ -410,7 +408,7 @@ func (p *parser) parseLiteral() *ast.Literal {
 		// producing data corruption from authored input.
 		v, err := strconv.ParseInt(t.Value, 10, 64)
 		if err != nil {
-			p.addError(DiagInvalidValue, t, "invalid integer literal '"+t.Value+"': "+err.Error())
+			p.addError(DiagInvalidValue, t, "invalid integer literal "+strconv.Quote(t.Value)+": "+err.Error())
 		}
 		return &ast.Literal{Kind: ast.LitInt, Raw: t.Value, IntVal: v}
 	case TokenFloat:
@@ -419,7 +417,7 @@ func (p *parser) parseLiteral() *ast.Literal {
 		// JSON as `null` and breaks downstream comparisons and budgets.
 		v, err := strconv.ParseFloat(t.Value, 64)
 		if err != nil {
-			p.addError(DiagInvalidValue, t, "invalid float literal '"+t.Value+"': "+err.Error())
+			p.addError(DiagInvalidValue, t, "invalid float literal "+strconv.Quote(t.Value)+": "+err.Error())
 		}
 		return &ast.Literal{Kind: ast.LitFloat, Raw: t.Value, FloatVal: v}
 	case TokenTrue:
@@ -562,16 +560,131 @@ func (p *parser) parseFieldType() ast.FieldType {
 		// as does the degenerate `file: file`.
 		return ast.FieldTypeFile
 	default:
-		p.addError(DiagInvalidType, t, "expected field type, got '"+t.Value+"'")
+		p.addError(DiagInvalidType, t, "expected field type, got "+strconv.Quote(t.Value))
 		return ast.FieldTypeString
 	}
 }
 
 func (p *parser) parseEnumConstraint() []string {
 	p.next() // consume [
+	// A schema field constrains what a MODEL produces, so a pattern there
+	// would be refused mid-run, not at the operator's keyboard — a
+	// different guarantee. Said by name: copying the documented vars line
+	// into a `schema` block is the likely way to arrive here.
+	if p.peek().Type == TokenMatching {
+		t := p.next()
+		p.addError(DiagInvalidValue, t,
+			"[matching: ...] constrains an operator-supplied value and is only valid on a `vars:` declaration, not on a schema field")
+		p.skipToNewline()
+		return nil
+	}
 	p.expect(TokenEnum)
 	p.expect(TokenColon)
+	return p.parseEnumValues()
+}
 
+// parseVarConstraints reads the constraint brackets a var declaration may
+// carry between its type and its default, in either order and **at most one
+// of each**: `[enum: "a", "b"]` and `[matching: "<re>"]`. `matching` is
+// var-only — a schema field constrains model output, which is refused
+// mid-run rather than at the operator's keyboard.
+//
+// A repeat is an error, not a merge. Both plausible merges are wrong in the
+// direction that matters: a second `[matching:]` would DROP the first
+// pattern, and a second `[enum:]` would WIDEN the accepted set. Either way
+// the file reads as one constraint and the engine enforces another, which
+// is the failure a constraint exists to prevent.
+//
+// Every iteration consumes at least the opening bracket, so the loop cannot
+// spin, and every malformed constraint leaves through recoverConstraint,
+// which drops the rest of the BROKEN line and nothing else.
+func (p *parser) parseVarConstraints() (enumVals []string, matching string) {
+	var seenEnum, seenMatching bool
+	for p.peek().Type == TokenLBrack {
+		p.next() // consume [
+		switch t := p.next(); t.Type {
+		case TokenEnum:
+			if seenEnum {
+				p.addError(DiagInvalidValue, t,
+					"a var declares at most one [enum: ...] constraint; merging two would widen the accepted set")
+				p.recoverConstraint(t)
+				return enumVals, matching
+			}
+			seenEnum = true
+			if bad, ok := p.expect(TokenColon); !ok {
+				p.recoverConstraint(bad)
+				return enumVals, matching
+			}
+			enumVals = p.parseEnumValues()
+		case TokenMatching:
+			if seenMatching {
+				p.addError(DiagInvalidValue, t,
+					"a var declares at most one [matching: ...] constraint; the second would silently replace the first")
+				p.recoverConstraint(t)
+				return enumVals, matching
+			}
+			seenMatching = true
+			if bad, ok := p.expect(TokenColon); !ok {
+				p.recoverConstraint(bad)
+				return enumVals, matching
+			}
+			// Quoted, like an enum value: a pattern is never a bare word
+			// (`^[a-z]+$` does not lex as one), so an unquoted token is a
+			// mistake that would otherwise become a literal-text pattern.
+			pat := p.next()
+			if pat.Type != TokenString {
+				p.addError(DiagInvalidValue, pat,
+					"a matching pattern must be a quoted string, got "+pat.Type.String())
+				p.recoverConstraint(pat)
+				return enumVals, matching
+			}
+			// An empty pattern is not "match only the empty string": RE2
+			// matches by search, so `""` is found in every value and the
+			// constraint admits everything. The compiler then skips it
+			// (empty is the unconstrained state) and `iterion fmt` erases
+			// the bracket — a declaration that reads as a constraint,
+			// enforces none, and loses its own text.
+			if pat.Value == "" {
+				p.addError(DiagInvalidValue, pat,
+					`[matching: ""] constrains nothing: an empty pattern is found in every value. Drop the bracket, or write "^$" for "the empty string only"`)
+				p.recoverConstraint(pat)
+				return enumVals, matching
+			}
+			matching = pat.Value
+			if bad, ok := p.expect(TokenRBrack); !ok {
+				p.recoverConstraint(bad)
+				return enumVals, matching
+			}
+		default:
+			p.addError(DiagInvalidValue, t,
+				"expected 'enum' or 'matching' in a var constraint, got "+t.Type.String())
+			p.recoverConstraint(t)
+			return enumVals, matching
+		}
+	}
+	return enumVals, matching
+}
+
+// recoverConstraint drops the rest of a broken constraint's line — and
+// nothing beyond it.
+//
+// `expect` and `next` consume on failure, so when the token that broke the
+// constraint IS the line's end, the parser already stands on the next line:
+// a skipToNewline from there eats the following declaration whole, leaving
+// one diagnostic naming the typo and a second declaration gone in silence.
+// Stepping back restores the terminator the enclosing block loop reads.
+func (p *parser) recoverConstraint(bad Token) {
+	switch bad.Type {
+	case TokenNewline, TokenComment, TokenEOF, TokenDedent:
+		p.backup()
+	default:
+		p.skipToNewline()
+	}
+}
+
+// parseEnumValues reads the quoted value list of an `[enum: ...]`
+// constraint, from the first value through the closing bracket.
+func (p *parser) parseEnumValues() []string {
 	var vals []string
 	t := p.next()
 	if t.Type == TokenString {
@@ -579,17 +692,22 @@ func (p *parser) parseEnumConstraint() []string {
 	} else {
 		// Don't silently drop bare identifiers — enum values must be quoted.
 		p.addError(DiagInvalidValue, t, "enum values must be quoted strings, got "+t.Type.String())
+		p.recoverConstraint(t)
+		return vals
 	}
 	for p.peek().Type == TokenComma {
 		p.next() // consume ,
 		t = p.next()
-		if t.Type == TokenString {
-			vals = append(vals, t.Value)
-		} else {
+		if t.Type != TokenString {
 			p.addError(DiagInvalidValue, t, "enum values must be quoted strings, got "+t.Type.String())
+			p.recoverConstraint(t)
+			return vals
 		}
+		vals = append(vals, t.Value)
 	}
-	p.expect(TokenRBrack)
+	if bad, ok := p.expect(TokenRBrack); !ok {
+		p.recoverConstraint(bad)
+	}
 	return vals
 }
 

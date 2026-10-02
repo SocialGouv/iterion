@@ -81,6 +81,15 @@ func WithoutTenantFilter(parent context.Context) context.Context {
 	return context.WithValue(parent, withoutTenantFilterKey{}, true)
 }
 
+// TeamBlind returns a context whose query sees the runs of every team:
+// the caller's tenant stamp is cleared and the tenant-filter guard is
+// lifted. A stamped tenant would scope the query right back down, so
+// clearing it is half of the job. Every callsite is a potential
+// tenant-isolation hole — audit by grepping for callers.
+func TeamBlind(parent context.Context) context.Context {
+	return WithoutTenantFilter(context.WithValue(parent, tenantCtxKey{}, ""))
+}
+
 // IsWithoutTenantFilter reports whether the ctx was tagged by
 // WithoutTenantFilter. Read by mongo's withTenantFilter guard.
 func IsWithoutTenantFilter(ctx context.Context) bool {

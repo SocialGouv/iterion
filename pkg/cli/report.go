@@ -235,6 +235,8 @@ func (rb *reportBuilder) summarize(evt *store.Event, step *reportStep) bool {
 		return rb.sumRunFinished(step)
 	case store.EventRunFailed:
 		return rb.sumRunFailed(evt, step)
+	case store.EventSandboxSkipped:
+		return rb.sumSandboxSkipped(evt, step)
 	case store.EventLLMRequest:
 		return rb.sumLLMRequest()
 	default:
@@ -440,6 +442,24 @@ func (rb *reportBuilder) sumRunFailed(evt *store.Event, step *reportStep) bool {
 	} else {
 		step.Summary = "Run failed"
 	}
+	return true
+}
+
+// sumSandboxSkipped renders the one event that says a run did not get
+// the isolation it asked for: `auto` executing on the host, or an
+// explicit container refused. The default renderer prints the node id,
+// which a run-scoped event has none of, so the reason — the event's
+// entire content — never reached the report (#1425).
+func (rb *reportBuilder) sumSandboxSkipped(evt *store.Event, step *reportStep) bool {
+	if evt.Data == nil {
+		step.Summary = "Sandbox skipped"
+		return true
+	}
+	if refused, _ := evt.Data["refused"].(bool); refused {
+		step.Summary = fmt.Sprintf("Sandbox refused [%v]: %v", evt.Data["error_code"], evt.Data["reason"])
+		return true
+	}
+	step.Summary = fmt.Sprintf("Sandbox skipped — the run is NOT isolated: %v", evt.Data["reason"])
 	return true
 }
 

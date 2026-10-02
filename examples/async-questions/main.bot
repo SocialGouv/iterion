@@ -21,12 +21,6 @@
 
 dsl: 2
 
-schema draft_out:
-  draft: string
-
-schema final_out:
-  readme: string
-
 prompt draft_sys:
   You are drafting a README skeleton for a small open-source project.
 
@@ -59,17 +53,31 @@ prompt finalize_user:
   Operator answers:
   {{outputs.gate.answers}}
 
+schema draft_out:
+  draft: string
+
+schema final_out:
+  readme: string
+
 ## ask_user_async / await_answers are claw-native tools, so the async
 ## drafting agent runs on claw. Pinning backend+model also keeps the bot
 ## in the CI compile floor (TestCatalogBotsParseAndCompileClean), which
 ## compiles with no credentials to auto-detect.
 agent draft:
-  backend: "claw"
   model: "anthropic/claude-sonnet-4-6"
-  interaction: async
+  backend: "claw"
+  output: draft_out
   system: draft_sys
   user: draft_user
-  output: draft_out
+  interaction: async
+
+agent finalize:
+  model: "anthropic/claude-sonnet-4-6"
+  backend: "claw"
+  output: final_out
+  publish: readme
+  system: finalize_sys
+  user: finalize_user
 
 ## Deterministic sync point: block HERE (and only here) until every
 ## question the draft agent posted is answered. Mandatory timeout —
@@ -78,16 +86,12 @@ await_answers gate:
   from: draft
   timeout: "30m"
 
-agent finalize:
-  backend: "claw"
-  model: "anthropic/claude-sonnet-4-6"
-  system: finalize_sys
-  user: finalize_user
-  output: final_out
-  publish: readme
-
 workflow async_questions:
+
   entry: draft
+
   draft -> gate
+
   gate -> finalize
+
   finalize -> done

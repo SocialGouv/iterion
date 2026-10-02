@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 type pipelineBoardTaskRequest struct {
@@ -148,7 +149,9 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	blockers := native.NormalizeBlockers(req.Blockers)
-	botArgs := cloneStringMap(req.BotArgs)
+	// A card never carries the publish grant: whatever a client sends under
+	// that name — the mask it was shown, a stale token — is dropped.
+	botArgs := store.DropServerMintedVars(cloneStringMap(req.BotArgs))
 	blockerPolicy := native.BlockerPolicy{RequireLabels: native.RequireBlockerLabels(botArgs)}
 
 	// Upsert: planners re-run without duplicating tickets for the same request file.
@@ -237,7 +240,7 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		Labels:   append([]string(nil), req.Labels...),
 		Priority: req.Priority,
 		Bot:      bot.Name,
-		BotArgs:  cloneStringMap(req.BotArgs),
+		BotArgs:  store.DropServerMintedVars(cloneStringMap(req.BotArgs)),
 		External: req.External,
 	}
 	// Prefer the store-side atomic unique-title create (no list-then-check
@@ -352,7 +355,7 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 		Body:     req.Body,
 		Labels:   req.Labels,
 		Priority: req.Priority,
-		BotArgs:  req.BotArgs,
+		BotArgs:  dropServerMintedArgs(req.BotArgs),
 		External: req.External,
 	}
 	if req.Title != nil {
@@ -485,4 +488,14 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.writeJSONFor(w, r, issue)
+}
+
+// dropServerMintedArgs is a PATCH's bot_args without a server-minted var: a
+// card never carries the publish grant, whatever the client sends back.
+func dropServerMintedArgs(args *map[string]string) *map[string]string {
+	if args == nil {
+		return nil
+	}
+	kept := store.DropServerMintedVars(*args)
+	return &kept
 }

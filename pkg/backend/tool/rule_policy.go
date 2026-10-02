@@ -34,7 +34,10 @@ func (rp *RulePolicy) CheckContext(ctx PolicyContext) error {
 			continue
 		}
 		// Rule matched — evaluate tool patterns.
-		toolHit := patternsMatch(rule.Allow, ctx.ToolName)
+		toolHit, err := patternsMatchContext(rule.Allow, ctx)
+		if err != nil {
+			return err
+		}
 		if rule.Deny {
 			// Deny rule: if the tool matches patterns, deny it.
 			if toolHit {

@@ -169,7 +169,7 @@ func WithAttachmentPromote(fn AttachmentPromoteFunc) EngineOption {
 // run the engine drives, so convention-specific logic (e.g. stamping
 // Run.WatchedIssueIDs from a dispatch node's `dispatched_ids` output)
 // can live in the wiring layer instead of the generic engine.
-func WithOnNodeFinished(fn func(runID, nodeID string, output map[string]any)) EngineOption {
+func WithOnNodeFinished(fn func(ctx context.Context, runID, nodeID string, output map[string]any)) EngineOption {
 	return func(e *Engine) { e.onNodeFinished = fn }
 }
 
@@ -296,6 +296,29 @@ func WithFilePath(path string) EngineOption {
 // any lineage already stored on the run document.
 func WithParentRunID(parentRunID string) EngineOption {
 	return func(e *Engine) { e.parentRunID = parentRunID }
+}
+
+// WithTrust records who wrote the code in this run's workspace, and the
+// commit its admission pinned, onto the run DOCUMENT.
+//
+// A sub-bot child inherits both from its parent's queue message (the runner
+// copies the message wholesale), but the child's document is built from a
+// named field list — so without this the child executed the parent's
+// untrusted tree while its own document read as trusted, and every
+// enforcement site that resolves a run BY ID (the publish grant, the
+// merge-time forge token) would have consulted that document.
+//
+// Empty values are ignored, mirroring WithParentRunID: a trusted launch says
+// nothing and keeps saying nothing.
+func WithTrust(trust store.RunTrust, repoSHAExpected string) EngineOption {
+	return func(e *Engine) {
+		if trust != "" {
+			e.trust = trust
+		}
+		if repoSHAExpected != "" {
+			e.repoSHAExpected = repoSHAExpected
+		}
+	}
 }
 
 // WithParentNodeID records the IR node id of the subbot node in the parent
@@ -591,6 +614,19 @@ func WithBundle(b *bundle.Bundle) EngineOption {
 // payload authoritative and suppresses local resolution. See Contributions.
 func WithContributions(c *Contributions) EngineOption {
 	return func(e *Engine) { e.contributions = c }
+}
+
+// WithContributionsUnresolved marks the dispatch as having arrived WITHOUT the
+// contributions payload (the runner sets it when the queue message's
+// msg.Contributions is nil — a field the publisher ships on every launch and
+// every resume, so nil means the field was lost, not that nothing is enabled).
+// The engine then treats the ambient plugin declaration as unverifiable: the
+// mirror pass mirrors nothing for plugins and reports the pass incomplete, so
+// the orphan pruner skips instead of deleting what earlier passes mirrored.
+// A local CLI/studio run never sets this — there, local resolution IS the
+// declaration.
+func WithContributionsUnresolved() EngineOption {
+	return func(e *Engine) { e.contributionsUnresolved = true }
 }
 
 // WithOutputValidation enables post-execution validation of node outputs

@@ -49,6 +49,9 @@ Authentication. Most routes accept any of:
 
 Where a route says "team member", "team admin" or "super-admin", the
 guard maps to `canViewTeam` / `canManageTeam` / `requireSuperAdmin`.
+**"team admin" therefore means admin/owner of that team OR an admin/owner
+of its ORG** — `canManageTeam` carries that third arm everywhere, reads
+included.
 Webhook delivery URLs (`POST /api/webhooks/<provider>/<id>`) use their
 own auth (token bearer or HMAC body signature) and are public to the
 JWT layer.
@@ -85,6 +88,7 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 | `GET` | `/api/teams` | member | List the caller's teams |
 | `POST` | `/api/teams` | member | Create a team |
 | `GET` | `/api/teams/{id}/members` | team member | List members |
+| `PUT` | `/api/teams/{id}/members/{user_id}` | team admin | Place an account that ALREADY exists, idempotently (`{"role":…}`). Refuses **422** when the user is not yet a member of the team's ORG — that membership is the identity boundary a team grant sits inside, so the order is `PUT /api/orgs/…` first |
 | `PATCH` | `/api/teams/{id}/members/{user_id}` | team admin | Change role |
 | `DELETE` | `/api/teams/{id}/members/{user_id}` | team admin | Remove a member |
 | `GET` | `/api/teams/{id}/invitations` | team admin | List pending invitations |
@@ -105,9 +109,11 @@ need org **admin/owner** (`canManageOrg`). Sources:
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
+| `GET` | `/api/orgs/{id}` | org member | One org — name, slug, status, quotas. The twin of `GET /api/teams/{id}`, so a console can resolve an org by id instead of by the caller's own membership tree |
 | `GET` | `/api/orgs/{id}/members` | org member | List org members + roles |
+| `PUT` | `/api/orgs/{id}/members/{user_id}` | **super-admin** | Place an account that ALREADY exists, idempotently (`{"role":…}`). Creates or updates, where `PATCH` requires an existing membership. Super-admin because it names an account id rather than an address its owner answers at: under org admin it absorbs any account, discloses its email through the roster, and turns the 404/200 split into an existence oracle. An org admin adds by `POST …/invitations` |
 | `PATCH` | `/api/orgs/{id}/members/{user_id}` | org admin | Change a member's org role (`member\|admin\|owner`) |
-| `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member |
+| `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member (cascades to every team grant inside the org) |
 | `GET` | `/api/orgs/{id}/invitations` | org admin | List pending org invitations |
 | `POST` | `/api/orgs/{id}/invitations` | org admin | Mint an org invitation token |
 | `DELETE` | `/api/orgs/{id}/invitations/{invite_id}` | org admin | Revoke |
@@ -129,6 +135,18 @@ need org **admin/owner** (`canManageOrg`). Sources:
 User-scoped + team-scoped flavours share the same payload shape. Both
 return metadata only — the plaintext is **write-only**.
 
+Revoking takes the same right as creating (`canManageTeam` on both), so an
+org admin cannot be left holding a credential they installed in a team of
+their org and cannot pull back. A **user-scoped** record is exempt: it is
+personal, and only its owner or a super-admin may touch it.
+
+⚠️ **`PATCH`/`DELETE` on `/api/me/...` is the same handler as the team
+route, with no `{id}` to re-scope from** — so the store tenant stays the
+caller's ACTIVE team, a TEAM-scoped record of that team is reachable there,
+and the rule follows the **record's** scope rather than the path. The
+sibling `GET /api/me/api-keys` lists user-scoped rows only, which hides the
+asymmetry: not listable there, still mutable there.
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
@@ -137,16 +155,16 @@ return metadata only — the plaintext is **write-only**.
 | `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete |
 | `GET` | `/api/me/api-keys` | member | List own user-scoped keys |
 | `POST` | `/api/me/api-keys` | member | Create personal key |
-| `PATCH` | `/api/me/api-keys/{key_id}` | member | Update |
-| `DELETE` | `/api/me/api-keys/{key_id}` | member | Delete |
+| `PATCH` | `/api/me/api-keys/{key_id}` | per record scope | Update |
+| `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete |
 | `GET` | `/api/teams/{id}/secrets` | team member | List team's generic secrets |
 | `POST` | `/api/teams/{id}/secrets` | team admin | Create |
 | `PATCH` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Update |
 | `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Delete |
 | `GET` | `/api/me/secrets` | member | Personal secrets |
 | `POST` | `/api/me/secrets` | member | Create |
-| `PATCH` | `/api/me/secrets/{secret_id}` | member | Update |
-| `DELETE` | `/api/me/secrets/{secret_id}` | member | Delete |
+| `PATCH` | `/api/me/secrets/{secret_id}` | per record scope | Update |
+| `DELETE` | `/api/me/secrets/{secret_id}` | per record scope | Delete |
 | `GET` | `/api/teams/{id}/bots/{bot_id}/bindings` | team member | List bot bindings |
 | `POST` | `/api/teams/{id}/bots/{bot_id}/bindings` | team admin | Create binding |
 | `PATCH` | `/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}` | team admin | Update |
@@ -176,6 +194,13 @@ not enabled on this server`.
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Delete one file (never `main.bot`) |
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Delete the bot |
 | `POST` | `/api/teams/{id}/bot-sources/{slug}/fork` | bot editor | Fork a baked catalog bot (`{from}`) into an editable copy |
+
+Every write validates the whole file map. A key ending in `.bot.yaml` — an
+author document, a draft of a `.bot`, never what launches — is refused with
+`400` and `error_code: author_document`; the store never holds one. A bot that
+holds such a key from before this rule is written again by deleting that file
+(the per-file `DELETE` validates the map after the removal) or by a whole-bundle
+`PUT` without it. A fork reads the catalog bundle without its drafts.
 
 Every write **compiles the bundle before it persists** — a bot that fails to
 parse/compile is rejected `400 bot does not compile: <diagnostics>`, never
@@ -454,9 +479,10 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
 | `GET` | `/api/admin/orgs/{id}/teams` | super-admin | List the org's teams |
-| `GET` | `/api/admin/users` | super-admin | List users (`?offset=&limit=` pagination; limit default 50, max 200) |
+| `GET` | `/api/admin/users` | super-admin | List users (`?offset=&limit=` pagination, limit default 50 / max 200; `?q=` matches an email PREFIX or an exact user id — not a substring, so the match rides the unique index on `email`) |
+| `GET` | `/api/admin/users/{id}` | super-admin | One account's file: status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was **granted** — not what it could reach. See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
-| `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset |
+| `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset; disabled accounts return 422 and must be explicitly re-enabled first |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
 | `GET` | `/api/admin/dlq` | super-admin | List parked messages |
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |

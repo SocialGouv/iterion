@@ -161,16 +161,18 @@ type jsonGroupDecl struct {
 	Tools    []*jsonToolNodeDecl `json:"tools,omitempty"`
 	Computes []*jsonComputeDecl  `json:"computes,omitempty"`
 	Edges    []*jsonEdge         `json:"edges,omitempty"`
+	Comments []*jsonComment      `json:"comments,omitempty"`
 }
 
 // jsonUseDecl mirrors UseDecl (`use <group> as <prefix> with { … }`).
 type jsonUseDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File   string           `json:"file,omitempty"`
-	Group  string           `json:"group,omitempty"`
-	Prefix string           `json:"prefix,omitempty"`
-	With   []*jsonWithEntry `json:"with,omitempty"`
+	File     string           `json:"file,omitempty"`
+	Group    string           `json:"group,omitempty"`
+	Prefix   string           `json:"prefix,omitempty"`
+	With     []*jsonWithEntry `json:"with,omitempty"`
+	Comments []*jsonComment   `json:"comments,omitempty"`
 }
 
 type jsonComment struct {
@@ -178,30 +180,59 @@ type jsonComment struct {
 	// MarshalFileWithProvenance alone: the transport never carries it.
 	File string `json:"file,omitempty"`
 	Text string `json:"text,omitempty"`
+	// Anchor and Place are the comment's address inside its carrier: the
+	// line it names and how it sits there (ast.Comment). A document that
+	// carries neither reads as a comment leading its carrier, which is
+	// what a canvas that only ever wrote head comments produces.
+	Anchor string `json:"anchor,omitempty"`
+	Place  string `json:"place,omitempty"`
+	// Blank is the paragraph break written above the comment.
+	Blank bool `json:"blank,omitempty"`
+}
+
+// commentPlaceToStr / strToCommentPlace name the three places a comment can
+// sit, so the transport carries a word rather than an ordinal.
+var commentPlaceToStr = map[CommentPlace]string{
+	CommentBefore:   "",
+	CommentAtEnd:    "end",
+	CommentTrailing: "trailing",
+}
+
+var strToCommentPlace = map[string]CommentPlace{
+	"":         CommentBefore,
+	"before":   CommentBefore,
+	"end":      CommentAtEnd,
+	"trailing": CommentTrailing,
 }
 
 type jsonVarsBlock struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File   string          `json:"file,omitempty"`
-	Fields []*jsonVarField `json:"fields,omitempty"`
+	File     string          `json:"file,omitempty"`
+	Fields   []*jsonVarField `json:"fields,omitempty"`
+	Comments []*jsonComment  `json:"comments,omitempty"`
 }
 
 type jsonVarField struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File    string       `json:"file,omitempty"`
-	Name    string       `json:"name,omitempty"`
-	Type    string       `json:"type,omitempty"`
-	Enum    []string     `json:"enum,omitempty"`
-	Default *jsonLiteral `json:"default,omitempty"`
+	File string   `json:"file,omitempty"`
+	Name string   `json:"name,omitempty"`
+	Type string   `json:"type,omitempty"`
+	Enum []string `json:"enum,omitempty"`
+	// Matching is the RE2 source of a `[matching: "<re>"]` constraint.
+	// An empty pattern is the unconstrained state, so omitempty loses
+	// nothing: there is no "constrained to the empty pattern".
+	Matching string       `json:"matching,omitempty"`
+	Default  *jsonLiteral `json:"default,omitempty"`
 }
 
 type jsonSecretsBlock struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File   string             `json:"file,omitempty"`
-	Fields []*jsonSecretField `json:"fields,omitempty"`
+	File     string             `json:"file,omitempty"`
+	Fields   []*jsonSecretField `json:"fields,omitempty"`
+	Comments []*jsonComment     `json:"comments,omitempty"`
 }
 
 type jsonSecretField struct {
@@ -221,8 +252,9 @@ type jsonSecretField struct {
 type jsonPresetsBlock struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File    string        `json:"file,omitempty"`
-	Entries []*jsonPreset `json:"entries,omitempty"`
+	File     string         `json:"file,omitempty"`
+	Entries  []*jsonPreset  `json:"entries,omitempty"`
+	Comments []*jsonComment `json:"comments,omitempty"`
 }
 
 type jsonPreset struct {
@@ -241,8 +273,9 @@ type jsonPresetValue struct {
 type jsonAttachmentsBlock struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File   string                 `json:"file,omitempty"`
-	Fields []*jsonAttachmentField `json:"fields,omitempty"`
+	File     string                 `json:"file,omitempty"`
+	Fields   []*jsonAttachmentField `json:"fields,omitempty"`
+	Comments []*jsonComment         `json:"comments,omitempty"`
 }
 
 type jsonAttachmentField struct {
@@ -275,6 +308,7 @@ type jsonMCPServerDecl struct {
 	Args      []string         `json:"args,omitempty"`
 	URL       string           `json:"url,omitempty"`
 	Auth      *jsonMCPAuthDecl `json:"auth,omitempty"`
+	Comments  []*jsonComment   `json:"comments,omitempty"`
 }
 
 type jsonMCPAuthDecl struct {
@@ -312,10 +346,11 @@ type jsonMemoryBlock struct {
 type jsonPromptDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File   string `json:"file,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Body   string `json:"body,omitempty"`
-	Inline bool   `json:"inline,omitempty"`
+	File     string         `json:"file,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Body     string         `json:"body,omitempty"`
+	Inline   bool           `json:"inline,omitempty"`
+	Comments []*jsonComment `json:"comments,omitempty"`
 }
 
 type jsonCursorDecl struct {
@@ -326,6 +361,7 @@ type jsonCursorDecl struct {
 	Description string                 `json:"description,omitempty"`
 	Values      []*jsonCursorEnumValue `json:"values,omitempty"`
 	Bands       []*jsonCursorBand      `json:"bands,omitempty"`
+	Comments    []*jsonComment         `json:"comments,omitempty"`
 }
 
 type jsonCursorEnumValue struct {
@@ -345,14 +381,15 @@ type jsonCursorBand struct {
 type jsonSupervisorDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File     string   `json:"file,omitempty"`
-	Name     string   `json:"name,omitempty"`
-	Watches  []string `json:"watches,omitempty"`
-	Model    string   `json:"model,omitempty"`
-	System   string   `json:"system,omitempty"`
-	Cooldown string   `json:"cooldown,omitempty"`
-	MaxEvals int      `json:"max_evals,omitempty"`
-	Monitors []string `json:"monitors,omitempty"`
+	File     string         `json:"file,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Watches  []string       `json:"watches,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	System   string         `json:"system,omitempty"`
+	Cooldown string         `json:"cooldown,omitempty"`
+	MaxEvals int            `json:"max_evals,omitempty"`
+	Monitors []string       `json:"monitors,omitempty"`
+	Comments []*jsonComment `json:"comments,omitempty"`
 }
 
 // jsonFallbackDecl is the wire form of one `fallbacks:` route.
@@ -384,9 +421,10 @@ type jsonCursorSetting struct {
 type jsonSchemaDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File   string             `json:"file,omitempty"`
-	Name   string             `json:"name,omitempty"`
-	Fields []*jsonSchemaField `json:"fields,omitempty"`
+	File     string             `json:"file,omitempty"`
+	Name     string             `json:"name,omitempty"`
+	Fields   []*jsonSchemaField `json:"fields,omitempty"`
+	Comments []*jsonComment     `json:"comments,omitempty"`
 }
 
 type jsonSchemaField struct {
@@ -414,7 +452,7 @@ type jsonAgentDecl struct {
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
 	SessionSlot       string               `json:"session_slot,omitempty"`
-	Tools             []string             `json:"tools,omitempty"`
+	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
@@ -436,8 +474,13 @@ type jsonAgentDecl struct {
 	Fallbacks         []*jsonFallbackDecl  `json:"fallbacks,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
+	AmbientContext    string               `json:"ambient_context,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
+	Allow             []string             `json:"allow,omitempty"`
+	Ask               []string             `json:"ask,omitempty"`
+	Deny              []string             `json:"deny,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
+	Comments          []*jsonComment       `json:"comments,omitempty"`
 }
 
 type jsonJudgeDecl struct {
@@ -459,7 +502,7 @@ type jsonJudgeDecl struct {
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
 	SessionSlot       string               `json:"session_slot,omitempty"`
-	Tools             []string             `json:"tools,omitempty"`
+	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
@@ -481,54 +524,61 @@ type jsonJudgeDecl struct {
 	Fallbacks         []*jsonFallbackDecl  `json:"fallbacks,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
+	AmbientContext    string               `json:"ambient_context,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
+	Allow             []string             `json:"allow,omitempty"`
+	Ask               []string             `json:"ask,omitempty"`
+	Deny              []string             `json:"deny,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
+	Comments          []*jsonComment       `json:"comments,omitempty"`
 }
 
 type jsonRouterDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File            string   `json:"file,omitempty"`
-	Name            string   `json:"name,omitempty"`
-	Description     string   `json:"description,omitempty"`
-	Mode            string   `json:"mode,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	Backend         string   `json:"backend,omitempty"`
-	Provider        string   `json:"provider,omitempty"`
-	System          string   `json:"system,omitempty"`
-	User            string   `json:"user,omitempty"`
-	Multi           bool     `json:"multi,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	Over            string   `json:"over,omitempty"`
-	As              string   `json:"as,omitempty"`
-	Key             string   `json:"key,omitempty"`
-	DependsOn       string   `json:"depends_on,omitempty"`
-	Needs           []string `json:"needs,omitempty"`
+	File            string         `json:"file,omitempty"`
+	Name            string         `json:"name,omitempty"`
+	Description     string         `json:"description,omitempty"`
+	Mode            string         `json:"mode,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	Backend         string         `json:"backend,omitempty"`
+	Provider        string         `json:"provider,omitempty"`
+	System          string         `json:"system,omitempty"`
+	User            string         `json:"user,omitempty"`
+	Multi           bool           `json:"multi,omitempty"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+	Over            string         `json:"over,omitempty"`
+	As              string         `json:"as,omitempty"`
+	Key             string         `json:"key,omitempty"`
+	DependsOn       string         `json:"depends_on,omitempty"`
+	Needs           []string       `json:"needs,omitempty"`
+	Comments        []*jsonComment `json:"comments,omitempty"`
 }
 
 type jsonHumanDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File              string   `json:"file,omitempty"`
-	Name              string   `json:"name,omitempty"`
-	Description       string   `json:"description,omitempty"`
-	Input             string   `json:"input,omitempty"`
-	Output            string   `json:"output,omitempty"`
-	Publish           string   `json:"publish,omitempty"`
-	ArtifactLabels    []string `json:"artifact_labels,omitempty"`
-	Instructions      string   `json:"instructions,omitempty"`
-	Interaction       string   `json:"interaction,omitempty"`
-	InteractionPrompt string   `json:"interaction_prompt,omitempty"`
-	InteractionModel  string   `json:"interaction_model,omitempty"`
-	MinAnswers        int      `json:"min_answers,omitempty"`
-	Model             string   `json:"model,omitempty"`
-	System            string   `json:"system,omitempty"`
-	Await             string   `json:"await,omitempty"`
-	ReviewURL         string   `json:"review_url,omitempty"`
-	Posture           string   `json:"posture,omitempty"`
-	MergeStrategy     string   `json:"merge_strategy,omitempty"`
-	MergeInto         string   `json:"merge_into,omitempty"`
-	MaxTurns          int      `json:"max_turns,omitempty"`
+	File              string         `json:"file,omitempty"`
+	Name              string         `json:"name,omitempty"`
+	Description       string         `json:"description,omitempty"`
+	Input             string         `json:"input,omitempty"`
+	Output            string         `json:"output,omitempty"`
+	Publish           string         `json:"publish,omitempty"`
+	ArtifactLabels    []string       `json:"artifact_labels,omitempty"`
+	Instructions      string         `json:"instructions,omitempty"`
+	Interaction       string         `json:"interaction,omitempty"`
+	InteractionPrompt string         `json:"interaction_prompt,omitempty"`
+	InteractionModel  string         `json:"interaction_model,omitempty"`
+	MinAnswers        int            `json:"min_answers,omitempty"`
+	Model             string         `json:"model,omitempty"`
+	System            string         `json:"system,omitempty"`
+	Await             string         `json:"await,omitempty"`
+	ReviewURL         string         `json:"review_url,omitempty"`
+	Posture           string         `json:"posture,omitempty"`
+	MergeStrategy     string         `json:"merge_strategy,omitempty"`
+	MergeInto         string         `json:"merge_into,omitempty"`
+	MaxTurns          int            `json:"max_turns,omitempty"`
+	Comments          []*jsonComment `json:"comments,omitempty"`
 }
 
 type jsonToolNodeDecl struct {
@@ -559,6 +609,7 @@ type jsonToolNodeDecl struct {
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 	Needs          []string           `json:"needs,omitempty"`
 	ParallelSafe   bool               `json:"parallel_safe,omitempty"`
+	Comments       []*jsonComment     `json:"comments,omitempty"`
 }
 
 // jsonActionParam is the JSON form of an ast.ActionParam. A LIST rather than
@@ -741,6 +792,7 @@ type jsonComputeDecl struct {
 	ArtifactLabels []string           `json:"artifact_labels,omitempty"`
 	Expr           []*jsonComputeExpr `json:"expr,omitempty"`
 	Await          string             `json:"await,omitempty"`
+	Comments       []*jsonComment     `json:"comments,omitempty"`
 }
 
 type jsonComputeExpr struct {
@@ -759,6 +811,7 @@ type jsonSubbotDecl struct {
 	Output      string           `json:"output,omitempty"`
 	Needs       []string         `json:"needs,omitempty"`
 	Isolated    bool             `json:"isolated,omitempty"`
+	Comments    []*jsonComment   `json:"comments,omitempty"`
 }
 
 type jsonEmitDecl struct {
@@ -769,38 +822,42 @@ type jsonEmitDecl struct {
 	Description string           `json:"description,omitempty"`
 	Event       string           `json:"event,omitempty"`
 	With        []*jsonWithEntry `json:"with,omitempty"`
+	Comments    []*jsonComment   `json:"comments,omitempty"`
 }
 
 type jsonWaitDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File        string `json:"file,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	Event       string `json:"event,omitempty"`
-	Timeout     string `json:"timeout,omitempty"`
-	Output      string `json:"output,omitempty"`
+	File        string         `json:"file,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Event       string         `json:"event,omitempty"`
+	Timeout     string         `json:"timeout,omitempty"`
+	Output      string         `json:"output,omitempty"`
+	Comments    []*jsonComment `json:"comments,omitempty"`
 }
 
 type jsonAwaitAnswersDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File        string `json:"file,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	From        string `json:"from,omitempty"`
-	Timeout     string `json:"timeout,omitempty"`
+	File        string         `json:"file,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	From        string         `json:"from,omitempty"`
+	Timeout     string         `json:"timeout,omitempty"`
+	Comments    []*jsonComment `json:"comments,omitempty"`
 }
 
 type jsonFailDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File        string `json:"file,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	Code        string `json:"code,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Resumable   bool   `json:"resumable,omitempty"`
+	File        string         `json:"file,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Code        string         `json:"code,omitempty"`
+	Message     string         `json:"message,omitempty"`
+	Resumable   bool           `json:"resumable,omitempty"`
+	Comments    []*jsonComment `json:"comments,omitempty"`
 }
 
 type jsonWorkflowDecl struct {
@@ -833,6 +890,7 @@ type jsonWorkflowDecl struct {
 	Worktree            string               `json:"worktree,omitempty"`
 	Compress            string               `json:"compress,omitempty"`
 	AutoMemory          string               `json:"auto_memory,omitempty"`
+	AmbientContext      string               `json:"ambient_context,omitempty"`
 	LoopBudgetGuard     string               `json:"loop_budget_guard,omitempty"`
 	RepoDevbox          string               `json:"repo_devbox,omitempty"`
 	WorkspaceCheckpoint string               `json:"workspace_checkpoint,omitempty"`
@@ -842,6 +900,7 @@ type jsonWorkflowDecl struct {
 	Deny                []string             `json:"deny,omitempty"`
 	Sandbox             *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Edges               []*jsonEdge          `json:"edges,omitempty"`
+	Comments            []*jsonComment       `json:"comments,omitempty"`
 }
 
 type jsonBudgetBlock struct {
@@ -854,13 +913,14 @@ type jsonBudgetBlock struct {
 }
 
 type jsonEdge struct {
-	From    string             `json:"from,omitempty"`
-	To      string             `json:"to,omitempty"`
-	When    *jsonWhenClause    `json:"when,omitempty"`
-	IsElse  bool               `json:"is_else,omitempty"`
-	Loop    *jsonLoopClause    `json:"loop,omitempty"`
-	Foreach *jsonForeachClause `json:"foreach,omitempty"`
-	With    []*jsonWithEntry   `json:"with,omitempty"`
+	From     string             `json:"from,omitempty"`
+	To       string             `json:"to,omitempty"`
+	When     *jsonWhenClause    `json:"when,omitempty"`
+	IsElse   bool               `json:"is_else,omitempty"`
+	Loop     *jsonLoopClause    `json:"loop,omitempty"`
+	Foreach  *jsonForeachClause `json:"foreach,omitempty"`
+	With     []*jsonWithEntry   `json:"with,omitempty"`
+	Comments []*jsonComment     `json:"comments,omitempty"`
 }
 
 // jsonForeachClause mirrors ForeachClause (`as foreach <name>(<item> in
@@ -1030,13 +1090,12 @@ func toJSON(f *File) (*jsonFile, error) {
 	for _, w := range f.Workflows {
 		jf.Workflows = append(jf.Workflows, workflowToJSON(w))
 	}
-	for _, c := range f.Comments {
-		jf.Comments = append(jf.Comments, &jsonComment{Text: c.Text})
-	}
 	jf.Profile = f.Profile
 	for _, im := range f.Imports {
 		jf.Imports = append(jf.Imports, im.Path)
 	}
+	// Every carrier's comments, by the one walk that finds them all.
+	stampComments(reflect.ValueOf(f), reflect.ValueOf(jf))
 
 	return jf, nil
 }
@@ -1395,9 +1454,10 @@ func varsBlockToJSON(v *VarsBlock) *jsonVarsBlock {
 	jv := &jsonVarsBlock{}
 	for _, f := range v.Fields {
 		jf := &jsonVarField{
-			Name: f.Name,
-			Type: typeExprToStr[f.Type],
-			Enum: f.EnumValues,
+			Name:     f.Name,
+			Type:     typeExprToStr[f.Type],
+			Enum:     f.EnumValues,
+			Matching: f.Matching,
 		}
 		if f.Default != nil {
 			jf.Default = literalToJSON(f.Default)
@@ -1464,7 +1524,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		User:              a.User,
 		Session:           sessionModeToStr[a.Session],
 		SessionSlot:       a.SessionSlot,
-		Tools:             a.Tools,
+		Tools:             declaredListToJSON(a.Tools),
 		ToolPolicy:        a.ToolPolicy,
 		Capabilities:      a.Capabilities,
 		Skills:            a.Skills,
@@ -1486,7 +1546,11 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Fallbacks:         fallbacksToJSON(a.Fallbacks),
 		Compress:          a.Compress,
 		AutoMemory:        a.AutoMemory,
+		AmbientContext:    a.AmbientContext,
 		Permission:        a.Permission,
+		Allow:             a.Allow,
+		Ask:               a.Ask,
+		Deny:              a.Deny,
 		Needs:             a.Needs,
 	}
 }
@@ -1508,7 +1572,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		User:              j.User,
 		Session:           sessionModeToStr[j.Session],
 		SessionSlot:       j.SessionSlot,
-		Tools:             j.Tools,
+		Tools:             declaredListToJSON(j.Tools),
 		ToolPolicy:        j.ToolPolicy,
 		Capabilities:      j.Capabilities,
 		Skills:            j.Skills,
@@ -1530,7 +1594,11 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Fallbacks:         fallbacksToJSON(j.Fallbacks),
 		Compress:          j.Compress,
 		AutoMemory:        j.AutoMemory,
+		AmbientContext:    j.AmbientContext,
 		Permission:        j.Permission,
+		Allow:             j.Allow,
+		Ask:               j.Ask,
+		Deny:              j.Deny,
 		Needs:             j.Needs,
 	}
 }
@@ -1573,6 +1641,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Worktree:            w.Worktree,
 		Compress:            w.Compress,
 		AutoMemory:          w.AutoMemory,
+		AmbientContext:      w.AmbientContext,
 		LoopBudgetGuard:     w.LoopBudgetGuard,
 		RepoDevbox:          w.RepoDevbox,
 		WorkspaceCheckpoint: w.WorkspaceCheckpoint,
@@ -1672,9 +1741,19 @@ func UnmarshalFile(data []byte) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The comments first — provenance is stamped on them too, and its
+	// walk pairs slices element for element, so they must be there.
+	if err := readComments(reflect.ValueOf(&jf), reflect.ValueOf(f)); err != nil {
+		return nil, err
+	}
 	// A document that came with provenance (MarshalFileWithProvenance)
 	// parses back into an AST whose spans name their files.
 	readProvenance(reflect.ValueOf(&jf), reflect.ValueOf(f))
+	// The fold moves comments between slices and changes their lengths,
+	// which is exactly what readProvenance's element-for-element walk
+	// stops at: it runs AFTER, or a group with a member comment loses the
+	// file of origin of every comment it carries.
+	foldGroupComments(f)
 	return f, nil
 }
 
@@ -1935,9 +2014,6 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		f.Workflows = append(f.Workflows, w)
 	}
 
-	for _, jc := range jf.Comments {
-		f.Comments = append(f.Comments, &Comment{Text: jc.Text})
-	}
 	f.Profile = jf.Profile
 	for _, p := range jf.Imports {
 		f.Imports = append(f.Imports, &ImportDecl{Path: p})
@@ -2169,7 +2245,7 @@ func varsBlockFromJSON(jv *jsonVarsBlock) (*VarsBlock, error) {
 		if !ok {
 			return nil, fmt.Errorf("astjson: unknown type %q", jf.Type)
 		}
-		vf := &VarField{Name: jf.Name, Type: te, EnumValues: jf.Enum}
+		vf := &VarField{Name: jf.Name, Type: te, EnumValues: jf.Enum, Matching: jf.Matching}
 		if jf.Default != nil {
 			l, err := literalFromJSON(jf.Default)
 			if err != nil {
@@ -2243,7 +2319,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			User:              ja.User,
 			Session:           sess,
 			SessionSlot:       ja.SessionSlot,
-			Tools:             ja.Tools,
+			Tools:             declaredListFromJSON(ja.Tools),
 			ToolPolicy:        ja.ToolPolicy,
 			Capabilities:      ja.Capabilities,
 			Skills:            ja.Skills,
@@ -2265,7 +2341,11 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Fallbacks:         fallbacksFromJSON(ja.Fallbacks),
 			Compress:          ja.Compress,
 			AutoMemory:        ja.AutoMemory,
+			AmbientContext:    ja.AmbientContext,
 			Permission:        ja.Permission,
+			Allow:             ja.Allow,
+			Ask:               ja.Ask,
+			Deny:              ja.Deny,
 			Needs:             ja.Needs,
 		},
 	}, nil
@@ -2301,7 +2381,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			User:              jj.User,
 			Session:           sess,
 			SessionSlot:       jj.SessionSlot,
-			Tools:             jj.Tools,
+			Tools:             declaredListFromJSON(jj.Tools),
 			ToolPolicy:        jj.ToolPolicy,
 			Capabilities:      jj.Capabilities,
 			Skills:            jj.Skills,
@@ -2323,7 +2403,11 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Fallbacks:         fallbacksFromJSON(jj.Fallbacks),
 			Compress:          jj.Compress,
 			AutoMemory:        jj.AutoMemory,
+			AmbientContext:    jj.AmbientContext,
 			Permission:        jj.Permission,
+			Allow:             jj.Allow,
+			Ask:               jj.Ask,
+			Deny:              jj.Deny,
 			Needs:             jj.Needs,
 		},
 	}, nil
@@ -2383,6 +2467,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Worktree:            jw.Worktree,
 		Compress:            jw.Compress,
 		AutoMemory:          jw.AutoMemory,
+		AmbientContext:      jw.AmbientContext,
 		LoopBudgetGuard:     jw.LoopBudgetGuard,
 		RepoDevbox:          jw.RepoDevbox,
 		WorkspaceCheckpoint: jw.WorkspaceCheckpoint,
@@ -2486,4 +2571,32 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 		})
 	}
 	return e, nil
+}
+
+// declaredListToJSON / declaredListFromJSON carry a list whose EMPTY form is
+// a declared value across the JSON seam. `omitempty` on a slice erases
+// nil-from-empty — the trap the per-node permission lists were written around
+// — so a list that must tell "declared, and empty" from "not declared" crosses
+// as a POINTER: nil is absent, a pointer to an empty slice is `[]`.
+//
+// The one field with that semantics today is an agent/judge `tools:`
+// (toolcatalog.ToolsDeclared). The rule lists deliberately do not have it.
+func declaredListToJSON(v []string) *[]string {
+	if v == nil {
+		return nil
+	}
+	return &v
+}
+
+func declaredListFromJSON(v *[]string) []string {
+	if v == nil {
+		return nil
+	}
+	if *v == nil {
+		// A present key is a declaration even when it is empty: this side
+		// never hands back a nil slice, or the seam would erase exactly what
+		// the pointer was introduced to carry.
+		return []string{}
+	}
+	return *v
 }

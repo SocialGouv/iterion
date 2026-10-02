@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strconv"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
@@ -64,7 +66,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.Session = p.parseSessionMode()
 	case TokenTools:
 		p.expect(TokenColon)
-		d.Tools = p.parseToolList()
+		d.Tools = p.parseDeclaredToolList()
 	case TokenToolPolicy:
 		p.expect(TokenColon)
 		d.ToolPolicy = p.parseToolList()
@@ -127,9 +129,21 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenAutoMemory:
 		p.expect(TokenColon)
 		d.AutoMemory = p.expectIdent()
+	case TokenAmbientContext:
+		p.expect(TokenColon)
+		d.AmbientContext = p.expectIdent()
 	case TokenPermission:
 		p.expect(TokenColon)
 		d.Permission = p.expectIdent()
+	case TokenAllow:
+		p.expect(TokenColon)
+		d.Allow = p.parseStringList()
+	case TokenAsk:
+		p.expect(TokenColon)
+		d.Ask = p.parseStringList()
+	case TokenDeny:
+		p.expect(TokenColon)
+		d.Deny = p.parseStringList()
 	case TokenNeeds:
 		p.expect(TokenColon)
 		d.Needs = p.parseNeedsList()
@@ -298,19 +312,19 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 
 func (p *parser) parseRouterMode() ast.RouterMode {
 	t := p.next()
-	switch t.Type {
-	case TokenFanOutAll:
+	switch enumWord(t) {
+	case "fan_out_all":
 		return ast.RouterFanOutAll
-	case TokenFanOutEach:
+	case "fan_out_each":
 		return ast.RouterFanOutEach
-	case TokenCondition:
+	case "condition":
 		return ast.RouterCondition
-	case TokenRoundRobin:
+	case "round_robin":
 		return ast.RouterRoundRobin
-	case TokenLLM:
+	case "llm":
 		return ast.RouterLLM
 	default:
-		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, fan_out_each, condition, round_robin, llm), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, fan_out_each, condition, round_robin, llm), got "+strconv.Quote(t.Value)+"")
 		return ast.RouterFanOutAll
 	}
 }
@@ -319,13 +333,13 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 
 func (p *parser) parseAwaitMode() ast.AwaitMode {
 	t := p.next()
-	switch t.Type {
-	case TokenWaitAll:
+	switch enumWord(t) {
+	case "wait_all":
 		return ast.AwaitWaitAll
-	case TokenBestEffort:
+	case "best_effort":
 		return ast.AwaitBestEffort
 	default:
-		p.addError(DiagInvalidValue, t, "expected await mode (wait_all, best_effort), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected await mode (wait_all, best_effort), got "+strconv.Quote(t.Value)+"")
 		return ast.AwaitWaitAll
 	}
 }
@@ -406,13 +420,13 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 			hd.ReviewURL = p.expectString()
 		case "posture":
 			p.expect(TokenColon)
-			hd.Posture = p.expectStringOrIdent()
+			hd.Posture = p.expectStringOrIdentLine()
 		case "merge_strategy":
 			p.expect(TokenColon)
-			hd.MergeStrategy = p.expectStringOrIdent()
+			hd.MergeStrategy = p.expectStringOrIdentLine()
 		case "merge_into":
 			p.expect(TokenColon)
-			hd.MergeInto = p.expectStringOrIdent()
+			hd.MergeInto = p.expectStringOrIdentLine()
 		case "max_turns":
 			p.expect(TokenColon)
 			hd.MaxTurns = p.expectInt()
@@ -429,7 +443,7 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 
 func (p *parser) parseInteractionMode() ast.InteractionMode {
 	t := p.next()
-	switch t.Value {
+	switch enumWord(t) {
 	case "none":
 		return ast.InteractionNone
 	case "human":
@@ -445,7 +459,7 @@ func (p *parser) parseInteractionMode() ast.InteractionMode {
 	case "human_or_host":
 		return ast.InteractionHumanOrHost
 	default:
-		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review, async, human_or_host), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review, async, human_or_host), got "+strconv.Quote(t.Value))
 		return ast.InteractionNone
 	}
 }
@@ -603,7 +617,7 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 			break
 		}
 		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
-			p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in recovery block")
+			p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in recovery block")
 			p.next()
 			p.skipToNewline()
 			continue
@@ -729,16 +743,11 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 				fd.Metered = *v
 			}
 		case "action":
-			// Bare ident, matching the DSL's enum style (`await: wait_all`).
-			// A quoted string is tolerated for the JSON round-trip authors.
-			at := p.next()
-			switch at.Type {
-			case TokenIdent, TokenString:
-				fd.Action = at.Value
-			default:
-				p.expectFailed(at, TokenIdent, "expected fallback action (skip), got "+at.Type.String())
-				p.skipToNewline()
-			}
+			// A bare word, matching the DSL's enum style (`await: wait_all`),
+			// or a quoted string for the JSON round-trip authors — the one
+			// string|ident reader every such property goes through; the
+			// compiler narrows the word to `skip`.
+			fd.Action = p.expectStringOrIdentLine()
 		case "when":
 			// A quoted expr over vars, like a compute `expr:` value.
 			fd.When = p.expectString()
@@ -882,13 +891,16 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 	}
 	gd := &ast.GroupDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
 
-	// Optional parameter list: (p1, p2, ...)
+	// Optional parameter list: (p1, p2, ...). A parameter that is not a
+	// name is refused where it stands, not left out.
 	if p.peek().Type == TokenLParen {
 		p.next()
 		for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF && p.peek().Type != TokenNewline {
-			pn := tokenAsIdent(p.next())
-			if pn != "" {
+			pt := p.next()
+			if pn := tokenAsIdent(pt); pn != "" {
 				gd.Params = append(gd.Params, pn)
+			} else {
+				p.listElementRefused(pt, "a parameter name")
 			}
 			if p.peek().Type == TokenComma {
 				p.next()
@@ -955,7 +967,7 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 				// source of an edge and ask for the arrow; its body goes
 				// with it. A node NAMED like a keyword is still an edge
 				// endpoint — that shape has no `<name>:` after the keyword.
-				p.addErrorHint(DiagUnexpectedToken, t, "'"+t.Value+"' cannot be declared inside a group — a group holds agent, judge, router, human, tool and compute declarations, and edges",
+				p.addErrorHint(DiagUnexpectedToken, t, strconv.Quote(t.Value)+" cannot be declared inside a group — a group holds agent, judge, router, human, tool and compute declarations, and edges",
 					"Move the `"+t.Value+"` declaration to the top level, outside the group.")
 				p.next()
 				p.skipUnknownProperty()
@@ -964,7 +976,7 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
 				gd.Edges = append(gd.Edges, p.parseEdge()...)
 			} else {
-				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in group body")
+				p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in group body")
 				p.next()
 			}
 		}
@@ -1177,7 +1189,7 @@ func (p *parser) parseFailDecl() *ast.FailDecl {
 		case t.Type == TokenIdent && t.Value == "code":
 			p.next()
 			p.expect(TokenColon)
-			fd.Code = p.expectStringOrIdent()
+			fd.Code = p.expectStringOrIdentLine()
 		case t.Type == TokenIdent && t.Value == "message":
 			p.next()
 			p.expect(TokenColon)
@@ -1231,7 +1243,7 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 		case "from":
 			p.next()
 			p.expect(TokenColon)
-			ad.From = p.expectStringOrIdent()
+			ad.From = p.expectStringOrIdentLine()
 		case "timeout":
 			p.next()
 			p.expect(TokenColon)

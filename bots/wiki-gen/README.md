@@ -71,7 +71,7 @@ iterion run bots/wiki-gen/main.bot \
   --var wiki_dir=docs/wiki \
   --var scope_notes="emphasize the runtime engine and the DSL"
 
-# Cheaper model for large repos
+# Explicit operator override (the default is Opus 5.5)
 ITERION_WIKI_MODEL_CLAUDE=claude-sonnet-5 iterion run bots/wiki-gen/main.bot
 ```
 

@@ -42,6 +42,9 @@ type ModelEntry struct {
 	// from the wire. (Opus 4.8/4.7.) Source:
 	// platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8
 	RejectsSampling bool
+
+	// RequiresAdaptiveThinking models cannot disable thinking or force a tool.
+	RequiresAdaptiveThinking bool
 }
 
 // ModelRegistry is a dynamic registry of known models.
@@ -138,7 +141,10 @@ func (r *ModelRegistry) ensureInit() {
 		// platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8
 		// Claude 5 — the current line. The bare "opus"/"sonnet"/"fable" aliases
 		// resolve to the newest of their line, so they live here, not on 4.x.
-		{Canonical: "claude-opus-5", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus", "opus-5"}, Metadata: anthropicMeta,
+		// September 2026 provider docs: Opus 5.5 always thinks; its default effort is medium.
+		{Canonical: "claude-opus-5-5", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus", "opus-5-5"}, Metadata: anthropicMeta,
+			SupportedReasoningEfforts: anthropicClaude5Effort, DefaultReasoningEffort: "medium", ThinkingMode: "adaptive", RejectsSampling: true, RequiresAdaptiveThinking: true},
+		{Canonical: "claude-opus-5", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus-5"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicClaude5Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive", RejectsSampling: true},
 		{Canonical: "claude-fable-5-1", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"fable", "fable-5-1", "fable-5"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicClaude5Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive", RejectsSampling: true},
@@ -163,6 +169,12 @@ func (r *ModelRegistry) ensureInit() {
 		// minimal/low/medium/high enum. OpenAI's Responses API
 		// documents `medium` as the implicit default when the
 		// reasoning_effort parameter is omitted.
+		{Canonical: "gpt-6-astra", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-6-astra"}, Metadata: openaiMeta,
+			SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultReasoningEffort: "medium"},
+		{Canonical: "gpt-6-sol", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-6-sol"}, Metadata: openaiMeta,
+			SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}, DefaultReasoningEffort: "medium"},
+		{Canonical: "gpt-6-luna", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-6-luna"}, Metadata: openaiMeta,
+			SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}, DefaultReasoningEffort: "medium"},
 		{Canonical: "gpt-5.5", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.5"}, Metadata: openaiMeta,
 			SupportedReasoningEfforts: openaiReasoningEffort, DefaultReasoningEffort: "medium"},
 		{Canonical: "gpt-5.5-pro", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.5-pro"}, Metadata: openaiMeta,

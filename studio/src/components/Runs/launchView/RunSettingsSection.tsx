@@ -15,6 +15,7 @@ export interface RunSettingsSectionProps {
   backendOverride: string;
   compressOverride: string;
   autoMemoryOverride: string;
+  ambientContextOverride: string;
   permissionOverride: string;
   reviewModeOverride: string;
   backendReport: BackendDetectReport | null;
@@ -25,6 +26,7 @@ export interface RunSettingsSectionProps {
   onBackendChange: (value: string) => void;
   onCompressChange: (value: string) => void;
   onAutoMemoryChange: (value: string) => void;
+  onAmbientContextChange: (value: string) => void;
   onPermissionChange: (value: string) => void;
   onReviewModeChange: (value: string) => void;
   /** True when the bot's parsed doc declares a `review_mode` var — the
@@ -64,6 +66,7 @@ function knobCaption(
 export default function RunSettingsSection({
   backendOverride,
   compressOverride,
+  ambientContextOverride,
   autoMemoryOverride,
   permissionOverride,
   reviewModeOverride,
@@ -71,6 +74,7 @@ export default function RunSettingsSection({
   effective,
   onBackendChange,
   onCompressChange,
+  onAmbientContextChange,
   onAutoMemoryChange,
   onPermissionChange,
   onReviewModeChange,
@@ -173,6 +177,34 @@ export default function RunSettingsSection({
               run stays hermetic. Honoured by <code>claude_code</code>,{" "}
               <code>claw</code> and <code>pi</code>.
             </div>
+        <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+          <div>
+            <div className="text-xs font-medium font-mono">ambient_context</div>
+            <div className="text-caption text-fg-subtle">inherited instructions</div>
+          </div>
+          <div>
+            <Select
+              value={ambientContextOverride}
+              onChange={(e) => onAmbientContextChange(e.currentTarget.value)}
+            >
+              <option value="">default — the repository&apos;s instructions</option>
+              <option value="none">none — nothing but the prompt</option>
+              <option value="workspace">workspace — repository files only</option>
+              <option value="operator">operator — the operator&apos;s setup only</option>
+              <option value="all">all — both origins</option>
+            </Select>
+            {knobCaption(ambientContextOverride, effective?.ambient_context)}
+            <div className="mt-1 text-caption text-fg-subtle">
+              Which instruction files agent/judge nodes inherit besides their
+              prompt (ADR-119): the repository&apos;s <code>CLAUDE.md</code>,{" "}
+              <code>.claude/rules</code> and <code>AGENTS.md</code>, and the
+              operator&apos;s own setup. <code>workspace</code> by default, so
+              a bot run behaves the same on every machine. Enforced on{" "}
+              <code>claude_code</code>, <code>claw</code>, <code>codex</code>{" "}
+              and <code>pi</code>.
+            </div>
+          </div>
+        </div>
           </div>
         </div>
         <div className="grid grid-cols-[160px_1fr] gap-3 items-start">

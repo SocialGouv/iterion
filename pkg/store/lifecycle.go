@@ -110,6 +110,21 @@ const (
 	// configuration change is needed before the same run can make progress.
 	FailureCapabilityUnsupported FailureCode = "CAPABILITY_UNSUPPORTED"
 
+	// FailureSandboxDriverUnavailable: an EXPLICIT sandbox mode was
+	// requested (a workflow's `sandbox:` block declaring `mode: inline`
+	// with an image / build) but no driver is available on this host —
+	// no docker/podman on PATH for a local run, no usable cluster for
+	// the runner. The refusal is a guarantee: an explicitly-declared
+	// container is what makes the workflow's isolation contract
+	// enforceable, so silently running unsandboxed is not an option.
+	// Distinct from `sandbox: auto`, which degrades to unsandboxed with
+	// a visible `sandbox_skipped` event when no runtime is present
+	// (`sandbox: auto` reads as "isolate if you can", authored to make
+	// the same bot run on a laptop without docker and in the cloud with
+	// a real driver). A schedule's `last_error` keys on this to explain
+	// why a scheduled run parked without executing.
+	FailureSandboxDriverUnavailable FailureCode = "SANDBOX_DRIVER_UNAVAILABLE"
+
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
 	// Previously only visible as the run_failed event's
@@ -235,6 +250,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureModelUnavailable,
 	FailureSchemaUnusable,
 	FailureCapabilityUnsupported,
+	FailureSandboxDriverUnavailable,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,

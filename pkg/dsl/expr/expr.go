@@ -12,7 +12,10 @@
 //	mul      := unary ( ( "*" | "/" | "%" ) unary )*
 //	unary    := "-" unary | postfix
 //	postfix  := primary ( "[" expr "]" )*
-//	primary  := number | string | bool | lambdaComb | funcCall | path | "(" expr ")"
+//	primary  := number | string | bool | listLit | objectLit | lambdaComb | funcCall | path | "(" expr ")"
+//	listLit  := "[" ( expr ( "," expr )* )? "]"
+//	objectLit := "{" ( pair ( "," pair )* )? "}"
+//	pair     := ( IDENT | string ) ":" expr
 //	funcCall := IDENT "(" ( expr ( "," expr )* )? ")"
 //	lambdaComb := ("map"|"filter") "(" expr "," lambda ")"
 //	             | "reduce" "(" expr "," expr "," lambda ")"
@@ -29,7 +32,12 @@
 // `if(cond, then, else)`, plus the total array/map helpers `sort`, `keys`,
 // `values`, `slice`, `sum`, `min`, `max`, `flatten`, and the numeric
 // `floor`, `round` (a number to the int64 an `int` field expects: floor
-// towards negative infinity, round half away from zero). The bounded higher-order
+// towards negative infinity, round half away from zero). Collections are
+// written as literals: a list `[expr, ...]` evaluates to a []any (an
+// all-string one conforms to a `string[]` field), an object
+// `{key: expr, ...}` — keys identifiers or quoted strings, each declared
+// once — to a map[string]any (a `json` field). Both nest, and an element
+// or value is any expression, references included. The bounded higher-order
 // combinators `map`, `filter`, `reduce` take a `=>` lambda whose parameter is a
 // local binding; the lambda is not a first-class value (it can only appear at a
 // combinator call site, applies once per element of a finite slice, and cannot
@@ -182,6 +190,90 @@ type Ref struct {
 	Path      []string
 }
 
+// IteratedRefs returns the refs an expression ITERATES: the collection
+// argument of a `map`/`filter`/`reduce`, the one position where the
+// evaluator walks a value element by element. The dry run shapes a
+// `json`-typed field read there as a one-element list, so the body runs
+// once and its coverage holds on both passes. Every other position leaves
+// the field's shape alone — a builtin or a subscript that cannot digest
+// the object shape fails, and the dry run reads a failure that rests on a
+// shape as inconclusive, never as the program's death (a shape the dry run
+// picked for one consumer contradicted another every time it tried:
+// PR #1491, three verdicts).
+func (a *AST) IteratedRefs() []Ref {
+	if a == nil || a.root == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var refs []Ref
+	walkIteratedBound(a.root, false, nil, func(r Ref) {
+		key := r.Namespace + ":" + joinPath(r.Path)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, r)
+	})
+	return refs
+}
+
+// walkIteratedBound walks the AST carrying an iterated flag; every pathNode
+// reached with the flag set is emitted through fn. The flag is set on the
+// collection of a lambda combinator alone and travels through a unary or
+// binary operator only — never through a function call (the call's result
+// is what the combinator iterates, its arguments are read in their own
+// positions), a subscript (one element, or a map key), a reduce's init
+// (the accumulator's seed) or a lambda body (one element per invocation).
+// Lambda-bound parameters are excluded from the emission, like
+// walkRefsBound.
+func walkIteratedBound(n node, iterated bool, bound map[string]bool, fn func(Ref)) {
+	switch v := n.(type) {
+	case pathNode:
+		if bound[v.namespace] {
+			return
+		}
+		if iterated {
+			fn(Ref{Namespace: v.namespace, Path: append([]string(nil), v.path...)})
+		}
+	case *unaryNode:
+		walkIteratedBound(v.child, iterated, bound, fn)
+	case *binaryNode:
+		walkIteratedBound(v.left, iterated, bound, fn)
+		walkIteratedBound(v.right, iterated, bound, fn)
+	case *funcCallNode:
+		for _, a := range v.args {
+			walkIteratedBound(a, false, bound, fn)
+		}
+	case *indexNode:
+		walkIteratedBound(v.recv, false, bound, fn)
+		walkIteratedBound(v.index, false, bound, fn)
+	case *listLit:
+		// A literal's elements are read once, as values — even in a
+		// combinator's collection position the LIST is what is iterated,
+		// never the paths its elements name.
+		for _, el := range v.elems {
+			walkIteratedBound(el, false, bound, fn)
+		}
+	case *objectLit:
+		for _, val := range v.vals {
+			walkIteratedBound(val, false, bound, fn)
+		}
+	case *lambdaCombNode:
+		walkIteratedBound(v.coll, true, bound, fn)
+		if v.init != nil {
+			walkIteratedBound(v.init, false, bound, fn)
+		}
+		nb := make(map[string]bool, len(bound)+len(v.params))
+		for k := range bound {
+			nb[k] = true
+		}
+		for _, p := range v.params {
+			nb[p] = true
+		}
+		walkIteratedBound(v.body, false, nb, fn)
+	}
+}
+
 func joinPath(p []string) string {
 	out := ""
 	for i, s := range p {
@@ -262,6 +354,9 @@ const (
 	tokLBracket // [
 	tokRBracket // ]
 	tokArrow    // =>
+	tokColon    // :
+	tokLBrace   // {
+	tokRBrace   // }
 )
 
 type token struct {
@@ -312,6 +407,15 @@ func (l *lexer) next() (token, error) {
 	case c == ']':
 		l.pos++
 		return token{kind: tokRBracket, value: "]"}, nil
+	case c == '{':
+		l.pos++
+		return token{kind: tokLBrace, value: "{"}, nil
+	case c == '}':
+		l.pos++
+		return token{kind: tokRBrace, value: "}"}, nil
+	case c == ':':
+		l.pos++
+		return token{kind: tokColon, value: ":"}, nil
 	case c == '+':
 		l.pos++
 		return token{kind: tokPlus, value: "+"}, nil
@@ -503,6 +607,22 @@ type indexNode struct {
 	index node
 }
 
+// listLit is a list literal `[expr, ...]`: it evaluates to a []any holding
+// each element's value, in order. The empty form `[]` is an empty (non-nil)
+// slice, which a `string[]` field accepts and `truthy` reads as false.
+type listLit struct {
+	elems []node
+}
+
+// objectLit is an object literal `{key: expr, ...}`: it evaluates to a
+// map[string]any. Keys are identifiers or quoted strings, fixed text (never
+// computed); the parser refuses a repeated key, so evaluation order cannot
+// decide a collision.
+type objectLit struct {
+	keys []string
+	vals []node
+}
+
 // lambdaCombNode is one of the bounded higher-order combinators `map`,
 // `filter`, `reduce`. The lambda is NOT a first-class value: it can only appear
 // here, is applied exactly once per element of an already-materialized finite
@@ -525,6 +645,8 @@ func (*unaryNode) exprNode()      {}
 func (*binaryNode) exprNode()     {}
 func (*funcCallNode) exprNode()   {}
 func (*indexNode) exprNode()      {}
+func (*listLit) exprNode()        {}
+func (*objectLit) exprNode()      {}
 func (*lambdaCombNode) exprNode() {}
 
 // ---------------------------------------------------------------------------
@@ -776,6 +898,10 @@ func (p *parser) parsePrimary() (node, error) {
 		}
 		p.advance()
 		return inner, nil
+	case tokLBracket:
+		return p.parseListLit()
+	case tokLBrace:
+		return p.parseObjectLit()
 	case tokIdent:
 		ns := p.cur.value
 		p.advance()
@@ -802,6 +928,91 @@ func (p *parser) parsePrimary() (node, error) {
 		return pathNode{namespace: ns, path: path}, nil
 	}
 	return nil, fmt.Errorf("expr: unexpected token %s", p.cur.value)
+}
+
+// parseListLit parses `[expr, ...]`, invoked with cur on the opening '['.
+// A '[' here is unambiguous with a subscript: subscripts are postfix (they
+// follow a primary), a literal is a primary. Elements are full expressions,
+// references included; a trailing comma is not accepted (the call-argument
+// rule, `f(a,)` fails the same way).
+func (p *parser) parseListLit() (node, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
+	p.advance() // consume '['
+	var elems []node
+	if p.cur.kind != tokRBracket {
+		for {
+			el, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			elems = append(elems, el)
+			if p.cur.kind == tokComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+	}
+	if p.cur.kind != tokRBracket {
+		return nil, fmt.Errorf("expr: expected ',' or ']' in a list literal, got %s", p.cur.value)
+	}
+	p.advance() // consume ']'
+	return &listLit{elems: elems}, nil
+}
+
+// parseObjectLit parses `{key: expr, ...}`, invoked with cur on the opening
+// '{'. A key is an identifier or a quoted string — fixed text, so the map an
+// object literal builds is known from its source alone; a repeated key is an
+// authoring error (silently keeping one of the pair would evaluate a value
+// the author did not choose).
+func (p *parser) parseObjectLit() (node, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
+	p.advance() // consume '{'
+	var keys []string
+	var vals []node
+	seen := map[string]bool{}
+	if p.cur.kind != tokRBrace {
+		for {
+			var key string
+			switch p.cur.kind {
+			case tokIdent, tokString:
+				key = p.cur.value
+				p.advance()
+			default:
+				return nil, fmt.Errorf("expr: object literal keys are identifiers or quoted strings, got %s", p.cur.value)
+			}
+			if p.cur.kind != tokColon {
+				return nil, fmt.Errorf("expr: expected ':' after object literal key %q, got %s", key, p.cur.value)
+			}
+			p.advance() // consume ':'
+			val, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if seen[key] {
+				return nil, fmt.Errorf("expr: object literal repeats key %q", key)
+			}
+			seen[key] = true
+			keys = append(keys, key)
+			vals = append(vals, val)
+			if p.cur.kind == tokComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+	}
+	if p.cur.kind != tokRBrace {
+		return nil, fmt.Errorf("expr: expected ',' or '}' in an object literal, got %s", p.cur.value)
+	}
+	p.advance() // consume '}'
+	return &objectLit{keys: keys, vals: vals}, nil
 }
 
 // parseFuncCallArgs is invoked with `cur` sitting on the opening `(` of a
@@ -954,6 +1165,10 @@ func evalNode(n node, st *evalState) (any, error) {
 		return evalFuncCall(v, st)
 	case *indexNode:
 		return evalIndex(v, st)
+	case *listLit:
+		return evalListLit(v, st)
+	case *objectLit:
+		return evalObjectLit(v, st)
 	case *lambdaCombNode:
 		return evalLambdaComb(v, st)
 	}
@@ -2000,6 +2215,34 @@ func evalIndex(n *indexNode, st *evalState) (any, error) {
 	return nil, fmt.Errorf("expr: cannot index %T", recv)
 }
 
+// evalListLit / evalObjectLit materialize a collection literal. Neither can
+// grow during evaluation (the shape is fixed in the source), so neither
+// debits the element-visit budget — that bounds the combinators' fan-out,
+// and a literal's size is already bounded by the expression text.
+func evalListLit(n *listLit, st *evalState) (any, error) {
+	out := make([]any, len(n.elems))
+	for i, el := range n.elems {
+		v, err := evalNode(el, st)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func evalObjectLit(n *objectLit, st *evalState) (any, error) {
+	out := make(map[string]any, len(n.keys))
+	for i, k := range n.keys {
+		v, err := evalNode(n.vals[i], st)
+		if err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
 // evalLambdaComb evaluates a bounded higher-order combinator. The loop count is
 // fixed before iteration to the materialized slice length; the body is applied
 // once per element under a fresh local frame; each element debits the visit
@@ -2112,6 +2355,14 @@ func walkRefsBound(n node, bound map[string]bool, fn func(Ref)) {
 	case *indexNode:
 		walkRefsBound(v.recv, bound, fn)
 		walkRefsBound(v.index, bound, fn)
+	case *listLit:
+		for _, el := range v.elems {
+			walkRefsBound(el, bound, fn)
+		}
+	case *objectLit:
+		for _, val := range v.vals {
+			walkRefsBound(val, bound, fn)
+		}
 	case *lambdaCombNode:
 		walkRefsBound(v.coll, bound, fn)
 		if v.init != nil {

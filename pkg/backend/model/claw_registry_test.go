@@ -154,22 +154,24 @@ func TestClawRegistry_ResolveConcurrentSameKey(t *testing.T) {
 
 // TestClawRegistry_ResolveConcurrentDifferentKeys verifies that concurrent
 // Resolve calls for distinct specs run their factories in parallel — i.e.,
-// the registry never serializes them on a global write lock. With 10 distinct
-// specs each delaying 100ms, total wall time must be well under 10×delay.
+// the registry never serializes them on a global write lock. Every factory
+// must enter before any factory is allowed to return.
 func TestClawRegistry_ResolveConcurrentDifferentKeys(t *testing.T) {
 	r := NewRegistry()
 
-	const factoryDelay = 100 * time.Millisecond
 	const goroutines = 10
+	entered := make(chan string, goroutines)
+	release := make(chan struct{})
 
-	// Register 10 distinct providers, each with its own slow factory.
+	// Hold every factory open until all distinct providers have entered.
 	for i := 0; i < goroutines; i++ {
 		// Capture loop variable.
 		idx := i
 		mock := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("hi", "end_turn")}}
 		providerName := providerNameForIdx(idx)
 		r.Register(providerName, func(modelID string) (api.APIClient, error) {
-			time.Sleep(factoryDelay)
+			entered <- providerName
+			<-release
 			return mock, nil
 		})
 	}
@@ -188,18 +190,24 @@ func TestClawRegistry_ResolveConcurrentDifferentKeys(t *testing.T) {
 		}(i)
 	}
 
-	begin := time.Now()
 	close(start)
-	wg.Wait()
-	elapsed := time.Since(begin)
-
-	// If the factories were serialized, elapsed >= goroutines * factoryDelay.
-	// We allow a generous bound (3x single-factory delay) to absorb scheduler
-	// noise on slow CI hosts while still detecting real serialization.
-	maxAllowed := 3 * factoryDelay
-	if elapsed >= maxAllowed {
-		t.Errorf("concurrent resolves for distinct keys took %v (>= %v) — they appear serialized", elapsed, maxAllowed)
+	// This deadline only bounds a broken barrier. Concurrency is proved by
+	// all factories entering while none can return, not by elapsed time.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	seen := make(map[string]bool, goroutines)
+waitForFactories:
+	for len(seen) < goroutines {
+		select {
+		case provider := <-entered:
+			seen[provider] = true
+		case <-timer.C:
+			t.Errorf("only %d/%d distinct factories entered before release — resolves may be serialized", len(seen), goroutines)
+			break waitForFactories
+		}
 	}
+	close(release)
+	wg.Wait()
 
 	for i, err := range errs {
 		if err != nil {

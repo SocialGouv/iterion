@@ -23,7 +23,7 @@ func TestBuildTaskForwardsDeclaredMCPServersPerBackend(t *testing.T) {
 		logger: iterlog.Nop(),
 		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
 			"probe": {Command: "probe-server", Args: []string{"--stdio"}},
-		}),
+		}, mcp.WithStartPolicy(mcp.StartAllServers)),
 	}
 	node := &ir.AgentNode{}
 	node.ID = "n"
@@ -76,7 +76,7 @@ func TestBuildTaskAmbientMCPServerBootFailureDegradesNotFails(t *testing.T) {
 		toolRegistry: tr,
 		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
 			"deadsrv": {Command: "/nonexistent/iterion-test-mcp-server"},
-		}),
+		}, mcp.WithStartPolicy(mcp.StartAllServers)),
 	}
 	var degraded []MCPServerDegradedInfo
 	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
@@ -124,7 +124,7 @@ func TestExplicitMCPWildcardBootFailureFailsTheNode(t *testing.T) {
 		toolRegistry: tr,
 		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
 			"deadsrv": {Command: "/nonexistent/iterion-test-mcp-server"},
-		}),
+		}, mcp.WithStartPolicy(mcp.StartAllServers)),
 	}
 	var degraded []MCPServerDegradedInfo
 	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {

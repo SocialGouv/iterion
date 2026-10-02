@@ -372,6 +372,55 @@ type finalizeResult struct {
 // finalizeWorktree promotes the worktree's HEAD onto a persistent
 // branch and best-effort fast-forwards the requested merge target.
 // Always best-effort: any failure is logged but does not fail the run.
+// proveOwnWorktree proves, through git, that the directory is the run's own
+// worktree: its toplevel IS the registered path, and its git common dir
+// hangs off the source repository's .git — a linked worktree of the run's
+// repository, never a directory whose git lookups climb into an enclosing
+// checkout (#1782). An executor that cannot answer keeps the pessimistic
+// reading: the proof fails and nothing is banked.
+func proveOwnWorktree(wc worktreeContext) error {
+	// git answers with PHYSICAL paths (kernel getcwd): both sides of every
+	// comparison are resolved, or a symlinked store dir makes the engine's
+	// own worktree read as foreign (#1782 review).
+	resolve := func(p string) string {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			return resolved
+		}
+		return abs
+	}
+	top, err := runGit(wc.wtPath, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git toplevel failed: %v", err)
+	}
+	if !samePath(resolve(strings.TrimSpace(top)), resolve(wc.wtPath)) {
+		return fmt.Errorf("the directory's git toplevel is %s, not the registered worktree %s", strings.TrimSpace(top), wc.wtPath)
+	}
+	common, err := runGit(wc.wtPath, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading its git common dir failed: %v", err)
+	}
+	common = strings.TrimSpace(common)
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(wc.wtPath, common)
+	}
+	source, err := runGit(wc.repoRoot, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("cannot prove the worktree is the run's own: reading the source repository's git common dir failed: %v", err)
+	}
+	source = strings.TrimSpace(source)
+	if !filepath.IsAbs(source) {
+		source = filepath.Join(wc.repoRoot, source)
+	}
+	if !samePath(resolve(common), resolve(source)) {
+		return fmt.Errorf("the directory hangs off git repository %s, not the run's source repository %s", common, source)
+	}
+	return nil
+}
+
 func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.Logger) finalizeResult {
 	res := finalizeResult{}
 
@@ -387,6 +436,18 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	if samePath(wc.wtPath, wc.repoRoot) {
 		if logger != nil {
 			logger.Warn("runtime: finalize: worktree path %s is the repo root — refusing to bank/promote (would commit on the operator's branch); preserving, recover any run output by hand", wc.wtPath)
+		}
+		res.PreserveWorktree = true
+		return res
+	}
+
+	// 0b. The same proof, before EVERY write this finalisation makes: a
+	// nested workdir with a clean tree has nothing to bank, but its HEAD is
+	// a commit of the enclosing repository — promoting it would create an
+	// iterion/run/* branch in a repo the run does not own (#1782 review).
+	if err := proveOwnWorktree(wc); err != nil {
+		if logger != nil {
+			logger.Warn("runtime: finalize: %v — refusing to bank or promote; preserving worktree at %s", err, wc.wtPath)
 		}
 		res.PreserveWorktree = true
 		return res
@@ -412,18 +473,32 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// as an explicit wip bank so the storage branch preserves it; the
 	// operator reviews it there (it is NEVER merged into their branch —
 	// see step 5).
-	if clean, cleanErr := workdirIsClean(wc.wtPath); cleanErr != nil {
+	porcelain, porcelainErr := runGit(wc.wtPath, "status", "--porcelain", "-z")
+	if porcelainErr != nil {
 		if logger != nil {
-			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", cleanErr)
+			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", porcelainErr)
 		}
-	} else if !clean {
+	} else if len(runOutputPaths(porcelain)) == 0 {
+		// Nothing of the run's to bank: clean, or tree noise only (the
+		// mirror, a drifted lock). The noise is NAMED, not silent — the
+		// operator reading the storage branch sees what was set aside
+		// (verdict 8).
+		if noise := noisePaths(porcelain); len(noise) != 0 && logger != nil {
+			logger.Info("runtime: finalize: tree noise set aside, nothing to bank: %s", strings.Join(noise, ", "))
+		}
+	} else {
 		msg := "wip(iterion): auto-banked uncommitted run output"
 		if opts.runName != "" {
 			msg += " (" + opts.runName + ")"
 		}
-		if err := runGitInDir(wc.wtPath, "add", "-A"); err != nil {
+		if err := runGitInDir(wc.wtPath, stageWorkArgs(wc.wtPath)...); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
+			}
+			res.PreserveWorktree = true
+		} else if setAside, err := wipSetAside(wc.wtPath, porcelain); err != nil {
+			if logger != nil {
+				logger.Warn("runtime: finalize: wip bank cannot %v — preserving worktree at %s", err, wc.wtPath)
 			}
 			res.PreserveWorktree = true
 		} else if out, err := gitCommitMessage(wc.wtPath, msg); err != nil {
@@ -437,7 +512,14 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				finalSHA = banked
 			}
 			if logger != nil {
-				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged)", shortSHA(finalSHA))
+				// What the bank did not carry, not what the classification
+				// calls noise: a tracked file under an ignored mirror rides
+				// the commit (stagingExclusions) and must not be named here.
+				named := strings.Join(setAside, ", ")
+				if named == "" {
+					named = "none"
+				}
+				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged) — tree noise set aside: %s", shortSHA(finalSHA), named)
 			}
 		}
 	}

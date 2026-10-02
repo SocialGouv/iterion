@@ -8,10 +8,11 @@ import (
 )
 
 // ContentHashDir computes the same stable logical-content SHA-256 as PackDir
-// and Bundle.Hash, without first creating an archive. Pack exclusions and
-// irregular-file checks are deliberately shared with the packer.
+// and Bundle.Hash, without first creating an archive. Pack exclusions, the
+// draft rule (IsDraftEntry) and irregular-file checks are deliberately
+// shared with the packer.
 func ContentHashDir(dir string) (string, error) {
-	entries, _, err := collectEntries(dir)
+	entries, _, _, err := collectEntries(dir, true)
 	if err != nil {
 		return "", err
 	}

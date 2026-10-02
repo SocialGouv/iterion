@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/liveledger"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -47,6 +48,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("ANTHROPIC_API_KEY or OPENAI_API_KEY is required")
 	}
+	liveledger.Track(t)
 	// Pick a model based on which key is available so the test runs
 	// against either provider without manual configuration.
 	if os.Getenv("ITERION_VISION_MODEL") == "" {

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -133,6 +134,9 @@ type OutputCorrector interface {
 type OutputCorrectionUsage struct {
 	Tokens  int
 	CostUSD float64
+	// UnreportedCalls has no field yet because no implementer exists
+	// (the interface is test-only): when a second OutputCorrectorWithUsage
+	// appears, the correction call's unreported count comes with it.
 }
 
 // OutputCorrectorWithUsage extends OutputCorrector for executors that can
@@ -159,12 +163,20 @@ type varsSetter interface{ SetVars(map[string]any) }
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	resourceScope            *runResourceScope
-	workflow                 *ir.Workflow
-	store                    store.RunStore
-	executor                 NodeExecutor
-	logger                   *iterlog.Logger
-	onNodeFinished           func(runID, nodeID string, output map[string]any)
+	resourceScope *runResourceScope
+	workflow      *ir.Workflow
+	store         store.RunStore
+	executor      NodeExecutor
+	logger        *iterlog.Logger
+	// seamWarnOnce keeps the "this executor cannot answer the seams
+	// admission reads" warning to one line per engine: admission asks per
+	// node, per branch, on every fan-out.
+	seamWarnOnce   sync.Once
+	onNodeFinished func(ctx context.Context, runID, nodeID string, output map[string]any)
+	// workDirTemp is the throw-away directory defaultWorkDir created under
+	// `go test` when the process cwd was the package directory (#1803);
+	// releaseTempWorkDir removes it when Run or ResumeWithHostInputs returns.
+	workDirTemp              string
 	onEvent                  func(evt store.Event)                // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
 	workflowHash             string                               // SHA-256 of the .bot source, set via WithWorkflowHash
@@ -175,6 +187,8 @@ type Engine struct {
 	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
 	filePath                 string                               // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
 	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions
+	trust                    store.RunTrust                       // who wrote the code in this run's workspace, set via WithTrust
+	repoSHAExpected          string                               // the commit the admission pinned, set via WithTrust
 	parentNodeID             string                               // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                   string                               // in-source preset name selected at launch, set via WithPreset
 	runName                  string                               // deterministic human-friendly run label, set via WithRunName
@@ -213,6 +227,7 @@ type Engine struct {
 	attachmentPromote        AttachmentPromoteFunc                // optional: invoked after CreateRun to materialise attachments
 	bundle                   *bundle.Bundle                       // optional: bundle backing this run; nil for plain .bot runs
 	contributions            *Contributions                       // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions
+	contributionsUnresolved  bool                                 // dispatch arrived without the payload: the ambient declaration is unverifiable (WithContributionsUnresolved); local CLI runs never set it
 	pauseSignal              <-chan struct{}                      // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
 	overrideCh               <-chan *OverrideMsg                  // optional: live-steering commands drained at the same safe boundary (see override.go); nil disables steering
 	dailyCap                 *DailyCapGuard                       // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
@@ -243,12 +258,16 @@ type Engine struct {
 	// studio falls back to the wall-clock display for that run). One run
 	// per engine, so a single slot suffices.
 	activeBudget atomic.Pointer[SharedBudget]
+	// budgetClock, when set, is the clock of every run budget this engine
+	// builds — only tests set it, to advance a run's age by hand.
+	budgetClock func() time.Time
 }
 
 // ActiveElapsed returns the monotonic active time consumed by the run
 // currently executing in this engine, or 0 when no run is active or the
 // workflow declares no budget. The value comes from the run's
-// SharedBudget (CLOCK_MONOTONIC via startedAt): OS-suspend time is
+// SharedBudget, on its clock — time.Now outside tests, so CLOCK_MONOTONIC
+// via startedAt: OS-suspend time is
 // EXCLUDED (the monotonic clock freezes while the machine sleeps), long
 // LLM thinking IS counted, and prior active time is preserved across
 // resume (Restore shifts startedAt back). This is the engine-
@@ -260,7 +279,7 @@ func (e *Engine) ActiveElapsed() time.Duration {
 	if b == nil {
 		return 0
 	}
-	_, _, _, elapsed, _, _ := b.Snapshot()
+	_, _, _, elapsed, _, _, _ := b.Snapshot()
 	return elapsed
 }
 
@@ -792,7 +811,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		nodeSessions:       make(map[string]store.NodeSessionSlot),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
-		budget:             newSharedBudget(e.workflow.Budget, e.logger),
+		budget:             e.newRunBudget(),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),
 		startedAt:          time.Now(),

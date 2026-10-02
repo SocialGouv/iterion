@@ -41,7 +41,7 @@ func TestRecordOrgSpendKey(t *testing.T) {
 			r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: tc.orgID}, usage)
 
 			now := time.Now().UTC()
-			got, err := counter.Usage(context.Background(), tc.wantKey, now)
+			got, err := counter.Usage(context.Background(), orgusage.OrgSubject(tc.wantKey), now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,7 +53,7 @@ func TestRecordOrgSpendKey(t *testing.T) {
 			if tc.wantKey == "org-1" {
 				other = "team-a"
 			}
-			if u, _ := counter.Usage(context.Background(), other, now); u.CostUSD != 0 {
+			if u, _ := counter.Usage(context.Background(), orgusage.OrgSubject(other), now); u.CostUSD != 0 {
 				t.Fatalf("spend leaked onto %q: %+v", other, u)
 			}
 		})
@@ -104,7 +104,7 @@ func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 		counter := orgusage.NewMemoryCounter()
 		r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.Nop()}}
 		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil))
-		if u, _ := counter.Usage(context.Background(), "org-1", time.Now().UTC()); u.CostUSD != 0 || u.InputTokens != 0 {
+		if u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("org-1"), time.Now().UTC()); u.CostUSD != 0 || u.InputTokens != 0 {
 			t.Fatalf("zero-spend attempt recorded usage: %+v", u)
 		}
 	})
@@ -116,7 +116,7 @@ func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 		usage.runCostUSD = 2
 		usage.mu.Unlock()
 		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1"}, usage)
-		if u, _ := counter.Usage(context.Background(), "", time.Now().UTC()); u.CostUSD != 0 {
+		if u, _ := counter.Usage(context.Background(), orgusage.OrgSubject(""), time.Now().UTC()); u.CostUSD != 0 {
 			t.Fatalf("tenant-less spend recorded: %+v", u)
 		}
 	})

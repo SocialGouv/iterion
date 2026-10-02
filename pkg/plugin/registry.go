@@ -13,6 +13,7 @@ import (
 
 	yaml "go.yaml.in/yaml/v2"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -37,6 +38,13 @@ type Plugin struct {
 	// Dir is the absolute install directory for an installed plugin; "" for a
 	// builtin (its files live in the embedded FS).
 	Dir string
+	// enabledByOperator records whether the decision that turned this plugin
+	// on was the OPERATOR's — as opposed to a project `.env` naming it in
+	// ITERION_PLUGINS_ENABLE, or a plugins.yaml under a home that same `.env`
+	// selected. It is not about the code, which is `Builtin`'s question; it
+	// is about who asked for the code to run.
+	enabledByOperator bool
+
 	// Enabled is the resolved enable state (operator state || default_enabled).
 	Enabled bool
 
@@ -148,15 +156,48 @@ type Registry struct {
 	// config holds per-plugin operator config values (plugin name → key → value),
 	// persisted alongside enable state in plugins.yaml.
 	config map[string]map[string]string
+	// loadSkips names every installed plugin that could not be loaded —
+	// an unreadable or unparseable plugin.yaml. Empty for a healthy home.
+	// Consumers whose decision depends on having SEEN every installed
+	// plugin (the skill-mirror pass deciding whether its workspace prune
+	// is safe) must treat a non-empty list as "the enumeration is
+	// partial", not as "nothing enabled".
+	loadSkips []string
+	// homeOperatorChosen is true when `home` is the iterion home the
+	// OPERATOR chose — the one named by the inherited environment — as
+	// opposed to one a project `.env` selected. It answers
+	// OperatorControlled for installed plugins; see that method.
+	homeOperatorChosen bool
+}
+
+// LoadSkips returns one human-readable reason per installed plugin that
+// could not be loaded. Empty when the home is healthy.
+func (r *Registry) LoadSkips() []string {
+	return r.loadSkips
 }
 
 // Load builds a registry from the embedded builtins and the installed plugins
 // under <iterion-home>/plugins/, applying the persisted enable state. A
-// malformed installed plugin is skipped (logged by the caller via the returned
-// error slice); a malformed builtin is a programming error and fails the load.
+// malformed installed plugin is skipped and recorded on the registry
+// (LoadSkips); a malformed builtin is a programming error and fails the load.
 func Load() (*Registry, error) {
 	home := store.GlobalIterionDataDir()
-	r := &Registry{home: home}
+	return loadFrom(home, store.InheritedIterionDataDir())
+}
+
+// LoadFromForTest builds a registry over an explicit home and an explicit
+// operator-chosen home, without consulting the environment. TESTS ONLY —
+// production goes through Load, whose trusted root comes from the inherited
+// environment.
+func LoadFromForTest(home, operatorHome string) (*Registry, error) {
+	return loadFrom(home, operatorHome)
+}
+
+func loadFrom(home, operatorHome string) (*Registry, error) {
+	// An operator home of "" means the inherited environment named none:
+	// "the operator said nothing", which is not "anything goes". Trust
+	// fails closed, so only builtins stay operator-controlled.
+	r := &Registry{home: home, homeOperatorChosen: operatorHome != "" && sameDir(home, operatorHome)}
 	if err := r.loadState(); err != nil {
 		return nil, err
 	}
@@ -222,8 +263,15 @@ func (r *Registry) loadBuiltins() error {
 }
 
 // loadInstalled scans <home>/plugins/*/plugin.yaml. Errors on individual
-// plugins are swallowed (a broken third-party plugin must not brick iterion);
-// a builtin of the same name takes precedence and the installed copy is skipped.
+// plugins are swallowed for the RUN (a broken third-party plugin must not
+// brick iterion) but RECORDED on the registry: a caller whose decision
+// depends on "did I see every plugin that is installed?" — the skill-mirror
+// pass deciding whether its workspace prune is safe — must be able to tell
+// "no plugins" from "some plugins unreadable", and a bare empty Enabled()
+// cannot (#1500 R2-F1 HIGH: the pruner deleted a broken-declared plugin's
+// files because the skip was silent). A builtin of the same name takes
+// precedence and the installed copy is skipped WITHOUT recording a load
+// skip — that is shadowing, not breakage.
 func (r *Registry) loadInstalled() {
 	base := filepath.Join(r.home, pluginsSubdir)
 	entries, err := os.ReadDir(base)
@@ -241,10 +289,17 @@ func (r *Registry) loadInstalled() {
 		dir := filepath.Join(base, e.Name())
 		data, err := os.ReadFile(filepath.Join(dir, ManifestFile))
 		if err != nil {
+			r.loadSkips = append(r.loadSkips, fmt.Sprintf("%s: read %s: %v", e.Name(), ManifestFile, err))
 			continue
 		}
 		m, err := ParseManifest(data)
-		if err != nil || have[m.Name] {
+		if err != nil {
+			r.loadSkips = append(r.loadSkips, fmt.Sprintf("%s: parse %s: %v", e.Name(), ManifestFile, err))
+			continue
+		}
+		if have[m.Name] {
+			// Builtin (or an earlier installed dir) shadows this copy —
+			// deliberate, not a breakage.
 			continue
 		}
 		have[m.Name] = true
@@ -253,22 +308,54 @@ func (r *Registry) loadInstalled() {
 }
 
 func (r *Registry) resolveEnabled() {
-	enableEnv := envNameSet("ITERION_PLUGINS_ENABLE")
-	disableEnv := envNameSet("ITERION_PLUGINS_DISABLE")
+	// Read as the process INHERITED them. A `.env` in the repository under
+	// review can set either — enabling a plugin the operator left off, or
+	// silencing one they turned on — and the value is honoured either way;
+	// what it cannot do is make the result speak for the operator.
+	// The live lists decide WHAT happens (unchanged behaviour); the inherited
+	// enable list decides whether the operator is the one who asked.
+	// Disabling needs no such distinction — see below.
+	enableEnv := envNameSet(envtrust.Inherited("ITERION_PLUGINS_ENABLE"))
+	plantedEnable := envNameSet(os.Getenv("ITERION_PLUGINS_ENABLE"))
+	plantedDisable := envNameSet(os.Getenv("ITERION_PLUGINS_DISABLE"))
 	for _, p := range r.plugins {
 		if v, ok := r.state[p.Name()]; ok {
 			p.Enabled = v
+			// The stored state lives in <home>/plugins.yaml, so it is the
+			// operator's exactly when the home is.
+			p.enabledByOperator = r.homeOperatorChosen
 		} else {
 			p.Enabled = p.Manifest.DefaultEnabled
+			// `default_enabled` is the manifest's own word, so it is the
+			// operator's exactly when the manifest is.
+			p.enabledByOperator = p.Builtin || r.homeOperatorChosen
 		}
 		// Env overrides win over both stored state and default_enabled — the
 		// cloud/headless path where the operator (or Helm chart) toggles a
 		// builtin via immutable env instead of the per-pod-ephemeral
 		// plugins.yaml. Disable wins over enable when a name is in both.
-		if enableEnv[p.Name()] {
+		if plantedEnable[p.Name()] {
+			// This branch only ever turns a plugin ON, so it may only ever
+			// ADD provenance. Assigning instead let a repository's `.env`
+			// naming a plugin the operator had already enabled erase the
+			// operator's own decision — and the diagnosis they then read said
+			// their builtin "comes from the workflow, not from the operator".
+			if p.Enabled {
+				p.enabledByOperator = p.enabledByOperator || enableEnv[p.Name()]
+			} else {
+				// The variable is what turns it on, so the variable's
+				// provenance is the decision's: a plugin the operator stored
+				// as disabled and a repository switched on is the
+				// repository's.
+				p.enabledByOperator = enableEnv[p.Name()]
+			}
 			p.Enabled = true
 		}
-		if disableEnv[p.Name()] {
+		// Disabling only ever removes a capability, so its provenance does
+		// not matter: a `.env` that silences a plugin costs the operator a
+		// tool, never the other way round. Read from the live environment for
+		// that reason.
+		if plantedDisable[p.Name()] {
 			p.Enabled = false
 		}
 	}
@@ -279,9 +366,12 @@ func (r *Registry) resolveEnabled() {
 
 // envNameSet parses a comma/space-separated env var into a set of plugin
 // names (trimmed, empties dropped). Used by ITERION_PLUGINS_ENABLE/DISABLE.
-func envNameSet(env string) map[string]bool {
+// envNameSet splits a comma/space separated plugin-name list. It takes the
+// VALUE, not the variable name, so each caller says which environment it is
+// reading — the live one, or the one the process inherited.
+func envNameSet(value string) map[string]bool {
 	out := map[string]bool{}
-	for _, tok := range strings.FieldsFunc(os.Getenv(env), func(r rune) bool { return r == ',' || r == ' ' }) {
+	for _, tok := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' }) {
 		if t := strings.TrimSpace(tok); t != "" {
 			out[t] = true
 		}
@@ -303,6 +393,51 @@ func (r *Registry) Get(name string) (*Plugin, bool) {
 func (r *Registry) IsEnabled(name string) bool {
 	p, ok := r.Get(name)
 	return ok && p.Enabled
+}
+
+// OperatorControlled reports whether p's CODE is the operator's: a builtin
+// embedded in this binary, or a manifest installed under the iterion home the
+// operator's own environment names.
+//
+// It is false for a plugin loaded from a home a project `.env` selected. The
+// plugin still loads and still runs wherever the workflow itself runs; what it
+// does not get is the operator's authority — notably the right to start an MCP
+// server on the LAUNCHER of a sandboxed run, which is the one placement the
+// sandbox cannot contain.
+func (r *Registry) OperatorControlled(p *Plugin) bool {
+	if p == nil {
+		return false
+	}
+	// The CODE: embedded in this binary, or installed under the home the
+	// operator's own environment names.
+	if !p.Builtin && !r.homeOperatorChosen {
+		return false
+	}
+	// WHO ASKED FOR IT: a builtin turned on by a repository's `.env` is the
+	// operator's code running at a repository's request.
+	if !p.enabledByOperator {
+		return false
+	}
+	// WHAT IT WAS TOLD: a builtin's manifest is fixed, but its behaviour is
+	// not — every builtin interpolates `{{config.*}}` into its server's env
+	// (firecrawl's API endpoint and key, codeindex's embedding endpoint), and
+	// that config comes from <home>/plugins.yaml and from
+	// ITERION_PLUGIN_<NAME>_<KEY>. A repository that supplies either is
+	// choosing where the operator's own binary sends the run's data, so the
+	// result is not the operator's either.
+	return r.configIsOperators(p.Name())
+}
+
+// sameDir reports whether two paths name the same directory, comparing them
+// cleaned and absolute. A relative ITERION_HOME (`.env` writing `ITERION_HOME=
+// ./x`) must not match the operator's absolute home by string luck.
+func sameDir(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
 }
 
 // Enabled returns the enabled plugins, sorted by name (stable chain order).
@@ -382,6 +517,14 @@ func (r *Registry) InstallDir(name string) string {
 
 // CacheDir returns a per-plugin cache directory under the iterion home, used to
 // expand the {{plugin.cache}} placeholder.
+// CacheDir and PluginDir resolve under the LIVE iterion home, which a project
+// `.env` can select — while OperatorControlled answers about the code, the
+// enablement and the configuration, never about these paths. A builtin is the
+// operator's whatever the home is, so a builtin that both ships
+// `default_enabled: true` AND contributes an MCP server would run with a
+// `{{plugin.cache}}` inside a home the repository chose. None does today;
+// before wiring one, resolve these from store.InheritedIterionDataDir or add
+// the path as a fourth leg of the trust check.
 func (r *Registry) CacheDir(name string) string {
 	return filepath.Join(r.home, pluginsSubdir, name, "cache")
 }
@@ -488,11 +631,32 @@ type RewriterContribution struct {
 	Spec   RewriterSpec
 }
 
-// EnabledRewriters returns the rewriter contributions of all enabled plugins,
-// in stable plugin-name order — this is the rewrite chain applied to commands.
+// EnabledRewriters returns the rewriter contributions of the enabled plugins
+// that are the OPERATOR's, in stable plugin-name order — this is the rewrite
+// chain applied to commands.
+//
+// The trust check is the same three-legged one an MCP server contribution
+// gets (loadPluginServers), and for a stronger reason: a rewriter is a
+// binary the LAUNCHER execs, host-side, on a sandboxed node's every shell
+// command — and its `sandbox_mount` picks a bind mount into the container.
+// A plugin installed under an iterion home a project `.env` selected is not
+// the operator's, so its rewriter does not get to choose either.
+//
+// Both consumers are behind this one function — the chain
+// (EnabledRewriterSpecs) and the mount composer — so the filter belongs
+// here rather than at each.
 func (r *Registry) EnabledRewriters() []RewriterContribution {
 	var out []RewriterContribution
 	for _, p := range r.Enabled() {
+		if len(p.Manifest.Contributes.Rewriters) == 0 {
+			continue
+		}
+		if !r.OperatorControlled(p) {
+			r.loadSkips = append(r.loadSkips,
+				p.Name()+": rewriters ignored — the plugin is not the operator's, and a rewriter is run by "+
+					"the launcher")
+			continue
+		}
 		for _, rw := range p.Manifest.Contributes.Rewriters {
 			out = append(out, RewriterContribution{Plugin: p.Name(), Spec: rw})
 		}

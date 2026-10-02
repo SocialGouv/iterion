@@ -71,7 +71,7 @@ push can actually happen.)
 - **`campaign`** (adaptive, claude_code, whole-repo, full tools) is the whole
   engine: it reads `git log`, builds a living todo list from a brief
   exploration, and applies the axis one site at a time — locate → smallest
-  change → build → test → **commit** (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name) incl. untracked, semantic
+  change → build → test → **commit** (`git add -A -- ':/' $ITERION_TREE_NOISE` (a deliverable under `.claude/` — or a deliberate `devbox.lock` update —: stage it by name) incl. untracked, semantic
   message) — until the pass has applied the axis everywhere it can. Before
   reporting it performs two advisory quality checks: **fit** (the change solves
   the axis's real intent, not only its wording) and **rot** (no needless
@@ -120,7 +120,7 @@ engine-resolved off the repo — never inside the target worktree).
 ## Right artifact (anti-Goodhart)
 
 The campaign commits the **uncommitted working tree** after its own build+test
-passes, staging untracked files (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name)) so a change that **adds** files
+passes, staging untracked files (`git add -A -- ':/' $ITERION_TREE_NOISE` (a deliverable under `.claude/` — or a deliberate `devbox.lock` update —: stage it by name)) so a change that **adds** files
 actually lands (`git diff HEAD` omits untracked). The deterministic
 `verify_build`/`verify_run` gate then re-checks the committed tree. See
 [docs/workflow_authoring_pitfalls.md](../../docs/workflow_authoring_pitfalls.md).
@@ -172,7 +172,7 @@ read-only); `plan_phase: off` is the explicit opt-out (plan in stride, the
 v2 shape). `plan_review: auto` resolves at launch from the run's
 credentials and gates ONLY the peer review: when a SECOND model family is
 available, the plan is critiqued by a cross-family peer (`claw` +
-`openai/gpt-5.6-sol` by default) and revised by the SAME author session
+`openai/gpt-6-astra` by default) and revised by the SAME author session
 before the campaign sweeps; otherwise the campaign receives the author's
 plan stamped as unreviewed (`plan_provenance`). `plan_review_policy`
 picks the mid-run peer-unavailability behaviour: `skip` (default — the

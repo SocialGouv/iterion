@@ -104,6 +104,11 @@ studio — trusts it.
 - Two bundlelint warnings follow (C254/C255): a manifest that repeats what
   the contract says, and a `subbot` whose `with:` misses a required input
   of the child's contract.
+- The runtime trusts the contract too (#1280): a `subbot` whose child keeps
+  one receives the contract's output ports, projected from the child's
+  per-node outputs, on every surface that runs a subbot — C255 holds the
+  parent's `output:` schema to those ports as the runtime truth. A child
+  without a contract keeps the terminal-node output semantics.
 
 ## Alternatives rejected
 

@@ -107,6 +107,7 @@ Walk top-to-bottom; first match wins.
 | "is ADR-NNN still right?", "re-challenge that decision" — human-gated, ends in keep/change/addendum | `adr-rechallenge` |
 | "set up a reproducible toolchain", "we need a devbox.json" | `devbox-setup` |
 | "watch these feeds / releases and digest them for us" — recurring veille | `feed-watch` |
+| "is production healthy right now, and what just changed?" — one deployed app's logs, metrics and health endpoints on a schedule, alerts to chat, git-backed incident state | `prod-watch` |
 | "give me a live URL for this branch", "a real review environment" | `review-env` |
 | architectural choice, hiring, prioritisation meeting, alignment | `""` |
 | operator is vague or it's cross-cutting | `""` |
@@ -359,6 +360,7 @@ dispatcher routes on it), never the persona.
 | ReArchi | `adr-rechallenge` | steer |
 | Appy | `app-dev` | build |
 | Themis | `arbitrate` | steer |
+| Assessy | `assessment` | — |
 | Bmady | `bmady` | build |
 | Billy | `branch-improve-loop` | harden |
 | Campy | `campaign` | steer |
@@ -378,6 +380,7 @@ dispatcher routes on it), never the persona.
 | Morphy | `modernize` | harden |
 | Nested Subbots Demo | `nested-subbots-demo` | — |
 | Pipeline Board Demo | `pipeline-board-demo` | — |
+| Argus | `prod-watch` | — |
 | Prody | `product-docs` | document |
 | Revi (converse) | `revi-converse` | verify |
 | Envy | `review-env` | operate |
@@ -647,7 +650,7 @@ router.
   post-install triage, malware / typosquat / install-hook detection,
   CVE baseline. Emits findings to the board; does not fix.
 - **Tags**: security, supply-chain, read-only
-- **Vars**: `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `scan_dir` (string), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `scan_dir` (string), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/sec-audit-deps/main.bot`
 
 ### `sec-audit-source` — Seki
@@ -679,7 +682,7 @@ language-agnostic baseline. Add a language by dropping a
   deserialisation, path traversal, misconfig). Emits findings to the
   board; does not fix. Pre-release hardening / PR-scope review.
 - **Tags**: security, read-only
-- **Vars**: `confirm_threshold` (int), `context_path` (string), `context_ttl_days` (int), `deepsec_agent` (string), `deepsec_bank_max_bytes` (int), `deepsec_concurrency` (int), `deepsec_model` (string), `deepsec_out` (string), `deepsec_process_limit` (int), `deepsec_root` (string), `diff_base` (string), `enable_deepsec` (bool), `enable_project_context` (bool), `file_filter` (string), `findings_cap_per_file` (int), `force_context_refresh` (bool), `fp_append_policy` (string), `fp_path` (string), `hard_stop_categories` (string), `matchers_dir` (string), `max_fix_per_run` (int), `min_generic_scanners` (int), `patch_attempts` (int), `patch_dir` (string), `records_dir` (string), `records_ttl_days` (int), `remediate` (bool), `remediation_mode` (string), `scan_dir` (string), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `shard_concurrency` (int), `shard_size` (int), `triage_inline_max_bytes` (int), `workflow_path` (string), `workspace_dir` (string)
+- **Vars**: `bundle_skills_dir` (string), `confirm_threshold` (int), `context_path` (string), `context_ttl_days` (int), `deepsec_agent` (string), `deepsec_bank_max_bytes` (int), `deepsec_concurrency` (int), `deepsec_model` (string), `deepsec_out` (string), `deepsec_process_limit` (int), `deepsec_root` (string), `diff_base` (string), `enable_deepsec` (bool), `enable_project_context` (bool), `file_filter` (string), `findings_cap_per_file` (int), `force_context_refresh` (bool), `fp_append_policy` (string), `fp_path` (string), `hard_stop_categories` (string), `matchers_dir` (string), `max_fix_per_run` (int), `min_generic_scanners` (int), `patch_attempts` (int), `patch_dir` (string), `records_dir` (string), `records_ttl_days` (int), `remediate` (bool), `remediation_mode` (string), `scan_dir` (string), `scan_dir_ttl_days` (int), `scanner_version` (string), `scope_notes` (string), `severity_threshold` (string), `shard_concurrency` (int), `shard_size` (int), `triage_inline_max_bytes` (int), `workflow_path` (string), `workspace_dir` (string)
 - **Path**: `bots/sec-audit-source/main.bot`
 
 ### `supply-shield` — Shieldy
@@ -714,7 +717,7 @@ packages.jsonl` for host-wide cross-repo dedup.
   the forge and the board; does not fix. For a CVE-focused gate use the
   companion bot supply-shield-cve (Vulny).
 - **Tags**: security, supply-chain, read-only
-- **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield/main.bot`
 
 ### `supply-shield-cve` — Vulny
@@ -747,7 +750,7 @@ a CVE tomorrow as advisories land. Point `cache_path` at
   baseline. Reports back on the forge and the board; does not fix. For a
   MALWARE-focused gate use the companion bot supply-shield (Shieldy).
 - **Tags**: security, supply-chain, read-only
-- **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield-cve/main.bot`
 
 ### `ultra11y` — Ally
@@ -1017,7 +1020,7 @@ in-stride commits until the diff is clean and the tree is green.
   aligns consuming code on breaking changes. Ask before running with
   major_policy: attempt.
 - **Tags**: deps, upgrade, ships-code
-- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_families_per_run` (int), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
+- **Vars**: `bundle_skills_dir` (string), `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_families_per_run` (int), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
 - **Path**: `bots/secured-renovacy/main.bot`
 
 ### `test-coverage` — Testy
@@ -1180,7 +1183,7 @@ doc-verification-checklist, forge-mr-create.
   needs an initial set authored from the code. Fixes and writes the
   DOCS only (never code logic) and commits.
 - **Tags**: docs, ships-code
-- **Vars**: `base_ref` (string), `bundle_self_path` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `source_branch` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `bundle_self_path` (string), `context_git` (string), `context_jira_base` (string), `context_jira_board` (string), `context_jira_project` (string), `context_jira_user` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `llm_backend` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `source_branch` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `product-docs` — Prody
@@ -1208,11 +1211,22 @@ in the report, never documented from inference.
 
 The determinism is TRUTH-only: a scope gate fails the run if anything
 outside `<product_dir>/**/*.md` changed, an EDITORIAL LINT gate fails
-it if a published page still carries working notes, and convergence
-is those two gates ∧ the campaign's honest `docs_aligned` contract —
-nothing else. A deterministic scan runs each pass as an ADVISORY
-hints producer (dead links, orphan pages, catalog surfaces no page
+it if a published page still carries working notes, an
+EXHAUSTIVENESS gate fails it if the product carries a golden-master
+net and the pages do not account for it, and convergence is those
+three gates ∧ the campaign's honest `docs_aligned` contract — nothing
+else. A deterministic scan runs each pass as an ADVISORY hints
+producer (dead links, orphan pages, catalog surfaces no page
 covers): help the agent is free to contradict, never an obligation.
+
+EXHAUSTIVENESS IS NOT THE AGENT'S WORD. When the product commits a
+golden-master net, `coverage_check` reads its feature inventory and
+its capture corpus and refuses five ways, each cause named: a
+documented screen the net never saw, an inventoried feature no page
+documents, an exclusion the pages do not name as one, a chapter
+naming no reference it restitutes, and an inventory or a
+documentation too empty to judge. Without a net the node is inert
+and the bot is exactly the one it was.
 
 EDITORIAL SOVEREIGNTY: the bundle ships generic default editorial
 skills in French (documentary model, GitBook blocks, glossary, tone),
@@ -1246,7 +1260,7 @@ container image and puts it live through the operator-attached
   repos there.
 - **Triggers**: product-docs, functional-docs, doc-produit
 - **Tags**: docs, ships-code
-- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_image` (string), `publish_registry_user` (string), `publish_slug` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `catalog_path` (string), `clone_depth` (int), `coverage_citation_close` (string), `coverage_citation_open` (string), `coverage_exclusions_heading` (string), `coverage_max_anchorless` (int), `coverage_min_prose` (int), `coverage_no_anchor_marker` (string), `coverage_placeholders` (string), `coverage_routes_file` (string), `coverage_routes_probe_timeout` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `oracle_dir` (string), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_image` (string), `publish_registry_user` (string), `publish_slug` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/product-docs/main.bot`
 
 ### `wiki-gen` — Wikky
@@ -1527,13 +1541,13 @@ with blocked lots requalified against the final tree.
 
 ### `copilot` — Copi
 
-Conversational iterion assistant. Terra (GPT-5.6) is the visible entry and
+Conversational iterion assistant. Sol (GPT-6) is the visible entry and
 executor in a standing chat loop. It handles simple requests directly; for
-complex work it asks a private Sol (GPT-5.6) reflection node for a plan.
+complex work it asks a private Sol (GPT-6) reflection node for a plan.
 Both GPT agents can fall back to Claude Opus while retaining their context. A
 fresh judge debates that plan, using Claude Opus then Kimi K3 then Grok when
-needed, before Terra verifies and carries it out. If execution finds a real
-blocker, Terra returns it to that same private planning loop. The subject is
+needed, before Sol verifies and carries it out. If execution finds a real
+blocker, Sol returns it to that same private planning loop. The subject is
 iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
 semantics, backends, bundles and convergence doctrine. Three
 postures the operator can switch mid-conversation — info (explain
@@ -1659,6 +1673,47 @@ destructive board changes.
 
 ### Uncategorized — visible, never hidden
 
+### `assessment` — Assessy
+
+Assesses a repository at the START of a modernisation campaign and writes
+the contract the execution bot then carries out: the state of the
+repository, the modernisation programme proposed for it, its measured
+size, and `.modernize/plan.yaml` itself.
+
+It holds NO knowledge of any language, build tool or runtime. An
+always-on agnostic floor measures what any git tree carries; everything
+stack-specific is declared in the bundle's `stack-*.md` skills, executed
+by a deterministic node for the stacks ONE adaptive agent names, and
+verified by a coverage gate that derives its expectations from those same
+skill blocks. Adding a stack is
+dropping a skill file — no DSL edit.
+
+Two properties are load-bearing and both are gates, never prose. Every
+declaration the survey agent writes is re-verified against the tree at a
+pinned commit: an unverifiable, duplicated or overlapping declaration is
+refused, because a declaration IS a number — declaring one artefact four
+times moves the published index a third of the way up the scale, and the
+band with it wherever a repository sits near one. And the size letter
+is published WITH the identifier and version of the measurement profile
+it is relative to; outside that profile's declared domain the bot
+publishes the raw measurements and "not applicable" rather than a letter
+that does not mean anything.
+
+- **Use when**:
+  Use at the beginning of a modernisation campaign, on a repository that
+  has no programme contract yet, to produce one. The bot needs a committed
+  BRIEF (`.modernize/brief.yaml`) carrying what no tree can state —
+  objectives, target versions, support policy, permitted changes, decisions
+  already taken. It refuses, named, when the brief is absent: guessing the
+  programme is the one thing the contract exists to prevent.
+  
+  Do NOT use it to EXECUTE the programme — that is the modernisation bot's
+  job, gate to gate, under a behavioural net. Do NOT expect an effort
+  projection from it: hours per class of lot are calibrated on a measured
+  campaign, and the first assessment has none.
+- **Vars**: `brief_path` (string), `bundle_skills_dir` (string), `gate_probe_timeout_s` (string), `out_dir` (string), `plan_path` (string), `profile_path` (string), `scratch_dir` (string), `survey_path` (string), `workspace_dir` (string)
+- **Path**: `bots/assessment/main.bot`
+
 ### `heartbeat` — Heartbeat (always-on demo)
 
 Tool-only demo of an always-on agent. Relaunched continuously by an
@@ -1700,6 +1755,60 @@ human / subbot only — no API keys, runs in seconds.
   produced-elements aggregation (image/audio preview) across the whole run
   tree. Not a production workflow.
 - **Path**: `examples/pipeline-board-demo/main.bot`
+
+### `prod-watch` — Argus
+
+Production watchdog for ONE deployed application (a scheduled tick,
+zero LLM in this slice — the compiled workflow contains no agent or
+judge node, so a tick can neither spend a token nor show a log line to
+a model). One deterministic run mode over a git-versioned state in the
+target workspace (an ops repository, never the application's own):
+
+- Loki through the Grafana datasource proxy: the configured error query
+  and a full leak sweep, paged FORWARD over a frozen window with an
+  ingestion lag, a persisted cursor and an explicit "partial coverage"
+  flag whenever the window was truncated or a query failed.
+- Prometheus probes through the same proxy, each result typed
+  healthy | breached | no_data | error — an absent metric is never read
+  as a healthy one.
+- The application's own health URLs.
+- Sentry's issues for one project and environment, through the org-scoped
+  API: issues first processed since the cursor (NEW), regressed or
+  escalating ones dated by their own activity (posted whether tracked or
+  not), the alerted ones read back by id (sightings, resolution). A
+  silent bootstrap per lane identity; issue text is scrubbed like a log
+  line and never persisted; no event body is fetched.
+- A redaction scan that is the ONLY reader of the raw lines: secrets,
+  JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
+  (Luhn), emails and phone numbers are replaced before anything is
+  derived; error lines are fingerprinted into templates; raw values
+  never reach a node output, an artifact, a checkpoint or an error.
+- An incident lifecycle that runs EVERY tick: new / escalated /
+  reminder / not-observed, source-health staleness, a per-tick cap
+  with an explicit overflow, and a dead lane that never counts as an
+  absence of observation.
+- Deterministic delivery to Mattermost incoming webhooks with
+  per-sink severity thresholds and required/optional sinks; the state
+  advances only after delivery (at-least-once, never a silent loss).
+
+Universal by design: no host, namespace, metric name, language or
+channel is baked in — everything comes from the workspace config
+(prod-watch.json) plus the `webhooks`, `grafana_token` and
+`sentry_token` secrets.
+Requires python3 (stdlib only) on the execution host.
+
+- **Use when**:
+  Use to watch ONE production (or production-like) deployment of an
+  application from its logs (Loki), metrics (Prometheus), Sentry issues
+  and health endpoints, with deterministic alerting to chat and a git-backed
+  incident state — the "is prod healthy, and what just changed" tick.
+  Requires the target workspace (an ops repo) to carry a prod-watch.json
+  (see skills/argus-config.md) and a Grafana service-account token. Not a
+  vulnerability watch (use vuln-watch), not an editorial digest (use
+  feed-watch), not the instrumentation of the application itself (use
+  instrument); it never edits code.
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/prod-watch/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->
 
@@ -1830,4 +1939,4 @@ agent reviewer:
   fall-through emits a `model_fallback` event and stamps
   `_fallback_used` / `_served_by` on the node output, so a deterministic
   gate can fail closed on a degraded input. See
-  [docs/backends.md](../../docs/backends.md) §Cross-backend fallback routes.
+  [docs/backends.md](../../../docs/backends.md) §Cross-backend fallback routes.

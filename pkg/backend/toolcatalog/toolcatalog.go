@@ -33,10 +33,13 @@ const ClawBackend = "claw"
 // registry and hard-fails on one it does not know. Every CLI backend runs its
 // own native toolset:
 //
-//   - claude_code ignores the lowercase list entirely under the always-on
-//     `--permission-mode bypassPermissions` (the real hard-restrict flag,
-//     `--tools`, is deliberately unused to preserve adaptivity);
-//   - codex cannot narrow its built-in shell at all;
+//   - claude_code turns the list into `--disallowedTools` over its closed
+//     native roster, so it bounds what EXISTS there — but it cannot resolve a
+//     bare name against a registry, and a name outside that roster is simply
+//     not removed (ReceivesToolList is the predicate for that other
+//     question);
+//   - codex maps the list onto a sandbox mode and cannot narrow its built-in
+//     shell by name;
 //   - pi, kimi and grok are driven through the CLI-agent seam, which never
 //     passes the list to the agent.
 //

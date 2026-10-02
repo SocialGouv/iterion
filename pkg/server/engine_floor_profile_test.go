@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func pushProfileBundle(requires string) string {
@@ -28,9 +29,9 @@ func pushProfileBundle(requires string) string {
 // a floor the fleet can hold, or forced, the push proceeds — forced with a
 // warning that names the gap.
 func TestAdminBotsPush_RefusesAProfileTwoBundleWithoutAFloor(t *testing.T) {
-	pinServerBuild(t, "v3.141.0+deadbeef")
+	pinServerBuild(t, "v"+parser.ProfileSince[2]+"+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.141.0+abc123"}}
+	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ProfileSince[2] + "+abc123"}}
 
 	w := adminBotsPutQuery(s, admin, "needy", "", pushProfileBundle(""))
 	if w.Code != http.StatusConflict {
@@ -40,7 +41,7 @@ func TestAdminBotsPush_RefusesAProfileTwoBundleWithoutAFloor(t *testing.T) {
 		t.Fatalf("refusal does not name the child and the remedy: %s", w.Body.String())
 	}
 
-	w = adminBotsPutQuery(s, admin, "needy", "", pushProfileBundle(">= 3.141.0"))
+	w = adminBotsPutQuery(s, admin, "needy", "", pushProfileBundle(">= "+parser.ProfileSince[2]))
 	if w.Code/100 != 2 {
 		t.Fatalf("push with a floor = %d %s", w.Code, w.Body.String())
 	}

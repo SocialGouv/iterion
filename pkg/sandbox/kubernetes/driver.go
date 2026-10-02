@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -1222,8 +1223,39 @@ func (r *Run) CaptureWorkspaceHead(ctx context.Context) (string, error) {
 //     host clone's own config (host credential-store path) must survive;
 //   - .git/iterion-credentials on the host is maintained LIVE by the
 //     runner's rotation refresher — the pod copy may be staler and must
-//     never overwrite it.
-var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials"}
+//     never overwrite it;
+//   - .git/hooks are programs git runs on the host clone — at the runner's
+//     commit and push — and what the pod wrote there is the sandboxed run's
+//     code: it stays in the pod.
+//
+// The HOST extract applies them too (exportOnce). The in-pod flags only save
+// bandwidth: the archiver runs in the sandbox, on an image the workflow
+// chooses, so a list enforced there alone is a list the exported side asks
+// the pod to respect. What the host must not receive, the host drops.
+var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials", "./.git/hooks"}
+
+// tarExcludeArgs renders exportExcludes as tar flags.
+func tarExcludeArgs() []string {
+	args := make([]string, 0, len(exportExcludes))
+	for _, ex := range exportExcludes {
+		args = append(args, "--exclude="+ex)
+	}
+	return args
+}
+
+// exportExcluded reports whether a workspace-relative path (slash-separated,
+// with or without the archive's "./" prefix) is one the export never carries
+// from the pod to the host — the member itself or anything under it.
+func exportExcluded(rel string) bool {
+	rel = strings.TrimPrefix(rel, "./")
+	for _, ex := range exportExcludes {
+		ex = strings.TrimPrefix(ex, "./")
+		if rel == ex || strings.HasPrefix(rel, ex+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // clearHostLooseRefs deletes the host clone's loose ref files so the
 // pod's ref state arrives authoritative through the export extract.
@@ -1270,46 +1302,224 @@ func clearHostLooseRefs(gitDir string) error {
 // deletions are fully represented via the exported `.git`; only an
 // uncommitted working-tree deletion is left behind, as an untracked
 // leftover.
+//
+// A writer racing the archive (a git process still finishing in the pod)
+// makes tar warn — a file changed, or was listed then removed — and exit 1
+// although the archive is complete. That one failure is retried with a
+// growing pause (ITERION_SANDBOX_EXPORT_ATTEMPTS, _RETRY_PAUSE); a tree
+// that keeps changing, and every other failure, stays an error. After a
+// retry, the files under .git that only a raced archive wrote — a lock, a
+// MERGE_HEAD caught mid-operation — are removed, since host-side git would
+// otherwise read them as an operation still in progress.
 func (r *Run) ExportWorkspace(ctx context.Context) error {
 	if r.info.WorkspacePath == "" {
 		return nil // workspace-less run — nothing was populated
 	}
 	hostDst := resolveCloneRoot(ctx, r.info.WorkspacePath)
 	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
-	if err := clearHostLooseRefs(filepath.Join(hostDst, ".git")); err != nil {
-		return fmt.Errorf("clear host loose refs before export extract: %w", err)
+	attempts, pause := exportRetrySettings(r.driver.logger)
+	hostGit := filepath.Join(hostDst, ".git")
+	before, err := gitDirFiles(hostGit)
+	if err != nil {
+		return fmt.Errorf("list host .git before export: %w", err)
 	}
+	var last error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		// Cleared before EVERY attempt: a pod-side gc between two attempts
+		// may pack a ref the previous extract wrote loose, and a stale loose
+		// file would shadow the packed value this attempt brings.
+		if err := clearHostLooseRefs(hostGit); err != nil {
+			return fmt.Errorf("clear host loose refs before export extract: %w", err)
+		}
+		retryable, extracted, err := r.exportOnce(ctx, hostDst)
+		if err == nil {
+			if attempt > 1 {
+				r.driver.logger.Warn("sandbox: workspace export succeeded on attempt %d/%d, after tar saw the tree change mid-archive", attempt, attempts)
+				if err := r.dropRacedGitLeftovers(hostGit, before, extracted); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if !retryable {
+			return err
+		}
+		last = err
+		r.driver.logger.Warn("sandbox: workspace export attempt %d/%d: tar saw the tree change mid-archive, retrying", attempt, attempts)
+		if attempt < attempts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("workspace export retry abandoned (%v): %w", ctx.Err(), last)
+			case <-time.After(pause):
+			}
+			pause *= 2
+		}
+	}
+	return fmt.Errorf("the pod workspace kept changing under the export after %d attempts: %w", attempts, last)
+}
 
+// Export retry defaults: five archives, the pause doubling from one second —
+// about fifteen seconds for a racing writer to finish (a detached `git gc`
+// included) inside the caller's export deadline.
+const (
+	defaultExportAttempts   = 5
+	defaultExportRetryPause = time.Second
+)
+
+// exportRetrySettings reads the retry bounds, overridable by
+// ITERION_SANDBOX_EXPORT_ATTEMPTS (an integer >= 1) and
+// ITERION_SANDBOX_EXPORT_RETRY_PAUSE (a positive Go duration, the first
+// pause; each next one doubles). An unusable value is reported and the default
+// kept — the export is not the place to fail on a knob.
+func exportRetrySettings(logger *iterlog.Logger) (attempts int, pause time.Duration) {
+	attempts, pause = defaultExportAttempts, defaultExportRetryPause
+	if raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_EXPORT_ATTEMPTS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 1 {
+			attempts = n
+		} else {
+			logger.Warn("sandbox: ITERION_SANDBOX_EXPORT_ATTEMPTS=%q is not an integer >= 1 — keeping %d", raw, attempts)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_EXPORT_RETRY_PAUSE")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			pause = d
+		} else {
+			logger.Warn("sandbox: ITERION_SANDBOX_EXPORT_RETRY_PAUSE=%q is not a positive duration — keeping %s", raw, pause)
+		}
+	}
+	return attempts, pause
+}
+
+// tarRaceWarnings are GNU tar's warnings for a tree that changed while it was
+// archived: a file rewritten, or listed and then removed. The archive is
+// complete; tar exits 1 ("some files differ").
+var tarRaceWarnings = []string{"file changed as we read it", "File removed before we read it"}
+
+// kubectlRemoteExit1 is the line `kubectl exec` itself adds to stderr when the
+// remote command exits 1.
+const kubectlRemoteExit1 = "command terminated with exit code 1"
+
+// onlyTarRaceWarnings reports whether err is an exit status 1 whose stderr
+// carries tar's race warnings and nothing else but kubectl's own exit-code
+// trailer — the one failure a retry can cure. kubectl reports its own failures
+// with exit 1 too, on other lines, so the stderr content tells them apart.
+func onlyTarRaceWarnings(err error, stderr string) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		return false
+	}
+	seen := false
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "" || line == kubectlRemoteExit1:
+		case strings.HasPrefix(line, "tar: ") && hasAnySuffix(line, tarRaceWarnings):
+			seen = true
+		default:
+			return false
+		}
+	}
+	return seen
+}
+
+func hasAnySuffix(s string, suffixes []string) bool {
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(s, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitDirFiles lists the regular files under gitDir, relative to it. The export
+// only ever removes what it can prove it wrote, so this is the host's state
+// BEFORE any archive landed.
+func gitDirFiles(gitDir string) (map[string]bool, error) {
+	files := map[string]bool{}
+	err := filepath.WalkDir(gitDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path == gitDir {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if d.Type().IsRegular() {
+			rel, relErr := filepath.Rel(gitDir, path)
+			if relErr != nil {
+				return relErr
+			}
+			files[filepath.ToSlash(rel)] = true
+		}
+		return nil
+	})
+	return files, err
+}
+
+// dropRacedGitLeftovers removes, after a retried export, every regular file
+// under hostGit that was not there before the export and that the successful
+// archive did not bring: only a raced archive can have written it. Candidates
+// come from walking hostGit itself — never from names the pod sent — and a
+// file the host already had is never touched.
+func (r *Run) dropRacedGitLeftovers(hostGit string, before, extracted map[string]bool) error {
+	now, err := gitDirFiles(hostGit)
+	if err != nil {
+		return fmt.Errorf("list host .git after export: %w", err)
+	}
+	for rel := range now {
+		// An excluded member is absent from `extracted` BECAUSE the host
+		// dropped it, not because an archive raced: never a candidate.
+		if before[rel] || extracted[".git/"+rel] || exportExcluded(".git/"+rel) {
+			continue
+		}
+		path := filepath.Join(hostGit, filepath.FromSlash(rel))
+		if !strings.HasPrefix(path, hostGit+string(os.PathSeparator)) {
+			return fmt.Errorf("refusing to remove %q: outside %s", path, hostGit)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove raced leftover %s: %w", path, err)
+		}
+		r.driver.logger.Warn("sandbox: removed %s — written by a raced archive, absent from the one that landed", path)
+	}
+	return nil
+}
+
+// exportOnce streams one archive of the pod workspace into hostDst. retryable
+// reports a failure onlyTarRaceWarnings accepts as transient; extracted names
+// the members the host extract wrote, relative to hostDst.
+func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, extracted map[string]bool, err error) {
 	kubectlArgs := []string{"--namespace", r.namespace,
 		"exec", r.podName, "--container", "workload", "--",
 		"tar", "-C", r.prepared.workspace}
-	for _, ex := range exportExcludes {
-		kubectlArgs = append(kubectlArgs, "--exclude="+ex)
-	}
+	kubectlArgs = append(kubectlArgs, tarExcludeArgs()...)
 	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
 	podTar := kubectlCmdContext(ctx, kubectlArgs...)
-	hostTar := exec.CommandContext(ctx, "tar", "-C", hostDst, "-xf", "-")
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("pod tar stdout pipe: %w", err)
+		return false, nil, fmt.Errorf("pod tar stdout pipe: %w", err)
 	}
-	hostTar.Stdin = pipe
-	var podErr, hostErr bytes.Buffer
+	var podErr bytes.Buffer
 	podTar.Stderr = &podErr
-	hostTar.Stderr = &hostErr
 
-	if err := hostTar.Start(); err != nil {
-		return fmt.Errorf("start host tar extract: %w", err)
+	if err := podTar.Start(); err != nil {
+		return false, nil, fmt.Errorf("start the pod's archiver: %w", err)
 	}
-	if err := podTar.Run(); err != nil {
-		_ = hostTar.Wait()
-		return fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, strings.TrimSpace(podErr.String()))
+	// The host reads the stream itself (extractExport): the exclusions and
+	// the path safety are decided here, not asked of the archiver running in
+	// the sandbox.
+	extracted, xerr := r.extractExport(pipe, hostDst)
+	if xerr != nil {
+		// Drain, so the pod's archiver sees its reader go away rather than
+		// block on a full pipe, then report the extraction error.
+		_, _ = io.Copy(io.Discard, pipe)
+		_ = podTar.Wait()
+		return false, nil, fmt.Errorf("extract the export into %s: %w", hostDst, xerr)
 	}
-	if err := hostTar.Wait(); err != nil {
-		return fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
+	if err := podTar.Wait(); err != nil {
+		stderr := strings.TrimSpace(podErr.String())
+		return onlyTarRaceWarnings(err, stderr), nil, fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
 	}
-	return nil
+	return false, extracted, nil
 }
 
 // fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on

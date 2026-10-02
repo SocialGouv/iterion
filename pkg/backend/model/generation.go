@@ -9,8 +9,10 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/claw-code-go/pkg/apikit"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,22 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
 
+	// Always-thinking models reject tool_choice:any. Keep the grounding
+	// contract in the executor: an announced, malformed or denied call is
+	// not an executed tool. Chain the observer rather than replacing it.
+	requireExecutedTool := opts.ForceInitialToolUse && len(opts.Tools) > 0 && requiresAdaptiveThinking(opts.Model)
+	executedTool := false
+	if requireExecutedTool {
+		observer := opts.OnToolStarted
+		opts.OnToolStarted = func(info ToolCallInfo) {
+			executedTool = true
+			if observer != nil {
+				observer(info)
+			}
+		}
+		messages = append(messages, api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Before giving your final answer, execute at least one of the available tools to ground your answer in observed evidence."}}})
+	}
+
 	var steps []StepResult
 	var totalUsage Usage
 	var lastText string
@@ -86,6 +104,12 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		// killing the run.
 		agg, err := callWithContextRetry(ctx, client, opts, &messages, forcedInitialToolChoice(opts, toolCallsSoFar))
 		if err != nil {
+			// A call the provider served before failing was billed: its
+			// partial usage, reported or not, joins the total the failure
+			// path meters.
+			if agg != nil {
+				accumulateUsage(&totalUsage, agg.usage)
+			}
 			return result(), err
 		}
 
@@ -140,6 +164,9 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = drainOperatorInbox(ctx, messages, opts)
 	}
 
+	if requireExecutedTool && !executedTool {
+		return result(), fmt.Errorf("model %s returned before executing a required initial tool", opts.Model)
+	}
 	return result(), nil
 }
 
@@ -151,10 +178,31 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 // the tools and answer from priors, producing ungrounded verdicts. No-op
 // without tools.
 func forcedInitialToolChoice(opts GenerationOptions, toolCallsSoFar int) *api.ToolChoice {
-	if opts.ForceInitialToolUse && len(opts.Tools) > 0 && toolCallsSoFar == 0 {
+	if opts.ForceInitialToolUse && len(opts.Tools) > 0 && toolCallsSoFar == 0 && !requiresAdaptiveThinking(opts.Model) {
 		return &api.ToolChoice{Type: "any"}
 	}
 	return nil
+}
+
+// requiresAdaptiveThinking reads the vendor's adaptive-thinking profile on
+// the route's capability id. A vendor route behind an OpenAI-compatible host
+// may carry the vendor's own namespace in its id
+// ("openai/anthropic/claude-opus-5-5"), so the id's last segment is asked
+// too: a false positive only trades a forced tool_choice for the
+// nudge-and-check, which stays fail-closed. A gateway route never borrows a
+// vendor's profile.
+func requiresAdaptiveThinking(model string) bool {
+	id := modelroute.Parse(model).CapabilityID()
+	if id == "" {
+		return false
+	}
+	if apikit.AnthropicProfile(id).RequiresAdaptiveThinking {
+		return true
+	}
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		return apikit.AnthropicProfile(id[i+1:]).RequiresAdaptiveThinking
+	}
+	return false
 }
 
 // buildStepResult shapes one aggregated model response into the StepResult
@@ -433,6 +481,13 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	// Copy messages to avoid mutating caller's slice.
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
+	if requiresAdaptiveThinking(opts.Model) {
+		// Native strict JSON cannot represent the DSL's arbitrary JSON fields.
+		// Keep the existing tool schema and fail-closed parser below, using
+		// auto plus an explicit instruction where forced choice is rejected.
+		toolChoice = nil
+		messages = append(messages, api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: fmt.Sprintf("Return the requested structured result by calling the %q tool with arguments matching its schema. Do not replace the tool call with prose or a JSON text block.", schemaName)}}})
+	}
 
 	// Build a request-only opts overlay: zero out Tools so buildRequest only
 	// includes the synthetic tool via extraTools.

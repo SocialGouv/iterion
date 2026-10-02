@@ -32,8 +32,12 @@ syntax check must hold text to the interpreter that will read it (F13).
    temporary directories of the run's own.
 2. **Every short-circuit the engine needs is a named option**
    (`runtime.WithSimulation(Simulation{AnswerHumans, EventsArrive,
-   AnswersArrive})`), read at one site each, and a sweep test proves no
-   production package passes it. There is no `if dryrun` in the engine.
+   AnswersArrive, BranchesRunToTheirEnd, Invented})`), read at one site
+   each, and a sweep test proves no production package passes it. There is
+   no `if dryrun` in the engine. (Amended 2026-09-19: `Invented` is the
+   dry run's knowledge of the values it made up — the engine hands it every
+   expression failure, and the dry run answers whether the failure rests on
+   one of them.)
 3. **Two passes, bias true then false**, so every `when` is met on both
    sides; the report names the nodes and edges no pass reached, the nodes
    whose output was only a shape, and each pass's end — a death, or a
@@ -49,7 +53,14 @@ syntax check must hold text to the interpreter that will read it (F13).
    have met; `clean` is the report's verdict; the exit code is the
    compiler's — or, when a dry run was asked for and could not run, the
    dry run's own inability, said in `exec_error` — and `--strict` makes
-   `clean` the exit code as well, the switch a CI gate flips on purpose.
+   `failing` the exit code as well, the switch a CI gate flips on purpose.
+   (Amended 2026-09-19, #1318/#1456/#1325: a `json` field has no defined
+   shape and the dry run guesses none — the object shape, a one-element list
+   only where an iteration reads it. An expression that fails on a value the
+   dry run invented is `inconclusive`, reported under its own heading, read
+   by `clean` but not by `failing`; a failure on the program's own value
+   stays a death. Three guessed shapes in a row had each contradicted another
+   consumer of the same field.)
 6. **Alongside, the compiler names the two deaths it can see** — C145, a
    bounded loop with no exit at its cap; C146, a division into an `int`
    field outside `floor()`/`round()` — and the runtime names the loop death

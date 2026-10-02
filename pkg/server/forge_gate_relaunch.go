@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,13 +105,15 @@ func gateRelaunchIdemKey(d deadGateRun, botID string) string {
 	return knowledge.ChecksumHex([]byte(fmt.Sprintf("gaterelaunch|%s|%s|%d|%s|%s", d.grant.TeamID, d.repo, d.number, d.pr.HeadSHA, botID)))
 }
 
-// gateRelaunchRetryPending reports whether the head's relaunch claim is a
-// launch that FAILED TO START and still has the lane's attention — a retry
-// due, or a spent budget whose escalation must be (re)filed. It is the one
-// case the reconciler re-enters the relaunch tail for from behind this run's
-// own synthetic marker. One store read; a settled claim, a fresh key, or a
-// failure still inside its backoff all answer no, which keeps the own-marker
-// offer the cheap exit it has to be at one offer per minute per dead run.
+// gateRelaunchRetryPending reports whether the head's relaunch claim still
+// has the lane's attention: a launch that FAILED TO START — a retry due, or a
+// spent budget whose escalation must be (re)filed — or one that never
+// recorded its run past acceptedLaunchWindow, a launch that died on the way.
+// It is the one case the reconciler re-enters the relaunch tail for from
+// behind this run's own synthetic marker. One store read; a settled claim, a
+// fresh key, a launch still in flight, or a failure still inside its backoff
+// all answer no, which keeps the own-marker offer the cheap exit it has to be
+// at one offer per minute per dead run.
 func (s *Server) gateRelaunchRetryPending(ctx context.Context, d deadGateRun) bool {
 	if d.run == nil || s == nil || s.webhookDeliveries == nil {
 		return false
@@ -119,8 +122,21 @@ func (s *Server) gateRelaunchRetryPending(ctx context.Context, d deadGateRun) bo
 	if botID == "" {
 		return false
 	}
-	_, _, verdict, _ := s.unattendedLaunchVerdict(ctx, gateRelaunchIdemKey(d, botID))
+	prior, found, verdict, _ := s.unattendedLaunchVerdict(ctx, gateRelaunchIdemKey(d, botID))
+	if found && s.relaunchClaimStale(prior) {
+		return true
+	}
 	return verdict == launchRetryDue || verdict == launchRetryExhausted
+}
+
+// relaunchClaimStale reports a claim row that still names no run past
+// acceptedLaunchWindow: a launch that died on the way — or, rarer, one whose
+// run started but whose row was never told.
+func (s *Server) relaunchClaimStale(prior webhooks.Delivery) bool {
+	if prior.Status != webhooks.StatusAccepted || prior.RunID != "" {
+		return false
+	}
+	return s.gateNow().Sub(prior.ClaimStart()) >= acceptedLaunchWindow
 }
 
 // relaunchDeadGateRun relaunches the bot that owed the (now synthetically
@@ -183,7 +199,13 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	// The failure budget, BEFORE any forge round trip: the sweep offers this
 	// dead run every minute, and the hold-label read below is a forge call
 	// against the same App quota the reconciler lives on.
-	prior, _, verdict, wait := s.unattendedLaunchVerdict(ctx, idem)
+	prior, found, verdict, wait := s.unattendedLaunchVerdict(ctx, idem)
+	if found && s.relaunchClaimStale(prior) {
+		s.escalateDeadGateToBoard(ctx, d, "", fmt.Sprintf(
+			"the automatic relaunch claimed this head %s ago and never recorded a run — its launch died on the way, or the run it started went unrecorded",
+			s.gateNow().Sub(prior.ClaimStart()).Round(time.Minute)))
+		return
+	}
 	switch verdict {
 	case launchRetryWait:
 		if s.logger != nil {
@@ -236,9 +258,10 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	// PR facts, the operator's pinned gate_context/arm_automerge, the bot's
 	// own vars. Only the per-run publish grant is dropped: the launch tail
 	// mints a fresh one (and would overwrite a stale copy anyway).
+	grantVars := forgePublishVars()
 	vars := make(map[string]string, len(d.run.Inputs)+1)
 	for k, v := range d.run.Inputs {
-		if k == forgePublishVarToken || k == forgePublishVarURL || k == forgePublishVarPRState {
+		if slices.Contains(grantVars[:], k) {
 			continue
 		}
 		if sv, ok := v.(string); ok {
@@ -286,13 +309,33 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		// provider quota, a bot defect) than any single death.
 		//
 		// But "duplicate" alone does not mean the replacement died: the
-		// idempotency claim is a read-then-insert, and the gate sweep runs
-		// unelected on every replica, so two passes landing on one dead run
-		// give one StatusLaunched and one StatusDuplicate — for a relaunch
-		// that just SUCCEEDED. Escalating on that files a card telling a human
+		// idempotency claim is a read-then-insert, and two offers can still
+		// land on one dead run (the event path beside the elected sweep, or
+		// two sweeps overlapping across a lease hand-over), giving one
+		// StatusLaunched and one StatusDuplicate — for a relaunch that just
+		// SUCCEEDED. Escalating on that files a card telling a human
 		// the automation is out of moves while the replacement is alive and
 		// reviewing. The card is worth filing only once the named run has
 		// itself stopped without answering.
+		//
+		// A claim row that names no run yet is that same race one step
+		// earlier: the winning offer is still launching — its row learns the
+		// run only once the launch returns. It is a death only once it is old
+		// enough that the launch died on the way.
+		if res.RunID == "" && res.claimedAt.IsZero() {
+			// Not a claim in flight: a failed start read back by a racing loser. The budget decides.
+			if p, _, v, _ := s.unattendedLaunchVerdict(ctx, idem); v == launchRetryExhausted {
+				s.escalateExhaustedRelaunch(ctx, d, botID, p.Attempts, p.Error)
+			}
+			return
+		}
+		if res.RunID == "" && !res.claimedAt.IsZero() && s.gateNow().Sub(res.claimedAt) < acceptedLaunchWindow {
+			if s.logger != nil {
+				s.logger.Debug("gate relaunch: %s on %s#%d@%s has a relaunch launching (claimed %s ago) — not escalating",
+					d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA), s.gateNow().Sub(res.claimedAt).Round(time.Second))
+			}
+			return
+		}
 		if alive, why := s.relaunchStillRunning(launchCtx, res.RunID); alive {
 			if s.logger != nil {
 				s.logger.Debug("gate relaunch: %s on %s#%d@%s already has a relaunch in flight (run %s, %s) — not escalating",
@@ -309,6 +352,15 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		} else if s.logger != nil {
 			s.logger.Debug("gate relaunch: %s on %s#%d@%s is already escalated — nothing new to file",
 				d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA))
+		}
+	case webhooks.StatusFiltered:
+		// A refusal, not a failure to start: retrying cannot change it (the
+		// tail's refusals are pure functions of the config and the target),
+		// and this sweep re-offers the same run every minute for its whole
+		// lookback — so escalating or retrying would repeat a wrong
+		// diagnosis on a schedule. The refusal recorded its own terminal row.
+		if s.logger != nil {
+			s.logger.Info("gate relaunch: %s on %s#%d refused: %s", d.gateCtx, d.repo, d.number, strings.TrimSpace(res.Error))
 		}
 	default:
 		why := strings.TrimSpace(res.Error)
@@ -493,9 +545,10 @@ func orNoError(err string) string {
 // relaunchStillRunning reports whether the run an idempotency claim named is
 // still working, and a short phrase saying how it was decided.
 //
-// The claim is a read-then-insert, and the gate sweep runs unelected on every
-// replica, so a StatusDuplicate does NOT by itself mean the replacement died:
-// two passes on one dead run give one launch and one duplicate for the SAME,
+// The claim is a read-then-insert, and two offers can still land on one dead
+// run — the event path beside the elected sweep, or two sweeps overlapping
+// across a lease hand-over — so a StatusDuplicate does NOT by itself mean the
+// replacement died: two offers give one launch and one duplicate for the SAME,
 // live, replacement. Escalation is a message to a human ("automation is out of
 // moves"), so it must be false only in the direction that stays quiet: an
 // unknown run — never launched, already pruned, unreadable store — is reported
@@ -513,6 +566,16 @@ func (s *Server) relaunchStillRunning(ctx context.Context, runID string) (bool, 
 	case store.RunStatusQueued, store.RunStatusRunning,
 		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
 		return true, string(run.Status)
+	}
+	if runAwaitsArmedRetry(run) {
+		return true, "parked on an armed retry"
+	}
+	// A run whose verdict waits on its grant to be posted is not dead: the
+	// reconciler posts the verdict once the wait is over.
+	if tok := runInputString(run, forgePublishVarToken); tok != "" && s.forgePublishTokens != nil {
+		if g, ok := s.forgePublishTokens.lookup(tok); ok && g.Deferred != nil {
+			return true, "its verdict waits to be posted"
+		}
 	}
 	return false, string(run.Status)
 }

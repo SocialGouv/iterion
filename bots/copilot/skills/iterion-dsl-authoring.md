@@ -94,18 +94,21 @@ lines, plus phantom `C016 unreachable` on unrelated nodes. Worse, if it
 somehow parsed, that line would never reach the model. Use plain text or
 a rule of dashes for headings inside prompts.
 
-### 2. Lists are INLINE arrays, never multi-line YAML
+### 2. Lists: inline arrays or dash lines — both spellings are one list
 
 ```
-tools: ["read_file", "grep"]                 # correct
-allow: ["Read(**)", "Bash(git log:*)"]       # correct
+tools: ["read_file", "grep"]                 # inline form
+allow: ["Read(**)", "Bash(git log:*)"]       # inline form
 
-tools:                                       # WRONG — E002 + E012 cascade
+tools:                                       # dash form — the same list
   - read_file
+  - grep
 ```
 
-The lexer is indentation-sensitive; a list does not continue onto the
-next line.
+Both forms are accepted in every profile and yield the same list. What
+breaks is a continuation line that is NOT indented under the property, or
+dash items pasted under a scalar value — keep the whole list in one
+spelling and indented under its key.
 
 ### 3. `tools:` behaves differently per backend
 
@@ -196,7 +199,7 @@ not oscillate. The shipped pattern is: one capable agent + a
 deterministic verify gate (a real exit code, never an LLM judgment) + a
 machine-checkable termination flag + a single bounded
 `continuation_loop(N)`. Judge the working tree (`git diff HEAD`), and
-make untracked files visible (`git add -N -- ':/' ':(exclude,top).claude'`) before diffing, or a
+make untracked files visible (`git add -N -- ':/' $ITERION_TREE_NOISE`) before diffing, or a
 change that only *adds* files is invisible.
 
 ## Diagnostic families

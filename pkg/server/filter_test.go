@@ -34,6 +34,7 @@ func TestIsWorkflowFile(t *testing.T) {
 	}{
 		{"foo.yaml", false},
 		{"foo.bot", true},
+		{"RUN.BOT", true}, // the suffix is case-folded, one rule with Detect (#1762)
 		{"foo.bot.tmp", false},
 		{"foo", false},
 		{"foo.go", false},

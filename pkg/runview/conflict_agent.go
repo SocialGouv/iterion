@@ -122,7 +122,7 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	}
 
 	opts := model.GenerationOptions{
-		Model:          providerlessModel(spec),
+		Model:          spec,
 		System:         resolverSystemPrompt,
 		Messages:       []api.Message{userMessage(prompt)},
 		ExplicitSchema: json.RawMessage(resolverSchema),
@@ -199,17 +199,6 @@ func resolveResolverModel(registry *model.Registry, override string) (string, er
 		return "", ErrAgentResolverNotWired
 	}
 	return spec, nil
-}
-
-// providerlessModel strips the leading "<provider>/" off a claw model
-// spec when present. Some claw provider factories expect just the
-// model ID at GenerationOptions.Model, while Registry.Resolve
-// expects the full spec — so we keep both around.
-func providerlessModel(spec string) string {
-	if i := strings.Index(spec, "/"); i >= 0 && i+1 < len(spec) {
-		return spec[i+1:]
-	}
-	return spec
 }
 
 // buildResolverPrompt assembles the user-message body for the

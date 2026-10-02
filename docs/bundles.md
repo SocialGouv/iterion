@@ -270,6 +270,66 @@ for collision, devbox and pause/resume rules.
    skill wins over a plugin skill and a
    [skill-library](skills-library.md) skill (precedence: bundle >
    plugin > library > hand-authored — ADR-059).
+
+   The same skills are ALSO written, verbatim, to
+   `<workDir>/.claude/iterion-skills/` — a copy the engine owns. That
+   directory is removed and refilled from the bundle on every mirror
+   pass (including for a run with no bundle), so it carries the
+   bundle's bytes under only the names the bundle ships, and no
+   collision policy applies to it. `${BUNDLE_SKILLS_DIR}` expands to
+   it, resolving to the in-container pathname when sandboxed.
+
+   Which one to read: an AGENT discovers skills under
+   `.claude/skills/`, where the workspace-wins rule is what lets an
+   operator customise one. A **tool node that parses a
+   machine-readable `iterion:` data block out of a skill** reads
+   `${BUNDLE_SKILLS_DIR}` instead — the workspace is a checkout of the
+   repository being worked on, so a file found under `.claude/skills/`
+   may be the bundle's or the repository's and nothing read back can
+   tell the two apart. A name the bundle does not ship has no file in
+   the owned copy, which is what makes "this name is not covered"
+   observable to the reader.
+
+   `${BUNDLE_SKILLS_DIR}` is **absolute or nothing**: a reader joins a
+   skill name onto it, and an empty or relative value would resolve
+   against the node's own working directory — the checkout. A relative
+   workspace is resolved against the process directory rather than
+   refused; one the process cannot resolve at all fails the run. A bot
+   declaring the var should constrain it, e.g. `[matching: "^/.*$"]`:
+   the launch gate reads the EXPANDED value, so it refuses `""` and
+   `some/dir` while admitting the `"${BUNDLE_SKILLS_DIR}"` a studio form
+   re-sends unmodified. The default `"${BUNDLE_SKILLS_DIR}"` itself names
+   a directory the RUN answers, so no compile-time reading may judge it:
+   it is [C181](references/diagnostics.md) — the pattern is checked on
+   no path for that default, and the warning says so. Before #1610 the
+   compile-time check (C161) compared the literal default text and
+   refused it under a bare `^/`; the `|[$][{]BUNDLE_SKILLS_DIR[}]`
+   branch the catalogue's bots still carry is that workaround, and is no
+   longer needed.
+
+   The reset removes the directory recursively, and `.claude` is a path
+   the checkout supplies: the engine resolves it and refuses the run
+   when it lands outside the workspace, rather than removing a
+   directory the workspace only points at. A workspace REACHED through
+   a symlink is untouched by that rule — both sides resolve to the same
+   tree.
+
+   A **child** running in its parent's workspace borrows the directory
+   the way it borrows `.claude/skills`, `commands`, `agents` and
+   `settings.json`: one list names all five. The child's scope saves the
+   parent's copy before the child's mirror replaces it and restores it
+   on every exit — success, failure, or an adoption that aborted — so
+   the parent reads its own bundle's names and bytes once the child
+   returns. Children sharing a workspace take that scope one at a time.
+   In a **shared copy-based sandbox** (a child adopting its parent's
+   live pod) the same list drives the reset in the pod, before the
+   child's copy is written through: the write-through seam adds files
+   and removes none, so a name only the parent's bundle ships would
+   otherwise answer for the child. Both halves fail closed — a file of
+   the owned copy that does not land aborts the adoption, because a
+   reader finding no entry for a name reports it as not covered. A file
+   outside that copy keeps the seam's ordinary behaviour: a skill the
+   agent cannot read is a degraded run, not a dead one.
 2. **Prompts** in `prompts/*.md` are merged into the AST `prompts:`
    table **before** static validation runs, so node-level
    `system:`/`user:` references against bundle filenames type-check.
@@ -326,6 +386,19 @@ that would defeat determinism:
   executing a materialized bundle tool.
 - `*.botz` — prior builds (avoids accidental nested packaging).
 - `.DS_Store`, `*.swp`, `*~` — OS/editor scratch.
+- `*.bot.yaml` files — an author document, the YAML twin a `.bot` can be
+  written as ([dsl.md](dsl.md)): a draft of the bot, never a member of the
+  bundle. It is left out of the archive and of the content hash on both sides
+  (pack and extraction), and is never extracted from an archive that carries
+  one (packed before this rule, or by hand): a bundle hashes the same with or
+  without its drafts. An archive's directory entries create nothing at
+  extraction either — the extracted tree is its files' alone, the content the
+  hash sees — so two archives that hash alike land the same tree in the
+  content-addressed cache whichever is opened first. A directory named like
+  a draft is a directory. `iterion bundle pack` says how many drafts it left
+  out. A plugin's source tree is not a bundle: `PackTree` carries every file
+  whatever its name, and its hash is that archive's own, not a bundle
+  identity.
 
 Symlinks, devices, sockets, and other non-regular entries are
 **rejected** at pack time with a clear error.
@@ -340,6 +413,18 @@ Re-supply the archive (or rebuild from source with `iterion bundle pack`).
 The bundle was produced by a newer iterion. Either upgrade your iterion
 install or downgrade the bundle (set `schema_version: 1` in
 `manifest.yaml`).
+
+**`runtime/bundle: <workDir>/.claude is a symlink to <target> — the run-start mirror would write through it …`**
+The repository keeps its agent assets elsewhere and links `.claude` to
+them — a legitimate monorepo pattern, but one a run cannot start against:
+the skills mirror would write through the link into the target, a path no
+tree-noise entry names (the dir-only `**/.claude/` rule never matches a
+symlink), so the wip bank would stage the mirrored files as the run's own
+work. The run refuses at mirror time and names the link and its target
+(#1569). Remedy: replace the symlink with a real directory — move
+the shared assets into `.claude/` itself, or copy them there — and commit
+that. The plugin-contribution mirrors skip with a warning on the same
+shape instead of failing; only the run-start bundle mirror refuses.
 
 **`bundle skill "X" shadowed by existing workspace entry`**
 A skill with the same name already exists at `<workDir>/.claude/skills/`.

@@ -1,6 +1,8 @@
 package delegate
 
 import (
+	"strings"
+
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 )
 
@@ -45,4 +47,35 @@ func BoardToolsFor(caps []string) []string {
 		out = append(out, boardToolFQN(t.Name))
 	}
 	return out
+}
+
+// IsIterionMCPTool reports whether a tool FQN is served by one of iterion's
+// OWN MCP transports — the board and runs servers this package registers for a
+// node's `capabilities:` — as opposed to a tool the node's `mcp:` blocks or the
+// harness brought.
+//
+// It is built from the same two server-name constants the FQNs are built from,
+// so it cannot drift into recognising a spelling nothing emits. Its consumer is
+// the workspace-safety classifier: these tools act on the BOARD and on the run
+// store, never on the shared worktree, which is the only thing that classifier
+// asks about. (Moving a card to `eligible` does start a run through the
+// dispatcher — a real effect, and not a write to the workspace this node
+// shares with its parallel siblings.)
+//
+// The runs half holds only while that server serves READS. A tool that
+// launched work would break it — a run started without `worktree: auto`
+// executes in the caller's cwd, which is the worktree the siblings share — so
+// the vocabulary is pinned by a test rather than believed (pkg/runops). The
+// operator-facing `local_run` / `local_resume` DO launch and are deliberately
+// not matched: pkg/operatormcp serves them under the server name `iterion`,
+// never under `iterion_board` or `iterion_runs`.
+//
+// The catalog refuses user/plugin servers in the reserved namespace, and CLI
+// forwarding applies the same check to programmatic Task entries. This name
+// predicate still does not authenticate tools inherited outside that resolved
+// catalog (for example, an explicit strict-MCP opt-out); ambient MCP tools do
+// not enter the effective surface used by the workspace-safety classifier.
+func IsIterionMCPTool(name string) bool {
+	return strings.HasPrefix(name, "mcp__"+boardMCPServerName+"__") ||
+		strings.HasPrefix(name, "mcp__"+runsMCPServerName+"__")
 }

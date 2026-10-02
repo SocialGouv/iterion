@@ -9,8 +9,12 @@ import (
 
 // RequestInfo is passed to the OnRequest hook before a generation call.
 type RequestInfo struct {
-	// Model is the model ID.
+	// Model is the routing spec the request was resolved from ("openai/gpt-5.5").
 	Model string
+
+	// WireModel is the id the request carries when it differs from Model —
+	// the spec minus its routing prefix — and "" for a bare spec.
+	WireModel string
 
 	// MessageCount is the number of messages in the request.
 	MessageCount int
@@ -19,7 +23,7 @@ type RequestInfo struct {
 	ToolCount int
 
 	// ReasoningEffort is the resolved reasoning_effort spec sent on the
-	// request, when set ("low", "medium", "high", "xhigh", "max"). Empty
+	// request, when set ("none", "low", "medium", "high", "xhigh", "max"). Empty
 	// when the node did not request a reasoning level.
 	ReasoningEffort string
 

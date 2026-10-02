@@ -115,8 +115,14 @@ func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorO
 	}
 	if spec == nil || !spec.Mode.IsActive() {
 		report.Mode = "none"
+		// Name the tier that decided there is nothing to validate —
+		// `sandbox: none` in the workflow reads differently from
+		// `--sandbox none` over a workflow that declares auto, and
+		// ResolveSandboxSpecForDoctor also appends the reason when an
+		// auto resolved to no spec at all.
+		report.Source = source
 		report.add("sandbox configured", CheckWarn,
-			"no active sandbox (mode none/inherit) — nothing to validate",
+			"no active sandbox to validate — "+source,
 			"declare sandbox: auto|inline on the workflow, or pass --sandbox auto, to enable container isolation")
 		return report
 	}
@@ -145,7 +151,7 @@ func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorO
 					" validates the spec for another host, so a local driver is not required here")
 		} else {
 			report.add("driver available", CheckFail, driverErr.Error(),
-				"install Docker or Podman, or pass --sandbox-driver=noop to bypass (the run will NOT be isolated)")
+				"install Docker or Podman — a `sandbox: auto` run would otherwise degrade to the host with a sandbox_skipped event, and an explicit `mode: inline` would park with SANDBOX_DRIVER_UNAVAILABLE")
 		}
 	} else {
 		report.add("driver available", CheckPass, "selected driver: "+driverName, "")

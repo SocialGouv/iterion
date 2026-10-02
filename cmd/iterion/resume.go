@@ -17,6 +17,7 @@ var resumeOpts struct {
 	background  bool
 
 	autoMemory      string
+	ambientContext  string
 	loopBudgetGuard string
 	supervisors     string
 	repoDevbox      string
@@ -69,6 +70,7 @@ var resumeCmd = &cobra.Command{
 			Background:  resumeOpts.background,
 
 			AutoMemory:          resumeOpts.autoMemory,
+			AmbientContext:      resumeOpts.ambientContext,
 			LoopBudgetGuard:     resumeOpts.loopBudgetGuard,
 			Supervisors:         resumeOpts.supervisors,
 			RepoDevbox:          resumeOpts.repoDevbox,
@@ -127,6 +129,7 @@ func init() {
 	f.BoolVar(&resumeOpts.background, "background", false, "Internal: managed-runner mode for the studio server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
 	f.StringVar(&resumeOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md) override on resume: on|off. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY — NOT the original launch, which is not persisted, so re-state it to keep a hermetic run hermetic. See docs/memory-and-knowledge.md.")
+	f.StringVar(&resumeOpts.ambientContext, "ambient-context", "", "ambient context override on resume: none|workspace|operator|all. Empty inherits the workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT — NOT the original launch, which is not persisted, so re-state it to keep the launch's choice")
 	f.StringVar(&resumeOpts.repoDevbox, "repo-devbox", "", "install the target repository's devbox.json on resume: on|off. Empty inherits the workflow repo_devbox: DSL then ITERION_REPO_DEVBOX — NOT the original launch, which is not persisted. See docs/dsl.md.")
 	f.StringVar(&resumeOpts.loopBudgetGuard, "loop-budget-guard", "", "loop back-edge affordability guard on resume: on|off. Empty inherits the workflow loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD — NOT the original launch, which is not persisted. See docs/dsl.md.")
 	f.StringVar(&resumeOpts.supervisors, "supervisors", "", "spawn DSL-declared supervisors on resume: on|off (not persisted from launch; empty inherits ITERION_SUPERVISORS). See docs/supervisors.md.")
@@ -136,8 +139,8 @@ func init() {
 	f.StringArrayVar(&resumeOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked.")
 	f.StringArrayVar(&resumeOpts.modelFor, "model", nil, "Override the model on resume (repeatable): \"selector=model\" or a bare \"model\". A resume already INHERITS what the run was launched with (read back off the run document); this layers over it per field, so overriding the effort alone keeps the launched model. Selector = node id, id glob (reviewer_*), or kind (agent|judge).")
 	f.StringVar(&resumeOpts.fallback, "fallback", "", "Re-apply the run-level fallback route on resume: \"<backend>:<model>\". Resume does NOT persist launch rules, and a long run outliving a quota window is exactly the case that resumes — pass the same --fallback used at run or the route stops applying silently.")
-	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code|pi|kimi|grok; codex is legacy). Same selector syntax as --model.")
-	f.StringArrayVar(&resumeOpts.effortFor, "effort-for", nil, "Re-apply a per-node/-group reasoning_effort override on resume (repeatable): \"selector=effort\" or a bare \"effort\" (low|medium|high|xhigh|max|ultracode). Same selector syntax as --model.")
+	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code|pi|kimi|grok|opencode; codex is legacy). Same selector syntax as --model.")
+	f.StringArrayVar(&resumeOpts.effortFor, "effort-for", nil, "Re-apply a per-node/-group reasoning_effort override on resume (repeatable): \"selector=effort\" or a bare \"effort\" (none|low|medium|high|xhigh|max|ultracode). Same selector syntax as --model.")
 	f.StringVar(&resumeOpts.sandbox, "sandbox", "", "sandbox override on resume: \"none\" (force off), \"auto\" (read .devcontainer/devcontainer.json). Empty inherits the launch-time --sandbox choice persisted on the run (a run launched with --sandbox none refuses docker on resume too); non-empty replaces it on purpose. See docs/sandbox.md.")
 	f.StringVar(&resumeOpts.sandboxDefaultImage, "sandbox-default-image", "", "sandbox-default-image override on resume. Empty inherits the launch's persisted value; non-empty replaces it. See --sandbox.")
 	f.StringVar(&resumeOpts.sandboxHostState, "sandbox-host-state", "", "sandbox host_state override on resume: \"auto\" | \"none\". Empty inherits the launch's persisted value; non-empty replaces it. See docs/sandbox.md.")

@@ -57,9 +57,7 @@ func codexWebSearchMode(task Task) string {
 }
 
 func codexWebSearchOption(task Task) codexsdk.Option {
-	return codexsdk.WithConfig(map[string]string{
-		"web_search": codexWebSearchMode(task),
-	})
+	return codexsdk.WithConfig(codexConfig(task, codexWebSearchMode(task)))
 }
 
 // validateCodexWebSearchCapability resolves and validates the CLI before the

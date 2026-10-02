@@ -63,6 +63,22 @@ func (s *Server) buildOpenAPI() map[string]any {
 			// Enrich from the route→types registry when present; otherwise
 			// fall back to an open "default" response.
 			if rs, ok := schemas[m+" "+rt.Pattern]; ok {
+				// Query parameters are per-OPERATION: the DELETE of a bundle
+				// file reads an if-match token the PUT takes in its body, so
+				// they cannot ride the path-level list.
+				if len(rs.query) > 0 {
+					params := make([]any, 0, len(rs.query))
+					for _, q := range rs.query {
+						params = append(params, map[string]any{
+							"name":        q.name,
+							"in":          "query",
+							"required":    false,
+							"description": q.description,
+							"schema":      map[string]any{"type": q.schemaType},
+						})
+					}
+					op["parameters"] = params
+				}
 				if rs.request != nil {
 					op["requestBody"] = map[string]any{
 						"required": !rs.requestOptional,

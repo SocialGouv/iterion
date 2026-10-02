@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,6 +82,9 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // persisted as human answers or artifacts; callers must be able to derive
 // them again from the durable run record on every resume.
 func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers, hostInputs map[string]any) (resultErr error) {
+	// Registered first so it runs last: a throw-away test workdir belongs to
+	// this whole call, not to the helpers that prepare it and return early.
+	defer e.releaseTempWorkDir()
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -1055,13 +1059,10 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 	}
 
 	// Atomically claim the run (compare-and-set) so a second concurrent
-	// resume can't spawn a duplicate execution racing on run.json.
-	// RunStatusQueued is a legitimate from-state on the cloud path: the
-	// publisher flips the run to queued before the runner claims the
-	// resume message (Resume's queued case routed here on the pending
-	// interaction evidence). The CAS still serializes concurrent claims.
-	// The claim also CONSUMES the pause pointer — see claimForResume.
-	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	// resume can't spawn a duplicate execution racing on run.json (and
+	// from the cloud's queued pre-flip too — see claimForResume). The
+	// claim also CONSUMES the pause pointer.
+	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
 
@@ -1188,7 +1189,7 @@ func (e *Engine) resumeFromRecoveryPause(ctx context.Context, r *store.Run, cp *
 	if cp.RecoveryCode != "" {
 		resumeData["recovery_code"] = cp.RecoveryCode
 	}
-	if err := e.claimForResumeWithData(ctx, r, cp, resumeData, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	if err := e.claimForResumeWithData(ctx, r, cp, resumeData, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
 	// A budget pause resumed without a raised cap would re-run the node
@@ -1263,7 +1264,7 @@ func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *stor
 	if err := e.store.PauseRun(ctx, runID, &persisted); err != nil {
 		return fmt.Errorf("runtime: persist parallel resume answer: %w", err)
 	}
-	if err := e.claimForResume(ctx, r, &persisted, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	if err := e.claimForResume(ctx, r, &persisted, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
 
@@ -1437,10 +1438,14 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 // rather than spawn a duplicate execution clobbering run.json. The single
 // choke point for BOTH human-pause resume paths (single-shot answers and
 // the review gate) — a claim without the consumption reopens the
-// stale-pointer window on that path alone. The failed-resumable path
-// claims via claimForFailureResume because it carries resume-data on the
-// emit (its checkpoint holds no pause pointer: failure boundaries never
-// set one, and a pause's pointer was consumed by the resume that used it).
+// stale-pointer window on that path alone. Every claim accepts `queued`
+// besides the statuses it names: the cloud publisher flips the run to
+// queued before the message reaches a runner, and Resume's queued case
+// routes it here on the pending interaction evidence; the CAS still
+// serializes concurrent claims. The failed-resumable path claims via
+// claimForFailureResume because it carries resume-data on the emit (its
+// checkpoint holds no pause pointer: failure boundaries never set one,
+// and a pause's pointer was consumed by the resume that used it).
 func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Checkpoint, allowed ...store.RunStatus) error {
 	return e.claimForResumeWithData(ctx, r, cp, nil, allowed...)
 }
@@ -1456,6 +1461,8 @@ func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *s
 			return fmt.Errorf("runtime: durable resume refuses cancelled run %q", r.ID)
 		}
 		allowed = []store.RunStatus{e.expectedResumeStatus}
+	} else if !slices.Contains(allowed, store.RunStatusQueued) {
+		allowed = append(slices.Clone(allowed), store.RunStatusQueued)
 	}
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {
@@ -1588,22 +1595,42 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// a resumed paused run reads the v0.1.0 skill content even though
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
-	ClearSkillTierMarkers(e.workDir)
+	e.defaultWorkDir()
+	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
-	if err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
+	e.defaultWorkDir()
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: plugin contributions (resume): %v", err)
+		}
+		return nil, nil, fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
-	// paused run that resumes keeps running as the selected sous-bot.
-	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
+	// paused run that resumes keeps running as the selected sous-bot. I/O
+	// errors on the library mirror stay FATAL — same doctrine as launch:
+	// a resume of a run whose DSL declares `skills: [x]` cannot silently
+	// proceed without x.
+	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
+	if libraryErr != nil {
+		return nil, nil, fmt.Errorf("runtime: library skills (resume): %w", libraryErr)
+	}
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	// Three preconditions gate the pruner on resume too (launch site has
+	// the same rationale): I/O clean, plugin+library complete, this is
+	// NOT a child subbot (children run in their parent's workspace).
+	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
+	} else if e.logger != nil {
+		e.logger.Debug("runtime: skipping orphan prune (pause resume) — child or incomplete mirror")
+	}
 	e.applyPresetFocus()
 
 	// Re-bootstrap the sandbox container (see resumeFromFailure for the
@@ -1962,20 +1989,36 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 // selected sous-bot.
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
-	ClearSkillTierMarkers(e.workDir)
+	e.defaultWorkDir()
+	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
-	if err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: plugin contributions (resume): %v", err)
+		}
+		return fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
-	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
+	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
+	if libraryErr != nil {
+		return fmt.Errorf("runtime: library skills (resume): %w", libraryErr)
+	}
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	// Same three preconditions as the launch and pause-resume sites: I/O
+	// clean (already returned), plugin+library both complete, not a
+	// child subbot.
+	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
+	} else if e.logger != nil {
+		e.logger.Debug("runtime: skipping orphan prune (failure resume) — child or incomplete mirror")
+	}
 	e.applyPresetFocus()
 	return nil
 }
@@ -2066,10 +2109,8 @@ func pinBackendRehydration(rs *runState, cp *store.Checkpoint) {
 func (e *Engine) restoreRunEnv(r *store.Run) {
 	if r.WorkDir != "" {
 		e.workDir = r.WorkDir
-	} else if e.workDir == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			e.workDir = cwd
-		}
+	} else {
+		e.defaultWorkDir()
 	}
 	// Mirror the run's repo root onto the engine so resolveVars's
 	// `${PROJECT_MEMORY_DIR}` expansion finds the same path it did
@@ -2222,7 +2263,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		return false, err
 	}
 	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
+		e.onNodeFinished(rs.ctx, rs.runID, nodeID, output)
 	}
 
 	// Best-effort checkpoint for resume-from-failed (parity with execLoopAfterExec).
@@ -2902,7 +2943,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		return err
 	}
 	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
+		e.onNodeFinished(rs.ctx, rs.runID, nodeID, output)
 	}
 
 	// Checkpoint.

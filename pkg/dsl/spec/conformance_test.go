@@ -73,6 +73,7 @@ var freeEntryProbes = map[string]string{
 	"cursors":           "agent a:\n  cursors:\n    zz_probe: 1\n",
 	"cursor.values":     "cursor c:\n  values:\n    zz_probe: \"f\"\n",
 	"cursor.bands":      "cursor c:\n  bands:\n    \"0..1\": \"f\"\n",
+	"fallbacks":         "agent a:\n  fallbacks:\n    zz_probe:\n      backend: claw\n",
 	"schema":            "schema s:\n  zz_probe: string\n",
 	"contract.ports":    "contract c:\n  inputs:\n    zz_probe: string\n",
 	"contract.criteria": "contract c:\n  criteria:\n    zz_probe:\n      kind: min_length\n",
@@ -198,6 +199,14 @@ func sampleValues(p spec.Property) []string {
 			return each(p.Values)
 		}
 		return []string{p.Name + ": x"}
+	case spec.DottedIdent:
+		return []string{p.Name + ": x", p.Name + ": a.b"}
+	case spec.PromptRef:
+		return []string{p.Name + ": x", p.Name + `: "inline text"`}
+	case spec.EnumOrEnv:
+		return append(each(p.Values), p.Name+`: "${X:-`+p.Values[0]+`}"`)
+	case spec.StringOrNumber:
+		return []string{p.Name + `: "30s"`, p.Name + ": 3"}
 	case spec.Int, spec.Number:
 		return []string{p.Name + ": 1"}
 	case spec.Bool:
@@ -229,7 +238,7 @@ func sampleValues(p spec.Property) []string {
 			return []string{"values:\n  a: \"f\""}
 		case "cursor.bands":
 			return []string{"bands:\n  \"0..1\": \"f\""}
-		case "fallback":
+		case "fallbacks":
 			return []string{"fallbacks:\n  r:\n    backend: \"claw\""}
 		}
 		return []string{p.Name + ":"} // an empty block: the bare header
@@ -303,7 +312,7 @@ func TestFreeEntryBlocksTakeAnyName(t *testing.T) {
 		}
 	}
 	for _, k := range spec.Kinds {
-		if k.Entries == nil || k.Name == "prompt" || k.Name == "group" || k.Name == "use" {
+		if k.Entries == nil {
 			continue
 		}
 		if _, ok := freeEntryProbes[k.Name]; !ok {
@@ -312,9 +321,19 @@ func TestFreeEntryBlocksTakeAnyName(t *testing.T) {
 	}
 }
 
+func hostOf(k spec.Kind, host string) bool {
+	for _, h := range k.Hosts {
+		if h == host {
+			return true
+		}
+	}
+	return false
+}
+
 // TestBlocksNameTheirHostsAndOpeners: a block's Hosts must be kinds the
-// registry knows, and its Body references must resolve, or the hints built
-// on them point at nothing.
+// registry knows, and its Body references — a property's or its entries' —
+// must resolve to a kind hosted here, or the hints and the schema built on
+// them point at nothing.
 func TestBlocksNameTheirHostsAndOpeners(t *testing.T) {
 	for _, k := range spec.Kinds {
 		for _, h := range k.Hosts {
@@ -327,6 +346,23 @@ func TestBlocksNameTheirHostsAndOpeners(t *testing.T) {
 		}
 		if (k.Role == spec.BlockRole || k.Role == spec.Entry) && (k.Opener == "" || len(k.Hosts) == 0) {
 			t.Errorf("%s: a block or entry needs an opener and at least one host", k.Name)
+		}
+		if e := k.Entries; e != nil {
+			// An entry's sub-block kind must exist and name this block as
+			// its host — the same relation a Block property keeps with its
+			// body; and the key a sequence carries the name under is the
+			// entry's own key name.
+			if e.Body != "" {
+				body, ok := spec.Lookup(e.Body)
+				if !ok {
+					t.Errorf("%s: entries body kind %q is not registered", k.Name, e.Body)
+				} else if !hostOf(body, k.Name) {
+					t.Errorf("%s: entries body kind %q does not list %q among its hosts", k.Name, e.Body, k.Name)
+				}
+			}
+			if e.SequenceKey != "" && e.SequenceKey != e.KeyName {
+				t.Errorf("%s: SequenceKey %q is not the entries' key name %q", k.Name, e.SequenceKey, e.KeyName)
+			}
 		}
 		for _, p := range k.Properties {
 			if p.Form == spec.Block || p.Form == spec.BlockOrIdent {

@@ -7,6 +7,25 @@ import (
 
 // PromptConfig is re-exported from internal/runtime so external hosts
 // (e.g. iterion) can select which system-prompt sections claw renders.
+//
+// Besides the section toggles it carries the memory scope — MemorySkipUser,
+// MemoryRoot, MemorySkipWorkspace, MemorySkipOuter, MemoryClaudeCodeLayout —
+// which decides WHICH CLAUDE.md files the project-instructions section reads:
+//
+//	user       ~/.claude/CLAUDE.md                       (MemorySkipUser leaves it out)
+//	outer      ancestors strictly above MemoryRoot       (MemorySkipOuter leaves them out)
+//	workspace  the working directory and the ancestors   (MemorySkipWorkspace leaves them out)
+//	           from it up to and including MemoryRoot
+//
+// While MemoryRoot bounds the workspace, an @import of a workspace-scope
+// file must resolve inside it, transitively, and a workspace file that is a
+// symlink resolving outside it is skipped; the user scope and the outer
+// ancestors are the operator's and are not confined.
+//
+// They are values, not sections, so ResolvePromptSections and
+// PromptSectionNames know nothing of them: set them on the PromptConfig
+// itself. Every zero value keeps the unscoped behaviour, and the ancestors
+// (outer and workspace alike) are read only while MemoryWalkUp is on.
 type PromptConfig = internalrt.PromptConfig
 
 // DefaultPromptConfig returns the all-on default (Claude Code parity).
@@ -52,6 +71,11 @@ func OperatingPosture() string {
 // memory) for workDir according to cfg. It deliberately excludes the base
 // identity sentence and the operating posture — the host owns its base
 // prompt and opts into each piece.
+//
+// Which CLAUDE.md files the project-instructions section reads is cfg's
+// memory scope (see PromptConfig). A host that caches the result must key it
+// on that scope as well as on workDir: the same directory renders differently
+// under a different scope.
 //
 // Each call builds a fresh assembler, so nothing is cached between calls:
 // every invocation re-walks ancestors, re-reads memory files, and re-runs

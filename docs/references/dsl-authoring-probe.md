@@ -107,10 +107,15 @@ change in the file, one `validate` round.
 | 2026-09-10, spec 1, same | the harness's `sonnet` label (self-reported "Claude Sonnet 5"), same | 199 | 0 (and 0 warnings) | 245k total, 2 497 lines | 16 | 1 (green first draft) |
 | 2026-09-16, spec 1, the lot 4 build (`e652e78ed`: the dry run, `fmt`/`fix`, C145–C147, the skill's "Rules the grammar does not show"), standard protocol | `claude-haiku-4-5-20251001`, Claude Agent SDK subagent | 217 | 4 (C010; C040 ×2, C033) and 2 warnings (C145, C137) | not captured, 1 113 lines | 3.5 | 2 |
 | 2026-09-16, spec 1, same build, reading capped to the skill and three gallery shapes (no docs, no catalogue, no source) | same | 239 | 4 (C012; C029 ×2, C014) and 2 warnings (C145, C137) | not captured, ~1 200 lines | ~4 | 2 |
+| 2026-09-22, spec 1, **the YAML twin** (lot 5 PR B, the prototype: the author document read by `pkg/dsl/author`, validated by the `probecheck` harness — converter, parser and compiler, as `validate` will), reading capped to the skill, a one-page explainer of the twin and the three gallery shapes written as YAML (232 lines); three runs, the explainer's second version | `claude-haiku-4-5-20251001`, Claude Agent SDK subagent | 189 / 176 / 138 | 11 (E012; E002 ×3, E001 ×2 on two edge strings; C012, C016 ×2, C040 ×2) and 3 warnings / 1 (E012: `worktree:` on an agent) / 0 and 1 warning (C137) | 821 lines each | 2–3 | 4 / 2 / 2 |
+| 2026-09-22, spec 1, **the `.bot` control of the same day** — same model, same build, reading capped to the skill and the same three shapes scaffolded as `.bot` (431 lines); three runs | same | 267 / 219 / 248 | 6 (E002 on a bare `when a && b`; C040, C016 ×4) and 2 warnings / 9 (C034 ×2, C031, C040 ×3, C012, C033, C014) and 2 warnings / 1 (C033) | 912 lines each | 2–5 | 5 / 3 / 2 |
+| 2026-09-22, spec 1, the YAML twin with the explainer's FIRST version, whose own example wrote a `command:` holding `: ` unquoted — not YAML — and which two of three runs copied; kept as the measure of that trap | same | 215 / 151 / 149 | 7 (E001 ×2 on a bare `when a && b`; C012, C016 ×2, C036, C040) and 4 warnings / 1 (E050: not YAML) / 1 (E050) | 812–817 lines | 2–3.3 | 3 / 4 / 6 |
 
 Rounds count the agent's `validate` runs up to and including the green one; a
 0 means the protocol forbade the agent to validate, and the draft was green
-when validated afterwards.
+when validated afterwards. On 2026-09-22 the first draft's errors are the
+harness's on the archived draft (the compile runs whatever the parse said, as
+`validate` does), never the agent's own count.
 
 The 2026-09-09 drafts were correct; both cost a whole session of reading
 before the first line, and both agents had to guess the same unwritten
@@ -149,6 +154,51 @@ is missed by the capped run only. The standard draft's `--strict` dry run then
 refused deliberately at its entry gate on `vars.release_tag`, the gallery's
 idiom, with no way to hand it a value — which is why `validate --var` exists
 (#1332). Artifacts of both runs are attached to #1110.
+
+### 2026-09-22 — the YAML twin against the `.bot`, on the prototype (lot 5, PR B)
+
+The bar, set before the measure (lot 5's plan, § 7): the twin is worth a
+surface if a mid-size model writing it does **not worse than the `.bot`** on
+errors, rounds and lines read — same day, build, model, spec, checklist and
+capped context — with three repetitions when the numbers are close. Six runs
+of each were made; the three that count on the YAML side are those of the
+explainer's second version (the first version's own example wrote a
+`command:` holding `: ` unquoted, which is not YAML, and two runs copied it —
+the rows above keep them as the measure of that trap).
+
+| measure, mean of three | YAML twin (runs 4–6) | `.bot` control (runs 1–3) |
+|---|---|---|
+| errors at the first draft | 4.0 (11, 1, 0) | 5.3 (6, 9, 1) |
+| of which parse-level (E-codes) | 2.3 (6, 1, 0) | 0.3 (1, 0, 0) |
+| rounds to green | 2.7 (4, 2, 2) | 3.3 (5, 3, 2) |
+| lines read | 821 | 912 |
+| minutes to the first draft | 2–3 | 2–5 |
+| requirements met, read on the final (grep, quoted or bare values) | 30/30 | 30/30 |
+
+**Verdict: GO for the surface (PR C), with what the measure taught written
+into it.** Not worse on the three measures; the reading is shorter because
+the YAML shapes carry no comments (232 lines against 431), not because the
+grammar is smaller. What the twin does NOT do is remove the lexical class the
+plan hoped would vanish "by construction": it moves it. Two of six runs fell
+into YAML's own trap — a plain value holding `: ` (a shell command with a jq
+filter) reads as a nested mapping and the whole document is refused, and the
+scanner's message ("mapping values are not allowed in this context") sent the
+model round in circles for four and six rounds — and one run nested quotes
+badly inside an edge string's `with` map. Both surfaces share the other
+parse-level mistake: an operator in a bare condition or a bare loop cap
+(`when ready && not time_ok`, `as fix(vars.max_fix_passes - 1)`), which the
+`.bot` refuses as "unexpected character" — the runs of the 16th had not made
+it. Three things ship because of this measure: the converter's YAML syntax
+errors carry the spelling that avoids them ("quote the whole value"), the
+lexer's E001 on an operator character says "an operator belongs in a quoted
+expression", and the twin's documentation (PR C) states the two rules a YAML
+author has to know that a `.bot` author does not — quote a value holding
+`: ` or ` #`, and an edge string's inner quotes are the `.bot`'s. The runs'
+other guesses — the loop cap written as an output field, `expr:` as an
+expression, exhaustiveness of `when` siblings — are the same the `.bot` runs
+made, and the diagnostics fixed them in one round. Artifacts: the drafts,
+finals, validate outputs and ledgers of the nine runs, the two explainers and
+the YAML shapes, attached to #1110.
 
 ## Reporting
 

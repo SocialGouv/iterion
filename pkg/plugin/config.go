@@ -3,7 +3,10 @@ package plugin
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // EffectiveConfig returns the named plugin's config as it is actually used:
@@ -12,31 +15,56 @@ import (
 // the MCP/rewriter subprocess gets the real credential).
 func (r *Registry) EffectiveConfig(name string) map[string]string {
 	out := map[string]string{}
+	defaults := map[string]string{}
 	if p, ok := r.Get(name); ok {
 		for _, f := range p.Manifest.Config {
-			if f.Default != "" {
-				out[f.Key] = f.Default
-			}
-			// Highest precedence: an env override ITERION_PLUGIN_<NAME>_<KEY>.
-			// This is the cloud/headless path — the operator (or the Helm
-			// chart) sets plugin config via immutable env instead of the
-			// per-pod-ephemeral plugins.yaml. Only declared keys are read.
-			if v, ok := pluginConfigEnv(name, f.Key); ok {
-				out[f.Key] = v
-			}
+			defaults[f.Key] = f.Default
 		}
 	}
-	for k, v := range r.config[name] {
-		// Operator-stored values overlay defaults, but a declared env
-		// override still wins (set above and re-asserted here so a stored
-		// value can't shadow the immutable env).
-		if envV, ok := pluginConfigEnv(name, k); ok {
-			out[k] = envV
-			continue
+	// Precedence, lowest to highest: the manifest's default, the operator's
+	// stored value, the env override ITERION_PLUGIN_<NAME>_<KEY> — the
+	// cloud/headless path, where the operator (or the Helm chart) sets plugin
+	// config via immutable env instead of the per-pod-ephemeral plugins.yaml.
+	for _, key := range r.configKeys(name) {
+		if def := defaults[key]; def != "" {
+			out[key] = def
 		}
-		out[k] = v
+		if stored, ok := r.config[name][key]; ok {
+			out[key] = stored
+		}
+		if v, ok := pluginConfigEnv(name, key); ok {
+			out[key] = v
+		}
 	}
 	return out
+}
+
+// configKeys is every key this plugin's configuration can carry: the ones its
+// manifest declares, plus the ones the operator's plugins.yaml stores. The
+// union, not the manifest alone, because a stored key the CURRENT manifest no
+// longer declares is still read — a builtin's config schema changing between
+// versions leaves exactly that.
+//
+// One owner for the key set, because two readers walking it differently is
+// how the trust check came to ask about a smaller set than the reader used:
+// an undeclared stored key's env override reached an operator-TRUSTED
+// server's environment without the check ever looking at it.
+func (r *Registry) configKeys(name string) []string {
+	seen := map[string]bool{}
+	if p, ok := r.Get(name); ok {
+		for _, f := range p.Manifest.Config {
+			seen[f.Key] = true
+		}
+	}
+	for k := range r.config[name] {
+		seen[k] = true
+	}
+	keys := make([]string, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // pluginConfigEnv reads the env override for one plugin config key:
@@ -45,8 +73,13 @@ func (r *Registry) EffectiveConfig(name string) map[string]string {
 // blank a defaulted URL). E.g. plugin "firecrawl" key "api_url" →
 // ITERION_PLUGIN_FIRECRAWL_API_URL.
 func pluginConfigEnv(name, key string) (string, bool) {
-	env := "ITERION_PLUGIN_" + envToken(name) + "_" + envToken(key)
-	return os.LookupEnv(env)
+	return os.LookupEnv(pluginConfigEnvName(name, key))
+}
+
+// pluginConfigEnvName is the per-key override variable. One place, because
+// the provenance check has to ask about exactly the names the reader reads.
+func pluginConfigEnvName(name, key string) string {
+	return "ITERION_PLUGIN_" + envToken(name) + "_" + envToken(key)
 }
 
 // envToken upper-cases and replaces '-' with '_' so kebab plugin/config names
@@ -185,4 +218,26 @@ func (r *Registry) fillConfigView(v View, p *Plugin) View {
 	v.ConfigValues = values
 	v.ConfigSecretSet = secretSet
 	return v
+}
+
+// configIsOperators reports whether every configuration value this plugin
+// will actually run with came from a source the operator controls.
+//
+// Two sources can carry a repository's answer: <home>/plugins.yaml, when a
+// project `.env` selected that home, and the per-key override
+// ITERION_PLUGIN_<NAME>_<KEY>, when a project `.env` planted it. Manifest
+// defaults are the plugin's own and always count as the operator's.
+//
+// A plugin with no configuration at all is unaffected — there is nothing for
+// a repository to have said.
+func (r *Registry) configIsOperators(name string) bool {
+	if len(r.config[name]) > 0 && !r.homeOperatorChosen {
+		return false
+	}
+	for _, key := range r.configKeys(name) {
+		if envtrust.Planted(pluginConfigEnvName(name, key)) {
+			return false
+		}
+	}
+	return true
 }

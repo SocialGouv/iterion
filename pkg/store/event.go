@@ -251,6 +251,20 @@ const (
 	//     cause and no head (an integrity refusal that lost its
 	//     FinalBranchError write) — head-vs-cause is the discriminant
 	EventRunBankRefused EventType = "run_bank_refused"
+	// EventRunFallbackRefused records a stage of the OPERATOR's launch-time
+	// fallback chain that the safety screen declined to materialise onto a
+	// node. The screen itself is right — an empty tools: list crossing to a
+	// CLI backend, a codex route under an active sandbox, a stage naming a
+	// backend with no model — but its verdict used to reach the runner log
+	// and nothing else, so the operator who asked for the route learned
+	// nothing: the run proceeded on the primary and died of exactly the
+	// failure the route existed to survive. A refusal the decider cannot
+	// read is a silent fallback, which this engine does not do anywhere
+	// else. Data:
+	//   - node: the agent node the stage was refused on
+	//   - stage: the stage's 1-based position in the operator's chain
+	//   - reason: the screen's own sentence, verbatim and actionable
+	EventRunFallbackRefused EventType = "run_fallback_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the
 	// finished chain does NOT contain. The takeover itself is correct —
@@ -444,7 +458,7 @@ const (
 	// Data keys: backend, declared_model, effective_model.
 	EventModelDrift EventType = "model_drift"
 	// EventModelServedViaFacade: the backend served the node through an
-	// Anthropic-shaped facade (session fingerprint "facade:<base url>")
+	// Anthropic-shaped facade (session fingerprint "facade:<slot>:<base url>")
 	// rather than the provider the model id names. The reported model id is
 	// unchanged — the facade aliases it silently — so this is the only
 	// signal that a "claude-*" node was answered by another family. Emitted
@@ -456,14 +470,30 @@ const (
 	// declared_model, effective_model, fingerprint.
 	EventModelServedViaFacade EventType = "model_served_via_facade"
 
-	// EventSandboxSkipped is emitted at run start when the workflow or a
-	// node requested an active sandbox mode (auto/inline) but the
-	// resolved driver cannot honour it — typically the noop driver on a
-	// host without docker, or the cloud V1 fallback where the runner
-	// pod is the de-facto sandbox. The Data field carries:
-	//   - driver: the driver that handled the request
+	// EventSandboxSkipped is emitted at run start when the workflow or
+	// a node requested an active sandbox mode (auto/inline) but the
+	// resolved driver cannot honour it — a host without docker, the
+	// cloud V1 fallback where the runner pod is the de-facto sandbox,
+	// or an EXPLICIT inline mode refused because no driver is
+	// available (#1425). The Data field carries:
 	//   - mode: the requested mode ("auto" or "inline")
+	//   - source: precedence label ("workflow sandbox: block",
+	//     "cli flag --sandbox", "global sandbox default", …)
 	//   - reason: human-readable explanation
+	//   - refused: bool — true on the INLINE refusal path (the run
+	//     parks with FailureCode=SANDBOX_DRIVER_UNAVAILABLE); absent
+	//     or false on the AUTO soft-skip path (the run continues
+	//     unsandboxed)
+	//   - error_code: string — the typed failure code, the same one
+	//     the run document carries as failure_code and the schedule
+	//     record copies into last_run_error_code (#1426). Set only
+	//     when refused=true.
+	//   - file_secrets_dropped: bool — set on an AUTO degrade whose
+	//     workflow declares `as: file` secrets: an unsandboxed run has
+	//     no container to mount them into, so they are not delivered
+	//   - driver: string — written only by the noop-pinned path
+	//     (startNoopSandbox), where a caller chose the passthrough
+	//     driver deliberately
 	EventSandboxSkipped EventType = "sandbox_skipped"
 	// EventSkillsInjected fires at run start when the OPERATOR added
 	// skill-library skills to this run on top of the workflow's own
@@ -518,6 +548,11 @@ const (
 	//   - source: precedence label (CLI > workflow > env > default)
 	//   - mounts: []string of "host_path:container_path" pairs (only
 	//     paths actually mounted are listed; skipped ones are absent)
+	//   - iterion_home_not_mounted: the iterion home left out because it is
+	//     not the one the operator chose (a project `.env` set it, or it is
+	//     the shared <tmp> fallback); absent when it was mounted
+	//   - home_not_mounted: the home dir a project `.env` set, under which
+	//     nothing was mounted; absent when the operator's own
 	EventSandboxHostStateMounted EventType = "sandbox_host_state_mounted"
 	// EventSandboxUserRemap fires when the docker driver injects
 	// `--user $(id -u):$(id -g)` because host_state=auto requires
@@ -583,20 +618,29 @@ const (
 	// Data keys: backend, session_id (the id that failed to serve),
 	// reason (delegate.FallbackCategory), error.
 	EventSessionDegraded EventType = "session_degraded"
-	// EventMCPServerDegraded records an AMBIENT MCP server (inherited from
-	// the target repo's .mcp.json or the plugin catalog — never named by
-	// the node) that failed to boot when the executor spliced the node's
-	// active servers into its tool set. The node runs on WITHOUT that
-	// server's tools instead of failing: the node never asked for it, and
-	// the other backends already degrade per-server (claude_code's CLI
-	// skips a server it cannot start; pi bounds each connect with a
-	// timeout) — failing the run here was a claw-path parity defect that
-	// let one unbootable repo server (e.g. a token-less sentry on a
-	// runner pod) kill every plan/review node. A server the node names
-	// EXPLICITLY (a concrete mcp.<server>.<tool> in tools:) still fails
-	// loud at resolution.
+	// EventMCPServerDegraded records an MCP server dropped when the
+	// executor spliced the node's active servers into a task's tool set:
+	// it failed to boot, or this launcher may not start it for a sandboxed
+	// run. The claim is about THAT TASK's tools, not about what the node
+	// finally ran with — claw may decline the task and a `fallbacks:`
+	// route may start those servers in its container, which the timeline
+	// shows as a model_fallback event beside this one. The task is built
+	// WITHOUT that server's tools rather than failing, because the other backends already degrade per-server
+	// (claude_code's CLI skips a server it cannot start; pi bounds each
+	// connect with a timeout) — failing the run here was a claw-path
+	// parity defect that let one unbootable repo server (e.g. a
+	// token-less sentry on a runner pod) kill every plan/review node. A
+	// server the node names EXPLICITLY (a concrete mcp.<server>.<tool>
+	// in tools:) still fails loud at resolution.
 	//
-	// Data keys: server, source ("ambient"), error.
+	// Data keys: server, source ("declared" when the node's own `mcp:`
+	// block named it, "ambient" when it was inherited from the target
+	// repo's .mcp.json, the plugin catalog or the workflow), origin (who
+	// controls the definition: project / workflow / plugin), refused
+	// (present and true when the launcher declined to start it), cause
+	// (present when a refused server was ALSO broken — the two facts are
+	// independent, so `refused` alone does not mean "nothing to fix"),
+	// error.
 	EventMCPServerDegraded EventType = "mcp_server_degraded"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker

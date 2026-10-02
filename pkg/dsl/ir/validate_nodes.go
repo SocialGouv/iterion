@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"math"
 	"net/url"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -317,10 +319,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		// silence. An empty effective backend is left alone: the resolver
 		// falls through to env and host credential detection, so the compiler
 		// genuinely cannot know.
-		backend := nn.GetLLMFields().Backend
-		if backend == "" {
-			backend = w.DefaultBackend
-		}
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		if backend != "" && !automemory.SupportsBackend(backend) {
 			c.warnfAt(DiagAutoMemoryNotSupported, n.NodeID(), "",
 				"%s %q: auto_memory: on has NO effect on backend=%q — MEMORY.md is wired for claude_code, claw and pi only",
@@ -328,6 +327,84 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		}
 	}
 	c.warnIfWorkflowAutoMemoryIsInert(w)
+}
+
+// validateAmbientContext enforces that every ambient_context value (the
+// workflow's and each agent/judge node's) is one of the accepted barewords:
+// a typo would otherwise read as "inherit" and hand the node the default, so
+// an invalid value is an ERROR (C184). Empty means unset.
+//
+// It then warns (C185) when an EXPLICIT per-node value meets a backend that
+// does not translate the policy: the node's effective backend and every
+// backend its fallback chain may route to. The workflow default reaches every
+// node, so a mixed-backend workflow would warn on each node that cannot honour
+// it; the workflow-level value is only reported once, when no node at all can
+// honour it. An unresolved backend is left alone: the resolver falls through
+// to env and host detection, so the compiler cannot know.
+//
+// Both the accepted values and the backend list come from pkg/backend/ambient,
+// so the compiler and the engine cannot disagree.
+func (c *compiler) validateAmbientContext(w *Workflow) {
+	valid := func(v string) bool {
+		if strings.TrimSpace(v) == "" {
+			return true
+		}
+		_, ok := ambient.Parse(v)
+		return ok
+	}
+	accepted := strings.Join(ambient.Values, ", ")
+	if !valid(w.AmbientContext) {
+		c.errorfAtSpan(DiagInvalidAmbientContext, c.workflowSpan(w.Name),
+			"workflow %q has invalid ambient_context %q; valid values are %s",
+			w.Name, w.AmbientContext, accepted)
+	}
+	honouring, ignoring := 0, 0
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		kind, value := nn.NodeKind().String(), nn.GetAmbientContext()
+		if !valid(value) {
+			c.errorfAt(DiagInvalidAmbientContext, n.NodeID(), "",
+				"%s %q has invalid ambient_context %q; valid values are %s",
+				kind, n.NodeID(), value, accepted)
+			continue
+		}
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if backend == "" || ambient.Enforces(backend) {
+			honouring++
+		} else {
+			ignoring++
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if backend != "" && !ambient.Enforces(backend) {
+			c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
+				"%s %q: ambient_context: %s is not enforced on backend=%q — it keeps its own conventions; claude_code, claw, codex and pi apply the policy",
+				kind, n.NodeID(), strings.TrimSpace(value), backend)
+		}
+		for _, f := range nn.GetFallbacks() {
+			if f.Action == FallbackActionSkip {
+				continue
+			}
+			routeBackend := f.Backend
+			if routeBackend == "" {
+				routeBackend = backend
+			}
+			if routeBackend != "" && routeBackend != backend && !ambient.Enforces(routeBackend) {
+				c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
+					"%s %q: ambient_context: %s is not enforced if fallback route %q runs on backend=%q",
+					kind, n.NodeID(), strings.TrimSpace(value), f.Name, routeBackend)
+			}
+		}
+	}
+	if strings.TrimSpace(w.AmbientContext) != "" && valid(w.AmbientContext) && ignoring > 0 && honouring == 0 {
+		c.warnfAtSpan(DiagAmbientContextNotEnforced, c.workflowSpan(w.Name),
+			"workflow %q sets ambient_context: %s but no agent/judge node runs on a backend that enforces it (claude_code, claw, codex, pi)",
+			w.Name, strings.TrimSpace(w.AmbientContext))
+	}
 }
 
 // warnIfWorkflowAutoMemoryIsInert covers the one shape the per-node rule above
@@ -363,10 +440,7 @@ func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
 		if !ok {
 			continue
 		}
-		backend := nn.GetLLMFields().Backend
-		if backend == "" {
-			backend = w.DefaultBackend
-		}
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		// Unresolved: the runtime falls through to env and host credential
 		// detection, so the compiler genuinely cannot know and must not guess.
 		supported := backend == "" || automemory.SupportsBackend(backend)
@@ -427,9 +501,9 @@ func forEachAgentJudgeToolValue(w *Workflow, llmGet func(LLMNode) string, toolGe
 // off|ask|deny. Empty ("") means unset/inherit and is always valid; the
 // comparison is case-insensitive and whitespace-trimmed (C110, error).
 //
-// It also warns (C111) when the workflow declares allow/ask/deny rules but the
-// resolved workflow permission mode is "" or "off" — the rules are inert
-// because the gate is disabled.
+// Whether a declared allow/ask/deny rule list ever REACHES a gated node is a
+// separate question with its own shape (workflow and node lists, replacement
+// between them); validatePermissionRules owns it, and C111.
 func (c *compiler) validatePermission(w *Workflow) {
 	valid := func(v string) bool {
 		switch strings.ToLower(strings.TrimSpace(v)) {
@@ -465,17 +539,6 @@ func (c *compiler) validatePermission(w *Workflow) {
 				}
 			}
 		})
-
-	// C111: rules declared but the gate is disabled. The resolved workflow
-	// mode is "" or "off" → the allow/ask/deny lists never take effect.
-	mode := strings.ToLower(strings.TrimSpace(w.Permission))
-	gateDisabled := mode == "" || mode == "off"
-	hasRules := len(w.PermissionAllow) > 0 || len(w.PermissionAsk) > 0 || len(w.PermissionDeny) > 0
-	if gateDisabled && hasRules {
-		c.warnfAtSpan(DiagPermissionRulesNoGate, c.workflowSpan(w.Name),
-			"workflow %q declares allow/ask/deny permission rules but the permission gate is %s; rules are inert",
-			w.Name, modeLabel(mode))
-	}
 }
 
 // modeLabel renders an empty permission mode as "off (unset)" for a clearer
@@ -548,7 +611,12 @@ func (c *compiler) validateMemory(w *Workflow) {
 	}
 	for _, n := range w.Nodes {
 		if nn, ok := n.(LLMNode); ok {
-			check(nn.NodeKind().String(), nn.NodeID(), nn.GetLLMFields().Backend, nn.GetMemory())
+			// The node's route as the source declares it — a dial by its
+			// default, and the workflow default when the node names none:
+			// reading the raw text warned that `memory:` "has NO effect on
+			// backend=${DIAL:-claw}" about a backend that IS claw.
+			check(nn.NodeKind().String(), nn.NodeID(),
+				effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend), nn.GetMemory())
 		}
 	}
 }
@@ -782,8 +850,13 @@ func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
 // Mirrors the Anthropic effort spec (platform.claude.com/docs/en/build-with-claude/effort)
 // and the CLAUDE_CODE_EFFORT_LEVEL env var (code.claude.com/docs/en/model-config).
 // Per-model availability is curated upstream in claw-code-go's ModelEntry; this
-// set is the union across all models.
+// set is the union across all models — "none" (no reasoning at all) is only
+// honoured by the models whose matrix carries it (GPT-6 Sol/Luna today). Per
+// route when the model lacks it: claw and claude_code clamp to the lowest
+// real level (see model.coerceEffort and the claudeCodeEffort mapping), pi
+// spells it off, codex's CLI refuses it, opencode passes it through.
 var ValidReasoningEfforts = map[string]bool{
+	"none":   true,
 	"low":    true,
 	"medium": true,
 	"high":   true,
@@ -1009,15 +1082,75 @@ func SetEnvOverlay(fn func(name string) (string, bool)) {
 // the write surface validates that namespace, and gating the read side
 // too means a corrupted or hand-edited settings document can never
 // inject $HOME, $PATH or a provider credential into an expansion.
+//
+// A name the process-env policy refuses (SetProcessEnvPolicy) resolves as
+// unset: on a cloud process, workflow text never reads the platform's
+// credentials. LookupOperatorEnv is the unrestricted read for text the
+// operator wrote.
 func LookupEnv(name string) string {
-	if strings.HasPrefix(name, "ITERION_") {
-		if fn := envOverlay.Load(); fn != nil {
-			if v, ok := (*fn)(name); ok && v != "" {
-				return v
-			}
-		}
+	if v, ok := lookupOverlay(name); ok {
+		return v
+	}
+	if !ProcessEnvReadable(name) {
+		return ""
 	}
 	return os.Getenv(name)
+}
+
+// LookupOperatorEnv is LookupEnv for text the operator wrote — a plugin's
+// MCP server, the deployment's own settings: the process-env policy is about
+// workflow text and does not reach the operator's configuration.
+func LookupOperatorEnv(name string) string {
+	if v, ok := lookupOverlay(name); ok {
+		return v
+	}
+	return os.Getenv(name)
+}
+
+func lookupOverlay(name string) (string, bool) {
+	if !strings.HasPrefix(name, "ITERION_") {
+		return "", false
+	}
+	if fn := envOverlay.Load(); fn != nil {
+		if v, ok := (*fn)(name); ok && v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// DurationParseReason is why a duration field does not parse, safe to show to
+// whoever reads the message: the parser's own error quotes its input, and
+// when `${…}` expansion produced that input it may be any value of the
+// process environment.
+func DurationParseReason(raw, expanded string, err error) string {
+	if raw == expanded {
+		return err.Error()
+	}
+	return "its ${…} references expand to a value that is not a duration"
+}
+
+// envPolicy says which names workflow text may read from the process
+// environment: a `${NAME}` in a .bot, a launch value, a tool command. Nil —
+// the default, a local operator's own environment — reads every name. A
+// cloud process installs one at boot: its environment holds the platform's
+// credentials, not the tenant's.
+var envPolicy atomic.Pointer[func(name string) bool]
+
+// SetProcessEnvPolicy installs envPolicy. Nil restores "every name".
+func SetProcessEnvPolicy(fn func(name string) bool) {
+	if fn == nil {
+		envPolicy.Store(nil)
+		return
+	}
+	envPolicy.Store(&fn)
+}
+
+// ProcessEnvReadable reports whether workflow text may read name from the
+// process environment.
+func ProcessEnvReadable(name string) bool {
+	fn := envPolicy.Load()
+	return fn == nil || (*fn)(name)
 }
 
 // lookupEnv keeps the package-internal call sites on the short name.
@@ -1050,67 +1183,158 @@ func ExpandEnvWithDefault(s string) string {
 // An empty lookup result means "unset", so `:-` fires: that is shell `:-`
 // (as opposed to `-`), and it is what ExpandEnvWithDefault already promised.
 func ExpandWithDefault(s string, lookup func(string) string) string {
+	out, _ := expandWithDefault(s, lookup, expandPolicy{})
+	return out
+}
+
+// ExpandBracedWithDefault expands only the BRACED forms — `${VAR}` and
+// `${VAR:-default}` — and leaves a bare `$NAME` exactly as written.
+//
+// It is the reading a value that is itself a DOCUMENT owes its author: a
+// `json` var's text is data, where `$5` is five dollars and `awk '{print
+// $1}'` is a program, and expanding those to the empty string corrupts the
+// document silently. The same distinction is why a tool `command:` body
+// expands braces only (expandBracedEnv): the author's `$?`, `$1` and `$ec`
+// belong to the shell, not to iterion.
+func ExpandBracedWithDefault(s string, lookup func(string) string) string {
+	out, _ := expandWithDefault(s, lookup, expandPolicy{bracedOnly: true})
+	return out
+}
+
+// expandPolicy is what an expansion does with the two forms that have no
+// single answer: a bare `$NAME`, and a `${NAME}` whose lookup is empty.
+type expandPolicy struct {
+	// bracedOnly leaves a bare `$NAME` as written.
+	bracedOnly bool
+	// keepUnresolved leaves a reference with no value as written, rather
+	// than resolving it to the empty string.
+	keepUnresolved bool
+}
+
+// maxEnvExpansionDepth bounds the nesting of `${A:-${B:-c}}` that resolves.
+//
+// Load-bearing, not cosmetic: a var's text is not always the author's —
+// `--var` and a launch payload deliver whatever a caller sent, and the HTTP
+// launch body is capped at 10 MB. Past the bound the segment is emitted AS
+// WRITTEN, braces included, so the `${` stays visible to whoever reads the
+// value rather than silently becoming empty. The deepest authored nesting
+// in this repo's catalogue is 2; raise the constant if a real chain ever
+// needs more.
+const maxEnvExpansionDepth = 32
+
+// expandWithDefault resolves `${…}` in ONE left-to-right pass, inside-out
+// by construction: a segment is resolved the moment its `}` is read, when
+// everything it contains has already been resolved.
+//
+// The pass is what makes the work LINEAR, and that is the point. Scanning
+// forward for a closing brace from each `${` separately is quadratic in the
+// number of unmatched opens — measured on this tree before the rewrite,
+// 160 KB of `${` took 1.9 s, and 1 MB took 77 s inside `resolveVars`, in a
+// call that carries no context and cannot be cancelled. A depth bound does
+// not help there: nothing recurses, so nothing counts.
+//
+// The second result is the number of source positions the pass visited —
+// the algorithm's own step count, which is what a test asserts on. A
+// duration ratio would say the same thing and flake on a shared runner
+// (#1393); this is a count.
+func expandWithDefault(s string, lookup func(string) string, policy expandPolicy) (string, int) {
 	if lookup == nil {
 		lookup = lookupEnv
 	}
-	var b strings.Builder
+	if !strings.ContainsRune(s, '$') {
+		return s, 0
+	}
+	visited := 0
+	var stack [][]byte
+	cur := make([]byte, 0, len(s))
+	// suppressed counts the opens past the depth bound, so their `}` is
+	// copied out with them instead of closing a segment that is still live.
+	suppressed := 0
 	for i := 0; i < len(s); {
-		// Bare `$NAME` form (no braces) — delegate to os.Expand for
-		// just this fragment.
-		if s[i] == '$' && i+1 < len(s) && s[i+1] != '{' {
+		visited++
+		opens := i+1 < len(s) && s[i] == '$' && s[i+1] == '{'
+		if suppressed > 0 {
+			switch {
+			case opens:
+				suppressed++
+				cur = append(cur, '$', '{')
+				i += 2
+			case s[i] == '}':
+				suppressed--
+				cur = append(cur, '}')
+				i++
+			default:
+				cur = append(cur, s[i])
+				i++
+			}
+			continue
+		}
+		if opens {
+			if len(stack) >= maxEnvExpansionDepth {
+				suppressed = 1
+				cur = append(cur, '$', '{')
+				i += 2
+				continue
+			}
+			stack = append(stack, cur)
+			cur = nil
+			i += 2
+			continue
+		}
+		if s[i] == '}' && len(stack) > 0 {
+			inner := cur
+			cur = stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			cur = append(cur, resolveBracedSegment(string(inner), lookup, policy)...)
+			i++
+			continue
+		}
+		if !policy.bracedOnly && s[i] == '$' && i+1 < len(s) && s[i+1] != '{' {
 			end := i + 1
 			for end < len(s) && (isAlnum(s[end]) || s[end] == '_') {
 				end++
 			}
 			if end > i+1 {
-				b.WriteString(lookup(s[i+1 : end]))
+				if v := lookup(s[i+1 : end]); v != "" || !policy.keepUnresolved {
+					cur = append(cur, v...)
+				} else {
+					cur = append(cur, s[i:end]...)
+				}
 				i = end
 				continue
 			}
 		}
-		// `${...}` form — scan to the matching closing brace with
-		// depth counting so nested ${...} segments stay paired.
-		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				if j+1 < len(s) && s[j] == '$' && s[j+1] == '{' {
-					depth++
-					j += 2
-					continue
-				}
-				if s[j] == '}' {
-					depth--
-					if depth == 0 {
-						break
-					}
-				}
-				j++
-			}
-			if depth == 0 {
-				inner := s[i+2 : j]
-				// Recurse so a nested ${...} inside the fallback
-				// gets expanded before we apply the default-value
-				// rule on this level.
-				expanded := ExpandWithDefault(inner, lookup)
-				if idx := strings.Index(expanded, ":-"); idx >= 0 {
-					name, fallback := expanded[:idx], expanded[idx+2:]
-					if v := lookup(name); v != "" {
-						b.WriteString(v)
-					} else {
-						b.WriteString(fallback)
-					}
-				} else {
-					b.WriteString(lookup(expanded))
-				}
-				i = j + 1
-				continue
-			}
-		}
-		b.WriteByte(s[i])
+		cur = append(cur, s[i])
 		i++
 	}
-	return b.String()
+	// An open with no `}` is not a reference: it renders as written, `${`
+	// included, around whatever was already resolved inside it.
+	for len(stack) > 0 {
+		inner := cur
+		cur = stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cur = append(cur, '$', '{')
+		cur = append(cur, inner...)
+	}
+	return string(cur), visited
+}
+
+// resolveBracedSegment applies the `${NAME}` / `${NAME:-default}` rule to
+// one segment whose own content is already resolved. An empty lookup result
+// means "unset", so `:-` fires: that is shell `:-` (as opposed to `-`), and
+// it is what ExpandEnvWithDefault has always promised.
+func resolveBracedSegment(inner string, lookup func(string) string, policy expandPolicy) string {
+	if idx := strings.Index(inner, ":-"); idx >= 0 {
+		name, fallback := inner[:idx], inner[idx+2:]
+		if v := lookup(name); v != "" {
+			return v
+		}
+		return fallback
+	}
+	if v := lookup(inner); v != "" || !policy.keepUnresolved {
+		return v
+	}
+	return "${" + inner + "}"
 }
 
 func isAlnum(c byte) bool {
@@ -1141,7 +1365,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 		}
 		if !ValidReasoningEfforts[effort] {
 			c.errorfAt(DiagInvalidReasoningEffort, node.NodeID(), "",
-				"node %q has invalid reasoning_effort %q; valid values are low, medium, high, xhigh, max, ultracode",
+				"node %q has invalid reasoning_effort %q; valid values are none, low, medium, high, xhigh, max, ultracode",
 				node.NodeID(), effort)
 			continue
 		}
@@ -1184,7 +1408,7 @@ func (c *compiler) validateNodeTimeout(w *Workflow) {
 		d, err := time.ParseDuration(expanded)
 		if err != nil {
 			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
-				"node %q has an invalid timeout %q: %v", node.NodeID(), raw, err)
+				"node %q has an invalid timeout %q: %s", node.NodeID(), raw, DurationParseReason(raw, expanded, err))
 			continue
 		}
 		if d <= 0 {
@@ -1205,6 +1429,11 @@ func ModelSupportsUltracode(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" || IsEnvSubstitutedEffort(m) {
 		return true
+	}
+	if modelroute.Parse(m).Gateway() {
+		// A gateway's model ids are its own namespace: an alias spelled
+		// like a Claude model is no evidence of one.
+		return false
 	}
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]

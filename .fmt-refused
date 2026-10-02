@@ -1,0 +1,25 @@
+# Files `iterion fmt` refuses, and why the check is green anyway.
+#
+# The list is EMPTY: #1612 gave the writer its multi-line forms — the `|`
+# block scalar at a property line, the backtick raw string elsewhere — and
+# every file that stood here is formatted now. What remains refusable is a
+# file holding a value no form carries over lines (a newline beside a
+# backtick or a carriage return that the block scalar cannot hold), which
+# one folded value re-renders without either form, exactly as before.
+#
+# This list is a RATCHET, not a permission slip. `task fmt:check` is green
+# while the refusals are exactly these. It goes red, naming the file, when:
+#   - a formattable file drifts out of its canonical form;
+#   - a new file becomes unformattable (adding one here needs a reason);
+#   - a file listed here stops being refused — including one renamed or
+#     deleted.
+#
+# Format the file and delete its line. Do not add one without a ticket.
+#
+# The list holds PATHS, not reasons: a file named here that later fails to
+# parse, or whose comments a rewrite would lose, is still merely "refused"
+# and the check stays green on it. The floor under that is elsewhere —
+# bots/catalog_parse_compile_test.go, inside the required `test` job, which
+# parses and compiles every catalogue bot.
+#
+# https://github.com/SocialGouv/iterion/issues/1612

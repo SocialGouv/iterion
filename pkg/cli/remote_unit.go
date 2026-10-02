@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // prepareUnit reads the bot at filePath as its unit — the file and the
@@ -22,6 +24,10 @@ import (
 // --force. A bot in one file with no include uploads byte-identical to what
 // it always did, so the identity of its runs does not move.
 func prepareUnit(filePath string) (string, error) {
+	// A draft never travels: refused before it is read, before any upload.
+	if workflowfile.IsAuthorDocument(filePath) {
+		return "", bundle.AuthorDocumentError(filePath)
+	}
 	src, err := os.ReadFile(filePath)
 	if err != nil {
 		return "", err

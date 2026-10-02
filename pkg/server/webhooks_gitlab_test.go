@@ -1148,7 +1148,7 @@ func TestGitLabWebhook_ConcurrentDuplicateReleasesQuota(t *testing.T) {
 		t.Fatalf("duplicate resp: %v", resp)
 	}
 	// The org's monthly counter must reflect ONE launch, not two.
-	u, err := counter.Usage(context.Background(), "o1", now)
+	u, err := counter.Usage(context.Background(), orgusage.OrgSubject("o1"), now)
 	if err != nil {
 		t.Fatal(err)
 	}

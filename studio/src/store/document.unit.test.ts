@@ -23,3 +23,21 @@ describe("document store: the unit a document was opened from", () => {
     expect(store.getState().unit).toBeNull();
   });
 });
+
+describe("document store: a null path that was SET, told from one never set", () => {
+  it("is not detached when fresh, is once the path is set to null, and is not again once a path is bound", () => {
+    const store = createDocumentStore();
+    // A fresh store: bound to nothing, and not resolved yet — a tab keeps
+    // the file param its load is for.
+    expect(store.getState().currentFilePath).toBeNull();
+    expect(store.getState().detached).toBe(false);
+
+    // File → New, Import, Start blank: the document follows no file.
+    store.getState().setCurrentFilePath(null);
+    expect(store.getState().detached).toBe(true);
+
+    // Save As, an opened file: bound again.
+    store.getState().setCurrentFilePath("demo/main.bot");
+    expect(store.getState().detached).toBe(false);
+  });
+});

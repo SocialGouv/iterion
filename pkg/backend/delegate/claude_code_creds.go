@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -26,8 +27,8 @@ func resolveMaxConsecutiveToolErrors() int {
 }
 
 // suppressedForfaitDir is the poisoned CLAUDE_CONFIG_DIR handed to the
-// CLI when the caller explicitly wants forfait auth REFUSED (the
-// providerHint=="zai" no-key branch). mergeCmdEnv turns an empty
+// CLI when the caller explicitly wants forfait auth REFUSED (a facade
+// hint with no facade key). mergeCmdEnv turns an empty
 // value into an absent env var, and the claude CLI then defaults
 // CLAUDE_CONFIG_DIR to $HOME/.claude — on a developer laptop that
 // has run `claude login`, a valid forfait sits there and the CLI
@@ -39,7 +40,7 @@ func resolveMaxConsecutiveToolErrors() int {
 const suppressedForfaitDir = "/nonexistent/iterion-suppress-forfait"
 
 // ForfaitSuppressedEnvKey is the iterion-internal marker that names a
-// suppression map (the providerHint=="zai" no-key branch). Every reader
+// suppression map (a facade hint with no facade key). Every reader
 // of CLAUDE_CONFIG_DIR inside iterion (providerFingerprint,
 // SessionFilesRoot, and any future one) tests THIS key before deciding
 // the OAuth forfait is set — pointing the CLI at a non-existent path
@@ -53,6 +54,31 @@ const suppressedForfaitDir = "/nonexistent/iterion-suppress-forfait"
 // finding R0a39d6.
 const ForfaitSuppressedEnvKey = "ITERION_FORFAIT_SUPPRESSED"
 
+// FacadeSlotEnvKey is the iterion-internal marker naming WHICH anthropic-wire
+// facade built an env map, written by facadeEnvFor's builders and read by
+// providerFingerprint so the slot travels with the routing label.
+//
+// Without it the slot has to be re-derived from ANTHROPIC_BASE_URL at read
+// time, and that URL does not identify a vendor: it is operator-controlled,
+// and two facades legitimately hold the same value. The generic way to put
+// Claude Code on Kimi is `export ANTHROPIC_BASE_URL=<moonshot endpoint>` —
+// the variable zaiEnv reads — and one internal gateway in front of both
+// vendors does the same. A reader deciding between equal labels answers with
+// whichever it compared first, so a Moonshot wall lands on the z.ai
+// fingerprint: the meter then parks the healthy key and keeps handing out the
+// walled one.
+//
+// Same shape as ForfaitSuppressedEnvKey above, for the same reason: the fact
+// is written by the code that KNOWS it and travels with the value it
+// qualifies. The CLI subprocess sees an unknown variable and ignores it.
+const FacadeSlotEnvKey = "ITERION_FACADE_SLOT"
+
+// facadeSourcePrefix opens every facade routing label
+// ("facade:<slot>:<base-url>"). One constant, read by the renderer and by the
+// parser: two spellings of a wire shape is how a reading ends up charged to
+// the wrong key.
+const facadeSourcePrefix = "facade:"
+
 // isForfaitSuppressed reports whether the given env map declares the
 // suppression marker. Cheap enough to call from every reader of
 // CLAUDE_CONFIG_DIR.
@@ -63,25 +89,29 @@ func isForfaitSuppressed(env map[string]string) bool {
 	return env[ForfaitSuppressedEnvKey] != ""
 }
 
-// settingSourcesFromEnv returns the CLI --setting-sources for claude_code
-// nodes. Default "user,project": load the operator's user-level CLAUDE.md /
-// settings.json and the target repo's project CLAUDE.md / .claude/settings.json
-// so the agent honours the same conventions native Claude Code would — a core
-// part of closing the adaptivity gap. Override via
-// ITERION_CLAUDE_CODE_SETTING_SOURCES (comma-separated user/project/local);
-// "" or "none" disables it, restoring the CLI's headless no-settings default.
-// "local" is omitted from the default: .claude/settings.local.json is
-// machine-specific and may carry absolute paths that don't resolve in a sandbox.
-func settingSourcesFromEnv() []claudesdk.SettingSource {
-	raw, ok := os.LookupEnv("ITERION_CLAUDE_CODE_SETTING_SOURCES")
+// settingSourcesEnv is the raw, claude_code-specific override of the scopes a
+// node loads. The ambient-context policy (ADR-119, claudeAmbient) decides them
+// otherwise.
+const settingSourcesEnv = "ITERION_CLAUDE_CODE_SETTING_SOURCES"
+
+// settingSourcesFromEnv reads ITERION_CLAUDE_CODE_SETTING_SOURCES, a
+// comma-separated list of user/project/local. set is false when the variable
+// is absent: the policy then decides. "" or "none" loads no scope at all,
+// which the caller must emit as `--setting-sources ""` — omitting the flag
+// would make the CLI load every scope, `local` included. The routing pin
+// (claudeRoutingPin) holds whatever the scopes. unknown lists the tokens that
+// are none of the three, for the caller to report: a list made only of typos
+// loads no scope at all.
+func settingSourcesFromEnv() (sources []claudesdk.SettingSource, set bool, unknown []string) {
+	raw, ok := os.LookupEnv(settingSourcesEnv)
 	if !ok {
-		raw = "user,project"
+		return nil, false, nil
 	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.EqualFold(raw, "none") {
-		return nil
+		return []claudesdk.SettingSource{}, true, nil
 	}
-	var out []claudesdk.SettingSource
+	out := []claudesdk.SettingSource{}
 	for _, part := range strings.Split(raw, ",") {
 		switch strings.ToLower(strings.TrimSpace(part)) {
 		case "user":
@@ -90,9 +120,11 @@ func settingSourcesFromEnv() []claudesdk.SettingSource {
 			out = append(out, claudesdk.SettingSourceProject)
 		case "local":
 			out = append(out, claudesdk.SettingSourceLocal)
+		default:
+			unknown = append(unknown, strings.TrimSpace(part))
 		}
 	}
-	return out
+	return out, true, unknown
 }
 
 // strictMCPFromEnv reports whether claude_code nodes should run with
@@ -119,16 +151,58 @@ func strictMCPFromEnv() bool {
 	}
 }
 
-// orchestrationTools is the claude_code tool surface that spawns background
-// work (Agent, and Task on older CLIs) or waits on it (TaskOutput, Monitor).
-// Withheld as one unit by ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS:
-// a waiter without a spawner is only a way to deadlock, and a spawner
-// without a waiter leaves background results unreadable.
+// orchestrationTools is the claude_code tool surface that spawns subagents
+// (Agent, and Task on older CLIs) or waits on background work (TaskOutput, on
+// CLIs that still have it, and Monitor). The opt-in
+// ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS withholds it as one unit,
+// because a waiter without a spawner is only a way to deadlock.
 var orchestrationTools = []string{"Agent", "Task", "TaskOutput", "Monitor"}
 
-// workflowOrchestrationTools is the multi-agent surface ultracode grants:
-// withheld from every node that is not in ultracode mode, knob or not.
-var workflowOrchestrationTools = []string{"Workflow"}
+// headlessWithheldTools are withheld from every claude_code spawn, whatever the
+// node declares and whatever its effort grants, ultracode included. Each one
+// hands work to a later turn, and a headless session has none: it ends with
+// its final output.
+//
+//   - Workflow always runs in the background and reports through a completion
+//     notification. It has no foreground mode, and the pinned CLI has no tool
+//     that waits on a task. The background-task switch (backgroundTasksOffEnv)
+//     does not reach it either. Its result could only arrive while the turn was
+//     still running, which is what a model ending its turn to wait never gets.
+//     The CLI also arms it on the word "ultracode" anywhere in the prompt,
+//     content included.
+//   - ScheduleWakeup and CronCreate/CronDelete/CronList schedule a prompt for a
+//     later turn of this session, so here they can never fire. A durable cron
+//     is written into the workspace's .claude/scheduled_tasks.json instead.
+//   - RemoteTrigger schedules remote agents under the account the CLI runs on.
+//
+// Withholding a name the running CLI does not register costs nothing: a deny
+// rule for an absent tool matches nothing.
+var headlessWithheldTools = []string{
+	"Workflow",
+	"ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
+	"RemoteTrigger",
+}
+
+// backgroundTasksOffEnv is the CLI's own switch for background work. With it
+// set, subagents run in the foreground and `run_in_background` disappears
+// from the Agent and Bash schemas. The CLI's Agent prompt then says the report
+// comes back as the tool result, instead of "the turn ends here, the report
+// arrives in a separate turn". In a one-shot session a background result can
+// only arrive while the turn is still running, and a model that ends its turn
+// to wait for one ends the session with it.
+//
+// The flag is the only lever that holds for every launch. The CLI decides
+// `async = remote || (wanted && !backgroundTasksDisabled)`, where `wanted` is
+// also true for an agent definition with `background: true`, for the fork
+// gate, and for coordinator mode. Forcing `run_in_background: false` on the
+// call would leave all three in the background. Only `isolation: "remote"`
+// (a cloud agent, gated behind claude.ai) stays asynchronous.
+//
+// It is one of the variables every spawn pins in two layers, the process
+// environment and the flag settings layer (claudeEnvPins): the CLI rewrites
+// its environment at startup from the settings files it loads, and this key
+// is one a project's settings may set.
+const backgroundTasksOffEnv = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
 
 // disallowOrchestrationToolsFromEnv reads
 // ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;
@@ -140,40 +214,6 @@ func disallowOrchestrationToolsFromEnv() bool {
 	default:
 		return false
 	}
-}
-
-// anthropicCredOptsForCLI returns claudesdk.WithEnv options that point
-// the spawned Claude Code subprocess at the right credentials.
-//
-// providerHint, when non-empty, overrides the default precedence with
-// a per-node routing decision (from the DSL `provider:` field):
-//   - "anthropic" — force Anthropic-direct (API key or OAuth dir),
-//     skip z.ai even if ZAI_API_KEY is set on the process. Use when a
-//     specific node needs Anthropic's full context window (1M on
-//     Claude Opus 4.7) instead of the smaller z.ai window.
-//   - "zai" — force z.ai routing (Anthropic-shaped facade backed by
-//     GLM-4.6) even if Anthropic credentials are present. Use to pin
-//     a node to GLM regardless of process-env precedence.
-//   - "" / "auto" — current process-env-driven precedence (below).
-//
-// Default precedence (first match wins, returned options are mutually
-// exclusive — never set both ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR):
-//
-//  1. Per-run BYOK z.ai key: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
-//     (z.ai's Coding-Plan token routes through Anthropic-shaped wire to
-//     z.ai's gateway, which aliases the model to GLM-4.5/4.6 internally).
-//  2. Per-run BYOK Anthropic key: ANTHROPIC_API_KEY.
-//  3. Per-run OAuth-forfait credentials.json (desktop): CLAUDE_CONFIG_DIR.
-//     NB: on the cloud the same kind is scheduled for removal under
-//     Anthropic Consumer Terms — see .plans/zai-glm-oauth.md.
-//  4. Process-env fallback ZAI_API_KEY: same shape as case 1, lets
-//     desktop users put `ZAI_API_KEY=...` in ~/.iterion/env without
-//     also having to set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN by
-//     hand. ANTHROPIC_API_KEY in env (if present) takes precedence
-//     via the CLI's own resolution; we don't set anything in that
-//     case so the inherited env wins.
-func anthropicCredOptsForCLI(ctx context.Context, providerHint string, sandboxed bool) []claudesdk.Option {
-	return credEnvToOpts(anthropicCredEnvForCLI(ctx, providerHint, sandboxed))
 }
 
 // taskSandboxed reports whether the task's CLI subprocess executes inside
@@ -249,7 +289,8 @@ func credEnvToOpts(env map[string]string) []claudesdk.Option {
 // Drop policy (forks only — a bare resume from the same daemon process
 // is always same-provider continuation, so signatures are trustworthy):
 //
-//   - parent fingerprint set AND differs from current → drop.
+//   - parent fingerprint set AND names another route than current
+//     (sameSessionRoute) → drop.
 //   - parent fingerprint EMPTY (legacy output produced by a binary
 //     that predates the stamp, or by a daemon restarted across a
 //     provider switch) → drop conservatively. The alternative —
@@ -274,11 +315,29 @@ func shouldDropSessionFork(task Task, currentFingerprint string) (bool, string) 
 	if task.SessionFingerprint == "" {
 		return true, "parent session has no recorded provider fingerprint (legacy output or pre-stamp binary) — starting fresh to avoid cross-provider thinking-block 400s"
 	}
-	if currentFingerprint != "" && task.SessionFingerprint != currentFingerprint {
+	if currentFingerprint != "" && !sameSessionRoute(task.SessionFingerprint, currentFingerprint) {
 		return true, fmt.Sprintf("parent session was built on %q but current provider is %q (signed thinking blocks would 400 on cross-provider reuse)",
 			task.SessionFingerprint, currentFingerprint)
 	}
 	return false, ""
+}
+
+// sameSessionRoute reports whether two provider fingerprints name the same
+// route for session reuse. Equal labels do. So does a facade label with no
+// slot against one with a slot, on the same rendered base URL: the slot-less
+// form names no credential — it is what a binary that predates the slot stamp
+// persisted, and what an ambient base URL renders — so it cannot contradict a
+// slot, and before the stamp both rendered the same string. Without this, every
+// facade session persisted before the stamp would be dropped on its first fork
+// after an upgrade. Two DIFFERENT slots on one base URL are two vendors behind
+// one gateway, and stay apart.
+func sameSessionRoute(a, b string) bool {
+	if a == b {
+		return true
+	}
+	slotA, baseA, okA := splitFacadeLabel(a)
+	slotB, baseB, okB := splitFacadeLabel(b)
+	return okA && okB && baseA == baseB && (slotA == "" || slotB == "")
 }
 
 // providerFingerprint derives a stable identifier for the routing
@@ -303,7 +362,15 @@ func providerFingerprint(env map[string]string) string {
 	// Anthropic" and does not collide with the direct label.
 	suppressed := isForfaitSuppressed(env)
 	if base := env["ANTHROPIC_BASE_URL"]; base != "" {
-		return "facade:" + facadeLabel(base)
+		// The slot the env was built FOR, when one stamped it: the base URL
+		// alone does not name a vendor (FacadeSlotEnvKey says why). An env
+		// whose base URL came from somewhere else — an operator's ambient
+		// value forwarded into a sandboxed spawn — carries no slot and keeps
+		// the bare form, which names no credential and is read as such.
+		if slot := env[FacadeSlotEnvKey]; slot != "" {
+			return facadeSourcePrefix + slot + ":" + facadeLabel(base)
+		}
+		return facadeSourcePrefix + facadeLabel(base)
 	}
 	if env["ANTHROPIC_API_KEY"] != "" {
 		return "anthropic-direct"
@@ -471,6 +538,80 @@ func readForfaitAccessToken(dir string) string {
 	return secrets.AnthropicForfaitAccessToken(dir)
 }
 
+// forfaitSpawn records the forfait access token one CLI spawn was handed and
+// the host dir it was read from. A CLI holds that token for its whole life,
+// while the store's refresh worker rotates the record under it — revoking the
+// token — and the runner rewrites the file with the rotation. The pair tells
+// that stale token apart from a dead credential. Zero when the spawn carried
+// no forfait token.
+type forfaitSpawn struct {
+	dir   string
+	token string
+}
+
+// forfaitSpawnOf reads the forfait token out of the credential env a spawn is
+// about to be handed. Only claudeForfaitEnv sets a non-empty
+// CLAUDE_CODE_OAUTH_TOKEN there, from the run's claude_code dir.
+func forfaitSpawnOf(ctx context.Context, credEnv map[string]string) forfaitSpawn {
+	token := credEnv["CLAUDE_CODE_OAUTH_TOKEN"]
+	if token == "" {
+		return forfaitSpawn{}
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return forfaitSpawn{}
+	}
+	return forfaitSpawn{dir: creds.OAuthDir(string(secrets.OAuthKindClaudeCode)), token: token}
+}
+
+// renewed reports that the forfait file now carries another access token than
+// the one this spawn was handed: the credential was rotated under the running
+// CLI, not rejected.
+func (s forfaitSpawn) renewed() bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	now := readForfaitAccessToken(s.dir)
+	return now != "" && now != s.token
+}
+
+// defaultForfaitRenewalWait covers the runner's follow of the store's record
+// (once a minute, pkg/runner/oauth_refresh.go) with slack: the provider
+// refuses a rotated token at once — measured 16 s after the rotation — and
+// the new one reaches the forfait file on the runner's next pass.
+const defaultForfaitRenewalWait = 75 * time.Second
+
+// renewedWithin is renewed, watched for up to wait: a spawn that carried no
+// forfait token answers at once, and so does a cancelled ctx.
+func (s forfaitSpawn) renewedWithin(ctx context.Context, wait time.Duration) bool {
+	if s.dir == "" || s.token == "" {
+		return false
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if s.renewed() {
+			return true
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(min(time.Second, left)):
+		}
+	}
+}
+
+// forfaitRenewalWait is the backend's bound for renewedWithin.
+func (b *ClaudeCodeBackend) forfaitRenewalWait() time.Duration {
+	if b.renewalWait > 0 {
+		return b.renewalWait
+	}
+	return defaultForfaitRenewalWait
+}
+
 // sandboxed reports that the CLI subprocess will execute inside a REAL
 // sandbox container (docker/kubernetes — not the host-passthrough noop), so
 // forfait credential paths must resolve to in-container locations.
@@ -485,13 +626,509 @@ func zaiEnv(key string) map[string]string {
 	if baseURL == "" {
 		baseURL = secrets.ZAIDefaultBaseURL
 	}
-	return map[string]string{
-		"ANTHROPIC_BASE_URL":   baseURL,
-		"ANTHROPIC_AUTH_TOKEN": key,
-	}
+	return facadeRouteEnv(secrets.ProviderZAI, baseURL, key)
 }
 
+// moonshotEnv is the ONE place a Moonshot key becomes CLI env, the twin of
+// zaiEnv for the Kimi family.
+//
+// The override knob is MOONSHOT_BASE_URL, NOT ANTHROPIC_BASE_URL, and that
+// asymmetry with zaiEnv is deliberate: ANTHROPIC_BASE_URL is already z.ai's
+// own documented wiring knob, so on a host configured for z.ai it holds
+// z.ai's endpoint — honouring it here would ship the Moonshot key to z.ai's
+// gateway, which is the "different provider, different bill" failure naming
+// the provider exists to prevent. A dedicated variable keeps the route as
+// explicit as the credential.
+func moonshotEnv(key string) map[string]string {
+	baseURL := os.Getenv("MOONSHOT_BASE_URL")
+	if baseURL == "" {
+		baseURL = secrets.MoonshotDefaultBaseURL
+	}
+	return facadeRouteEnv(secrets.ProviderMoonshot, baseURL, key)
+}
+
+// facadeRouteEnv is the env of a FUNDED facade route: the vendor's endpoint,
+// its key, the slot stamp — and every Anthropic channel the spawned CLI could
+// otherwise inherit, cleared.
+//
+// Setting the facade's two variables is not enough on its own. The spawn
+// inherits the process env (host) or the container env (sandbox), and the
+// CLI's documented auth precedence puts the cloud-provider switches
+// (CLAUDE_CODE_USE_BEDROCK / _VERTEX / _FOUNDRY) ABOVE ANTHROPIC_AUTH_TOKEN: an
+// ambient switch sends a node pinned to a facade to that cloud account
+// instead, while its fingerprint still names the facade. ANTHROPIC_API_KEY and
+// CLAUDE_CODE_OAUTH_TOKEN rank below the facade token, but nothing makes the
+// CLI withhold them from the request it sends to the facade's gateway — a
+// host carrying an Anthropic key or forfait would hand it to another vendor.
+// The refusal (suppressAnthropicWireEnv) clears the same channels, from the
+// same function.
+func facadeRouteEnv(slot secrets.Provider, baseURL, key string) map[string]string {
+	env := clearedAnthropicChannels()
+	env["ANTHROPIC_BASE_URL"] = baseURL
+	env["ANTHROPIC_AUTH_TOKEN"] = key
+	env[FacadeSlotEnvKey] = string(slot)
+	return env
+}
+
+// clearedAnthropicChannels names the credential channels the CLI resolves on
+// its own besides the base-URL/auth-token pair — the Anthropic key, the forfait
+// token and the cloud-provider switches — each set to "", which mergeCmdEnv and
+// the sandbox exec both read as "unset the inherited value". The pair itself
+// is left to each caller: a facade route fills it, the refusal clears it.
+func clearedAnthropicChannels() map[string]string {
+	env := map[string]string{
+		"ANTHROPIC_API_KEY":       "",
+		"CLAUDE_CODE_OAUTH_TOKEN": "",
+	}
+	for _, k := range cloudProviderSwitches {
+		env[k] = ""
+	}
+	return env
+}
+
+// cloudProviderSwitches are the variables that boot the CLI into a cloud
+// provider's mode. They rank first in its auth precedence, above every token.
+var cloudProviderSwitches = []string{
+	"CLAUDE_CODE_USE_BEDROCK",
+	"CLAUDE_CODE_USE_VERTEX",
+	"CLAUDE_CODE_USE_FOUNDRY",
+}
+
+// ambientAnthropicAuthConfigured reports whether this process' env already
+// configures an Anthropic route of its own: a key, a token, or a
+// cloud-provider switch. The ZAI_API_KEY shortcut stands down when it does —
+// it auto-routes only a host with no Anthropic auth configured.
+func ambientAnthropicAuthConfigured() bool {
+	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
+		return true
+	}
+	for _, k := range cloudProviderSwitches {
+		if os.Getenv(k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// facadeEnvFor builds the CLI env for one anthropic-wire facade slot, or nil
+// when the slot names no facade. One function so a caller that walks
+// secrets.AnthropicWireSlotOrder cannot honour a facade at one site and miss
+// it at the next.
+func facadeEnvFor(slot, key string) map[string]string {
+	switch slot {
+	case string(secrets.ProviderZAI):
+		return zaiEnv(key)
+	case string(secrets.ProviderMoonshot):
+		return moonshotEnv(key)
+	}
+	return nil
+}
+
+// suppressAnthropicWireEnv is the refusal: the env handed to the CLI when a
+// node is pinned to a facade provider and NO key for it is reachable. Every
+// channel the CLI could otherwise resolve to reach Anthropic-direct is
+// actively suppressed, so downstream surfaces "no <provider> credential"
+// instead of silently routing the node to a different provider and a
+// different bill. The hostile set:
+//   - Anthropic-flavoured env tokens (ANTHROPIC_API_KEY,
+//     ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN),
+//   - the ANTHROPIC_BASE_URL routing hint,
+//   - the forfait FILE channel (CLAUDE_CONFIG_DIR: the CLI reads
+//     $CLAUDE_CONFIG_DIR/.credentials.json when no higher-priority env token
+//     is set, and on a sandboxed spawn the container's baked value from
+//     `exportForfaitConfigDirs` survives unless we override it here — the
+//     fifth authoritative auth path in claudeForfaitEnv),
+//   - the alt-provider switches CLAUDE_CODE_USE_BEDROCK / _USE_VERTEX /
+//     _USE_FOUNDRY (claw-code-go detectProvider checks these BEFORE
+//     ANTHROPIC_API_KEY, so an operator with the switch and cloud creds
+//     ambient would silently boot the CLI into Bedrock/Vertex mode against
+//     their cloud account for a facade-pinned node with no facade key).
+//
+// CLAUDE_CONFIG_DIR is set to a POISONED absolute path instead of `""`:
+// mergeCmdEnv turns an empty value into an absent env var on the spawned
+// CLI, which then defaults to $HOME/.claude — on a developer laptop that has
+// run `claude login`, that resolves a valid forfait and re-opens the leak. A
+// path we know does not exist forces the CLI's read to fail and no fallback
+// to authenticate. The other four vars stay `""` (real "clear this inherited
+// value") because they carry secrets, not paths.
+//
+// Clearing only a subset leaves the leak intact: issue #1390 pinned this on
+// a wave-4 fallback route that 404'd on the GLM id after silently landing at
+// api.anthropic.com. It is one function rather than one map per facade
+// provider for the same reason — a copy is where the next provider's set
+// goes stale.
+func suppressAnthropicWireEnv() map[string]string {
+	env := clearedAnthropicChannels()
+	env["ANTHROPIC_BASE_URL"] = ""
+	env["ANTHROPIC_AUTH_TOKEN"] = ""
+	env["CLAUDE_CONFIG_DIR"] = suppressedForfaitDir
+	// Marker every iterion-internal reader of CLAUDE_CONFIG_DIR tests
+	// before treating it as a real OAuth forfait — providerFingerprint
+	// would otherwise render the poisoned dir as `anthropic-oauth` and
+	// persist it into the node's output map; SessionFilesRoot would
+	// write transcripts under the non-existent path. See R0a39d6.
+	env[ForfaitSuppressedEnvKey] = "1"
+	return env
+}
+
+// normalizeProviderHint folds a routing hint into the form the switches in
+// this file are written in: lower-case, no surrounding space.
+//
+// The hint is operator TEXT and nothing upstream folds it — a bot's
+// `provider:` field is trimmed but never cased (ir.SplitProviderStep), a
+// launch-time override is stored verbatim, and the compiler's unknown-hint
+// diagnostic is a warning. Matching the exact literal therefore let
+// `provider: "Moonshot"` miss every facade branch and fall through to the
+// DEFAULT precedence: another vendor's account, another bill, and no refusal —
+// the failure ErrNoFacadeCredential exists to make loud.
+//
+// Folded ONCE at the top of the two functions that take a raw hint — this file
+// routes with one (anthropicCredEnvForCLI) and refuses with the other
+// (facadeHintRefusal) — rather than at each comparison, so a branch added
+// later cannot be the one that forgot.
+func normalizeProviderHint(hint string) string {
+	return strings.ToLower(strings.TrimSpace(hint))
+}
+
+// facadeEnvKey names the process-env fallback a facade hint honours when the
+// run carries no BYOK key for it, or "" when the slot has none. Its argument
+// is a NORMALIZED hint (normalizeProviderHint) or a slot name read from
+// secrets.AnthropicWireSlotOrder.
+//
+// ZAI_API_KEY is z.ai's own variable and nothing else reads it, so an
+// ambient value means "route me to z.ai". MOONSHOT_API_KEY is NOT symmetric:
+// it is already the credential channel of `backend: "kimi"` (ADR-065), whose
+// CLI resolves it from the host env. An operator who exported it configured
+// that CLI, not a reroute of every anthropic-wire node — so it is honoured
+// only under an explicit `provider: moonshot` hint, never by the default
+// precedence.
+func facadeEnvKey(slot string) string {
+	switch slot {
+	case string(secrets.ProviderZAI):
+		return "ZAI_API_KEY"
+	case string(secrets.ProviderMoonshot):
+		return "MOONSHOT_API_KEY"
+	}
+	return ""
+}
+
+// facadeCredEnvForHint resolves a facade-pinned node: the run's own BYOK key
+// first, then the provider's process-env fallback, then the refusal. Shared
+// by every facade hint so a new provider cannot land with a weaker refusal
+// than its siblings.
+func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool) map[string]string {
+	if hasCreds {
+		if k := creds.APIKey(secrets.Provider(slot)); k != "" {
+			return facadeEnvFor(slot, k)
+		}
+		// Then a key a shared tier funded BECAUSE a route pins this
+		// provider (secrets.RunBundle.PinnedAPIKeys). Read here and not in
+		// the default-precedence walk below: this branch runs only under an
+		// explicit `provider:` hint, which is the whole licence such a key
+		// carries. After the run's own key, never before it — a tenant's
+		// instrument outranks the deployment's.
+		if k := creds.PinnedAPIKey(secrets.Provider(slot)); k != "" {
+			return facadeEnvFor(slot, k)
+		}
+	}
+	if envKey := facadeEnvKey(slot); envKey != "" {
+		if k := os.Getenv(envKey); k != "" {
+			return facadeEnvFor(slot, k)
+		}
+	}
+	return suppressAnthropicWireEnv()
+}
+
+// ErrNoFacadeCredential is the refusal a node pinned to an anthropic-wire
+// facade provider gets when no key for that provider is reachable. It NAMES
+// the provider and the variable that would have supplied it, because the
+// alternative the CLI produces on its own is "Not logged in" — a message
+// that does not say which of the run's credentials was expected, and reads
+// identically whether the operator pinned the wrong provider or the key
+// simply expired.
+type ErrNoFacadeCredential struct {
+	Provider string
+	EnvVar   string
+}
+
+func (e *ErrNoFacadeCredential) Error() string {
+	return fmt.Sprintf("delegate: node pinned to provider %q but no %s credential is reachable "+
+		"(no BYOK key for this run, no %s in the environment) — refusing rather than routing to Anthropic, "+
+		"which is a different account and a different bill",
+		e.Provider, e.Provider, e.EnvVar)
+}
+
+// facadeHintRefusal turns a facade-pinned node whose resolved env is the
+// suppression map into that named refusal, or nil when the node is funded (or
+// is not facade-pinned at all).
+//
+// It reads the ENV the CLI would actually receive rather than re-running the
+// resolution: a second copy of "is there a key?" is free to disagree with the
+// one that routes, and the disagreement would be invisible — the node would
+// either run suppressed (opaque 401) or be refused while funded.
+func facadeHintRefusal(providerHint string, env map[string]string) error {
+	providerHint = normalizeProviderHint(providerHint)
+	envVar := facadeEnvKey(providerHint)
+	if envVar == "" || !isForfaitSuppressed(env) {
+		return nil
+	}
+	return &ErrNoFacadeCredential{Provider: providerHint, EnvVar: envVar}
+}
+
+// AnthropicRouteSource names the usage-meter source a claude_code session on a
+// route with this provider hint stamps its readings with (stampUsageSource) —
+// the label the runner keys a reading by. It runs the composition
+// setupCredsAndSession runs, host-side and with no task additions, so a
+// pre-flight asking it before the session exists reads the ledger the session
+// will write. refused is true when the delegate refuses the route before
+// spawning — a facade hint with no key reachable: no session, no spend, no
+// reading. A node's own env additions (Task.ExtraEnv) are not composed: they
+// can only move a route that holds no bundle credential, whose readings land
+// on the run's credential-less meter either way.
+func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
+	task := Task{ProviderHint: providerHint}
+	env, selected := anthropicCredRouteForTask(ctx, task)
+	if facadeHintRefusal(providerHint, env) != nil {
+		return "", true
+	}
+	return providerFingerprint(anthropicFingerprintEnvForTask(task, env, selected)), false
+}
+
+// AnthropicWireFacadeSlot maps a usage Reading.Source label back onto the
+// credential slot that paid for it, or "" when the label names no facade.
+//
+// The runner's meter needs this because every facade renders as
+// "facade:…": a reading charged to the wrong vendor parks the healthy key and
+// keeps handing out the walled one. The slot is READ from the label, not
+// re-derived from its base URL — the URL is operator-controlled and two
+// facades can carry the same one, so re-deriving at read time answers with
+// whichever case was compared first (FacadeSlotEnvKey carries the measurement
+// that made this concrete). The stamp is written by the code that built the
+// env, so an operator's base-URL override travels with it and changes nothing
+// here.
+//
+// A facade label with no slot — an ambient base URL forwarded into a
+// sandboxed spawn, a label written by a binary that predates the stamp — names
+// no credential, and a guess is the mis-charge itself: it answers "".
+func AnthropicWireFacadeSlot(source string) string {
+	switch source {
+	case PiUsageSourceZAI:
+		return string(secrets.ProviderZAI)
+	case PiUsageSourceMoonshot:
+		return string(secrets.ProviderMoonshot)
+	}
+	slot, _, _ := splitFacadeLabel(source)
+	return slot
+}
+
+// splitFacadeLabel parses a facade routing label into the slot that built it
+// and the rendered base URL: "facade:<slot>:<base>" → (slot, base, true), the
+// slot-less "facade:<base>" → ("", base, true), anything else → ok=false. The
+// one parser for providerFingerprint's facade shape, so the meter and the
+// session-fork guard cannot read it two ways.
+func splitFacadeLabel(label string) (slot, base string, ok bool) {
+	rest, ok := strings.CutPrefix(label, facadeSourcePrefix)
+	if !ok {
+		return "", "", false
+	}
+	// facadeEnvFor is the one place that knows which slots are facades:
+	// asking it beats a third list of the same two names. A base URL's
+	// scheme ("https") is not one, which is what keeps the slot-less form
+	// from reading as a slot.
+	if head, tail, cut := strings.Cut(rest, ":"); cut && facadeEnvFor(head, "") != nil {
+		return head, tail, true
+	}
+	return "", rest, true
+}
+
+// UsageMeterBackendForProvider names the meter backend a provider's refusals
+// are recorded under, "" for one that carries no metered evidence.
+// Anthropic-wire keys (the direct one and the facades) are spent by
+// claude_code sessions, so that is where the runner meters them.
+//
+// One function, read by the launch walk and by the credential view alike:
+// when they disagreed, the view reported "never refused" for a credential the
+// walk was actively skipping.
+func UsageMeterBackendForProvider(prov secrets.Provider) string {
+	if secrets.WireFamily(string(prov)) == secrets.WireFamilyAnthropic {
+		return BackendClaudeCode
+	}
+	return ""
+}
+
+// anthropicCredEnvForCLI resolves the credential environment for a CLI.
+// Task-aware spawns use anthropicCredEnvForTask to compose provisioning too.
+//
+// providerHint, when non-empty, overrides the default precedence with
+// a per-node routing decision (from the DSL `provider:` field):
+//   - "anthropic" — force Anthropic-direct (API key or OAuth dir),
+//     skip z.ai even if ZAI_API_KEY is set on the process. Use when a
+//     specific node needs Anthropic's full context window (1M on
+//     Claude Opus 4.7) instead of the smaller z.ai window.
+//   - "zai" — force z.ai routing (Anthropic-shaped facade backed by
+//     GLM-4.6) even if Anthropic credentials are present. Use to pin
+//     a node to GLM regardless of process-env precedence.
+//   - "moonshot" — force Moonshot routing (Anthropic-shaped facade
+//     backed by the Kimi family), same contract as "zai".
+//   - "" / "auto" — current process-env-driven precedence (below).
+//
+// The hint is matched folded (normalizeProviderHint): it is operator text, and
+// which account pays must not depend on its capitalisation.
+//
+// A facade hint with no key reachable REFUSES rather than degrades: every
+// Anthropic-flavoured channel is actively suppressed so the node surfaces
+// "no <provider> credential" instead of quietly spending a different
+// account (see suppressAnthropicWireEnv).
+//
+// Default precedence (first match wins, returned options are mutually
+// exclusive — never set both ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR). The
+// order is secrets.AnthropicWireSlotOrder, shared with the usage meter and
+// the spend ledger:
+//
+//  1. Per-run BYOK z.ai key: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
+//     (z.ai's Coding-Plan token routes through Anthropic-shaped wire to
+//     z.ai's gateway, which aliases the model to GLM-4.5/4.6 internally).
+//  2. Per-run BYOK Moonshot key: same shape, pointed at Moonshot's
+//     Anthropic-compatible endpoint for the Kimi family.
+//  3. Per-run BYOK Anthropic key: ANTHROPIC_API_KEY.
+//  4. Per-run OAuth-forfait credentials.json (desktop): CLAUDE_CONFIG_DIR.
+//     NB: on the cloud the same kind is scheduled for removal under
+//     Anthropic Consumer Terms — see .plans/zai-glm-oauth.md.
+//  5. Process-env fallback ZAI_API_KEY: same shape as case 1, lets
+//     desktop users put `ZAI_API_KEY=...` in ~/.iterion/env without
+//     also having to set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN by
+//     hand. ANTHROPIC_API_KEY in env (if present) takes precedence
+//     via the CLI's own resolution; we don't set anything in that
+//     case so the inherited env wins. MOONSHOT_API_KEY has no such
+//     step — facadeEnvKey says why.
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
+	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, providerHint, sandboxed)
+	if sandboxed && inheritAmbient {
+		env := ambientAnthropicEnvForSandbox()
+		if env == nil && len(selected) > 0 {
+			env = make(map[string]string, len(selected))
+		}
+		for key, value := range selected {
+			env[key] = value
+		}
+		return env
+	}
+	return selected
+}
+
+// anthropicCredEnvForTask composes both CLI passes with the same precedence:
+// ambient forwarding < task additions (including empty values) < the resolved
+// credential route. The last layer includes suppression entries: an extra
+// variable must not redirect a selected facade's bearer or revive its forfait.
+func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
+	env, _ := anthropicCredRouteForTask(ctx, task)
+	return env
+}
+
+// anthropicCredRouteForTask is anthropicCredEnvForTask with the resolver's
+// selection beside the composed env: the credentials bound for the route,
+// which alone may name it (anthropicFingerprintEnvForTask).
+func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected map[string]string) {
+	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
+	env = map[string]string{}
+	if inheritAmbient && taskSandboxed(task) {
+		for key, value := range ambientAnthropicEnvForSandbox() {
+			env[key] = value
+		}
+	}
+	entries, _ := claudeExtraEnvEntries(task)
+	for _, kv := range entries {
+		env[kv[0]] = kv[1]
+	}
+	// These labels belong to the resolver, never to process provisioning.
+	// Otherwise an extra env entry can forge a usage-meter slot or turn a
+	// funded route into the "no credential" suppression sentinel.
+	env[FacadeSlotEnvKey] = ""
+	env[ForfaitSuppressedEnvKey] = ""
+	if selected[FacadeSlotEnvKey] == "" && (selected["ANTHROPIC_API_KEY"] != "" || selected["CLAUDE_CONFIG_DIR"] != "") {
+		// A bound direct credential owns its route as a whole. Applying just
+		// its key after ExtraEnv could restore a context key at an unrelated
+		// endpoint, or let a cloud switch spend a different account instead.
+		for key, value := range clearedAnthropicChannels() {
+			env[key] = value
+		}
+		env["ANTHROPIC_BASE_URL"] = ""
+		env["ANTHROPIC_AUTH_TOKEN"] = ""
+	}
+	if normalizeProviderHint(task.ProviderHint) == "anthropic" {
+		// The explicit direct hint also rules out cloud-provider modes when
+		// auth itself is inherited rather than bound from the run context.
+		for _, key := range cloudProviderSwitches {
+			env[key] = ""
+		}
+	}
+	for key, value := range selected {
+		env[key] = value
+	}
+	return env, selected
+}
+
+// directCredentialChannels are the env entries that name a credential of the
+// run by themselves: the Anthropic key, the OAuth forfait's config dir.
+var directCredentialChannels = []string{"ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"}
+
+// anthropicFingerprintEnvForTask is the env a session's source label is read
+// from, never the one it spawns with. A direct credential names the route only
+// when the resolver selected it: the pod's ambient key forwarded into a
+// sandbox, or one a node's own env adds, is no credential of the run and reads
+// as the inherited env does on the host — the usage meter and the spend ledger
+// charge that label to no bundle credential. A host-inherited endpoint is
+// accounted for without changing the spawn environment; a sandbox already has
+// explicit forwarding. Preserve an explicit empty override and the historical
+// cloud-mode labels: a cloud switch makes an inherited Anthropic endpoint
+// irrelevant to routing.
+func anthropicFingerprintEnvForTask(task Task, env, selected map[string]string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	for key, value := range env {
+		out[key] = value
+	}
+	for _, key := range directCredentialChannels {
+		if selected[key] == "" {
+			delete(out, key)
+		}
+	}
+	if taskSandboxed(task) {
+		return out
+	}
+	if _, explicit := out["ANTHROPIC_BASE_URL"]; explicit {
+		return out
+	}
+	base := os.Getenv("ANTHROPIC_BASE_URL")
+	if base == "" {
+		return out
+	}
+	for _, key := range cloudProviderSwitches {
+		value, explicit := out[key]
+		if !explicit {
+			value = os.Getenv(key)
+		}
+		if value != "" {
+			return out
+		}
+	}
+	out["ANTHROPIC_BASE_URL"] = base
+	return out
+}
+
+// claude_code spends the run's Claude forfait before a key a shared tier
+// pinned for an `anthropic` route: the `anthropic` branch below reads the
+// run's own default key, then the forfait, then the pinned key — and the
+// default precedence never reads a pinned key at all.
+func init() {
+	RegisterForfaitFirst(BackendClaudeCode, string(secrets.ProviderAnthropic))
+}
+
+// selectedAnthropicCredEnvForCLI returns authoritative route/credential
+// overrides and whether auth is ambient. An explicit direct hint can clear
+// stale routing fields while still inheriting credentials; those credentials
+// must be composed BEFORE task additions, not promoted to selected overrides.
+func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) (env map[string]string, inheritAmbient bool) {
+	providerHint = normalizeProviderHint(providerHint)
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
 	// providerHint=="anthropic": force Anthropic-direct. Skip the z.ai
@@ -499,127 +1136,81 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	if providerHint == "anthropic" {
 		if hasCreds {
 			if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
-				return map[string]string{"ANTHROPIC_API_KEY": k}
+				return map[string]string{"ANTHROPIC_API_KEY": k}, false
 			}
+			// The forfait before a key a shared tier pinned for the route: a
+			// pin names the PROVIDER, and this CLI spends the subscription on
+			// its plan. The pinned key exists for the consumers that cannot
+			// (claw bills a Claude forfait as extra usage, pi has no bridge to
+			// it); spending it here would move a subscription's work onto a
+			// key billed per token — the org's or the platform's, beside the
+			// tenant's own forfait.
 			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-				return claudeForfaitEnv(d, sandboxed)
+				return claudeForfaitEnv(d, sandboxed), false
+			}
+			// Same licence as the facade branch below: an explicit pin may
+			// spend a key a shared tier funded for it.
+			if k := creds.PinnedAPIKey(secrets.ProviderAnthropic); k != "" {
+				return map[string]string{"ANTHROPIC_API_KEY": k}, false
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the
 		// CLI. Actively clear ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 		// so a stale z.ai value from the parent env doesn't leak in. A
-		// sandboxed spawn inherits the CONTAINER env, not this process'
-		// — forward the ambient Anthropic-direct credentials explicitly
-		// (keeping the z.ai suppression: the hint forces direct).
-		env := map[string]string{
+		// sandboxed spawn needs explicit forwarding; the caller composes
+		// that ambient layer before any task additions, then these overrides.
+		return map[string]string{
 			"ANTHROPIC_BASE_URL":   "",
 			"ANTHROPIC_AUTH_TOKEN": "",
-		}
-		if sandboxed {
-			for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"} {
-				if v := os.Getenv(k); v != "" {
-					env[k] = v
+		}, true
+	}
+
+	// A facade hint ("zai", "moonshot") forces that vendor's endpoint: the
+	// run's own key first, then the provider's process-env fallback, then a
+	// refusal that leaves the CLI no Anthropic channel to fall through to.
+	// Each facade goes through the same function so none can land with a
+	// weaker refusal than its siblings.
+	if facadeEnvKey(providerHint) != "" {
+		return facadeCredEnvForHint(providerHint, creds, hasCreds), false
+	}
+
+	// Default precedence (providerHint is "" / "auto"), in
+	// secrets.AnthropicWireSlotOrder — the one list every reader of this
+	// wire shares. Only credentials the RUN carries participate: a facade's
+	// process-env fallback answers to its own hint, never here (facadeEnvKey
+	// says why MOONSHOT_API_KEY in particular must not reroute an unpinned
+	// node).
+	if hasCreds {
+		for _, slot := range secrets.AnthropicWireSlotOrder {
+			switch slot {
+			case string(secrets.ProviderAnthropic):
+				if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
+					return map[string]string{"ANTHROPIC_API_KEY": k}, false
+				}
+			case string(secrets.OAuthKindClaudeCode):
+				if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
+					return claudeForfaitEnv(d, sandboxed), false
+				}
+			default:
+				if k := creds.APIKey(secrets.Provider(slot)); k != "" {
+					if env := facadeEnvFor(slot, k); env != nil {
+						return env, false
+					}
 				}
 			}
 		}
-		return env
-	}
-
-	// providerHint=="zai": force the z.ai facade. Prefer in-context
-	// creds; fall back to ZAI_API_KEY in the process env.
-	if providerHint == "zai" {
-		if hasCreds {
-			if k := creds.APIKey(secrets.ProviderZAI); k != "" {
-				return zaiEnv(k)
-			}
-		}
-		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
-			return zaiEnv(zai)
-		}
-		// No z.ai key reachable — actively suppress every channel the
-		// CLI could otherwise resolve to reach Anthropic-direct, so
-		// downstream surfaces the "no z.ai credential" error instead
-		// of silently routing the node to a different provider. The
-		// hostile set:
-		//   - Anthropic-flavoured env tokens (ANTHROPIC_API_KEY,
-		//     ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN),
-		//   - the ANTHROPIC_BASE_URL routing hint,
-		//   - the forfait FILE channel (CLAUDE_CONFIG_DIR: the CLI
-		//     reads $CLAUDE_CONFIG_DIR/.credentials.json when no
-		//     higher-priority env token is set, and on a sandboxed
-		//     spawn the container's baked value from
-		//     `exportForfaitConfigDirs` survives unless we override
-		//     it here — the fifth authoritative auth path in
-		//     claudeForfaitEnv),
-		//   - the alt-provider switches CLAUDE_CODE_USE_BEDROCK /
-		//     _USE_VERTEX / _USE_FOUNDRY (claw-code-go
-		//     detectProvider checks these BEFORE ANTHROPIC_API_KEY,
-		//     so an operator with the switch and cloud creds ambient
-		//     would silently boot the CLI into Bedrock/Vertex mode
-		//     against their cloud account for a `provider: zai`
-		//     node without a z.ai key).
-		//
-		// CLAUDE_CONFIG_DIR is set to a POISONED absolute path
-		// instead of `""`: mergeCmdEnv turns an empty value into an
-		// absent env var on the spawned CLI, which then defaults to
-		// $HOME/.claude — on a developer laptop that has run `claude
-		// login`, that resolves a valid forfait and re-opens the
-		// leak. A path we know does not exist forces the CLI's read
-		// to fail and no fallback to authenticate. The other four
-		// vars stay `""` (real "clear this inherited value") because
-		// they carry secrets, not paths.
-		//
-		// Clearing only a subset leaves the leak intact: issue #1390
-		// pinned this on a wave-4 fallback route that 404'd on the
-		// GLM id after silently landing at api.anthropic.com.
-		return map[string]string{
-			"ANTHROPIC_BASE_URL":      "",
-			"ANTHROPIC_AUTH_TOKEN":    "",
-			"ANTHROPIC_API_KEY":       "",
-			"CLAUDE_CODE_OAUTH_TOKEN": "",
-			"CLAUDE_CONFIG_DIR":       suppressedForfaitDir,
-			"CLAUDE_CODE_USE_BEDROCK": "",
-			"CLAUDE_CODE_USE_VERTEX":  "",
-			"CLAUDE_CODE_USE_FOUNDRY": "",
-			// Marker every iterion-internal reader of
-			// CLAUDE_CONFIG_DIR tests before treating it as a real
-			// OAuth forfait — providerFingerprint would otherwise
-			// render the poisoned dir as `anthropic-oauth` and
-			// persist it into the node's output map; SessionFilesRoot
-			// would write transcripts under the non-existent path.
-			// See R0a39d6.
-			ForfaitSuppressedEnvKey: "1",
-		}
-	}
-
-	// Default precedence (providerHint is "" / "auto").
-	if hasCreds {
-		switch {
-		case creds.APIKey(secrets.ProviderZAI) != "":
-			return zaiEnv(creds.APIKey(secrets.ProviderZAI))
-		case creds.APIKey(secrets.ProviderAnthropic) != "":
-			return map[string]string{"ANTHROPIC_API_KEY": creds.APIKey(secrets.ProviderAnthropic)}
-		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
-			return claudeForfaitEnv(creds.OAuthDir(string(secrets.OAuthKindClaudeCode)), sandboxed)
-		}
 	}
 	// Env-fallback: ZAI_API_KEY is the convenience knob for desktop
-	// users. Only honoured when no Anthropic-flavoured creds are
-	// already wired by env — ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
-	// from the inherited env stays authoritative.
-	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+	// users. Only honoured when no Anthropic route is already configured
+	// by env — ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN or a cloud-provider
+	// switch from the inherited env stays authoritative. The switches count
+	// because zaiEnv clears them: honouring the shortcut past one would
+	// turn a Bedrock/Vertex/Foundry host into a z.ai one.
+	if !ambientAnthropicAuthConfigured() {
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
-			return zaiEnv(zai)
+			return zaiEnv(zai), false
 		}
 	}
-	// Host path: nil = let the spawned CLI inherit whatever ambient
-	// Anthropic env this process carries (os.Environ passthrough). A
-	// sandboxed spawn has no such inheritance — forward the ambient
-	// credentials explicitly so a runner-pod-level forfait
-	// (CLAUDE_CODE_OAUTH_TOKEN) or API key reaches the in-container CLI
-	// exactly as it would a host spawn.
-	if sandboxed {
-		return ambientAnthropicEnvForSandbox()
-	}
-	return nil
+	// The caller composes ambient inheritance/forwarding with task additions.
+	return nil, true
 }

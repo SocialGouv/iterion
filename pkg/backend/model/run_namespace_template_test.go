@@ -35,7 +35,7 @@ func TestRunNamespaceReachesPromptsAndToolCommands(t *testing.T) {
 
 	// Tool commands.
 	refs := []*ir.Ref{{Kind: ir.RefRun, Path: []string{"max_cost_usd"}, Raw: "{{run.max_cost_usd}}"}}
-	cmd := resolveCommandTemplate("test $(echo {{run.max_cost_usd}}) -gt 0", refs, nil, nil, td, "run-abc")
+	cmd := resolveCommandTemplate("test $(echo {{run.max_cost_usd}}) -gt 0", refs, nil, nil, td, "run-abc", nil)
 	if strings.Contains(cmd, "{{run.max_cost_usd}}") || !strings.Contains(cmd, "12") {
 		t.Errorf("tool command run.max_cost_usd not substituted: %q", cmd)
 	}

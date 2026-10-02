@@ -72,6 +72,11 @@ func (s *Snapshot) AddDir(name, dir string) error {
 		if strings.HasSuffix(entry.Name(), "_test.go") {
 			return nil
 		}
+		// A draft (`.bot.yaml`, IsDraftEntry) is not a member of the bundle:
+		// not in the snapshot, not in its digest — the packer's rule.
+		if IsDraftEntry(entry.Name(), entry.IsDir()) {
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
@@ -179,6 +184,12 @@ func (s *Snapshot) Materialize() (string, func(), error) {
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	for rel, f := range s.Files {
+		if IsDraftEntry(rel, false) {
+			// A snapshot persisted before the rule may carry a draft: it is
+			// not materialised — the runner reads the .bot alone, as AddDir
+			// now freezes it.
+			continue
+		}
 		p := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			cleanup()

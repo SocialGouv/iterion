@@ -1,0 +1,8 @@
+# refused: the .bot has no signed number, so neither has the twin
+dsl: 2
+nodes:
+  - agent: a
+    max_tokens: -1
+workflow:
+  name: w
+  entry: a

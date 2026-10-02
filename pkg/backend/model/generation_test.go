@@ -67,7 +67,7 @@ func textEvents(text string, inputTokens, outputTokens int) []api.StreamEvent {
 		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: text}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: outputTokens}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: outputTokens}},
 		{Type: api.EventMessageStop},
 	}
 }
@@ -78,7 +78,7 @@ func toolUseEvents(id, name, inputJSON string, inputTokens, outputTokens int) []
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: id, Name: name}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: inputJSON}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: outputTokens}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: outputTokens}},
 		{Type: api.EventMessageStop},
 	}
 }
@@ -130,7 +130,7 @@ func TestAggregateStream_Thinking(t *testing.T) {
 		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 1}},
 		{Type: api.EventContentBlockDelta, Index: 1, Delta: api.Delta{Type: "text_delta", Text: "The answer is 42."}},
 		{Type: api.EventContentBlockStop, Index: 1},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 30}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 30}},
 		{Type: api.EventMessageStop},
 	}
 	for _, ev := range events {
@@ -166,7 +166,7 @@ func TestAggregateStream_ToolUse(t *testing.T) {
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"cit`}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `y": "Paris"}`}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 30}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 30}},
 		{Type: api.EventMessageStop},
 	}
 	for _, ev := range events {
@@ -228,7 +228,7 @@ func TestAggregateStream_MultipleBlocks(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 2, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 2, ID: "tu_2", Name: "get_time"}},
 		{Type: api.EventContentBlockDelta, Index: 2, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"tz": "EST"}`}},
 		{Type: api.EventContentBlockStop, Index: 2},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 50}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 50}},
 		{Type: api.EventMessageStop},
 	}
 	for _, ev := range events {
@@ -261,7 +261,7 @@ func TestAggregateStream_IncompleteToolUse(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "broken"}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"partial`}},
 		// Missing content_block_stop!
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}},
 		{Type: api.EventMessageStop},
 	}
 	for _, ev := range events {
@@ -317,7 +317,7 @@ func TestAggregateStream_CompleteStreamNotFlagged(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "done"}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 5}},
 		{Type: api.EventMessageStop},
 	}
 	for _, ev := range events {
@@ -345,7 +345,7 @@ func TestAggregateStream_CacheTokens(t *testing.T) {
 	ch <- api.StreamEvent{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}}
 	ch <- api.StreamEvent{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "ok"}}
 	ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
-	ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 10}}
+	ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 10}}
 	close(ch)
 
 	agg := aggregateStream(context.Background(), ch)
@@ -422,7 +422,7 @@ func TestGenerateTextDirect_ThinkingOnStep(t *testing.T) {
 		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 1}},
 		{Type: api.EventContentBlockDelta, Index: 1, Delta: api.Delta{Type: "text_delta", Text: "The answer is 42."}},
 		{Type: api.EventContentBlockStop, Index: 1},
-		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 30}},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 30}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(events)
@@ -457,7 +457,7 @@ func TestGenerateTextDirect_ThinkingOnStep(t *testing.T) {
 // (usage.output_tokens_details), it must win over the re-encoded
 // approximation of the visible (summarized) text.
 func TestGenerateTextDirect_ExactThinkingTokensWin(t *testing.T) {
-	deltaEv := api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 348}}
+	deltaEv := api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 348}}
 	deltaEv.Usage.OutputTokensDetails.ThinkingTokens = 312
 	events := []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 50},
@@ -840,7 +840,7 @@ func TestGenerateObjectDirect(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output"}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"city":"Paris","temp":22}`}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 15}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 15}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(events)
@@ -913,7 +913,7 @@ func TestGenerateObjectDirect_CustomSchemaName(t *testing.T) {
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "my_schema"}},
 		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"value":42}`}},
 		{Type: api.EventContentBlockStop, Index: 0},
-		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 10}},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 10}},
 		{Type: api.EventMessageStop},
 	}
 	client := newMockClient(events)

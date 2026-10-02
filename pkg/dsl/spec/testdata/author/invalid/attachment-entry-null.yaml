@@ -1,0 +1,11 @@
+# refused: an attachment needs its type; a bare name is no attachment
+dsl: 2
+attachments:
+  spec:
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

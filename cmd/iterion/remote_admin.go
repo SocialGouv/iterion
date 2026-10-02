@@ -67,8 +67,11 @@ var remoteAdminOrgsCmd = &cobra.Command{
 			if len(args) != 3 {
 				return fmt.Errorf("usage: admin orgs status <org-id> <status>")
 			}
-			body := []byte(fmt.Sprintf(`{"status":%q}`, args[2]))
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/orgs/"+args[1]+"/status", body)
+			body, err := jsonBody(map[string]string{"status": args[2]})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/orgs/"+url.PathEscape(args[1])+"/status", body)
 		case "teams":
 			id, err := needID()
 			if err != nil {
@@ -87,18 +90,53 @@ var remoteAdminOrgsCmd = &cobra.Command{
 	}),
 }
 
+// remoteAdminUserQuery narrows the list to accounts whose email starts
+// with it, or the one whose id equals it.
+var remoteAdminUserQuery string
+
 var remoteAdminUsersCmd = &cobra.Command{
-	Use:   "users [update <user-id>]",
-	Short: "List platform users, or update one (--data)",
-	Args:  cobra.MaximumNArgs(2),
+	Use:   "users [get <user-id>|update <user-id>|reset-password <user-id>]",
+	Short: "List platform users (--q to search), or act on one",
+	Long: "`get` returns one account's FILE: status, last sign-in, whether a\n" +
+		"password sign-in is possible at all, its SSO links, and the orgs and\n" +
+		"teams it was actually GRANTED — the answer to \"where does this account\n" +
+		"come from, and why does it see nothing?\".\n\n" +
+		"`--q` matches an email PREFIX or an exact user id; it is not a substring\n" +
+		"search, so the server can answer it from the index on email.\n\n" +
+		"`reset-password` mints a one-shot temporary password (printed ONCE) and\n" +
+		"revokes every live session. It is the recovery path on a deployment with\n" +
+		"no outbound email; hand the password over out-of-band.",
+	Args: cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/users")
+			path := "/api/admin/users"
+			if q := strings.TrimSpace(remoteAdminUserQuery); q != "" {
+				path += "?q=" + url.QueryEscape(q)
+			}
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 		}
-		if args[0] != "update" || len(args) != 2 {
-			return fmt.Errorf("usage: admin users [update <user-id> --data @f]")
+		if len(args) != 2 {
+			return fmt.Errorf("usage: admin users [get <user-id>|update <user-id> --data @f|reset-password <user-id>]")
 		}
-		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", "/api/admin/users/"+args[1], remoteAdminData, "patch JSON")
+		// --q is read only by the list form above; accepting it silently on an
+		// action would answer a question the operator did not ask.
+		if strings.TrimSpace(remoteAdminUserQuery) != "" {
+			return fmt.Errorf("--q applies to the list form only (`admin users --q <prefix>`), not to %q", args[0])
+		}
+		// PathEscape: an id reaching a URL path unescaped lets `../` retarget
+		// the request through ServeMux's 307 redirect — the CLI would report
+		// success on a route the operator never named.
+		base := "/api/admin/users/" + url.PathEscape(args[1])
+		switch args[0] {
+		case "get":
+			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+		case "update":
+			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base, remoteAdminData, "patch JSON")
+		case "reset-password":
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/reset-password", nil)
+		default:
+			return fmt.Errorf("unknown users action %q (get|update|reset-password)", args[0])
+		}
 	}),
 }
 
@@ -372,8 +410,11 @@ every mutation lands on the platform audit log with a content digest.`,
 			if err != nil {
 				return err
 			}
-			body := []byte(fmt.Sprintf(`{"from":%q}`, slug))
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/bots/"+slug+"/fork", body)
+			body, err := jsonBody(map[string]string{"from": slug})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/bots/"+url.PathEscape(slug)+"/fork", body)
 		default:
 			return fmt.Errorf("unknown bots action %q (want push|show|pull|rm|fork)", action)
 		}
@@ -491,9 +532,16 @@ setting > pod env var > the .bot's own default.
   iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
   iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE   # back to env/default
 
-Infra namespaces (Mongo/NATS/JWT/secrets/…) and credential-shaped names
-are refused at write time. Changes reach every replica within the
-resolver TTL (no restart); runs claimed after that expand the new value.
+A bot var tunes how runs behave. The names the platform keeps for itself are
+refused at write time — those that lift or weaken a guard (security, spend
+and quota ceilings, bounds on untrusted input, workspace safety), configure
+the process or the fleet, name an outside endpoint or identity, or are
+written by the engine for a child process — and so are credential-shaped
+names and values outside letters, digits and ._:/@+=,%-[]. A stored entry
+the current rule refuses (written under an older rule) is not applied and is
+listed under "refused": rm it, or set a valid value.
+Changes reach every replica within the resolver TTL (no restart); runs
+claimed after that expand the new value.
 
 Two honesty notes. Values are stored, echoed and audit-logged IN CLEAR —
 never put a secret in a bot var, even under an innocent name. And a var
@@ -579,6 +627,8 @@ var (
 	remotePlatformCredEnforce string
 	remotePlatformCredTeams   string
 	remotePlatformCredOrgs    string
+	remotePlatformCredKeys    string
+	remotePlatformCredFacade  string
 )
 
 var remoteAdminPlatformCredsCmd = &cobra.Command{
@@ -595,9 +645,27 @@ does not by itself cut the fleet off from its only credential.
   iterion remote admin platform-credentials set --orgs <org-id>
   iterion remote admin platform-credentials set --enforce true
   iterion remote admin platform-credentials set --enforce false   # back to open
+  iterion remote admin platform-credentials set --keys-first true # keys before forfaits
+  iterion remote admin platform-credentials set --facade-default never
 
 Enforcing an audience that names nobody is refused: its symptom would be
-every credential-less run failing at its first LLM call.`,
+every credential-less run failing at its first LLM call.
+
+--keys-first sets the shared-tier fill order on one wire family (platform and
+org tiers). By default a forfait takes the family and an API key funds only
+the routes that name its provider, or the wire a closed forfait leaves free;
+true puts the key first and the forfait behind it; "" clears the override back
+to ITERION_PLATFORM_KEYS_FIRST.
+
+--facade-default says whether a facade key (z.ai, Moonshot: another vendor
+answering a claude id with its own model) may become the anthropic wire's
+DEFAULT in a shared tier: auto (the default) on no tier of the run while ANY
+tier holds an Anthropic-native credential — the run parks on it; tier: per
+tier, the tier holding no native credential falls through to it; never (it
+funds only the routes that name its provider), always (whenever the family is
+free — a closed forfait falls through to it); "" clears the override back to
+ITERION_PLATFORM_FACADE_DEFAULT.
+The GET shows the stored values and the effective ones.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		const path = "/api/admin/settings/platform-credentials"
@@ -624,8 +692,28 @@ every credential-less run failing at its first LLM call.`,
 		if cmd.Flags().Changed("orgs") {
 			body["orgs"] = splitCSV(remotePlatformCredOrgs)
 		}
+		if cmd.Flags().Changed("keys-first") {
+			switch strings.ToLower(strings.TrimSpace(remotePlatformCredKeys)) {
+			case "true", "on", "yes":
+				body["keys_first"] = true
+			case "false", "off", "no":
+				body["keys_first"] = false
+			case "":
+				body["keys_first"] = nil // back to ITERION_PLATFORM_KEYS_FIRST
+			default:
+				return fmt.Errorf("--keys-first wants true|false (or \"\" to clear), got %q", remotePlatformCredKeys)
+			}
+		}
+		if cmd.Flags().Changed("facade-default") {
+			switch v := strings.ToLower(strings.TrimSpace(remotePlatformCredFacade)); v {
+			case "", "auto", "tier", "never", "always":
+				body["facade_default"] = v
+			default:
+				return fmt.Errorf("--facade-default wants auto|tier|never|always (or \"\" to clear), got %q", remotePlatformCredFacade)
+			}
+		}
 		if len(body) == 0 {
-			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b]")
+			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b] [--keys-first true|false] [--facade-default auto|tier|never|always]")
 		}
 		raw, err := json.Marshal(body)
 		if err != nil {
@@ -793,6 +881,7 @@ var remotePluginsCmd = &cobra.Command{
 func init() {
 	remoteAdminOrgsCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
+	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminUserQuery, "q", "", "Match an email prefix, or an exact user id")
 
 	for _, c := range []*cobra.Command{remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd} {
 		c.Flags().StringVar(&remoteLLMFromEnv, "from-env", "", "Read the secret value from this environment variable")
@@ -824,6 +913,8 @@ func init() {
 	remoteAdminSandboxCmd.Flags().BoolVar(&remoteSandboxClearImage, "clear-default-image", false, "Clear the override (fall back to the env default / built-in)")
 
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredEnforce, "enforce", "", "true|false — gate who may draw on the platform credentials")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredKeys, "keys-first", "", "true|false — shared tiers fill API keys before forfaits on one wire family (\"\" clears it back to the env default)")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredFacade, "facade-default", "", "auto|tier|never|always — whether a z.ai/Moonshot key may be the anthropic wire's default in a shared tier (auto: not while ANY tier of the run holds a Claude credential; tier: per tier) (\"\" clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredTeams, "teams", "", "Comma-separated team ids admitted (empty string clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredOrgs, "orgs", "", "Comma-separated org ids whose every team is admitted (empty string clears)")
 

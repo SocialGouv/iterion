@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,8 +14,21 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pat"
 )
+
+// outageStore fails exactly one call — GetTeam — and passes everything
+// else through: an infrastructure outage must read as a 5xx, never as the
+// client-fault 400 the unknown-team refusal carries.
+type outageStore struct {
+	identity.Store
+	err error
+}
+
+func (f outageStore) GetTeam(ctx context.Context, id string) (identity.Team, error) {
+	return identity.Team{}, f.err
+}
 
 func newPATTestServer(t *testing.T) (*Server, context.Context) {
 	t.Helper()
@@ -121,6 +137,51 @@ func TestPATExpiryAndPins(t *testing.T) {
 		s.handleCreatePAT(w, orgReq(ctx, "POST", "/api/me/tokens", `{"name":"pinned","team_id":"ghost"}`, ""))
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("pin to non-member team status = %d, want 403", w.Code)
+		}
+	})
+
+	t.Run("team pin refuses a team that does not exist", func(t *testing.T) {
+		// A super-admin passes the membership gate for ANY string — the
+		// existence gate is what stops a slug-shaped pin minted 201 and
+		// then unable to authenticate ("token team unavailable" forever).
+		w := httptest.NewRecorder()
+		s.handleCreatePAT(w, orgReq(superAdminCtx(), "POST", "/api/me/tokens", `{"name":"slug","team_id":"pic-graal"}`, ""))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("mint for a non-existent team status = %d, want 400", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "unknown team") {
+			t.Fatalf("the refusal names the unknown team: %s", w.Body.String())
+		}
+	})
+
+	t.Run("a store outage is not read as an unknown team", func(t *testing.T) {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			t.Fatalf("rand: %v", err)
+		}
+		signer, err := auth.NewJWTSigner(base64.RawStdEncoding.EncodeToString(key), 15*time.Minute)
+		if err != nil {
+			t.Fatalf("signer: %v", err)
+		}
+		svc, err := auth.NewService(auth.Config{
+			Store:      outageStore{Store: identity.NewMemoryStore(), err: errors.New("store unavailable")},
+			Sessions:   auth.NewMemorySessionStore(),
+			Signer:     signer,
+			SignupMode: auth.SignupOpen,
+			RefreshTTL: time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("auth service: %v", err)
+		}
+		s2 := New(Config{}, iterlog.New(iterlog.LevelError, nil))
+		s2.authSvc = svc
+		w := httptest.NewRecorder()
+		s2.handleCreatePAT(w, orgReq(superAdminCtx(), "POST", "/api/me/tokens", `{"name":"outage","team_id":"t1"}`, ""))
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("a store outage must read 5xx, not the client-fault 400: status=%d body=%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "check team") {
+			t.Fatalf("the 500 carries the cause: %s", w.Body.String())
 		}
 	})
 

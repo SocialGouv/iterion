@@ -130,21 +130,21 @@ func deepsecCommand(t *testing.T) string {
 
 // deepsecErrReporter extracts the embedded python that builds the errors[]
 // array, with the shell-level escaping of its double quotes undone — which is
-// exactly what the shell hands to python3 -c.
+// exactly what the shell hands to python3 -I -c.
 func deepsecErrReporter(t *testing.T) string {
 	t.Helper()
 	body := deepsecCommand(t)
-	const marker = `python3 -c "`
+	const marker = `python3 -I -c "`
 	i := strings.Index(body, `ERR_JSON=$(`)
 	if i < 0 {
 		t.Fatal("no ERR_JSON assignment in the deepsec command")
 	}
 	j := strings.Index(body[i:], marker)
 	if j < 0 {
-		t.Fatal("the ERR_JSON assignment embeds no python3 -c body")
+		t.Fatal("the ERR_JSON assignment embeds no python3 -I -c body")
 	}
 	start := i + j + len(marker)
-	// The terminator is the closing quote of `python3 -c "…"`, which sits at
+	// The terminator is the closing quote of `python3 -I -c "…"`, which sits at
 	// the start of its own line. Searching for a bare `")` cuts the body at
 	// the first ESCAPED quote before a paren — and python then dies on a
 	// syntax error with empty stdout, which reads as "the reporter is broken"

@@ -2,7 +2,7 @@
 
 [Why Iterion?](why-iterion.md) explains what the engine is for. This page
 explains **how we decide** when a design question is open — the stance the
-tactical rules in `CLAUDE.md` serve, and the two arbitrations that are already
+tactical rules in [`AGENTS.md`](../AGENTS.md) serve, and the two arbitrations that are already
 settled so they don't get re-opened on every feature.
 
 | Pillar | One line |
@@ -63,6 +63,7 @@ one. The shipped hatches are the pattern to imitate:
 | The typed remote CLI covers N endpoints | `iterion remote api <METHOD> <path>` reaches all of them | [cloud CLI](cloud-cli.md) |
 | The MCP server exposes curated tools | the `remote_api` tool is the raw passthrough | [MCP server](mcp-server.md) |
 | Host state is auto-mounted | `--sandbox-host-state=none`, `ITERION_SANDBOX_HOST_STATE` | [sandbox](sandbox.md) |
+| A `language: py` tool script runs `python3 -I` | a `command:` names its own interpreter and flags | [DSL](dsl.md) |
 
 ### Corollaries for contributors
 
@@ -97,7 +98,7 @@ and a migration next quarter.
 | Seam | Interface | Shipped implementations |
 |---|---|---|
 | Node execution | `NodeExecutor` ([engine.go](../pkg/runtime/engine.go)) | `ClawExecutor`, test stubs |
-| LLM/agent backend | `delegate.Backend` + `SystemPromptModeForBackend` ([delegate.go](../pkg/backend/delegate/delegate.go)) | claw, claude_code, codex, pi, kimi, grok — [ADR-065](adr/065-dedicated-cli-agent-backend.md), [backends](backends.md) |
+| LLM/agent backend | `delegate.Backend` + `SystemPromptModeForBackend` ([delegate.go](../pkg/backend/delegate/delegate.go)) | claw, claude_code, codex, pi, kimi, grok, opencode — [ADR-065](adr/065-dedicated-cli-agent-backend.md), [backends](backends.md) |
 | Issue tracker | `tracker.Tracker` ([tracker.go](../pkg/dispatcher/tracker/tracker.go)) | native kanban, GitHub, Forgejo |
 | Git forge | [`pkg/forge`](../pkg/forge/) provider adapters | GitHub, GitLab, Forgejo — [ADR-049](adr/049-forge-as-interchangeable-substrate.md) |
 | Shared memory | `knowledge.MemoryStore` ([pkg/knowledge](../pkg/knowledge/)) | filesystem, Mongo — [memory](memory-and-knowledge.md) |
@@ -358,4 +359,4 @@ Related reading: [Why Iterion?](why-iterion.md) ·
 [Architecture](architecture.md) ·
 [The ratchet](improvement-ratchet.md) ·
 [Workflow authoring pitfalls](workflow_authoring_pitfalls.md) ·
-[ADR index](adr/README)
+[ADR index](adr/README.md)

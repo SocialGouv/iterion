@@ -62,7 +62,7 @@ func TestAPathCompilesItsUnit(t *testing.T) {
 		t.Fatal("no identity recorded")
 	}
 	// What the compile read is reported file by file, for the run to record.
-	_, cs, err := compileUnit(mainBot, "", true, nil)
+	_, cs, _, err := compileUnit(mainBot, "", true, nil)
 	if err != nil {
 		t.Fatalf("compileUnit: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestTheIdentityFollowsTheIncludeClosure(t *testing.T) {
 	})
 	mainBot := filepath.Join(root, "main.bot")
 
-	_, cs, err := compileUnit(mainBot, "", true, nil)
+	_, cs, _, err := compileUnit(mainBot, "", true, nil)
 	if err != nil {
 		t.Fatalf("compileUnit: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestTheIdentityFollowsTheIncludeClosure(t *testing.T) {
 	}
 
 	writeUnit(t, root, map[string]string{"notes/b.md": "Beta, edited"})
-	_, edited, err := compileUnit(mainBot, "", true, nil)
+	_, edited, _, err := compileUnit(mainBot, "", true, nil)
 	if err != nil {
 		t.Fatalf("compileUnit after the nested include edit: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestTheIdentityFollowsTheIncludeClosure(t *testing.T) {
 	}
 
 	writeUnit(t, root, map[string]string{"notes/c.md": "nobody includes me"})
-	_, same, err := compileUnit(mainBot, "", true, nil)
+	_, same, _, err := compileUnit(mainBot, "", true, nil)
 	if err != nil {
 		t.Fatalf("compileUnit beside an unincluded file: %v", err)
 	}

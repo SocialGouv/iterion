@@ -1,0 +1,8 @@
+# lax: an explicit tag (!!str) decodes to the type it names and passes the schema — the converter refuses explicit tags (E050): the value's shape decides its type
+dsl: 2
+nodes:
+  - agent: a
+    model: !!str m
+workflow:
+  name: w
+  entry: a

@@ -16,12 +16,22 @@ import (
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 //go:embed codex_output_discipline.txt
 var codexOutputDisciplinePreamble string
+
+const defaultCodexModel = "gpt-6-sol"
+
+func codexTaskModel(model string) string {
+	if model == "" {
+		return defaultCodexModel
+	}
+	return strings.TrimPrefix(model, "openai/")
+}
 
 // CodexBackend delegates work to the `codex` CLI (OpenAI Codex)
 // via the Codex Agent SDK.
@@ -34,6 +44,7 @@ type CodexBackend struct {
 
 // Execute runs the codex CLI with the given task using the Codex Agent SDK.
 func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	task.Model = codexTaskModel(task.Model)
 	if task.Permission.Enabled() {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(
 			"delegate: codex cannot enforce this node's permission: %s gate; refusing to run ungated",
@@ -70,9 +81,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
 	}
-	if model := strings.TrimPrefix(task.Model, "openai/"); model != "" {
-		opts = append(opts, codexsdk.WithModel(model))
-	}
+	opts = append(opts, codexsdk.WithModel(codexTaskModel(task.Model)))
 	if task.ToolMaxSteps > 0 {
 		opts = append(opts, codexsdk.WithMaxTurns(task.ToolMaxSteps))
 	}
@@ -118,8 +127,20 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var stderrCapture codexStderrCapture
 	// Keep credential setup in one helper: structured-output formatting starts a
 	// second CLI process and must use the exact same per-run auth source.
-	if envOverride := codexCredEnvForCLI(ctx); len(envOverride) > 0 {
-		opts = append(opts, codexsdk.WithEnv(envOverride))
+	// The same environment carries the ambient-context policy's CODEX_HOME
+	// (codexSpawnEnv), computed once so both passes see the same home and the
+	// formatting pass resumes the session the work pass wrote.
+	spawnEnv, releaseHome, err := codexSpawnEnv(ctx, task)
+	if err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
+	defer func() {
+		if rerr := releaseHome(); rerr != nil {
+			b.Logger.Warn("[%s#%d/codex] %v", task.NodeID, task.Iteration, rerr)
+		}
+	}()
+	if len(spawnEnv) > 0 {
+		opts = append(opts, codexsdk.WithEnv(spawnEnv))
 	}
 
 	opts = append(opts, codexsdk.WithStderr(func(line string) {
@@ -185,7 +206,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		const maxFmtAttempts = 2
 		for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 			b.Logger.Debug("codex [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, resultMsg.SessionID)
-			fmtRM, fmtDuration, fmtErr := b.formatOutput(ctx, task, resultMsg.SessionID, codexCLIPath)
+			fmtRM, fmtDuration, fmtErr := b.formatOutput(ctx, task, resultMsg.SessionID, codexCLIPath, spawnEnv)
 			result.Duration += fmtDuration
 			if fmtErr != nil {
 				if attempt < maxFmtAttempts {
@@ -347,7 +368,7 @@ func codexQueryContent(prompt string, images []string) codexsdk.UserMessageConte
 // formatOutput performs a second pass: resumes the work-pass session with
 // WithOutputSchema and a tight formatting prompt. Sandbox is forced to
 // read-only so the pass cannot mutate state while rendering the final JSON.
-func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, codexCLIPath string) (*codexsdk.ResultMessage, time.Duration, error) {
+func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, codexCLIPath string, spawnEnv map[string]string) (*codexsdk.ResultMessage, time.Duration, error) {
 	var stderrCapture codexStderrCapture
 	opts := []codexsdk.Option{
 		codexsdk.WithResume(sessionID),
@@ -356,7 +377,7 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, c
 		codexsdk.WithPermissionMode("bypassPermissions"),
 		// Formatting is intentionally tool-free work. Do not inherit Codex's
 		// cached-search default (or the work pass's live-search capability).
-		codexsdk.WithConfig(map[string]string{"web_search": codexWebSearchModeDisabled}),
+		codexsdk.WithConfig(codexConfig(task, codexWebSearchModeDisabled)),
 		codexsdk.WithStderr(func(line string) {
 			stderrCapture.AppendLine(line)
 			if line != "" {
@@ -367,15 +388,13 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, c
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
 	}
-	if model := strings.TrimPrefix(task.Model, "openai/"); model != "" {
-		opts = append(opts, codexsdk.WithModel(model))
-	}
+	opts = append(opts, codexsdk.WithModel(codexTaskModel(task.Model)))
 	opts = append(opts, codexsdk.WithCliPath(codexCLIPath))
 	if task.ReasoningEffort != "" {
 		opts = append(opts, codexsdk.WithEffort(mapReasoningEffort(task.ReasoningEffort)))
 	}
-	if envOverride := codexCredEnvForCLI(ctx); len(envOverride) > 0 {
-		opts = append(opts, codexsdk.WithEnv(envOverride))
+	if len(spawnEnv) > 0 {
+		opts = append(opts, codexsdk.WithEnv(spawnEnv))
 	}
 
 	prompt := "Format your complete findings as JSON matching the required output schema. Do not call any tools; just return the JSON."
@@ -579,6 +598,12 @@ func (c *codexStderrCapture) String() string {
 	return c.buf.String()
 }
 
+// codex spends the run's ChatGPT forfait before any key pinned for an
+// `openai` route: codexCredEnvForCLI below never reads a pinned key.
+func init() {
+	RegisterForfaitFirst(BackendCodex, string(secrets.ProviderOpenAI))
+}
+
 // codexCredEnvForCLI resolves the per-run Codex credential environment. Keep
 // this shared by the work and formatting passes: the latter resumes the first
 // pass in a new CLI process and otherwise loses tenant-scoped auth.
@@ -754,7 +779,8 @@ func hasNonEmptyStructuredOutput(value any) bool {
 }
 
 // codexSandboxForAllowedTools picks the least-privilege codex sandbox mode
-// compatible with the intent expressed by a non-empty AllowedTools list.
+// compatible with the intent expressed by a DECLARED AllowedTools list (an
+// empty one names nothing that writes, so it stays read-only).
 // Iterion accepts both Claude-style TitleCase names and its native snake_case
 // aliases, so normalise before deciding whether filesystem mutation is needed.
 //
@@ -766,13 +792,27 @@ func codexSandboxForAllowedTools(allowed []string) string {
 		if isCodexWebSearchTool(t) {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(t)) {
-		case "read", "read_file", "readfile", "cat", "glob", "grep", "ls":
+		// Classified by the CANONICAL name, not by a spelling list of this
+		// file's own: `find` and `glob` are one tool, and a private table
+		// gave them different sandboxes (#1579 — the same disagreement, on a
+		// fourth table).
+		//
+		// Unifying the spellings also settles three names the old list did
+		// not carry at all, so they fell to `default` and forced
+		// workspace-write: `toolsearch`, `todowrite`, `skill` — plus the
+		// `list_dir` spelling of `ls`. (`websearch` was already exempt, one
+		// line above, through isCodexWebSearchTool.) None of them writes the
+		// workspace — a todo list is session state, a skill is a read — so a
+		// node declaring read-ish names beside one of them is now read-only,
+		// which is what this function's contract (the LEAST-PRIVILEGE mode
+		// compatible with the declared intent) asks for. Measured over 53
+		// spellings and all 2809 ordered pairs: it narrows, never widens. The
+		// one `.bot` in the tree on `backend: "codex"` also sets
+		// `readonly: true`, so it short-circuits before this classifier.
+		switch toolcatalog.CanonicalToolName(t) {
+		case "read", "glob", "grep", "ls", "websearch", "toolsearch", "todowrite", "skill":
 			continue
-		case "bash", "shell", "sh",
-			"edit", "edit_file", "file_edit", "multiedit", "str_replace",
-			"write", "write_file", "writefile",
-			"notebookedit", "notebook_edit", "patch", "apply_patch", "run_command":
+		case "bash", "edit", "write", "notebookedit":
 			return "workspace-write"
 		default:
 			// Unknown/custom tool names cannot prove the task is read-only. Prefer
@@ -785,9 +825,11 @@ func codexSandboxForAllowedTools(allowed []string) string {
 
 // codexSandboxForTask maps the DSL's access intent to Codex. readonly is the
 // explicit lock-down and wins over a conflicting full_access opt-in.
-// With neither flag, an empty tools list means "native toolset unrestricted"
-// throughout Iterion, so Codex must receive workspace-write rather than silently
-// changing that contract to read-only. A restricted list is classified by name.
+// With neither flag, an UNDECLARED tools list means "native toolset
+// unrestricted" throughout Iterion, so Codex must receive workspace-write
+// rather than silently changing that contract to read-only. A restricted list
+// is classified by name — and a list DECLARED empty names nothing that writes,
+// so it is read-only: the author asked for no tools at all.
 func codexSandboxForTask(task Task) string {
 	if task.Readonly {
 		return "read-only"
@@ -795,7 +837,7 @@ func codexSandboxForTask(task Task) string {
 	if task.FullAccess {
 		return "danger-full-access"
 	}
-	if len(task.AllowedTools) == 0 {
+	if !task.ToolsDeclared && len(task.AllowedTools) == 0 {
 		return "workspace-write"
 	}
 	return codexSandboxForAllowedTools(task.AllowedTools)
@@ -806,10 +848,15 @@ func codexNeedsTwoPass(task Task) bool {
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.
-// Codex only supports low/medium/high/max — xhigh maps down to high (matching the
+// The SDK exposes none/low/medium/high/max — xhigh maps down to high (matching the
 // "fall back to highest supported at or below" convention used by Claude Code).
+// "none" maps to the SDK's EffortNone: the models that carry it (GPT-6
+// Sol/Luna) disable reasoning entirely; a model without it is refused by the
+// CLI rather than silently re-leveled here.
 func mapReasoningEffort(s string) codexsdk.Effort {
 	switch s {
+	case "none":
+		return codexsdk.EffortNone
 	case "low":
 		return codexsdk.EffortLow
 	case "medium":

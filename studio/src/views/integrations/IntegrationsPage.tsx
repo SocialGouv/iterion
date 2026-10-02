@@ -40,7 +40,7 @@ const TAB_ITEMS = TABS.map((t) => ({ value: t.id, label: t.label }));
 
 export default function IntegrationsPage() {
   const { activeTeam } = useAuth();
-  const canManage = useCanManageTeam();
+  const canManage = useCanManageTeam(activeTeam?.team_id ?? "");
   // Integrations are team-scoped cloud resources (forge/webhook/secret
   // stores are wired only in cloud mode). Local mode has no team selector,
   // so "select a team" would be an instruction that can't be followed —

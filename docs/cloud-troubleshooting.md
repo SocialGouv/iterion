@@ -98,6 +98,7 @@ Diagnose:
 
 Fix:
 - Rotate the access key + secret in the secret backing `ITERION_S3_ACCESS_KEY_ID` / `ITERION_S3_SECRET_ACCESS_KEY` and roll the deployment.
+- For SeaweedFS: the identity holding the key (the JSON the gateway reads: `-config` for `weed s3`, `-s3.config` for `weed server -s3`) needs the `Read`, `Write` and `List` actions — never add an identity named `anonymous`, it is how unsigned requests get served. With `-autoCreateBucket` (`-s3.autoCreateBucket` under `weed server -s3`) left at its default (true), a PUT into a missing bucket CREATES it for an `Admin` identity: a wrong `ITERION_S3_BUCKET` then fills a new, empty bucket instead of failing.
 - For MinIO: ensure the access key has `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket` on the configured bucket.
 - For AWS: prefer IAM Roles for Service Accounts (IRSA) over static keys — set `serviceAccount.annotations.eks.amazonaws.com/role-arn` in your values overlay and unset the `*_ACCESS_KEY_ID` env vars.
 

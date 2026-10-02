@@ -29,6 +29,14 @@ type Identity struct {
 	// revocation later (we don't revoke access tokens today; we
 	// rely on short TTL + refresh rotation).
 	JTI string
+	// Via names how this identity's team was resolved when it does NOT
+	// come from the credential's own pin: the run-by-id resolution
+	// (run_scope.go) re-scopes an identity to the RUN's team and records
+	// here which standing carried it ("membership", "org-admin-lineage").
+	// Empty means the team is the credential's own (session, pinned PAT,
+	// synthetic principal) — the common case, and every pre-existing
+	// construction site keeps it empty.
+	Via string
 }
 
 // IdentityKind distinguishes a real authenticated user (JWT or PAT — full

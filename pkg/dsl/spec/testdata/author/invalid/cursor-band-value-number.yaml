@@ -1,0 +1,13 @@
+# refused: a band carries a prompt fragment, a string
+dsl: 2
+cursors:
+  c:
+    bands:
+      "0..1": 7
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

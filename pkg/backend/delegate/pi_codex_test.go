@@ -447,7 +447,7 @@ func TestPiBinaryOverride(t *testing.T) {
 	t.Run("env names the binary on the host", func(t *testing.T) {
 		t.Setenv("ITERION_PI_BIN", "/opt/pi-native")
 		b := NewPiBackend(nil, "")
-		if got := b.print.resolveBinary(Task{}); got != "/opt/pi-native" {
+		if got, _ := b.print.resolveBinary(Task{}); got != "/opt/pi-native" {
 			t.Errorf("print transport resolved %q, want the override", got)
 		}
 		if _, ok := b.rpc.(*PiRPCBackend); !ok {
@@ -458,15 +458,31 @@ func TestPiBinaryOverride(t *testing.T) {
 	// An explicit per-node `command:` is the more specific statement.
 	t.Run("an explicit command wins", func(t *testing.T) {
 		t.Setenv("ITERION_PI_BIN", "/opt/pi-native")
-		if got := NewPiBackend(nil, "/usr/bin/pi").print.resolveBinary(Task{}); got != "/usr/bin/pi" {
+		if got, _ := NewPiBackend(nil, "/usr/bin/pi").print.resolveBinary(Task{}); got != "/usr/bin/pi" {
 			t.Errorf("resolved %q, want the explicit one", got)
 		}
 	})
 
 	t.Run("unset leaves the protocol default", func(t *testing.T) {
 		t.Setenv("ITERION_PI_BIN", "")
-		if got := NewPiBackend(nil, "").print.resolveBinary(Task{}); got != "" {
-			t.Errorf("resolved %q, want empty so the PATH lookup applies", got)
+		if got, _ := NewPiBackend(nil, "").print.resolveBinary(Task{}); got != piProtocol.DefaultBinary {
+			t.Errorf("resolved %q, want the protocol default so the PATH lookup applies", got)
+		}
+	})
+
+	// A relative path with a separator would resolve against cmd.Dir — the
+	// workspace — and run a binary out of the checkout. Refused, never
+	// swapped for the default in silence. A BARE NAME carries no such hazard
+	// (os/exec resolves it through PATH) and stays honoured.
+	t.Run("a relative path is refused, a bare name is honoured", func(t *testing.T) {
+		t.Setenv("ITERION_PI_BIN", "./bin/pi")
+		if _, err := NewPiBackend(nil, "").print.resolveBinary(Task{}); err == nil {
+			t.Error("a relative override was accepted; it would exec out of the workspace")
+		}
+		t.Setenv("ITERION_PI_BIN", "pi-nightly")
+		got, err := NewPiBackend(nil, "").print.resolveBinary(Task{})
+		if err != nil || got != "pi-nightly" {
+			t.Errorf("bare name resolved (%q, %v), want it honoured for the PATH lookup", got, err)
 		}
 	})
 }
@@ -978,15 +994,15 @@ func TestPiBinaryOverrideIsHostOnly(t *testing.T) {
 	t.Setenv("ITERION_PI_BIN", "/opt/host-only/pi")
 	b := NewPiBackend(nil, "")
 
-	if got := b.print.resolveBinary(Task{}); got != "/opt/host-only/pi" {
+	if got, _ := b.print.resolveBinary(Task{}); got != "/opt/host-only/pi" {
 		t.Errorf("host run resolved %q, want the override", got)
 	}
-	if got := b.print.resolveBinary(Task{Sandbox: stubSandboxRun{}}); got != "" {
+	if got, _ := b.print.resolveBinary(Task{Sandbox: stubSandboxRun{}}); got != piProtocol.DefaultBinary {
 		t.Errorf("sandboxed run resolved %q — a host path is not a container path", got)
 	}
 
 	explicit := NewPiBackend(nil, "/pinned/pi")
-	if got := explicit.print.resolveBinary(Task{Sandbox: stubSandboxRun{}}); got != "/pinned/pi" {
+	if got, _ := explicit.print.resolveBinary(Task{Sandbox: stubSandboxRun{}}); got != "/pinned/pi" {
 		t.Errorf("explicit command resolved %q, want it honoured", got)
 	}
 }
@@ -1109,7 +1125,7 @@ func TestHostlessIsOneDefinition(t *testing.T) {
 	if !noop.Hostless() {
 		t.Fatal("a noop sandbox is a passthrough; it runs on the host")
 	}
-	if got := NewPiBackend(nil, "").print.resolveBinary(noop); got != "/opt/host-only/pi" {
+	if got, _ := NewPiBackend(nil, "").print.resolveBinary(noop); got != "/opt/host-only/pi" {
 		t.Errorf("resolveBinary = %q on a noop run, want the host override", got)
 	}
 	if (Task{Sandbox: stubSandboxRun{}}).Hostless() {

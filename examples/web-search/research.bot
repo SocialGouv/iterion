@@ -26,16 +26,16 @@ schema researcher_output:
   sources: string[]
 
 agent researcher:
-  backend: "claw"
   model: "anthropic/claude-sonnet-4-6"
+  backend: "claw"
+  output: researcher_output
   system: researcher_system
   user: researcher_user
-  output: researcher_output
   tools: [web_search, web_fetch]
   tool_max_steps: 8
-  session: fresh
 
 workflow main:
+
   entry: researcher
 
   budget:

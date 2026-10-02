@@ -38,6 +38,13 @@ interface Props<T = string> {
    *  Adds a "Use '<query>'" row + Enter-commits-on-no-match. Only
    *  meaningful when T is string-like (e.g. a free-form assignee). */
   freeSolo?: boolean;
+  /** Reports the search text as it is typed, for a host that resolves
+   *  `options` from the SERVER rather than filtering a list it already
+   *  holds. Without it such a host has to render a second search box above
+   *  this one, and the operator faces two inputs that both read as "type
+   *  to find". The local filter still runs over whatever `options` come
+   *  back, which is harmless when the server already matched them. */
+  onQueryChange?: (query: string) => void;
 }
 
 /** Combobox is a searchable single-select primitive. The Board ticket
@@ -61,6 +68,7 @@ export function Combobox<T = string>({
   size = "sm",
   id,
   freeSolo = false,
+  onQueryChange,
 }: Props<T>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -96,7 +104,11 @@ export function Combobox<T = string>({
     setOpen(false);
     setQuery("");
     setFocusIdx(-1);
-  }, []);
+    // Closing clears the text, so a server-backed host must hear it too —
+    // otherwise its next open shows the previous search's results under an
+    // empty box.
+    onQueryChange?.("");
+  }, [onQueryChange]);
 
   const sizeClass = size === "sm" ? "h-7 text-xs px-2" : "h-9 text-sm px-2.5";
 
@@ -150,11 +162,17 @@ export function Combobox<T = string>({
   };
 
   // Header shows the selected option's label or the placeholder.
+  //
+  // A held value whose option is no longer in `options` falls back to the
+  // value itself, NEVER to the placeholder: a host whose list can shrink
+  // under a live selection — a server-backed search, a refetched roster —
+  // would otherwise read as "nothing is selected" while the selection is
+  // still held and the submit button next to it still enabled.
   const headerText = selected
     ? selected.label
-    : value === "" && emptyLabel
-      ? emptyLabel
-      : "";
+    : value === ""
+      ? (emptyLabel ?? "")
+      : String(value);
 
   const listboxId = useId();
 
@@ -202,6 +220,7 @@ export function Combobox<T = string>({
               onChange={(e) => {
                 setQuery(e.target.value);
                 setFocusIdx(emptyLabel != null ? -1 : 0);
+                onQueryChange?.(e.target.value);
               }}
               onKeyDown={onKeyDown}
               className="w-full bg-surface-1 text-fg-default rounded border border-border-default px-2 py-1 text-xs outline-none focus:border-accent"

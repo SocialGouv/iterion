@@ -80,15 +80,15 @@ metrics on each event:
 
 iterion attributes metrics from each backend on a best-effort basis:
 
-| Metric                          | claw | claude_code | pi | kimi | grok | codex |
-|---------------------------------|:----:|:-----------:|:--:|:----:|:----:|:-----:|
-| `iterion_llm_request_total`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `iterion_llm_retry_total`       | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `iterion_node_duration_ms`      | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `iterion_tool_call_total`       | ✅ | ✅ | ✅ | — | — | ✅ |
-| `iterion_node_tokens_total`     | ✅ | ✅ | ✅ | ✅\* | ✅\* | ✅ |
-| `iterion_node_cost_usd_total`   | ✅\*\* | ✅\*\* | ✅† | — | — | ✅\*\* |
-| `iterion_parallel_branches`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Metric                          | claw | claude_code | pi | kimi | grok | codex | opencode |
+|---------------------------------|:----:|:-----------:|:--:|:----:|:----:|:-----:|:--------:|
+| `iterion_llm_request_total`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `iterion_llm_retry_total`       | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `iterion_node_duration_ms`      | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `iterion_tool_call_total`       | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| `iterion_node_tokens_total`     | ✅ | ✅ | ✅ | ✅\* | ✅\* | ✅ | ✅ |
+| `iterion_node_cost_usd_total`   | ✅\*\* | ✅\*\* | ✅† | — | — | ✅\*\* | ✅† |
+| `iterion_parallel_branches`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* Kimi/Grok token counts are present only when the CLI's JSON output includes
 usage. Their legacy protocol adapter exposes a total rather than an
@@ -96,6 +96,10 @@ input/output split.
 
 \*\* Cost is computed from the per-model pricing table in
 `pkg/backend/cost/cost.go`; an unknown model emits no `_cost_usd` field.
+
+opencode reports a real input/output split (not just a total) and its own
+per-step USD cost, both read off its `step-finish` parts; it runs its own
+tool loop, so iterion sees no individual tool calls.
 
 † Pi supplies its own provider-computed input/output cost in both RPC and print
 modes, so it does not depend on Iterion's pricing table.

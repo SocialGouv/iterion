@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
@@ -303,14 +304,14 @@ func TestBundleValidationChecksAFragmentThroughEverySibling(t *testing.T) {
 // must still compile without it, and its manifest still declare the floor
 // its sources need.
 func TestDeleteBotSourceFileKeepsTheGuards(t *testing.T) {
-	pinServerBuild(t, "v3.145.0+deadbeef")
+	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, editor, _ := newBotSourceTestServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.145.0+abc123"}}
+	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
 	edCtx := auth.WithIdentity(context.Background(), editor)
 	files := map[string]string{
 		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: worker\n  worker -> done\n",
 		"lib/nodes.bot": "schema out:\n  ok: bool\n\nagent worker:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"x\"\n  output: out\n",
-		"manifest.yaml": "name: multi\nversion: 1.0.0\nrequires:\n  iterion: \">= 3.145.0\"\n",
+		"manifest.yaml": "name: multi\nversion: 1.0.0\nrequires:\n  iterion: \">= " + parser.ImportSince + "\"\n",
 	}
 	body, _ := json.Marshal(botSourcePutReq{Files: files})
 	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/multi", strings.NewReader(string(body))).WithContext(edCtx)
@@ -348,16 +349,16 @@ func TestDeleteBotSourceFileKeepsTheGuards(t *testing.T) {
 // imports included — and a bundle that never compiled can still shed a
 // file the compiler never reads.
 func TestBotSourceFileRoutesCheckWhatTheyChange(t *testing.T) {
-	pinServerBuild(t, "v3.145.0+deadbeef")
+	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, editor, _ := newBotSourceTestServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.145.0+abc123"}}
+	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
 	edCtx := auth.WithIdentity(context.Background(), editor)
 	files := map[string]string{
 		"main.bot":      "workflow main:\n  entry: done\n",
 		"child.bot":     "import \"lib/x.bot\"\n\nworkflow other:\n  entry: t\n  t -> done\n",
 		"lib/x.bot":     "tool t:\n  command: \"true\"\n",
 		"README.md":     "# demo\n",
-		"manifest.yaml": "name: multi\nversion: 1.0.0\nrequires:\n  iterion: \">= 3.145.0\"\n",
+		"manifest.yaml": "name: multi\nversion: 1.0.0\nrequires:\n  iterion: \">= " + parser.ImportSince + "\"\n",
 	}
 	seed := func(slug string, files map[string]string) {
 		body, _ := json.Marshal(botSourcePutReq{Files: files})

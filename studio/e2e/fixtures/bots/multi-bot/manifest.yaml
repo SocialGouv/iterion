@@ -1,0 +1,7 @@
+name: multi-bot
+display_name: Multi-File Fixture
+description: A bot in several files, so the studio UI e2e suite can exercise the Source view's file picker.
+version: 0.1.0
+enabled: true
+requires:
+  iterion: ">= 3.145.0"

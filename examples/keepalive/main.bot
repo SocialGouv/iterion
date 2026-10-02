@@ -11,9 +11,11 @@ schema out:
   beat: string
 
 tool beat:
-  command: `printf '{"beat":"%s"}' "$(date -u +%H:%M:%SZ)"`
+  command: "printf '{\"beat\":\"%s\"}' \"$(date -u +%H:%M:%SZ)\""
   output: out
 
 workflow heartbeat:
+
   entry: beat
+
   beat -> done

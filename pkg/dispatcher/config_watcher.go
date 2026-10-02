@@ -59,7 +59,7 @@ func NewConfigWatcher(path string, logger *iterlog.Logger) (*ConfigWatcher, erro
 // pattern that fsnotify cannot follow on a per-file watch on Linux.
 func (w *ConfigWatcher) Start(onReload func(*Config)) error {
 	dir := filepath.Dir(w.path)
-	if err := w.fsWatcher.Add(dir); err != nil {
+	if err := fswatch.Add(w.fsWatcher, dir); err != nil {
 		return err
 	}
 	errtrack.Go("dispatcher.configWatcher", func() { w.loop(onReload) })

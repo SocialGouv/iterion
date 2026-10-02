@@ -199,6 +199,18 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 // as every workflow file under it (skipping the store, the VCS and vendored
 // trees), sorted.
 func collectBotFiles(cmd string, paths []string) ([]string, error) {
+	return collectWorkflowFiles(cmd, paths, false)
+}
+
+// collectWorkflowFiles is collectBotFiles with an explicit policy for the
+// author document (`.bot.yaml`, a draft of a .bot): fmt takes one — named
+// or met in a walk, it has a canonical YAML form — while fix and migrate
+// take none; a document named to them is refused with the command that
+// writes the .bot they work on.
+func collectWorkflowFiles(cmd string, paths []string, documents bool) ([]string, error) {
+	accept := func(p string) bool {
+		return workflowfile.IsWorkflowFile(p) || (documents && workflowfile.IsAuthorDocument(p))
+	}
 	var out []string
 	seen := map[string]bool{}
 	add := func(p string) {
@@ -213,7 +225,10 @@ func collectBotFiles(cmd string, paths []string) ([]string, error) {
 			return nil, fmt.Errorf("%s: %w", cmd, err)
 		}
 		if !info.IsDir() {
-			if !workflowfile.IsWorkflowFile(p) {
+			if !accept(p) {
+				if workflowfile.IsAuthorDocument(p) {
+					return nil, fmt.Errorf("%s: %s is an author document, a draft of a .bot: `iterion fmt --to bot %s` writes the .bot, which %s takes", cmd, p, p, cmd)
+				}
 				return nil, fmt.Errorf("%s: %s is not a workflow file", cmd, p)
 			}
 			add(p)
@@ -224,15 +239,15 @@ func collectBotFiles(cmd string, paths []string) ([]string, error) {
 				return err
 			}
 			if d.IsDir() {
-				// Hidden trees hold other checkouts (`.claude/worktrees`,
-				// `.works`, `.repos`), the store and the VCS: never rewritten
-				// from a walk, only when named as a path themselves.
-				if path != p && (strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "node_modules") {
+				// The shared rule (workflowfile.SkipWalkDir): a tree a
+				// walk does not descend into is never rewritten from one,
+				// only when named as a path itself.
+				if path != p && workflowfile.SkipWalkDir(d.Name()) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if workflowfile.IsWorkflowFile(path) {
+			if accept(path) {
 				add(path)
 			}
 			return nil

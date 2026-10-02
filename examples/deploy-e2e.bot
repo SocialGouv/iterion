@@ -14,22 +14,21 @@
 
 dsl: 2
 
+vars:
+  app_dir: string = "${PROJECT_DIR}"
+  test_url: string = "https://app.test.example.com"
+
 secrets:
   ## Cluster credentials, exposed via $KUBECONFIG pointing at the file.
   kubeconfig:
     as: file
-    env: KUBECONFIG
+    env: "KUBECONFIG"
     optional: true
-
   ## A deploy/API token, egress-scoped to the test instance host.
   deploy_token:
     as: file
     optional: true
     hosts: ["api.test.example.com"]
-
-vars:
-  app_dir: string = "${PROJECT_DIR}"
-  test_url: string = "https://app.test.example.com"
 
 prompt deploy_system:
   Build the app in {{vars.app_dir}}, redeploy it to the test cluster
@@ -59,14 +58,14 @@ schema verdict_schema:
 agent deploy_and_test:
   model: "anthropic/claude-sonnet-4-6"
   backend: "claude_code"
-  system: deploy_system
   output: deploy_result
+  system: deploy_system
 
 judge verdict:
   model: "openai/gpt-5.4-mini"
   backend: "claw"
-  system: verdict_system
   output: verdict_schema
+  system: verdict_system
 
 ## The loop-exhaustion exit: once `retry` is spent the back-edge is
 ## declined, and the bare edge below carries the run here — a typed
@@ -76,9 +75,14 @@ fail deploy_unverified:
   message: "the deployment did not pass end-to-end validation after the retries allowed"
 
 workflow deploy_e2e:
-  entry: deploy_and_test
   sandbox: auto
+
+  entry: deploy_and_test
+
   deploy_and_test -> verdict
+
   verdict -> done when pass
-  verdict -> deploy_and_test as retry(2) when not pass
+
+  verdict -> deploy_and_test when not pass as retry(2)
+
   verdict -> deploy_unverified

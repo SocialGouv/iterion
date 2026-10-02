@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/zlib"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,32 +13,73 @@ import (
 	"unicode/utf8"
 )
 
+// ErrBudgetExceeded is returned when the extraction blows the caller's
+// budget — a single FlateDecode stream inflating past it (a compressed
+// bomb), or the document-wide sum of streams doing the same through
+// many small ones. Neither is a corrupt stream to skip: the caller set
+// a budget, the document broke it, the extraction fails whole.
+var ErrBudgetExceeded = errors.New("pdf extraction past the caller's budget")
+
+// DefaultDecompressionBudget bounds what one FlateDecode stream may
+// inflate to when the caller has no opinion. zlib holds roughly 1000:1,
+// so a budget is the only thing standing between a small compressed
+// bomb and an allocation the host process dies of.
+const DefaultDecompressionBudget = 64 << 20
+
 // ExtractText reads a PDF file and extracts all readable text from BT/ET
 // operators across all content streams. Non-text pages or encrypted PDFs
-// yield an empty string rather than an error.
-func ExtractText(path string) (string, error) {
+// yield an empty string rather than an error. maxDecompressed is the
+// INFLATION budget: any single FlateDecode stream inflating past it, or
+// the document-wide sum of inflated streams doing the same through many
+// small ones, fails with ErrBudgetExceeded instead of allocating. The
+// path form reads the whole file unbounded — size-bound it yourself or
+// use ExtractTextFromBytes.
+func ExtractText(path string, maxDecompressed int64) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to read PDF: %w", err)
 	}
-	return ExtractTextFromBytes(data), nil
+	return ExtractTextFromBytes(data, maxDecompressed)
 }
 
 // ExtractTextFromBytes extracts text from raw PDF bytes. This is the core
 // extraction function, useful for testing without touching the filesystem.
-func ExtractTextFromBytes(data []byte) string {
+func ExtractTextFromBytes(data []byte, maxDecompressed int64) (string, error) {
 	var allText strings.Builder
+	// The budget's consumers are TWO: any single inflate (bounded inside
+	// inflate) and the document-wide sum of inflated bytes — many small
+	// streams, each under the cap, allocate the same memory one bomb
+	// would, whether or not any of it is text.
+	var inflatedTotal int64
 	offset := 0
 
 	for offset < len(data) {
+		// "stream" with a NON-ALPHANUMERIC byte before it. Bare
+		// "stream" matches inside "endstream" (a multi-stream document
+		// had every stream after the first consumed as mis-aligned
+		// garbage), and the "\nstream" form excluded spec-tolerated
+		// delimiters ("<< … >>stream" glued, lone \r, space, tab).
 		streamStart := bytes.Index(data[offset:], []byte("stream"))
+		for streamStart >= 0 {
+			prev := offset + streamStart - 1
+			if prev < 0 || !isPDFNameByte(data[prev]) {
+				break
+			}
+			next := bytes.Index(data[offset+streamStart+1:], []byte("stream"))
+			if next < 0 {
+				streamStart = -1
+				break
+			}
+			streamStart += next + 1
+		}
 		if streamStart < 0 {
 			break
 		}
 		absStart := offset + streamStart
 
-		// Skip past "stream\r\n" or "stream\n".
-		contentStart := skipStreamEOL(data, absStart+len("stream"))
+		// Skip past "stream\r\n" or "stream\n" (the leading \n of the
+		// needle is not part of the stream content).
+		contentStart := skipStreamEOL(data, absStart+len("\nstream"))
 
 		endRel := bytes.Index(data[contentStart:], []byte("endstream"))
 		if endRel < 0 {
@@ -56,10 +98,21 @@ func ExtractTextFromBytes(data []byte) string {
 		raw := data[contentStart:contentEnd]
 		var streamBytes []byte
 		if isFlate {
-			decompressed, err := inflate(raw)
+			decompressed, err := inflate(raw, maxDecompressed)
 			if err != nil {
+				if errors.Is(err, ErrBudgetExceeded) {
+					// A compressed bomb is not a corrupt stream to
+					// skip: the caller asked for a budget and the
+					// document blew through it — fail the whole
+					// extraction explicitly.
+					return "", err
+				}
 				offset = contentEnd
 				continue
+			}
+			inflatedTotal += int64(len(decompressed))
+			if inflatedTotal > maxDecompressed {
+				return "", ErrBudgetExceeded
 			}
 			streamBytes = decompressed
 		} else {
@@ -77,27 +130,43 @@ func ExtractTextFromBytes(data []byte) string {
 		offset = contentEnd
 	}
 
-	return allText.String()
+	return allText.String(), nil
+}
+
+// isPDFNameByte reports whether b is a PDF name character — the ones a
+// longer word like "endstream" (or "downstream" in a dict string) puts
+// immediately before a "stream" token it should absorb.
+func isPDFNameByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
 // inflate decompresses zlib/deflate data. Tries zlib first, falls back to
-// raw deflate for PDFs that omit the zlib header.
-func inflate(data []byte) ([]byte, error) {
+// raw deflate for PDFs that omit the zlib header. The read is capped at
+// limit+1 bytes: a stream inflating past limit fails with
+// ErrBudgetExceeded instead of allocating (zlib holds ~1000:1, so an
+// uncapped ReadAll here turned a 1 MiB file into a 1 GiB slice).
+func inflate(data []byte, limit int64) ([]byte, error) {
 	// Try zlib first.
 	r, err := zlib.NewReader(bytes.NewReader(data))
 	if err == nil {
-		buf, readErr := io.ReadAll(r)
+		buf, readErr := io.ReadAll(io.LimitReader(r, limit+1))
 		r.Close()
 		if readErr == nil {
+			if int64(len(buf)) > limit {
+				return nil, fmt.Errorf("%w (limit %d)", ErrBudgetExceeded, limit)
+			}
 			return buf, nil
 		}
 	}
 	// Fallback: raw deflate (no zlib header).
 	fr := flate.NewReader(bytes.NewReader(data))
-	buf, err := io.ReadAll(fr)
+	buf, err := io.ReadAll(io.LimitReader(fr, limit+1))
 	fr.Close()
 	if err != nil {
 		return nil, fmt.Errorf("flate inflate error: %w", err)
+	}
+	if int64(len(buf)) > limit {
+		return nil, fmt.Errorf("%w (limit %d)", ErrBudgetExceeded, limit)
 	}
 	return buf, nil
 }
@@ -340,7 +409,7 @@ func MaybeExtractPDFFromPrompt(prompt string) (string, string, bool) {
 		}
 		absPath = pdfPath
 	}
-	text, err := ExtractText(absPath)
+	text, err := ExtractText(absPath, DefaultDecompressionBudget)
 	if err != nil || text == "" {
 		return "", "", false
 	}

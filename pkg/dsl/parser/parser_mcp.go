@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strconv"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
@@ -131,8 +133,7 @@ func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
 
 func (p *parser) parseMCPTransport() ast.MCPTransport {
 	t := p.next()
-	value := tokenAsIdent(t)
-	switch value {
+	switch enumWord(t) {
 	case "stdio":
 		return ast.MCPTransportStdio
 	case "http":
@@ -140,7 +141,7 @@ func (p *parser) parseMCPTransport() ast.MCPTransport {
 	case "sse":
 		return ast.MCPTransportSSE
 	default:
-		p.addError(DiagInvalidValue, t, "expected MCP transport (stdio, http, sse), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected MCP transport (stdio, http, sse), got "+strconv.Quote(t.Value))
 		return ast.MCPTransportUnknown
 	}
 }

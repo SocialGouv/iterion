@@ -3,8 +3,10 @@ package cloudpublisher
 import (
 	"context"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"hash/fnv"
 	"io"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -30,9 +32,18 @@ func seedOAuth(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, owner
 		// what a tier owes the bundle is THIS record's identity, whatever
 		// it was derived from.
 		Fingerprint: seededFP(ownerKey),
+		CreatedAt:   seededConnectedAt(ownerKey),
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
+}
+
+// seededConnectedAt is when seedOAuth's record for ownerKey was connected:
+// distinct per owner, so a slot that carries another record's time is seen.
+func seededConnectedAt(ownerKey string) time.Time {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(ownerKey))
+	return time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(h.Sum32()%100000) * time.Second)
 }
 
 // seededFP is the fingerprint seedOAuth stamps on the record it creates.
@@ -40,8 +51,15 @@ func seededFP(ownerKey string) string { return "fp-" + ownerKey }
 
 func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string) secrets.RunBundle {
 	t.Helper()
+	return resolveBundlePinned(t, p, runSecrets, sealer, runID, tenant, owner, nil)
+}
+
+// resolveBundlePinned is resolveBundle with the launch-frozen pinned set the
+// shared tiers read (store.Run.PinnedProviders).
+func resolveBundlePinned(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string, pinned []string) secrets.RunBundle {
+	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

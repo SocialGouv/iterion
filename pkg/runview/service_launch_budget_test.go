@@ -130,7 +130,7 @@ func TestResume_ActivatesAndPersistsUnlimitedWorkflowBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	launched, err := svc.Launch(context.Background(), LaunchSpec{FilePath: botPath})
+	launched, err := svc.Launch(context.Background(), LaunchSpec{FilePath: botPath, WorkDir: dir})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}

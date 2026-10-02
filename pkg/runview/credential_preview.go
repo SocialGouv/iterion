@@ -47,18 +47,22 @@ type CredentialPreviewCapacity struct {
 // Selection (selected/shadowed/not_consulted) is independent of availability
 // State: a pinned blocked key or a restored credential can still be selected.
 type CredentialPreviewCandidate struct {
-	ID           string                     `json:"id"`
-	Tier         string                     `json:"tier"`
-	Source       string                     `json:"source"`
-	Provider     string                     `json:"provider"`
-	Wire         string                     `json:"wire"`
-	Rank         int                        `json:"rank"`
-	Label        string                     `json:"label"`
-	Pinned       bool                       `json:"pinned"`
-	State        string                     `json:"state"`
-	Reason       string                     `json:"reason,omitempty"`
-	Selection    string                     `json:"selection"`
-	Selected     bool                       `json:"selected"`
+	ID        string `json:"id"`
+	Tier      string `json:"tier"`
+	Source    string `json:"source"`
+	Provider  string `json:"provider"`
+	Wire      string `json:"wire"`
+	Rank      int    `json:"rank"`
+	Label     string `json:"label"`
+	Pinned    bool   `json:"pinned"`
+	State     string `json:"state"`
+	Reason    string `json:"reason,omitempty"`
+	Selection string `json:"selection"`
+	Selected  bool   `json:"selected"`
+	// RouteOnly marks a selected key sealed for the routes that NAME its
+	// provider and nothing else (secrets.RunBundle.PinnedAPIKeys): it does
+	// not fill its wire for the run's other nodes.
+	RouteOnly    bool                       `json:"route_only,omitempty"`
 	Conditional  bool                       `json:"conditional"`
 	AccountGroup string                     `json:"account_group,omitempty"`
 	ReopensAt    *time.Time                 `json:"reopens_at,omitempty"`

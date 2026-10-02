@@ -18,7 +18,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -27,7 +30,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -291,9 +296,9 @@ type SandboxParams struct {
 	BoardMCPHandler http.Handler
 
 	// EffectiveBackend resolves a node's backend the way DISPATCH will —
-	// launch-time `--backend`/`--model` overrides included. The engine
-	// passes its executor; nil (a driver-level test) reads the raw IR
-	// alone. Without it the claw bind-mount decision misses every
+	// launch-time `--backend` overrides included. The engine
+	// passes its backendResolver(); nil (a driver-level test) reads the raw
+	// IR alone. Without it the claw bind-mount decision misses every
 	// override, since they are applied at dispatch and never folded back
 	// into the IR. Same seam as the workspace-safety admission check.
 	EffectiveBackend effectiveBackendResolver
@@ -334,8 +339,10 @@ func workflowMaxDurationSeconds(wf *ir.Workflow) int64 {
 //
 // When the resolved driver cannot honour the requested mode (typically:
 // the user wants a real sandbox but no docker/podman is on PATH), the
-// function emits a `sandbox_skipped` event and returns a noop Run so
-// callers can keep using the same code paths without nil-checking.
+// MODE decides (#1425): `auto` emits a `sandbox_skipped` event and
+// returns (nil, nil) — the caller's `active == nil` branch is the
+// unsandboxed run, host devbox and all — while an explicit `inline`
+// returns a RuntimeError coded SANDBOX_DRIVER_UNAVAILABLE.
 func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbox, error) {
 	logger := p.Logger
 	// Wrap the raw emitter so every callsite that discards the error
@@ -363,13 +370,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		// must stay visible: emit sandbox_skipped so the run record says
 		// it executed unsandboxed and why.
 		if skipReason != "" {
-			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
-				"mode":   string(sandbox.ModeAuto),
-				"source": source,
-				"reason": "sandbox-by-default degraded to unsandboxed: " + skipReason,
-			})
+			payload := autoDegradePayload(sandbox.ModeAuto, source, skipReason, p.Workflow)
+			_ = emitEvent(store.EventSandboxSkipped, payload)
 			if logger != nil {
-				logger.Warn("runtime: sandbox-by-default degraded to unsandboxed for run %s: %s", p.RunID, skipReason)
+				logger.Warn("runtime: %s (run %s)", payload["reason"], p.RunID)
 			}
 		}
 		return nil, nil
@@ -392,19 +396,50 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// is what the "configure mounts first" invariant requires.
 	driver, err := selectSandboxDriver(spec, logger, p.Drivers)
 	if err != nil {
-		// A sandbox chosen by the built-in default must not brick runs on
-		// hosts with no container runtime — degrade to unsandboxed with a
-		// visible event. An EXPLICIT request keeps the hard error.
-		if source == sandboxDefaultSource {
-			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
-				"mode":   string(spec.Mode),
-				"source": source,
-				"reason": "sandbox-by-default degraded to unsandboxed: " + err.Error(),
-			})
+		// The MODE decides, and this is the one place it does (#1425).
+		// Not the SOURCE: a `sandbox: auto` written in the workflow,
+		// passed as --sandbox=auto or inherited from the built-in
+		// default all ask the same question, so they get the same
+		// answer.
+		//
+		//   - `auto` reads as "isolate if you can". No driver on this
+		//     host → run unsandboxed, and say so on the run's stream.
+		//     Returning nil (rather than the passthrough noop driver)
+		//     is what puts the run on the engine's no-sandbox branch,
+		//     where the host devbox and the `iterion` PATH shim are
+		//     provisioned — see startSandbox. This is the answer the
+		//     107 scheduled ticks measured on the operator's own host
+		//     (2026-07-20 → 2026-09-17) needed instead of dying.
+		//   - an explicit `sandbox: { mode: inline, image/build: … }`
+		//     is the container the author wired; the refusal IS the
+		//     isolation guarantee. The run parks with
+		//     [store.FailureSandboxDriverUnavailable] — the typed code
+		//     the schedule's last_run_error_code (#1426) and the
+		//     studio's failure row read — and the `sandbox_skipped`
+		//     event carries `refused: true` so the run's own stream
+		//     states the reason before any row updates.
+		if spec.Mode == sandbox.ModeAuto {
+			payload := autoDegradePayload(spec.Mode, source, err.Error(), p.Workflow)
+			_ = emitEvent(store.EventSandboxSkipped, payload)
 			if logger != nil {
-				logger.Warn("runtime: sandbox-by-default degraded to unsandboxed for run %s: %v", p.RunID, err)
+				logger.Warn("runtime: %s (run %s)", payload["reason"], p.RunID)
 			}
 			return nil, nil
+		}
+		if errors.Is(err, sandbox.ErrDriverUnavailable) {
+			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
+				"mode":       string(spec.Mode),
+				"source":     source,
+				"refused":    true,
+				"error_code": string(store.FailureSandboxDriverUnavailable),
+				"reason":     err.Error(),
+			})
+			return nil, &RuntimeError{
+				Code:    ErrCodeSandboxDriverUnavailable,
+				Message: fmt.Sprintf("sandbox: mode %q refused: no container-runtime driver available", spec.Mode),
+				Hint:    "install docker or podman; or declare `sandbox: auto` to let the run degrade to the host with a sandbox_skipped event; or run it unsandboxed on purpose with --sandbox none",
+				Cause:   err,
+			}
 		}
 		return nil, err
 	}
@@ -436,6 +471,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		botRunFilesDir = spec.Env[runFilesEnvVar]
 		spec.Env[runFilesEnvVar] = runFilesContainerPath
 	}
+	// Tool scripts find the canonical tree-noise pathspecs via
+	// $ITERION_TREE_NOISE (pkg/treenoise) so a scope gate filters the tree
+	// with the engine's list, not its own literal (#1464).
+	seedTreeNoiseEnv(spec)
 	seedDefaultLocale(spec)
 	// The bundle is a host bind and nothing else: a driver with no host
 	// filesystem would have it dropped below, leaving every promise made
@@ -708,7 +747,7 @@ func workflowHasInteractiveNode(wf *ir.Workflow) bool {
 // ClawExecutor implements it; defining it here keeps the runtime
 // decoupled from pkg/backend/secretguard.
 type secretEgressRewriter interface {
-	MaterializeForHost(s, host string) string
+	MaterializeForHostWithin(s, host string, limit int) (string, bool)
 	ExfiltratesTo(s, host string) bool
 	SecretsInspectActive() bool
 }
@@ -729,6 +768,42 @@ func (e *Engine) resolveSecretRewriter() netproxy.SecretRewriter {
 		return nil
 	}
 	return rw
+}
+
+// sandboxModelHosts reads ITERION_SANDBOX_MODEL_HOSTS: the operator's own
+// model gateways (comma- or space-separated, in the network rules' syntax),
+// whose request bodies the inspecting proxy leaves in placeholder form like
+// a provider's. netproxy.New refuses an entry that is not a host pattern.
+func sandboxModelHosts() []string {
+	return strings.FieldsFunc(os.Getenv("ITERION_SANDBOX_MODEL_HOSTS"), func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+}
+
+// sandboxInspectMaxBody reads ITERION_SANDBOX_INSPECT_MAX_BODY: the bound of
+// the request body the egress proxy holds to inspect — a byte count, or one
+// with a KiB/MiB/GiB suffix (e.g. 256MiB). Unset is 0, the proxy's default
+// (64 MiB); a value that is no positive size fails the run's start.
+func sandboxInspectMaxBody() (int64, error) {
+	raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_INSPECT_MAX_BODY"))
+	if raw == "" {
+		return 0, nil
+	}
+	num, mult := raw, int64(1)
+	for _, u := range []struct {
+		suffix string
+		mult   int64
+	}{{"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"B", 1}} {
+		if len(raw) > len(u.suffix) && strings.EqualFold(raw[len(raw)-len(u.suffix):], u.suffix) {
+			num, mult = strings.TrimSpace(raw[:len(raw)-len(u.suffix)]), u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("ITERION_SANDBOX_INSPECT_MAX_BODY=%q: want a positive byte count (e.g. 268435456 or 256MiB)", raw)
+	}
+	return n * mult, nil
 }
 
 // sandboxTLSInspectEnabled reports the ITERION_SANDBOX_TLS_INSPECT
@@ -764,8 +839,8 @@ func startNetworkProxy(
 
 	// TLS inspection needs the driver to inject the per-run CA into the
 	// container trust store; drivers advertise that via
-	// Capabilities.SupportsTLSInspection. Where it's unsupported (k8s,
-	// noop), enabling inspection would mint leaves the container can't
+	// Capabilities.SupportsTLSInspection. Where it's unsupported (noop),
+	// enabling inspection would mint leaves the container can't
 	// trust and break every TLS call — degrade to a transparent proxy
 	// (Layer 1 + redaction + allowlist still apply). See docs/secrets.md.
 	if rewriter != nil && !driver.Capabilities().SupportsTLSInspection {
@@ -796,9 +871,15 @@ func startNetworkProxy(
 		return nil, "", nil, fmt.Errorf("driver proxy config: %w", err)
 	}
 
+	maxBody, err := sandboxInspectMaxBody()
+	if err != nil {
+		return nil, "", nil, err
+	}
 	opts := netproxy.Options{
-		Policy: policy,
-		Token:  token,
+		Policy:           policy,
+		Token:            token,
+		ModelHosts:       sandboxModelHosts(),
+		MaxInspectedBody: maxBody,
 		OnBlocked: func(host, reason string) {
 			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
 				"host":   host,
@@ -915,11 +996,11 @@ func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 // (force on, read devcontainer.json). Inline mode requires a DSL
 // block and so cannot be expressed via the flag.
 //
-// The third return (skipReason) is non-empty ONLY when the mode was
-// chosen by the built-in default and the host cannot honour it (not a
-// git repo, unreadable devcontainer): the run degrades to unsandboxed
-// and the caller must surface the reason (sandbox_skipped event). An
-// EXPLICIT sandbox request never degrades — it errors.
+// The third return (skipReason) is non-empty when mode=auto resolves to
+// no spec because the host cannot honour it (not a git repo, unreadable
+// devcontainer with no default image): the run degrades to unsandboxed
+// and the caller must surface the reason (sandbox_skipped event). The
+// mode decides that, not the source — see [sandboxDefaultSource].
 func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
@@ -938,18 +1019,20 @@ func resolveSandboxSpecWithFallback(
 	if mode == "" || mode == string(sandbox.ModeNone) {
 		return nil, source, "", nil
 	}
-	byDefault := source == sandboxDefaultSource
 
 	switch mode {
 	case string(sandbox.ModeAuto):
 		if repoRoot == "" {
-			if byDefault {
-				// auto is repo-bound by design (it mounts the repo tree);
-				// outside a repo the default is simply not applicable —
-				// quiet skip (no event), unlike the degrade cases below.
-				return nil, source + " — not applicable (outside a git repository)", "", nil
-			}
-			return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)")
+			// auto is repo-bound by design (it mounts the repo tree).
+			// Outside a repo there is nothing to isolate against, so
+			// "isolate if you can" answers as it does on a host with no
+			// driver: run, and say so — the reason travels as skipReason
+			// and the caller turns it into the sandbox_skipped event.
+			// An embedder's path in practice: `iterion run`, studio and
+			// the runner all resolve a repo root first (engineRepoRoot
+			// falls back to the working directory), so a run reaches
+			// this only through a library caller that passes none.
+			return nil, source, "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)", nil
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -969,31 +1052,32 @@ func resolveSandboxSpecWithFallback(
 					expandSandboxSpec(&spec, repoRoot)
 					return &spec, source + " (default image: " + defaultImage + ")", "", nil
 				}
+				// Reached only by a caller that resolves no default image:
+				// every product entry point routes through
+				// resolveDefaultSandboxImage*, which always returns one, so
+				// this guards embedders rather than runs.
 				return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
 			}
-			if byDefault {
-				// Ambient default: a devcontainer the sandbox cannot use
-				// (parse error, refused runArgs like --privileged, …) must
-				// not disable sandboxing when a default image exists — the
-				// repo's devcontainer serves human dev environments first,
-				// and rejecting it would leave every run on such a repo
-				// permanently unsandboxed (observed live: iterion's own
-				// devcontainer declares --privileged; run 019f8a0b degraded
-				// to unsandboxed instead of using the default image).
-				if defaultImage != "" {
-					var spec sandbox.Spec
-					if wf != nil && wf.Sandbox != nil {
-						spec = fromIRSpec(wf.Sandbox)
-					}
-					spec.Mode = sandbox.ModeAuto
-					spec.Image = defaultImage
-					spec.ImageFallback = defaultImageFallback
-					expandSandboxSpec(&spec, repoRoot)
-					return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
+			// A devcontainer the sandbox cannot use (parse error,
+			// refused runArgs like --privileged, …) must not disable
+			// sandboxing while a default image exists — the repo's
+			// devcontainer serves human dev environments first, and
+			// rejecting it would leave every run on such a repo
+			// permanently unsandboxed (observed live: iterion's own
+			// devcontainer declares --privileged; run 019f8a0b degraded
+			// to unsandboxed instead of using the default image).
+			if defaultImage != "" {
+				var spec sandbox.Spec
+				if wf != nil && wf.Sandbox != nil {
+					spec = fromIRSpec(wf.Sandbox)
 				}
-				return nil, source, fmt.Sprintf("devcontainer.json unreadable: %v", err), nil
+				spec.Mode = sandbox.ModeAuto
+				spec.Image = defaultImage
+				spec.ImageFallback = defaultImageFallback
+				expandSandboxSpec(&spec, repoRoot)
+				return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
 			}
-			return nil, source, "", fmt.Errorf("runtime: sandbox: read devcontainer.json: %w", err)
+			return nil, source, fmt.Sprintf("devcontainer.json unreadable: %v", err), nil
 		}
 		spec := devcontainer.ToSandboxSpec(dc)
 		return &spec, source + " (" + path + ")", "", nil
@@ -1061,15 +1145,45 @@ func ResolveSandboxSpecForDoctor(
 	return spec, source, nil
 }
 
+// autoDegradePayload builds the `sandbox_skipped` event body for an
+// `auto` mode the host could not honour. One builder for both degrade
+// sites — the spec-resolution one and the driver-selection one — so a
+// field added for one is carried by the other; they describe the same
+// outcome (this run executes on the host) and differ only in which
+// obstacle they met.
+func autoDegradePayload(mode sandbox.Mode, source, obstacle string, wf *ir.Workflow) map[string]any {
+	reason := "sandbox: auto degraded to unsandboxed: " + obstacle
+	payload := map[string]any{
+		"mode":   string(mode),
+		"source": source,
+	}
+	// An unsandboxed run has nowhere to mount `as: file` secrets — the
+	// container mount IS their delivery channel (sandbox_secret_files.go),
+	// and the cloud runner's pod-side fallback writes them only for a run
+	// it already knows has no sandbox. Degrading without saying this
+	// trades a dead run for a run that reads an empty secret path and
+	// improvises.
+	if workflowHasFileSecrets(wf) {
+		payload["file_secrets_dropped"] = true
+		reason += " — `as: file` secrets are NOT delivered to an unsandboxed run"
+	}
+	payload["reason"] = reason
+	return payload
+}
+
 // sandboxDefaultSource labels a mode chosen at the GLOBAL-DEFAULT tier
 // (ITERION_SANDBOX_DEFAULT, or the sandbox-by-default policy that
 // product entry points install via [ResolveGlobalSandboxDefault]), as
 // opposed to an explicit per-run request from the CLI flag or the
-// workflow's own block. Downstream resolution keys degrade-vs-fail on
-// this: an explicit sandbox request that cannot be honoured must
-// hard-error (never silently soften), but the ambient default must not
-// brick runs on hosts that cannot sandbox (no container runtime) —
-// those degrade to unsandboxed with a visible sandbox_skipped event.
+// workflow's own block.
+//
+// It is a LABEL — it rides the sandbox_skipped event so an operator
+// knows which tier asked for a sandbox — and nothing keys behaviour on
+// it. Degrade-vs-refuse is decided by the MODE alone (#1425): `auto`
+// degrades with a visible event wherever the host cannot honour it,
+// `inline` refuses with SANDBOX_DRIVER_UNAVAILABLE. Keying it on the
+// source is what made one host condition answer two different ways
+// depending on where the word "auto" was written.
 const sandboxDefaultSource = "global sandbox default"
 
 // ResolveGlobalSandboxDefault returns the effective global sandbox
@@ -1099,8 +1213,14 @@ func ResolveGlobalSandboxDefault() string {
 // on workflows that don't ship one. CLI "none" still wins everywhere
 // (explicit opt-out is non-overridable).
 func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
+	// `build:` makes a block as explicit as `image:` does — it names a
+	// container the author wired. Reading only Image let --sandbox=auto
+	// rewrite a build-form block to auto, which since #1425 means
+	// "degrade to the host", so two workflows differing only in
+	// image/build got opposite isolation guarantees under one flag.
 	hasInlineBlock := wf != nil && wf.Sandbox != nil &&
-		wf.Sandbox.Mode == string(sandbox.ModeInline) && wf.Sandbox.Image != ""
+		wf.Sandbox.Mode == string(sandbox.ModeInline) &&
+		(wf.Sandbox.Image != "" || wf.Sandbox.Build != nil)
 
 	if cli == string(sandbox.ModeAuto) && hasInlineBlock {
 		return wf.Sandbox.Mode, "workflow sandbox: block (overrides --sandbox=auto)"
@@ -1248,19 +1368,26 @@ func parseUserUID(user string) (int, bool) {
 }
 
 // resolveHostHomeDir returns the host user's home directory, normalised
-// to an absolute path. Empty string when the host has no usable HOME
-// (CI containers without HOME, distroless, etc.) — callers treat that
-// as "host_state cannot fire, skip silently".
-func resolveHostHomeDir() string {
+// to an absolute path. Empty when the host has no usable HOME (CI
+// containers without HOME, distroless, etc.), and empty with planted=true
+// when a project `.env` set it — the caller binds nothing under it and
+// says why.
+func resolveHostHomeDir() (dir string, planted bool) {
+	// A home dir a project `.env` set is not the operator's: the state under
+	// it — ~/.claude, ~/.codex, ~/.gitconfig, the caches — would be the
+	// repository's choice of what the sandbox binds read-write.
+	if envtrust.Planted(store.HomeEnvName()) {
+		return "", true
+	}
 	h, err := os.UserHomeDir()
 	if err != nil || h == "" {
-		return ""
+		return "", false
 	}
 	abs, err := filepath.Abs(h)
 	if err != nil {
-		return h
+		return h, false
 	}
-	return abs
+	return abs, false
 }
 
 // fromIRSpec converts the IR-level SandboxSpec to the runtime-level
@@ -1342,7 +1469,7 @@ func cloneStringMap(m map[string]string) map[string]string {
 //   - the IR as authored — the node's `backend:` (empty meaning claw, the
 //     implicit default) and its `fallbacks:` routes;
 //   - the backend DISPATCH will resolve, resolver being the executor's own
-//     chain (launch `--backend`/`--model` overrides → DSL → workflow
+//     chain (launch `--backend` overrides → DSL → workflow
 //     default → env → auto-detection). Overrides are applied at dispatch
 //     and never folded into the IR, so `--backend '*=claw'` on a workflow
 //     of claude_code nodes is invisible to the first reading alone.
@@ -1355,8 +1482,9 @@ func cloneStringMap(m map[string]string) map[string]string {
 // the node mid-run with `exec: /usr/local/bin/iterion: no such file or
 // directory`, an unused read-only bind costs nothing.
 //
-// A nil resolver (a driver-level call, a stub executor) reads the IR
-// alone: today's behaviour, unchanged.
+// A nil resolver (a driver-level call) reads the IR alone, and so does the
+// engine's stand-in for an executor that does not resolve backends: its
+// answer never names claw.
 func containsClawNode(wf *ir.Workflow, resolver effectiveBackendResolver) bool {
 	for _, n := range wf.Nodes {
 		if resolverRoutesToClaw(n, resolver) {
@@ -1728,6 +1856,16 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if active != nil {
 		e.attachmentsContainerDir = active.attachmentsDir
 	}
+	if active == nil || active.run == nil {
+		// Settled WITHOUT a sandbox — the declared one degraded (no
+		// container runtime), or none was declared. Say so, rather than
+		// leaving the executor unable to tell "no sandbox" from "not
+		// settled yet": a guard that must fail closed while the question
+		// is open needs to hear the answer even when it is "no".
+		if s, ok := e.executor.(sandboxSetter); ok {
+			s.SetSandbox(nil)
+		}
+	}
 	if active != nil && active.run != nil {
 		// The facts a subbot child needs to execute in this sandbox.
 		e.activeShare = &SharedSandbox{
@@ -1783,7 +1921,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), sandboxShutdownTimeout)
 		defer cancel()
 		active.shutdown(cleanupCtx, e.logger)
 	}
@@ -1798,6 +1936,15 @@ const sandboxWorkspaceExportTimeout = 5 * time.Minute
 // sandboxHeadCaptureTimeout bounds the single pod-side `git rev-parse`
 // that records the workspace HEAD before the export.
 const sandboxHeadCaptureTimeout = 30 * time.Second
+
+// sandboxShutdownTimeout bounds the sandbox's own shutdown at teardown.
+const sandboxShutdownTimeout = 30 * time.Second
+
+// SandboxTeardownBudget bounds what the engine still does in a sandbox once
+// its run was cancelled, before it returns: the workspace HEAD capture, the
+// export, the shutdown. The runner holds the run's lease that long past the
+// cancellation, no longer.
+const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxShutdownTimeout
 
 // WorkspaceIntegrity is the sandbox-side git truth captured at teardown
 // for export-based drivers (kubernetes), BEFORE ExportWorkspace streams
@@ -2121,7 +2268,15 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	copyBased := sharedSandboxIsCopyBased(shared.Run)
 	pushed := 0
 	if refresher, ok := shared.Run.(sandbox.WorkspaceFileRefresher); ok {
-		pushed = writeThroughMirroredSkills(ctx, e.workDir, refresher, e.logger)
+		// clearBorrowedSandboxResources emptied every borrowed entry in the
+		// copy above — the parent's engine-owned skills copy among them, saved
+		// by beginRunResources and restored when this child's scope ends. This
+		// refills them from the child's host mirror.
+		var werr error
+		pushed, werr = writeThroughMirroredSkills(ctx, e.workDir, refresher, e.logger)
+		if werr != nil {
+			return devboxCleanup, fmt.Errorf("runtime: the engine-owned skills copy did not land in the adopted sandbox, whose own copy was emptied for this child; a reader would report every name it cannot find as not covered: %w", werr)
+		}
 	}
 	// What the child does NOT get in a shared sandbox, said once, in the
 	// events: its own file secrets are not materialised at adoption (no
@@ -2164,7 +2319,9 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 }
 
 // writeThroughMirroredSkills pushes what the run mirrored into the host
-// workdir's .claude/ for its agents — bundle/plugin/library skills,
+// workdir's .claude/ for its agents — bundle/plugin/library skills, the
+// engine-owned copy of the bundle's skills (owned_skills.go, what a tool
+// node parsing an `iterion:` block reads),
 // plugin commands and agents, the merged hooks settings — into a copy-based
 // sandbox through the driver's write-through seam. The parent's own files
 // are already in its copy (rewriting them is idempotent: the host mirror
@@ -2172,21 +2329,42 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 // what the copy lacks. Each write is bounded on its own. Returns the count
 // written; a failed write is logged and skipped — a skill the agent cannot
 // read is a degraded run, not a dead one.
-func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher sandbox.WorkspaceFileRefresher, logger *iterlog.Logger) int {
+//
+// It walks childResourcePaths — the entries clearBorrowedSandboxResources has
+// just emptied in the copy — so whatever the reset removes, this refills.
+//
+// The engine-owned copy is the ONE exception, and returns an error. Its
+// directory was emptied in the container a moment ago so the parent's names
+// could not answer for this child; a file that then fails to land leaves the
+// child with a copy that is partly or wholly missing, and a reader finding no
+// entry for a name reports it as not covered. That is a security verdict
+// quietly downgraded — the outcome the reset exists to prevent — so adoption
+// fails closed at both halves or neither.
+func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher sandbox.WorkspaceFileRefresher, logger *iterlog.Logger) (int, error) {
 	const perFile = 30 * time.Second
 	n := 0
-	push := func(path string) {
+	var ownedErr error
+	push := func(path string, owned bool) {
 		rel, rerr := filepath.Rel(workDir, path)
 		if rerr != nil {
+			if owned && ownedErr == nil {
+				ownedErr = fmt.Errorf("runtime: %s is not under the run workspace %s: %w", path, workDir, rerr)
+			}
 			return
 		}
 		body, rerr := os.ReadFile(path)
 		if rerr != nil {
+			if owned && ownedErr == nil {
+				ownedErr = fmt.Errorf("runtime: read %s for write-through: %w", rel, rerr)
+			}
 			return
 		}
 		wctx, cancel := context.WithTimeout(ctx, perFile)
 		defer cancel()
 		if werr := refresher.RefreshWorkspaceFile(wctx, filepath.ToSlash(rel), body); werr != nil {
+			if owned && ownedErr == nil {
+				ownedErr = fmt.Errorf("runtime: write %s into the shared sandbox: %w", rel, werr)
+			}
 			if logger != nil {
 				logger.Warn("runtime: write-through of %s into the shared sandbox failed: %v", rel, werr)
 			}
@@ -2194,20 +2372,26 @@ func writeThroughMirroredSkills(ctx context.Context, workDir string, refresher s
 		}
 		n++
 	}
-	for _, sub := range []string{"skills", "commands", "agents"} {
-		root := filepath.Join(workDir, ".claude", sub)
+	for _, name := range childResourcePaths {
+		owned := name == ownedSkillsDirName
+		root := filepath.Join(workDir, ".claude", name)
+		// A root that does not exist is an entry this run has nothing for
+		// (settings.json is a file root: the walk visits it alone). Any other
+		// error inside the owned copy is a file that will not land.
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				if owned && ownedErr == nil && (path != root || !errors.Is(err, fs.ErrNotExist)) {
+					ownedErr = fmt.Errorf("runtime: walk %s for write-through: %w", path, err)
+				}
 				return nil
 			}
-			push(path)
+			if !d.IsDir() {
+				push(path, owned)
+			}
 			return nil
 		})
 	}
-	if settings := filepath.Join(workDir, ".claude", "settings.json"); fileExists(settings) {
-		push(settings)
-	}
-	return n
+	return n, ownedErr
 }
 
 func fileExists(path string) bool {

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -21,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 )
 
 // maxSubbotDepth bounds nested subbot recursion on a pod, as runview does
@@ -280,10 +280,11 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if childWorkDir == "" {
 			childWorkDir = workDir
 		}
-		var (
-			lastMu sync.Mutex
-			last   map[string]any
-		)
+		// Capture what the child emits — the terminal-node output a
+		// contractless subbot returns, plus the per-node outputs a contract's
+		// projection reads (#1280). The callback fires concurrently when the
+		// child fans out parallel branches, so the capture is mutex-guarded.
+		var capture runview.SubbotOutputCapture
 		// Sandbox-run observer: the mid-run credential refreshers write
 		// rotated tokens THROUGH into the child's container, and file
 		// secrets refresh — a child that outlives a token (a per-lot child
@@ -313,17 +314,16 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			runtime.WithLoopBudgetGuard(msg.LoopBudgetGuard),
 			runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 			runtime.WithParentRunID(req.ParentRunID),
+			// The wire carries these (child := *msg); the DOCUMENT is built
+			// from a named field list and would otherwise read as trusted.
+			runtime.WithTrust(child.Trust, child.RepoSHAExpected),
 			runtime.WithParentNodeID(req.NodeID),
 			// Recursive wiring: a child that declares subbot nodes resolves
 			// its own children relative to ITS directory.
 			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),
 			runtime.WithEventObserver(childUsage.observe),
-			runtime.WithOnNodeFinished(func(runID, nodeID string, out map[string]any) {
-				if out != nil {
-					lastMu.Lock()
-					last = out
-					lastMu.Unlock()
-				}
+			runtime.WithOnNodeFinished(func(_ context.Context, runID, nodeID string, out map[string]any) {
+				capture.Record(nodeID, out)
 			}),
 		}
 		// The child executes in the PARENT's sandbox when the parent has one:
@@ -336,10 +336,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		opts = append(opts, runtime.WithBundle(childBundle))
 		// Plugin/library skills the LAUNCHING instance resolved: the pod's
 		// iterion home is empty, so without the payload the child would
-		// silently find only the compiled-in builtins.
-		if msg.Contributions != nil {
-			opts = append(opts, runtime.WithContributions(contributionsFromWire(msg.Contributions)))
-		}
+		// silently find only the compiled-in builtins. A missing payload is an
+		// anomaly (see contributionsEngineOptions) and is never read as
+		// "nothing enabled".
+		opts = append(opts, contributionsEngineOptions(msg.Contributions, childLogger)...)
 
 		childEng := runtime.New(childWf, r.cfg.Store, childExec, opts...)
 		r.registerRunEngine(childRunID, childEng)
@@ -389,9 +389,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, r.cfg.Store, req)
-		lastMu.Lock()
-		defer lastMu.Unlock()
-		return last, nil
+		if contract := childWf.Contract; contract != nil {
+			return subbotcontracts.ProjectOutput(contract, capture.ByNode()), nil
+		}
+		return capture.Terminal(), nil
 	}
 }
 

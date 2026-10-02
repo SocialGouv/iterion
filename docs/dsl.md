@@ -30,13 +30,13 @@ agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-**The syntax profile.** A file may open with `dsl: 2` — its first significant line, after blank lines and comments (the `## ---` frontmatter included). Absent means profile 1: today's grammar, frozen. The header governs changes of MEANING only, and profile 2 carries four: a `"…"` string reads the standard escapes (`\"` `\\` `\n` `\t` `\r` `\0`) with no directive, where profile 1 keeps every backslash verbatim; a blank line inside a prompt body is kept as a paragraph break, where profile 1 drops it; the profile-1 `## strict-escape: on` directive is refused (E042), as is the retired `project_root:` (E043). Everything else on this page reads the same in both profiles. New files start with the header (`bots create` and the studio write it); an existing file moves with `iterion dsl migrate --to 2 <file|bundle>`, which re-spells the literals so their values do not change, names the prompts whose paragraphs will now reach the model, raises the bundle's `requires.iterion` to the build that reads the profile, and leaves every other byte alone. `iterion validate` says when a headerless file is one profile 2 would read otherwise (C144); a bundle written in profile 2 with no `requires.iterion` draws C252 and is refused at push. A header this build does not read is E040; one below a declaration — or below an `import` — is E041: the lexer took its profile off the first significant line, and read the whole file as profile 1.
+<a id="the-syntax-profile"></a>**The syntax profile.** A file may open with `dsl: 2` — its first significant line, after blank lines and comments (the `## ---` frontmatter included). Absent means profile 1: the grammar at the 1.0 cut, frozen. The header governs changes of MEANING only, and profile 2 carries four: a `"…"` string reads the standard escapes (`\"` `\\` `\n` `\t` `\r` `\0`) with no directive, where profile 1 keeps every backslash verbatim; a blank line inside a prompt body is kept as a paragraph break, where profile 1 drops it; the profile-1 `## strict-escape: on` directive is refused (E042), as is the retired `project_root:` (E043). Everything else on this page reads the same in both profiles. New files start with the header (`bots create` and the studio write it); an existing file moves with `iterion dsl migrate --to 2 <file|bundle>`, which re-spells the literals so their values do not change, names the prompts whose paragraphs will now reach the model, raises the bundle's `requires.iterion` to the build that reads the profile, and leaves every other byte alone. `iterion validate` says when a headerless file is one profile 2 would read otherwise (C144); a bundle written in profile 2 with no `requires.iterion` draws C252 and is refused at push. A header this build does not read is E040; one below a declaration — or below an `import` — is E041: the lexer took its profile off the first significant line, and read the whole file as profile 1.
 
 **Names and keys are unique.** A node id is unique across every node kind (C041 — `emit`, `wait` and `await_answers` included), a prompt, a schema, a cursor or a group among its own kind, and a key of `vars:`, `presets:`, `attachments:` or `secrets:` appears once in its block (E010) — in one file as across two: a duplicate key used to shadow the other in silence.
 
-**A bot in several files.** A file may open — after `dsl:` and the comments, before its first declaration — with `import "lib/<file>.bot"` lines, one per fragment. A path is relative to the file that imports it and must resolve under the bot's `lib/` directory, next to the main (no absolute path, no `..`, no symlink); a fragment may import its siblings by bare name, and a file is read once however many files import it. The unit — the main and every fragment its imports reach — compiles as ONE program: the declarations of every kind are appended in the order the files are reached, `vars:`/`presets:`/`attachments:`/`secrets:` merge by key, and a name declared in two files, or a key declared twice anywhere, is refused naming both places (E010); a fragment holds no `workflow`, and two workflows in a unit are refused too. Each file keeps its own `dsl:` header (and its own C144). An `import` after a declaration is E044, a path outside `lib/` or malformed E045, a fragment missing or unreadable E046, a cycle E047; a file that imports, compiled alone (a document, an upload), is refused by name (C030). See [`import` under reuse](#import--a-bot-in-several-files) for what every surface does with the unit.
+**A bot in several files.** A file may open — after `dsl:` and the comments, before its first declaration — with `import "lib/<file>.bot"` lines, one per fragment. A path is relative to the file that imports it and must resolve under the bot's `lib/` directory, next to the main (no absolute path, no `..`, no symlink); a fragment may import its siblings by bare name, and a file is read once however many files import it. The unit — the main and every fragment its imports reach — compiles as ONE program: the declarations of every kind are appended in the order the files are reached, `vars:`/`presets:`/`attachments:`/`secrets:` merge by key, and a name declared in two files, or a key declared twice anywhere, is refused naming both places (E010); a fragment holds no `workflow`, and two workflows in a unit are refused too. Each file keeps its own `dsl:` header (and its own C144). An `import` after a declaration is E044, a path outside `lib/` or malformed E045, a fragment missing or unreadable E046, a cycle E047; a main loaded from the filesystem's own root keeps its absolute names in client-boundary answers, with a warning saying why — no name cut is safe there (E048); a file that imports, compiled alone (a document, an upload), is refused by name (C030). See [`import` under reuse](#import--a-bot-in-several-files) for what every surface does with the unit.
 
-Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191); an empty workflow draws the compiler's own diagnostics (no entry first); a `use` of an empty group draws C141. A block header — `vars:`, `budget:`, `memory:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `compaction:`, `resources:`, `presets:`, `attachments:`, `secrets:`, `sandbox:` and its `build:`/`network:` — may stand bare the same way and declares an empty block, kept as the author wrote it: a nested one ends at its parent's dedent or before a blank line and a sibling; a top-level one, having no dedent to end it, needs the blank line (or the end of the file). What an empty block means is the compiler's call: an empty `mcp:` wires nothing (a tool name it cannot resolve stays the error it was), a bare `sandbox:` is the inline block form, which C044 refuses until it carries an `image:` or `build:`. Two things do not follow the rule: `fallbacks:` must name at least one route (a bare header is refused, by name — a chain with no route is not a chain, and a route with no name has no written form either: the studio refuses it at save), and a property spelled the same in a block and in its parent (`user:` in a sandbox and on an agent), written at the parent's level after a blank line, is the parent's — the blank line is the author's signal, as for declarations. `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, `|` block scalars, and one plain bare word (`backend: claw`) where the grammar expects a string; a value that is not one word (`20m`, `gpt-5.5`) keeps its quotes. A list is written inline (`tools: [bash, grep]`) or as one `- item` per line indented under the property, comment lines allowed between items; both read as the same list, and `[]` is the empty list's only form. A `with { n: 3, ok: true }` map reads a number or a bool as the string it spells.
+Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191); an empty workflow draws the compiler's own diagnostics (no entry first); a `use` of an empty group draws C141. A block header — `vars:`, `budget:`, `memory:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `compaction:`, `resources:`, `presets:`, `attachments:`, `secrets:`, `sandbox:` and its `build:`/`network:` — may stand bare the same way and declares an empty block, kept as the author wrote it: a nested one ends at its parent's dedent or before a blank line and a sibling; a top-level one, having no dedent to end it, needs the blank line (or the end of the file). What an empty block means is the compiler's call: an empty `mcp:` wires nothing (a tool name it cannot resolve stays the error it was), a bare `sandbox:` is the inline block form, which C044 refuses until it carries an `image:` or `build:`. Two things do not follow the rule: `fallbacks:` must name at least one route (a bare header is refused, by name — a chain with no route is not a chain, and a route with no name has no written form either: the studio refuses it at save), and a property spelled the same in a block and in its parent (`user:` in a sandbox and on an agent), written at the parent's level after a blank line, is the parent's — the blank line is the author's signal, as for declarations. `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). A comment keeps the place it was written at through a rewrite — a studio save, `iterion fmt`: it is carried by the declaration it was written around, above the line it leads, and written back there, `##` being the canonical form. The indentation written INSIDE a comment is part of its text, and a blank line between two `##` lines is kept as the paragraph break it is. A comment whose line the writer does not emit — a property equal to its default, an empty list — is written at the end of the block it was in rather than dropped. Two places have no declaration to hold them and land at the file's head: a comment at the end of the `dsl:` header's own line, and one above the file's FIRST declaration separated from it by a blank line — there the file's own comments and the first declaration's are written one after the other, and that blank line is what tells them apart. Values accept quoted strings, backtick-delimited raw strings, `|` block scalars, and one plain bare word (`backend: claw`) where the grammar expects a string; a value that is not one word (`20m`, `gpt-5.5`) keeps its quotes. A word from a fixed list (`session: fresh`, `await: wait_all`, `mode: fan_out_each`, `transport: stdio`, `interaction: human`) reads quoted as well as bare, and a word outside the list is refused either way. A list is written inline (`tools: [bash, grep]`) or as one `- item` per line indented under the property, comment lines allowed between items; both read as the same list, and `[]` is the empty list's only form. A `with { n: 3, ok: true }` map reads a number or a bool as the string it spells.
 
 ## Inputs and reusable values
 
@@ -46,6 +46,7 @@ Declarations may appear in any order subject to validation. A `prompt`, `schema`
 vars:
   project: string
   mode: string [enum: "autonomous", "interview"] = "autonomous"
+  agent: string [matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$"] = ""
   max_retries: int = 3
   verbose: bool = false
   threshold: float = 0.8
@@ -58,9 +59,103 @@ presets:
     verbose: true
 ```
 
-Supported types are `string`, `bool`, `int`, `float`, `json`, and `string[]`. Only strings accept `[enum: ...]`; defaults and launch values must belong to the declared set. Runtime precedence is `--var` over `--preset`, recipe values, and declaration defaults. See [recipes](recipes.md).
+Supported types are `string`, `bool`, `int`, `float`, `json`, and `string[]`. Runtime precedence is `--var` over `--preset`, recipe values, and declaration defaults. See [recipes](recipes.md).
 
-A workflow may declare an additional `vars:` block. Top-level and workflow variables are merged during compilation.
+**A var's text has one reading**, whether it is the default written in the `.bot` or a value supplied by `--var`, a launch payload or a preset: the `${VAR}` / `${VAR:-default}` forms are expanded first, then the text is narrowed to the declared type. `tags: string[] = "${LIST:-a,b}"` and `--var 'tags=${LIST:-a,b}'` therefore start the run with the same `["a", "b"]`. A `json` var expands only the **braced** forms — a document's `$` is data (`{"cost":"$5"}` is five dollars, `{"awk":"{print $1}"}` is a program) while `${PROJECT_DIR}` still resolves. Every other type keeps the full reading, bare `$NAME` included. A `string[]` accepts either the JSON array form or comma-separated text; a `json` value that is not JSON stays the text the author wrote.
+
+Nesting in `${A:-${B:-c}}` is bounded: 32 levels resolve, and past that the segment is emitted as written, `${` included, rather than silently resolving to nothing — a var's text is not always the author's, and a launch payload carries whatever a caller sent.
+
+A site written against the *text* of a list-typed default reads something else under that reading, and says nothing: `length(vars.tags)` counted characters and counts elements, `TAGS={{vars.tags}}` in a `command:` keeps the first element and runs the rest as a command, a `script:` receives a list where it received a quoted string. **C155** names every expression, shell body and script body in that position.
+
+#### Constraints — `[enum: ...]` and `[matching: "<re>"]`
+
+A string var can narrow what it accepts beyond "a string". Both constraints
+are string-only ([C125](references/diagnostics.md) / [C160](references/diagnostics.md)),
+a var may carry **at most one of each** — in either order, and a repeated
+bracket is refused rather than merged — and both are enforced independently:
+
+- `[enum: "a", "b"]` — the value is one of a declared set.
+- `[matching: "<re>"]` — the value satisfies a Go [RE2](https://github.com/google/re2/wiki/Syntax)
+  pattern (no backreferences, no lookaround; [C162](references/diagnostics.md)
+  refuses one that does not compile). The pattern is a quoted, non-empty
+  string: RE2 matches by search, so `""` would be found in every value and
+  constrain nothing — write `"^$"` for "the empty string only".
+
+**Where each is checked.** A literal **default** is checked at compile time
+([C126](references/diagnostics.md) / [C161](references/diagnostics.md)) on the
+text as written — a default is never re-checked later. A default carrying an
+env reference expands at run start, not at compile time, so the verbatim
+comparison could not judge it: the compiler expands what has an answer with
+no environment (the `${VAR:-default}` forms) and **warns** instead — [C181](references/diagnostics.md)
+when a reference stays unresolvable, which includes the engine-supplied
+names (`${PROJECT_DIR}` and kin: the RUN answers those itself, so no
+compile-time reading may) — the constraint is then checked on no
+path for that default: named, never silently excused — and [C182](references/diagnostics.md)
+when the compile-time reading violates (it is still only the value a launch
+with nothing set starts with, and the operator's env is an explicit choice).
+Only text whose `$` is no reference at all stays on the literal path. `:-` is
+the only operator the expander has, so `${VAR:+alt}` and `${VAR-default}`
+look up a variable literally named `VAR:+alt` / `VAR-default` (the run's
+lookup filters no name), and a computed name (`${${SEL}}`, `${PRE${X}}`)
+resolves to whatever the launch environment makes of it: both are C181.
+An operator-supplied value
+(`--var`, an HTTP payload, a dispatcher's `bot_args`, a preset overlay) is
+refused **at launch**, before a worktree or a sandbox is created, naming the
+var, the offending value and what it failed. Launch values are judged after
+the same `${...}` expansion the run applies, so the gate and the run never
+read a reference differently.
+
+An in-source `presets:` entry that sets a var to a value its constraint
+refuses is **warned** about at `iterion validate`
+([C165](references/diagnostics.md)) rather than left for the run that
+happens to select it. A warning and not a refusal, deliberately: only a run
+that selects that preset is affected, and that run is refused at the launch
+gate — so an error would block a run selecting another preset, or none, and
+would strand a paused run whose declaration was tightened after it started.
+The warning stops at naming what it can see: whether the run is really
+refused also depends on the launch (a `--var` override supersedes the
+preset, and an engine-resolved var such as `review_mode` is overwritten
+before the gate reads it).
+
+Two limits to that warning, both because the compiler is not the run.
+A preset value the run's **expander rewrites** (`${VAR}`, `${VAR:-x}`,
+`$NAME`) is left to the gate, which sees it expanded — the compile-time
+environment is not the launch environment. Note the asymmetry with a
+default, which is the same text read for a different purpose: `= "${A:-fast}"`
+on a constrained var is refused, because the launch gate never re-**checks**
+a default — it judges the values a launch supplies — so a default excused at
+compile time would be checked on no path at all. The same text as a preset
+value *is* re-judged there, so it is left to the gate. (Both are **expanded**
+at run time; it is the checking that differs.) And a
+bundle's file-based preset (`presets/<name>.md`) is merged after
+compilation, so it too is the gate's to judge.
+
+A **resume** does not re-check stored values: a run admitted at launch stays
+resumable when its declaration is tightened afterwards.
+
+**Anchoring.** Go matches by **search**, not by full match, so `[a-z]+` also
+accepts `--flag` and ` codeX --some-flag`. Anchor the pattern with `^...$`,
+anchoring every branch of an alternation (`^a$|^b$`);
+[C163](references/diagnostics.md) warns when it is not. `(?m)` counts as
+unanchored: under the `m` flag the anchors become LINE anchors and a value
+carrying a newline passes a pattern that reads as if it could not.
+
+**Writing the pattern.** It is an ordinary quoted string, so under
+`dsl: 2` a backslash follows the [profile-2 escape rules](#the-syntax-profile):
+write `"^\\d+$"`, or use a backtick raw string — `` `^\d+$` `` — which
+`iterion fmt` normalises to the escaped form.
+
+**Checking at the keyboard.** `iterion run` refuses a bad value outright. Under
+the dry run the refusal is a pass that dies, which bare
+`iterion validate --exec` reports without failing — use
+`iterion validate --exec --strict` for a non-zero exit.
+
+A workflow may declare an additional `vars:` block. Top-level and workflow
+variables are merged during compilation, and a workflow-level entry that
+re-uses a top-level name **replaces** it — so a redeclaration that carries no
+constraint would drop one the earlier declaration made. That is refused
+([C164](references/diagnostics.md)): constrain the var on the redeclaration
+too (with either constraint), or on neither.
 
 ### Attachments
 
@@ -187,6 +282,8 @@ schema review_result:
 
 Schemas define structured node inputs/outputs. Field types match variable types (`string`, `bool`, `int`, `float`, `json`, `string[]`); string fields may carry enum constraints. A seventh type, `file`, declares an operator-supplied binary and is valid only on a human node's `output_schema` — no model can produce one, so the compiler rejects it elsewhere with [C129](references/diagnostics.md). See [human-in-the-loop](human-in-the-loop.md).
 
+An LLM node's answer is held to its `output:` schema at the end of its turn. When it fails on a shape one more ask can fix — a required field missing, or text where JSON was expected — the executor re-asks the model **once**, with the validation error as its next input, in the conversation (`claw`) or session (`claude_code`, `codex`, `pi`) the answer came from; a type or enum mismatch, or a second invalid answer, fails the node. The re-ask is a real, billed turn and the run's events name it. See [the schema re-ask](backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask).
+
 ### Template namespaces
 
 | Reference | Meaning |
@@ -201,6 +298,7 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 | `{{loop.name.iteration}}` / `.max` / `.previous_output` | Declared-loop state. |
 | `{{each.name.item}}` / `.index` / `.count` / `.first` / `.last` / `.empty` | Sequential edge-`foreach` state. |
 | `{{run.id}}` | Current run id. |
+| `{{run.tree_noise}}` | The canonical tree-noise pathspecs (`':(exclude,top).claude' ':(exclude,top)devbox.lock' ':(exclude,top).iterion-script-*'`) — what a scope gate or a whole-tree staging must exclude, because the run's setup and tooling wrote it, never the pass's work. In a **prompt** it renders ready to paste into a git command. In an EXECUTABLE body it does not: a tool `command:` shell-escapes it into ONE argument, and a `script:` body JSON-encodes it (`"':(exclude,top).claude' …"` — one double-quoted word under `sh`/`bash`) — `git add` refuses it, and a `git status`-based gate silently ignores it and lists the noise anyway. Read `$ITERION_TREE_NOISE` in both (set for every tool process, host and sandbox), **unquoted**: the value is space-separated and must word-split into one pathspec per entry — `"$ITERION_TREE_NOISE"` collapses them into a single pathspec that matches nothing, so the exclusion vanishes in silence. See [the run namespace](#the-run-namespace) and [bot authoring](agents/bots/bot-authoring.md). |
 | `{{run.elapsed_seconds}}` / `.cost_usd` / `.tokens` / `.iterations` | What the run has consumed so far — see [the run namespace](#the-run-namespace). |
 | `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
@@ -211,9 +309,23 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 
 **Inside a fan-out branch**, every namespace above resolves exactly as it does on the trunk — a node renders the same whether it was reached by a plain edge or by a `fan_out_all` / `fan_out_each` router. `{{outputs.*}}` resolves against the BRANCH's own view: its upstream trunk outputs plus what this branch has produced, plus the per-item binding a `fan_out_each` stamped. Sibling branches are invisible to each other, which is what makes the render deterministic; their outputs only become readable at the convergence node. `{{run.*}}` is the run's, not the branch's — the whole run's consumption and caps, shared by every branch.
 
-**In a data mapping** — an edge `-> dst with { … }`, a subbot node's own `with:`, an emit node's `with:`, or a `fail message:` — the runtime resolves the template through the mapping resolver, which supports the namespaces the compiler validates there: `{{vars.*}}`, `{{outputs.*}}`, `{{input.*}}` (on an edge, source output; on a subbot/emit `with:` the reference has no `input:` surface to check against so **C149** warns, prefer `{{vars.*}}` for a declared launch-time value or `{{outputs.<node>.<field>}}` for a producer's output — but the compiler cannot prove absence of the key, since a parent's launch payload may legitimately forward undeclared keys through this channel), `{{artifacts.*}}`, `{{loop.*}}`, `{{each.*}}`, `{{run.*}}` and the literal-open form `{{"{{"}}`. `{{secrets.*}}` and `{{attachments.*}}` are **refused** in a data mapping AND inside a compute node's `expr:` (**C150** / **C151**): both namespaces materialise only at execution sinks (a tool's `command:` / `script:` / `postcondition:`, a tool action's `params:` value, or a prompt body); `pkg/dsl/expr`'s `evalNamespaces` excludes them deliberately, so a compute expression would render either to nil. A **ref-less literal** in a mapping travels verbatim as a string, unconditionally — and so does a template that interpolates a reference into prose (`"{{vars.n}} "`; only a mapping that is exactly one value reference passes the value's type through — the literal-open form `{{"{{"}}` renders the literal text) — a `bool` / `int` / `float` / `string[]` field on the destination reads it as a string whatever the text (`"true"`, `"42"` and `"[\"a\"]"` included; a compute passing it through to a typed output fails SCHEMA_VALIDATION), and a `json` field gets the text where a literal visibly attempts an encoding (`"[]"`, `"{}"`, `"''"`, `"null"`; a plain word is a JSON string already and stays silent; a bare number stays silent as a deliberate exception — arithmetic on it reads the string); **C152** warns on both, with the remedy per type: a scalar constant comes from a compute's `expr:` (`ok: "false"`, `n: "0"`, referenced as `{{outputs.<compute>.<field>}}`) or a var of the type; a list or an object comes from a producer's typed output (a node whose `output:` schema declares the field and prints it, `{"xs": ["a"]}`) — the expr language has no list or object literal, and a `string[]` / `json` var default is seeded as text today (#1285) — or the field is declared `string` when one string is what is meant.
+**In a data mapping** — an edge `-> dst with { … }`, a subbot node's own `with:`, an emit node's `with:`, or a `fail message:` — the runtime resolves the template through the mapping resolver, which supports the namespaces the compiler validates there: `{{vars.*}}`, `{{outputs.*}}`, `{{input.*}}` (on an edge, source output; on a subbot/emit `with:` the reference has no `input:` surface to check against so **C149** warns, prefer `{{vars.*}}` for a declared launch-time value or `{{outputs.<node>.<field>}}` for a producer's output — but the compiler cannot prove absence of the key, since a parent's launch payload may forward undeclared keys through this channel when the launch passed `--allow-unknown-inputs` (#1757): the forwarding is the opt-out's declared use, the typo'd key is what the default refusal names), `{{artifacts.*}}`, `{{loop.*}}`, `{{each.*}}`, `{{run.*}}` and the literal-open form `{{"{{"}}`. `{{secrets.*}}` and `{{attachments.*}}` are **refused** in a data mapping AND inside a compute node's `expr:` (**C150** / **C151**): both namespaces materialise only at execution sinks (a tool's `command:` / `script:` / `postcondition:`, a tool action's `params:` value, or a prompt body); `pkg/dsl/expr`'s `evalNamespaces` excludes them deliberately, so a compute expression would render either to nil. A **ref-less literal** in a mapping travels verbatim as a string, unconditionally — and so does a template that interpolates a reference into prose (`"{{vars.n}} "`; only a mapping that is exactly one value reference passes the value's type through — the literal-open form `{{"{{"}}` renders the literal text) — a `bool` / `int` / `float` / `string[]` field on the destination reads it as a string whatever the text (`"true"`, `"42"` and `"[\"a\"]"` included; a compute passing it through to a typed output fails SCHEMA_VALIDATION), and a `json` field gets the text where a literal visibly attempts an encoding (`"[]"`, `"{}"`, `"''"`, `"null"`; a plain word is a JSON string already and stays silent; a bare number stays silent as a deliberate exception — arithmetic on it reads the string); **C152** warns on both, with the remedy per type: a scalar constant comes from a compute's `expr:` (`ok: "false"`, `n: "0"`, referenced as `{{outputs.<compute>.<field>}}`) or a var of the type; a list or an object comes from a compute's `expr:` collection literal (`xs: "['a']"`, `doc: "{k: 'v'}"`) or a producer's typed output (a node whose `output:` schema declares the field and prints it, `{"xs": ["a"]}`) — or the field is declared `string` when one string is what is meant.
 
-A tool `command:` / `script:` / `postcondition:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}`, `{{run.*}}`, `{{outputs.<node>.<field>}}`, `{{artifacts.*}}`, `{{attachments.*}}` and `{{loop.*}}` — the last four from the same template snapshot a prompt renders from, on the trunk and in a branch alike (inside a branch, the branch's own view, per-item binding included). An artifact, an attachment field or a loop counter is substituted like an output — shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:` (a counter as a number, an artifact as an object) — and its `{{!…}}` raw form crosses the same command-injection boundary; inside quotes you wrote, such a reference is refused (C137, an error for these three: before they resolved here, the braces reached the shell literally). An output is substituted exactly like an input: shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:`; the `{{!outputs.…}}` raw form crosses the command-injection boundary like `{{!input.…}}` does. An output the referenced node has not produced yet takes the missing-input rule too — the `{{…}}` placeholder stays in a shell body so `bash -c` fails on it visibly, and renders as `null` in a script body. The output arrives with the shape its producer gave it: a `json`-declared **input** field is pre-encoded into one JSON token for the shell, an output referenced directly is not, so a list of strings space-joins into several words. To keep the pre-encoding, thread the value through an edge `with` mapping into a `json` input field and read `{{input.<key>}}`.
+A tool `command:` / `script:` / `postcondition:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}`, `{{run.*}}`, `{{outputs.<node>.<field>}}`, `{{artifacts.*}}`, `{{attachments.*}}` and `{{loop.*}}` — the last four from the same template snapshot a prompt renders from, on the trunk and in a branch alike (inside a branch, the branch's own view, per-item binding included). An artifact, an attachment field or a loop counter is substituted like an output — shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:` (a counter as a number, an artifact as an object) — and its `{{!…}}` raw form crosses the same command-injection boundary; inside quotes you wrote, such a reference is refused (C137, an error for these three: before they resolved here, the braces reached the shell literally). An output is substituted exactly like an input: shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:`; the `{{!outputs.…}}` raw form crosses the command-injection boundary like `{{!input.…}}` does. An output the referenced node has not produced yet takes the missing-input rule too — the `{{…}}` placeholder stays in a shell body so `bash -c` fails on it visibly, and renders as `null` in a script body. **A list renders by its DECLARATION in a `command:` / `postcondition:`**, because a `json` value and a `string[]` one arrive as the same thing and only the declaration separates them:
+
+| declared | renders as | empty value |
+|---|---|---|
+| `json` var or input field | its compact JSON text, always **one** shell token (`'[1,2]'`); a value that is itself a **string** is handed over unquoted, so it is not round-trippable through `json.loads` — declare the slot `string` when the value is text | `'[]'` — the token stays, so the command's arity does not move |
+| `string[]` var or input field | one shell-escaped word per element (`'a.go' 'b.go'`) | **no token at all** — that is what an empty argv list means |
+| anything else the declaration does not reach | the value's own shape: a scalar list space-joins into several words, anything else is one JSON token | no token |
+
+An author who declares `json` writes a program that parses JSON, so the value must survive as one word: `KEY={{vars.langs}} python3 -I -c "json.loads(os.environ['KEY'])"`. Do not interpolate a `json` reference into program *source* inside a `command:` — the value lands shell-quoted, which a Python or JS parser reads as a string literal. Use a `script:` node for that (every namespace renders as a JSON literal there, `[1,2]` and not `'[1,2]'`), or pass the value through the environment as above. A JSON literal is valid source in JS and in any JSON-superset syntax; **`true`, `false` and `null` are not Python or Ruby literals**, so a `language: py` script must read such a value through `json.loads` of a `{{!…}}`-free string rather than paste it into an expression.
+
+`string[]` renders nothing when empty ON PURPOSE, and that is the one case worth designing around: `cmd {{input.files}} --flag` loses its argument and `--flag` shifts one place left. Declare the slot `json` when the site needs a token whatever the length.
+
+`{{vars.<name>.<member>}}` reads the MEMBER of a `json` var, the same thing an expression reads from the same text — a prompt, a data mapping and a tool body all drill it, and a member the document has not keeps its placeholder like any other unwired reference.
+
+A declaration reaches `{{vars.<name>}}` (the `vars:` block), the node's own `{{input.<field>}}` (its `input:` schema) and `{{outputs.<node>.<field>}}` (the producer's `output:` schema). A key an edge delivers to a node that declares no `input:` schema, and a drilled path (`{{input.a.b}}`, `{{outputs.n.f.g}}`) whose leaf no schema types, carry none and take the shape rule of the last row. A `json` slot holding JSON **null** holds a value, not a hole, and renders `'null'`. A `string[]` one does not take that rule — a producer that had nothing to say is not an empty argv list, so a null there keeps the `{{…}}` placeholder like any reference nobody wired, and the missing wiring stays visible.
 
 ## LLM nodes: `agent` and `judge`
 
@@ -230,13 +342,14 @@ agent reviewer:
   system: review_system
   user: review_user
   session: fresh
-  tools: [bash, read_file, grep]
+  tools: [bash, read_file, grep]   ## `tools: []` = declared empty; no line = undeclared
   tool_policy: [git.*, read_file]
   capabilities: [board.read]
   skills: ["review-playbook"]
   tool_max_steps: 10
   max_tokens: 12000
   reasoning_effort: high
+  ambient_context: none   ## none|workspace|operator|all (default workspace, ADR-119)
   timeout: "20m"
   readonly: true
   publish: review_artifact
@@ -250,11 +363,24 @@ Important property groups:
 | Model execution | `model`, `backend`, `provider`, and the `claude_code`-compatible binary override `command`. See [backends](backends.md) and [delegation](delegation.md). |
 | Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `description`. |
 | Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only\|persist`, `interaction`, `interaction_prompt`, `interaction_model`. `persist` (ADR-089) resumes **this node's own** last CLI conversation on re-entry (claude_code / pi / codex); judges and humans stay graph nodes. Trunk-only (C243). |
-| Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. |
+| Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. The exact Claude spellings `Read`/`Bash`/`Grep` resolve on claw as `read_file`/`bash`/`grep` when the bundle declares the tool-alias engine floor; exact names and unique MCP shorthand win first. See [tool-name aliases](tool-name-aliases.md). |
 | Limits | `tool_max_steps`, `max_tokens`, `reasoning_effort`, `timeout`, `compaction`, `compress`. |
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
 | Backend-specific | `full_access` and `images` are honored by the Codex backend; other backends ignore them. |
 | Persistent context | `memory` and `cursors`. |
+
+`ambient_context: none | workspace | operator | all` picks what the node
+inherits from its surroundings besides its prompt (ADR-119): the
+repository's instruction files (`workspace`, the default — `CLAUDE.md`,
+`.claude/rules/`, `AGENTS.md` …), the operator's personal agent setup and
+the files above the repository root (`operator`), both (`all`) or nothing
+(`none`). Declared on the node or the workflow, with a run override
+(`--ambient-context`) and `ITERION_AMBIENT_CONTEXT` below it. Enforced on
+`claude_code`, `claw`, `codex` and `pi`; an explicit value on another
+backend warns (C185). An invalid value is a compile error (C184). Review
+bots that judge a checkout they do not control usually want `none`. See
+[backends.md](backends.md#ambient-context-adr-119--what-a-node-inherits-besides-its-prompt) and
+[ADR-119](adr/119-ambient-context-policy.md).
 
 `readonly: true` forces delegated agents into a read-only sandbox and classifies the node as non-mutating for parallel workspace safety. `full_access: true` is a high-authority Codex-only opt-in; `readonly` wins if both are present.
 
@@ -360,7 +486,7 @@ human approval:
   min_answers: 1
 ```
 
-`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, `review`, or `async`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. The `async` mode is an agent/judge mode (not a human-node mode): the node posts non-blocking questions with `ask_user_async` and keeps working, syncing on demand via an `await_answers` node — see [async interaction](async-interaction.md). Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
+`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, or `human_or_host` (the host application may answer in the operator's place, whichever comes first — see [the assistant dock](assistant-dock.md); C212 refuses the mode without its `host_event` field and the field without the mode). A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. The `async` mode is an agent/judge mode (not a human-node mode): the node posts non-blocking questions with `ask_user_async` and keeps working, syncing on demand via an `await_answers` node — see [async interaction](async-interaction.md). Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
 
 Resume a pause with `iterion resume --run-id <id> --file workflow.bot --answer key=value`.
 
@@ -390,7 +516,7 @@ tool run_tests:
   output: test_result        # schema: passed: bool, log: string
 ```
 
-(`jq -Rs` reads the whole log as one JSON string and ships in the default sandbox image; the `.[-20000:]` tail bounds what reaches the schema field — and every downstream prompt that reads it — because nothing else does: a 50 MB log would land in the judge's context whole; a `python3 -c "…json.dumps…"` wrapper reads well but `python3` is NOT in that image, and a missing interpreter turns the payload into invalid JSON that the runtime then wraps as `{"result": …}` in silence — declare any interpreter you rely on in the bot's `devbox.json`.) A `command:` runs through **`bash -c`**, on the host and inside a sandbox alike ([`executor_tool.go`](../pkg/backend/model/executor_tool.go), `toolNodeCommand`); a `script:` runs the interpreter its `language:` names, and `language: sh` is whatever `sh` is on PATH — dash on Debian-derived images, so keep scripts POSIX. Every `{{ref}}` in a `command:` is shell-escaped as one word; do not wrap it in quotes of your own ([C137](references/diagnostics.md)).
+(`jq -Rs` reads the whole log as one JSON string and ships in the default sandbox image; the `.[-20000:]` tail bounds what reaches the schema field — and every downstream prompt that reads it — because nothing else does: a 50 MB log would land in the judge's context whole; a `python3 -c "…json.dumps…"` wrapper reads well but `python3` is NOT in that image, and a missing interpreter turns the payload into invalid JSON that the runtime then wraps as `{"result": …}` in silence — declare any interpreter you rely on in the bot's `devbox.json`.) A `command:` runs through **`bash -c`**, on the host and inside a sandbox alike ([`executor_tool.go`](../pkg/backend/model/executor_tool.go), `toolNodeCommand`); a `script:` runs the interpreter its `language:` names, and `language: sh` is whatever `sh` is on PATH — dash on Debian-derived images, so keep scripts POSIX. **Python runs isolated.** A tool node's working directory is the workspace, and python puts it first on `sys.path` for `-c`, `-m` and stdin, as it puts a script's own directory for a script file (which lands in the workspace under a copy-based sandbox): a `json.py` the judged tree carries would replace the standard module inside the node. A `language: py` script runs `python3 -I`; in a `command:`, write `python3 -I` whatever hands python its program — `-c`, `-m`, a heredoc, a `<` redirect or a pipe (the catalog refuses the bare form, `TestCatalogPythonRunsIsolated`). `-I` also ignores `PYTHON*` variables and the user site: the body reaches the standard library and the system site-packages. A body that needs `PYTHONPATH` or a sibling module names its interpreter itself in a `command:` — `python3 lib/run.py` keeps the script's directory and the environment — and owns what that directory holds. Every `{{ref}}` in a `command:` is shell-escaped as one word; do not wrap it in quotes of your own ([C137](references/diagnostics.md)).
 
 Verified Actions add a deterministic outcome check and bounded recovery:
 
@@ -457,6 +583,8 @@ compute summarize:
 
 Expressions support field/index access, arithmetic/comparison/boolean operators, conditional/map/filter/reduce forms, and the total built-ins `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `floor`, and `round`. `min`/`max` take either ONE array (`min(input.nums)`) or two or more values (`min(max(floor_s, cap * ratio), cap * 0.5)` — the shape a clamp is written with; arguments are flattened one level, so `max(list, 7)` compares the list's elements against the scalar). They share namespaces with quoted `when` expressions and are bounded by an evaluation-work limit; see [DSL totality](dsl-totality-and-tc.md).
 
+**Collections are written as literals.** A list `[expr, ...]` evaluates to an array — `xs: "['a', 'b']"` fills a `string[]` field directly (this is the rich form the [C152](references/diagnostics.md) remedy names: a collection constant comes from a compute, referenced as `{{outputs.<compute>.<field>}}`), and `[]` is the empty list. An object `{key: expr, ...}` evaluates to a JSON object — `doc: "{k: 'v', xs: ['a']}"` fills a `json` field; a key is an identifier or a quoted string, each declared once (a repeat is refused at parse), and `{}` is the empty object. Elements and values are full expressions, references included (`[input.name, 'fallback']`), and literals nest. Strings inside a literal use either quote (`'a'` / `"a"` — the single form embeds in a double-quoted DSL value without escaping, in both profiles). Two collection facts to know: equality never walks into a collection — `==` is false and `!=` true even between identical contents (`[1] == [1]` is false; compare `length(...)`, an element, `keys(...)`/`values(...)`, or `join(...)`; the compiler warns with **C306** when it can see it) — and a `string[]` field holds only an all-string list (the compiler warns with **C307** when a literal breaks it, e.g. `['a', 1]` — quote the element or type the field `json`). The literals are additive syntax, accepted in both syntax profiles: a profile gates changes of MEANING, and no previously valid expression read a leading `[` or `{` as anything but an error.
+
 **The output is typed by its schema.** A compute output is conformed to the declared field types where it is produced, on the trunk and inside a fan-out branch alike: an integral number under `int` is stored as the integer it reads as, an integer under `float` as a float, and a value that cannot be conformed fails the node with the field named — a fractional float under `int` (`10.58` from a division), a string under `bool`, a number under `string`. The engine never picks a rounding for you: write it, with `floor(x)` (towards negative infinity) or `round(x)` (half away from zero), both of which return an integer.
 
 ```iter fragment
@@ -488,6 +616,7 @@ block through vars that drift from it in silence.
 | `run.max_cost_usd` | float | The effective cost cap. |
 | `run.max_tokens` | int | The effective token cap. |
 | `run.max_iterations` | int | The effective iteration cap. |
+| `run.tree_noise` | string | The canonical tree-noise pathspecs (pkg/treenoise), shell-quoted and space-separated: `':(exclude,top).claude' ':(exclude,top)devbox.lock' ':(exclude,top).iterion-script-*'`. Constant for a run. Tool scripts get the same list in `ITERION_TREE_NOISE` — the bare pathspecs, NOT the quoted prompt form: the prompt rendering is single-quoted for a shell command line, the env value word-splits into one pathspec per entry. |
 
 The four `max_*` members are the caps **in force right now**: the
 `budget:` block after the `iterion run --max-*` flags, the recipe/preset,
@@ -678,7 +807,7 @@ workflow w:
   worker -> done
 ```
 
-Every surface reads the unit, never the main alone: `iterion validate main.bot` (a fragment validated alone says where it is validated), `run`, `resume`, `fork`, `rewind --auto`, the dispatcher, the studio (which opens the merged document with each declaration's file on it and saves each declaration back where it came from — a new one to the main), the cloud editor, the bot registry (the launch form's vars come from the whole unit), the catalog, and the recipes embedded in the binary — `iterion run feature-dev/main.bot` from any directory writes the whole bot to its cache, and the studio's Examples list serves an embedded bot in several files as one flat program. A remote launch uploads the program written out as one file; the cloud snapshot freezes `lib/` with the rest, and a subbot declared in a fragment resolves like one declared in the main. The run's identity covers every file of the unit and every `{{include}}` its prompts read, so a fragment edited under a parked run is a source change (`iterion resume` refuses it without `--force`), and the run records every file it executed (`workflow_sources`) for `rewind --auto` to diff. A bundle that imports declares the engine floor that reads it (`requires: { iterion: ">= 3.145.0" }`): `validate` asks for it (C252), a push refuses without (409). `iterion bots create <slug> --template library` scaffolds the shape.
+Every surface reads the unit, never the main alone: `iterion validate main.bot` (a fragment validated alone says where it is validated), `run`, `resume`, `fork`, `rewind --auto`, the dispatcher, the studio (which opens the merged document with each declaration's file on it and saves each declaration back where it came from — a new one to the main; its Source view is a picker over the unit's files, showing ONE file's text at a time, with the merged program as a read-only entry beside them, and an edit re-parses the unit with that file replaced), the cloud editor, the bot registry (the launch form's vars come from the whole unit), the catalog, and the recipes embedded in the binary — `iterion run feature-dev/main.bot` from any directory writes the whole bot to its cache, and the studio's Examples list serves an embedded bot in several files as one flat program. A remote launch uploads the program written out as one file; the cloud snapshot freezes `lib/` with the rest, and a subbot declared in a fragment resolves like one declared in the main. The run's identity covers every file of the unit and every `{{include}}` its prompts read, so a fragment edited under a parked run is a source change (`iterion resume` refuses it without `--force`), and the run records every file it executed (`workflow_sources`) for `rewind --auto` to diff. A bundle that imports declares the engine floor that reads it (`requires: { iterion: ">= 3.145.0" }`): `validate` asks for it (C252), a push refuses without (409). `iterion bots create <slug> --template library` scaffolds the shape.
 
 ### `subbot`
 
@@ -748,14 +877,16 @@ What the compiler holds, and where:
 - **C300** — every input is a declared var of the port's type, its value comes from the launch (an input carries no `from:` and no `file:`), and its requiredness and default are the var's — an input is required exactly when its var has no default, and defaults to what the var defaults to, read as the launch reads a value of that type (a `string[]` or `json` var's text as a list or an object); a port may repeat them, never contradict them; on a var without a default, a `nullable: true` port may be `required: false` — with no default, or `default: null` — since omitted, the run starts with the var unset, which is null; a var's `[enum: …]` is the domain the contract advertises. A contract is declared once, its `version:` starts at 1, and the workflow's `contract:` names a declaration.
 - **C301** — every output names its producer: `from: <node>.<field>`, a field of the node's output schema of the port's type; `from: <node>` for a port typed with the node's whole output schema, or for a file port — a port with a `file:` block — on a node that publishes an artifact (`publish:`). An instance of a group is named `<prefix>.<node>`; an `await_answers` binds through its implicit `answers` field, typed `json`. An output is never defaulted.
 - **C302** — a criterion names a declared port, singular (`input.goal`, `output.pr_url`), an evaluator that takes the port's type (a file port is a file, which none takes), and parameters its declaration accepts; a default has the port's type, and is `null` only on a `nullable: true` port.
-- **C303** (warning) — a criterion whose `kind:` has no registered evaluator (this build ships `min_length` and `pattern`) is declared and rendered, not evaluated.
+- **C303** (warning) — a criterion whose `kind:` has no registered evaluator (this build ships `min_length` and `pattern`) is named: **no criterion is evaluated at run time, registered or not** — a criterion is a declared check for readers (and for the evaluators a future release will run), and C303 only warns that the declared kind ships no evaluator.
 - **C304** (warning) — an output whose producer is on no path to `done` is produced only when the bot fails.
 
 A `default:` or `params:` is **one JSON value on one line** — `"text"`, `12`, `true`, `null`, `[...]` or `{key: value}` — with no bare word, no signed number and no exponent: the `.bot` text refuses the other forms outright, at the lexer (E001, E002), and a value that reaches the compiler through a document — the studio's — and the text cannot write is C302.
 
-`iterion validate` renders the bound contract (each port with its producer, each criterion with its evaluator, each effect) and returns it as `public_contract` in `--json`, the result the MCP `local_validate` tool reads — for a program that compiles, never for one that does not. The studio saves a contract back to the file it came from, and `Verify` holds the saved text to the document: a name that is not an identifier, or a value the text cannot write, is refused by name before a file is touched. Two more readers are held to the contract as warnings: the manifest (**C254** — a `launch.primary` entry that is not a contract input, a `produces[].node` that produces no contract output; `launch.hidden`, the inputs the form never renders, is not held) and a parent's `subbot` (**C255** — a `with:` that misses an input the child's contract requires; the parent's `output:` schema is the child's terminal output, which the contract does not define, and is not held).
+`iterion validate` renders the bound contract (each port with its producer, each criterion with its evaluator, each effect) and returns it as `public_contract` in `--json`, the result the MCP `local_validate` tool reads — for a program that compiles, never for one that does not. The studio saves a contract back to the file it came from, and `Verify` holds the saved text to the document: a name that is not an identifier, or a value the text cannot write, is refused by name before a file is touched. Two more readers are held to the contract as warnings: the manifest (**C254** — a `launch.primary` entry that is not a contract input, a `produces[].node` that produces no contract output; `launch.hidden`, the inputs the form never renders, is not held) and a parent's `subbot` (**C255** — a `with:` that misses an input the child's contract requires, and an `output:` schema field the child's contract does not produce, or produces at another scalar type; a `json` field accepts any port shape, so only the scalars the two sides share are compared).
 
-A bundle that declares a contract declares the engine floor that reads one (`requires: { iterion: ">= 3.150.0" }`, `parser.ContractSince`): `validate` asks for it (C252), a push refuses without it (409), a studio authoring commit likewise (400, `bot_engine_floor`), `iterion dsl migrate` raises a bundle's floor to what its sources need. A comment survives a studio save only at the file's head, before the first declaration: written inside a contract — as inside any declaration, or between two — it is dropped when the studio writes the file back.
+**What a parent receives.** A `subbot` node whose child keeps a contract receives the contract's output ports, projected from the child's run after it finishes — not the child's terminal-node output. A `from: <node>.<field>` port carries that field's value; a port typed with the node's whole output schema, or a file port, carries the node's whole output; the port name is the key the parent reads. A port whose producer — or whose field — the child did not produce is an absent key, which is what a skipped producer means: `nullable:` marks the ports a finished run may legitimately leave out. A child that keeps no contract keeps the historic semantics (its terminal-node output is the subbot's output). The projection happens on every surface that runs a subbot — `iterion run`, the studio, the dispatcher and the cloud pod — including the paths that rebuild a child's output from the store after a human gate or a restart. `iterion bots create <slug> --template contract` scaffolds a bot that keeps one.
+
+A bundle that declares a contract declares the engine floor that reads one (`requires: { iterion: ">= 3.150.0" }`, `parser.ContractSince`): `validate` asks for it (C252), a push refuses without it (409), a studio authoring commit likewise (400, `bot_engine_floor`), `iterion dsl migrate` raises a bundle's floor to what its sources need. A comment survives a studio save where it was written: above the declaration it leads, above a property inside a block, beside an edge, at the end of a line. Each one travels on the declaration it was written around, so moving that declaration on the canvas moves its comments with it, and `unparse.Verify` — the guard the save and `iterion fmt` both call — refuses a text that lost one.
 
 ## Cursors and supervisors
 
@@ -818,6 +949,7 @@ workflow review:
   default_backend: "claude_code"
   worktree: auto
   compress: on
+  ambient_context: none
   permission: ask
   allow: ["Read(*)", "Grep(*)"]
   ask: ["Bash(git push:*)"]
@@ -1013,6 +1145,41 @@ warning fires, run `iterion models pricing` to see which source (if any)
 answers, then either add the model to the table or expect `max_cost_usd` to
 bind on the priced nodes only.
 
+#### Neither ceiling counts usage the provider never reported
+
+The budget counts what the provider reported. A claw call whose usage the
+provider did not report in full is counted apart. Two causes:
+
+- A provider that sends no usage at all. On the OpenAI chat wire, usage
+  is sent only when requested, and claw requests it from api.openai.com
+  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked,
+  so its calls count as unreported unless it sends usage anyway.
+- A call that ended before its final account: a cut, a stall, a failure
+  frame carrying none, or a request abandoned unanswered by the cold-stream
+  watchdog. A request the provider refused before serving any of it — a
+  rate limit, an overload, an exhausted balance, an over-window prompt, or
+  any condition no new request clears, named by the error's code or type —
+  is billed nothing and is not counted. The verdict is read on the chat and
+  Responses wires; the Anthropic wire forwards the frame's message only, so
+  a refusal named only in prose still counts there.
+
+Whatever the call consumed reaches the run as a lower bound at most: the
+tokens it streamed before failing, or nothing. The first such call under a
+declared `max_tokens` or `max_cost_usd` emits one advisory `budget_warning`
+on dimension `usage_unreported`. Its `detail` names how many calls went
+unreported so far. As for `cost_usd_unpriced`, this figure is a floor:
+the warning is raised once per ceiling and re-armed when a ceiling is
+raised. The count rides the checkpoint, so a resumed run keeps it — and
+raises the warning once more. A failed attempt counts too, retried or not;
+when that count is all it spent, it takes no `max_iterations` slot.
+
+Each node output carries the count under `_usage_unreported_calls`, and
+each completed claw step that went unreported carries
+`usage_unreported: true` on its `llm_step_finished` event. Outside a
+budget, the runner logs that fact once per attempt and per route — for
+the steps it saw: a failed call emits no `llm_step_finished`, so only the
+budget counts it.
+
 ### The target repo's toolchain — `repo_devbox:`
 
 Two `devbox.json` files can supply a run's binaries, and both are
@@ -1159,17 +1326,98 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 
 - `worktree: auto` executes in a per-run worktree and preserves a run branch. Final merge behavior depends on CLI/studio flags and delegated merge authority; see [merge policy](merge-policy.md) and [resume](resume.md).
 - `sandbox: auto` resolves a devcontainer/default image. Block form supports image/build, user/workspace, host-state, environment, mounts, post-create, and network policy; see [sandbox](sandbox.md).
-- `permission: off|ask|deny` plus allow/ask/deny rules creates an execution-time tool gate. CLI overrides are available; see [permissions](permissions.md).
+- `permission: off|ask|deny` plus `allow:`/`ask:`/`deny:` rules creates an execution-time tool gate. Mode and rule lists are declarable on the `workflow` block and on an `agent`/`judge` node; a node list REPLACES the workflow list of the same kind, and the CLI overrides append to whichever won. See [permissions](permissions.md).
 - `compress: off|on|ultra` controls output compression where supported; see [ultracode](ultracode.md).
 - Workflow budgets are shared across branches in that run. Hitting cost, token, duration, parallelism, or iteration limits emits budget events and stops/parks according to the failure path. Nested subbot runs retain their own budgets. `warn_tokens` is the advisory exception: crossing it emits a single `budget_warning` event (`advisory: true`) suggesting an audit of what consumed the tokens, and execution continues — use it instead of `max_tokens` when heavy consumption is legitimate (judge/rewrite loops going to their bounds) but worth an operator's look.
 - `resources` are named semaphores. Integer values declare capacities; string arrays declare leaseable named members exposed to nodes that list the resource in `needs:`.
+
+## Writing the twin in YAML
+
+A `.bot` can be written in YAML. The author document `x.bot.yaml` holds the declarations of `x.bot` under the same names — `dsl:` (required), then `catalog:`, `vars:`, `schemas:`, `prompts:`, `nodes:`, `workflow:` and the rest, in the order the writer puts them ([author-schema.md](references/author-schema.md) lists every key and how each value is written) — with YAML's own values. It is a way of **writing** the `.bot`, never a second truth ([ADR-102](adr/102-yaml-author-twin.md)): no surface launches, packs, hashes or stores a document — every launcher refuses one by name, and a bundle leaves it out — and the `.bot` is what you commit, review and run.
+
+```yaml author
+dsl: 2
+schemas:
+  verdict:
+    ready: bool
+prompts:
+  ask: Review the change and say whether it is ready to merge.
+nodes:
+  - agent: reviewer
+    model: anthropic/claude-sonnet-4-6
+    output: verdict
+    system: ask
+workflow:
+  name: review
+  entry: reviewer
+  edges:
+    - reviewer -> done when ready
+    - reviewer -> fail when not ready
+```
+
+The loop:
+
+1. Write `x.bot.yaml`. The JSON Schemas [`iterion-author.schema.json`](references/iterion-author.schema.json) (one per profile beside it) give an editor completion and a first check.
+2. `iterion validate x.bot.yaml` reads the document into the program it describes — in the unit and the bundle of `x.bot`, every finding at the line of the document you wrote — and `--exec` runs the dry run on it.
+3. `iterion fmt --to bot x.bot.yaml` writes `x.bot` beside it, proven the same program; a program with no written `.bot` form is refused, nothing written (E054). Once `x.bot` is there, a document you changed writes it again with `--force` — which replaces the file whole: the comments and the frontmatter keys the `.bot` carried and the document does not are gone, and `fmt` counts the comments, names the first, and names the keys.
+4. Commit `x.bot`. In CI, `iterion fmt --to bot --check x.bot.yaml` says whether the `.bot` beside the document is still the one it writes. `iterion diagram x.bot.yaml` draws that `.bot`; `iterion fmt x.bot.yaml` rewrites the document in its canonical form — the form of the examples on this page.
+
+`iterion fmt --to yaml x.bot` goes the other way: the document of an existing `.bot`, and a note for what the document does not carry — the `.bot`'s comments, the frontmatter keys beyond `catalog:`'s four — which the `.bot` keeps until `--to bot --force` writes it from the document.
+
+**Three rules a YAML author needs that a `.bot` author does not.** The authoring probe measured the first two as the traps the YAML form adds ([dsl-authoring-probe.md](references/dsl-authoring-probe.md)); the third is YAML's own:
+
+- **Quote a value that holds `: ` or ` #`, or starts with a character YAML reserves.** A plain `jq '.status: .code'` — or a text ending in `:` — reads as a mapping, and the document is refused (E050), the message saying to quote the value. A value that starts with `{`, `[`, `!`, `&`, `*`, `|`, `>`, `%`, `@` or a backtick is YAML syntax, not text: a `{{input.task}}` template written unquoted is a mapping, and a leading `! ` is a tag YAML drops — `! grep -q x f` would lose its negation; both are refused, the message saying to quote. A space followed by `#` starts a YAML comment, and that is no error: the plain value simply ends there — `echo "see #123"` reads as `echo "see`; `fmt --to bot` counts the comments it leaves out of the `.bot` and names the first, and `validate --exec` finds a command cut in two. Quote in single quotes, a `'` inside written twice (`'it''s'`): inside double quotes YAML reads backslash escapes — `"\t"` is a tab, `"\x41"` is `A`.
+- **An edge is one `.bot` edge line, and its inner quotes are the `.bot`'s.** An edge that holds `: ` — a `with` mapping — is quoted whole in YAML, single quotes outside, the `.bot`'s double quotes inside, and a `'` in it written twice (`''`):
+
+```yaml author
+dsl: 2
+schemas:
+  summary:
+    text: string
+  verdict:
+    ok: bool
+prompts:
+  ask: Summarise the change.
+  check: Is this summary complete? {{input.summary}}
+nodes:
+  - agent: writer
+    model: anthropic/claude-sonnet-4-6
+    output: summary
+    system: ask
+  - judge: reader
+    model: anthropic/claude-sonnet-4-6
+    output: verdict
+    system: check
+workflow:
+  name: summarise
+  entry: writer
+  edges:
+    - 'writer -> reader with { summary: "{{outputs.writer.text}}" }'
+    - reader -> done when ok
+    - reader -> fail when not ok
+```
+
+Written plain, or inside double quotes of its own, the same line ends early and the document is refused (E050), the message naming the single quotes:
+
+```yaml author invalid:E050
+dsl: 2
+workflow:
+  name: summarise
+  entry: writer
+  edges:
+    - writer -> reader with { summary: "{{outputs.writer.text}}" }
+```
+
+- **Write a number as digits, without a leading 0.** YAML reads `010` as the octal 8 where the `.bot` reads 10, `0x10` as 16, `+3` as 3, `1e2` as 100 and `01.5` as 1.5. The converter refuses these spellings rather than re-spell them in silence (E051, YAML's reading named): write the number you mean in the `.bot`'s digits (`8` or `10`, `16`, `100`), or — where the value may be text — quote it (`'010'`, a zip code). A `-` is kept where the value is always text — a `with` value, a connector's parameter (`offset: -10`); where a number or a text is taken (a preset's value, a JSON value) a signed number is refused, quote it if it is text; a property that takes a number takes no sign. The same holds for a bool where text is taken: `True` is YAML's spelling, `true` the `.bot`'s, and `draft: true` in a connector's `params:` is the text `true`.
+
+**What else differs.** A prompt declared under `prompts:` as a `|` block is a `.bot` prompt body: its leading and trailing blank lines are dropped, the first line's indentation is taken off every line, and profile 1 drops its interior blank lines — when the body you wrote is read otherwise, `validate` says so (E053, a warning), `fmt` refuses to rewrite the document rather than put that reading in your place, and `fmt --to bot` writes the reading into the `.bot`. YAML's scanner also ends a line at an invisible U+0085 (NEL), U+2028 (LS) or U+2029 (PS): inside a literal block body one is read as the newline the scanner meant (E053 names the reading), but a trailing line holding only such a character is chomped like a blank line before the body is ever read — so the document itself is scanned raw, and one warning lists every line that holds one (E055). A ` #` that follows a plain TEXT value on its line warns the same way — the value ends at the `#` and the rest is a comment YAML drops (`command: echo "see #123"` reads `echo "see`); a number, a bool, a null, a quoted or block scalar keep their trailing comment as the note it reads as. A prompt text written in place (`system: |`) is a string, kept as written. `dsl:` is required (E052). `catalog:` is the `.bot`'s `## ---` frontmatter, read by the one reader the catalogue uses. Comments are not carried either way: a document with YAML comments is refused by `fmt` and left as it is, and it still converts with `--to bot`, which counts the comments the `.bot` is not written with and names the first; `--to yaml` counts the `.bot` comments the document leaves behind. A conversion under `--force` replaces its target whole, and names what the target carried that the new text does not.
 
 ## Validation and references
 
 Three steps stand between a `.bot` and its first paid run, each cheaper than the next, each catching what the previous cannot:
 
 1. **`iterion validate workflow.bot`** — parse and compile. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242, C243 (`session:` on a non-model node) and the structural band C244–C249; bundle checks use C200–C234. Every finding comes with its position and a `fix:` line, and `--json` carries each as an object (`code`, `severity`, `file`/`line`/`column`, `message`, `hint`, `node_id`, `edge_id`) — with `edit` when the remedy is mechanical (the literal before and after; `iterion fix` applies it). The [diagnostic catalogue](references/diagnostics.md) is authoritative. Two of the warnings name the deaths a new bot meets first: **C145**, a bounded loop with no exit at its cap (the run would die of `LOOP_EXHAUSTED`), and **C146**, a division into an `int` field without `floor()`/`round()`.
-2. **`iterion validate --exec workflow.bot`** — the dry run. A program that compiles is run twice under a simulation, every condition true then false, without a model, a shell or the workspace: prompts, `command:`, `script:` and `postcondition:` are rendered by the production renderers and every `{{…}}` left unresolved is named with the reason; shell text is held to `bash -n` (`dash -n` for `language: sh`); a human is answered by a schema-shaped output, a `wait` at once; a `subbot` child is read within the bundle and simulated the same way. The report (`exec` in `--json`) lists each pass, the findings by node, the nodes whose output was only a **shape** (a condition read from one decided nothing about the real bot), what no pass reached, and `clean`. It never decides `valid`: it says what the first paid run would have met — `--strict` makes `clean` the exit code too, for a CI gate. `--fixtures f.json` answers nodes with recorded outputs. The promise is bounded — the dry run *reduces* the runtime class of failure, it does not remove it: a value only a model produces stays a shape, a binary only the image has stays unchecked, said as such ([ADR-100](adr/100-dry-run-at-the-executor-seam.md)).
+2. **`iterion validate --exec workflow.bot`** — the dry run. A program that compiles is run twice under a simulation, every condition true then false, without a model, a shell or the workspace: prompts, `command:`, `script:` and `postcondition:` are rendered by the production renderers and every `{{…}}` left unresolved is named with the reason; shell text is held to `bash -n` (`dash -n` for `language: sh`); a human is answered by a schema-shaped output, a `wait` at once; a `subbot` child is read within the bundle and simulated the same way. A `json`-typed field has no defined shape and the dry run guesses none: it keeps the object shape (a one-element list only where a fan_out_each, a foreach or a `map`/`filter`/`reduce` iterates it, so the body is entered), and an expression that fails on a value the dry run invented — a shaped `json` field, a `json` var without a value, a value derived from one — is **inconclusive**, not a death: the pass goes on, the finding names the value and what would decide it (`--var`, a fixture, a typed field). The report (`exec` in `--json`) lists each pass, the findings by node, the inconclusive expressions under their own heading, the nodes whose output was only a **shape** (a condition read from one decided nothing about the real bot), the branches of a fan-out whose end was neither a ceiling nor a declared refusal (a `best_effort` fan-out finishes the run around them; the dry run names them under `dead_branches`, each once with its crossings), what no pass reached, and two verdicts: `clean` (nothing to fix, nothing undecided) and `failing` (a death or a defect finding). It never decides `valid`: it says what the first paid run would have met — `--strict` makes `failing` the exit code, for a CI gate; an inconclusive expression is printed, not failed. `--fixtures f.json` answers nodes with recorded outputs. The promise is bounded — the dry run *reduces* the runtime class of failure, it does not remove it: a value only a model produces stays a shape, a binary only the image has stays unchecked, said as such ([ADR-100](adr/100-dry-run-at-the-executor-seam.md)).
 3. **`iterion run`** — the real thing, on the build the bot declares in `requires.iterion`.
 
 Around them: `iterion fmt` writes a file in its canonical form — the text the studio saves — proven the same program before it is written (`--check` in CI), and `iterion fix` applies the mechanical remedies the diagnostics carry (today C137, the quotes an author writes around a `{{ref}}` the runtime quotes already). Both refuse by name what they cannot rewrite without changing the program, and leave it as it was. From Claude Code, the MCP tool `local_validate` returns the same JSON as `validate` (`exec` and `fixtures` included).

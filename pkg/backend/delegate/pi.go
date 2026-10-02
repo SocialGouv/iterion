@@ -88,10 +88,11 @@ var piProtocol = CLIAgentProtocol{
 	// Rebound by NewPiBackend to carry that backend's logger. The default has
 	// to stay non-nil: this value is copied by anything building a pi
 	// CLIAgentBackend by hand, and a nil field there is argv silently lost.
-	ExtraArgsFor:    func(task Task) []string { return piExtraArgsFor(task, nil) },
-	ParseOutputRich: parsePiOutput,
-	ResolveEnv:      piResolveEnv,
-	SandboxEnv:      piSandboxEnv,
+	ExtraArgsFor:       func(task Task) []string { return piExtraArgsFor(task, nil) },
+	SystemPromptSuffix: piSystemPromptSuffix,
+	ParseOutputRich:    parsePiOutput,
+	ResolveEnv:         piResolveEnv,
+	SandboxEnv:         piSandboxEnv,
 
 	ExtraArgs: []string{
 		"--mode", "json",
@@ -193,21 +194,37 @@ func (b *PiBackend) recordAuthRefusal(task Task, err error) error {
 	return err
 }
 
+// The facade source labels a pi node emits. pi reaches these vendors through
+// its OWN first-class providers rather than a base-URL redirect, so there is
+// no facade URL to render and the label is fixed. Exported because the
+// runner's meter must map each one back onto the credential slot that paid
+// (AnthropicWireFacadeSlot): a literal spelled independently on both sides is
+// how a reading ends up charged to the wrong key.
+const (
+	PiUsageSourceZAI      = "facade:pi-zai"
+	PiUsageSourceMoonshot = "facade:pi-moonshot"
+)
+
 // piUsageSource maps pi's provider slug onto the source vocabulary the
 // runner's meter keys on (runCredKeys.forSource), or "" when the refusal
 // cannot be attributed to a credential the meter tracks.
 //
 // Only the anthropic wire is mapped, and that is not an omission: the
 // credential-skip evidence is claude_code-metered end to end
-// (usageBackendForProvider), so a reading on any other provider could not
-// be acted upon even if it were recorded — while a mislabelled one WOULD
+// (UsageMeterBackendForProvider), so a reading on any other provider could
+// not be acted upon even if it were recorded — while a mislabelled one WOULD
 // be acted upon, against the wrong credential.
 func piUsageSource(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "anthropic":
 		return "anthropic-direct"
 	case "zai":
-		return "facade:pi-zai"
+		return PiUsageSourceZAI
+	// pi's own id for Moonshot, which is what piResolveModel returns after
+	// piProviderPrefixes — matching on iterion's "moonshot" here would
+	// never fire.
+	case "moonshotai":
+		return PiUsageSourceMoonshot
 	}
 	return ""
 }
@@ -242,6 +259,12 @@ func (b *PiBackend) execute(ctx context.Context, task Task) (Result, error) {
 	}
 	defer cleanupCodex()
 	for k, v := range codexEnv {
+		task.ExtraEnv = append(task.ExtraEnv, k+"="+v)
+	}
+	// The key a shared tier pinned for THIS node's route rides the same
+	// channel, for the same reason: both transports and the sandboxed path
+	// read task.ExtraEnv, and nothing narrower reaches all of them.
+	for k, v := range piRouteEnv(ctx, task) {
 		task.ExtraEnv = append(task.ExtraEnv, k+"="+v)
 	}
 	// Transport selection. RPC is the default because it is strictly higher
@@ -479,7 +502,8 @@ func piMapProvider(name string) string {
 
 // piMapEffort maps iterion's reasoning_effort dial onto pi's --thinking
 // flag. pi accepts off|minimal|low|medium|high|xhigh|max, a strict superset
-// of iterion's levels, so every level passes through unchanged.
+// of iterion's levels, so every level passes through unchanged — except
+// `none`, which pi spells `off`.
 //
 // `ultracode` is remapped to `xhigh` defensively: the runtime already does
 // this on the wire, and pi has no subagent tool, so ultracode's
@@ -489,6 +513,8 @@ func piMapEffort(effort string) []string {
 	switch effort {
 	case "":
 		return nil
+	case "none":
+		effort = "off"
 	case "ultracode":
 		effort = "xhigh"
 	}
@@ -553,13 +579,16 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 	// pi walks up from the working directory and injects every AGENTS.md and
 	// CLAUDE.md it finds into the system prompt. That is parity with
 	// claude_code and on by default for the same reason — but it is not free,
-	// and the bill is invisible until measured: on iterion's own tree (a
-	// 103 KB CLAUDE.md) a trivial one-word prompt costs 26,933 input tokens
-	// with context files against 448 without. Sixty times the input, before
-	// the node does any work, on every call.
+	// and the bill is invisible until measured: when iterion's own CLAUDE.md
+	// was 103 KB (ADR-085), a trivial one-word prompt cost 26,933 input
+	// tokens with context files against 448 without. Sixty times the input,
+	// before the node does any work, on every call.
 	//
-	// So it stays on, and it gets an off switch.
-	if strings.TrimSpace(os.Getenv("ITERION_PI_NO_CONTEXT_FILES")) == "1" {
+	// Which of them reach the node is its ambient-context policy (ADR-119):
+	// pi's walk cannot be bounded, so every policy but `all` turns it off and
+	// iterion supplies the allowed files itself (piSystemPromptSuffix).
+	// ITERION_PI_NO_CONTEXT_FILES=1 stays the operator's raw off switch.
+	if !piUsesNativeContextFiles(task) {
 		args = append(args, "--no-context-files")
 	}
 
@@ -652,6 +681,38 @@ func piSandboxEnv(ctx context.Context, task Task) map[string]string {
 	return env
 }
 
+// piRouteEnv hands pi the key a shared tier sealed for THIS node's route
+// (RunBundle.PinnedAPIKeys). pi names its provider on its argv, so the pin is
+// the node's own and the key crosses for it alone — the zai or moonshot key a
+// Claude forfait keeps out of the run's default channel. A default key of the
+// same provider is the run's own and already set by piResolveEnv.
+func piRouteEnv(ctx context.Context, task Task) map[string]string {
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	provider, _ := piResolveModel(task.Model, task.ProviderHint)
+	p := piSecretsProvider(provider)
+	envKey := piEnvKeys[p]
+	if envKey == "" || creds.APIKey(p) != "" {
+		return nil
+	}
+	if k := creds.PinnedAPIKey(p); k != "" {
+		return map[string]string{envKey: k}
+	}
+	return nil
+}
+
+// piSecretsProvider maps a pi provider id back to the iterion provider whose
+// credential funds it: pi names Moonshot "moonshotai" (piProviderPrefixes).
+func piSecretsProvider(provider string) secrets.Provider {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == piProviderPrefixes["moonshot"] {
+		return secrets.ProviderMoonshot
+	}
+	return secrets.Provider(p)
+}
+
 // piEnvKeys maps a pi provider id onto the API-key environment variable pi
 // reads for it. Only providers iterion can supply a BYOK credential for
 // appear; everything else pi resolves from its own credential store.
@@ -660,6 +721,7 @@ var piEnvKeys = map[secrets.Provider]string{
 	secrets.ProviderOpenAI:     "OPENAI_API_KEY",
 	secrets.ProviderXAI:        "XAI_API_KEY",
 	secrets.ProviderZAI:        "ZAI_API_KEY",
+	secrets.ProviderMoonshot:   "MOONSHOT_API_KEY",
 	secrets.ProviderOpenRouter: "OPENROUTER_API_KEY",
 }
 

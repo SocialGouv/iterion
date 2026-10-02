@@ -21,7 +21,7 @@ func TestToolBodiesGetTheValueNotThePromptsText(t *testing.T) {
 	if want := `n = 3; m = 10; a = {"score":3}; s = 1024; p = "/p/d"; sc = 3`; got != want {
 		t.Fatalf("script rendered\n%s\nwant\n%s", got, want)
 	}
-	cmd := RenderCommand(body, mustRefs(body), nil, nil, td, "run-1", nil)
+	cmd := RenderCommand(body, mustRefs(body), nil, nil, td, "run-1", nil, nil)
 	for _, want := range []string{"n = '3'", "a = '{\"score\":3}'", "s = '1024'", "p = '/p/d'"} {
 		if !strings.Contains(cmd, want) {
 			t.Fatalf("command rendered %q, lacks %q", cmd, want)

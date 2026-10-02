@@ -106,7 +106,7 @@ ARG DEEPSEC_VERSION=latest
 #
 # `deepsec` reads CODEX_REAL_BIN (it is on its own env allowlist), which
 # is how a caller points it at this binary rather than its bundled one.
-ARG CODEX_VERSION=0.154.0
+ARG CODEX_VERSION=0.156.1
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     --mount=type=cache,target=/root/.npm \

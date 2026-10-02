@@ -136,6 +136,9 @@ export function errorMessage(err: unknown): string {
 // Returns a friendly hint for a recognised failure mode, or null when
 // nothing matches (the caller then falls back to the raw message).
 export function errorHint(err: unknown): ErrorHint | null {
+  // Said verbatim: a replacement's deadline names what it was loading, and a
+  // name matches the rules below as readily as a diagnosis does.
+  if (err instanceof Error && err.name === "ReplaceDeadlineError") return null;
   const msg = errorMessage(err);
   for (const rule of RULES) {
     if (rule.match.test(msg)) {

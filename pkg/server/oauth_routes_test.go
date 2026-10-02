@@ -694,6 +694,10 @@ func TestOAuthBrowserCompletion_ServerBuiltBlobIsNotHeldToPasteRules(t *testing.
 // never the value. Before this only the success path wrote anything.
 func TestOAuthCredentialIngestion_RefusalLeavesATrace(t *testing.T) {
 	srv, hs, signer, oauthStore := oauthTestServer(t)
+	// team-x must EXIST: a mutating route whose {id} resolves to no team
+	// is refused at route resolution (#2046), before the ingestion path
+	// this test audits ever runs.
+	seedTeam(t, srv, "team-x", "team-x")
 	var logs bytes.Buffer
 	srv.logger = iterlog.New(iterlog.LevelWarn, &logs)
 	auditStore := audit.NewMemoryStore()
@@ -849,5 +853,36 @@ func TestOAuthCredentialIngestion_TranscriptPasteLeavesATrace(t *testing.T) {
 	// The trace names the shape, never the material.
 	if strings.Contains(log, "sk-ant-oat01-secret") || strings.Contains(body, "sk-ant-oat01-secret") {
 		t.Fatalf("the refusal echoed the token; log:\n%s\nbody: %s", log, body)
+	}
+}
+
+// TestOAuthConnect_aReconnectMovesTheConnectTime: the connect path stamps a
+// new connect time on every connect — the fact a lent slot's borrower tells
+// a donor's re-connect from the refresh worker's rotation by.
+func TestOAuthConnect_aReconnectMovesTheConnectTime(t *testing.T) {
+	_, hs, signer, oauthStore := oauthTestServer(t)
+	alice := oauthJWT(t, signer, "alice")
+	blob := func(token string) string {
+		return `{"claudeAiOauth":{"accessToken":"` + token + `","refreshToken":"rt-` + token + `","expiresAt":4102444800000,"scopes":["user:inference"]}}`
+	}
+	if code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob("sk-ant-oat01-first")); code != http.StatusOK {
+		t.Fatalf("connect = %d body=%s", code, body)
+	}
+	first, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for !time.Now().After(first.CreatedAt) {
+		time.Sleep(time.Millisecond)
+	}
+	if code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob("sk-ant-oat01-second")); code != http.StatusOK {
+		t.Fatalf("re-connect = %d body=%s", code, body)
+	}
+	second, err := oauthStore.Get(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CreatedAt.IsZero() || !second.CreatedAt.After(first.CreatedAt) {
+		t.Fatalf("connect times %s then %s: a re-connect must move it", first.CreatedAt, second.CreatedAt)
 	}
 }

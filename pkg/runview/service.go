@@ -46,6 +46,13 @@ type LaunchSpec struct {
 	// compatible context from the launch inputs and persists it on the run.
 	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
 	Vars             map[string]string       // --var-style overrides
+	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
+	// input check: an input that names no declared var rides the launch
+	// (warned, never silent) instead of refusing it. The forwarding channel
+	// a parent's undeclared payload key rides to a subbot ({{input.extra}}
+	// in a node's `with:`) is this opt-out's legitimate user; a typo'd key
+	// stays the default's refusal. False = the check runs.
+	AllowUnknownInputs bool
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.
@@ -93,6 +100,10 @@ type LaunchSpec struct {
 	// "off") from the studio Launch toggle. "" inherits the workflow/node
 	// `auto_memory:` DSL then ITERION_AUTO_MEMORY.
 	AutoMemory string
+	// AmbientContext is the run-level ambient-context override ("", "none",
+	// "workspace", "operator", "all"; ADR-119). "" inherits the workflow/node
+	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT.
+	AmbientContext string
 	// LoopBudgetGuard is the run-level back-edge affordability override
 	// ("", "on", "off"). "" inherits the workflow `loop_budget_guard:` then
 	// ITERION_LOOP_BUDGET_GUARD.
@@ -180,6 +191,15 @@ type LaunchSpec struct {
 	// operator has no local checkout.
 	RepoURL string
 	RepoRef string
+	// Trust classifies who wrote the code RepoURL/RepoRef resolve to. The
+	// zero value is the trusted default; a launch surface that admits an
+	// outsider's tree (the fork review lane) sets store.RunTrustFork, and
+	// everything the run is then denied is decided from the RUN, not from
+	// here — this field only gets the fact onto the document.
+	Trust store.RunTrust
+	// RepoSHAExpected pins the commit this launch admitted, for a RepoRef an
+	// untrusted party can move. Empty disables the runner's comparison.
+	RepoSHAExpected string
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
 	// by repository. Set by inbound-webhook launches; empty otherwise.
@@ -409,6 +429,11 @@ type ResumeSpec struct {
 	// back to the workflow's own value — turning memory on for a run the
 	// operator had launched hermetically.
 	AutoMemory string
+	// AmbientContext re-states the run-level ambient-context override, for the
+	// same reason AutoMemory does: a resume that said nothing would fall back
+	// to the workflow's value, and could hand the operator's setup to a run
+	// launched with `none`.
+	AmbientContext string
 	// LoopBudgetGuard re-states the run-level back-edge affordability
 	// override ("", "on", "off"), for the same reason AutoMemory does.
 	LoopBudgetGuard string

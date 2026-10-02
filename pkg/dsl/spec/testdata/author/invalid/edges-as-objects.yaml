@@ -1,0 +1,10 @@
+# refused: an edge is a string in the .bot's own grammar; the object form is not a form
+dsl: 2
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges:
+    - {from: a, to: done}

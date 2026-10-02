@@ -95,6 +95,8 @@ func (s *Server) registerAuthRoutes() {
 
 	// Super-admin only.
 	s.mux.Handle("GET /api/admin/users", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminListUsers)))
+	// One account's file: provenance, granted memberships, SSO links.
+	s.mux.Handle("GET /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetUser)))
 	s.mux.Handle("PATCH /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateUser)))
 	s.mux.Handle("POST /api/admin/users/{id}/reset-password", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminResetUserPassword)))
 	s.registerAdminOrgRoutes()

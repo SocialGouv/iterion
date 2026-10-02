@@ -8,6 +8,18 @@ version: "3"
 # on fresh checkouts.
 dotenv: [".env"]
 
+# The live-e2e ledger writer (pkg/liveledger.Track, hooked from the
+# harness at t.Cleanup) picks up the current task's name from this
+# env var — it is how the ledger row is keyed on the operator-facing
+# `task test:live:*` target rather than on the internal Go test
+# function name. `{{.TASK}}` is Task's built-in variable for the
+# currently-running task; setting it at the root scope covers every
+# `test:live:*` target without a per-target edit that would drift.
+# Non-live tasks set it too, harmlessly — the harness only records
+# from live tests.
+env:
+  ITERION_LIVE_LEDGER_TARGET: "{{.TASK}}"
+
 vars:
   BINARY: iterion
   CMD: ./cmd/iterion
@@ -16,6 +28,10 @@ vars:
   COMMIT:
     sh: git rev-parse --short HEAD 2>/dev/null || echo ""
   LDFLAGS: -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v{{.VERSION}} -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit={{.COMMIT}}
+  # The cloud:* tasks name their compose project: a COMPOSE_PROJECT_NAME in
+  # the shell or in .env would otherwise aim them — `down -v
+  # --remove-orphans` included — at another project.
+  CLOUD_COMPOSE: docker compose -p iterion-cloud -f docker-compose.cloud.yml
 
 tasks:
   default:
@@ -159,6 +175,21 @@ tasks:
     desc: Compile every -tags=live test in the repo without running anything (build-gate the paid live suite for free). Uses ./... so any future live-tagged file outside ./e2e is covered automatically — a live-tagged test file elsewhere in pkg/ would otherwise bit-rot invisibly.
     cmds:
       - go test -tags live -count=1 -run '^$' ./...
+
+  test:clilive:
+    desc: Free real-CLI proofs of the ADR-119 ambient context, against the installed claude and codex CLIs (each skips when absent). Needs a route to api.anthropic.com / api.openai.com; a deliberately invalid key fails once the CLI has assembled its context, so nothing is spent.
+    cmds:
+      - go test -tags clilive -count=1 -run TestCLILive -v ./pkg/backend/delegate/...
+
+  test:clilive:compile:
+    desc: Compile every -tags=clilive test without running anything, so the real-CLI proofs cannot bit-rot unseen
+    cmds:
+      - go test -tags clilive -count=1 -run '^$' ./...
+
+  test:live:status:
+    desc: Answer "do the live e2e still pass?" without spending — reads e2e/testdata/live/ledger.json + Taskfile.yml and prints every test:live target with its last verdict or `never`, sorted by staleness. No credential, no network. See #1422.
+    cmds:
+      - go run ./cmd/iterion-live-status
 
   test:live:
     desc: Run all live e2e tests (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
@@ -376,6 +407,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_Worktree$' -timeout 5m ./e2e/...
 
+  test:live:feat:workspace-commands:
+    desc: 'Live e2e for workspace .claude/commands/ parity on claude_code and claw (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_WorkspaceCommands$' -timeout 15m ./e2e/...
+
   test:live:feat:board-caps:
     desc: 'Live e2e for the agent board.* capabilities feature (real cost).'
     cmds:
@@ -532,6 +568,16 @@ tasks:
     cmds:
       - go test -count=1 -run 'TestGeneratedMapsAreFresh|TestTheFreshnessGateBites' ./pkg/repomap/
 
+  bots:fmt:
+    desc: Rewrite every shipped bot and example in its canonical form
+    cmds:
+      - go run -mod=vendor ./cmd/iterion fmt bots examples
+
+  fmt:check:
+    desc: Fail if a shipped bot or example drifted out of its canonical form, or if .fmt-refused is stale
+    cmds:
+      - go run -mod=vendor ./cmd/iterion fmt --check --baseline .fmt-refused bots examples
+
   dsl:gen:
     desc: Regenerate DSL docs, skills and Monaco vocabulary from the parser and property registry
     cmds:
@@ -541,6 +587,34 @@ tasks:
     desc: Fail if a committed rendering of the DSL property registry is stale, or if the registry and the parser disagree
     cmds:
       - go test -count=1 -run 'TestGeneratedDSLDocsAreFresh|TestRegistryMatchesTheParser|TestEBNF' ./pkg/dsl/spec/
+
+  auto-maintenance:check:
+    desc: "Run the auto-maintenance agreements against a repository (REPO=owner/name): 1 on a measured disagreement, 2 on a blind spot. See docs/auto-maintenance.md"
+    requires:
+      vars: [REPO]
+    cmds:
+      - ./scripts/auto-maintenance-check.sh {{.REPO}}
+
+  docs:links:
+    desc: Check every relative link and #anchor of the tracked markdown against the tree, the way GitHub resolves them (0 broken is the contract), and hold the site's slugifier to the same GitHub-verified anchors
+    cmds:
+      - go run -mod=vendor ./scripts/docslinks
+      - node docs/scripts/check-anchor-slugs.mjs
+
+  docs:links:test:
+    desc: Run the site link checker's own tests — every URL form the built site serves, and every one it does not
+    cmds:
+      # The file is NAMED, not globbed: `node --test '<glob>'` exits 0 having
+      # run nothing when the glob matches no file, so a rename would retire
+      # the whole suite in silence. Naming it exits 1 the day the path moves.
+      - node --test docs/scripts/check-links.test.mjs
+
+  docs:links:new:
+    desc: Only the links broken since the merge base with BASE (default origin/main) — what a change adds, the inherited backlog excluded; what the advisory CI step reports
+    vars:
+      BASE: '{{.BASE | default "origin/main"}}'
+    cmds:
+      - go run -mod=vendor ./scripts/docslinks -base {{.BASE}}
 
   brand:gen:
     desc: Regenerate every committed copy of the brand assets (favicons, app icon, docs logo, pkg/brand, studio mark) from assets/brand/
@@ -1077,24 +1151,34 @@ tasks:
 
   # --- Cloud-mode docker-compose (plan §F T-38, T-39) -------------
   cloud:up:
-    desc: Bring up the cloud-mode local stack (Mongo + NATS + MinIO + iterion)
+    desc: Bring up the cloud-mode local stack (Mongo + NATS + SeaweedFS + iterion)
     cmds:
-      - docker compose -f docker-compose.cloud.yml up -d --build
+      - '{{.CLOUD_COMPOSE}} up -d --build'
 
   cloud:down:
     desc: Tear down the cloud-mode stack including volumes
     cmds:
-      - docker compose -f docker-compose.cloud.yml down -v
+      # --remove-orphans: also the containers of services the file no
+      # longer declares (the MinIO of a stack started before SeaweedFS).
+      - '{{.CLOUD_COMPOSE}} down -v --remove-orphans'
 
   cloud:logs:
     desc: Tail logs from every cloud-mode service
     cmds:
-      - docker compose -f docker-compose.cloud.yml logs -f --tail=100
+      - '{{.CLOUD_COMPOSE}} logs -f --tail=100'
 
   cloud:up:deps:
-    desc: Bring up only the backing services (Mongo + NATS + MinIO) without iterion
+    desc: Bring up only the backing services (Mongo + NATS + SeaweedFS) without iterion
     cmds:
-      - docker compose -f docker-compose.cloud.yml up -d mongo nats minio minio-init
+      - '{{.CLOUD_COMPOSE}} up -d mongo nats seaweedfs s3-init'
+
+  cloud:test:s3:
+    desc: Run the S3 gateway compatibility bench against the local stack's SeaweedFS, in its own bucket (after task cloud:up:deps)
+    cmds:
+      # Inline rather than under env: — an ITERION_TEST_S3_* exported in the
+      # shell wins over a task's env: and would aim the bench, which writes
+      # and deletes objects, at another gateway.
+      - ITERION_TEST_S3_ENDPOINT=http://127.0.0.1:8333 ITERION_TEST_S3_ENDPOINT_B= ITERION_TEST_S3_ACCESS_KEY_ID=iterion-dev ITERION_TEST_S3_SECRET_ACCESS_KEY=iterion-dev-secret ITERION_TEST_S3_BUCKET=iterion-compat-bench ITERION_TEST_S3_ALLOW_FOREIGN_OBJECTS= go test -count=1 -run TestGatewayCompat -v ./pkg/store/blob/
 
   cloud:dev:
     desc: Hot-reload iterion in the cloud stack via watchexec rebuild + container restart
@@ -1102,13 +1186,23 @@ tasks:
     cmds:
       # Single quoted arg, not `sh -c '...'` — see studio:dev:backend note
       # (watchexec's default shell re-shells `sh -c`, losing the quoting).
-      - watchexec -r -e go -w cmd -w pkg -- 'docker compose -f docker-compose.cloud.yml up -d --build iterion-server'
+      - watchexec -r -e go -w cmd -w pkg -- '{{.CLOUD_COMPOSE}} up -d --build iterion-server'
 
   changelog:gen:
     desc: Rebuild CHANGELOG.md (current major) + docs/changelog/ archives from git history
     cmds:
       - corepack pnpm install --prefer-offline
       - corepack pnpm exec node scripts/changelog-gen.mjs
+
+  release:floors:
+    desc: Preview what the release cut would do to the syntax-floor pins, and refuse a shape it cannot realign (the cut itself runs `cmd/release-floors --apply` from release-it's before:git:beforeRelease hook)
+    cmds:
+      - go run ./cmd/release-floors {{.CLI_ARGS}}
+
+  ci:queue-stats:
+    desc: "Measure main's merge queue over a window — enqueue→merge latency, merges that skipped the queue, queue builds a direct push discarded, failing tests (read-only, needs gh; e.g. `task ci:queue-stats -- --since 2026-09-22 --until 2026-09-28`)"
+    cmds:
+      - bash scripts/diagnostics/queue-stats.sh {{.CLI_ARGS}}
 
   # --- Helm chart targets (plan §F T-36, T-39) --------------------
   chart:sync-version:
@@ -1196,6 +1290,11 @@ tasks:
             fh.write("\n")
         PY
         echo "Updated docker/llm-clis/package.json — review and commit."
+
+  board:epics:sync:
+    desc: "Check the GitHub board's Epic field against the sub-issue parents (APPLY=1 to fix)"
+    cmds:
+      - scripts/board-epics-sync.sh {{if eq .APPLY "1"}}--apply{{end}}
 
   docker:build:
     desc: Build the iterion container image locally (tagged ghcr.io/socialgouv/iterion:dev)

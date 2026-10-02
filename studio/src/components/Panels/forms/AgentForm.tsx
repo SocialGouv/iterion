@@ -15,6 +15,9 @@ import {
   BACKEND_OPTIONS,
   INTERACTION_HELP,
   INTERACTION_OPTIONS,
+  PERMISSION_HELP,
+  PERMISSION_OPTIONS,
+  PERMISSION_RULES_HELP,
   REASONING_EFFORT_HELP,
   REASONING_EFFORT_OPTIONS,
   SESSION_HELP,
@@ -28,6 +31,7 @@ import CompactionFields from "./CompactionFields";
 import CursorsFields from "./CursorsFields";
 import FallbacksFields from "./FallbacksFields";
 import MCPConfigFields from "./MCPConfigFields";
+import { toolsFieldHelp } from "./toolsFieldHelp";
 
 interface Props {
   decl: AgentDecl | JudgeDecl;
@@ -233,16 +237,19 @@ export default function AgentForm({ decl, kind }: Props) {
       />
       <SelectField
         label="Await"
-        value={decl.await ?? "none"}
-        onChange={(v) => update({ await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
+        value={decl.await ?? ""}
+        onChange={(v) => update({ await: (v || undefined) as AwaitMode | undefined })}
         options={AWAIT_OPTIONS}
+        allowEmpty
+        emptyLabel="-- no await (default) --"
         help={AWAIT_HELP}
       />
       <TagListField
         label="Tools"
         values={decl.tools ?? []}
-        onChange={(v) => update({ tools: v.length > 0 ? v : undefined })}
+        onChange={(v) => update({ tools: v })}
         placeholder="Add tool..."
+        help={toolsFieldHelp(decl.tools)}
       />
       <NumberField
         label="Tool Max Steps"
@@ -256,6 +263,49 @@ export default function AgentForm({ decl, kind }: Props) {
         values={decl.tool_policy ?? []}
         onChange={(v) => update({ tool_policy: v.length > 0 ? v : undefined })}
         placeholder="Add allow/deny pattern..."
+      />
+      {/* Tool-permission gate (#1222, docs/permissions.md). An emptied list
+          is written back as `undefined`, never `[]`: the JSON seam carries
+          these with `omitempty`, so `[]` and "absent" are the same value on
+          the wire — a control that wrote `[]` would look like it cleared the
+          workflow's list and inherit it instead. */}
+      <SelectField
+        label="Permission"
+        // C110 accepts the mode case-insensitively and whitespace-trimmed,
+        // and the writer puts it back verbatim, so `permission: Deny` is a
+        // legal, diagnostic-free spelling. Matched raw it falls through to
+        // the empty option and the inspector would report a hard-denying
+        // node as inheriting its workflow.
+        value={(decl.permission ?? "").trim().toLowerCase()}
+        onChange={(v) => update({ permission: v || undefined })}
+        options={PERMISSION_OPTIONS}
+        allowEmpty
+        emptyLabel="-- inherit workflow --"
+        help={PERMISSION_HELP}
+      />
+      <TagListField
+        label="Allow"
+        values={decl.allow ?? []}
+        onChange={(v) => update({ allow: v.length > 0 ? v : undefined })}
+        literalValues
+        placeholder="Add allow rule, e.g. Read(**)..."
+        help={PERMISSION_RULES_HELP}
+      />
+      <TagListField
+        label="Ask"
+        values={decl.ask ?? []}
+        onChange={(v) => update({ ask: v.length > 0 ? v : undefined })}
+        literalValues
+        placeholder="Add ask rule, e.g. Bash(git push:*)..."
+        help={PERMISSION_RULES_HELP}
+      />
+      <TagListField
+        label="Deny"
+        values={decl.deny ?? []}
+        onChange={(v) => update({ deny: v.length > 0 ? v : undefined })}
+        literalValues
+        placeholder="Add deny rule, e.g. Read(.env*)..."
+        help={PERMISSION_RULES_HELP}
       />
       <TagListField
         label="Needs (resources)"

@@ -219,10 +219,24 @@ type Grant struct {
 	// readings of the one it replaced. Empty only for donor records that
 	// predate stamping.
 	Fingerprint string
+	// RecordID is the id of the donor's OAuth record a lent subscription was
+	// read from — the record the server's refresh worker rotates. The
+	// borrower's runner follows it instead of exchanging the refresh token
+	// itself: that exchange would revoke the token the donor's record, and
+	// every run spending it, still holds. Empty for a lent API key.
+	RecordID string
+	// RecordConnectedAt is that record's connect time (OAuthRecord.CreatedAt),
+	// which the refresh worker's rotations never rewrite: the borrower's
+	// runner stops following the record only when the donor re-connects it
+	// with another subscription.
+	RecordConnectedAt time.Time
 	// RemainingUSD is what was left of the donor's tightest spend cap.
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
 	RemainingUSD float64
+	// Bound when the lease is inserted, never looked up by run ID later:
+	// concurrent acquisitions can hold different leases for the same run.
+	releaseGuard *ReleaseGuard
 }
 
 // Acquire finds a donor for req and records the lease. Returns ErrNoDonor
@@ -252,8 +266,12 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// donor's daily runs and re-granting their whole remaining allowance,
 	// against a ledger that learned nothing about what the killed attempt
 	// spent. Closing first turns it into the superseded non-admission it is,
-	// so the retry is admitted as new.
-	b.supersedeOpenLeases(ctx, req.RunID, now)
+	// so the retry is admitted as new. A run id another team holds is
+	// refused instead: its leases are that team's record of what their runs
+	// consumed, not this requester's to close.
+	if err := b.supersedeOpenLeases(ctx, req, now); err != nil {
+		return nil, err
+	}
 
 	poolsEnabled, allowed, err := b.resolvePools(ctx, req)
 	if err != nil {
@@ -574,7 +592,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		}
 	}
 
-	payload, fingerprint, gone, err := b.openCredential(ctx, p, now)
+	cred, gone, err := b.openCredential(ctx, p, now)
 	if err != nil {
 		release()
 		return nil, "", err
@@ -616,12 +634,15 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	b.logger.Info("credpool: run %s served by donor %s (%s, allowance=$%.2f%s)",
 		req.RunID, p.UserID, p.Credential, remaining, meteredNote(p.Source))
 	return &Grant{
-		PledgeID:     p.ID,
-		DonorID:      p.UserID,
-		Credential:   p.Credential,
-		Payload:      payload,
-		Fingerprint:  fingerprint,
-		RemainingUSD: remaining,
+		PledgeID:          p.ID,
+		DonorID:           p.UserID,
+		Credential:        p.Credential,
+		Payload:           cred.payload,
+		Fingerprint:       cred.fingerprint,
+		RecordID:          cred.recordID,
+		RecordConnectedAt: cred.connectedAt,
+		RemainingUSD:      remaining,
+		releaseGuard:      &ReleaseGuard{lease: lease},
 	}, "", nil
 }
 
@@ -632,6 +653,14 @@ func meteredNote(src CredentialSource) string {
 		return ", metered"
 	}
 	return ""
+}
+
+// openedCredential is what a pledge lends, unsealed for one grant.
+type openedCredential struct {
+	payload     []byte
+	fingerprint string
+	recordID    string
+	connectedAt time.Time
 }
 
 // openCredential unseals whatever the pledge lends. It returns a non-empty
@@ -646,30 +675,34 @@ func meteredNote(src CredentialSource) string {
 // (the hash of the plaintext the runner would derive anyway — carried so
 // the grant NAMES the account instead of leaving every consumer to
 // re-derive it or report nothing).
-func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (payload []byte, fingerprint, gone string, err error) {
+//
+// recordID and connectedAt name the donor's OAuth record a subscription was
+// read from, so the borrower's runner can follow its rotations
+// (Grant.RecordID, Grant.RecordConnectedAt); empty for a key.
+func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (cred openedCredential, gone string, err error) {
 	switch p.Source {
 	case SourceOAuth:
 		rec, gerr := b.oauth.Get(ctx, p.UserID, secrets.OAuthKind(p.Ref))
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrOAuthNotFound) {
-				return nil, "", "the connected subscription was disconnected — reconnect it to resume sharing", nil
+				return openedCredential{}, "the connected subscription was disconnected — reconnect it to resume sharing", nil
 			}
-			return nil, "", "", gerr
+			return openedCredential{}, "", gerr
 		}
 		// An expired token with no way to renew is dead: the refresh worker
 		// skips it, so it will never come back on its own.
 		if gone := oauthCredentialGone(rec, now); gone != "" {
-			return nil, "", gone, nil
+			return openedCredential{}, gone, nil
 		}
 		pt, oerr := secrets.OpenOAuthPayload(b.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 		if oerr != nil {
-			return nil, "", "", fmt.Errorf("credpool: unseal donated subscription: %w", oerr)
+			return openedCredential{}, "", fmt.Errorf("credpool: unseal donated subscription: %w", oerr)
 		}
-		return pt, rec.Fingerprint, "", nil
+		return openedCredential{payload: pt, fingerprint: rec.Fingerprint, recordID: rec.ID, connectedAt: rec.CreatedAt}, "", nil
 
 	case SourceAPIKey:
 		if b.apiKeys == nil {
-			return nil, "", "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
+			return openedCredential{}, "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
 		}
 		// GetOwned, not Get: this read runs on the BORROWER's context, in
 		// another tenant than the donor's, and the tenant-scoped Get would
@@ -679,19 +712,19 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		k, gerr := b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrApiKeyNotFound) {
-				return nil, "", "the lent API key was deleted — pledge another to resume sharing", nil
+				return openedCredential{}, "the lent API key was deleted — pledge another to resume sharing", nil
 			}
-			return nil, "", "", gerr
+			return openedCredential{}, "", gerr
 		}
 		// A donor lends THEIR OWN key. A team-wide key is the team's to
 		// spend, not one member's to hand to the pool, and a pledge must
 		// never become a way to re-scope somebody else's credential.
 		if gone := apiKeyCredentialGone(k, p, now); gone != "" {
-			return nil, "", gone, nil
+			return openedCredential{}, gone, nil
 		}
 		pt, oerr := secrets.OpenApiKey(b.sealer, k)
 		if oerr != nil {
-			return nil, "", "", fmt.Errorf("credpool: unseal donated api key: %w", oerr)
+			return openedCredential{}, "", fmt.Errorf("credpool: unseal donated api key: %w", oerr)
 		}
 		// The donor record's own stamp. A key IS its own identity, so a
 		// borrower could re-derive this from the plaintext — but only if
@@ -699,28 +732,43 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		// GRANTED line and the run-doc stamp naming a slot instead of the
 		// account paying for it. Empty on keys stored before stamping;
 		// the derivation from the plaintext stays the fallback.
-		return pt, k.Fingerprint, "", nil
+		return openedCredential{payload: pt, fingerprint: k.Fingerprint}, "", nil
 	}
-	return nil, "", "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
+	return openedCredential{}, "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
 }
 
-// supersedeOpenLeases closes any lease still marked as serving this run.
-// Their donors get their slot and committed allowance back; the run unit
-// stays consumed, because those attempts did run. Best-effort: a miss only
-// costs a slot until the lease TTL.
-func (b *Broker) supersedeOpenLeases(ctx context.Context, runID string, now time.Time) {
-	open, err := b.leases.ListOpenByRun(ctx, runID)
+// ErrRunHeldElsewhere reports an acquire on a run id another team's open
+// lease already holds.
+var ErrRunHeldElsewhere = errors.New("credpool: run id held by another team's open lease")
+
+// supersedeOpenLeases closes every open lease the requesting team holds on
+// this run. Their donors get their slot and committed allowance back; the
+// run unit stays consumed, because those attempts did run. An open lease of
+// ANOTHER team refuses the acquire: closing it would free the donor's slot
+// and erase the charge while the run still uses the credential. Best-effort:
+// a store miss only costs a slot until the lease TTL.
+func (b *Broker) supersedeOpenLeases(ctx context.Context, req Request, now time.Time) error {
+	open, err := b.leases.ListOpenByRun(ctx, req.RunID)
 	if err != nil {
-		b.logger.Warn("credpool: could not check the open leases of run %s: %v", runID, err)
-		return
+		b.logger.Warn("credpool: could not check the open leases of run %s: %v", req.RunID, err)
+		return nil
+	}
+	for _, l := range open {
+		// An unstamped side of the pair is legacy (pre-tenancy leases,
+		// bounded by the lease TTL): it supersedes rather than refuses,
+		// so an old lease cannot block the owning team's own retry.
+		if req.TenantID != "" && l.TenantID != "" && l.TenantID != req.TenantID {
+			return fmt.Errorf("%w: run %q is held by team %q", ErrRunHeldElsewhere, req.RunID, l.TenantID)
+		}
 	}
 	for _, l := range open {
 		// Zero, not l.CostUSD: Close ADDS, and whatever this lease already
 		// carries was recorded when it was charged.
 		if _, cerr := b.leases.Close(ctx, l.ID, 0, OutcomeSuperseded, now); cerr != nil {
-			b.logger.Warn("credpool: could not supersede lease %s of run %s: %v", l.ID, runID, cerr)
+			b.logger.Warn("credpool: could not supersede lease %s of run %s: %v", l.ID, req.RunID, cerr)
 		}
 	}
+	return nil
 }
 
 // releaseReservation gives back one admitted-but-unused run unit.
@@ -730,7 +778,7 @@ func (b *Broker) releaseReservation(ctx context.Context, pledgeID string, when t
 	}
 }
 
-// ReleaseGuard pins the exact lease that was open before a caller performed
+// ReleaseGuard pins an exact lease at acquisition or before a caller performs
 // an atomic state transition. A later attempt of the same run gets a new
 // lease id, so releasing through this guard can never close that successor.
 // Its fields stay private so callers cannot manufacture or retarget one.
@@ -766,6 +814,18 @@ func (b *Broker) ReleaseCaptured(ctx context.Context, guard *ReleaseGuard) {
 	b.releaseLease(context.WithoutCancel(ctx), guard.lease)
 }
 
+// ReleaseGrant undoes only the acquisition that produced grant. Launchers
+// must use it instead of Release: another acquisition for the same run may
+// have inserted its lease even before the original Acquire returned.
+// A nil grant, or one not produced by Acquire, has nothing to release.
+// Like ReleaseCaptured, it is cancellation-immune and idempotent.
+func (b *Broker) ReleaseGrant(ctx context.Context, grant *Grant) {
+	if grant == nil {
+		return
+	}
+	b.ReleaseCaptured(ctx, grant.releaseGuard)
+}
+
 // Release undoes an acquisition whose run never started — a launch that
 // failed after the credential was granted (the run document could not be
 // saved, the queue publish failed).
@@ -777,6 +837,8 @@ func (b *Broker) ReleaseCaptured(ctx context.Context, guard *ReleaseGuard) {
 //
 // Idempotent and best-effort: it is called from error paths that must
 // surface their OWN error, not this one.
+// Callers holding the original grant should use ReleaseGrant, which cannot
+// release a different acquisition for the same run.
 func (b *Broker) Release(ctx context.Context, runID string) {
 	b.ReleaseCaptured(ctx, b.CaptureRelease(ctx, runID))
 }

@@ -94,7 +94,7 @@
 ## doc alignment is real, landed work). `iterion validate` reports NO
 ## undeclared cycle — this is the only declared loop.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## STACK/REPO-AGNOSTIC (docs/agents "Repo-agnostic and stack-agnostic — the universality rules" +
 ## "Universal code bots"): universal doc_globs defaults, no language /
 ## ecosystem / layout literal anywhere in vars, commands or schemas;
 ## the stack knowledge lives in the bundled skills; the hint
@@ -105,7 +105,6 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
   ## Doc footprint scope (comma-separated globs). scan_hints
   ## enumerates files matching these globs each pass. Hidden /
   ## vendored / runtime dirs are excluded unconditionally via
@@ -117,16 +116,13 @@ vars:
   ## doc locations are added per-run via --var, never baked into the
   ## catalog default.
   doc_globs: string = "README.md,docs/**/*.md,**/README.md,CLAUDE.md,**/CLAUDE.md"
-
   ## Optional free-text notes pinning the campaign's attention.
   scope_notes: string = ""
-
   ## Auto-exclusion. When non-empty, scan_hints excludes any file
   ## whose path starts with this prefix from the doc footprint. Set
   ## to the bot's own bundle dir when running docs-refresh on a repo
   ## that contains its source; otherwise leave empty.
   bundle_self_path: string = ""
-
   ## Incremental base (explicit pin). When non-empty, scan_hints computes
   ## `git diff <diff_since>...HEAD --name-only` → `recently_changed_code_files`.
   ## Usually left EMPTY: in `mode: incremental` scan_hints AUTO-DETECTS the
@@ -134,7 +130,6 @@ vars:
   ## only re-aligns what changed since it last ran. Pin it to force a base —
   ## e.g. the PR base for an amend-PR run (`--var diff_since=main`).
   diff_since: string = ""
-
   ## Alignment scope. `full` (default): the campaign sweeps the WHOLE
   ## corpus semantically — the monthly reconciliation that catches
   ## cross-cutting drift no per-file diff sees. `incremental`: the
@@ -146,24 +141,20 @@ vars:
   ## a broken link anywhere is still caught. A first run with no prior
   ## alignment commit degrades cleanly to a full sweep.
   mode: string = "full"
-
   ## Hard-excluded directories. Comma-separated list of directory
   ## names whose presence anywhere in a path disqualifies it from the
   ## doc footprint (regardless of `doc_globs`). Defaults exclude
   ## runtime / scratch / vendor / artifact dirs that should never be
   ## audited.
   excluded_dirs: string = ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out"
-
   ## Cap on the advisory hints list handed to the campaign (context
   ## bound — telemetry counts are computed BEFORE truncation, so the
   ## report stays honest about what was cut).
   max_hints: int = 120
-
   ## The docs directory scan_hints skips when scanning code areas for
   ## `unmentioned_area` hints, so `docs/` is not itself flagged as an
   ## undocumented code area. Repo-relative; DEFAULT "docs".
   docs_dir: string = "docs"
-
   ## Out-of-tree, sandbox-writable scratch for the promises ledger
   ## (and any cross-pass state). The engine
   ## resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/
@@ -171,7 +162,6 @@ vars:
   ## /tmp/iterion-scratch under a sandbox. Keeping it OUT of the
   ## target worktree is the repo-agnostic rule.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/docs-refresh"
-
   ## DISMISSALS LEDGER — the campaign's cross-pass MEMORY. JSON array
   ## of {doc, kind, value, reason} entries the campaign adjudicated
   ## as not-worth-acting-on (false positives, internal-only areas,
@@ -180,7 +170,6 @@ vars:
   ## persistence of the agent's own judgment, never a cage. Out of
   ## tree like scratch_dir; empty disables the exclusion.
   dismissed_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json"
-
   ## Hard cap on continuation PASSES — the convergence backstop. Each
   ## pass is one hints→campaign→scope_check cycle; the run stops
   ## (shipping what is banked) when the docs are reported aligned +
@@ -194,7 +183,6 @@ vars:
   ## (see the budget block). 4 = one comprehensive sweep + refinement to
   ## the floor; exhaustion here finalizes+ships gracefully.
   max_passes: int = 4
-
   ## ─── PR finalization (opt-in) ─────────────────────────────────
   ## Same contract as feature-dev/app-dev: when open_mr=true, after
   ## the run finishes (converged OR max_passes exhausted with banked
@@ -208,7 +196,6 @@ vars:
   mr_branch: string = ""
   mr_base: string = ""
   source_issue_ref: string = ""
-
   ## PR-CONTEXT inputs — the GENERIC vars iterion's forge webhook and the
   ## `/doki` command already set for ANY bot launched ON a pull request
   ## (no docs-refresh-specific engine code; iterion stays bot-agnostic).
@@ -229,6 +216,39 @@ vars:
   ## `mr_branch` overrides it; empty on both → finalize_mr falls back to the
   ## current branch, else reports it could not determine the head.
   source_branch: string = ""
+  ## ─── Product context sources (opt-in) ────────────────────────────
+  ## Reference material the campaign reads as GROUNDING (product
+  ## background a repo's code alone cannot tell it: functional specs,
+  ## online-help PDFs, the tracker board). context_ingest materializes
+  ## everything under `${scratch_dir}/context-<run id>/` — deliberately
+  ## OUT of the worktree, so the .md-only writeable set never sees it,
+  ## and per-RUN (PROJECT_SCRATCH_DIR is shared by concurrent runs of
+  ## the same repo) — before the first pass. Both channels are
+  ## independent; all vars empty (the default) → the gate skips the
+  ## node and existing users see zero change.
+  ## Comma-separated https URLs of reference repositories to
+  ## shallow-clone (e.g. a docs repo holding the product's reference
+  ## PDFs). Cloned read-only via the mounted `forge_token` (never on
+  ## argv); anonymous clone for public repos.
+  context_git: string = ""
+  ## Jira Cloud board snapshot. `context_jira_base` non-empty arms the
+  ## channel: the board's issues are fetched once and rendered to
+  ## `context-<run id>/jira/board-<board>.md` (key, type, status, summary,
+  ## description truncated). Auth = Basic `context_jira_user` +
+  ## the `tracker_token` file secret (same name and shape review-pr
+  ## binds; Jira Cloud API token). A configured source that fails
+  ## FAILS the node explicitly — no silent degradation.
+  context_jira_base: string = ""
+  context_jira_project: string = ""
+  context_jira_board: string = ""
+  context_jira_user: string = ""
+  ## Backend running the campaign node. Resolved at launch from vars
+  ## (`--var llm_backend=claw`), per the routing-field rule: only
+  ## `{{vars.*}}` resolves in `backend:`. Default stays claude_code
+  ## (full native toolset); the effort env
+  ## (`ITERION_DOC_ALIGN_EFFORT_CLAUDE`) still applies as-is — a claw
+  ## run inherits the documented degradation of ultracode off opus.
+  llm_backend: string = "claude_code"
 
 secrets:
   ## Forge access for push + PR creation + the issue back-link.
@@ -239,9 +259,16 @@ secrets:
   forge_token:
     as: file
     optional: true
+  ## Tracker API token for the context Jira snapshot (context_ingest).
+  ## Same secret name and shape review-pr binds (tracker_token) so one
+  ## team secret serves both bots; mounted as a file, consumed only by
+  ## the deterministic fetch, never read into a prompt. The egress
+  ## lock lives on the binding (`allowed_hosts`), not in the DSL.
+  tracker_token:
+    as: file
+    optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
-
 prompt campaign_system:
   You are a senior technical writer-engineer running a DOC-ALIGNMENT
   campaign — working EXACTLY as you would in a productive, human-driven
@@ -258,8 +285,9 @@ prompt campaign_system:
       areas that exist in the repo but appear in no doc.
   You correct and author documentation, never code.
 
-  LOAD YOUR SKILLS FIRST. The bundle ships six skills under
-  `.claude/skills/` describing the discipline you MUST follow:
+  LOAD YOUR SKILLS FIRST. The bundle ships seven editorial skills
+  under `.claude/skills/` describing the discipline you MUST follow
+  (the eighth, `forge-mr-create.md`, belongs to the PR tail):
     - `docs-refresh.md` — operating playbook, the why and the
       inviolable rules
     - `doc-mismatch-taxonomy.md` — the mismatch kinds that tell you
@@ -271,6 +299,9 @@ prompt campaign_system:
     - `doc-verification-checklist.md` — the verification preamble to
       run before declaring anything aligned
     - `anti-facade-fix-rules.md` — what a façade fix looks like
+    - `context-sources.md` — the product-context material (when the
+      run carries any): what it is, how to read it per backend,
+      what it may and may not ground
 
   THE SCAN IS AN AID, NOT YOUR SCOPE. Your user prompt carries an
   ADVISORY report from a deterministic scan: probable drift sorted by
@@ -331,7 +362,7 @@ prompt campaign_system:
           those too) → COMMIT the aligned doc with a semantic
           message (`docs(<area>): <what was aligned>`), body ending
           with the trailer line `Bot: docs-refresh`. Stage everything
-          including new files (`git add -A -- ':/' ':(exclude,top).claude'`) before each commit;
+          including new files (`git add -A -- ':/' {{run.tree_noise}}`) before each commit;
           a page under `.claude/` that IS your deliverable is staged by name
           (`git add -- .claude/<path>`): the exclusion spares the mirror, not your work.
        b. DISMISS + LEDGER — a false positive, or genuinely not worth
@@ -467,6 +498,23 @@ prompt campaign_user:
   Scope notes (operator's attention pin, may be empty):
   {{vars.scope_notes}}
 
+  ## Product context (may be empty)
+  {{input.context_note}}
+  When the line above is non-empty, the directory it names holds
+  READ-ONLY reference material (spec PDFs, tracker snapshots,
+  functional exports) describing what this product IS for its users —
+  grounding the code alone cannot give you. Read it BEFORE planning
+  the pass; let it steer doc-enrichment (what deserves a page, which
+  business rule a cryptic code path implements) and verify claims it
+  makes against the code as usual. Backend note: claude_code reads
+  PDFs natively (Read tool); under a backend whose file reader is
+  text-only or workspace-bound (claw), reach PDFs and scratch files
+  through bash (`pdftotext -layout <file> -`). NEVER copy context
+  files into the repository — the writeable set is `.md` only and
+  reference material is not content. A context fact the code
+  contradicts is DRIFT IN THE CONTEXT, not a licence to write it into
+  the docs; flag it in drift_remaining instead.
+
   ## Pass scope — mode: {{input.mode}}
   FULL: sweep the WHOLE corpus — plan it, then align exhaustively. The
   periodic reconciliation that catches cross-cutting drift a per-file
@@ -519,7 +567,6 @@ prompt campaign_user:
   already aligned.
 
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
-
 prompt finalize_mr_system:
   You finalize a finished docs-refresh run by getting its SERIES of
   per-doc alignment commits into a pull request (PR; merge request on
@@ -610,6 +657,24 @@ prompt finalize_mr_user:
 ## (kinds: missing_path, dead_link, dead_anchor, unmentioned_area);
 ## every *_count field is TELEMETRY (report/events), never a gate
 ## condition.
+## context_gate lifts the context vars into one bool so the two
+## outgoing edges use the C012-exhaustive simple form (mr_gate shape):
+## at least one source configured → materialize; none → the node never
+## executes and the run is unchanged (mr_gate verbatim pattern).
+schema context_gate_state:
+  has_context: bool
+
+## context_ingest materializes the optional product-context sources
+## before the first pass. context_note is the campaign-facing line:
+## empty when no source is configured, else the context root + a
+## one-line-per-source inventory. A configured source that failed is
+## an explicit node failure (errors non-empty AND exit non-zero), so
+## a half-materialized context never passes silently.
+schema context_ingest_output:
+  context_note: string
+  sources: int
+  errors: string
+
 schema hints_output:
   doc_files: string[]
   doc_count: int
@@ -640,6 +705,7 @@ schema campaign_input:
   pr_url: string
   recently_changed_code_files: string[]
   fail_log: string
+  context_note: string
 
 ## campaign's TERMINATION CONTRACT (G2): a machine-checkable output
 ## the engine keys convergence on. docs_aligned is the done-oracle;
@@ -703,6 +769,55 @@ schema finalize_mr_output:
   skipped_reason: string
   summary: string
 
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+## campaign — the one adaptive agent. Backend is per-run selectable via
+## `llm_backend` (default claude_code: the full native toolset so it
+## works exactly like a native session — survey docs + code (the
+## advisory report is a starting point, never the scope), verify in the
+## code, fix or write the doc, commit each aligned doc in stride).
+## session: fresh — a fresh pass re-derives its todo from a fresh
+## advisory report + `git log` (git is the durable state). Board
+## capabilities power the findings handoff (code bugs found while
+## verifying claims → inbox).
+agent campaign:
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "{{vars.llm_backend}}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  capabilities: [board.read, board.create]
+  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
+  ## tool + the orchestration prerogative — so it can fan out its own
+  ## sub-auditors across the corpus, EXACTLY as a native Claude Code
+  ## session does. A single agent (any prompt) self-scopes to the
+  ## obvious docs and misses the long tail; a 3-way live benchmark
+  ## (2026-07-23) showed the only run that reached the full corpus —
+  ## bot READMEs + cloud + studio — was the one that DECOMPOSED. This
+  ## is coverage via the agent's own judgment, not engine fan-out.
+  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
+  interaction: human
+
+agent finalize_mr:
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
+  backend: "claude_code"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  tool_max_steps: 20
+  reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -739,8 +854,175 @@ schema finalize_mr_output:
 ##
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks (BT = chr(96)); values flow via shell env vars.
+## context_ingest — deterministic materialization of the OPTIONAL
+## product-context sources (v3.6.0), run ONCE before the loop. Git
+## reference repos are shallow-cloned and a Jira board is snapshotted
+## to markdown, all under ${scratch_dir}/context-<run id>/ — deliberately
+## OUTSIDE the worktree so the .md-only writeable set never sees it.
+## No source configured → a no-op that reports zero sources (existing
+## users see no change). A configured source that fails FAILS the node
+## explicitly: a half-materialized context must never look like a
+## complete one. No LLM.
+tool context_ingest:
+  command: `CTX_GIT={{vars.context_git}} JIRA_BASE={{vars.context_jira_base}} JIRA_PROJECT={{vars.context_jira_project}} JIRA_BOARD={{vars.context_jira_board}} JIRA_USER={{vars.context_jira_user}} TRACKER_TOKEN_FILE={{secrets.tracker_token.path}} FORGE_TOKEN_FILE={{secrets.forge_token.path}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -I -c "
+import os, json, re, subprocess, shutil, urllib.request, urllib.error, base64
+
+scratch = os.environ.get('SCRATCH', '')
+# Per-RUN namespace: PROJECT_SCRATCH_DIR is keyed off the repo root and
+# SHARED by concurrent runs of the same repo (worktree: auto lets them
+# proceed in parallel) — a shared context/ dir would let one run's
+# re-clone rmtree another run's live grounding mid-campaign.
+ctx = os.path.join(scratch, 'context-' + (os.environ.get('RUN_ID', '') or 'shared'))
+os.makedirs(ctx, exist_ok=True)
+notes = []
+errors = []
+sources = 0
+
+# ── git reference repos ──────────────────────────────────────────
+raw = os.environ.get('CTX_GIT', '').strip()
+forge_token_file = os.environ.get('FORGE_TOKEN_FILE', '')
+if raw:
+    have_token = bool(forge_token_file) and os.path.isfile(forge_token_file)
+    askpass = os.path.join(ctx, '.git-askpass.sh')
+    # The token file path comes from the engine's secret mount (no
+    # spaces); refuse anything that could break out of the script.
+    if have_token and not set(forge_token_file) <= set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-'):
+        have_token = False
+        errors.append('forge_token: unexpected mount path, refusing to wire it into the askpass helper')
+    with open(askpass, 'w') as f:
+        f.write('#!/bin/sh\n')
+        f.write('case ' + chr(36) + '1 in\n')
+        f.write('  Username*) echo oauth2 ;;\n')
+        f.write('  Password*) cat ' + (forge_token_file if have_token else '/nonexistent-iterion-askpass') + ' ;;\n')
+        f.write('esac\n')
+    os.chmod(askpass, 0o700)
+    env = dict(os.environ)
+    env['GIT_ASKPASS'] = askpass
+    env['GIT_TERMINAL_PROMPT'] = '0'
+    for url in [u.strip() for u in raw.split(',') if u.strip()]:
+        if not url.startswith('https://'):
+            errors.append('context_git: only https URLs are supported, got ' + url)
+            continue
+        slug = re.sub(r'[^a-z0-9._-]', '-', url.rstrip('/').split('/')[-1].lower().removesuffix('.git')) or 'repo'
+        dest = os.path.join(ctx, slug)
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        cmd = ['git', 'clone', '--depth', '1', '--single-branch', '-c', 'credential.helper=', url, dest]
+        try:
+            p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
+            if p.returncode != 0:
+                errors.append(slug + ': clone failed: ' + ((p.stderr or p.stdout).strip() or 'no output')[-400:])
+                continue
+            # Pre-extract PDFs to .txt sidecars so ANY backend can read
+            # them through bash (claw's read_file is workspace-bound and
+            # text-only). Poppler ships in the bot's devbox.json; a PDF
+            # without pdftotext is an explicit, actionable failure.
+            # Separate try: a conversion failure must not read as a
+            # clone failure.
+            pdfs = 0
+            pdftotext = shutil.which('pdftotext')
+            try:
+                for root, _, fs in os.walk(dest):
+                    for f in fs:
+                        if f.lower().endswith('.pdf'):
+                            pdfs += 1
+                            if not pdftotext:
+                                continue
+                            pp = os.path.join(root, f)
+                            subprocess.run(['pdftotext', '-layout', pp, pp + '.txt'], capture_output=True, timeout=120)
+                if pdfs and not pdftotext:
+                    errors.append(slug + ': ' + str(pdfs) + ' PDF(s) found but pdftotext is missing — the bot devbox (poppler_utils) did not apply')
+                    continue
+            except Exception as e:
+                errors.append(slug + ': pdf pre-extraction error: ' + str(e)[:200])
+                continue
+            n = sum(len(fs) for _, _, fs in os.walk(dest))
+            sources += 1
+            notes.append('git repo ' + slug + ' (' + str(n) + ' files' + (', ' + str(pdfs) + ' PDF pre-extracted' if pdfs else '') + ') at ' + dest)
+        except Exception as e:
+            errors.append(slug + ': clone error: ' + str(e)[:200])
+
+# ── Jira board snapshot ──────────────────────────────────────────
+jbase = os.environ.get('JIRA_BASE', '').strip()
+if jbase:
+    jboard = os.environ.get('JIRA_BOARD', '').strip()
+    juser = os.environ.get('JIRA_USER', '').strip()
+    tfile = os.environ.get('TRACKER_TOKEN_FILE', '')
+    missing = [n for n, v in [('context_jira_board', jboard), ('context_jira_user', juser)] if not v]
+    if not tfile or not os.path.isfile(tfile):
+        missing.append('tracker_token secret (file ' + (tfile or 'UNSET') + ' absent)')
+    if missing:
+        errors.append('jira: ' + jbase + ' configured but missing: ' + ', '.join(missing))
+    else:
+        try:
+            token = open(tfile).read().strip()
+            basic = base64.b64encode((juser + ':' + token).encode()).decode()
+            base = jbase.rstrip('/')
+            issues, total, start_at = [], None, 0
+            for _ in range(5):
+                url = base + '/rest/agile/1.0/board/' + jboard + '/issue?maxResults=100&startAt=' + str(start_at) + '&fields=summary,status,issuetype,description'
+                req = urllib.request.Request(url)
+                req.add_header('Authorization', 'Basic ' + basic)
+                req.add_header('Accept', 'application/json')
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    data = json.load(r)
+                total = data.get('total', 0)
+                issues.extend(data.get('issues', []))
+                start_at = len(issues)
+                if start_at >= total:
+                    break
+            lines = ['# Jira board ' + jboard + ' (project ' + os.environ.get('JIRA_PROJECT', '?') + ') — ' + str(len(issues)) + ' of ' + str(total) + ' issues', '']
+            def adf_text(node):
+                # Jira Cloud v3 descriptions are Atlassian Document Format
+                # JSON; flatten to plain text (a dict or a raw string both work).
+                if isinstance(node, str):
+                    return node
+                if isinstance(node, dict):
+                    if node.get('type') == 'text':
+                        return node.get('text', '')
+                    return ''.join(adf_text(c) for c in node.get('content', []))
+                if isinstance(node, list):
+                    return ''.join(adf_text(c) for c in node)
+                return ''
+            for iss in issues:
+                fld = iss.get('fields', {})
+                status = ((fld.get('status') or {}).get('name') or '?')
+                itype = ((fld.get('issuetype') or {}).get('name') or '?')
+                lines.append('## ' + iss.get('key', '?') + ' — ' + (fld.get('summary') or '').replace(chr(10), ' ') + '  [' + itype + ' / ' + status + ']')
+                desc = re.sub(r'\s+', ' ', adf_text(fld.get('description'))).strip()
+                if desc:
+                    lines.append(desc[:1500] + (' …[truncated]' if len(desc) > 1500 else ''))
+                lines.append('')
+            jdir = os.path.join(ctx, 'jira')
+            os.makedirs(jdir, exist_ok=True)
+            jbsafe = re.sub(r'[^a-z0-9._-]', '-', jboard.lower()) or 'board'
+            with open(os.path.join(jdir, 'board-' + jbsafe + '.md'), 'w') as f:
+                f.write(chr(10).join(lines))
+            sources += 1
+            notes.append('jira board ' + jboard + ' (' + str(len(issues)) + ' of ' + str(total) + ' issues) at ' + os.path.join(jdir, 'board-' + jbsafe + '.md'))
+        except urllib.error.HTTPError as e:
+            body = ''
+            try:
+                body = e.read()[:200].decode('utf-8', 'replace')
+            except Exception:
+                pass
+            errors.append('jira: HTTP ' + str(e.code) + ' on ' + jbase + ' — ' + body)
+        except Exception as e:
+            errors.append('jira: ' + str(e)[:200])
+
+# ── manifest + campaign note ─────────────────────────────────────
+with open(os.path.join(ctx, 'manifest.json'), 'w') as f:
+    json.dump({'sources': sources, 'errors': errors}, f, indent=1)
+if errors:
+    print(json.dumps({'context_note': '', 'sources': sources, 'errors': ' | '.join(errors)}))
+    raise SystemExit(1)
+note = '' if sources == 0 else 'Product context materialized at ' + ctx + ' — ' + '; '.join(notes) + '.'
+print(json.dumps({'context_note': note, 'sources': sources, 'errors': ''}))
+"`
+  output: context_ingest_output
+
 tool scan_hints:
-  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -I -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1011,34 +1293,6 @@ print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, '
 "`
   output: hints_output
 
-## campaign — the one adaptive agent. claude_code with the full native
-## toolset so it works exactly like a native session: survey docs +
-## code (the advisory report is a starting point, never the scope),
-## verify in the code, fix or write the doc, commit each aligned doc
-## in stride. session: fresh — a fresh pass re-derives its todo from a
-## fresh advisory report + `git log` (git is the durable state). Board
-## capabilities power the findings handoff (code bugs found while
-## verifying claims → inbox).
-agent campaign:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5}"
-  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
-  ## tool + the orchestration prerogative — so it can fan out its own
-  ## sub-auditors across the corpus, EXACTLY as a native Claude Code
-  ## session does. A single agent (any prompt) self-scopes to the
-  ## obvious docs and misses the long tail; a 3-way live benchmark
-  ## (2026-07-23) showed the only run that reached the full corpus —
-  ## bot READMEs + cloud + studio — was the one that DECOMPOSED. This
-  ## is coverage via the agent's own judgment, not engine fan-out.
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
-  input: campaign_input
-  output: campaign_output
-  system: campaign_system
-  user: campaign_user
-  session: fresh
-  interaction: human
-  capabilities: [board.read, board.create]
-
 ## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
 ## BASE (oldest reflog entry of the fresh per-run worktree — exact
 ## under worktree: auto) against the working tree and flags any changed
@@ -1046,7 +1300,7 @@ agent campaign:
 ## Untracked files are held to the same rule. No LLM; the campaign
 ## must revert whatever this flags.
 tool scope_check:
-  command: `WS={{vars.workspace_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} python3 -I -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
 
@@ -1073,24 +1327,40 @@ for h in reflog:
     if not is_own_commit(h):
         base = h
         break
-# The engine's tree under .claude/ (a tracked settings.json it rewrites to
-# inject plugin hooks) is not the run's change in either branch (#1364).
-changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/'))
-def is_scaffold(line):
-    # iterion lays the bundle's skills (and plugin commands, agents,
-    # settings) under <workspace>/.claude/ at run start: written by the
-    # engine, never by a pass, never the run's work (#1364) -- the rule
-    # finalize applies to the wip bank (runOutputPaths). A rename is
-    # judged on its destination; a quoted path is unquoted.
+# The tree-noise list the engine provisions (ITERION_TREE_NOISE: the
+# .claude/ mirror, a drifted devbox.lock, tool-node script scratch) is not
+# the run's change on any branch (#1364, #1464): a verify_build that ran
+# devbox drifts the lock, and THIS pass's scope check must not fail on it.
+# The hard-coded .claude/ filter stays as the floor for an engine that does
+# not provision the variable yet.
+NOISE_PREFIX = ':(exclude,top)'
+noise = tuple(v[len(NOISE_PREFIX):] for v in os.environ.get('ITERION_TREE_NOISE', '').split() if v.startswith(NOISE_PREFIX))
+def is_noise(path):
+    for n in noise:
+        if n.endswith('*'):
+            if path.startswith(n[:-1]):
+                return True
+        elif path == n or path.startswith(n + '/'):
+            return True
+    return False
+changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/') and not is_noise(l.strip()))
+def line_path(line):
+    # A rename is judged on its destination; a quoted path is unquoted.
     path = line[3:]
     if ' -> ' in path:
         path = path.split(' -> ', 1)[1]
     path = path.strip()
     if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
         path = path[1:-1]
-    return path.startswith('.claude/')
+    return path
+def is_scaffold(line):
+    # iterion lays the bundle's skills (and plugin commands, agents,
+    # settings) under <workspace>/.claude/ at run start: written by the
+    # engine, never by a pass, never the run's work (#1364) -- the rule
+    # finalize applies to the wip bank (runOutputPaths).
+    return line_path(line).startswith('.claude/')
 for line in git(['status', '--porcelain']).splitlines():
-    if line[:2].strip() == '??' and not is_scaffold(line):
+    if line[:2].strip() == '??' and not is_scaffold(line) and not is_noise(line_path(line)):
         changed.add(line[3:].strip())
 
 def allowed(p):
@@ -1103,6 +1373,52 @@ if out_of_scope:
 print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:100], 'log': log}))
 "`
   output: scope_check_output
+
+## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
+## LLM agent; entering it with NO push credential mounted burns a whole turn
+## just to rediscover, in shell, that it can't push. This tool answers "is
+## there a push credential?" in ~100ms of subprocess so the graph only pays
+## finalize_mr when a push can actually happen. python3 for safe JSON;
+## read-only, idempotent.
+tool forge_auth_probe:
+  command: `python3 -I -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
+tool surface_pr_link:
+  command: `URL={{input.url}} python3 -I -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
+"`
+  input: surface_pr_link_input
+
+## context_gate — the entry gate that keeps context_ingest a true opt-in
+## (mr_gate verbatim shape): at least one source configured →
+## materialize; none → skip straight to scan_hints and existing runs
+## never execute the node. No LLM, no shell.
+compute context_gate:
+  output: context_gate_state
+  expr:
+    has_context: "!!(vars.context_git || vars.context_jira_base)"
 
 ## gate — the deterministic continuation decision. converged = scope
 ## clean AND the campaign reports the docs aligned — NOTHING ELSE. The
@@ -1129,75 +1445,15 @@ compute mr_gate:
   expr:
     open_mr: "vars.open_mr || vars.pr_url"
 
-## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
-## LLM agent; entering it with NO push credential mounted burns a whole turn
-## just to rediscover, in shell, that it can't push. This tool answers "is
-## there a push credential?" in ~100ms of subprocess so the graph only pays
-## finalize_mr when a push can actually happen. python3 for safe JSON;
-## read-only, idempotent.
-tool forge_auth_probe:
-  command: `python3 -c "
-import os, subprocess, json
-tok = '/run/iterion/secrets/forge_token'
-try:
-    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
-        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
-except OSError:
-    pass
-for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
-    if os.environ.get(v):
-        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
-try:
-    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-    if r.returncode == 0:
-        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
-except Exception:
-    pass
-print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
-"`
-  output: forge_auth_state
-
-agent finalize_mr:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
-  input: finalize_mr_input
-  output: finalize_mr_output
-  system: finalize_mr_system
-  user: finalize_mr_user
-  tools: [bash, read_file, glob, grep]
-  capabilities: [board.read, board.comment]
-  tool_max_steps: 20
-
-## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
-## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
-## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
-## directive a tool node prints on stdout — never from agent prose. Reached
-## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
-## python guard drops an empty url so the scanner never sees a malformed
-## directive. read-only, idempotent.
-schema surface_pr_link_input:
-  url: string
-
-tool surface_pr_link:
-  input: surface_pr_link_input
-  command: `URL={{input.url}} python3 -c "
-import os
-u = (os.environ.get('URL') or '').strip()
-if u:
-    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
-"`
-
 ## ─── Workflow ───────────────────────────────────────────────────
-
 workflow docs_refresh:
-  entry: scan_hints
-
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/ —
   ## the campaign commits doc alignments in stride; the worktree +
   ## finalize FF keeps the operator's checkout untouched during the run
   ## and lands the series on a persistent branch on convergence.
   worktree: auto
+
+  entry: context_gate
 
   budget:
     max_parallel_branches: 1
@@ -1224,6 +1480,16 @@ workflow docs_refresh:
     threshold: 0.9
     preserve_recent: 8
 
+  ## Entry: optional product context materialized ONCE before the loop
+  ## (the continuation loop back-edge re-enters scan_hints, never
+  ## context_ingest); with no source configured the gate branches
+  ## straight to scan_hints and the run is unchanged.
+  context_gate -> context_ingest when has_context
+
+  context_gate -> scan_hints when not has_context
+
+  context_ingest -> scan_hints
+
   ## Each pass: the fresh advisory report is handed to the campaign as
   ## HELP (+ the previous gate's feedback — empty on pass 1,
   ## outputs.gate resolves nil-safe before the gate has run). A repo
@@ -1238,7 +1504,8 @@ workflow docs_refresh:
     incremental_base: "{{outputs.scan_hints.incremental_base}}",
     pr_url: "{{vars.pr_url}}",
     recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}",
-    fail_log: "{{outputs.gate.fail_log}}"
+    fail_log: "{{outputs.gate.fail_log}}",
+    context_note: "{{outputs.context_ingest.context_note}}",
   }
 
   ## Deterministic TRUTH gate after every campaign pass: writeable-set
@@ -1246,6 +1513,7 @@ workflow docs_refresh:
   ## affect the repo's build, so there is no build/test gate), then the
   ## continuation decision.
   campaign -> scope_check
+
   scope_check -> gate
 
   ## Converged → straight to the PR tail. The dispatcher owns the
@@ -1253,11 +1521,13 @@ workflow docs_refresh:
   ## finish→completed_state "review", studio-merge→done) — the bot does
   ## not transition the issue itself, so there is no mark-issue node.
   gate -> mr_gate when converged
+
   ## Not converged → another pass through the loop head: a fresh
   ## advisory report (resolved hints + ledger entries retire) →
   ## campaign. A scope violation rides outputs.gate.fail_log on the
   ## scan_hints→campaign edge; green-but-more-work rides an empty log.
   gate -> scan_hints as continuation_loop("{{vars.max_passes}}")
+
   ## continuation_loop exhausted (max_passes hit while work remains) →
   ## finish anyway, shipping what is banked (every committed alignment
   ## is real, landed work; the last campaign_output's drift_remaining
@@ -1270,23 +1540,30 @@ workflow docs_refresh:
   ## finalize_mr refuses an empty PR + reports drift_remaining honestly
   ## in the body.
   mr_gate -> forge_auth_probe when open_mr
+
   mr_gate -> done when not open_mr
 
   forge_auth_probe -> finalize_mr when available with {
-    workspace_dir:    "{{vars.workspace_dir}}",
-    pr_url:           "{{vars.pr_url}}",
-    source_branch:    "{{vars.source_branch}}",
-    mr_branch:        "{{vars.mr_branch}}",
-    mr_base:          "{{vars.mr_base}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    pr_url: "{{vars.pr_url}}",
+    source_branch: "{{vars.source_branch}}",
+    mr_branch: "{{vars.mr_branch}}",
+    mr_base: "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",
-    scope_notes:      "{{vars.scope_notes}}",
+    scope_notes: "{{vars.scope_notes}}",
     campaign_summary: "{{outputs.campaign.summary}}",
-    drift_remaining:  "{{outputs.campaign.drift_remaining}}"
+    drift_remaining: "{{outputs.campaign.drift_remaining}}",
   }
+
   forge_auth_probe -> done when not available
+
   ## PR opened → surface its URL as a headline result-link in the run summary
   ## (deterministic stdout directive → preview_url_available kind=pr), then
   ## finish. Nothing opened (empty diff / refused PR) → straight to done.
-  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> surface_pr_link when opened with {
+    url: "{{outputs.finalize_mr.url}}"
+  }
+
   finalize_mr -> done when not opened
+
   surface_pr_link -> done

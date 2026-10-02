@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,10 +17,10 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
-	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
@@ -40,12 +42,28 @@ type unitFileInfo struct {
 	Rel     string   `json:"rel"`
 	Profile int      `json:"profile,omitempty"`
 	Imports []string `json:"imports,omitempty"`
+	// Digest is sha256 of the file's content as the answer read it. The
+	// unit's Revision covers the files the unit HOLDS; a file a per-file
+	// edit newly imports is none of them, and the save rewrites it from a
+	// document built on that read — so the claim carries it back and the
+	// save compares, or a colleague's edit since the apply is overwritten
+	// in silence.
+	Digest string `json:"digest,omitempty"`
+}
+
+// canonReason is a canon refusal without its sentinel prefix, for a message
+// that already says which file it is about and what was being attempted.
+func canonReason(err error) string {
+	return strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")
 }
 
 func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
-	info := &unitInfo{Root: filepath.ToSlash(filepath.Dir(reqPath)), Main: u.Main, Revision: u.Digest}
+	// Files is never nil: the picker of the Source view iterates it, and a
+	// JSON `null` would reach a TS `UnitFileInfo[]` that declares itself
+	// non-nullable.
+	info := &unitInfo{Root: filepath.ToSlash(filepath.Dir(reqPath)), Main: u.Main, Revision: u.Digest, Files: []unitFileInfo{}}
 	for _, f := range u.Files {
-		fi := unitFileInfo{Rel: f.Rel}
+		fi := unitFileInfo{Rel: f.Rel, Digest: fileDigest(f.Source)}
 		if f.AST != nil {
 			fi.Profile = f.AST.Profile
 			for _, im := range f.AST.Imports {
@@ -55,6 +73,13 @@ func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
 		info.Files = append(info.Files, fi)
 	}
 	return info
+}
+
+// fileDigest is the content identity one file's claim carries back to the
+// save: sha256 of its bytes, the same hash the unit's Digest composes.
+func fileDigest(source []byte) string {
+	sum := sha256.Sum256(source)
+	return hex.EncodeToString(sum[:])
 }
 
 // hasProvenance reports whether any declaration, block or comment of the
@@ -67,7 +92,8 @@ func hasProvenance(f *ast.File) bool {
 }
 
 // walkCarriers visits the span of every top-level declaration, comment,
-// keyed block and block entry of a document — every carrier of provenance.
+// keyed block, block entry and block comment of a document — every carrier
+// of provenance.
 func walkCarriers(f *ast.File, visit func(ast.Span)) {
 	dv := reflect.ValueOf(f).Elem()
 	for i := 0; i < dv.NumField(); i++ {
@@ -89,6 +115,13 @@ func walkCarriers(f *ast.File, visit func(ast.Span)) {
 			if entries := entriesOf(fv.Elem()); entries.IsValid() {
 				for j := 0; j < entries.Len(); j++ {
 					if span, ok := spanOf(entries.Index(j)); ok {
+						visit(span)
+					}
+				}
+			}
+			if cs := commentsOf(fv.Elem()); cs.IsValid() {
+				for j := 0; j < cs.Len(); j++ {
+					if span, ok := spanOf(cs.Index(j)); ok {
 						visit(span)
 					}
 				}
@@ -116,27 +149,49 @@ func spanOf(v reflect.Value) (ast.Span, bool) {
 	return sf.Interface().(ast.Span), true
 }
 
-// entriesOf is the one slice field of a keyed block (Fields, Entries).
+// entriesOf is the entry list of a keyed block — `Fields` or `Entries`.
+// NAMED, not guessed: a block has more than one slice field (it carries
+// the comments written around it too), and "the first slice field" would
+// return whichever the struct happens to declare first — a field reorder
+// would then route the comment list as the entries.
 func entriesOf(block reflect.Value) reflect.Value {
-	for i := 0; i < block.NumField(); i++ {
-		if block.Field(i).Kind() == reflect.Slice {
-			return block.Field(i)
+	for _, name := range []string{"Fields", "Entries"} {
+		if f := block.FieldByName(name); f.IsValid() && f.Kind() == reflect.Slice {
+			return f
 		}
 	}
 	return reflect.Value{}
+}
+
+// commentsOf is a carrier's comment list, invalid when it has none.
+func commentsOf(v reflect.Value) reflect.Value {
+	f := v.FieldByName("Comments")
+	if !f.IsValid() || f.Kind() != reflect.Slice {
+		return reflect.Value{}
+	}
+	return f
 }
 
 // splitByProvenance takes a document of a merged unit apart, file by file:
 // each declaration, comment and block entry goes to the file its
 // provenance names — to the main when it names none, which is where the
 // editor puts a new declaration — on a skeleton that keeps each file's own
-// header (its profile and its import lines, which the editor does not
-// edit). A provenance naming a file the unit does not have is refused.
-func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error) {
+// header. The header is the stored file's (its profile and its import
+// lines) unless headers names the file, which is how a save carries a
+// header the per-file editor changed: the document the client holds names
+// them (unit_files), and the skeleton takes the CLAIMED profile and import
+// lines, so the change is written instead of dropped. A provenance naming
+// a file the unit does not have is refused.
+func splitByProvenance(doc *ast.File, u *unit.Unit, headers map[string]unitFileInfo) (map[string]*ast.File, error) {
 	parts := make(map[string]*ast.File, len(u.Files))
 	for _, f := range u.Files {
 		skel := &ast.File{}
-		if f.AST != nil {
+		if h, ok := headers[f.Rel]; ok {
+			skel.Profile = h.Profile
+			for _, p := range h.Imports {
+				skel.Imports = append(skel.Imports, &ast.ImportDecl{Path: p})
+			}
+		} else if f.AST != nil {
 			skel.Profile = f.AST.Profile
 			skel.Imports = f.AST.Imports
 		}
@@ -184,6 +239,26 @@ func splitByProvenance(doc *ast.File, u *unit.Unit) (map[string]*ast.File, error
 		case reflect.Pointer:
 			if fv.IsNil() {
 				continue
+			}
+			// The comments written around the block go where they were
+			// written, like its entries: a block is a carrier, and
+			// without this a save of a bot in several files dropped
+			// every comment of its `vars:`, `presets:`, `secrets:` and
+			// `attachments:` — silently, and with the save reporting
+			// success, which is the whole of #1282 on this path.
+			if cs := commentsOf(fv.Elem()); cs.IsValid() {
+				for j := 0; j < cs.Len(); j++ {
+					el := cs.Index(j)
+					span, _ := spanOf(el)
+					q, err := owner(span, "")
+					if err != nil {
+						return nil, err
+					}
+					target := reflect.ValueOf(q).Elem().Field(i)
+					ensureBlock(target, fv.Type())
+					tc := commentsOf(target.Elem())
+					tc.Set(reflect.Append(tc, el))
+				}
 			}
 			// Each entry goes where it was, and a block exists in a file
 			// because an entry of it does. A block emptied of every entry
@@ -427,18 +502,25 @@ type stagedUnitFile struct {
 }
 
 // saveUnit saves a document of a bot in several files back into them:
-// each declaration to the file its provenance names, only the files whose
-// program changed rewritten — byte for byte untouched otherwise — every
-// main of the directory that imports a rewritten fragment checked to still
-// compile, and the writes published as one journaled transaction under
-// the files' locks, after the revision the document was opened at is
-// found unchanged on disk.
+// each declaration to the file its provenance names, each file's header
+// (its `dsl:` profile and its import lines) from the document's claim when
+// the request carries one (unit_files) — the per-file editor may change
+// both, and the stored files' headers would drop the change — only the
+// files whose program changed rewritten — byte for byte untouched
+// otherwise — every main of the directory that imports a rewritten
+// fragment checked to still compile, and the writes published as one
+// journaled transaction under the files' locks, after the revision the
+// document was opened at is found unchanged on disk.
 func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRequest, absPath string, doc *ast.File, current []byte) {
 	if req.CreateOnly {
 		httpError(w, http.StatusUnprocessableEntity, "a bot in several files cannot be saved as a new file: save it in place, or write the flattened program by hand")
 		return
 	}
 	u := unit.LoadDirWithMain(absPath, absPath, current)
+	// The unit was read from disk, and the refusal below answers the
+	// diagnostic to the client: it names the fragment at fault by its
+	// unit-relative path (#1934).
+	relUnitDiagnostics(u)
 	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
 		httpError(w, http.StatusUnprocessableEntity, "the bot's files do not load as one unit (%s): fix them on disk before saving from the studio", d)
 		return
@@ -455,20 +537,34 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		httpError(w, http.StatusUnprocessableEntity, "the document carries no provenance for a bot in several files: reopen %s in the studio (an older client would fold every file into the main)", req.Path)
 		return
 	}
-	parts, err := splitByProvenance(doc, u)
+	target, headers, added, err := s.claimedTarget(u, unitRequest{main: u.Main, abs: absPath, root: u.Root}, req.UnitFiles, true)
+	if err != nil {
+		var conflict claimConflict
+		if errors.As(err, &conflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	parts, err := splitByProvenance(doc, target, headers)
 	if err != nil {
 		httpError(w, http.StatusUnprocessableEntity, "%v", err)
 		return
 	}
 	var staged []stagedUnitFile
 	stagedText := map[string][]byte{}
-	for _, f := range u.Files {
+	for _, f := range target.Files {
 		part := parts[f.Rel]
 		if f.AST != nil && sameProgram(part, f.AST) {
 			continue
 		}
-		text := unparse.Unparse(part)
-		if err := unparse.Verify(part, text); err != nil {
+		text, err := canon.Text(f.Rel, part, f.Source)
+		if err != nil {
+			if errors.Is(err, canon.ErrRefused) {
+				httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved from the studio: %s. Leave the file as it is, or edit it directly", f.Rel, canonReason(err))
+				return
+			}
 			httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved as .bot source without changing it: %v", f.Rel, err)
 			return
 		}
@@ -483,7 +579,7 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		writeJSON(w, saveFileResponse{Path: req.Path, Source: mainText, ConfirmedDiskPath: absPath, Revision: u.Digest})
 		return
 	}
-	if err := siblingImportersStillCompile(u, stagedText); err != nil {
+	if err := siblingImportersStillCompile(target, stagedText); err != nil {
 		httpError(w, http.StatusUnprocessableEntity, "%v", err)
 		return
 	}
@@ -501,6 +597,17 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 	if again := unit.LoadDir(absPath); again.Digest != u.Digest {
 		httpError(w, http.StatusConflict, "the files of %s changed on disk while the save waited for their locks: reopen it and redo the edit", req.Path)
 		return
+	}
+	// The unit's digest covers the files it HOLDS; a file the claim newly
+	// imports is none of them, and it is rewritten from the document built
+	// on the apply's read. Re-read it here, or a colleague's edit made
+	// while the save waited is overwritten in silence.
+	for _, f := range added {
+		b, readErr := os.ReadFile(f.Name) // #nosec G304 -- a fragment of the unit, confined by the loader that read it
+		if readErr != nil || !bytes.Equal(b, f.Source) {
+			httpError(w, http.StatusConflict, "%s changed on disk while the save waited for the locks: reopen the bot and redo the edit", f.Rel)
+			return
+		}
 	}
 	previews := make([]authoringPreviewFile, 0, len(staged))
 	for _, f := range staged {
@@ -553,6 +660,9 @@ func siblingImportersStillCompile(u *unit.Unit, staged map[string][]byte) error 
 			continue
 		}
 		after := unit.LoadDirStaged(sibling, staged)
+		// The sibling was read from disk, and the refusal answers its
+		// diagnostic to the client — relative names (#1934).
+		relUnitDiagnostics(after)
 		if d := firstErrorDiagnostic(after.Diagnostics); d != "" {
 			return fmt.Errorf("saving would break %s, which imports a rewritten fragment: %s", name, d)
 		}
@@ -751,19 +861,33 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		httpError(w, http.StatusUnprocessableEntity, "the document carries no provenance for a bot in several files: reopen the bot (an older client would fold every file into the main)")
 		return
 	}
-	parts, err := splitByProvenance(doc, u)
+	target, headers, _, err := s.claimedTarget(u, unitRequest{files: req.Files, main: main}, req.UnitFiles, true)
+	if err != nil {
+		var conflict claimConflict
+		if errors.As(err, &conflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	parts, err := splitByProvenance(doc, target, headers)
 	if err != nil {
 		httpError(w, http.StatusUnprocessableEntity, "%v", err)
 		return
 	}
 	out := map[string]string{}
-	for _, f := range u.Files {
+	for _, f := range target.Files {
 		part := parts[f.Rel]
 		if f.AST != nil && sameProgram(part, f.AST) {
 			continue
 		}
-		text := unparse.Unparse(part)
-		if err := unparse.Verify(part, text); err != nil {
+		text, err := canon.Text(f.Rel, part, f.Source)
+		if err != nil {
+			if errors.Is(err, canon.ErrRefused) {
+				httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved from the studio: %s. Leave the file as it is, or edit it directly", f.Rel, canonReason(err))
+				return
+			}
 			httpError(w, http.StatusUnprocessableEntity, "%s cannot be rendered as .bot source without changing it: %v", f.Rel, err)
 			return
 		}
@@ -783,4 +907,651 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		patched[rel] = text
 	}
 	writeJSON(w, unparseResponse{Source: source, Files: out, Revision: unit.LoadMap(patched, main).Digest})
+}
+
+// unitRequest is where a per-file request of the Source view reads its bot
+// from: a cloud bundle's files map, or a main in the workspace. It keeps
+// what staging one file needs, so the picker's render and its apply cannot
+// disagree on which unit they mean — and so a disk unit is re-staged
+// through LoadDirStaged, which keeps every file's on-disk name (what an
+// `include` and a `subbot` resolve against) instead of a map key.
+type unitRequest struct {
+	unit  *unit.Unit
+	files map[string]string // set for a cloud bundle
+	main  string
+	abs   string // set for a unit on disk
+	root  string // the unit's directory on disk, "" for a files map
+}
+
+// stage reloads the unit with rel's text replaced by source.
+func (ur unitRequest) stage(rel, source string) *unit.Unit {
+	if ur.files != nil {
+		patched := make(map[string]string, len(ur.files))
+		for k, v := range ur.files {
+			patched[k] = v
+		}
+		patched[rel] = source
+		return unit.LoadMap(patched, ur.main)
+	}
+	// Keyed the way loadDir keys its staged map: from the directory of the
+	// MAIN on disk, not by the unit's rel. For a main that is itself a
+	// `lib/` fragment the two differ, and a mismatched key is read as "no
+	// staged text" — the loader falls back to disk and the route answers
+	// 200 with the author's edit silently gone.
+	key := rel
+	if ur.root != "" {
+		if k, err := filepath.Rel(filepath.Dir(ur.abs), filepath.Join(ur.root, filepath.FromSlash(rel))); err == nil {
+			key = filepath.ToSlash(k)
+		}
+	}
+	return unit.LoadDirStaged(ur.abs, map[string][]byte{key: []byte(source)})
+}
+
+// claimConflict is a claimed-unit validation failure that is a STALENESS
+// conflict (409), not a refusal (422): a file the claim adds changed since
+// the apply read it into the document.
+type claimConflict struct{ msg string }
+
+func (e claimConflict) Error() string { return e.msg }
+
+// claimedTarget resolves the unit a request's claimed file list
+// (unit_files) makes of the stored one: each file's profile and import
+// lines AS THE CLIENT KNOWS them, which a per-file edit may have changed —
+// the two header fields the merged document does not carry. The answer is
+// the stored unit itself, with nil headers, when the claim adds nothing to
+// it — the exact path a client without the claim takes — and otherwise a
+// unit of the CLAIMED membership, whose kept files keep their stored AST
+// (what "did this file's program change" is judged against) and whose
+// skeleton headers come from the claim, so the change is written instead
+// of dropped. added holds the files the claim joins to the unit, with
+// their content as read NOW; a disk save re-reads them under the locks.
+// forWrite says the answer backs a WRITE: a file the claim adds is then
+// checked against the digest the claim carries (the unit's revision never
+// covered it). A render passes false — showing the document's truth about
+// its files is not a write, and refusing it would strand an unsaved header
+// edit behind a staleness verdict only a save needs.
+func (s *Server) claimedTarget(u *unit.Unit, ur unitRequest, claimed []unitFileInfo, forWrite bool) (target *unit.Unit, headers map[string]unitFileInfo, added []unit.File, err error) {
+	if len(claimed) == 0 || claimedMatchesStored(u, claimed) {
+		return u, nil, nil, nil
+	}
+	probe := ur.probeUnit(u, claimed)
+	return finishClaimed(u, probe, claimed, forWrite)
+}
+
+// claimedMatchesStored reports whether the claimed file list is the stored
+// unit's, file for file and header for header.
+func claimedMatchesStored(u *unit.Unit, claimed []unitFileInfo) bool {
+	if len(claimed) != len(u.Files) {
+		return false
+	}
+	stored := make(map[string]unit.File, len(u.Files))
+	for _, f := range u.Files {
+		stored[f.Rel] = f
+	}
+	for _, cf := range claimed {
+		f, ok := stored[cf.Rel]
+		if !ok {
+			return false
+		}
+		profile, imports := storedHeader(f)
+		if profile != cf.Profile || !importPathsEqual(imports, cf.Imports) {
+			return false
+		}
+	}
+	return true
+}
+
+// storedHeader is a stored file's header as a claim carries it: the raw
+// `dsl:` profile (0 when the file declares none) and the import paths as
+// written.
+func storedHeader(f unit.File) (profile int, imports []string) {
+	if f.AST == nil {
+		return 0, nil
+	}
+	for _, im := range f.AST.Imports {
+		imports = append(imports, im.Path)
+	}
+	return f.AST.Profile, imports
+}
+
+// importPathsEqual reports whether two import lists name the same paths in
+// the same order.
+func importPathsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// probeUnit loads the unit a claimed file list describes, so its
+// membership comes from the CLAIMED import lines rather than the stored
+// ones: every file the stored unit holds is staged as its claimed header
+// alone — the `import` lines, no declaration — and the loader walks those;
+// a file the claim ADDS is not staged, so the loader reads its real
+// content, from the bundle's files map or from disk with its confinement,
+// and walks its own imports from there. The probe's entries for the kept
+// files are the synthetic headers', not the files': what the declarations
+// are is the stored unit's to say.
+func (ur unitRequest) probeUnit(stored *unit.Unit, claimed []unitFileInfo) *unit.Unit {
+	held := make(map[string]bool, len(stored.Files))
+	for _, f := range stored.Files {
+		held[f.Rel] = true
+	}
+	// The synthetic main keeps a workflow when the real one declares one —
+	// named after it, so an error that mentions it (a fragment that declares
+	// a workflow of its own meets the unit's one-workflow rule, E010) reads
+	// as the REAL main's workflow, not as a "probe" the author never wrote.
+	// A main living below a lib/ directory whose staged text has no
+	// workflow is read as a FRAGMENT of the bot above (unit.fragmentAlone
+	// judges the staged text), and the probe's whole membership is rebased
+	// under names nothing claims.
+	stub := ""
+	for _, f := range stored.Files {
+		if f.Rel == stored.Main && f.AST != nil && len(f.AST.Workflows) > 0 {
+			stub = f.AST.Workflows[0].Name
+		}
+	}
+	if ur.files != nil {
+		m := make(map[string]string, len(claimed))
+		for _, cf := range claimed {
+			if held[cf.Rel] {
+				m[cf.Rel] = claimedHeaderText(cf, mainStub(cf, stored, stub))
+			} else if src, ok := ur.files[cf.Rel]; ok {
+				m[cf.Rel] = src
+			}
+			// An added file the bundle does not hold stays out of the map:
+			// the loader reports it unreadable at the import that names it.
+		}
+		return unit.LoadMap(m, ur.main)
+	}
+	staged := make(map[string][]byte, len(claimed))
+	for _, cf := range claimed {
+		if !held[cf.Rel] {
+			continue
+		}
+		// Keyed the way stage keys its overlay: from the directory of the
+		// main on disk, which differs from the unit's rels when the main is
+		// itself a `lib/` fragment.
+		key := cf.Rel
+		if ur.root != "" {
+			if k, err := filepath.Rel(filepath.Dir(ur.abs), filepath.Join(ur.root, filepath.FromSlash(cf.Rel))); err == nil {
+				key = filepath.ToSlash(k)
+			}
+		}
+		staged[key] = []byte(claimedHeaderText(cf, mainStub(cf, stored, stub)))
+	}
+	return unit.LoadDirStaged(ur.abs, staged)
+}
+
+// mainStub is the stub workflow's name for the claimed main, "" for every
+// other file (never a fragment: the unit's one-workflow rule would fire
+// inside the probe).
+func mainStub(cf unitFileInfo, stored *unit.Unit, stub string) string {
+	if cf.Rel == stored.Main {
+		return stub
+	}
+	return ""
+}
+
+// claimedHeaderText renders a claimed file header — its `import` lines —
+// as a whole file's text: what probeUnit stages for a file the stored unit
+// holds, so the loader walks the CLAIMED imports and the membership is the
+// claim's, while no declaration of the stored file leaks into the probe.
+// stubWorkflow, when set, adds a stub workflow of that name — the real
+// main's, so the staged main keeps its main-ness below a lib/ directory
+// and any error that names the workflow names the author's own.
+func claimedHeaderText(cf unitFileInfo, stubWorkflow string) string {
+	var b strings.Builder
+	for _, p := range cf.Imports {
+		fmt.Fprintf(&b, "import %s\n", strconv.Quote(p))
+	}
+	if stubWorkflow != "" {
+		fmt.Fprintf(&b, "\nworkflow %s:\n  entry: done\n", stubWorkflow)
+	}
+	return b.String()
+}
+
+// citeStoredMainWorkflow rewrites the probe's duplicate-workflow
+// diagnostic (E010) so the main-side citation is the STORED main's real
+// workflow position. The probe's main is a synthetic header: its stub
+// workflow sits wherever the claim's import lines leave it — a line that
+// shifts with the claim's import count and points at a place the author's
+// file does not have. Everything else the probe cites is real (fragments
+// are read from their real content); when the real main declares no
+// workflow there is no stub, and nothing to rewrite.
+func citeStoredMainWorkflow(stored, probe *unit.Unit) {
+	if probe.Merged == nil || len(probe.Merged.Workflows) < 2 {
+		return
+	}
+	var mainWf *ast.WorkflowDecl
+	for _, f := range stored.Files {
+		if f.Rel == stored.Main && f.AST != nil && len(f.AST.Workflows) > 0 {
+			mainWf = f.AST.Workflows[0]
+		}
+	}
+	if mainWf == nil {
+		return
+	}
+	other := probe.Merged.Workflows[1]
+	for i, d := range probe.Diagnostics {
+		if d.Code == parser.DiagDuplicateDecl && strings.HasPrefix(d.Message, "a unit has one workflow:") {
+			probe.Diagnostics[i].Message = fmt.Sprintf("a unit has one workflow: %q here and %q at %s:%d", other.Name, mainWf.Name, stored.Main, mainWf.Span.Start.Line)
+		}
+	}
+}
+
+// relUnitDiagnostics rewrites a disk-loaded unit's diagnostics to the
+// unit's relative names, for every unit whose diagnostics cross to a
+// client (#1918, #1934). The semantics — and the cut the launch and
+// publish paths apply to the errors that ride no diagnostic (#1970) —
+// live in unit.RelDiagnostics, so every boundary cuts with the one rule.
+func relUnitDiagnostics(u *unit.Unit) {
+	u.RelDiagnostics()
+}
+
+// finishClaimed validates the probe of a claimed file list against the
+// claim and assembles the unit the save or the render works from: the
+// stored unit's own entries for the files it holds (their declarations are
+// the comparison a rewrite is judged against), the probe's for the ones
+// the claim adds (their content as read now — and for a WRITE,
+// digest-checked against the read the claim carries, since the unit's
+// revision never covered them). headers maps every claimed file to the
+// header the split's skeleton must take: the claim's, not the stored
+// file's.
+func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bool) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
+	citeStoredMainWorkflow(stored, probe)
+	relUnitDiagnostics(probe)
+	if d := firstErrorDiagnostic(probe.Diagnostics); d != "" {
+		return nil, nil, nil, fmt.Errorf("the files the document claims do not load as one unit: %s", d)
+	}
+	byRel := make(map[string]unitFileInfo, len(claimed))
+	mainSeen := false
+	for _, cf := range claimed {
+		if _, dup := byRel[cf.Rel]; dup {
+			return nil, nil, nil, fmt.Errorf("the document's file list names %s twice", cf.Rel)
+		}
+		byRel[cf.Rel] = cf
+		mainSeen = mainSeen || cf.Rel == stored.Main
+	}
+	if !mainSeen {
+		return nil, nil, nil, fmt.Errorf("the document's file list does not hold the bot's main (%s)", stored.Main)
+	}
+	held := make(map[string]unit.File, len(stored.Files))
+	for _, f := range stored.Files {
+		held[f.Rel] = f
+	}
+	files := make([]unit.File, 0, len(probe.Files))
+	var added []unit.File
+	for _, pf := range probe.Files {
+		cf, ok := byRel[pf.Rel]
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("the document's `import` lines reach %s, which its file list does not claim", pf.Rel)
+		}
+		delete(byRel, pf.Rel)
+		if f, ok := held[pf.Rel]; ok {
+			files = append(files, f)
+			continue
+		}
+		// A file the claim ADDS was never covered by the unit's revision, so
+		// the digest of the read the document was built from is the only
+		// thing that stands between a colleague's edit and an overwrite. A
+		// claim without it cannot be told fresh from stale: refused, not
+		// trusted.
+		if cf.Digest == "" {
+			return nil, nil, nil, fmt.Errorf("the document's file list claims %s, a file this bot did not hold, without the digest of the read it was seen in: reopen the bot and redo the edit", pf.Rel)
+		}
+		if forWrite && cf.Digest != fileDigest(pf.Source) {
+			return nil, nil, nil, claimConflict{fmt.Sprintf("%s changed since it was read into this bot: reopen it and redo the edit", pf.Rel)}
+		}
+		added = append(added, pf)
+		files = append(files, pf)
+	}
+	if len(byRel) > 0 {
+		rels := make([]string, 0, len(byRel))
+		for rel := range byRel {
+			rels = append(rels, rel)
+		}
+		sort.Strings(rels)
+		return nil, nil, nil, fmt.Errorf("the document's file list claims %s, which no `import` line reaches", strings.Join(rels, ", "))
+	}
+	headers := make(map[string]unitFileInfo, len(claimed))
+	for _, cf := range claimed {
+		headers[cf.Rel] = cf
+	}
+	return &unit.Unit{Root: stored.Root, Main: stored.Main, Files: files}, headers, added, nil
+}
+
+// resolveUnitRequest is the ONE place the two modes are told apart. A path
+// goes through s.safePath — the audited workspace boundary — and through
+// workflowfile.IsWorkflowFile, like every other route that reads a bot.
+func (s *Server) resolveUnitRequest(files map[string]string, main, path string) (unitRequest, error) {
+	if len(files) > 0 {
+		if main == "" {
+			main = "main.bot"
+		}
+		if !workflowfile.IsWorkflowFile(main) {
+			return unitRequest{}, fmt.Errorf("main %q is not a workflow file: a unit is read from a .bot", main)
+		}
+		return unitRequest{unit: unit.LoadMap(files, main), files: files, main: main}, nil
+	}
+	if path == "" {
+		return unitRequest{}, errors.New("a per-file request names no bot: give the bundle's files and its main, or the workspace path of the main")
+	}
+	if !workflowfile.IsWorkflowFile(path) {
+		return unitRequest{}, fmt.Errorf("%s is not a workflow file: a unit is read from a .bot", path)
+	}
+	abs, err := s.safePath(path)
+	if err != nil {
+		return unitRequest{}, err
+	}
+	u := unit.LoadDir(abs)
+	return unitRequest{unit: u, main: u.Main, abs: abs, root: u.Root}, nil
+}
+
+// unitFile is the unit's file named rel, and whether it holds one. A rel
+// the unit does not hold is an error wherever it appears: answering the
+// whole unit, or answering unchanged, would let a stale or mistyped name
+// read as success and send the author's typed text to the bin — including
+// the name of a fragment deleted under the open picker, which the staged
+// text would otherwise resurrect.
+func unitFile(u *unit.Unit, rel string) (unit.File, bool) {
+	for _, f := range u.Files {
+		if f.Rel == rel {
+			return f, true
+		}
+	}
+	return unit.File{}, false
+}
+
+// unparseUnitPart renders ONE file of a unit: what the Source view's picker
+// shows for the file it is on. Read-only — no revision is presented and
+// nothing is written — so a file of a unit that no longer loads, or one the
+// writer cannot reproduce, is still readable. The render follows the
+// document's claimed file list (unit_files) when the request carries one:
+// a header a per-file edit changed and has not saved yet is rendered as
+// claimed, or the view would show the stored header over a document that
+// no longer has it — and a re-apply of that text would silently revert the
+// edit. Staleness of a file the claim newly imports is NOT judged here:
+// the render writes nothing, and refusing it would strand the unsaved
+// header edit behind a verdict only a save needs — the save makes it, as
+// a conflict, when it runs.
+func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc *ast.File) {
+	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if ur.unit.Merged == nil {
+		httpError(w, http.StatusUnprocessableEntity, "the bot's files hold no program")
+		return
+	}
+	target, headers, _, err := s.claimedTarget(ur.unit, ur, req.UnitFiles, false)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	f, ok := unitFile(target, req.File)
+	if !ok {
+		httpError(w, http.StatusUnprocessableEntity, "%q is not a file of this bot (%s)", req.File, strings.Join(unitRels(target), ", "))
+		return
+	}
+	parts, err := splitByProvenance(doc, target, headers)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	// A unit's `bindable` is the MAIN's parse alone, so a FRAGMENT the
+	// parser could only salvage leaves the buffer unsalvaged and this view
+	// on — and the loader keeps that file's partial AST, so the part here
+	// is missing everything after the error. Rendering it back would show
+	// the author a text their file does not contain and hide the very lines
+	// they have to fix, which is what this route exists not to do.
+	if spr := parser.Parse(f.Rel, string(f.Source)); parseHasErrors(spr.Diagnostics) {
+		// The diagnostic itself, not a guess about it: several error-severity
+		// diagnostics leave a COMPLETE ast (an unknown property, a bad `dsl:`
+		// value), so "does not parse" would be false of them — while the
+		// render is still not the file, which is what this refuses.
+		writeJSON(w, unparseResponse{
+			Source:  string(f.Source),
+			Refused: fmt.Sprintf("iterion could not read all of %s (%s), so the document holds only what could be read of it — repair it where this bot's files live", f.Rel, firstParseError(spr.Diagnostics)),
+			Stored:  true,
+		})
+		return
+	}
+	text, err := canon.Text(f.Rel, parts[f.Rel], f.Source)
+	if err != nil {
+		if errors.Is(err, canon.ErrRefused) {
+			// The writer cannot reproduce this file. Rendering it anyway
+			// would show the author a text their file does not contain —
+			// the lie the salvage path already refuses to tell — so the
+			// file's own text comes back, with the reason it is the only
+			// thing that can.
+			writeJSON(w, unparseResponse{Source: string(f.Source), Refused: canonReason(err), Stored: true})
+			return
+		}
+		httpError(w, http.StatusUnprocessableEntity, "%s cannot be rendered as .bot source without changing it: %v", f.Rel, err)
+		return
+	}
+	writeJSON(w, unparseResponse{Source: text})
+}
+
+// parseUnitWithFile re-parses a unit with ONE file replaced by the text the
+// Source view's picker holds: the author edits a real file, and the merged
+// document the canvas and the save both work from is rebuilt from it. The
+// staged text's `import` lines decide the staged unit's membership and its
+// `dsl:` line its file's profile — the two header fields the merged
+// document does not carry — and the answer's file list names them, so the
+// save (saveUnit / unparseUnitFiles) is handed the claim back as
+// unit_files and writes the header from it.
+//
+// It answers no revision. A revision is a claim about the files at REST —
+// the token saveUnit and unparseUnitFiles compare against disk, or against
+// the bundle as stored — and an overlay changed neither. Answering the
+// staged unit's digest would make every later save a false conflict;
+// answering the current one would adopt a colleague's edit made meanwhile
+// and destroy the conflict detection outright. The client keeps the
+// revision it opened at.
+func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
+	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if _, ok := unitFile(ur.unit, req.File); !ok {
+		httpError(w, http.StatusUnprocessableEntity, "%q is not a file of this bot (%s)", req.File, strings.Join(unitRels(ur.unit), ", "))
+		return
+	}
+	// The staged text must PARSE on its own. A file the parser can only
+	// salvage merges as the declarations it COULD read, and a document
+	// missing them writes that file back short — 200, no diagnostic, the
+	// author's declarations gone. The refusal is what the Source view shows
+	// instead, which is where the author fixes it.
+	//
+	// It is a parse check and nothing more: text that parses but declares
+	// less than it did is the author's edit, and /api/parse answers parse
+	// diagnostics alone on every one of its three shapes. What the program
+	// compiles to is /api/validate's question.
+	pr := parser.Parse(req.File, req.Source)
+	if parseHasErrors(pr.Diagnostics) {
+		var errs []string
+		for _, d := range pr.Diagnostics {
+			if d.Severity == parser.SeverityError {
+				errs = append(errs, d.Error())
+			}
+		}
+		httpError(w, http.StatusUnprocessableEntity, "%s does not parse, so it cannot be applied — the rest of the bot would be saved without what it declares: %s", req.File, strings.Join(errs, "; "))
+		return
+	}
+	staged := ur.stage(req.File, req.Source)
+	// Both units were read from disk, and both the refusal below and the
+	// 200's diagnostics cross to the client — relative names (#1934). The
+	// stored unit's are cut too so the refusal's already-known comparison
+	// (stagedLoadFailure) matches rel against rel.
+	relUnitDiagnostics(ur.unit)
+	relUnitDiagnostics(staged)
+	// What an apply may not carry, refused by name: a staged `import` the
+	// loader cannot follow — a fragment that is not there, a path outside
+	// the bot's lib/ directory, a cycle — or one that pulls in a fragment
+	// the parser could only salvage. Both leave the merged document short
+	// of declarations a save would then drop. Errors the stored unit
+	// already has are the author's existing business, and ones an edit
+	// introduces in a file the bot already holds (a duplicate declaration,
+	// say) are surfaced as diagnostics and saved as ever: the save can
+	// carry both.
+	if msg := stagedLoadFailure(ur.unit, staged, req.File); msg != "" {
+		httpError(w, http.StatusUnprocessableEntity, "%s", msg)
+		return
+	}
+	var diags []string
+	for _, d := range staged.Diagnostics {
+		diags = append(diags, d.Error())
+	}
+	if staged.Merged == nil {
+		writeJSON(w, parseResponse{Diagnostics: diags})
+		return
+	}
+	// staged.Root is "" for a bundle's files map and the directory for a
+	// unit on disk: provenance names each file the way the document the
+	// client already holds does, so a save can still tell the files apart.
+	docJSON, err := ast.MarshalFileWithProvenance(staged.Merged, staged.Root)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+		return
+	}
+	info := unitInfoOf(staged, staged.Main)
+	info.Root = ""
+	info.Revision = ""
+	mainSource := ""
+	if mf, ok := unitFile(staged, staged.Main); ok {
+		mainSource = string(mf.Source)
+	}
+	writeJSON(w, parseResponse{
+		Document:    json.RawMessage(docJSON),
+		Diagnostics: diags,
+		Unit:        info,
+		Bindable:    !parseHasErrors(parser.Parse(staged.Main, mainSource).Diagnostics),
+	})
+}
+
+// openedText is the current text of the workspace file a document was
+// opened from — the BEFORE a fold is judged against (#1612). Empty, with
+// no error, when the document has no workspace file to be about: an
+// unbound buffer, or a path with a scheme (a cloud `botsource://` bot,
+// whose writes are judged by the bot-source routes on the two texts they
+// hold). A path that IS named and cannot be resolved is an error, never a
+// silent "nothing to compare": that is how a guard stops firing quietly.
+func (s *Server) openedText(w http.ResponseWriter, path string) ([]byte, bool) {
+	if path == "" || strings.Contains(path, "://") {
+		return nil, true
+	}
+	if !workflowfile.IsWorkflowFile(path) {
+		// The same bound every other route that reads a bot applies. Without
+		// it this answers the whole content of any workspace file, since a
+		// refusal echoes the text it read.
+		httpError(w, http.StatusBadRequest, "%s is not a workflow file: a document is rendered against a .bot", path)
+		return nil, false
+	}
+	abs, err := s.safePath(path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return nil, false
+	}
+	b, err := os.ReadFile(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		// A path the buffer is headed for but that is not written yet.
+		return nil, true
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "read error: %v", err)
+		return nil, false
+	}
+	return b, true
+}
+
+// stagedLoadFailure names what a per-file apply may not carry: a staged
+// header the loader cannot follow — an `import` naming no file of the bot,
+// a path outside its lib/ directory, a cycle — or one that pulls in a
+// fragment the parser could only salvage. Both leave the merged document
+// short of declarations a save would then drop, so the apply is refused
+// instead, and the refusal names the file and the reason. Errors the
+// stored unit already has pass through as diagnostics, and so do the ones
+// an edit introduces in a file the bot already holds (a duplicate
+// declaration, say): the save can carry both, and the diagnostics say what
+// broke.
+func stagedLoadFailure(stored, staged *unit.Unit, file string) string {
+	prev := make(map[string]bool, len(stored.Diagnostics))
+	for _, d := range stored.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			prev[string(d.Code)+"\x00"+d.File+"\x00"+d.Message] = true
+		}
+	}
+	held := make(map[string]bool, 2*len(stored.Files))
+	for _, f := range stored.Files {
+		held[f.Name] = true
+		held[f.Rel] = true
+	}
+	var errs []string
+	for _, d := range staged.Diagnostics {
+		if d.Severity != parser.SeverityError {
+			continue
+		}
+		if prev[string(d.Code)+"\x00"+d.File+"\x00"+d.Message] {
+			continue
+		}
+		switch d.Code {
+		case parser.DiagImportUnreadable, parser.DiagBadImportPath, parser.DiagImportCycle:
+			errs = append(errs, d.Error())
+		default:
+			// A parse error in a file the apply's imports NEWLY brought in:
+			// its declarations merge as what the parser could read of them.
+			if !held[d.File] {
+				errs = append(errs, d.Error())
+			}
+		}
+	}
+	if len(errs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s changes this bot's `import` lines, and with them the unit does not load: %s. A fragment an import names must exist under the bot's lib/ directory and parse whole — fix the import, or change it where this bot's files live and reopen the bot", file, strings.Join(errs, "; "))
+}
+
+// unitFoldReason names a file of the unit whose multi-line form the
+// FLATTENED text does not carry. It is a question about what is handed
+// over, not about each file on its own: the merged program is rendered at
+// the merged profile, so a unit can hold a file `iterion fmt` refuses and
+// still flatten faithfully, and a unit of files it accepts can flatten
+// folded. Asking per file answered both the wrong way round — it blocked a
+// download that was byte-faithful and stayed silent on one that was not.
+//
+// Empty when nothing is lost, and empty too when the unit cannot be
+// resolved, which is the one case the merged view had nothing to be about.
+// It ANNOTATES a display; the writes are refused on their own, each
+// against the file it is about.
+func (s *Server) unitFoldReason(source string, files map[string]string, main, path string) string {
+	ur, err := s.resolveUnitRequest(files, main, path)
+	if err != nil || ur.unit.Merged == nil {
+		return ""
+	}
+	for _, f := range ur.unit.Files {
+		if line, size, folds := canon.Folds(f.Rel, string(f.Source), source); folds {
+			return fmt.Sprintf("%s: the value at line %d is written over several lines and the merged program has no form for one — its %d characters come back as a single line (#1612)", f.Rel, line, size)
+		}
+	}
+	return ""
+}
+
+// firstParseError is the first error-severity diagnostic of a parse, for a
+// message that quotes what happened rather than characterising it.
+func firstParseError(diags []parser.Diagnostic) string {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return d.Error()
+		}
+	}
+	return "unreadable"
 }

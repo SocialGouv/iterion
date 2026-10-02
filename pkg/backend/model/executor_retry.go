@@ -207,7 +207,15 @@ func shouldRetryInPlace(err error, fallbackAccepts func(error) bool) bool {
 // (the schema-validation retry, direct one-shot dispatch) use it and get
 // the historical behaviour unchanged.
 func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, sharedSession bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn)
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, "")
+}
+
+// retryDelegateLoopReask is retryDelegateLoop for the schema re-ask: the
+// transport retries the re-ask itself pays carry the reask marker, so a
+// timeline reader keys them to the re-ask's work instead of mistaking them
+// for first-attempt retries.
+func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string, backendName string, sharedSession bool, reask string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, reask)
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
@@ -230,7 +238,7 @@ func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 // every attempt is independent, which is what every caller but the main
 // dispatch wants. A carry makes the attempts share a session the TASK never
 // named, which is why the fold asks the results too (see foldSameSession).
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), carryForward ...func(delegate.Result)) (delegate.Result, error) {
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), reask string, carryForward ...func(delegate.Result)) (delegate.Result, error) {
 	result, err := fn()
 	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
@@ -248,6 +256,7 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 				Attempt:     attempt,
 				Error:       err,
 				Delay:       delay,
+				Reask:       reask,
 			})
 		}
 
@@ -354,6 +363,7 @@ func foldSameSession(prev, next delegate.Result, sharedSession bool) bool {
 func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	pt, nt := prev.Tokens, next.Tokens
 	pc, nc := cost.USDFromOutput(prev.Output), cost.USDFromOutput(next.Output)
+	pu, nu := cost.UnreportedCalls(prev.Output), cost.UnreportedCalls(next.Output)
 
 	tokens := pt + nt
 	usd := pc + nc
@@ -375,7 +385,14 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	// log line; the budget clocks its own elapsed), but a node that spent
 	// five minutes before a 30s retry reported the 30s.
 	next.Duration += prev.Duration
-	if tokens == nt && usd == nc {
+	// The attempts are the same element's: one that names no session
+	// identity of its own — a refusal before any call, an attempt
+	// cancelled in backoff — keeps the one before it, so the spend folded
+	// here is still booked on the credential that paid it.
+	if next.SessionFingerprint == "" {
+		next.SessionFingerprint = prev.SessionFingerprint
+	}
+	if tokens == nt && usd == nc && pu == 0 {
 		return next
 	}
 	next.Tokens = tokens
@@ -389,6 +406,7 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	if usd != nc {
 		next.Output["_cost_usd"] = usd
 	}
+	cost.SetUnreportedCalls(next.Output, pu+nu)
 	return next
 }
 
@@ -634,12 +652,21 @@ type chainSpend struct {
 	tokens   int
 	duration time.Duration
 	costUSD  float64
+	// unreported counts the failed routes' calls whose usage the provider
+	// did not report: their tokens and cost above are a lower bound.
+	unreported int
+}
+
+// spendLabel names the element a skip's folded spend is booked on.
+type spendLabel struct {
+	backend, model, effective, fingerprint string
 }
 
 func (s *chainSpend) add(r delegate.Result) {
 	s.tokens += r.Tokens
 	s.duration += r.Duration
 	s.costUSD += cost.USDFromOutput(r.Output)
+	s.unreported += cost.UnreportedCalls(r.Output)
 }
 
 // applyTo folds the accumulated spend into the winning result.
@@ -650,7 +677,7 @@ func (s *chainSpend) add(r delegate.Result) {
 // leaving the map at the last route's figure alone would under-report
 // the chain's true cost to max_cost_usd / org caps / donor ledgers.
 func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
-	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 {
+	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 && s.unreported == 0 {
 		return r
 	}
 	r.Tokens += s.tokens
@@ -660,7 +687,7 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 	// all: a last element that could not even spawn, folding a whole
 	// session's spend into a struct field nobody enforces on. Allocated
 	// here for the same reason typedFailure allocates it.
-	if r.Output == nil && (s.tokens > 0 || s.costUSD > 0) {
+	if r.Output == nil && (s.tokens > 0 || s.costUSD > 0 || s.unreported > 0) {
 		r.Output = map[string]any{}
 	}
 	if r.Output != nil {
@@ -670,6 +697,7 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 		if s.costUSD > 0 {
 			r.Output["_cost_usd"] = cost.USDFromOutput(r.Output) + s.costUSD
 		}
+		cost.SetUnreportedCalls(r.Output, cost.UnreportedCalls(r.Output)+s.unreported)
 	}
 	return r
 }
@@ -820,6 +848,8 @@ func (e *ClawExecutor) newElementBuilder(
 		} else {
 			task.Model = baseModels[bn]
 		}
+		// A GLM id on the anthropic wire is a z.ai model: see RouteProviderHint.
+		task.ProviderHint = RouteProviderHint(ctx, bn, task.ProviderHint, task.Model)
 		// Claw's named persistent slot stores provider-neutral history and
 		// its pause data was validated/sanitized by buildTask. Keep both on
 		// same-Claw fallback, including when the primary is on cooldown.
@@ -876,6 +906,11 @@ type chainOutcome struct {
 	// zero-value output (only the caller knows the schema). Result carries
 	// the failed routes' accumulated spend, never content.
 	Skipped bool
+	// Route is the model spec of the element the outcome names: the one
+	// that served; on a skip, the last one whose attempt spent (else the
+	// last that executed) — the route its folded spend is booked on; on a
+	// failure, the last one that executed. Empty when no element ran.
+	Route string
 	// SessionDegraded reports that the element that served did so only
 	// after its best-effort session (`session: inherit_if_available` /
 	// `persist`) failed to load and was dropped — the node completed
@@ -928,16 +963,31 @@ func (e *ClawExecutor) dispatchChain(
 		// would otherwise disarm a usage_window-filtered skip and turn
 		// the operator's `skip` policy into `wait`.
 		lastCat = delegate.FallbackUnclassified
-		// lastBackend is the backend of the most recently EXECUTED route —
-		// the spend's origin. The skip outcome must carry it: an empty
-		// BackendName falls back to the node's REQUESTED backend at the
-		// event layer, and the runner's cost accumulator keys its claw
-		// double-count exclusion on that name — a metered route's real
-		// spend mislabelled "claw" is erased from the org cap and the
-		// credpool donor ledger. (Known limit: a chain that burned on TWO
-		// backends keeps one label — the last one.)
+		// lastBackend is the backend of the most recently EXECUTED route,
+		// and lastModel its model spec: a failure is labelled with them,
+		// and so is a skip when no route spent. An empty BackendName would
+		// fall back to the node's REQUESTED backend at the event layer.
 		lastBackend string
+		lastModel   string
+		// spender is the last element whose attempt carried tokens or
+		// cost. A skip — the one outcome without a serving element whose
+		// spend the runner books — is labelled with it, never with a later
+		// route that spent nothing: the runner's cost accumulator keys its
+		// claw double-count exclusion on the backend, the credential slot
+		// on the route and the session fingerprint. (Known limit: a chain
+		// that burned on two routes books the whole on the last spender.)
+		spender spendLabel
 	)
+	noteSpend := func(backendName, model string, r delegate.Result) {
+		if r.Tokens > 0 || cost.USDFromOutput(r.Output) > 0 {
+			spender = spendLabel{
+				backend:     firstNonEmpty(r.BackendName, backendName),
+				model:       model,
+				effective:   r.EffectiveModel,
+				fingerprint: r.SessionFingerprint,
+			}
+		}
+	}
 	effModel := func(el chainElement) string {
 		if el.Model != "" {
 			return el.Model
@@ -960,10 +1010,16 @@ func (e *ClawExecutor) dispatchChain(
 		// routes' spend; the caller synthesizes the zero-value output.
 		if el.Skip {
 			res := spent.applyTo(delegate.Result{Output: map[string]any{}})
+			on := spendLabel{backend: lastBackend, model: lastModel}
+			if spender.backend != "" {
+				on = spender
+				res.BackendName, res.EffectiveModel, res.SessionFingerprint = on.backend, on.effective, on.fingerprint
+			}
 			return chainOutcome{
 				Result: res,
-				// The route that EXECUTED and spent — see lastBackend.
-				BackendName: lastBackend,
+				// The route that spent — see spender and lastBackend.
+				BackendName: on.backend,
+				Route:       on.model,
 				ServedBy:    stepLabel(el),
 				FellThrough: true,
 				Skipped:     true,
@@ -1053,14 +1109,14 @@ func (e *ClawExecutor) dispatchChain(
 				return anyElementAccepts(rest, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
 			}
 		}
-		lastBackend = backendName
+		lastBackend, lastModel = backendName, task.Model
 		sessionBeforeAttempt := e.snapshotTaskSession(ctx, task)
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
 		carriedSession := false
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
-		}, func(prev delegate.Result) {
+		}, "", func(prev delegate.Result) {
 			// An in-process retry stays in the SAME sandbox — the engine
 			// starts one per run, never per node (runtime: startSandbox is
 			// called from engine_run and resume only) — so the CLI session
@@ -1130,6 +1186,7 @@ func (e *ClawExecutor) dispatchChain(
 			case delegate.FallbackUnclassified:
 				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)
 				sessionDegraded = true
+				noteSpend(backendName, task.Model, result)
 				spent.add(result)
 				// Dropping task.SessionID is not, by itself, enough to
 				// make the retry fresh. The claw store's effective
@@ -1150,7 +1207,7 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.SessionFingerprint = ""
 				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
 					return backend.Execute(ctx, fresh)
-				})
+				}, "")
 				if freshErr == nil {
 					task = &fresh
 				}
@@ -1163,12 +1220,14 @@ func (e *ClawExecutor) dispatchChain(
 				BackendName:     backendName,
 				Backend:         backend,
 				Task:            task,
+				Route:           task.Model,
 				ServedBy:        stepLabel(el),
 				FellThrough:     i > 0,
 				SessionDegraded: sessionDegraded,
 			}, nil
 		}
 		causes = append(causes, err)
+		noteSpend(backendName, task.Model, result)
 
 		if ctx.Err() != nil {
 			// Cancellation is terminal for the node, but it does not
@@ -1179,7 +1238,7 @@ func (e *ClawExecutor) dispatchChain(
 			// donor's ledger — and the optional-session degrade made that
 			// reachable on a SINGLE-route node, where `spent` used to be
 			// provably empty at this point.
-			return chainOutcome{Result: spent.applyTo(result), BackendName: backendName}, err
+			return chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model}, err
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		lastCat = cat
@@ -1251,9 +1310,9 @@ func (e *ClawExecutor) dispatchChain(
 	// lending donor's ledger.
 	result = spent.applyTo(result)
 	if len(chain) > 1 {
-		return chainOutcome{Result: result}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
+		return chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
-	return chainOutcome{Result: result}, err
+	return chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel}, err
 }
 
 // fallbackRouteEnds resolves the two ends of a route change for the event

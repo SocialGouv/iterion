@@ -43,7 +43,7 @@ func TestEmitTrigger_FanOutToNothingMetersNothing(t *testing.T) {
 	if rec.Code != 202 {
 		t.Fatalf("emit = %d %s, want 202", rec.Code, rec.Body.String())
 	}
-	u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+	u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 	if u.Runs != 0 {
 		t.Errorf("monthly runs = %d after an emit that launched nothing, want 0", u.Runs)
 	}
@@ -93,7 +93,7 @@ func TestEmitFanOut_MetersOneSlotPerLaunch(t *testing.T) {
 	if got := pub.count(); got != 2 {
 		t.Fatalf("the fan-out launched %d run(s), want 2", got)
 	}
-	u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
+	u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
 	if u.Runs != 2 {
 		t.Errorf("monthly runs = %d for a fan-out of 2 launches, want 2", u.Runs)
 	}

@@ -11,7 +11,7 @@
 // is persisted, and rehydration of `activeEditorTabId` can land after the URL
 // effect and restore the previously-active tab over it. These tests pin the
 // re-assert that makes the effect self-correcting.
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useTabsStore } from "@/store/tabs";
@@ -46,7 +46,7 @@ function tabsSnapshot() {
 }
 
 beforeEach(() => {
-  useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null });
+  useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null, currentProjectKey: null });
   search = "";
   loc.setLocation.mockClear();
 });
@@ -54,6 +54,27 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("the URL decides which editor tab is on screen", () => {
+  it("opens the linked file in the current project and reuses it on switch-back", () => {
+    const store = useTabsStore.getState();
+    store.setCurrentProjectKey("/project-a");
+    const a = store.openTab("editor", { file: "bots/a.bot" });
+    store.setCurrentProjectKey("/project-b");
+    search = "?file=bots%2Fa.bot";
+    render(<EditorTabsView />);
+
+    const b = useTabsStore.getState().activeEditorTabId;
+    expect(b).not.toBe(a);
+    expect(screen.queryByText("The same workflows, visually.")).toBeNull();
+    expect(screen.getByTestId(`host-${b}`)).toBeTruthy();
+    expect(screen.queryByTestId(`host-${a}`)).toBeNull();
+
+    act(() => store.setCurrentProjectKey("/project-a"));
+    expect(useTabsStore.getState().activeEditorTabId).toBe(a);
+    expect(screen.getByTestId(`host-${a}`)).toBeTruthy();
+    expect(screen.queryByTestId(`host-${b}`)).toBeNull();
+    expect(useTabsStore.getState().tabs).toHaveLength(2);
+  });
+
   it("activates the draft tab the URL names", () => {
     search = "?draft=run-new";
     render(<EditorTabsView />);

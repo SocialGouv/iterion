@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -38,7 +39,7 @@ import (
 // Default fallback model for the self-repair / agent rungs when the node's
 // recovery: block names none. Mirrors defaultRouterModel — a cheap, capable
 // default that works for the common Anthropic-credentialled host.
-const defaultVerifiedActionModel = "anthropic/claude-sonnet-4-6"
+const defaultVerifiedActionModel = "anthropic/claude-opus-5-5"
 
 // selfRepairSchema is the structured-output contract for the self-repair
 // rung: the model returns a corrected shell command (and its reasoning).
@@ -74,6 +75,11 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 	if setupErr != nil {
 		// Build / policy failure — not a recoverable recipe error.
 		return nil, setupErr
+	}
+	if res.runErr != nil {
+		// The ladder judges the recipe by its postcondition, not by this
+		// error — but the error is still what happened, so it is recorded.
+		e.logVA(node.ID, fmt.Sprintf("recipe failed: %v", res.runErr))
 	}
 	met, pcOut, pcErr := e.runPostcondition(ctx, node, input)
 	if pcErr != nil {
@@ -160,8 +166,13 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 		return res, true, err
 	default:
 		// Registry tool (bare name): run via the standard recipe path. No
-		// command to self-repair, so report non-repairable.
+		// command to self-repair, so report non-repairable. The sandbox
+		// refusal is a setup error; any other failure is the recipe's run.
 		out, rerr := e.executeToolNodeRecipe(ctx, node, input)
+		var setup *toolNodeSetupError
+		if errors.As(rerr, &setup) {
+			return recipeResult{}, false, rerr
+		}
 		return recipeResult{output: out, runErr: rerr}, false, nil
 	}
 }
@@ -171,17 +182,19 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 // (when valid JSON) becomes the skip / success output so authors can surface
 // state (e.g. the resulting commit sha). Routed through runToolNodeCore so
 // it is sandbox-aware and visible as a tool_called event.
+// postconditionBody resolves the postcondition the way the node's own
+// `command:` is resolved: the same env expansion, the same escaper, the same
+// snapshot, and the same declared shapes — its refs are validated against the
+// same input schema, so a `json`-declared field holding a list must land as
+// one token here exactly as it does in the command itself.
+func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) string {
+	expanded := expandBracedEnv(node.Postcondition)
+	td := TemplateDataFromContext(ctx)
+	return resolveCommandTemplate(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
+}
+
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
-	resolve := func() string {
-		expanded := expandBracedEnv(node.Postcondition)
-		td := TemplateDataFromContext(ctx)
-		// A postcondition is the node's second shell command body, resolved
-		// with the same escaper over the same snapshot, and its refs are
-		// validated against the same input schema — so a `json`-declared
-		// field holding a list breaks out of its assignment here exactly as
-		// it does in the command itself.
-		return resolveCommandTemplate(expanded, node.PostcondRefs, e.jsonFieldsAsText(node, input), e.vars, td, RunIDFromContext(ctx), e.secretGuard)
-	}
+	resolve := func() string { return e.postconditionBody(ctx, node, input) }
 	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
@@ -220,7 +233,8 @@ STDERR:
 %s
 
 Return only the corrected command (one shell invocation, may use && / pipes). Do not explain in the command itself.`,
-		strings.TrimSpace(node.Goal), strings.TrimSpace(lastCmd), truncate(stdout, 4000), truncate(stderr, 4000))
+		strings.TrimSpace(node.Goal), e.secretGuard.Redact(strings.TrimSpace(lastCmd)),
+		truncate(e.secretGuard.Redact(stdout), 4000), truncate(e.secretGuard.Redact(stderr), 4000))
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,

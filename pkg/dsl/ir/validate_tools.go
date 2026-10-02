@@ -74,15 +74,75 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 		// first claw route: every route shares this list, so repeating the
 		// message per route would say nothing new.
 		for _, fb := range nn.GetFallbacks() {
-			if !toolcatalog.ConstrainsTools(fb.Backend) {
+			route := sourceBackend.routeName(fb.Backend)
+			if !toolcatalog.ConstrainsTools(route) {
 				continue
 			}
 			for _, name := range unresolvable {
 				d := c.toolDiagReporter(w, n, name)
 				d.report(DiagUnknownTool, id, "",
 					"%s %q: tools: names %q, which fallback %s %s on backend %q — the route would fail at the moment the run is already falling back%s",
-					kind, id, name, fallbackLabel(fb), d.routeConsequence(), fb.Backend, d.hint(name))
+					kind, id, name, fallbackLabel(fb), d.routeConsequence(), route, d.hint(name))
 			}
+			break
+		}
+	}
+}
+
+// validateEmptyToolsEnforced reports a `tools: []` that does not hold.
+//
+// A declared-empty list is the author saying "this node has no tools"
+// (toolcatalog.ToolsDeclared). Two shapes defeat it, and the diagnostic names
+// both:
+//
+//   - a backend that never RECEIVES the list. pi, kimi and grok are driven
+//     through the CLI-agent seam, which does not pass it to the agent, so the
+//     node runs with that CLI's own toolset — the opposite of what the file
+//     says. Same for a `fallbacks:` route, at the moment the run is already
+//     falling back.
+//   - the runtime RE-POPULATING it. On claw `interaction:` grants `ask_user`
+//     whatever the list holds (claw needs the tool loop to carry it), and
+//     that one entry makes the list non-empty for every append below it:
+//     `todo_write`, then `read_file`/`write_file`/`glob` under `auto_memory:`.
+//     A node that declared no tools ends up holding a file writer. The engine
+//     does not silently drop either the tools declaration or the interaction
+//     one — it says so and leaves the author to choose.
+//
+// A warning, not an error: the node still runs, and an operator who knows the
+// route may want it anyway (philosophy: warn over reject, never silently
+// replace an explicit choice).
+func (c *compiler) validateEmptyToolsEnforced(w *Workflow) {
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		tools := nn.GetTools()
+		if !toolcatalog.ToolsDeclared(tools) || len(tools) > 0 {
+			continue
+		}
+		kind, id := nn.NodeKind().String(), nn.NodeID()
+		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if backend == clawBackendName && NodeInteraction(n) != InteractionNone {
+			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
+				"%s %q declares `tools: []` (no tools) and `interaction:` on claw — claw carries `ask_user` through its tool loop, so the list is re-populated with it, and that one entry unlocks every other runtime append the node qualifies for: `todo_write`, the `agent` spawner under ultracode, the board tools its `capabilities:` grant (`transition_issue` included), and `read_file`/`write_file`/`glob` under `auto_memory:`; drop one of the two declarations, or move the node to claude_code, where an empty list removes the whole native roster (MCP tools and Agent/TaskOutput/Monitor still reach it)",
+				kind, id)
+			continue
+		}
+		if backend != "" && !toolcatalog.ReceivesToolList(backend) {
+			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
+				"%s %q declares `tools: []` (no tools) but backend %q never receives the list — the node runs with that CLI's own full toolset; bound it with `deny:` rules (on kimi and grok those need `sandbox: none` — C136), or run it on a backend that receives the list (claw, claude_code, codex)",
+				kind, id, backend)
+			continue
+		}
+		for _, fb := range nn.GetFallbacks() {
+			route := sourceBackend.routeName(fb.Backend)
+			if route == "" || toolcatalog.ReceivesToolList(route) {
+				continue
+			}
+			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
+				"%s %q declares `tools: []` (no tools) but fallback %s runs on backend %q, which never receives the list — the node regains that CLI's full toolset at the moment the run is already falling back; bound it with `deny:` rules (on kimi and grok those need `sandbox: none` — C136), or route to a backend that receives the list",
+				kind, id, fallbackLabel(fb), route)
 			break
 		}
 	}
@@ -140,6 +200,9 @@ func (c *compiler) validateRecoveryAgentTools(w *Workflow, tn *ToolNode) {
 // fixed and known, so unresolvableToolNames accepts them outright and the
 // check keeps its teeth on every other name.
 func (c *compiler) toolDiagReporter(w *Workflow, n Node, name string) toolDiag {
+	if toolcatalog.BuiltinAlias(name) != "" {
+		return toolDiag{report: c.warnfAt, alias: true}
+	}
 	if toolcatalog.IsIdentifiableMistake(name) && !mcpWiringVisible(w, n) {
 		return toolDiag{report: c.errorfAt, blocking: true}
 	}
@@ -153,10 +216,14 @@ func (c *compiler) toolDiagReporter(w *Workflow, n Node, name string) toolDiag {
 type toolDiag struct {
 	report   func(DiagCode, string, string, string, ...any)
 	blocking bool
+	alias    bool
 }
 
 // consequence renders what happens on the node's own backend.
 func (d toolDiag) consequence() string {
+	if d.alias {
+		return "resolves only with the bundle engine-floor opt-in, or as an exact tool / unique MCP shorthand"
+	}
 	if d.blocking {
 		return "cannot resolve — the node fails the moment it dispatches"
 	}
@@ -166,6 +233,9 @@ func (d toolDiag) consequence() string {
 // routeConsequence is the same for a `fallbacks:` route, where the failure
 // lands at the worst possible moment.
 func (d toolDiag) routeConsequence() string {
+	if d.alias {
+		return "resolves only with the bundle engine-floor opt-in, or as an exact tool / unique MCP shorthand"
+	}
 	if d.blocking {
 		return "cannot resolve"
 	}
@@ -183,6 +253,9 @@ func (d toolDiag) routeConsequence() string {
 // remedy for a run the compiler just refused.
 func (d toolDiag) hint(name string) string {
 	h := toolHint(name)
+	if d.alias {
+		return h
+	}
 	if d.blocking {
 		return h + " If the name really is an MCP server's tool, spell it `mcp.<server>.<tool>` — or show the server exists (a top-level `mcp_server:`, or an `mcp:` block on the workflow or the node that names, disables, inherits or autoloads servers; an empty block shows nothing), which softens this to a warning"
 	}
@@ -257,6 +330,9 @@ func unresolvableToolNames(tools []string) []string {
 // Returned with its own leading punctuation so the caller's format string
 // reads as one sentence either way.
 func toolHint(name string) string {
+	if canonical := toolcatalog.BuiltinAlias(name); canonical != "" {
+		return fmt.Sprintf(". Use %q, or declare the tool-alias engine floor in the bundle's requires.iterion to enable the Claw alias. An exact tool or unique MCP suffix still takes precedence; see docs/tool-name-aliases.md", canonical)
+	}
 	if toolcatalog.IsUnexpandedRef(name) {
 		return ". Tool names are the one field iterion does not expand — unlike model:, backend: and command:, a `${VAR}` or `{{ref}}` entry reaches the registry verbatim; name the tool literally."
 	}
@@ -280,7 +356,7 @@ func unresolvableToolsReason(routeBackend string, tools []string, mcpVisible boo
 	}
 	var unresolvable []string
 	for _, name := range unresolvableToolNames(tools) {
-		if toolcatalog.IsIdentifiableMistake(name) {
+		if toolcatalog.BuiltinAlias(name) == "" && toolcatalog.IsIdentifiableMistake(name) {
 			unresolvable = append(unresolvable, name)
 		}
 	}

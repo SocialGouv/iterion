@@ -76,10 +76,10 @@ func TestScheduleOutcomeStampsBothOutcomesOnTheSchedule(t *testing.T) {
 			name:            "failure stamps error + code",
 			runID:           "run-boom",
 			status:          store.RunStatusFailed,
-			errMsg:          "sandbox: mode strict requested but no container runtime is available",
-			failureCode:     store.FailureSandboxSetupTimeout, // stand-in for the #1425 typed refusal
-			wantErrMsg:      "sandbox: mode strict requested but no container runtime is available",
-			wantErrCode:     string(store.FailureSandboxSetupTimeout),
+			errMsg:          `sandbox: mode "inline" refused: no container-runtime driver available`,
+			failureCode:     store.FailureSandboxDriverUnavailable, // the #1425 typed refusal itself
+			wantErrMsg:      `sandbox: mode "inline" refused: no container-runtime driver available`,
+			wantErrCode:     string(store.FailureSandboxDriverUnavailable),
 			wantStatus:      string(store.RunStatusFailed),
 			wantOutcomeKind: trigger.KindRunFailed,
 		},

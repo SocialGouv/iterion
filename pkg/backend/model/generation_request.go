@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 )
@@ -21,20 +22,14 @@ import (
 
 // buildRequest constructs a CreateMessageRequest from GenerationOptions and messages.
 // extraTools and toolChoice are appended/set on top of opts.Tools.
-// wireModelID strips an optional "provider/" routing prefix from a model
-// spec, returning the bare model ID the wire API expects. iterion selects
-// the provider via Registry.Resolve(spec); the resolved client then needs
-// only the bare model on the request — claw_backend and subagent already
-// pass bare, but the direct-generation callers (executeHumanLLM,
-// ExecuteReviewCompanion) pass the full spec. Without this, "anthropic/
-// claude-sonnet-4-6" reaches the Anthropic API verbatim and 404s (the
-// openai/bedrock claw providers strip it incidentally; anthropic does not).
-// A bare "claude-opus-4-8" (no slash) is returned unchanged.
+// wireModelID is the id a request carries for a model spec: the spec minus
+// its routing prefix, stripped exactly once. Every GenerationOptions carries
+// the FULL spec — iterion picks the provider through Registry.Resolve(spec),
+// and this is the one place the prefix comes off — so a model id that holds
+// slashes of its own ("openai/meta-llama/Llama-3.3-70B") reaches the wire
+// whole. A bare "claude-opus-4-8" is returned unchanged.
 func wireModelID(spec string) string {
-	if i := strings.Index(spec, "/"); i >= 0 {
-		return spec[i+1:]
-	}
-	return spec
+	return modelroute.Parse(spec).Wire
 }
 
 // llmSpanOp is the operation name every in-process provider call is
@@ -127,8 +122,8 @@ func startStreamWithColdWatchdog(
 // model spec ("anthropic/claude-opus-5" → "anthropic"), or "default"
 // when the spec is bare and the registry picks the provider.
 func modelProvider(spec string) string {
-	if i := strings.Index(spec, "/"); i >= 0 {
-		return spec[:i]
+	if p := modelroute.Parse(spec).Provider; p != "" {
+		return p
 	}
 	return "default"
 }
@@ -231,6 +226,7 @@ func accumulateUsage(total *Usage, step Usage) {
 	total.CacheWriteTokens += step.CacheWriteTokens
 	total.ReasoningTokens += step.ReasoningTokens
 	total.ThinkingMs += step.ThinkingMs
+	total.UnreportedCalls += step.UnreportedCalls
 }
 
 // toolCallsFromBlocks converts aggregated tool_use blocks to ToolCall values.
@@ -260,12 +256,24 @@ func fireOnRequest(opts GenerationOptions, messageCount int) {
 		}
 		opts.OnRequest(RequestInfo{
 			Model:           opts.Model,
+			WireModel:       wireModelIfDistinct(opts.Model),
 			MessageCount:    messageCount,
 			ToolCount:       len(opts.Tools),
 			ReasoningEffort: reasoning,
 			Timestamp:       time.Now(),
 		})
 	}
+}
+
+// wireModelIfDistinct is the wire id of a spec when it differs from the
+// spec itself — the routing prefix came off — and "" for a bare spec, so an
+// event names the wire id only when it says something the model field does
+// not.
+func wireModelIfDistinct(spec string) string {
+	if w := wireModelID(spec); w != spec {
+		return w
+	}
+	return ""
 }
 
 // callAndAggregate calls StreamResponse, aggregates the stream, fires the
@@ -295,6 +303,17 @@ func callAndAggregate(
 	coldTimeout := resolveClawStreamColdTimeout()
 	idleTimeout := resolveClawStreamIdleTimeout()
 	ch, err := startStreamWithColdWatchdog(ctx, requestCtx, client, req, coldTimeout)
+
+	// The cold allowance began before StreamResponse was entered. Carry its
+	// remaining time into aggregation instead of accidentally granting a
+	// second full cold window to a provider that returned a stream late.
+	coldRemaining := coldTimeout
+	if err == nil && coldTimeout > 0 {
+		coldRemaining = time.Until(start.Add(coldTimeout))
+		if coldRemaining <= 0 {
+			err = &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
+		}
+	}
 	if err != nil {
 		span.Finish(err)
 		if opts.OnResponse != nil {
@@ -303,23 +322,10 @@ func callAndAggregate(
 				Error:   err,
 			})
 		}
-		return nil, err
-	}
-
-	// The cold allowance began before StreamResponse was entered. Carry its
-	// remaining time into aggregation instead of accidentally granting a
-	// second full cold window to a provider that returned a stream late.
-	coldRemaining := coldTimeout
-	if coldTimeout > 0 {
-		coldRemaining = time.Until(start.Add(coldTimeout))
-		if coldRemaining <= 0 {
-			err := &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
-			span.Finish(err)
-			if opts.OnResponse != nil {
-				opts.OnResponse(ResponseInfo{Latency: time.Since(start), Error: err})
-			}
-			return nil, err
+		if errors.As(err, new(*StreamIdleError)) {
+			return abandonedCall(err), nil
 		}
+		return nil, err
 	}
 	agg := aggregateStreamWithIdleWatchdog(ctx, ch, coldRemaining, idleTimeout)
 	// aggregate receives the remaining cold allowance so its timer is exact,
@@ -356,4 +362,12 @@ func callAndAggregate(
 	}
 
 	return &agg, nil
+}
+
+// abandonedCall is the response of a request the cold watchdog gave up on:
+// it went out, and whatever the provider spent on it, nothing reported it.
+// A provider that answered with an error instead served nothing, and
+// callAndAggregate returns that error alone.
+func abandonedCall(err error) *aggregatedResponse {
+	return &aggregatedResponse{usage: Usage{UnreportedCalls: 1}, err: err}
 }

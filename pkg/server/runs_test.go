@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -91,81 +93,88 @@ func decodeJSONResp(t *testing.T, resp *http.Response, v any) {
 // Tests
 // ---------------------------------------------------------------------------
 
+// listRunsAs issues GET /api/runs the way production delivers it: the list
+// scopes EXPLICITLY (ADR-103), so the request always arrives carrying the
+// operator identity the auth middleware resolved.
+func listRunsAs(t *testing.T, srv *Server, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/runs"+query, nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{UserID: "op", TeamID: "team-x", Role: identity.RoleMember}))
+	rec := httptest.NewRecorder()
+	srv.handleListRuns(rec, req)
+	return rec
+}
+
 func TestListRuns_EmptyStore(t *testing.T) {
-	_, hs := newTestServer(t)
-	resp, err := http.Get(hs.URL + "/api/runs")
-	if err != nil {
-		t.Fatalf("GET /api/runs: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
+	srv, _ := newTestServer(t)
+	rec := listRunsAs(t, srv, "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
 	}
 	var out struct {
 		Runs []runview.RunSummary `json:"runs"`
 	}
-	decodeJSONResp(t, resp, &out)
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(out.Runs) != 0 {
 		t.Errorf("Runs = %d, want 0", len(out.Runs))
 	}
 }
 
 func TestListRuns_WithSeedAndFilter(t *testing.T) {
-	srv, hs := newTestServer(t)
+	srv, _ := newTestServer(t)
 	seedRun(t, srv, "run-1", "wf_alpha", store.RunStatusFinished)
 	seedRun(t, srv, "run-2", "wf_beta", store.RunStatusFailed)
 	seedRun(t, srv, "run-3", "wf_alpha", store.RunStatusRunning)
 
 	t.Run("no filter", func(t *testing.T) {
-		resp, err := http.Get(hs.URL + "/api/runs")
-		if err != nil {
-			t.Fatalf("GET: %v", err)
-		}
+		rec := listRunsAs(t, srv, "")
 		var out struct {
 			Runs []runview.RunSummary `json:"runs"`
 		}
-		decodeJSONResp(t, resp, &out)
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 		if len(out.Runs) != 3 {
 			t.Errorf("len = %d, want 3", len(out.Runs))
 		}
 	})
 
 	t.Run("filter by status", func(t *testing.T) {
-		resp, err := http.Get(hs.URL + "/api/runs?status=finished")
-		if err != nil {
-			t.Fatalf("GET: %v", err)
-		}
+		rec := listRunsAs(t, srv, "?status=finished")
 		var out struct {
 			Runs []runview.RunSummary `json:"runs"`
 		}
-		decodeJSONResp(t, resp, &out)
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 		if len(out.Runs) != 1 || out.Runs[0].ID != "run-1" {
 			t.Errorf("Runs = %+v, want only run-1", out.Runs)
 		}
 	})
 
 	t.Run("filter by workflow", func(t *testing.T) {
-		resp, err := http.Get(hs.URL + "/api/runs?workflow=wf_alpha")
-		if err != nil {
-			t.Fatalf("GET: %v", err)
-		}
+		rec := listRunsAs(t, srv, "?workflow=wf_alpha")
 		var out struct {
 			Runs []runview.RunSummary `json:"runs"`
 		}
-		decodeJSONResp(t, resp, &out)
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 		if len(out.Runs) != 2 {
 			t.Errorf("len = %d, want 2", len(out.Runs))
 		}
 	})
 
 	t.Run("limit", func(t *testing.T) {
-		resp, err := http.Get(hs.URL + "/api/runs?limit=2")
-		if err != nil {
-			t.Fatalf("GET: %v", err)
-		}
+		rec := listRunsAs(t, srv, "?limit=2")
 		var out struct {
 			Runs []runview.RunSummary `json:"runs"`
 		}
-		decodeJSONResp(t, resp, &out)
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 		if len(out.Runs) != 2 {
 			t.Errorf("len = %d, want 2", len(out.Runs))
 		}
@@ -409,7 +418,7 @@ func TestLaunch_RejectsBadBudgetDuration(t *testing.T) {
 // run's resolved bundle name case-insensitively, including the legacy
 // basename(bundle_path) fallback, and excludes bundle-less runs.
 func TestListRuns_BotFilter(t *testing.T) {
-	srv, hs := newTestServer(t)
+	srv, _ := newTestServer(t)
 	seedRun(t, srv, "run-docs", "wf_docs", store.RunStatusFinished)
 	seedRun(t, srv, "run-feature", "wf_feature", store.RunStatusFinished)
 	seedRun(t, srv, "run-plain", "wf_plain", store.RunStatusFinished)
@@ -435,17 +444,16 @@ func TestListRuns_BotFilter(t *testing.T) {
 
 	get := func(query string) []runview.RunSummary {
 		t.Helper()
-		resp, err := http.Get(hs.URL + "/api/runs" + query)
-		if err != nil {
-			t.Fatalf("GET %s: %v", query, err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s: status = %d, want 200", query, resp.StatusCode)
+		rec := listRunsAs(t, srv, query)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", query, rec.Code)
 		}
 		var out struct {
 			Runs []runview.RunSummary `json:"runs"`
 		}
-		decodeJSONResp(t, resp, &out)
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 		return out.Runs
 	}
 

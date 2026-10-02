@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { salvageRefusal } from "./salvage";
 
-// A refusal has to name a way OUT that exists. The Source view is read-only
-// for a bot in several files — its Edit/Apply controls are hidden whenever
-// `unit` is set — so a unit's author told to "repair it in the Source view"
-// is told to use a control the render gate removed, and the buffer has no
-// route at all: Save, Save As, Download, Copy and Launch are all refused.
+// A refusal has to name a way OUT that exists, and one that works all the
+// way to the file. Two shapes were tried for a bot in several files and
+// both named a CONTROL that fails: the "files drawer", which renders only
+// for a cloud `botsource://` path; then the Source view, whose Apply
+// answers 200 and whose Save then refuses. The control that works differs
+// per twin and on the cloud twin there is none. So the message names the
+// CONSTRAINT instead — one fact, true on both twins, witnessed server-side
+// by TestASalvagedUnitIsRepairedWhereTheSaveReadsIt.
 describe("salvageRefusal", () => {
   it("says nothing when the document is the program", () => {
     expect(salvageRefusal({ salvaged: false })).toBeNull();
@@ -18,12 +21,18 @@ describe("salvageRefusal", () => {
     expect(refusal).toMatch(/Source view/i);
   });
 
-  it("never points a bot in several files at the Source view", () => {
+  it("tells a bot in several files the constraint, not a control", () => {
     const refusal = salvageRefusal({ salvaged: true, unit: { main: "main.bot" } });
     expect(refusal).not.toBeNull();
-    // The control it would name is hidden for a unit.
+    // The fact the save enforces, said as a fact.
+    expect(refusal).toMatch(/where this bot's files live/i);
+    expect(refusal).toMatch(/nothing edited here can reach/i);
+    // None of the three controls that were named and did not work: the
+    // drawer (cloud-only), the Source view / Apply (200 then 422), and
+    // "on disk", which is not where a cloud bundle's files live.
+    expect(refusal).not.toMatch(/files drawer/i);
     expect(refusal).not.toMatch(/Source view/i);
-    // And it names one that is there.
-    expect(refusal).toMatch(/files drawer|on disk/i);
+    expect(refusal).not.toMatch(/Apply/);
+    expect(refusal).not.toMatch(/on disk/i);
   });
 });

@@ -1,0 +1,9 @@
+# refused: dsl is a profile number, not a word
+dsl: two
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

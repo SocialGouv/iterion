@@ -47,6 +47,7 @@ var validModelBackendNames = map[string]bool{
 	delegate.BackendKimi:       true,
 	delegate.BackendGrok:       true,
 	delegate.BackendPi:         true,
+	delegate.BackendOpenCode:   true,
 }
 
 func validBackendNames() []string {

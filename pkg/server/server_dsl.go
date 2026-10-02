@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
@@ -34,6 +36,13 @@ type parseRequest struct {
 	// response the unit's revision.
 	Files map[string]string `json:"files,omitempty"`
 	Main  string            `json:"main,omitempty"`
+	// File names ONE file of that unit, and Source is then the text the
+	// Source view's picker holds for it: the unit is re-parsed with that
+	// file replaced, so the author edits a real file instead of a merged
+	// program no save could take apart. Path is the workspace path of the
+	// main, for a unit on disk, where the client holds no files map.
+	File string `json:"file,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
 type parseResponse struct {
@@ -88,11 +97,30 @@ type unparseRequest struct {
 	Files    map[string]string `json:"files,omitempty"`
 	Main     string            `json:"main,omitempty"`
 	Revision string            `json:"revision,omitempty"`
+	// UnitFiles is the file list the client last holds for the unit (its
+	// unit.files): each file's profile and import lines AS THE CLIENT
+	// KNOWS them, which a per-file edit of the Source view may have changed
+	// — the two header fields the merged document does not carry. With it,
+	// the write-back and the per-file render follow the claim; without it,
+	// both rebuild every file's header from the stored files.
+	UnitFiles []unitFileInfo `json:"unit_files,omitempty"`
 	// Flatten renders the merged program of a bot in several files as one
 	// text for DISPLAY — the Source view — which is never written back:
 	// without it a document whose declarations name their files is
 	// refused here, since one file could only fold every file into it.
 	Flatten bool `json:"flatten,omitempty"`
+	// File names ONE file of the unit to render — what the Source view's
+	// picker shows for the file it is on. Read-only: no revision is
+	// presented and nothing is written. Path is the workspace path of the
+	// main, for a unit on disk, where the client holds no files map.
+	File string `json:"file,omitempty"`
+	// Path is the workspace file this document was opened from. Two uses,
+	// and both need the server to hold the file rather than the client:
+	// it names the unit a `file` belongs to, and it is the BEFORE a fold
+	// is judged against (#1612). A before the client supplies is a before
+	// the client can overwrite — `currentSource` is the launch's inline
+	// text, not the file's — so the server reads it.
+	Path string `json:"path,omitempty"`
 }
 
 type unparseResponse struct {
@@ -102,6 +130,20 @@ type unparseResponse struct {
 	// absent. Revision is the unit's revision once they are patched in.
 	Files    map[string]string `json:"files,omitempty"`
 	Revision string            `json:"revision,omitempty"`
+	// Refused is set when the writer cannot reproduce this file: a value
+	// its author wrote over several lines has no multi-line form and would
+	// come back as one line (#1612, pkg/dsl/canon). Every path that WRITES
+	// refuses outright; this is what the ones that DISPLAY get instead.
+	Refused string `json:"refused,omitempty"`
+	// Stored says Source is the bytes the server READ — the file as it is
+	// kept — and not a render of the document. It travels because a caller
+	// cannot tell the two apart and the difference decides whether the
+	// answer may be handed to the author as their file: three of the four
+	// answers that carry Refused read a file, and the flatten one renders
+	// the merged program, which is no file at all. Without it a client
+	// reading "refused, so Source is the file" is right three times and
+	// hands over a collapsed render the fourth.
+	Stored bool `json:"stored,omitempty"`
 }
 
 type validateRequest struct {
@@ -132,6 +174,10 @@ type validateResponse struct {
 func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 	var req parseRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.File != "" {
+		s.parseUnitWithFile(w, req)
 		return
 	}
 	if len(req.Files) > 0 {
@@ -175,17 +221,54 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
 		return
 	}
+	if req.File != "" {
+		s.unparseUnitPart(w, req, f)
+		return
+	}
+	if req.Flatten {
+		// Before the write path below: flatten is a DISPLAY of the merged
+		// program, and a cloud caller carries its bundle's files for the
+		// same reason a local one carries its path — so the answer can say
+		// which of the bot's files the merged text no longer carries over
+		// its lines.
+		source := unparse.Unparse(f)
+		if err := unparse.Verify(f, source); err != nil {
+			httpError(w, http.StatusUnprocessableEntity, "the document cannot be rendered as .bot source without changing it: %v", err)
+			return
+		}
+		writeJSON(w, unparseResponse{Source: source, Refused: s.unitFoldReason(source, req.Files, req.Main, req.Path)})
+		return
+	}
 	if len(req.Files) > 0 {
 		s.unparseUnitFiles(w, req, f)
 		return
 	}
-	if hasProvenance(f) && !req.Flatten {
+	if hasProvenance(f) {
 		httpError(w, http.StatusUnprocessableEntity, "the document is a bot in several files (its declarations name their files): write it back with its files and revision, never as one file")
 		return
 	}
 
-	source := unparse.Unparse(f)
-	if err := unparse.Verify(f, source); err != nil {
+	// REPORTED, never refused: this is what shows a refused bot in ONE file
+	// its own source, and blanking it would leave the author nothing to
+	// read. The writes are refused elsewhere — the three server-side save
+	// paths, and the bot-source routes for the writes a client performs.
+	before, ok := s.openedText(w, req.Path)
+	if !ok {
+		return
+	}
+	name := "studio.bot"
+	if req.Path != "" {
+		name = req.Path
+	}
+	source, err := canon.Text(name, f, before)
+	if err != nil {
+		if errors.Is(err, canon.ErrRefused) {
+			// The file's OWN text, never the writer's: a render that folds
+			// a value is exactly the text the author's file does not
+			// contain, and the view says "this is your file" above it.
+			writeJSON(w, unparseResponse{Source: string(before), Refused: canonReason(err), Stored: true})
+			return
+		}
 		httpError(w, http.StatusUnprocessableEntity, "the document cannot be rendered as .bot source without changing it: %v", err)
 		return
 	}
@@ -231,12 +314,17 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 				// leave useAutoValidation's stale diagnostics on screen. The
 				// document is validated alone, and the response SAYS so
 				// (C222, below); the CLI refuses this same state outright.
-				unopenable = oerr
+				// The warning rides the 200 body, so the hint error gets the
+				// root cut its refusal siblings already had (#1970) — it is
+				// only .Error()'d below, the re-wrap loses nothing.
+				unopenable = errors.New(unit.RelTextRoot(filepath.Dir(abs), oerr.Error()))
 			case b != nil:
 				// A prompts merge that genuinely fails stays an error: the
-				// bundle opened, so its prompts/*.md are in scope.
+				// bundle opened, so its prompts/*.md are in scope. The merge's
+				// read errors name the bundle's directory, absolute — the 422
+				// is the client's, the directory is the server's (#1970).
 				if merr := runview.MergeBundlePrompts(f, b); merr != nil {
-					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
+					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %s", unit.RelTextRoot(b.Dir, merr.Error()))
 					return
 				}
 			default:
@@ -612,6 +700,9 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		return
 	}
 	var diags []string
+	// The unit was read from disk and its diagnostics are answered to the
+	// client: they name the files by their unit-relative paths (#1934).
+	relUnitDiagnostics(u)
 	for _, d := range u.Diagnostics {
 		diags = append(diags, d.Error())
 	}
@@ -653,7 +744,10 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 	}
 	flat, err := flatProgram(name, u.Merged)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "%v", err)
+		// The include-inlining refusal rides no diagnostic: it names the
+		// resolved path, absolute for a disk-loaded unit, so the error
+		// itself gets the root cut (#1934's rule, on this path: #1970).
+		httpError(w, http.StatusInternalServerError, "%v", u.RelError(err))
 		return
 	}
 	writeExample(w, name, flat, "", "")

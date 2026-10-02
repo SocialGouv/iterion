@@ -40,6 +40,13 @@ sink, before persistence:
   `node_finished` output via the engine's `SecretScrubber`),
 - run.log block bodies, tool sidecar blobs, turn-snapshot conversations.
 
+Values iterion only scrubs — the run's provider keys, the process's own
+secret-named environment, and credentials a server mints for a run (the forge
+publish grant) — are **redact-only**: their placeholder resolves nowhere, so
+no agent, command or egress request can turn it back into the value, and it is
+passed through unchanged. Only the secrets a workflow declares (Layer 1)
+materialize.
+
 **Deliberately NOT redacted:** persisted **artifacts** and the resume
 **checkpoint**. These are load-bearing — they feed `{{outputs.X}}` /
 `{{artifacts.X}}` and are re-read on resume; redacting them would corrupt
@@ -202,11 +209,91 @@ rewrite the plaintext request (Deno-parity secret handling):
   in-memory, never persisted) mints per-host leaves. Its public cert is
   injected into the sandbox so in-container clients trust the leaves.
 - **Substitution** ([`inspect.go`](../pkg/sandbox/netproxy/inspect.go)):
-  `MaterializeForHost` swaps placeholder→value, but only toward a
-  secret's approved `hosts:`.
+  `MaterializeForHostWithin` swaps placeholder→value, but only toward a
+  secret's approved `hosts:` (a secret that declares none goes toward any
+  host), and within the inspection bound.
 - **Content DLP**: `ExfiltratesTo` blocks (403) a real secret value bound
   for a host it isn't scoped to — defeats domain-fronting the host
   allowlist can't see.
+- **A model's conversation is never substituted.** The harness's own model
+  calls (the claude CLI, the claw runner) leave the sandbox through the
+  same proxy, their conversation naming secrets by their placeholders. A
+  request to a model API keeps its body as sent: a provider's host
+  (`api.anthropic.com`, `api.openai.com`, `openrouter.ai`, `api.x.ai`,
+  `api.mistral.ai`, `api.z.ai`, `api.moonshot.ai`/`.cn`, the Gemini and
+  Vertex AI hosts, Azure OpenAI, Bedrock runtime), a model API's path at
+  any host (`/v1/messages`, `/chat/completions`, `/v1/completions`,
+  `/responses` under any base (a gateway's, Copilot's, the ChatGPT
+  forfait's `chatgpt.com/backend-api/codex/responses`), `/v1/embeddings`,
+  `/images/generations`, `:generateContent`, `:rawPredict` and their
+  streaming forms, Ollama's `/api/chat` and `/api/generate`, Bedrock's
+  `/model/{id}/invoke` and `/converse`), or a host listed in
+  `ITERION_SANDBOX_MODEL_HOSTS` (a gateway at a path of its own, in the
+  network rules' syntax — `gw.corp`, `*.corp`, `**.corp`, an IP, a CIDR,
+  `!` to exclude; a base URL or `host:port` names its host; an entry that
+  is none of these, one matching every host (`*`, `**`), or a list of
+  exclusions only, fails the run's start whenever its sandbox starts the
+  proxy, the entry named by its position). Its
+  headers are substituted as usual (an API key a tool gives as a
+  placeholder), and content DLP applies to it like to any request. A
+  tool that sends a secret in the body of a model API call gets the
+  placeholder there: a model sees placeholders, never values
+  ([`model.go`](../pkg/sandbox/netproxy/model.go)).
+- **A scoped value in the conversation.** A secret scoped with `hosts:`
+  whose value a workspace reader showed the agent (Read, Bash — they
+  return what the workspace holds) is in the conversation from then on:
+  content DLP refuses the run's next model call (403 `blocked by sandbox
+  secret policy`, a `network_blocked` event). Keep such a file out of the
+  agent's reads, or scope the secret to the model provider's host too.
+- **A request goes where its tunnel was opened.** Policy, content DLP and
+  substitution all key on the `CONNECT` target; a request naming another
+  host inside the tunnel — its `Host` header, an absolute URL, another
+  port — is refused (421, a `network_blocked` event) rather than forwarded
+  there with the target's secrets. A client that routes a request to
+  another host than its URL's through the proxy (`curl --connect-to`) is
+  refused that way.
+- **Plain HTTP too.** A plain-HTTP request through the same proxy gets the
+  same content DLP as an inspected one — its method, URL, headers and body;
+  a chunked request's trailers, which it does not scan, are dropped (on
+  both paths).
+  Its placeholders are never substituted: a value never goes out over clear
+  text.
+- **Clients that honour the proxy.** The drivers set `HTTPS_PROXY`,
+  `HTTP_PROXY` and their lower-case spellings (curl, wget and git read only
+  `http_proxy` for an `http://` URL), and `NO_PROXY`/`no_proxy` to the
+  sandbox's own loopback — `localhost,127.0.0.1,0.0.0.0`, plus
+  `host.docker.internal` on docker (the host's MCP listeners, reached
+  directly). Docker ADDS those to the entries the spec carried, under both
+  spellings: nothing enforces egress there, so an inherited corporate
+  proxy's exceptions stay the operator's. A pod REPLACES them: its egress
+  is locked by the synthesized NetworkPolicy, and an entry kept from the
+  spec would carve a hole in the allowlist that policy enforces. No IPv6 loopback: clients read entries as patterns, and every
+  spelling of it breaks a mainstream one — a bare `::1` reads to Ruby's
+  Net::HTTP as any IPv4 address ending in `.1` and to Python's requests as
+  any IPv6 address ending in `::1`, while `[::1]` and `::1/128` make httpx
+  refuse to build a client. Where the driver enforces no egress
+  policy — docker, or a kubernetes cluster whose CNI ignores
+  NetworkPolicy — a client that ignores them reaches the network directly:
+  the proxy governs the clients that use it.
+- **A bounded body.** The proxy holds a request's body to scan and
+  substitute it: one over the bound (64 MiB by default) is refused (413),
+  never cut — a plain-HTTP upload included (an `http://` git push, an
+  artifact `curl -T`), which the proxy now scans too. The bound holds for
+  what substitution makes as well: a placeholder expands to its value, so
+  a body that would pass the bound once substituted is refused, and so are
+  header values whose substitution would add more than the bound.
+  `ITERION_SANDBOX_INSPECT_MAX_BODY` moves the bound (a byte count, or
+  `256MiB`, `1GiB`; the proxy holds several times that per request in
+  memory — about five with the header budget, more as a request carries
+  more distinct secrets, and once per request in flight);
+  `ITERION_SANDBOX_TLS_INSPECT=off` lifts it with Layer 2.
+- **What the scan sees.** Content DLP matches each registered form of a
+  value as one contiguous run of the request's text — its method, URL,
+  headers (a field name as sent when the value is all lower-case: Go
+  canonicalises names, and the other case shapes are a follow-up) and body.
+  A value split across two fields, or re-encoded in a way the guard does
+  not register, is not seen: the gate stops a leak, not an agent that
+  works around it.
 
 Inspection activates by default when a sandboxed run has known secrets;
 it forces a proxy even under `network: open`. Why TLS inspection is safe
@@ -365,7 +452,9 @@ to the LLMs, not what a bot uses inside a run.
 | `ITERION_SECRETS_REDACT_DECODE` | on | off disables the recursive base64/hex decode pass. |
 | `ITERION_SECRETS_REDACT_MIN_SCORE` | 0.7 | Heuristic confidence floor (the 0.6 generic high-entropy rule is excluded by default). |
 | `ITERION_SECRETS_PLACEHOLDERS` | on | off renders `{{secrets.X}}` as the real value instead of a placeholder. |
-| `ITERION_SANDBOX_TLS_INSPECT` | on | off disables Layer 2 TLS inspection (the escape hatch for a pinning client or broken CA injection). |
+| `ITERION_SANDBOX_TLS_INSPECT` | on | off disables Layer 2 — TLS inspection and the plain-HTTP content DLP alike (the escape hatch for a pinning client or broken CA injection). |
+| `ITERION_SANDBOX_MODEL_HOSTS` | (none) | Your own model gateways, comma- or space-separated, in the network rules' syntax (a base URL or `host:port` names its host): Layer 2 leaves their request bodies in placeholder form, beside the built-in providers and model API paths. An invalid entry fails the run's start whenever its sandbox starts the proxy. |
+| `ITERION_SANDBOX_INSPECT_MAX_BODY` | 64 MiB | The bound of a request body Layer 2 holds to inspect: a byte count or a KiB/MiB/GiB size (`256MiB`); a larger body is refused (413). It bounds what substitution makes too, and the request line and headers keep net/http's own bound. The proxy holds several times the bound per request in memory (about five with the header budget, more with several distinct secrets), once per request in flight. A value that is no positive size fails the run's start whenever its sandbox starts the proxy. |
 
 ## Diagnostics
 

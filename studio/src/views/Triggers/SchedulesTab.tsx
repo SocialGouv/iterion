@@ -24,6 +24,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { humanizeCron } from "@/lib/humanizeCron";
 
 import { EditScheduleDialog, NewScheduleDialog } from "./ScheduleDialogs";
+import ScheduleOutcome from "./ScheduleOutcome";
 import {
   cadenceLabel,
   filterGroupsByRepo,
@@ -57,7 +58,7 @@ export default function SchedulesTab({
   onUnavailable: () => void;
 }) {
   const { repos, enabled, teamID } = useActiveRepo();
-  const canManage = useCanManageTeam();
+  const canManage = useCanManageTeam(teamID ?? "");
   const [, navigate] = useLocation();
   const { confirm, dialog } = useConfirm();
 
@@ -399,6 +400,7 @@ function ScheduleGroupCard({
                 </Button>
               </>
             )}
+            <ScheduleOutcome schedule={s} />
           </li>
         ))}
       </ul>

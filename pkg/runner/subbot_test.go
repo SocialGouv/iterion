@@ -131,6 +131,45 @@ func TestResolveSubbotSource(t *testing.T) {
 	})
 }
 
+const subbotTestContractChild = `## a child that keeps a contract: two producers, one whole-schema port
+schema mid:
+  carried: string
+schema out:
+  validated: bool
+  echoed: string
+
+vars:
+  ticket: string = "none"
+
+contract kid:
+  version: 1
+  inputs:
+    ticket: string
+  outputs:
+    carried: string
+      from: first.carried
+    validated: bool
+      from: work.validated
+    echoed: string
+      from: work.echoed
+    all: out
+      from: work
+
+tool first:
+  command: ` + "`" + `printf '{"carried":"c-%s"}' {{vars.ticket}}` + "`" + `
+  output: mid
+
+tool work:
+  command: ` + "`" + `printf '{"validated":true,"echoed":"%s"}' {{vars.ticket}}` + "`" + `
+  output: out
+
+workflow child:
+  contract: kid
+  entry: first
+  first -> work
+  work -> done
+`
+
 func subbotTestRunner(t *testing.T) (*Runner, store.RunStore) {
 	t.Helper()
 	st, err := store.New(t.TempDir())
@@ -169,6 +208,44 @@ func TestSubbotRunnerRunsChildOnPod(t *testing.T) {
 	}
 	if e, _ := out["echoed"].(string); e != "T-9" {
 		t.Fatalf("child output = %v, want echoed=T-9 (the `with:` vars reached the child)", out)
+	}
+}
+
+// TestSubbotRunnerProjectsAContractedChildsOutput: a child that keeps a
+// contract hands its parent the contract's ports projected from the child's
+// per-node outputs — a mid-node's field, the terminal node's fields, and the
+// terminal node's whole output through a whole-schema port — not the
+// terminal-node output map a contractless child returns (#1280). The
+// terminal-map return is the mutation this test reddens on: the mid-node
+// port would come back missing.
+func TestSubbotRunnerProjectsAContractedChildsOutput(t *testing.T) {
+	r, _ := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", subbotTestContractChild)
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	out, err := run(context.Background(), runtime.SubbotRequest{
+		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
+		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	})
+	if err != nil {
+		t.Fatalf("subbot runner: %v", err)
+	}
+	if v, _ := out["carried"].(string); v != "c-T-9" {
+		t.Fatalf("projected = %v, want carried=c-T-9 read from the child's MID node — the terminal map has no carried field", out)
+	}
+	if v, _ := out["validated"].(bool); !v {
+		t.Fatalf("projected = %v, want validated=true from the contract port", out)
+	}
+	all, ok := out["all"].(map[string]any)
+	if !ok {
+		t.Fatalf("projected = %v, want the whole-schema port all carrying the terminal node's whole output", out)
+	}
+	if e, _ := all["echoed"].(string); e != "T-9" {
+		t.Fatalf("whole-schema port = %v, want the terminal node's echoed", all)
 	}
 }
 

@@ -302,7 +302,9 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   the base and the bot reviews, comments and pushes against the wrong code
   under iterion's own identity. Serving forks needs a lane of its own
   (read-only, no publish grant, no fixer launch, no repo secrets, project
-  settings not honoured), not a switch on the existing ones.
+  settings not honoured), not a switch on the existing ones — see
+  [the fork review lane](#fork-review-lane) for the half of that lane that
+  ships today.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`, `/billy`), routed through the command registry —
   including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
@@ -372,6 +374,103 @@ webhook action (marking a WIP PR ready arrives as `edited`, which does not
 auto-trigger), so on Forgejo the draft→ready re-trigger is on-demand — a
 collaborator reopens the PR or uses the `/command` path. The no-draft and
 no-fork guarantees hold regardless.
+
+### <a name="fork-review-lane"></a>The fork review lane — what ships today
+
+A fork pull request is still refused on every ordinary lane, unconditionally,
+and no setting lifts that. What exists now is the **enforcement half** of the
+separate lane [#874](https://github.com/SocialGouv/iterion/issues/874)
+specifies: the controls that make serving a fork survivable. The **admission**
+half — the maintainer gesture that opts one pull request in, and the
+per-contributor budget — is a follow-up, so today **nothing produces a fork
+launch** and the lane admits nothing.
+
+**A run says who wrote its code.** `store.RunTrust` rides the run document,
+not the launching surface, because the decisions it governs are taken again
+long after the launch: a resume, a usage-window retry and a forked child all
+rebuild their credentials from the stored run. `RunTrustFork` marks a
+workspace authored outside the tenant. Every enforcement site calls
+`Trusted()`, which admits exactly ONE value — an unrecognised trust loses the
+capabilities rather than inheriting them.
+
+**What it withdraws, and where:**
+
+| Capability | Withdrawn at | Refusal |
+|---|---|---|
+| The forge publish grant (review, comment, and the `revi/review` commit status that gates the merge) | `injectForgePublishVars` refuses to MINT; `runOwnsGrant` refuses to HONOUR — on opposite sides of the run's creation, so no single mistake clears both | `forge publish grant refused for an untrusted workspace`; audit `forge.grant.untrusted_run` |
+| The tenant's workflow secrets — chiefly `forge_token`, which the runner writes into the clone as a git credential store | the cloud publisher skips the generic credential tier, on launch AND on resume | a declared secret that is not `optional:` makes the launch fail loudly rather than run with it unset |
+| The same token by its SECOND carrier — the secret id pinned on the run, opened server-side at merge time | `forgeTokenForRun` | `runs on an untrusted workspace … the tenant's forge token is never opened for it` |
+| Executing a tree nobody approved | the runner compares the fetched commit against the one the admission pinned (`RepoSHAExpected`), after the fetch and before the checkout | the run is refused, naming both commits |
+
+**And what it does NOT withdraw yet.** That table is not #874's five
+constraints. Two are **unenforced**, and belong to the admission half:
+
+| #874 constraint | State | Why |
+|---|---|---|
+| **4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **deferred to PR2** | `store.RunTrust` *does* reach `pkg/runtime` and `pkg/runner` — it rides the queue message, refuses a pinless untrusted workspace, and is stamped onto a sub-bot's document. What no path routes it into is the **toolchain and network policy**: `resolveRepoDevbox(override, workflow)` takes no trust argument, and the sandbox network policy has none either |
+| **5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **deferred to PR2** | among those surfaces only the gate-context write is trust-gated; `applyWebhookVarLayers` layers `cfg.LaunchVars`/`OperatorLaunchVars` whatever the trust, the hold-label veto is trust-blind, and `orgusage.ForkAuthorSubject` has no production caller |
+
+Deferred rather than done here because nothing sets `RunTrustFork`: this half's
+safety is **safety-by-refusal**, so the marker's READERS must be right before
+anything can carry it. 4b and 5 are admission-time controls — they shape how a
+fork run is *built*, which is the half that does not exist yet, and a guard
+whose condition can never be true reads as working while proving nothing. Both
+are on #874's remainder.
+
+**Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
+KIND, not a permission. The check sits at the launch tail
+(`launchWebhookTarget`) rather than at the top of each provider handler,
+because three of that function's five callers never cross a handler — the
+sync-debounce sweep, the gate relaunch and the gate auto-fix rebuild a target
+from stored state and enter the tail directly, minutes to hours later. Both
+directions are refused: a fork target on an ordinary subscription (the
+dangerous one — that config carries the repo's grant and secret pins), and a
+same-repo target on the fork lane. A board-mode route is refused separately
+inside `dispatchInvocation`: it returns before the tail, and a board card has
+no seat for provenance.
+
+`ForkLane` is **not settable through the API yet**, deliberately — no
+create/PATCH request struct carries it — so every config decodes `false`. When
+the admission half makes it settable, the PATCH route must refuse changing it
+on an existing config, because the per-contributor budget will be keyed on it.
+
+**An opt-in is a GESTURE, not a record.** The admission half will be a
+maintainer `/command` on the pull request, authorised by the collaborator-
+permission gate the `/command` lanes already apply, resolving the head through
+the forge API at that moment and pinning THAT commit onto the launch. Iterion
+stores no "this PR is opted in" row, deliberately — and this is the design's
+invariant, not an implementation detail:
+
+- a stored opt-in is a standing grant, and a standing grant goes stale. The
+  gesture would be recorded against a pull request whose head the contributor
+  can replace a second later, so the record would have to be invalidated by
+  something, and every such scheme is a race between the invalidator and the
+  push;
+- a gesture cannot go stale because it is not kept: one gesture authorises one
+  review of one commit. "Opted in, then force-pushed" is not a case to defend
+  against — there is nothing left to reuse, and the runner refuses the run
+  when the fetched commit is not the pinned one;
+- and it removes the durable state entirely, with its two store
+  implementations and its whole time-of-check/time-of-use surface.
+
+The cost is honest and small: re-reviewing a new head is a new gesture.
+
+**GitLab: the seam is named, and nothing refuses it yet.** The lane's launch
+pair needs the base project's own merge-request head ref —
+`refs/merge-requests/<iid>/head`, GitLab's twin of `refs/pull/<n>/head` — and
+that is the seam a GitLab fork lane would be built on. It is named here rather
+than wired. Nothing refuses a GitLab fork-lane config today for the simple
+reason that nothing can set `ForkLane` at all; the admission half must add
+that provider refusal in the same change that makes the field settable, or
+GitLab gets a half-built path instead of an honest "no".
+
+**Why a fork lane can name one repository at all.** The launch pair that made
+the original refusal unconditional was `<base>.CloneURL` + a head branch
+living elsewhere. The lane does not build that pair: it launches on the base
+repo's own pull-request head ref (`refs/pull/<n>/head` on GitHub and Forgejo),
+which names ONE repository — the base — and resolves to the fork's commit. The
+base stays the clone's only remote, so `base_ref` and `origin/<base>` remain
+the base's, not a tree the contributor controls.
 
 ### PR auto-lane: review, not mutate (Revi vs Billy)
 

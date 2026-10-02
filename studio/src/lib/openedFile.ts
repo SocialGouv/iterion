@@ -22,6 +22,7 @@ export interface OpenedFileTargetStore {
   setSalvaged: (salvaged: boolean) => void;
   setUnit: (u: UnitInfo | null) => void;
   markSaved: () => void;
+  markReplaced: () => void;
 }
 
 /**
@@ -36,6 +37,10 @@ export interface OpenedFileTargetStore {
  *
  * The flag is set after the path, because setting the path clears it.
  *
+ * It is a REPLACEMENT, whoever asked for it: from here the tab is about this
+ * reading of the file, and an answer asked about the one before — a save or
+ * a Save As still in flight — settles nothing on it (`_replaced`).
+ *
  * One function for every flow that applies an opened file — the picker, the
  * tab host, the file watcher's reload, the assistant's post-write reload —
  * so the rule is one decision. A second copy of it is how one site keeps
@@ -47,6 +52,7 @@ export interface OpenedFileTargetStore {
  * and the three that WRITE, which share `salvageRefusal`.
  */
 export function applyOpenedFile(result: OpenedFile, store: OpenedFileTargetStore) {
+  store.markReplaced();
   store.setDocument(result.document);
   store.setDiagnostics(result.diagnostics);
   store.setCurrentFilePath(result.path ?? null);

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
@@ -634,6 +635,35 @@ func extractUsage(output map[string]any) (tokens int, costUSD float64) {
 	// not to record a $0 sample. A zero returned here is therefore "unknown";
 	// SharedBudget.RecordUsage is what keeps it out of the enforced axis.
 	return
+}
+
+// nodeSpend is what a node output says it spent: tokens, cost, and how many
+// of its calls went without the provider reporting their usage — for those
+// the tokens and cost are a lower bound.
+type nodeSpend struct {
+	tokens          int
+	costUSD         float64
+	unreportedCalls int
+}
+
+// empty reports an output that spent nothing at all: no tokens, no cost, and
+// no call whose usage went unreported — that one's bill is unknown, not zero.
+func (s nodeSpend) empty() bool {
+	return s.tokens == 0 && s.costUSD == 0 && s.unreportedCalls == 0
+}
+
+// onlyUnreported reports a spend that is nothing but unreported calls: no
+// token or cost counter moved, so there is nothing to book, only a count to
+// note.
+func (s nodeSpend) onlyUnreported() bool {
+	return s.tokens == 0 && s.costUSD == 0 && s.unreportedCalls > 0
+}
+
+// extractSpend reads a node output's spend: the `_tokens` / `_cost_usd` keys
+// extractUsage reads, and the count of calls whose usage went unreported.
+func extractSpend(output map[string]any) nodeSpend {
+	tokens, costUSD := extractUsage(output)
+	return nodeSpend{tokens: tokens, costUSD: costUSD, unreportedCalls: cost.UnreportedCalls(output)}
 }
 
 // buildNodeFinishedData builds the data payload for a node_finished event,

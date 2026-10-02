@@ -1,0 +1,8 @@
+dsl: 2
+
+compute decide:
+  output: check
+  publish: decision
+  expr:
+    ok: "true"
+    summary: "'converged'"

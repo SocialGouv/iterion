@@ -300,6 +300,24 @@ export async function deleteInvitation(teamID: string, invID: string): Promise<v
   });
 }
 
+// putTeamMember places an account that ALREADY EXISTS in the team with a
+// role, idempotently — the direct counterpart of the email invitation.
+//
+// The server requires the user to already belong to the team's ORG (422
+// otherwise): that membership is the identity boundary a team grant sits
+// inside, and creating it silently here would let a team admin pull a
+// stranger into their org.
+export async function putTeamMember(
+  teamID: string,
+  userID: string,
+  role: string,
+): Promise<void> {
+  await send(`/teams/${encodeURIComponent(teamID)}/members/${encodeURIComponent(userID)}`, {
+    method: "PUT",
+    body: JSON.stringify({ role }),
+  });
+}
+
 export async function updateMemberRole(teamID: string, userID: string, role: string): Promise<TeamMemberView> {
   return send(`/teams/${encodeURIComponent(teamID)}/members/${encodeURIComponent(userID)}`, {
     method: "PATCH",

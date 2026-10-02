@@ -1,0 +1,9 @@
+# refused: a cursor setting is a value name, a position or a quoted string, not a list
+dsl: 2
+nodes:
+  - agent: a
+    cursors:
+      depth: [deep]
+workflow:
+  name: w
+  entry: a

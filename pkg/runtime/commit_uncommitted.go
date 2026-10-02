@@ -3,10 +3,14 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
 // CommitUncommittedAndFinalize stages every change in a run's worktree
@@ -54,15 +58,23 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: commit message is required")
 	}
 
-	clean, err := workdirIsClean(r.WorkDir)
+	porcelain, err := runGit(r.WorkDir, "status", "--porcelain", "-z")
 	if err != nil {
-		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w", err)
+		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w (output: %s)", err, strings.TrimSpace(porcelain))
 	}
-	if clean {
+	// The probe agrees with THIS gesture's staging (verdict 5, R138690): a
+	// worktree whose only dirt is a tracked-and-modified devbox.lock is a
+	// lock-only bump the merge-destined commit carries — refusing it here
+	// left the studio's salvage action no path to bank it. Only the mirror
+	// is set aside; the wip bank keeps the fuller IsNoise probe.
+	if len(commitWorkPaths(porcelain)) == 0 {
+		if strings.TrimSpace(porcelain) != "" {
+			return fmt.Errorf("runtime: commit-uncommitted: workdir %q is dirty with tree noise only — nothing of the run's to commit (see git status)", r.WorkDir)
+		}
 		return fmt.Errorf("runtime: commit-uncommitted: workdir %q has no changes to commit", r.WorkDir)
 	}
 
-	if err := runGitInDir(r.WorkDir, "add", "-A"); err != nil {
+	if err := runGitInDir(r.WorkDir, commitStageArgs(r.WorkDir)...); err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: git add: %w", err)
 	}
 	if out, err := gitCommitMessage(r.WorkDir, message); err != nil {
@@ -75,21 +87,146 @@ func CommitUncommittedAndFinalize(
 	return RecoverFinalize(ctx, st, r, logger)
 }
 
-// workdirIsClean returns true when `git status --porcelain` reports nothing
-// once iterion's OWN scaffolding is set aside. See runOutputPaths for why that
-// exclusion exists and what it deliberately does not cover.
-func workdirIsClean(workdir string) (bool, error) {
-	out, err := runGit(workdir, "status", "--porcelain")
-	if err != nil {
-		return false, fmt.Errorf("git status: %w (output: %s)", err, strings.TrimSpace(out))
-	}
-	return len(runOutputPaths(out)) == 0, nil
+// stageWorkArgs stages the whole tree EXCEPT the canonical tree noise
+// (pkg/treenoise): the `.claude/` mirror and a drifted devbox.lock are not
+// the pass's work, and the WIP BANK's staging gesture agrees with the
+// cleanliness probe — never merged, the lock is derivable from devbox.json.
+// The operator-initiated commit-and-finalize deliberately disagrees: its
+// commit is merge-destined, so it stages a tracked-and-modified lock (see
+// commitStageArgs). dir is the work tree the gesture runs in: an exclusion
+// git already ignores there is left unspelled (stagingExclusions).
+func stageWorkArgs(dir string) []string {
+	args := []string{"add", "-A", "--", ":/"}
+	return append(args, stagingExclusions(dir, treenoise.Entries)...)
 }
 
-// scaffoldPrefix is where mirrorBundleSkills lays the bot's skills inside the
-// run worktree. What lives there is written BY iterion, at run start, from the
-// bundle — it is not something the run produced.
-const scaffoldPrefix = ".claude/"
+// commitStageArgs stages the tree for the OPERATOR-initiated commit-and-
+// finalize: the `.claude/` mirror stays excluded (iterion wrote it, the run
+// did not — deliverables under it are staged by name), but a
+// tracked-and-modified devbox.lock is STAGED here, not dropped: this
+// commit is merge-destined, and a dependency bot's lock bump is half its
+// deliverable — dropping it would merge devbox.json without its
+// resolution and destroy the bump with the worktree (verdict 3, R5478b3).
+// The wip bank keeps the fuller exclusion: it is never merged, and the
+// lock is derivable from devbox.json. dir is the work tree the gesture runs
+// in: where the mirror is already ignored there is no exclusion to spell
+// (stagingExclusions).
+func commitStageArgs(dir string) []string {
+	args := []string{"add", "-A", "--", ":/"}
+	return append(args, stagingExclusions(dir, []treenoise.Entry{treenoise.MirrorEntry()})...)
+}
+
+// stagingExclusions renders entries as the exclusion pathspecs a staging
+// gesture may spell in dir. `git add` refuses an exclusion — exits 1 with
+// "The following paths are ignored by one of your .gitignore files", the
+// index correctly staged — when its untracked walk classified the path the
+// pathspec's literal part spells as ignored: present in the work tree,
+// covered by the ignore rules, and not skipped as indexed. A gesture
+// reading that exit as failure leaves the run's work unbanked (#1558, on
+// this repository's own `**/.claude/`). So every entry's literal path is
+// asked the walk's own question first (gitAddRefusesExclusionOf), and an
+// exclusion git would refuse is left unspelled. The omission excludes
+// nothing git does not already keep out, with one floor: tracked files
+// under an ignored DIRECTORY — the walk classifies a directory on the
+// rules alone — ride the commit as any tracked file does, the gesture's
+// behaviour before the exclusions existed (when the run's other work
+// brings the bank about at all: the probe deciding that still reads them
+// as noise, #1571). The literal part of a Prefix
+// entry is a path like any other: a file named exactly `.iterion-script-`
+// and ignored trips the wildcard exclusion too, and the scratch files
+// beside it then ride the wip bank — never merged — rather than the run's
+// work going unbanked. Where git cannot answer (dir is no work tree) every
+// exclusion is spelled and the gesture reports the real failure itself.
+func stagingExclusions(dir string, entries []treenoise.Entry) []string {
+	top, inWorkTree := gitTopLevel(dir)
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if inWorkTree && gitAddRefusesExclusionOf(dir, top, e.Path) {
+			continue
+		}
+		out = append(out, e.Pathspec())
+	}
+	return out
+}
+
+// gitTopLevel is the root of the work tree dir belongs to; ok is false
+// when git cannot say — dir absent, not inside a work tree, a bare
+// repository.
+func gitTopLevel(dir string) (top string, ok bool) {
+	cmd, cancel := gitCmd("-C", dir, "rev-parse", "--show-toplevel")
+	defer cancel()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	top = strings.TrimSpace(string(out))
+	return top, top != ""
+}
+
+// gitAddRefusesExclusionOf reports whether `git add`'s untracked walk, run
+// in dir, classifies the repository-top path rel as ignored — the condition
+// under which an exclusion pathspec naming it makes the gesture exit 1.
+// The walk skips an indexed FILE before consulting the ignore rules but
+// classifies a DIRECTORY on the rules alone, tracked content or not; the
+// probe asks the same way — check-ignore consulting the index for a file
+// (a tracked file is never ignored), the rules alone (--no-index) for a
+// directory — about the top-anchored path (`:(top)`), the one the
+// exclusion names, whatever dir is. Absent from the work tree, nothing is
+// walked and nothing refused. Any answer but "ignored" (exit 0) — git
+// unable to answer included — keeps the exclusion.
+func gitAddRefusesExclusionOf(dir, top, rel string) bool {
+	info, err := os.Lstat(filepath.Join(top, rel))
+	if err != nil {
+		return false
+	}
+	args := []string{"-C", dir, "check-ignore", "-q"}
+	if info.IsDir() {
+		args = append(args, "--no-index")
+	}
+	cmd, cancel := gitCmd(append(args, "--", ":(top)"+rel)...)
+	defer cancel()
+	return cmd.Run() == nil
+}
+
+// commitWorkPaths returns the porcelain entries the OPERATOR-initiated
+// commit-and-finalize would stage: everything except the engine's own
+// mirror — a tracked-and-modified devbox.lock IS the dependency work half
+// the merge-destined commit carries (verdict 3, R5478b3). The probe must
+// agree with this gesture, not with the wip bank's (verdict 5, R138690).
+func commitWorkPaths(porcelain string) []string {
+	var out []string
+	for _, path := range porcelainPaths(porcelain) {
+		if !treenoise.IsMirror(path) {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// porcelainPaths normalizes `git status --porcelain -z` output into the
+// paths it reports. The NUL-terminated form is the only porcelain this
+// package reads: a rename carries destination and source as two fields
+// (destination first), so a source literally named `x -> y.md` can no
+// longer be cut at the wrong " -> ", and no path arrives C-quoted. The one
+// record-walker is gitlib.ParseStatusPorcelainZ, shared with worktreepool
+// (#1577).
+func porcelainPaths(porcelain string) []string {
+	records, err := gitlib.ParseStatusPorcelainZ(porcelain)
+	if err != nil {
+		// An unparseable status must never read as a clean tree: hand the
+		// probes the raw output as one opaque path, which no noise entry
+		// matches, so every caller takes its "dirty" branch.
+		if porcelain == "" {
+			return nil
+		}
+		return []string{porcelain}
+	}
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		out = append(out, rec.Path)
+	}
+	return out
+}
 
 // runOutputPaths returns the porcelain entries that stand for work the RUN
 // produced, dropping the scaffolding iterion mirrored in itself.
@@ -112,30 +249,57 @@ const scaffoldPrefix = ".claude/"
 // it never removes a file, and never touches what the run committed.
 func runOutputPaths(porcelain string) []string {
 	var out []string
-	for _, line := range strings.Split(porcelain, "\n") {
-		if len(line) < 4 {
-			continue
+	for _, path := range porcelainPaths(porcelain) {
+		if !treenoise.IsNoise(path) {
+			out = append(out, path)
 		}
-		// Porcelain v1 is `XY<space><path>`, and a rename reads
-		// `<old> -> <new>`. The destination is what exists on disk, so it
-		// is the one that decides.
-		path := line[3:]
-		if i := strings.Index(path, " -> "); i >= 0 {
-			path = path[i+4:]
-		}
-		// Non-ASCII paths come back quoted under core.quotePath. Only the
-		// quoting is stripped; the C-style escapes inside are left as git
-		// wrote them, since nothing here needs to open the file.
-		path = strings.TrimSpace(path)
-		if len(path) >= 2 && strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"") {
-			path = path[1 : len(path)-1]
-		}
-		if path == "" || strings.HasPrefix(path, scaffoldPrefix) {
-			continue
-		}
-		out = append(out, path)
 	}
 	return out
+}
+
+// noisePaths returns the porcelain paths the noise list sets aside — the
+// complement of runOutputPaths. The wip bank's warn line names them, so a
+// banked commit never silently swallows what it excluded (verdict 8).
+func noisePaths(porcelain string) []string {
+	work := map[string]bool{}
+	for _, p := range runOutputPaths(porcelain) {
+		work[p] = true
+	}
+	var out []string
+	for _, p := range porcelainPaths(porcelain) {
+		if !work[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// wipSetAside is the tree noise the wip bank did NOT carry: the porcelain's
+// noise paths minus what the staging gesture put in the index, read between
+// `git add` and the commit. A file tracked under an ignored mirror rides
+// the bank (stagingExclusions, its floor) while the classification still
+// calls it noise (#1571); the operator reading the storage branch is told
+// what was set aside, never the opposite of what happened. Both sides are
+// the paths' raw bytes: `-z` prints them as the index and the file system
+// carry them.
+func wipSetAside(dir, porcelain string) ([]string, error) {
+	staged, err := runGit(dir, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("read the staged set: %w (output: %s)", err, strings.TrimSpace(staged))
+	}
+	carried := map[string]bool{}
+	for _, p := range strings.Split(staged, "\x00") {
+		if p != "" {
+			carried[p] = true
+		}
+	}
+	var out []string
+	for _, p := range noisePaths(porcelain) {
+		if !carried[p] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func runGitInDir(workdir string, args ...string) error {

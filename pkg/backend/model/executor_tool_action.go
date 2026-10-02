@@ -55,7 +55,7 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 		// success it never performed.
 		return nil, fmt.Errorf("model: tool node %q declares `action: %s` but this process has no connector catalog wired", node.ID, node.Action)
 	}
-	if err := e.checkToolNodePolicy(ctx, node, actionToolName(node)); err != nil {
+	if err := e.checkToolNodePolicy(ctx, node, actionToolName(node), actionToolName(node), actionToolName(node)); err != nil {
 		return nil, err
 	}
 
@@ -429,7 +429,7 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		if whole && !secret {
 			rendered = resolveScriptTemplate(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard)
 		} else {
-			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, rawTemplateValue, true, nil)
+			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, nil, rawTemplateValue, true, nil)
 		}
 		// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value —
 		// the whole point, since a secret must not sit in a command line or

@@ -8,7 +8,7 @@ import (
 
 func TestAsyncInteractionRefusesUnsupportedBackend(t *testing.T) {
 	for _, kind := range []string{"agent", "judge"} {
-		for _, backend := range []string{"codex", "kimi", "grok", "claw", "claude_code", "pi", "auto", "${ASYNC_BACKEND}"} {
+		for _, backend := range []string{"codex", "kimi", "grok", "opencode", "claw", "claude_code", "pi", "auto", "${ASYNC_BACKEND}"} {
 			for _, inherited := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/inherited=%t", kind, backend, inherited), func(t *testing.T) {
 					src := kind + " a:\n  model: \"m\"\n  interaction: async\n"
@@ -22,7 +22,7 @@ func TestAsyncInteractionRefusesUnsupportedBackend(t *testing.T) {
 					src += "  a -> done\n"
 					cr := compileFile(t, src)
 					want := 0
-					if backend == "codex" || backend == "kimi" || backend == "grok" {
+					if backend == "codex" || backend == "kimi" || backend == "grok" || backend == "opencode" {
 						want = 1
 					}
 					if got := countCode(cr, DiagCode("C267")); got != want {

@@ -31,7 +31,7 @@ func TestManager_EmptyToolListNotCached(t *testing.T) {
 		"empty": {Name: "empty", Transport: TransportHTTP, URL: server.URL},
 	}
 	cache := NewToolCache(t.TempDir(), time.Hour)
-	m := NewManager(cfg, WithToolCache(cache))
+	m := NewManager(cfg, WithToolCache(cache), WithStartPolicy(StartAllServers))
 	defer m.Close()
 
 	if err := m.EnsureServers(context.Background(), tool.NewRegistry(), []string{"empty"}); err != nil {

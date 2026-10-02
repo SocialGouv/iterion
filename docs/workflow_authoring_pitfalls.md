@@ -438,10 +438,10 @@ run's cumulative series — **never `git diff HEAD^...HEAD`** (the last
 reviewer_gpt diffed `HEAD^...HEAD`, reported "feature not implemented"
 against work that was plainly present, split the cross-family verdict
 and oscillated forever. Same family of bug: `git diff HEAD` omits
-*untracked* files — new files must be marked or staged first (`git add -N -- ':/' ':(exclude,top).claude'`, `git add -A -- ':/' ':(exclude,top).claude'` — iterion's skills mirror left out)
+*untracked* files — new files must be marked or staged first (`git add -N -- ':/' $ITERION_TREE_NOISE`, `git add -A -- ':/' $ITERION_TREE_NOISE` — iterion's skills mirror left out)
 before diffing or a change that ADDS files reads as missing. The v2
-campaign contracts bake `git add -A -- ':/' ':(exclude,top).claude'` into the per-unit commit step.
-From ONE branch only: two parallel reviewers each running `git add -N -- ':/' ':(exclude,top).claude'`
+campaign contracts bake `git add -A -- ':/' $ITERION_TREE_NOISE` into the per-unit commit step.
+From ONE branch only: two parallel reviewers each running `git add -N -- ':/' $ITERION_TREE_NOISE`
 contend for `.git/index.lock` — fatal for the loser, whose empty report
 then reads as an approve — so a read-only branch reads untracked files
 with `git ls-files --others --exclude-standard -z | xargs -0 -I{} git
@@ -652,7 +652,7 @@ your own literal quotes:
 
 ```
 # BROKEN — raw prose JSON in single quotes:
-DECISIONS='{{!input.decisions}}' python3 -c "..."
+DECISIONS='{{!input.decisions}}' python3 -I -c "..."
 ```
 
 LLM prose is full of apostrophes ("iterion's") and parens ("(CLI/studio)").
@@ -666,7 +666,7 @@ surrounding quotes** — let `shellEscapeValue` quote it:
 
 ```
 # CORRECT — shellEscapeValue wraps + escapes; json.loads gets exact JSON:
-DECISIONS={{input.decisions}} python3 -c "import os,json; d=json.loads(os.environ['DECISIONS'])"
+DECISIONS={{input.decisions}} python3 -I -c "import os,json; d=json.loads(os.environ['DECISIONS'])"
 ```
 
 Reserve `{{!ref}}` for values you control that are *meant* to be
@@ -674,6 +674,20 @@ re-interpreted as shell. A tool node that only ever saw path tokens (e.g.
 adr-cartograph's `build_manifest`) can carry the `'{{!input.x}}'` pattern
 latently for a long time — it breaks the day an apostrophe-bearing value
 flows through, so fix the pattern, not just the one value that tripped it.
+
+### Python in a tool node runs isolated
+
+A tool node runs with the workspace as its working directory, and
+`python3 -c` (like `-m`, or a program read from stdin: a heredoc, a `<`
+redirect, a pipe) puts that directory first on `sys.path`. A `json.py`,
+`hashlib.py` or `subprocess.py` at the root of the judged tree,
+git-ignored or not, then replaces the standard module inside the node,
+and a gate's verdict is written by the tree it judges. Write
+`python3 -I -c`, `python3 -I <<'PY'`, `… | python3 -I` (the catalog
+guard `TestCatalogPythonRunsIsolated` refuses the bare forms, by name or
+by path); a `language: py` script already runs `python3 -I`. A body that
+needs a third-party module gets it from the image's system
+site-packages, never from the workspace.
 
 ### Diagnostics
 

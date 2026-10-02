@@ -479,7 +479,25 @@ func (e *Engine) resolveFanOutArray(rn *ir.RouterNode, rs *runState) ([]any, err
 		return nil, fmt.Errorf("fan_out_each router %q has no resolvable 'over' source", rn.ID)
 	}
 	val := e.resolveRef(rn.OverRefs[0], rs.scope())
-	return coerceToArray(val, rn.ID, rn.Over)
+	arr, err := coerceToArray(val, rn.ID, rn.Over)
+	if err != nil {
+		// A simulation may know the failure rests on a value it made up: the
+		// simulated collection stands in, so the router fires and the branch
+		// body is read on both passes.
+		if standIn, inconclusive := e.inconclusiveExpression(ExpressionFailure{
+			NodeID:     rn.ID,
+			Source:     rn.Over,
+			Refs:       exprRefsOf(rn.OverRefs),
+			Collection: "over",
+			Err:        err,
+		}); inconclusive {
+			if list, ok := standIn.([]any); ok {
+				return list, nil
+			}
+		}
+		return nil, err
+	}
+	return arr, nil
 }
 
 // coerceToArray turns a resolved value into a []interface{}. It accepts a

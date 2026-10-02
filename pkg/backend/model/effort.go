@@ -10,22 +10,24 @@ import (
 // sensible coerced value rather than an outright drop.
 func effortRank(e string) int {
 	switch e {
-	case "minimal":
+	case "none":
 		return 1
-	case "low":
+	case "minimal":
 		return 2
-	case "medium":
+	case "low":
 		return 3
-	case "high":
+	case "medium":
 		return 4
-	case "xhigh":
+	case "high":
 		return 5
-	case "max":
+	case "xhigh":
 		return 6
+	case "max":
+		return 7
 	case "ultracode":
 		// Not a wire value — a mode that maps to xhigh (see wireEffort).
 		// Ranked above max so any ordering comparison treats it as the top.
-		return 7
+		return 8
 	default:
 		return 0
 	}

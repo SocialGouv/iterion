@@ -5,13 +5,17 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // #659 pt 1: a METERED donor key granted by the pool used to reach the
@@ -68,7 +72,7 @@ func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": &ir.AgentNode{
 		BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "xai", Model: "xai/grok-4"},
 	}}}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-xai", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-xai", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -174,7 +178,7 @@ func TestPoolTier_zaiHintUnderAnAnthropicPrefixTakesTheZaiDonor(t *testing.T) {
 		t.Run(sh.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			p, fp := zaiDonorPublisher(t, &buf)
-			creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), poolTeam), "run-zai", poolOrg, poolTeam, "requester", "bot", sh.wf, nil, nil, model.ModelOverrides{}, nil)
+			creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), poolTeam), "run-zai", poolOrg, poolTeam, "requester", "bot", sh.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -185,5 +189,63 @@ func TestPoolTier_zaiHintUnderAnAnthropicPrefixTakesTheZaiDonor(t *testing.T) {
 				t.Fatalf("want the GRANTED line naming the z.ai donor and no terminal Warn; got:\n%s", log)
 			}
 		})
+	}
+}
+
+// A run whose only routes name zai, funded by an org key sealed for those
+// routes beside the org's closed Claude forfait, holds no DEFAULT credential —
+// and still has nothing to borrow: the pool is not asked for z.ai, and the
+// donation never takes the org's key's routes over.
+func TestPoolTier_isNotAskedForAProviderARouteKeyFunds(t *testing.T) {
+	var buf bytes.Buffer
+	p, _ := zaiDonorPublisher(t, &buf)
+	keys := secrets.NewMemoryApiKeyStore()
+	seedKeyFP(t, keys, p.sealer, secrets.OrgTierTenantID(poolOrg), secrets.ProviderZAI, "sk-zai-org", "fp-zai-org")
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, p.sealer, secrets.OrgTierOwnerKey(poolOrg), "sk-ant-org-forfait")
+	st := usagecap.NewMemStore()
+	if err := st.Record(context.Background(), usagecap.Key(delegate.BackendClaudeCode, usagecap.OrgScope(poolOrg), seededFP(secrets.OrgTierOwnerKey(poolOrg))), usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
+		ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	p.apiKeys, p.oauthForfait, p.usageCaps = keys, oauth, st
+	p.identity = &fakeTeamResolver{
+		orgs:    map[string]string{poolTeam: poolOrg},
+		orgDocs: map[string]identity.Org{poolOrg: {ID: poolOrg, CredentialAudience: identity.CredentialAudience{Teams: []string{poolTeam}}}},
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"review": &ir.AgentNode{
+		BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claude_code", Model: "glm-5.3"},
+	}}}
+	pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+	ctx := store.WithTenant(context.Background(), poolTeam)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-glm", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if creds.grant != nil {
+		t.Fatalf("the pool lent %s:%s beside the org's key sealed for the zai routes", creds.grant.Source, creds.grant.Ref)
+	}
+	rec, err := p.runSecrets.(*secrets.MemoryRunSecretsStore).Get(ctx, creds.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	b, err := secrets.OpenRunBundle(p.sealer, "run-glm", rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+	if b.PinnedAPIKeys[secrets.ProviderZAI] != "sk-zai-org" || b.APIKeys[secrets.ProviderZAI] != "" {
+		t.Errorf("zai routes funded by the org key: %v; a default zai key present: %v", b.PinnedAPIKeys[secrets.ProviderZAI] == "sk-zai-org", b.APIKeys[secrets.ProviderZAI] != "")
+	}
+	// The preview answers the same: no donation selected.
+	preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), previewSpec(poolTeam, "requester"), wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range preview.Candidates {
+		if c.Tier == "pool" && c.Selected {
+			t.Errorf("the preview predicts the donation the launch does not take: %+v", c)
+		}
 	}
 }

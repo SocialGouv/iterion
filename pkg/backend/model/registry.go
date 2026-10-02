@@ -17,6 +17,7 @@ import (
 	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
 	bedrockprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/bedrock"
 	foundryprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/foundry"
+	moonshotprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/moonshot"
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 
@@ -92,6 +93,14 @@ func (r *Registry) registerDefaults() {
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		baseURL := os.Getenv("ANTHROPIC_BASE_URL")
 		authToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+		// A GLM id is served by z.ai, never by api.anthropic.com: with
+		// ZAI_API_KEY at hand it goes there whatever Anthropic credential the
+		// env also carries — a sandboxed node receives the run's default keys
+		// beside the one its route is funded with — through glmBaseURL, the
+		// endpoint the in-process path (ResolveWithContext) picks too.
+		if zai := os.Getenv("ZAI_API_KEY"); zai != "" && modelServedByZAI(modelID) {
+			apiKey, authToken, baseURL = zai, "", glmBaseURL(baseURL)
+		}
 		if apiKey == "" && authToken == "" {
 			if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
 				apiKey = zai
@@ -184,9 +193,15 @@ func (r *Registry) registerDefaults() {
 		// above). When set, it also disables the ChatGPT-OAuth path so
 		// we don't send masquerading codex_cli_rs headers to a third
 		// party.
+		// OpenAIModelVerbatim on every client of claw's OpenAI provider (here,
+		// the keyed twin, xAI and the ctx forfait): the request already carries
+		// the wire id iterion computed — the routing prefix came off once, in
+		// wireModelID — so claw strips no further prefix ("openai/qwen/q" stays
+		// "qwen/q") and never swaps a "claude…" id for another model.
 		cfg := api.ProviderConfig{
-			Model:   modelID,
-			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+			Model:               modelID,
+			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
+			OpenAIModelVerbatim: true,
 		}
 		// Resolution: an explicit OPENAI_API_KEY wins by default — it's
 		// the standard surface for both CI and BYOK setups, and treating
@@ -212,10 +227,8 @@ func (r *Registry) registerDefaults() {
 		//     Credentials.OAuthDir("codex")), so a runner with no ~/.codex
 		//     still uses the connected ChatGPT-forfait.
 		apiKey := os.Getenv("OPENAI_API_KEY")
-		oauthPref := os.Getenv("ITERION_OPENAI_USE_OAUTH")
-		oauthDisabled := oauthPref == "0" || cfg.BaseURL != ""
-		oauthForced := oauthPref == "1"
-		shouldTryOAuth := !oauthDisabled && (apiKey == "" || oauthForced)
+		oauthForced := os.Getenv("ITERION_OPENAI_USE_OAUTH") == "1"
+		shouldTryOAuth := openAIOAuthAllowed() && (apiKey == "" || oauthForced)
 		if shouldTryOAuth {
 			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
 				applyCodexOAuth(&cfg, view)
@@ -228,9 +241,10 @@ func (r *Registry) registerDefaults() {
 	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(withClientIdentity(api.ProviderConfig{
-			APIKey:  apiKey,
-			Model:   modelID,
-			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+			APIKey:              apiKey,
+			Model:               modelID,
+			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
+			OpenAIModelVerbatim: true,
 		}))
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
@@ -270,19 +284,63 @@ func (r *Registry) registerDefaults() {
 	r.providers["xai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(withClientIdentity(api.ProviderConfig{
-			APIKey:  os.Getenv("XAI_API_KEY"),
-			Model:   modelID,
-			BaseURL: xaiBaseURL(),
+			APIKey:              os.Getenv("XAI_API_KEY"),
+			Model:               modelID,
+			BaseURL:             xaiBaseURL(),
+			OpenAIModelVerbatim: true,
 		}))
 	}
 	r.providersWithKey["xai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(withClientIdentity(api.ProviderConfig{
-			APIKey:  apiKey,
-			Model:   modelID,
-			BaseURL: xaiBaseURL(),
+			APIKey:              apiKey,
+			Model:               modelID,
+			BaseURL:             xaiBaseURL(),
+			OpenAIModelVerbatim: true,
 		}))
 	}
+	// Moonshot — the Kimi family through Moonshot's Anthropic-compatible
+	// endpoint. Auth via MOONSHOT_API_KEY (or cloud BYOK under provider
+	// "moonshot"). Model specs look like `moonshot/kimi-k2`. No Claude-forfait
+	// or subscription path applies: this wire only ever takes an account key.
+	r.providers["moonshot"] = func(modelID string) (api.APIClient, error) {
+		key := strings.TrimSpace(os.Getenv("MOONSHOT_API_KEY"))
+		if key == "" {
+			// Named rather than degraded. A client built with no credential
+			// is non-nil, so the caller proceeds and every call answers 401
+			// with nothing saying which variable was missing — issue #687's
+			// shape, and the reason the anthropic ctx factory refuses too.
+			return nil, fmt.Errorf("no Moonshot credential: set MOONSHOT_API_KEY, or attach a BYOK key under provider %q", secrets.ProviderMoonshot)
+		}
+		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  key,
+			Model:   modelID,
+			BaseURL: moonshotBaseURL(),
+		}))
+	}
+	r.providersWithKey["moonshot"] = func(modelID, apiKey string) (api.APIClient, error) {
+		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: moonshotBaseURL(),
+		}))
+	}
+}
+
+// moonshotBaseURL resolves the Anthropic-compatible host for Moonshot: an
+// explicit MOONSHOT_BASE_URL (operator / proxy / the .cn gateway), otherwise
+// the published endpoint.
+//
+// Deliberately NOT ANTHROPIC_BASE_URL, unlike the anthropic factory's z.ai
+// fallback above: that variable is z.ai's own documented wiring knob, so on a
+// host configured for z.ai it holds z.ai's endpoint — reading it here would
+// send a Moonshot key to another vendor's gateway. Same reasoning, and the
+// same variable, as delegate.moonshotEnv.
+func moonshotBaseURL() string {
+	if base := strings.TrimSpace(os.Getenv("MOONSHOT_BASE_URL")); base != "" {
+		return base
+	}
+	return secrets.MoonshotDefaultBaseURL
 }
 
 // xaiBaseURL resolves the OpenAI-compatible host for xAI. Prefer an
@@ -516,6 +574,17 @@ func ParseModelSpec(spec string) (providerName, modelID string, err error) {
 	return spec[:idx], spec[idx+1:], nil
 }
 
+// glmBaseURL is where a GLM call is sent with a z.ai key: the operator's
+// ANTHROPIC_BASE_URL when one is set — a self-hosted z.ai-compatible endpoint,
+// a regional facade, a proxy: the operator means it, exactly as the
+// claude_code delegate's zaiEnv reads it — z.ai's default endpoint otherwise.
+func glmBaseURL(operatorBase string) string {
+	if strings.TrimSpace(operatorBase) != "" {
+		return operatorBase
+	}
+	return secrets.ZAIDefaultBaseURL
+}
+
 // ResolveWithContext is the BYOK-aware variant of Resolve.
 //
 // When ctx carries per-run secrets.Credentials with a non-empty key
@@ -536,6 +605,32 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	creds, hasCreds := credentialsLookup(ctx)
 	if !hasCreds {
 		return r.Resolve(spec)
+	}
+	// `anthropic/glm-*` is served by z.ai, not by the anthropic credential
+	// its prefix names: spend the run's z.ai key against z.ai's endpoint —
+	// the in-process twin of the sandbox, where ZAI_API_KEY makes the env
+	// factory do the same. Without it the Claude forfait answered the call
+	// and api.anthropic.com refused a model it does not serve.
+	if providerName == "anthropic" && modelServedByZAI(modelID) {
+		if zai := creds(string(secrets.ProviderZAI)); zai != "" {
+			return anthropicprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+				APIKey:  zai,
+				Model:   modelID,
+				BaseURL: glmBaseURL(os.Getenv("ANTHROPIC_BASE_URL")),
+			}))
+		}
+	}
+	// openai: the run's ChatGPT forfait, spent on its plan, comes before a key
+	// a shared tier sealed only for this route — the run's own default key
+	// still comes first. anthropic keeps the key before the forfait: a Claude
+	// forfait on claw is billed as extra usage.
+	if providerName == "openai" {
+		if c, ok := secrets.CredentialsFromContext(ctx); ok &&
+			c.APIKey(secrets.ProviderOpenAI) == "" && c.PinnedAPIKey(secrets.ProviderOpenAI) != "" {
+			if client, ok, err := r.openAIFromCtxForfait(ctx, modelID); ok {
+				return client, err
+			}
+		}
 	}
 	overrideKey := creds(providerName)
 	if overrideKey == "" {
@@ -601,6 +696,35 @@ func credentialsLookup(ctx context.Context) (credentialsResolver, bool) {
 	return credentialsLookupFn(ctx)
 }
 
+// RunCredentialsLookup is the credentials lookup a cloud runner installs with
+// SetCredentialsLookup: it reads the run's secrets.Credentials from ctx.
+//
+// APIKeyForRoute, not APIKey: ResolveWithContext calls it with the provider its
+// MODEL SPEC names, which is the pin itself, so a key a shared tier funded for
+// that pin must be spendable here — the sandbox path already hands it over as
+// an env var.
+func RunCredentialsLookup(ctx context.Context) (func(provider string) string, bool) {
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil, false
+	}
+	return func(provider string) string {
+		return creds.APIKeyForRoute(secrets.Provider(provider))
+	}, true
+}
+
+// RunOAuthDirLookup is the OAuth-dir lookup a cloud runner installs with
+// SetOAuthDirLookup: the per-run forfait dirs (codex / claude_code) the runner
+// materialised at claim time, so the in-process factory spends a tenant's
+// subscription on a pod that has neither ~/.codex nor ~/.claude.
+func RunOAuthDirLookup(ctx context.Context) (func(kind string) string, bool) {
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil, false
+	}
+	return creds.OAuthDir, true
+}
+
 // applyCodexOAuth stamps a Codex ChatGPT-forfait view onto a provider config
 // (Bearer OAuth token + account id + client version header). Shared by the
 // disk-based factory and the ctx-resolved (cloud) path so both build an
@@ -611,27 +735,57 @@ func applyCodexOAuth(cfg *api.ProviderConfig, view secrets.CodexCredentialsView)
 	cfg.OpenAIClientVersion = codexCLIVersion()
 }
 
+// openAIOAuthAllowed reports whether this process lets a ChatGPT forfait be
+// spent: no ITERION_OPENAI_USE_OAUTH=0 refusal, and no OPENAI_BASE_URL — a
+// forfait's Codex headers never go to a third-party endpoint. The disk
+// factory, the per-run forfait and the sandbox crossing all read it.
+func openAIOAuthAllowed() bool {
+	return os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" && os.Getenv("OPENAI_BASE_URL") == ""
+}
+
+// codexForfaitView loads the ChatGPT-mode forfait materialised in dir, when
+// this process may spend one there.
+func codexForfaitView(dir string) (secrets.CodexCredentialsView, bool) {
+	if dir == "" || !openAIOAuthAllowed() {
+		return secrets.CodexCredentialsView{}, false
+	}
+	view, err := secrets.LoadCodexCredentialsFrom(dir)
+	if err != nil || !view.IsChatGPTMode() {
+		return secrets.CodexCredentialsView{}, false
+	}
+	return view, true
+}
+
+// OpenAIForfaitServes reports whether claw, on an `openai/…` route holding no
+// default openai key of its own, spends the run's ChatGPT forfait rather than
+// a key pinned for the route — the choice ResolveWithContext makes in process
+// and the sandbox's env factory makes from what forwardableProviderEnv hands
+// it. The runner's spend ledger asks it to book the route where it went.
+func OpenAIForfaitServes(creds secrets.Credentials) bool {
+	_, ok := codexForfaitView(creds.OAuthDir(string(secrets.OAuthKindCodex)))
+	return ok
+}
+
 // openAIFromCtxForfait builds an OpenAI ChatGPT-forfait client from the
 // tenant's per-run-materialised codex credentials (Credentials.OAuthDir),
 // honouring the same disable knobs as the disk factory. Returns ok=false when
 // OAuth is disabled, no codex dir is resolved, or the dir has no ChatGPT-mode
 // auth.json — the caller then falls back to the shared resolver.
 func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
-	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" || os.Getenv("OPENAI_BASE_URL") != "" {
+	view, ok := codexForfaitView(oauthDirLookup(ctx, "codex"))
+	if !ok {
 		return nil, false, nil
 	}
-	dir := oauthDirLookup(ctx, "codex")
-	if dir == "" {
-		return nil, false, nil
-	}
-	view, err := secrets.LoadCodexCredentialsFrom(dir)
-	if err != nil || !view.IsChatGPTMode() {
-		return nil, false, nil
-	}
-	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL")}
-	applyCodexOAuth(&cfg, view)
-	client, cerr := openaiprovider.New().NewClient(withClientIdentity(cfg))
+	client, cerr := openaiprovider.New().NewClient(withClientIdentity(openAIForfaitConfig(modelID, view)))
 	return client, true, cerr
+}
+
+// openAIForfaitConfig is the ChatGPT-forfait client's configuration: the
+// request's model sent verbatim, like every client of claw's OpenAI provider.
+func openAIForfaitConfig(modelID string, view secrets.CodexCredentialsView) api.ProviderConfig {
+	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL"), OpenAIModelVerbatim: true}
+	applyCodexOAuth(&cfg, view)
+	return cfg
 }
 
 // anthropicFromCtxForfait builds an Anthropic client from the tenant's

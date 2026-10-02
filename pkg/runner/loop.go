@@ -1156,6 +1156,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
+	// OAuthForfaits, when non-nil, is the OAuth-forfait store (same Mongo DB,
+	// same Sealer). The server's refresh worker is the one refresher of a
+	// record; the runner FOLLOWS the record a run was sealed with
+	// (RunBundle.OAuthRecordRefs) and rewrites the materialised credentials
+	// file with each rotation. nil, or a slot without a ref → the runner
+	// refreshes the claude_code file itself.
+	OAuthForfaits secrets.OAuthStore
+
 	// ApiKeys, when non-nil, is the BYOK store shared with the publisher.
 	// The runner bumps `last_used_at` on every credential the run actually
 	// spent tokens on at metering time (recordOrgSpend), so the studio
@@ -1324,8 +1332,10 @@ type Runner struct {
 }
 
 type inFlight struct {
-	runID    string
-	delivery *natsq.Delivery
+	runID string
+	// delivery only reports progress: processOne dispatches it once the
+	// engine returns, and the run holds its lease until then.
+	delivery progressReporter
 	// cancelFn cancels the run context WITH A CAUSE (context.CancelCause).
 	// The cause is the single source of the shutdown-vs-operator decision:
 	// runtime.ErrRunInterrupted (runner drain / lost heartbeat) → the engine
@@ -1589,9 +1599,12 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 // cancelAndAwaitCheckpoint cancels the in-flight run so the engine unwinds
 // via handleContextDoneWithCheckpoint (preserving the checkpoint), extends
 // the ack window, and waits for processOne to finalise (promote to
-// failed_resumable + nak). If waitCtx expires first it best-effort naks so
-// JetStream redelivers to a sibling. Shared by the interrupt drain and the
-// lame-duck ceiling cap.
+// failed_resumable + nak). If waitCtx expires first, the run is still
+// unwinding and holds its lease: a sibling handed the delivery now would
+// only find the lock held, and spend a delivery per try. processOne
+// dispatches it once the engine returns; a pod that dies first leaves it to
+// the ack deadline. Shared by the interrupt drain and the lame-duck ceiling
+// cap.
 func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context) {
 	// Cancel WITH the interrupted cause so the engine writes failed_resumable
 	// (auto-resume) rather than terminal cancelled — the shutdown-vs-operator
@@ -1602,8 +1615,7 @@ func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context
 	case <-cur.done:
 		r.cfg.Logger.Info("runner: in-flight run %s interrupted + checkpointed for resume", cur.runID)
 	case <-waitCtx.Done():
-		logDeliveryErr(r.cfg.Logger, "nak-shutdown-grace", cur.runID, cur.delivery.Nak())
-		r.cfg.Logger.Warn("runner: drain grace expired for run %s — naking for redelivery", cur.runID)
+		r.cfg.Logger.Warn("runner: drain grace expired for run %s — it still unwinds; its delivery is dispatched when the engine returns", cur.runID)
 	}
 }
 
@@ -1704,7 +1716,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
 		if pre.skippedRetry != "" {
-			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause)
+			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause, "")
 		}
 		dispatchPrecondition(logger, delivery, pre, msg.RunID)
 		return
@@ -1745,22 +1757,19 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}
 
-	// Heartbeat goroutine: refresh the NATS lease while we own it. On
-	// refresh failure it cancels runCtx WITH the interrupted cause so the
-	// engine unwinds to failed_resumable — better to lose progress than to
-	// let the lease expire while the engine is still writing to Mongo (which
-	// would invite split-brain when JetStream redelivers to a sibling pod).
-	// The cause makes the redelivery auto-resume without manual intervention.
-	hbDone := make(chan struct{})
-	errtrack.Go("runner.heartbeat", func() { r.heartbeat(runCtx, runCancel, lock, delivery, hbDone) })
-	// Cancel runCtx *before* waiting on hbDone, otherwise we deadlock:
-	// heartbeat only exits on ctx.Done(), and the outer `defer runCancel`
-	// at function entry is LIFO-last so it would run after this defer.
+	// Heartbeat goroutine: refresh the NATS lease until the engine returns,
+	// its teardown included (startLeaseHeartbeat). On refresh failure it
+	// cancels runCtx WITH the interrupted cause so the engine unwinds to
+	// failed_resumable — better to lose progress than to let the lease
+	// expire while the engine is still writing to Mongo (which would invite
+	// split-brain when JetStream redelivers to a sibling pod). The cause
+	// makes the redelivery auto-resume without manual intervention.
+	stopHeartbeat := r.startLeaseHeartbeat(runCtx, runCancel, msg.RunID, lock, delivery)
 	// nil cause: the run has already returned terminally here, so this is
 	// teardown — the engine never reads the cause. Idempotent panic net.
 	defer func() {
 		runCancel(nil)
-		<-hbDone
+		stopHeartbeat()
 	}()
 
 	// Stamped under the lock, before any work: the pair (launcher build,
@@ -1775,10 +1784,10 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// heartbeat issues periodic InProgress() on this same delivery to
 	// hold the JetStream ack deadline open; draining it here guarantees
 	// no InProgress() lands after the terminal Ack/Nak below (which would
-	// otherwise log a spurious already-acked error). A second drain in
-	// the defer above is a no-op on the closed channel.
+	// otherwise log a spurious already-acked error). A second stop in the
+	// defer above is a no-op.
 	runCancel(nil)
-	<-hbDone
+	stopHeartbeat()
 
 	// Run-outcome side effects (completion webhook + run.<outcome> event →
 	// push notifications, chained triggers) fire ONLY when this delivery
@@ -1838,7 +1847,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	redeliverable := r.cfg.NATS != nil && delivery.NumDelivered() < r.cfg.NATS.MaxDeliver()
 	r.recordPoolSpend(msg, usage, err, isNakAction(outcome.action) && redeliverable)
 
-	if outcomeSideEffectsFire(err, outcome.action) {
+	// A resume the engine refused before its claim goes back to the status
+	// it came from (releaseRefusedResume). A paused run is waiting again,
+	// as it was: no outcome happened to announce.
+	var released store.RunStatus
+	if !isNakAction(outcome.action) {
+		released = r.releaseRefusedResume(msg, err, logger)
+	}
+	if outcomeSideEffectsFire(err, outcome.action) && released != store.RunStatusCancelled && !released.IsPaused() {
 		fireOutcome()
 	}
 	// The continuation promote: only the RUNNER knows whether a Nak
@@ -1865,8 +1881,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			r.recordRedeliveryDeferred(msg, outcome, err, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
 		}
 	}
-	if outcome.finalStatus == "deterministic_failure" {
-		r.recordRetrySkipped(msg, runtimeCodeOf(err), err.Error())
+	if recordsRetrySkipped(outcome.finalStatus, released) {
+		r.recordRetrySkipped(msg, refusalCode(err), err.Error(), released)
 	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
@@ -1939,24 +1955,143 @@ func (r *Runner) recordRunnerBuild(ctx context.Context, msg *queue.RunMessage, l
 // — so the operator either waits for a pod that never comes or reads the
 // two deployments' logs to find out. Best-effort and bounded like every
 // teardown-path timeline write.
-func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string) {
+//
+// released is the status a resume refused before its claim went back to
+// (releaseRefusedResume), empty when the run was not released: the event
+// then says where the run waits.
+func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string, released store.RunStatus) {
 	if r.cfg.Store == nil {
 		return
 	}
 	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
 	defer cancel()
 	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	data := map[string]any{
+		"reason": "deterministic",
+		"code":   string(code),
+		"error":  cause,
+		"hint":   "re-executing would run the same step against the same inputs; fix the cause, then `iterion resume --force`",
+	}
+	if released != "" {
+		data["status"] = string(released)
+		switch code {
+		case store.FailureIRUnloadable:
+			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + ": this runner cannot load the IR the server compiled; align the runner with the server, then resume"
+		case store.FailureBotRequiresNewerEngine:
+			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + ": the bot requires a newer engine than this runner; bump the runner image, then resume"
+		default:
+			data["hint"] = "the resume was refused before it claimed the run, which is back to " + string(released) + "; fix the cause, or resume with --force"
+		}
+	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunRetrySkipped,
-		Data: map[string]any{
-			"reason": "deterministic",
-			"code":   string(code),
-			"error":  cause,
-			"hint":   "re-executing would run the same step against the same inputs; fix the cause, then `iterion resume --force`",
-		},
+		Data: data,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit run_retry_skipped: %v", msg.RunID, err)
 	}
+}
+
+// recordsRetrySkipped reports that a delivery's end is put on the run's
+// timeline as run_retry_skipped: a deterministic failure, which is not
+// redelivered, and any resume the runner put back where it came from — its
+// own verdicts (an IR it cannot load, a bot above its engine) included.
+func recordsRetrySkipped(finalStatus string, released store.RunStatus) bool {
+	return finalStatus == "deterministic_failure" || released != ""
+}
+
+// releaseRefusedResume puts back where it came from a resume the engine
+// refused before claiming it, and returns that status (empty when the run
+// was not released). The publisher flipped the run to queued before
+// publishing, and a refusal the runner acks is never redelivered: without
+// this the run sat queued until the orphan sweeper — past the redelivery
+// window, never while the consumer has a backlog — flipped it
+// failed_resumable, losing both the status it was resumed from (a paused
+// run's pending question with it) and the refusal's code. The doc decides,
+// never the error: only this attempt, and only while nobody claimed it — a
+// run the engine claimed is no longer queued, and a newer resume carries a
+// newer QueuedAt.
+func (r *Runner) releaseRefusedResume(msg *queue.RunMessage, execErr error, logger *iterlog.Logger) store.RunStatus {
+	if msg == nil || msg.Resume == nil || execErr == nil || r.cfg.Store == nil {
+		return ""
+	}
+	rel := store.AsQueuedResumeReleaser(r.cfg.Store)
+	if rel == nil {
+		return ""
+	}
+	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	if perr != nil {
+		logger.Warn("runner: run %s: the resume ended before any claim, but its published_at %q does not parse — the run stays queued: %v", msg.RunID, msg.PublishedAtRFC, perr)
+		return ""
+	}
+	to := msg.Resume.PriorStatus
+	if !to.CanOperatorResume() {
+		to = store.RunStatusFailedResumable
+	}
+	meta := store.RunOutcomeMeta{Code: refusalCode(execErr)}
+	switch {
+	case to == store.RunStatusCancelled:
+		// Nobody cancelled anything anew: the run keeps the cancel's code.
+		meta = store.RunOutcomeMeta{Code: store.FailureCancelled, Continuation: store.ContinuationFinal}
+	case !to.IsPaused():
+		meta.Continuation = store.ContinuationFinal
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	sctx := store.WithIdentity(ctx, msg.TenantID, msg.OwnerID)
+	changed, err := rel.ReleaseQueuedRunIfAttempt(sctx, msg.RunID, to, execErr.Error(), publishedAt, meta)
+	switch {
+	case err != nil:
+		logger.Warn("runner: run %s: could not put the refused resume back to %s — the run stays queued: %v", msg.RunID, to, err)
+		return ""
+	case !changed:
+		return ""
+	}
+	logger.Info("runner: run %s: resume refused before its claim — the run is back to %s", msg.RunID, to)
+	return to
+}
+
+// refusalCode is the typed code of a refusal: the engine's, or the runner's
+// own verdict on a bundle it will not run.
+func refusalCode(err error) store.FailureCode {
+	switch {
+	case errors.Is(err, ErrIRUnloadable):
+		return store.FailureIRUnloadable
+	case errors.Is(err, ErrBotRequiresNewerEngine):
+		return store.FailureBotRequiresNewerEngine
+	}
+	return runtimeCodeOf(err)
+}
+
+// releasesRefusedResumes reports that a refusal of msg, before any claim,
+// will be put back where the resume came from (releaseRefusedResume) — so a
+// writer of its own verdict leaves the run to it.
+func (r *Runner) releasesRefusedResumes(msg *queue.RunMessage) bool {
+	if msg == nil || msg.Resume == nil || r.cfg.Store == nil || store.AsQueuedResumeReleaser(r.cfg.Store) == nil {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	return err == nil
+}
+
+// verdictFromStatuses is the statuses the runner's own verdict on msg moves
+// the run from. A resume the run is still queued for is left to the release
+// (releaseRefusedResume), which puts it back where it came from — a paused
+// run keeps its pending question: leftToRelease, and queued is not among
+// them. A resume whose run the queue no longer holds queued — a redelivery
+// after a nak, an orphan adopted and promoted, a launch redelivered as a
+// resume — takes the verdict, as a launch does.
+func (r *Runner) verdictFromStatuses(msg *queue.RunMessage) (from []store.RunStatus, leftToRelease bool) {
+	from = store.RunnerVerdictFromStatuses()
+	if !r.releasesRefusedResumes(msg) {
+		return from, false
+	}
+	kept := make([]store.RunStatus, 0, len(from))
+	for _, s := range from {
+		if s != store.RunStatusQueued {
+			kept = append(kept, s)
+		}
+	}
+	return kept, true
 }
 
 // outcomeSideEffectsFire reports whether a delivery ending on the plain
@@ -2126,6 +2261,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// so recordRunGitMeta can persist the commit/file metadata into the store
 	// before the pod's ephemeral workspace is wiped; the server pod, which
 	// has no worktree, serves the panels from that.
+	// A pin with no repository to clone is a pin nobody can enforce:
+	// prepareRepoWorkspace — which holds both the guard and the commit
+	// comparison — is entered only when RepoURL is set, so this message would
+	// run in the pod's own workdir while its run document advertises an
+	// admitted commit. Refused here, at the branch that decides there is no
+	// repo workspace, because that is the only place the shape is visible.
+	if strings.TrimSpace(msg.RepoSHAExpected) != "" && strings.TrimSpace(msg.RepoURL) == "" {
+		return fmt.Errorf("runner: run %s: admitted for commit %s but carries no repository to clone — refusing rather than running with the pin unenforced", msg.RunID, msg.RepoSHAExpected)
+	}
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		cloneStart := time.Now()
@@ -2160,7 +2304,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// wildcard resolves to zero tools (the firecrawl/repo-falcon plugins were
 	// silently inert in cloud runs). Fail loudly on a malformed catalog rather
 	// than run a bot missing the tools it declared.
-	if err := mcp.PrepareWorkflow(wf, workDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workDir, r.cfg.Logger); err != nil {
 		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
 	}
 
@@ -2458,10 +2602,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// Plugin/library skills the LAUNCHING instance resolved for us. This pod's
 	// iterion home is ephemeral and empty, so local resolution would silently
 	// find nothing but the compiled-in builtins; passing the payload (even
-	// empty) makes it authoritative and suppresses that dead local lookup.
-	if msg.Contributions != nil {
-		engineOpts = append(engineOpts, runtime.WithContributions(contributionsFromWire(msg.Contributions)))
-	}
+	// empty) makes it authoritative and suppresses that dead local lookup. A
+	// missing payload is an anomaly (see contributionsEngineOptions) and is
+	// never read as "nothing enabled".
+	engineOpts = append(engineOpts, contributionsEngineOptions(msg.Contributions, r.cfg.Logger)...)
 	if msg.Resume != nil && msg.Resume.Force {
 		// Force-resume must be applied at engine construction so the
 		// hash-mismatch guard in pkg/runtime/resume.go reads the flag.
@@ -2515,7 +2659,24 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if msg.Resume != nil {
 		runErr = engine.ResumeWithHostInputs(ctx, msg.RunID, msg.Resume.Answers, msg.Resume.HostInputs)
 	} else {
-		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+		// The #1757 input check, runner side: the wire check for the launch
+		// the publisher admitted — an old queued message, or one admitted
+		// before this check existed, cannot skip it by being old. Late but
+		// effective: the run fails naming the key, never runs on defaults
+		// as if parameterised. msg.AllowUnknownInputs is the operator's
+		// opt-out riding the wire (CLI --allow-unknown-inputs, the
+		// dispatcher's warn-and-proceed contract).
+		if unknown := ir.UnknownInputNames(wf, msg.Vars); len(unknown) > 0 && !msg.AllowUnknownInputs {
+			runErr = fmt.Errorf("launch input %s names no var of the workflow (declared: %s) — re-launch, or pass allow_unknown_inputs to ride it",
+				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+			runLogger.Error("%s", runErr.Error())
+		} else {
+			if len(unknown) > 0 {
+				runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
+					strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+			}
+			runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+		}
 	}
 	if runErr == nil {
 		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)
@@ -2686,13 +2847,22 @@ func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, ca
 	// image carries a checkpoint worth every node already paid for — a nil
 	// there would erase the anchor the aligned fleet resumes from. The
 	// expected set keeps the cancelled-wins guard: a run the operator
-	// cancelled meanwhile is not flipped back.
-	if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
+	// cancelled meanwhile is not flipped back. A resume still queued goes
+	// back where it came from instead (verdictFromStatuses).
+	from, leftToRelease := r.verdictFromStatuses(msg)
+	changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
 		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
-		store.RunnerVerdictFromStatuses()); err != nil {
+		from)
+	switch {
+	case err != nil:
 		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
-	} else if !changed {
+	case !changed && !leftToRelease:
 		r.cfg.Logger.Warn("runner: run %s: the unloadable-IR verdict was declined (status drifted) — the document does not carry IR_UNLOADABLE", msg.RunID)
+	}
+	if leftToRelease && !changed {
+		// The run goes back where it came from: no failure to announce, and
+		// processOne records the refusal there (run_retry_skipped).
+		return
 	}
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunFailed,
@@ -2766,9 +2936,7 @@ func applyCloudBudgetCeiling(wf *ir.Workflow, logger *iterlog.Logger) {
 	if wf.Budget == nil {
 		wf.Budget = &ir.Budget{}
 	}
-	before := *wf.Budget
-	wf.Budget.ClampToCeiling(ceiling)
-	if logger != nil && *wf.Budget != before {
+	if imposed := wf.Budget.ClampToCeiling(ceiling); logger != nil && imposed {
 		logger.Info("runner: clamped workflow budget to platform ceiling (iterations=%d tokens=%d cost=%.2f dur=%q)",
 			wf.Budget.MaxIterations, wf.Budget.MaxTokens, wf.Budget.MaxCostUSD, wf.Budget.MaxDuration)
 	}
@@ -2844,7 +3012,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		Workflow: wf,
 		Vars:     vars,
 		Store:    usage,
-		RunID:    msg.RunID,
+		// usage wraps the run store and loads no records: a resume message
+		// carries no launch vars, and the guard reads the grant from here.
+		Runs:        r.cfg.Store,
+		RunID:       msg.RunID,
+		ParentRunID: msg.ParentRunID,
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
 		// this seam — the declared-supervisor hub rides it.
 		EventObservers: hookObservers,
@@ -2860,6 +3032,9 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// environment, so an operator's `--auto-memory off` on a bot whose
 		// DSL says `on` would run with memory on — the knob failing open.
 		AutoMemory: msg.AutoMemory,
+		// Same failure direction for the ambient context: dropping it would hand
+		// the run the workflow's policy instead of the operator's explicit one.
+		AmbientContext: msg.AmbientContext,
 		// Keep this as the ExecutorSpec's run-level override: folding it into
 		// wf.Permission would let a node-level `off` beat an operator `deny`.
 		Permission: msg.Permission,
@@ -2883,7 +3058,10 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// that will run sandboxed, and sandboxed-or-not is this value's
 		// call for an inherit-everything node.
 		SandboxOverride: r.cfg.SandboxOverride,
-		SandboxDefault:  r.cfg.SandboxDefault,
+		// Both tiers come from the runner's own configuration — the same
+		// two the engine receives below.
+		SandboxTiersKnown: true,
+		SandboxDefault:    r.cfg.SandboxDefault,
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the

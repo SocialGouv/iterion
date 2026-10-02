@@ -35,6 +35,7 @@ import NodeDetailPanel from "./NodeDetailPanel";
 import QueuedBanner from "./QueuedBanner";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
+import { RunTeamNotice } from "./RunTeamNotice";
 import { BottomTabPanel } from "./runView/BottomTabPanel";
 import { ExpandStrip, ResizeSeparator } from "./runView/PanelChrome";
 import { SideDock } from "./runView/SideDock";
@@ -594,6 +595,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             children render `bare` so this container owns the single
             bottom border instead of each painting its own. */}
         <div className="shrink-0 border-b border-border-default">
+          <RunTeamNotice tenantId={snapshot.run.tenant_id} />
           <RunHeader
             run={snapshot.run}
             active={active}

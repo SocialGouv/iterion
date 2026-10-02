@@ -1,0 +1,11 @@
+# refused: a backend is a word — its value carries no line break (a word-valued pattern)
+dsl: 2
+nodes:
+  - agent: a
+    backend: "claw\n"
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges:
+    - a -> done

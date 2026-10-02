@@ -6,7 +6,7 @@ import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { useThemeStore } from "@/store/theme";
 import { NODE_COLORS, DEBOUNCE_FIT_VIEW_MS, DEBOUNCE_LAYOUT_SETTLE_MS, type LayerKind } from "@/lib/constants";
-import { parseGroups } from "@/lib/groups";
+import { documentGroups } from "@/lib/groups";
 import { FLOW_CONTROLS_STYLE, FLOW_MINIMAP_BG, FLOW_MINIMAP_MASK, FLOW_MINIMAP_STYLE } from "@/lib/flowTheme";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useCanvasSearch } from "@/hooks/useCanvasSearch";
@@ -89,11 +89,8 @@ export default function Canvas({ active = true }: CanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView, getNodes, getViewport, setViewport } = useReactFlow();
 
-  // Parse groups for context menu
-  const groups = useMemo(() => {
-    if (!document) return [];
-    return parseGroups(document.comments ?? []);
-  }, [document]);
+  // Groups for the context menu, from every comment the document carries.
+  const groups = useMemo(() => documentGroups(document), [document]);
 
   // Build nodeId -> groupName lookup for context menu
   const nodeToGroup = useMemo(() => {

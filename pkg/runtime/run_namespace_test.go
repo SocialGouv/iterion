@@ -36,7 +36,7 @@ func TestRunNamespaceExposesBudget(t *testing.T) {
 	wf := budgetedWorkflow()
 	eng := New(wf, tmpStore(t), newStubExecutor())
 	rs := eng.newRunState("run-ns", nil)
-	rs.budget.RecordUsage(1_200, 3.25)
+	rs.budget.RecordUsage(spendOf(1_200, 3.25))
 
 	ctx := eng.exprContext(rs, nil)
 	if ctx.Run == nil {
@@ -133,7 +133,7 @@ func TestRunNamespaceReachesDataMappings(t *testing.T) {
 	wf := budgetedWorkflow()
 	eng := New(wf, tmpStore(t), newStubExecutor())
 	rs := eng.newRunState("run-map", nil)
-	rs.budget.RecordUsage(1_200, 3.25)
+	rs.budget.RecordUsage(spendOf(1_200, 3.25))
 
 	// One vocabulary, four consumers: every member the namespace publishes
 	// must resolve through the mapping path exactly as through the expr path.
@@ -174,6 +174,35 @@ func TestRunNamespaceReachesDataMappings(t *testing.T) {
 	if !strings.HasPrefix(out.reason, wantPrefix) || strings.HasSuffix(out.reason, "after s") {
 		t.Errorf("fail message rendered %q, want %q<elapsed>s", out.reason, wantPrefix)
 	}
+}
+
+// TestRunTreeNoiseRendersTheCanonicalPathspecs covers #1464: the namespace's
+// newest member renders the tree-noise pathspecs a scope gate pastes into its
+// git command. Constant for a run, so the snapshot semantics of a rendered
+// command lose nothing; the VALUE is pkg/treenoise's to keep truthful — this
+// test pins only that the namespace carries it and that it is not empty (an
+// empty exclusion list is a gate switched off in silence).
+func TestRunTreeNoiseRendersTheCanonicalPathspecs(t *testing.T) {
+	eng := New(budgetedWorkflow(), tmpStore(t), newStubExecutor())
+	rs := eng.newRunState("run-noise", nil)
+
+	got := resolveRunPath(rs, []string{"tree_noise"})
+	s, ok := got.(string)
+	if !ok || s == "" {
+		t.Fatalf("run.tree_noise = %#v, want a non-empty string of pathspecs", got)
+	}
+	if !containsEach(s, "':(exclude,top).claude'", "':(exclude,top)devbox.lock'", "':(exclude,top).iterion-script-*'") {
+		t.Fatalf("run.tree_noise = %q, want every canonical exclusion", s)
+	}
+}
+
+func containsEach(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // TestFailMessageRendersRunNamespaceOnTheRun is the operator-visible half of

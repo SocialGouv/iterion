@@ -196,6 +196,7 @@ func TestMapReasoningEffort(t *testing.T) {
 		{"high", codexsdk.EffortHigh},
 		{"xhigh", codexsdk.EffortHigh},
 		{"max", codexsdk.EffortMax},
+		{"none", codexsdk.EffortNone},
 		{"unknown", codexsdk.EffortMedium},
 	}
 	for _, tt := range tests {
@@ -535,6 +536,43 @@ func TestBuildSystemPrompt_Modes(t *testing.T) {
 		}
 		if at < authorAt {
 			t.Errorf("AuthoredBase+suffixes: %q must come after the author text", suffix)
+		}
+	}
+}
+
+// Subagents run in the foreground, so a message that launches several is a
+// barrier: they run concurrently and the next message waits for all of them.
+// The ultracode section describes that shape, and no longer the pipeline one
+// ("prefer pipelines to barriers") a background launch allowed.
+func TestUltracodeSectionDescribesParallelismPerMessage(t *testing.T) {
+	got := Task{SystemPrompt: "author", Ultracode: true}.BuildSystemPrompt()
+	if strings.Contains(got, "Prefer pipelines to barriers") {
+		t.Error("the ultracode section still advises pipelines over barriers, a shape foreground subagents cannot take")
+	}
+	for _, want := range []string{"ONE message run concurrently", "waits for all of them"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the ultracode section does not say %q", want)
+		}
+	}
+}
+
+// The ultracode section grants the orchestration and stays backend-neutral:
+// how a subagent's report comes back is the backend's to state, because the
+// mechanics differ per backend. claude_code states it in headlessSubagentRule,
+// once per spawn that keeps the tool, and that rule must never reach a prompt
+// built for another backend. The section also names no waiting tool: the one
+// it used to name, TaskOutput, is a tool the pinned CLI removed.
+func TestUltracodeSectionLeavesSubagentMechanicsToTheBackend(t *testing.T) {
+	for _, mode := range []SystemPromptMode{SystemPromptStandalone, SystemPromptAppendToNative, SystemPromptAuthoredBase} {
+		got := Task{SystemPrompt: "author", Ultracode: true, SystemPromptMode: mode}.BuildSystemPrompt()
+		if !strings.Contains(got, "## Workflow Orchestration") {
+			t.Fatalf("mode %v: the ultracode section is missing", mode)
+		}
+		if strings.Contains(got, "TaskOutput") {
+			t.Errorf("mode %v: the ultracode section names TaskOutput, a tool the pinned CLI removed", mode)
+		}
+		if strings.Contains(got, "## Subagents in this session") {
+			t.Errorf("mode %v: BuildSystemPrompt carries claude_code's subagent rule — it belongs to that backend's spawn alone", mode)
 		}
 	}
 }

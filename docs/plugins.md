@@ -21,9 +21,9 @@ A manifest's `contributes:` block lists one or more typed extension points:
 | `rewriters`   | command-output compressors (the rtk generalization)       | the rewrite chain on all three shell surfaces (claude_code Bash hook, claw bash builtin, tool nodes) |
 | `mcp_servers` | MCP servers (e.g. a knowledge-graph explorer)             | the workflow MCP catalog — ambient, workflow-wide, like a project `.mcp.json` entry |
 | `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start, in BOTH the directory form `<name>/SKILL.md` (what claude_code's Skill tool discovers — Agent Skills spec) and the flat alias `<name>.md` (what prompt Reads by path resolve) |
-| `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/<name>.md` (claude_code discovers via `--setting-sources project`) |
+| `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/<name>.md`; a prompt opening with `/<name>` resolves to that file's body on claude_code **and** claw ([capability matrix](backends.md#workspace-slash-commands)) |
 | `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/<name>.md` (claude_code discovers via `--setting-sources project`) |
-| `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`) |
+| `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`; claw fires a subset — see the parity table) |
 | `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
 
 `skills` / `commands` / `agents` share one mirror mechanism + the bundle
@@ -102,14 +102,51 @@ reaches its runs. Two consequences worth knowing:
 - Enablement of *installed* plugins stays **global per instance**. For a
   **team-scoped, private** plugin see the next section.
 
-**The mirror never prunes.** A skill mirrored into a workspace stays there once
-its source is renamed, removed or disabled: nothing walks `.claude/skills/` to
-drop a file whose name no longer appears in what the run mirrored
-(`ClearSkillTierMarkers` clears the per-pass tier sidecars, not the files or
-their `.sha256` markers). A stale copy is inert for `claude_code`, which
-discovers only the `<name>/SKILL.md` directory form — but `claw` resolves a flat
-`<name>.md` too, and will keep offering it under its old name. In a persistent
-workspace, delete it by hand; a run in a fresh checkout never sees one.
+**The mirror prunes orphans in run-owned worktrees.** A skill (or command
+or agent) whose source is renamed, removed or disabled upstream leaves its
+copy behind unless the mirror actively drops it. At the end of every mirror
+pass — launch AND resume — `pruneWorkspaceMirror` walks
+`.claude/{skills,commands,agents}/.iterion-managed/` and removes every
+marker whose `.tier` sidecar was not refreshed this pass AND whose
+destination file still hashes to the marker AND which carries iterion's
+`.iterion-wrote` provenance sidecar. That predicate is exactly
+`reconcileSkillFile`'s "refresh-vs-shadow" test plus a provenance stamp:
+a matching hash with the sidecar means iterion wrote the file and the
+operator did not edit it, so pruning it takes nobody's work. Anything
+else — a file with no marker, a file the operator edited (hash diverged),
+a file that already vanished, or a file mirrored by an iterion OLDER than
+the provenance sidecar (see below) — is left alone. The sweep runs by
+default only when the workspace is a **run-owned** worktree
+(`worktree: auto`, where a stale mirror file has no operator
+interpretation). A `worktree: none` / direct-mode run against the
+operator's own checkout skips pruning — an orphan there costs one unused
+file; a false-positive prune costs an operator's edit. The escape hatch
+is greppable and opt-in: `ITERION_PRUNE_MIRROR_IN_CHECKOUT=1`.
+
+**A pass that could not verify its declaration never prunes.** The sweep
+runs only after BOTH mirrors report the pass complete — every declared
+entry actually produced this pass (a library `skills:` ref missing from a
+resume's contributions payload, or a plugin registry that could not be
+read, aborts the blessing). On the cloud path a dispatch that arrives
+WITHOUT the contributions payload is treated the same way: a runner pod's
+iterion home is empty by design, so its local "0 plugins enabled" proves
+nothing about the launching instance's set — the pass mirrors nothing,
+warns, and leaves the pruner unarmed. The publisher ships the payload on
+every launch and resume (possibly empty, which IS a statement: nothing
+enabled), so a missing field is an anomaly, never silently read as "the
+operator disabled everything".
+
+**Pre-upgrade leftovers are exempt — delete by hand.** The
+`.iterion-wrote` sidecar only exists on files this version wrote. A
+workspace whose mirrors predate it carries none, and an orphan (its
+source is gone) can never be re-mirrored into acquiring one — so those
+stale copies stay un-pruned by design. Backfilling the sidecar for every
+hash-matching pre-upgrade file would also stamp provenance onto an
+operator's byte-identical copy of a skill and make THAT prunable, which
+is the delete the sidecar exists to prevent. In a persistent workspace,
+delete a pre-upgrade leftover by hand; any file whose upstream content
+changes gets refreshed into full provenance and prunes normally from
+then on.
 
 **Same-name collisions across enabled plugins are loud.** Two plugins
 contributing one file name land on one destination — the mirror keeps
@@ -360,17 +397,17 @@ The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
 CLI, and marketplace. Skills and MCP servers reach both `claude_code` and
 `claw`. Pi also consumes the resolved plugin skills through an explicit
 `--skill` directory in both transports, and the MCP catalog through its embedded
-RPC extension. The remaining work is claw-side discovery/execution for commands,
-named agents, and hooks. Kimi, Grok, and Codex do not consume these
+RPC extension. The remaining work is claw-side discovery of named agents, and the hook
+events claw skips. Kimi, Grok, and Codex do not consume these
 plugin contribution surfaces:
 
 | Claude plugin type | iterion kind | parity note |
 |--------------------|--------------|-------------|
 | skills             | `skills` ✅ shipped      | claude_code native lookup, claw's `skill` tool, and pi's explicit `--skill` path consume `.claude/skills/` |
 | MCP servers        | `mcp_servers` ✅ shipped | `claude_code`, claw, and pi RPC consume the resolved MCP catalog |
-| slash commands     | `commands` ✅ shipped (claude_code) | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`. claw reads commands only from CLAUDE.md today → a `.claude/commands/` loader is staged in `.works/claw-code-go` (`internal/commands/`), lands on the next claw release + `go.mod` bump |
+| slash commands     | `commands` ✅ shipped | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`, claw resolves the same files in-process (claw-code-go `pkg/api/commands`). A prompt opening with `/<name>` becomes that file's body on either backend — see the [capability matrix](backends.md#workspace-slash-commands) for the four measured differences — **frontmatter beyond `description:` is ignored on claw, so a command that narrows itself with `allowed-tools:` keeps the node's full tool set there — the runtime warns and names #1717**, plus workspace-only scope, one-based `$1`, and the unevaluated `` !`cmd` ``/`@path`/`$0` forms |
 | subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool + SubagentRunner but no named-agent file loader → claw-side follow-on |
-| hooks              | `hooks` ✅ shipped (claude_code) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw has shell + Go hook runners but no settings discovery → claw-side follow-on |
+| hooks              | `hooks` ✅ shipped (claude_code) · partial (claw) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw re-reads the same file per node execution (`registerSettingsHooks`, `pkg/backend/model/settings_hooks.go`) and runs the **`command`**-type entries of `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `Stop` only — `prompt`-type entries and every other event (`UserPromptSubmit`, `SessionStart`, `PreCompact`, …) are skipped without a diagnostic, and a **sandboxed** claw node reads none at all → claw-side follow-on |
 
 The principle: where claude_code has a native surface and claw does not (or they
 diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw
@@ -378,9 +415,9 @@ source) so a plugin behaves identically on either backend, rather than papered
 over with a claude_code-only adapter. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
-The `commands`, `agents`, and `hooks` manifest kinds are shipped today. Their
-claude_code wiring is live; only the claw parity work called out in the table is
-follow-on.
+The `commands`, `agents`, and `hooks` manifest kinds are shipped today.
+`commands` reaches claw as well as claude_code; `hooks` reaches it partially
+(see the row above); named subagents stay claude_code-only.
 
 ## Public skill libraries (shipped)
 

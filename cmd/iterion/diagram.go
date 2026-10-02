@@ -12,7 +12,7 @@ var diagramOpts struct {
 }
 
 var diagramCmd = &cobra.Command{
-	Use:   "diagram <file.bot>",
+	Use:   "diagram <file.bot | file.bot.yaml>",
 	Short: "Generate Mermaid diagram",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

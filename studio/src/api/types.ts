@@ -2,6 +2,8 @@
 // document round-trip). Field shapes and JSON tags are kept aligned with
 // the Go side; reload the studio whenever the AST changes.
 
+import type { iterDslEnumValuesByProperty } from "@/lib/iterDsl.generated";
+
 export interface IterDocument {
   // The syntax profile of the file's `dsl: N` header (ADR-098); absent
   // or 0 = profile 1. The server writes the header back on save.
@@ -51,12 +53,22 @@ export interface UnitFileInfo {
   rel: string;
   profile?: number;
   imports?: string[];
+  /** sha256 of the file's content as the server last read it. The unit's
+   *  revision covers the files the unit HOLDS; a file a per-file edit
+   *  newly imports is none of them, so the claim carries this back and the
+   *  save compares — a colleague's edit since the apply is a conflict,
+   *  never a silent overwrite. */
+  digest?: string;
 }
 
 /** A declared terminal failure: `fail <name>:` with a typed code the run's
  *  `failure_code` carries, a templated message, and whether the run stays
  *  resumable. The bare `fail` target has no declaration. */
 export interface FailDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -74,6 +86,16 @@ export interface Comment {
    *  the declaration back to that file, and a new one to the main. */
   file?: string;
   text: string;
+  /** Where the comment was written, inside the declaration that carries
+   *  it: the dotted key path of the line it names (`model`,
+   *  `sandbox.network`, `->2` for the second edge), empty for the
+   *  declaration itself. Carry it back untouched — the save writes the
+   *  comment above that line. */
+  anchor?: string;
+  /** How it sits relative to `anchor`: above it (absent, or "before"),
+   *  below the last line of the block it names ("end"), or at the end of
+   *  its line ("trailing"). */
+  place?: "before" | "end" | "trailing";
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +103,10 @@ export interface Comment {
 // ---------------------------------------------------------------------------
 
 export interface VarsBlock {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -99,6 +125,12 @@ export interface VarField {
   /** DSL `[enum: "a", "b"]` constraint — present only on string vars.
    *  Non-empty ⇒ the var renders as a fixed-choice select. */
   enum?: string[];
+  /** DSL `[matching: "<re>"]` constraint — an RE2 pattern, string vars
+   *  only. Transport: it rides the document so an edit and a save do not
+   *  drop it. The forms deliberately do NOT test a value against it —
+   *  see `lib/varValidation.tsx` for why (the engine refuses at launch,
+   *  and a browser RegExp is not RE2). */
+  matching?: string;
 }
 
 export type TypeExpr = "string" | "bool" | "int" | "float" | "json" | "string[]";
@@ -120,6 +152,10 @@ export type LiteralKind = "string" | "int" | "float" | "bool";
 // ---------------------------------------------------------------------------
 
 export interface PresetsBlock {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -154,6 +190,10 @@ export interface PresetValue {
 export type AttachmentType = "file" | "image";
 
 export interface AttachmentsBlock {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -318,6 +358,10 @@ export interface StagedUpload {
 export type MCPTransport = "unknown" | "stdio" | "http" | "sse";
 
 export interface MCPServerDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -362,6 +406,10 @@ export interface CompactionBlock {
 // ---------------------------------------------------------------------------
 
 export interface PromptDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -374,6 +422,10 @@ export interface PromptDecl {
 }
 
 export interface SchemaDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -394,17 +446,32 @@ export type FieldType = "string" | "bool" | "int" | "float" | "json" | "string[]
 // Nodes
 // ---------------------------------------------------------------------------
 
-export type SessionMode = "fresh" | "inherit" | "fork" | "artifacts_only";
-export type AwaitMode = "none" | "wait_all" | "best_effort";
+// SessionMode / AwaitMode / InteractionMode are WIRE types: the server
+// marshals them from typed AST enums through the maps of
+// pkg/dsl/ast/jsonenc.go (sessionModeToStr / awaitModeToStr /
+// interactionModeToStr), and those maps emit exactly the DSL registry
+// words of pkg/dsl/spec — pinned by TestJSONWireEnumsMatchTheRegistry on
+// the Go side. The honest source here is therefore the generated registry
+// module (iterDsl.generated.ts, regenerated by `task dsl:gen` and gated
+// by `task dsl:check`): derive the unions from it and this third copy
+// cannot drift again (#1935).
+export type SessionMode = (typeof iterDslEnumValuesByProperty)["session"][number];
+// No "none": "no await" is the ABSENT property — jsonenc.go accepts
+// "none" on input but never emits it (the zero value maps to "" and
+// `omitempty` drops the field), and the parser refuses the word.
+export type AwaitMode = (typeof iterDslEnumValuesByProperty)["await"][number];
 
 // InteractionMode is unified across agent/judge/human nodes. Replaces
 // the old editor-only `HumanMode` and adds llm/llm_or_human surfaces.
-export type InteractionMode = "none" | "human" | "llm" | "llm_or_human";
+export type InteractionMode = (typeof iterDslEnumValuesByProperty)["interaction"][number];
 
+// "none" disables reasoning entirely; only the models whose matrix carries it
+// (GPT-6 Sol/Luna) honour it — claw and claude_code clamp it to low elsewhere,
+// pi spells it off, codex's CLI refuses it on a model without it.
 // "ultracode" is a mode, not a wire effort: xhigh + a standing prerogative to
 // orchestrate multi-agent workflows (reliable only on claude-opus-4-8). The
 // runtime remaps it to xhigh before the provider. See docs/ultracode.md.
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
 // FallbackDecl is one named route of an agent/judge `fallbacks:` block
 // (ADR-087). Entries are tried in declaration order when the primary
@@ -425,6 +492,10 @@ export interface FallbackDecl {
 }
 
 export interface AgentDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -445,6 +516,17 @@ export interface AgentDecl {
   tools?: string[];
   tool_policy?: string[];
   tool_max_steps?: number;
+  /** Tool-permission gate mode for this node: "off" | "ask" | "deny".
+   *  Empty/absent inherits the workflow's. See docs/permissions.md. */
+  permission?: string;
+  /** Node-level permission rules, `Tool(pattern)` syntax. A NON-EMPTY list
+   *  replaces the workflow's list of the same kind — never a union, and
+   *  independently per kind. An empty list is not "clear the workflow's":
+   *  the JSON seam carries these with `omitempty`, so write `undefined`
+   *  rather than `[]` when the author empties the control. */
+  allow?: string[];
+  ask?: string[];
+  deny?: string[];
   // Per-LLM-call output cap; 0 / undefined inherits the backend default.
   max_tokens?: number;
   reasoning_effort?: ReasoningEffort;
@@ -464,6 +546,10 @@ export interface AgentDecl {
 }
 
 export interface JudgeDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -481,6 +567,17 @@ export interface JudgeDecl {
   tools?: string[];
   tool_policy?: string[];
   tool_max_steps?: number;
+  /** Tool-permission gate mode for this node: "off" | "ask" | "deny".
+   *  Empty/absent inherits the workflow's. See docs/permissions.md. */
+  permission?: string;
+  /** Node-level permission rules, `Tool(pattern)` syntax. A NON-EMPTY list
+   *  replaces the workflow's list of the same kind — never a union, and
+   *  independently per kind. An empty list is not "clear the workflow's":
+   *  the JSON seam carries these with `omitempty`, so write `undefined`
+   *  rather than `[]` when the author empties the control. */
+  allow?: string[];
+  ask?: string[];
+  deny?: string[];
   max_tokens?: number;
   reasoning_effort?: ReasoningEffort;
   readonly?: boolean;
@@ -500,6 +597,10 @@ export interface JudgeDecl {
 // ---------------------------------------------------------------------------
 
 export interface CursorDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -540,6 +641,10 @@ export type RouterMode =
   | "llm";
 
 export interface RouterDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -564,6 +669,10 @@ export interface RouterDecl {
 }
 
 export interface HumanDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -586,6 +695,10 @@ export interface HumanDecl {
 }
 
 export interface ToolNodeDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -610,6 +723,10 @@ export interface ToolNodeDecl {
 // boolean ANDs, counters, and other plain computation that shouldn't
 // burn tokens.
 export interface ComputeDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -635,6 +752,10 @@ export interface ComputeExpr {
 // pkg/dsl/ast/jsonenc.go jsonSubbotDecl: all fields omitempty except name;
 // `with` reuses the {key,value} shape of edge data mappings.
 export interface SubbotDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -652,6 +773,10 @@ export interface SubbotDecl {
 // ---------------------------------------------------------------------------
 
 export interface WorkflowDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files (`import "lib/x.bot"`). Read-only: the save writes
    *  the declaration back to that file, and a new one to the main. */
@@ -700,6 +825,10 @@ export interface BudgetBlock {
 }
 
 export interface Edge {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   from: string;
   to: string;
   when?: WhenClause;
@@ -805,6 +934,10 @@ export type ServerWsEvent = FileEvent | ProjectSwitchedEvent;
  *  what it takes, produces and delivers, its deterministic checks and its
  *  visible effects. Mirrors pkg/dsl/ast/jsonenc_contract.go. */
 export interface ContractDecl {
+  /** The `##` lines written around this declaration, each carrying the
+   *  place it was written at. Carry them back untouched: the save writes
+   *  each one above the line it names. */
+  comments?: Comment[];
   /** Provenance: the file this came from, in a document of a bot in
    *  several files. Read-only: the save writes the declaration back to
    *  that file, and a new one to the main. */

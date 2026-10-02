@@ -534,7 +534,8 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /** GET /api/admin/users/{id} */
+        get: operations["getAdminUsersById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1706,6 +1707,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/orgs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id} */
+        get: operations["getOrgsById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/orgs/{id}/api-keys": {
         parameters: {
             query?: never;
@@ -2686,6 +2706,26 @@ export interface paths {
         /** POST /api/runs/{id}/assistant-watches */
         post: operations["postRunsByIdAssistantWatches"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/assistant-watches/{watchID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/runs/{id}/assistant-watches/{watchID} */
+        delete: operations["deleteRunsByIdAssistantWatchesByWatchID"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6207,6 +6247,7 @@ export interface components {
             budget_tokens_used?: number;
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
+            budget_unreported_calls?: number;
             cost_usd_total?: number;
             fired_events?: {
                 [key: string]: {
@@ -6338,6 +6379,7 @@ export interface components {
             reason?: string;
             /** Format: date-time */
             reopens_at?: string;
+            route_only?: boolean;
             selected: boolean;
             selection: string;
             source: string;
@@ -6793,6 +6835,8 @@ export interface components {
         };
         PlatformCredentials: {
             enforce?: boolean;
+            facade_default?: string;
+            keys_first?: boolean;
             orgs: string[];
             teams: string[];
             /** Format: date-time */
@@ -6917,6 +6961,7 @@ export interface components {
             skipped_cred_reopens_at?: string;
             source?: components["schemas"]["RunSource"];
             status: string;
+            tenant_id?: string;
             /** Format: date-time */
             updated_at: string;
             watched_issue_ids?: string[];
@@ -7043,8 +7088,10 @@ export interface components {
             email: string;
             id: string;
             is_super_admin: boolean;
+            last_login_at?: string;
             name?: string;
             status: string;
+            updated_at?: string;
         };
         WatcherCursor: {
             consecutive_no_progress?: number;
@@ -7120,6 +7167,48 @@ export interface components {
             mode?: string;
             workspace_id?: string;
         };
+        adminUpdateUserReq: {
+            is_super_admin?: boolean;
+            name?: string;
+            status?: string;
+        };
+        adminUserDetailView: {
+            has_password: boolean;
+            orgs: components["schemas"]["adminUserOrgView"][];
+            sso_links: components["schemas"]["adminUserSSOLinkView"][];
+            teams: components["schemas"]["adminUserTeamView"][];
+            user: components["schemas"]["UserView"];
+        };
+        adminUserOrgView: {
+            joined_at?: string;
+            org_id: string;
+            org_name?: string;
+            org_slug?: string;
+            personal?: boolean;
+            purge_after?: string;
+            role: string;
+            status?: string;
+        };
+        adminUserSSOLinkView: {
+            created_at?: string;
+            email?: string;
+            provider: string;
+            subject: string;
+        };
+        adminUserTeamView: {
+            joined_at?: string;
+            missing_team?: boolean;
+            org_id?: string;
+            org_name?: string;
+            org_status?: string;
+            orphan_grant?: boolean;
+            personal?: boolean;
+            role: string;
+            status?: string;
+            team_id: string;
+            team_name?: string;
+            team_slug?: string;
+        };
         apiKeyView: {
             alive_runs?: number;
             bots: string[];
@@ -7150,6 +7239,10 @@ export interface components {
             effective: components["schemas"]["effectiveBotRoles"];
             origin: string;
             stored?: components["schemas"]["BotRoles"];
+        };
+        botSourceFilePutReq: {
+            content: string;
+            version?: number;
         };
         botSourceForkReq: {
             from: string;
@@ -7204,6 +7297,9 @@ export interface components {
         botVarsSettingsView: {
             origin: string;
             propagation_bound_seconds: number;
+            refused?: {
+                [key: string]: string;
+            };
             stored?: components["schemas"]["BotVars"];
         };
         createApiKeyReq: {
@@ -7472,6 +7568,8 @@ export interface components {
         };
         platformCredentialsSettingsView: {
             enforced: boolean;
+            facade_default_effective: string;
+            keys_first_effective: boolean;
             origin: string;
             stored?: components["schemas"]["PlatformCredentials"];
         };
@@ -7516,6 +7614,7 @@ export interface components {
             source: string;
         };
         previewEffectiveSettings: {
+            ambient_context: components["schemas"]["previewEffectiveKnob"];
             auto_memory: components["schemas"]["previewEffectiveKnob"];
             backend: components["schemas"]["previewEffectiveKnob"];
             compress: components["schemas"]["previewEffectiveKnob"];
@@ -7536,6 +7635,7 @@ export interface components {
             launch_rate_per_min?: number;
             max_concurrent_runs?: number;
             name: string;
+            org_id?: string;
             personal?: boolean;
             slug: string;
             status: string;
@@ -7716,20 +7816,29 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourceFilePutReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
     deleteAdminBotsBySlugFilesByPath: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -7739,12 +7848,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
@@ -8465,12 +8576,41 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        limit: number;
+                        offset: number;
+                        query?: string;
+                        users: components["schemas"]["UserView"][];
+                    };
+                };
+            };
+        };
+    };
+    getAdminUsersById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["adminUserDetailView"];
+                };
             };
         };
     };
@@ -8483,14 +8623,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["adminUpdateUserReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UserView"];
+                };
             };
         };
     };
@@ -9986,6 +10132,28 @@ export interface operations {
             };
         };
     };
+    getOrgsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["orgView"];
+                };
+            };
+        };
+    };
     getOrgsByIdApiKeys: {
         parameters: {
             query?: never;
@@ -11360,6 +11528,27 @@ export interface operations {
             };
         };
     };
+    deleteRunsByIdAssistantWatchesByWatchID: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                watchID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getRunsByIdAttachmentsByName: {
         parameters: {
             query?: never;
@@ -12566,12 +12755,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["teamSummaryView"];
+                };
             };
         };
     };
@@ -12881,20 +13072,29 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourceFilePutReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
     deleteTeamsByIdBotSourcesBySlugFilesByPath: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+            };
             header?: never;
             path: {
                 id: string;
@@ -12905,12 +13105,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };

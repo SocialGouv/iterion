@@ -144,15 +144,20 @@ func RefreshModelSpecs(ctx context.Context) error {
 func KnownModelSpecs() []string {
 	return []string{
 		"anthropic/claude-opus-5",
+		"anthropic/claude-opus-5-5",
 		"anthropic/claude-sonnet-5",
 		"anthropic/claude-opus-4-8",
 		"anthropic/claude-sonnet-4-6",
 		"anthropic/claude-haiku-4-5",
+		"anthropic/glm-5.3",
 		"anthropic/glm-5.2",
 		"anthropic/glm-5.1",
 		"anthropic/glm-4.6",
 		"openai/gpt-5.5",
 		"openai/gpt-5.4-mini",
+		"openai/gpt-6-astra",
+		"openai/gpt-6-sol",
+		"openai/gpt-6-luna",
 		"openai/o3",
 	}
 }

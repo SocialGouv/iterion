@@ -1,0 +1,13 @@
+# refused: a port's type is a type name
+dsl: 2
+contracts:
+  c:
+    inputs:
+      x: 1
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

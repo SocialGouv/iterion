@@ -2,11 +2,14 @@ package runtime
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
@@ -102,7 +105,7 @@ func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName st
 	defer cancel()
 	err = runScript(cctx, `set -eu
 `+assertWorkspaceRoot+`mkdir -p "$2"
-for name in skills commands agents settings.json; do
+for name in `+childResourceWords()+`; do
  if test -e "$1/$name" || test -L "$1/$name"; then cp -a "$1/$name" "$2/$name"; fi
 done`)
 	if err != nil {
@@ -112,7 +115,7 @@ done`)
 		ctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
 		defer cancel()
 		return runScript(ctx, `set -eu
-`+assertWorkspaceRoot+`for name in skills commands agents settings.json; do
+`+assertWorkspaceRoot+`for name in `+childResourceWords()+`; do
  rm -rf "$1/$name"
  if test -e "$2/$name" || test -L "$2/$name"; then mkdir -p "$1"; cp -a "$2/$name" "$1/$name"; fi
 done
@@ -120,12 +123,36 @@ rm -rf "$2"`)
 	}, nil
 }
 
+// childResourceWords renders childResourcePaths as shell words, so the scripts
+// run inside a sandbox act on exactly the entries the host-side snapshot saves.
+func childResourceWords() string {
+	words := make([]string, len(childResourcePaths))
+	for i, name := range childResourcePaths {
+		words[i] = shellquote.Quote(name)
+	}
+	return strings.Join(words, " ")
+}
+
 // The copy must receive the complete effective child tree. Merely overwriting
-// files leaves parent-only files behind when a child replaces a directory skill.
-// beginRunResources already saved the original copy for restoration on all exits.
+// files leaves parent-only files behind when a child replaces a directory skill
+// — and for the engine-owned skills copy, a name only the parent's bundle ships
+// would answer for the child. beginRunResources already saved the original copy
+// for restoration on all exits, an aborted adoption included.
+//
+// A copy-based adoption with no borrowed scope is refused rather than skipped:
+// nothing would have saved the parent's entries, so resetting them destroys
+// them and leaving them lets the parent's names answer for the child. Every
+// child that adopts runs in place and opens that scope (Run and Resume both
+// call beginRunResources before startSandbox); this states the precondition
+// instead of trusting it.
 func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
-	if e.resourceScope == nil || !e.resourceScope.borrowed || !sharedSandboxIsCopyBased(e.sharedSandbox.Run) {
+	if e.sharedSandbox == nil || !sharedSandboxIsCopyBased(e.sharedSandbox.Run) {
 		return nil
+	}
+	if e.resourceScope == nil || !e.resourceScope.borrowed {
+		return fmt.Errorf("runtime: adopting the parent's copy-based sandbox (%s) needs a borrowed resource scope, and this run holds none: "+
+			"the parent's .claude entries (%s) would be replaced in the sandbox with no saved copy to restore",
+			e.sharedSandbox.Run.Driver(), strings.Join(childResourcePaths, ", "))
 	}
 	ctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
@@ -134,7 +161,7 @@ func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
 		return err
 	}
 	res, err := e.sharedSandbox.Run.Exec(ctx, []string{"sh", "-c", `set -eu
-` + assertWorkspaceRoot + `for name in skills commands agents settings.json; do rm -rf "$1/$name"; done`,
+` + assertWorkspaceRoot + `for name in ` + childResourceWords() + `; do rm -rf "$1/$name"; done`,
 		"sh", root, "", workspace}, sandbox.ExecOpts{})
 	if err != nil {
 		return err
@@ -154,18 +181,44 @@ func (e *Engine) resourceDirForRun() string {
 	return bundleResourceDir(e.bundle, e.filePath)
 }
 
+// noopChildCleanup is the provisioning cleanup that owns nothing.
+var noopChildCleanup = func() {}
+
+// childDevboxStagingPath is where THIS provisioning stages a child's
+// devbox install: the run id keeps it readable, the random suffix makes it
+// this provisioning's alone. Keyed by the run id alone, two stagers of one
+// run shared one directory and whichever finished first deleted the
+// other's install while it was still in use (#1787 — measured on the
+// runtime tests: every process staging for the run id "child" raced on
+// /tmp/iterion-devbox/child-<sha256("child")>). The path sits in the
+// sandbox's own /tmp: the install and the cleanup both run through the
+// child's handle.
+func childDevboxStagingPath(runID string) (string, error) {
+	var nonce [8]byte
+	if _, err := cryptorand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("runtime: stage child devbox: %w", err)
+	}
+	sum := sha256.Sum256([]byte(runID))
+	return fmt.Sprintf("/tmp/iterion-devbox/child-%x-%s", sum[:6], hex.EncodeToString(nonce[:])), nil
+}
+
 // Child provisioning is staged at a unique path, then attached to the child's
 // handle only. Neither the parent's botDevboxDir nor its environment changes.
 func (e *Engine) provisionSharedChildDevbox(ctx context.Context, runID string, inherited sandbox.Run) (sandbox.Run, func()) {
 	dir := e.resourceDirForRun()
 	config := devboxConfigIn(dir, "child bundle", e.logger)
-	noop := func() {}
 	if config == "" {
-		return inherited, noop
+		return inherited, noopChildCleanup
 	}
 	inline, err := readInlineDevbox(dir)
-	staged := fmt.Sprintf("/tmp/iterion-devbox/child-%x", sha256.Sum256([]byte(runID)))
-	bin := path.Join(staged, devboxProfileBin)
+	staged, stageErr := childDevboxStagingPath(runID)
+	if stageErr != nil {
+		err = errors.Join(err, stageErr)
+	}
+	var bin string
+	if staged != "" {
+		bin = path.Join(staged, devboxProfileBin)
+	}
 	if err == nil {
 		script := devboxInstallSnippet([]devboxProject{{label: "child bot", hostConfig: config, dir: staged, inline: inline}}) + "\ntest -d " + shellquote.Quote(bin)
 		installCtx, cancel := context.WithTimeout(ctx, hostDevboxInstallTimeout)
@@ -176,11 +229,14 @@ func (e *Engine) provisionSharedChildDevbox(ctx context.Context, runID string, i
 			err = fmt.Errorf("child devbox install exit %d: %s", res.ExitCode, res.Stderr)
 		}
 	}
-	cleanup := func() {
-		cctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
-		defer cancel()
-		if res, err := inherited.Exec(cctx, []string{"rm", "-rf", staged}, sandbox.ExecOpts{}); (err != nil || res.ExitCode != 0) && e.logger != nil {
-			e.logger.Warn("runtime: child devbox cleanup %s: %v (exit %d)", staged, err, res.ExitCode)
+	cleanup := noopChildCleanup
+	if staged != "" {
+		cleanup = func() {
+			cctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
+			defer cancel()
+			if res, err := inherited.Exec(cctx, []string{"rm", "-rf", staged}, sandbox.ExecOpts{}); (err != nil || res.ExitCode != 0) && e.logger != nil {
+				e.logger.Warn("runtime: child devbox cleanup %s: %v (exit %d)", staged, err, res.ExitCode)
+			}
 		}
 	}
 	data := map[string]any{"target": "shared_sandbox", "sources": []string{"bot"}, "configs": []string{config}}

@@ -1,15 +1,10 @@
 import { existsSync, readdirSync } from 'node:fs'
-import { dirname, join, normalize } from 'node:path'
+import { join } from 'node:path'
 import { defineConfig } from 'vitepress'
 import { withMermaid } from 'vitepress-plugin-mermaid'
 import type MarkdownIt from 'markdown-it'
-
-const REPO = 'https://github.com/SocialGouv/iterion'
-const BLOB = `${REPO}/blob/main`
-
-// Extensions that are source artifacts, not site pages: even when referenced
-// with an in-/docs relative path, link them to the file on GitHub.
-const RAW_SOURCE = /\.(go|ebnf|ya?ml|sh|json|bot|botz|ts|tsx|mod|sum|toml|proto)$/i
+import { githubSlug } from './github-slug.mjs'
+import { REPO, rewriteHref } from './rewrite-href.mjs'
 
 // Docs are authored to be read on github.com: hundreds of links escape /docs
 // (../pkg/*.go, ../README.md, ...) or point at raw in-repo source artifacts.
@@ -78,57 +73,6 @@ function escapeBraces(md: MarkdownIt) {
   }
   wrap('text', (t, i) => md.utils.escapeHtml(t[i].content))
   wrap('code_inline', (t, i) => `<code>${md.utils.escapeHtml(t[i].content)}</code>`)
-}
-
-const DOCS_ROOT = join(__dirname, '..')
-
-// Does an in-docs directory lack a browsable index (README.md / index.md)?
-function dirHasNoIndex(resolved: string): boolean {
-  const abs = join(DOCS_ROOT, resolved.replace(/^docs\/?/, ''))
-  if (!existsSync(abs)) return false
-  try {
-    const entries = readdirSync(abs)
-    return !entries.some((f) => /^(readme|index)\.md$/i.test(f))
-  } catch {
-    return false
-  }
-}
-
-type Rewrite = { href: string; external: boolean }
-
-function rewriteHref(href: string, relativePath: string | undefined): Rewrite | null {
-  // Skip absolute URLs, anchors, and protocol-relative links.
-  if (/^([a-z]+:)?\/\//i.test(href) || href.startsWith('#') || href.startsWith('mailto:')) {
-    return null
-  }
-  const [path, hash = ''] = href.split('#')
-  const suffix = hash ? '#' + hash : ''
-  if (!path) return null
-
-  // The doc's directory relative to the repo root (docs are under docs/).
-  const docDir = relativePath ? join('docs', dirname(relativePath)) : 'docs'
-  const resolved = normalize(join(docDir, path)).replace(/\\/g, '/')
-
-  // The top-level docs index is excluded from the site (index.md is the home);
-  // point in-docs links to it at the site home instead.
-  if (resolved === 'docs/README.md') {
-    // Internal link: VitePress prepends `base` itself, so omit it here.
-    return { href: '/' + suffix, external: false }
-  }
-
-  const escapesDocs = !resolved.startsWith('docs/') && resolved !== 'docs'
-  const isRawInDocs = resolved.startsWith('docs/') && RAW_SOURCE.test(path)
-  // A directory link with no index page can't render as a site page — send it
-  // to the GitHub tree so it still resolves.
-  const isIndexlessDir = /\/$/.test(path) && dirHasNoIndex(resolved)
-
-  if (escapesDocs || isRawInDocs) {
-    return { href: `${BLOB}/${resolved}${suffix}`, external: true }
-  }
-  if (isIndexlessDir) {
-    return { href: `${REPO}/tree/main/${resolved}${suffix}`, external: true }
-  }
-  return null
 }
 
 // Build a collapsed sidebar group listing every .md in a docs subdir.
@@ -348,6 +292,10 @@ export default withMermaid(
       ['meta', { name: 'twitter:image', content: 'https://socialgouv.github.io/iterion/og.png' }],
     ],
     markdown: {
+      // Heading anchors follow GitHub's rule (github-slug.mjs), so a
+      // `#fragment` written for github.com resolves here too; `task
+      // docs:links` checks every link against that one rule.
+      anchor: { slugify: githubSlug },
       // The .bot DSL uses ```iter fences (YAML-like, indentation-based) — alias
       // to the bundled yaml grammar. (```ebnf isn't bundled either but has no
       // close bundled match; it falls back to plain text on its own.)

@@ -163,6 +163,10 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	if err := s.cloudGuardRefusal(req.Guard); err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%s", err.Error())
+		return
+	}
 	if err := retrypolicy.Validate(retrypolicy.Policy{
 		UsageWindow: req.RetryUsageWindow,
 		MaxAttempts: req.RetryMaxAttempts,
@@ -318,6 +322,18 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	if err := schedgate.ValidateReapable(merged, false); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
+	}
+	// Only a patch that CHANGES the guard is refused. A row carrying one from
+	// before stays editable — pausing it must keep working — and its guard
+	// does not run (cloudScheduleGate). The comparison is against the stored
+	// value, not against "the field is present": every edit dialog sends the
+	// whole policy back, the stored guard included, so refusing on presence
+	// refuses the very edits this exemption exists for.
+	if g := req.Guard; g != nil && strings.TrimSpace(*g) != strings.TrimSpace(cur.Guard) {
+		if err := s.cloudGuardRefusal(*g); err != nil {
+			httpError(w, http.StatusUnprocessableEntity, "%s", err.Error())
+			return
+		}
 	}
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.

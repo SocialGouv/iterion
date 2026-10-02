@@ -24,10 +24,10 @@ func TestLiteralTemplateRenderingIsSinglePass(t *testing.T) {
 	if got := e.resolveTemplate(source, nil, nil); got != want {
 		t.Fatalf("prompt=%q", got)
 	}
-	for _, render := range []func(any) string{rawTemplateValue, shellEscapeValue, jsonLiteralValue} {
+	for _, render := range []func(any, ValueShape) string{rawTemplateValue, shellEscapeValue, jsonLiteralValue} {
 		// Literal source is inserted verbatim, dynamic values retain each site's encoding.
-		expected := `{{vars.x}} / ` + render(vars["x"]) + ` / {{`
-		if got := resolveTemplateWith(source, refs, nil, vars, nil, "", nil, render, true, nil); got != expected {
+		expected := `{{vars.x}} / ` + render(vars["x"], ShapeUndeclared) + ` / {{`
+		if got := resolveTemplateWith(source, refs, nil, vars, nil, "", nil, nil, render, true, nil); got != expected {
 			t.Fatalf("render=%q want=%q", got, expected)
 		}
 	}

@@ -318,7 +318,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			result.eventErrors++
 		}
 		if e.onNodeFinished != nil {
-			e.onNodeFinished(runID, currentNodeID, output)
+			e.onNodeFinished(ctx, runID, currentNodeID, output)
 		}
 
 		selected, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output, result, branchRS)
@@ -691,10 +691,28 @@ func (e *Engine) emitBranchNodeFailed(ctx context.Context, runID, branchID, node
 // Prometheus parallel-branches gauge) rely on it to track in-flight
 // concurrency. result is taken by pointer so the deferred read sees the
 // branch's final state.
+//
+// When result.err carries a typed cause, the event names it so an
+// observer can tell the death's family without parsing the message: the
+// runtime error's Code (`code`), the LoopDeclined.Reason it carries
+// (`declined` — a ceiling reason under CeilingReason, the program's
+// design otherwise), and whether it wraps ErrDeliberateFailure
+// (`deliberate` — the branch ended at a declared `fail` node). A dry
+// run reads them to tell a dead branch from a ceiling and a declared
+// refusal (dry-run #1325); other observers ignore them.
 func (e *Engine) emitBranchFinishedDefer(ctx context.Context, runID, branchID, startNodeID string, result *branchResult) {
 	data := map[string]any{}
 	if result.err != nil {
 		data["error"] = result.err.Error()
+		if code := errorCode(result.err); code != "" {
+			data["code"] = code
+		}
+		if reason := declinedReason(result.err); reason != "" {
+			data["declined"] = reason
+		}
+		if errors.Is(result.err, ErrDeliberateFailure) {
+			data["deliberate"] = true
+		}
 	}
 	if result.joinNodeID != "" {
 		data["join_node"] = result.joinNodeID
@@ -703,6 +721,47 @@ func (e *Engine) emitBranchFinishedDefer(ctx context.Context, runID, branchID, s
 		e.logger.Warn("branch %s: failed to emit branch_finished: %v", branchID, err)
 		result.eventErrors++
 	}
+}
+
+// errorCode is the FailureCode-equivalent an error carries: the
+// RuntimeError.Code when the error is one, `BUDGET_EXCEEDED` when it
+// wraps the ErrBudgetExceeded sentinel (which the trunk's storage layer
+// stamps FailureBudgetExceeded on — checkPreExecBudget writes a plain
+// `%w`-wrapped sentinel, not a typed RuntimeError, and the classifier
+// must read it the same way). Empty when neither. Kept next to the
+// message on branch_finished so a reader knows the death's family
+// without parsing (PR #1491 review Rdabb2b: the branch classifier
+// equals the trunk's ceilingOf).
+func errorCode(err error) string {
+	var rt *RuntimeError
+	if errors.As(err, &rt) && rt != nil && rt.Code != "" {
+		return string(rt.Code)
+	}
+	if errors.Is(err, ErrBudgetExceeded) {
+		return string(store.FailureBudgetExceeded)
+	}
+	if stoppedBranch(err) {
+		// A branch the fan-out's own stop ended — the budget's
+		// cancelOnFirstFailure, the run cancelled, a deadline — was ended
+		// by the run's circumstances, and the cancelled run's code is what
+		// the storage layer stamps on such an end. A wrapper with an empty
+		// code falls through to the sentinels, so a stop the typed error
+		// carries still reads.
+		return string(store.FailureCancelled)
+	}
+	return ""
+}
+
+// declinedReason is the LoopDeclined.Reason an error carries: the loop
+// decline the death follows — a ceiling reason under CeilingReason, the
+// program's design (`loop_cap`) otherwise. Empty when the error follows
+// no decline.
+func declinedReason(err error) string {
+	var d *LoopDeclined
+	if errors.As(err, &d) && d != nil {
+		return d.Reason
+	}
+	return ""
 }
 
 // checkPreExecBudget emits budget_exceeded and sets result.err (returning
@@ -884,7 +943,8 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 // recordBranchUsage is this plus the verdict, recordFailedBranchSpend is this
 // alone.
 func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) *budgetCheckResult {
-	tokens, costUSD := extractUsage(output)
+	spend := extractSpend(output)
+	costUSD := spend.costUSD
 
 	if e.dailyCap != nil && costUSD > 0 {
 		*branchCostUSD += costUSD
@@ -902,8 +962,8 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 	if rs.budget == nil {
 		return nil
 	}
-	checks := rs.budget.RecordUsage(tokens, costUSD)
-	if tokens > 0 || costUSD > 0 {
+	checks := rs.budget.RecordUsage(spend)
+	if !spend.empty() {
 		// The run budget just moved in memory. Every exit of this branch that
 		// writes no checkpoint would leave it there: a failed node, a fail
 		// node, an edge that cannot resolve, an exceeded budget. The flag is
@@ -938,11 +998,27 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 // detached from the branch's, so a teardown mid-branch cannot refuse the
 // ledger write it is the last chance to make.
 func (e *Engine) recordFailedBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) {
-	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
+	spend := extractSpend(output)
+	if spend.empty() {
 		return
 	}
 	bookCtx, cancel := detachedBookingCtx(ctx)
 	defer cancel()
+	if spend.onlyUnreported() {
+		// Noted, not booked — recordFailedNodeSpend says why. The count
+		// still moved the run budget in memory, so the flush is armed.
+		if rs.budget == nil {
+			return
+		}
+		result.spendUncheckpointed = true
+		for _, w := range rs.budget.noteUnreported(spend.unreportedCalls) {
+			if err := e.emitBranch(bookCtx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
+				result.eventErrors++
+			}
+		}
+		return
+	}
 	// The flush is armed by whichever DURABLE axis the booking moved — the
 	// shared run budget or the branch's own cost cursor, both inside
 	// recordBranchSpend. Arming it here as well would order a full

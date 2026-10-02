@@ -18,13 +18,13 @@ func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) 
 	if e == nil || e.workflow == nil || r == nil || r.Checkpoint == nil {
 		return nil
 	}
-	b := newSharedBudget(e.workflow.Budget, e.logger)
+	b := e.newRunBudget()
 	if b == nil {
 		return nil
 	}
 	cp := r.Checkpoint
 	b.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed,
-		time.Duration(cp.BudgetElapsedNS), cp.BudgetUnpricedTokens, cp.BudgetUnpricedNodes)
+		time.Duration(cp.BudgetElapsedNS), cp.BudgetUnpricedTokens, cp.BudgetUnpricedNodes, cp.BudgetUnreportedCalls)
 	if raises := r.BudgetRaises; raises != nil {
 		b.RaiseCaps(ir.BudgetOverrides{
 			MaxCostUSD:    raises.MaxCostUSD,

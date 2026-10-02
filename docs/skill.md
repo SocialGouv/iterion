@@ -48,7 +48,7 @@ A single file — [`skills/adversarial-review-loop/SKILL.md`](../skills/adversar
 
 It is the practice this project ships its own changes through: a subagent whose posture is to *refute* the diff rather than bless it, a verification pass that judges the subagent as harshly as it judged the code, fixes applied at the class rather than the site, tests proved by mutation, and three named exits for a loop that has stopped converging. It carries a round budget (a ceiling on cost, never a target), the commit trailers that report what a review cost, the upstream plan review by a model of another family, and the journal/retrospective discipline that keeps the protocol honest instead of dogmatic.
 
-How **iterion itself** applies it — where the round is required, the ceiling by change size, who pays a local round versus a gate cycle — is in [docs/agents/adversarial-review-loop.md](agents/adversarial-review-loop.md).
+How **iterion itself** applies it — where the round is required, the ceiling by change size, who pays a local round versus a gate cycle — is in [docs/agents/workflow/adversarial-review-loop.md](agents/workflow/adversarial-review-loop.md).
 
 ## Installing from iterion itself
 

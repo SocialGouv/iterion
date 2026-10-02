@@ -61,12 +61,11 @@ func (p *parser) expectActionID() string {
 // `iterion connections add --alias`, where a dash is an ordinary thing to
 // write. Reading it with expectIdent alone meant `forge-main` — a name that
 // command stores without a word — could not be named from any workflow, and
-// the limit came from nothing but the reader.
+// the limit came from nothing but the reader. It is the one string|ident
+// reader every such property goes through, so a dotted bare alias
+// (`forge.main`) reads here as it reads everywhere else.
 func (p *parser) expectConnectionAlias() string {
-	if p.peek().Type == TokenString {
-		return p.next().Value
-	}
-	return p.expectIdent()
+	return p.expectStringOrIdentLine()
 }
 
 // expectScalarText reads a bare scalar (`30s`, `3`) or a quoted string, and

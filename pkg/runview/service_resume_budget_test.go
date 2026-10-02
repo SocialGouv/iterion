@@ -76,7 +76,7 @@ func TestResume_AskLessLocalResumeKeepsTheLaunchCap(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	res, err := svc.Launch(ctx, LaunchSpec{FilePath: botPath, Budget: &ir.BudgetOverrides{MaxCostUSD: 120}})
+	res, err := svc.Launch(ctx, LaunchSpec{FilePath: botPath, WorkDir: dir, Budget: &ir.BudgetOverrides{MaxCostUSD: 120}})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}

@@ -15,7 +15,7 @@ import (
 var provenanceFixture = map[string]string{
 	"main.bot":        "dsl: 2\nimport \"lib/schemas.bot\"\nimport \"lib/nodes.bot\"\n\n## the main's comment\n\nvars:\n  goal: string\n\nsecrets:\n  token: \"${TOKEN}\"\n\nagent a:\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"d\"\n  input: s\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
 	"lib/schemas.bot": "schema s:\n  ok: bool\n\nvars:\n  depth: int\n\npresets:\n  fast:\n    depth: 1\n",
-	"lib/nodes.bot":   "## the fragment's comment\n\nprompt p:\n  Hello.\n\nagent b:\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"e\"\n  system: p\n  output: s\n\nsubbot child:\n  source: \"kids/k.bot\"\n",
+	"lib/nodes.bot":   "## the fragment's comment\n\nprompt p:\n  Hello.\n\n## on the agent\nagent b:\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"e\"\n  system: p\n  output: s\n\nsubbot child:\n  source: \"kids/k.bot\"\n",
 }
 
 // carriers walks a raw document and returns, for every object that is a
@@ -30,12 +30,28 @@ func carriers(t *testing.T, raw []byte) map[string]string {
 	}
 	out := map[string]string{}
 	blocks := map[string]string{"vars": "fields", "presets": "entries", "attachments": "fields", "secrets": "fields"}
+	// nested records the comments a declaration or a block carries: they
+	// are carriers too, and provenance has to reach them where they are.
+	nested := func(prefix string, obj map[string]any) {
+		cs, ok := obj["comments"].([]any)
+		if !ok {
+			return
+		}
+		for i, c := range cs {
+			if co, ok := c.(map[string]any); ok {
+				out[prefix+".comments["+itoa(i)+"]"] = stringOf(co["file"])
+			}
+		}
+	}
 	for key, v := range doc {
 		switch vv := v.(type) {
 		case []any:
 			for i, e := range vv {
 				if obj, ok := e.(map[string]any); ok {
 					out[key+"["+itoa(i)+"]"] = stringOf(obj["file"])
+					if key != "comments" {
+						nested(key+"["+itoa(i)+"]", obj)
+					}
 				}
 			}
 		case map[string]any:
@@ -44,6 +60,7 @@ func carriers(t *testing.T, raw []byte) map[string]string {
 				continue
 			}
 			out[key] = stringOf(vv["file"])
+			nested(key, vv)
 			if entries, ok := vv[inner].([]any); ok {
 				for i, e := range entries {
 					if obj, ok := e.(map[string]any); ok {
@@ -81,7 +98,10 @@ func TestProvenanceIsOnEveryCarrier(t *testing.T) {
 		"agents[0]": "main.bot", "agents[1]": "lib/nodes.bot",
 		"prompts[0]": "lib/nodes.bot", "schemas[0]": "lib/schemas.bot", "subbots[0]": "lib/nodes.bot",
 		"workflows[0]": "main.bot",
-		"comments[0]":  "main.bot", "comments[1]": "lib/nodes.bot",
+		// A comment is a carrier too — at the file's head when it leads
+		// no declaration, on the declaration it was written around
+		// otherwise (#1282).
+		"comments[0]": "main.bot", "comments[1]": "lib/nodes.bot", "agents[1].comments[0]": "lib/nodes.bot",
 		"vars": "main.bot", "vars.fields[0]": "main.bot", "vars.fields[1]": "lib/schemas.bot",
 		"secrets": "main.bot", "secrets.fields[0]": "main.bot",
 		"presets": "lib/schemas.bot", "presets.entries[0]": "lib/schemas.bot",
@@ -124,6 +144,10 @@ func TestProvenanceIsReadBack(t *testing.T) {
 	}
 	if f.Comments[1].Span.Start.File != "lib/nodes.bot" || f.Subbots[0].Span.Start.File != "lib/nodes.bot" {
 		t.Fatalf("comment and subbot read back from %q and %q", f.Comments[1].Span.Start.File, f.Subbots[0].Span.Start.File)
+	}
+	// A comment carried by a declaration reads its file back too.
+	if len(f.Agents[1].Comments) != 1 || f.Agents[1].Comments[0].Span.Start.File != "lib/nodes.bot" {
+		t.Fatalf("the agent's comments read back as %+v", f.Agents[1].Comments)
 	}
 	// Without provenance, nothing is invented.
 	plain, err := ast.UnmarshalFile(mustMarshal(t, u.Merged))

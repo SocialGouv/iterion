@@ -162,16 +162,13 @@ func meterScopeForKeyScope(scopeTeamID string) string {
 }
 
 // usageMeterBackendForProvider names the meter backend a provider's
-// refusals are recorded under, "" for one that carries no metered
-// evidence. Anthropic-shaped keys (the real one and the z.ai facade) are
-// spent by claude_code sessions, so that is where the runner meters them —
-// the same mapping the launch walk applies, kept identical on purpose.
+// refusals are recorded under, "" for one that carries no metered evidence.
+// Deferred to the delegate that does the metering: "kept identical on
+// purpose" was a promise made twice in two packages, and the day they drift
+// this view reports "never refused" for a credential the launch walk is
+// actively skipping.
 func usageMeterBackendForProvider(prov secrets.Provider) string {
-	switch prov {
-	case secrets.ProviderAnthropic, secrets.ProviderZAI:
-		return delegate.BackendClaudeCode
-	}
-	return ""
+	return delegate.UsageMeterBackendForProvider(prov)
 }
 
 // aliveRunsFor counts the runs holding k's concurrency slot right now —
@@ -441,8 +438,9 @@ func (s *Server) handleUpdateApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	// AuthZ: team-wide keys → admin/owner of that team. User-scoped
-	// keys → only the owning user (or super-admin).
+	// AuthZ: team-wide keys → whoever may manage that team, which is the
+	// same right that created the key. User-scoped keys → only the owning
+	// user (or super-admin).
 	if !s.canMutateApiKey(r.Context(), id, key) {
 		httpError(w, http.StatusForbidden, "cannot mutate this key")
 		return

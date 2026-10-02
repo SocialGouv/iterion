@@ -1,0 +1,11 @@
+# refused: file is a schema field type, not a var type
+dsl: 2
+vars:
+  x: file
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

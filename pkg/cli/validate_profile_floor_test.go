@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // `iterion validate` on a bundle written in profile 2 whose manifest
@@ -30,7 +32,7 @@ func TestRunValidate_AsksAProfileTwoBundleForItsFloor(t *testing.T) {
 	if s := out.String(); !strings.Contains(s, "C252") || !strings.Contains(s, "main.bot") {
 		t.Fatalf("validate did not ask for the floor:\n%s", s)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("name: p2\ndisplay_name: P2\nrequires:\n  iterion: \">= 3.141.0\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("name: p2\ndisplay_name: P2\nrequires:\n  iterion: \">= "+parser.ProfileSince[2]+"\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	jp, out = jsonPrinter()

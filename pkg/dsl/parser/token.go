@@ -111,6 +111,7 @@ const (
 	TokenAs
 	TokenWith
 	TokenEnum
+	TokenMatching
 	// Session modes
 	TokenFresh
 	TokenInherit
@@ -172,6 +173,8 @@ const (
 	TokenCompress
 	// AutoMemory backend auto-memory (MEMORY.md) switch: on|off
 	TokenAutoMemory
+	// AmbientContext the ambient context a node inherits: none|workspace|operator|all
+	TokenAmbientContext
 	// LoopBudgetGuard back-edge affordability guard switch: on|off
 	TokenLoopBudgetGuard
 	// RepoDevbox target-repo devbox.json provisioning switch: on|off
@@ -300,6 +303,7 @@ var tokenNames = map[TokenType]string{
 	TokenAs:                 "as",
 	TokenWith:               "with",
 	TokenEnum:               "enum",
+	TokenMatching:           "matching",
 	TokenFresh:              "fresh",
 	TokenInherit:            "inherit",
 	TokenInheritIfAvailable: "inherit_if_available",
@@ -348,6 +352,7 @@ var tokenNames = map[TokenType]string{
 	TokenWorktree:            "worktree",
 	TokenCompress:            "compress",
 	TokenAutoMemory:          "auto_memory",
+	TokenAmbientContext:      "ambient_context",
 	TokenLoopBudgetGuard:     "loop_budget_guard",
 	TokenRepoDevbox:          "repo_devbox",
 	TokenWorkspaceCheckpoint: "workspace_checkpoint",
@@ -450,6 +455,7 @@ var keywords = map[string]TokenType{
 	"as":                    TokenAs,
 	"with":                  TokenWith,
 	"enum":                  TokenEnum,
+	"matching":              TokenMatching,
 	"fresh":                 TokenFresh,
 	"inherit":               TokenInherit,
 	"inherit_if_available":  TokenInheritIfAvailable,
@@ -495,6 +501,7 @@ var keywords = map[string]TokenType{
 	"worktree":              TokenWorktree,
 	"compress":              TokenCompress,
 	"auto_memory":           TokenAutoMemory,
+	"ambient_context":       TokenAmbientContext,
 	"loop_budget_guard":     TokenLoopBudgetGuard,
 	"repo_devbox":           TokenRepoDevbox,
 	"workspace_checkpoint":  TokenWorkspaceCheckpoint,
@@ -527,6 +534,12 @@ type Token struct {
 	// the tokens the scanner reads from the text; a virtual token (INDENT,
 	// DEDENT, NEWLINE) carries the position it was emitted at.
 	Offset, End int
+	// EndLine is the 1-based line the token ENDS on — its own line for
+	// almost every token, and below it for a value written over several
+	// lines (a raw string, a `|` block scalar). Derived from the token's
+	// extent in the SOURCE, never from its value: a profile-2 `"a\nb"`
+	// decodes to two lines and occupies one.
+	EndLine int
 	// Code is set on a TokenError only: the diagnostic code of the lexer's
 	// diagnosis (a tab, an unterminated string, a bad escape), so the parser
 	// reports THAT — never "expected X, got Error" with a token-shape hint

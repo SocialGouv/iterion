@@ -275,6 +275,8 @@ func TestBotVarsValidate(t *testing.T) {
 	ok := BotVars{Vars: map[string]string{
 		"ITERION_VIBE_EFFORT_CLAUDE":            "max",
 		"ITERION_GOLDEN_MASTER_ADVERSARY_MODEL": "claude-opus-5",
+		"ITERION_VIBE_MODEL_CLAUDE":             "claude-opus-5-5[1m]",
+		"ITERION_SEC_AUDIT_PROVIDER_CHAIN":      "zai:glm-5.3,anthropic:claude-opus-5-5",
 	}}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("valid vars: %v", err)
@@ -290,6 +292,7 @@ func TestBotVarsValidate(t *testing.T) {
 		"sandbox image family":   "ITERION_SANDBOX_DEFAULT_IMAGE",
 		"credential-shaped key":  "ITERION_MY_API_KEY",
 		"credential-shaped tok":  "ITERION_FORGE_TOKEN_TTL",
+		"dispatcher infra":       "ITERION_DISPATCHER_PORT",
 	}
 	for label, name := range rejected {
 		if err := (BotVars{Vars: map[string]string{name: "v"}}).Validate(); err == nil {
@@ -300,6 +303,13 @@ func TestBotVarsValidate(t *testing.T) {
 		"blank value":      "  ",
 		"multi-line value": "a\nb",
 		"oversized value":  strings.Repeat("x", botVarsMaxValueLen+1),
+		// Substituted raw into tool and script bodies: each of these would
+		// run as code in a publish step that holds the forge token.
+		"command separator":    "max; echo INJECTED #",
+		"command substitution": "$(id)",
+		"backtick":             "`id`",
+		"pipe":                 "max | cat",
+		"space":                "max now",
 	}
 	for label, v := range badValues {
 		if err := (BotVars{Vars: map[string]string{"ITERION_OK_VAR": v}}).Validate(); err == nil {
@@ -314,5 +324,67 @@ func TestBotVarsValidate(t *testing.T) {
 		if err := (BotVars{Vars: big}).Validate(); err == nil {
 			t.Error("a record past the key bound must be rejected")
 		}
+	}
+}
+
+// An env default the knobs cannot read refuses the boot rather than being
+// read as the built-in default — the operator wrote something and meant it.
+func TestValidateEnv_RefusesWhatTheKnobsCannotRead(t *testing.T) {
+	t.Setenv(EnvKeysFirst, "")
+	t.Setenv(EnvFacadeDefault, "")
+	if err := ValidateEnv(); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+	t.Setenv(EnvFacadeDefault, "Never")
+	t.Setenv(EnvKeysFirst, "true")
+	if err := ValidateEnv(); err != nil {
+		t.Fatalf("valid values: %v", err)
+	}
+	if got := (*PlatformCredentials)(nil).Facade(); got != FacadeNever {
+		t.Errorf("Facade() with the env at Never = %q, want never", got)
+	}
+	if !(*PlatformCredentials)(nil).PrefersKeys() {
+		t.Errorf("PrefersKeys() with the env at true = false")
+	}
+	for name, val := range map[string]string{EnvKeysFirst: "maybe", EnvFacadeDefault: "sometimes"} {
+		t.Setenv(EnvKeysFirst, "")
+		t.Setenv(EnvFacadeDefault, "")
+		t.Setenv(name, val)
+		if err := ValidateEnv(); err == nil {
+			t.Errorf("%s=%q accepted", name, val)
+		}
+	}
+}
+
+// `tier` is the per-tier rule #1956 first shipped, kept as the opt-out when
+// `auto` became run-wide: every reader accepts it, and a boot or a record
+// carrying an unknown value still refuses.
+func TestFacadePolicy_TierIsEverywhereAValue(t *testing.T) {
+	t.Setenv(EnvFacadeDefault, "")
+	if got := (*PlatformCredentials)(nil).Facade(); got != FacadeAuto {
+		t.Fatalf("the built-in default = %q, want auto", got)
+	}
+	t.Setenv(EnvFacadeDefault, "Tier")
+	if err := ValidateEnv(); err != nil {
+		t.Fatalf("ValidateEnv(tier): %v", err)
+	}
+	if got := (*PlatformCredentials)(nil).Facade(); got != FacadeTier {
+		t.Errorf("Facade() with the env at Tier = %q, want tier", got)
+	}
+	stored := "tier"
+	rec := &PlatformCredentials{FacadeDefault: &stored}
+	if got := rec.Facade(); got != FacadeTier {
+		t.Errorf("Facade() with the record at tier = %q, want tier (the record wins)", got)
+	}
+	if err := rec.Validate(); err != nil {
+		t.Errorf("Validate(tier): %v", err)
+	}
+	t.Setenv(EnvFacadeDefault, "sometimes")
+	if err := ValidateEnv(); err == nil {
+		t.Error("an unknown facade value was accepted")
+	}
+	bad := "sometimes"
+	if err := (&PlatformCredentials{FacadeDefault: &bad}).Validate(); err == nil {
+		t.Error("a record with an unknown facade value was accepted")
 	}
 }

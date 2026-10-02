@@ -308,8 +308,17 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		Ctx:      ctx,
 		Workflow: r.workflow,
 		Store:    s,
-		Inbox:    &model.StoreInboxBinder{Store: s},
-		RunID:    spec.RunID,
+		// The dispatcher's engine sets neither sandbox tier, so the
+		// workflow's own `sandbox:` block decides — which is exactly what
+		// these two empty tiers resolve to. Declared rather than left
+		// blank: an omission would read as "this surface did not look",
+		// and the MCP start policy would stay closed for the whole run.
+		SandboxTiersKnown: true,
+		Inbox:             &model.StoreInboxBinder{Store: s},
+		RunID:             spec.RunID,
+		// The run's record does not exist yet when its executor is built, so
+		// a credential the dispatch carries is known here only from the vars.
+		Vars:     stringifyVars(spec.Vars),
 		Logger:   runLogger,
 		StoreDir: spec.StoreDir,
 		WorkDir:  spec.WorkspacePath,
@@ -480,8 +489,11 @@ func (r *EngineRunner) dispatchViaService(ctx context.Context, spec DispatchSpec
 		FilePath: r.workflowPath,
 		RunID:    spec.RunID,
 		Vars:     stringifyVars(spec.Vars),
-		WorkDir:  spec.WorkspacePath,
-		DailyCap: spec.DailyCap,
+		// The daemon's own warn-and-proceed contract on unknown bot_args
+		// (loop.go): the launch proceeds, the warning already fired.
+		AllowUnknownInputs: true,
+		WorkDir:            spec.WorkspacePath,
+		DailyCap:           spec.DailyCap,
 	}
 	if spec.Issue != nil && spec.Issue.ID != "" {
 		ls.SourceRef = &store.RunSource{

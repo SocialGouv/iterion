@@ -290,7 +290,7 @@ export interface NodeServed {
   context_window?: number;
   max_output_tokens?: number;
   // Provider routing label of the session behind this record
-  // ("anthropic-oauth", "facade:<base url>", …). A model id alone cannot
+  // ("anthropic-oauth", "facade:<slot>:<base url>", …). A model id alone cannot
   // tell that an Anthropic-shaped facade answered a claude id with
   // whatever it aliases it to. Absent when the backend reports none —
   // that reads "route unknown", never "not a facade".
@@ -336,6 +336,10 @@ export type RunCheckpoint = CheckpointBudget & {
 
 export interface RunHeader {
   id: string;
+  // The team the run belongs to (ADR-103): by-id reads are served from
+  // the run's team, so the console can disclose that the run being viewed
+  // lives outside the caller's active team. Empty on legacy runs.
+  tenant_id?: string;
   execution_context?: ExecutionContext;
   admission?: AdmissionDecision;
   output_corrections?: Record<string, OutputCorrectionEpisode>;
@@ -737,8 +741,9 @@ export interface RunRepo {
 }
 
 // Shape of GET /api/runs/global-active — runs currently active in
-// ANY iterion store on the host (the global ~/.iterion slot plus
-// every per-project store under ~/.iterion/projects/). Surfaced on
+// ANY iterion store on the host (the iterion home's own slot plus
+// every per-project store under its projects/ — $ITERION_HOME, else
+// ~/.iterion). Surfaced on
 // the Home view so an operator sees in-flight work without having
 // to open each project first.
 export interface GlobalActiveRun {
@@ -936,6 +941,10 @@ export interface CreateRunRequest {
   compress?: string;
   // auto-memory (MEMORY.md) override ("on" | "off"). Empty inherits the
   // workflow/node `auto_memory:` DSL then ITERION_AUTO_MEMORY (default off).
+  // ambient-context override ("none" | "workspace" | "operator" | "all").
+  // Empty inherits the workflow/node `ambient_context:` DSL then
+  // ITERION_AMBIENT_CONTEXT (default workspace, ADR-119).
+  ambient_context?: string;
   auto_memory?: string;
   // tool-permission gate mode ("off" | "ask" | "deny"). Empty inherits
   // the workflow/node `permission:` DSL then ITERION_PERMISSION. "ask"
@@ -1038,6 +1047,7 @@ export interface PreviewEffectiveKnob {
 export interface PreviewEffectiveSettings {
   compress: PreviewEffectiveKnob;
   auto_memory: PreviewEffectiveKnob;
+  ambient_context: PreviewEffectiveKnob;
   permission: PreviewEffectiveKnob;
   backend: PreviewEffectiveKnob;
 }

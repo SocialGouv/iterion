@@ -26,6 +26,23 @@ import (
 // the shared master key.
 type RunBundle struct {
 	APIKeys map[Provider]string `json:"api_keys,omitempty"`
+	// PinnedAPIKeys carries keys a shared tier (org, platform) filled ONLY
+	// because a route of the run NAMES that provider, on a wire family
+	// another slot already fills. They are deliberately NOT in APIKeys:
+	// every default-precedence reader walks that map, and the anthropic
+	// wire ranks the facade slots FIRST — a moonshot key added there for
+	// one pinned node would silently reroute every UNPINNED node of the
+	// run onto Kimi, and past a tenant's own forfait, which is the
+	// cross-vendor substitution the one-key-per-family rule exists to
+	// prevent. Kept in their own map, they are invisible to those readers
+	// by construction rather than by a guard each would have to repeat.
+	//
+	// The rule for reading one: a pinned key serves ONLY a route that
+	// names its provider — the claude_code delegate under an explicit
+	// `provider:` hint, a claw node whose model spec carries the
+	// `<provider>/` prefix. Metering still stamps its fingerprint, so its
+	// own usage windows are attributed to it like any other credential.
+	PinnedAPIKeys map[Provider]string `json:"pinned_api_keys,omitempty"`
 	// GenericSecrets maps workflow secret names to plaintext payloads
 	// resolved from the tenant/user secret store at publish time.
 	GenericSecrets map[string]string `json:"generic_secrets,omitempty"`
@@ -53,6 +70,22 @@ type RunBundle struct {
 	// token refreshes, re-stamped when a human posts new credentials.
 	// Metering keys on it; empty for records that predate stamping.
 	OAuthFingerprints map[string]string `json:"oauth_fingerprints,omitempty"`
+	// OAuthRecordRefs maps the same kinds to the ID of the OAuthStore record
+	// the payload was read from. The server's refresh worker is the ONE
+	// refresher of a record: a runner follows the record by this id to pick
+	// up each rotation, instead of exchanging the refresh token itself and
+	// revoking the token every other holder still uses. A lent subscription
+	// names the DONOR's record. Absent from bundles sealed by an older
+	// server.
+	OAuthRecordRefs map[string]string `json:"oauth_record_refs,omitempty"`
+	// OAuthRecordConnectedAt maps the same kinds to the connect time
+	// (OAuthRecord.CreatedAt) of the record a ref names. Only a connect
+	// rewrites it; the refresh worker's rotations never do, even those that
+	// re-stamp the fingerprint. A lent slot is held to it: the borrower
+	// stops following the donor's record only when the donor re-connected
+	// the slot with another subscription. Absent from bundles sealed by an
+	// older server.
+	OAuthRecordConnectedAt map[string]time.Time `json:"oauth_record_connected_at,omitempty"`
 	// ForgeAppBotLogin is the GitHub-App bot login (e.g.
 	// "iterion-forge-1234[bot]") when the run's forge_token was resolved
 	// from a github_app connection. An installation token can't `GET /user`

@@ -26,6 +26,10 @@ func isolateEnv(t *testing.T) {
 		// dev machine (a first-class supported provider) flips the anthropic
 		// provider off and turns detection tests red.
 		"ZAI_API_KEY",
+		// Moonshot is the other Anthropic-compatible facade; scrub it so a
+		// host holding a real key (or configured for the kimi CLI, which
+		// reads the same variable) does not flip moonshot Available.
+		"MOONSHOT_API_KEY", "MOONSHOT_BASE_URL",
 		// xAI Grok is a first-class claw provider (XAI_API_KEY); scrub so a
 		// host with a real key does not flip claw Available unexpectedly.
 		"XAI_API_KEY", "XAI_BASE_URL",
@@ -35,6 +39,7 @@ func isolateEnv(t *testing.T) {
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
 		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR", "ITERION_PI_AGENT_DIR",
+		"XDG_DATA_HOME", "ITERION_OPENCODE_BIN",
 		"HOME",
 	} {
 		t.Setenv(k, "")
@@ -47,6 +52,8 @@ func isolateEnv(t *testing.T) {
 	// pi ships on some dev machines and not others; without this the pi
 	// hints differ per host.
 	stubBinary(t, &findPiBinary, "")
+	// opencode ships on some dev machines and not others; same reason.
+	stubBinary(t, &findOpenCodeBinary, "")
 	// The macOS Keychain probe shells out to /usr/bin/security and would
 	// read the dev machine's real Claude Code login on darwin — stub it to
 	// "absent" so detection is deterministic on every host. Tests that
@@ -341,12 +348,43 @@ func TestZAISuggestedModel(t *testing.T) {
 			continue
 		}
 		found = true
-		if p.SuggestedModel != "anthropic/glm-5.2" {
-			t.Fatalf("zai suggested model = %q, want anthropic/glm-5.2", p.SuggestedModel)
+		if p.SuggestedModel != "anthropic/glm-5.3" {
+			t.Fatalf("zai suggested model = %q, want anthropic/glm-5.3 — GLM is always 5.3", p.SuggestedModel)
 		}
 	}
 	if !found {
 		t.Fatal("zai provider not present in detectProviders()")
+	}
+}
+
+// The picker can only offer a provider it lists. Moonshot detects on its own
+// key alone — unlike z.ai there is no ANTHROPIC_BASE_URL form to recognise,
+// because a Moonshot key is routed with MOONSHOT_BASE_URL.
+func TestDetect_MoonshotProvider(t *testing.T) {
+	isolateEnv(t)
+	find := func(t *testing.T) ProviderStatus {
+		t.Helper()
+		for _, p := range detectProviders() {
+			if p.Name == "moonshot" {
+				return p
+			}
+		}
+		t.Fatal("moonshot provider not present in detectProviders()")
+		return ProviderStatus{}
+	}
+	if p := find(t); p.Available {
+		t.Errorf("moonshot reported available with no key: %+v", p)
+	}
+	t.Setenv("MOONSHOT_API_KEY", "moonshot-test")
+	p := find(t)
+	if !p.Available {
+		t.Error("moonshot must be available once MOONSHOT_API_KEY is set")
+	}
+	if p.Source != "MOONSHOT_API_KEY" {
+		t.Errorf("moonshot source = %q, want MOONSHOT_API_KEY", p.Source)
+	}
+	if p.SuggestedModel != "moonshot/kimi-k2" {
+		t.Errorf("moonshot suggested model = %q, want moonshot/kimi-k2", p.SuggestedModel)
 	}
 }
 
@@ -784,4 +822,18 @@ func TestDetectPiMatchesWhatTheRunWillRead(t *testing.T) {
 			t.Errorf("sources = %v, want one — the same credential was listed twice", st.Sources)
 		}
 	})
+}
+
+// Providers is Detect's provider list, without the backend probes: a caller
+// that reads only the providers (the supervisor's model resolution) spawns no
+// CLI and still sees exactly what Detect reports.
+func TestProvidersIsDetectsProviderList(t *testing.T) {
+	stubClaudeAuthStatus(t, true)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-detect-test")
+	t.Setenv("ZAI_API_KEY", "")
+	if got, want := Providers(), Detect(context.Background()).Providers; !slices.EqualFunc(got, want, func(a, b ProviderStatus) bool {
+		return a.Name == b.Name && a.Available == b.Available && a.SuggestedModel == b.SuggestedModel && a.Source == b.Source && slices.Equal(a.OverriddenSources, b.OverriddenSources)
+	}) {
+		t.Errorf("Providers() = %+v, want Detect's %+v", got, want)
+	}
 }

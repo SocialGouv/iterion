@@ -3,6 +3,8 @@ package runner
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +195,7 @@ func TestRecordCredentialSpend_SandboxedClawChargesTheCodexSlot(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{
 			delegate.BackendClaudeCode:     "/tmp/oauth-claude",
-			string(secrets.OAuthKindCodex): "/tmp/oauth-codex",
+			string(secrets.OAuthKindCodex): chatGPTForfaitDir(t),
 		},
 		PlatformSourced: map[string]bool{string(secrets.OAuthKindCodex): true},
 		Fingerprints: map[string]string{
@@ -269,4 +271,100 @@ func TestRecordCredentialSpend_WarnsOnceOnAnUnattributableRoute(t *testing.T) {
 	if rows, _ := counter.List(ctx, now, "team-c"); len(rows) != 0 {
 		t.Fatalf("rows = %+v, want none: the decline must not charge anybody", rows)
 	}
+}
+
+// A claude_code node pinned `provider: zai` spends the z.ai key whatever holds
+// the wire's default — here the team's forfait — and its session says so on
+// delegate_finished. Read from (backend, model) alone, its spend was booked on
+// the forfait, which never served it; an unpinned node of the same model in
+// the same run still books on the forfait.
+func TestRecordCredentialSpend_BooksAClaudeCodeRouteOnTheCredentialItsSessionNamed(t *testing.T) {
+	counter := credusage.NewMemoryCounter()
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), CredUsage: counter}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "zai-pinned"},
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/tmp/oauth"},
+		PlatformSourced:      map[string]bool{string(secrets.ProviderZAI): true},
+		Fingerprints: map[string]string{
+			delegate.BackendClaudeCode:  "fp-forfait",
+			string(secrets.ProviderZAI): "fp-zai",
+		},
+	})
+	usage := newMetricsEmitter(nil, nil)
+	for node, source := range map[string]string{
+		"pinned":   "facade:zai:https://api.z.ai/api/anthropic",
+		"unpinned": "anthropic-oauth",
+	} {
+		usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: node,
+			Data: map[string]any{"declared_model": "claude-opus-5-5"}})
+		usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: node,
+			Data: map[string]any{"backend": delegate.BackendClaudeCode, "tokens": float64(1000), "cost_usd": 1.0, "fingerprint": source}})
+	}
+
+	now := time.Now().UTC()
+	r.recordCredentialSpend(ctx, &queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, usage, now)
+	rows, err := counter.List(ctx, now, "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, row := range rows {
+		got[row.Fingerprint] += row.CostUSD
+	}
+	if got["fp-zai"] != 1.0 || got["fp-forfait"] != 1.0 {
+		t.Errorf("booked %v, want $1 on the z.ai key (the pinned node) and $1 on the forfait (the unpinned one)", got)
+	}
+}
+
+// The two anthropic labels on the ledger: a session on the key a shared tier
+// pinned for its route ("anthropic-direct") books on that key, one on the
+// pod's env ("anthropic-env") on nobody — never on the z.ai key holding the
+// run's default, which neither spent.
+func TestRecordCredentialSpend_BooksTheDirectLabelsOnTheKeyTheyNamed(t *testing.T) {
+	counter := credusage.NewMemoryCounter()
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), CredUsage: counter}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:         map[secrets.Provider]string{secrets.ProviderZAI: "zai-tenant"},
+		PinnedAPIKeys:   map[secrets.Provider]string{secrets.ProviderAnthropic: "ant-platform"},
+		PlatformSourced: map[string]bool{string(secrets.ProviderAnthropic): true},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):       "fp-zai",
+			string(secrets.ProviderAnthropic): "fp-ant",
+		},
+	})
+	usage := newMetricsEmitter(nil, nil)
+	for node, source := range map[string]string{"pinned": "anthropic-direct", "ambient": "anthropic-env"} {
+		usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: node,
+			Data: map[string]any{"declared_model": "claude-opus-5-5"}})
+		usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: node,
+			Data: map[string]any{"backend": delegate.BackendClaudeCode, "tokens": float64(1000), "cost_usd": 1.0, "fingerprint": source}})
+	}
+
+	now := time.Now().UTC()
+	r.recordCredentialSpend(ctx, &queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, usage, now)
+	rows, err := counter.List(ctx, now, "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, row := range rows {
+		got[row.Fingerprint] += row.CostUSD
+	}
+	if got["fp-ant"] != 1.0 || got["fp-zai"] != 0 {
+		t.Errorf("booked %v, want $1 on the pinned Anthropic key and nothing on the z.ai key", got)
+	}
+}
+
+// chatGPTForfaitDir materialises a ChatGPT-mode codex forfait the way a runner
+// does, under a hermetic OAuth env: claw spends it on an `openai/…` route only
+// when the blob is there and this process lets it (model.OpenAIForfaitServes).
+func chatGPTForfaitDir(t *testing.T) string {
+	t.Helper()
+	t.Setenv("ITERION_OPENAI_USE_OAUTH", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"tok-abc","account_id":"acct-xyz"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

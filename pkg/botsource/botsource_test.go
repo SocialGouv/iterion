@@ -50,7 +50,9 @@ func TestValidate(t *testing.T) {
 }
 
 func TestMemoryStore_CRUD(t *testing.T) {
-	ctx := context.Background()
+	// The read paths require a tenant ctx (the twins must not diverge on
+	// scoping), so even this CRUD test reads through a scoped one.
+	ctx := store.WithTenant(context.Background(), "team-1")
 	st := NewMemoryStore()
 
 	created, err := st.Create(ctx, validSource("team-1", "reviewer"))

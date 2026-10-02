@@ -477,32 +477,45 @@ func TestCollectHostStateMounts(t *testing.T) {
 	})
 }
 
-func TestResolveSandboxSpecDefaultTierDegrades(t *testing.T) {
-	// Global-default tier (sandbox-by-default): outside a git repo the
-	// default is not applicable — quiet skip, no error, no skipReason.
-	spec, source, skipReason, err := resolveSandboxSpec(&ir.Workflow{}, "", "", "auto", "ghcr.io/test/sandbox:v1")
-	if err != nil {
-		t.Fatalf("default-tier auto outside a repo must not error, got: %v", err)
-	}
-	if spec != nil {
-		t.Fatalf("expected nil spec, got %+v", spec)
-	}
-	if skipReason != "" {
-		t.Errorf("outside-a-repo skip must be quiet (no event), got skipReason %q", skipReason)
-	}
-	if !strings.Contains(source, "not applicable") {
-		t.Errorf("source = %q, want it to note the default was not applicable", source)
-	}
-
-	// An EXPLICIT workflow request keeps the hard error.
+// TestResolveSandboxSpecAutoDegradesWhateverItsSource pins the rule
+// #1425 settled: `auto` never refuses, and it answers the same way
+// wherever the word was written. Each host condition it cannot honour
+// (outside a git repository; a devcontainer it cannot use with no
+// default image to fall back on) resolves to NO spec plus a non-empty
+// skipReason, which resolveAndStartSandbox turns into the
+// sandbox_skipped event.
+//
+// Mutation: gate either branch back on `source == sandboxDefaultSource`
+// and return an error for the explicit tier → the workflow-tier
+// sub-cases redden. Drop the skipReason on the outside-a-repo branch →
+// the "must be visible" assertion reddens (a silent skip is how a bot
+// discovers, mid-run, that nothing is isolated).
+func TestResolveSandboxSpecAutoDegradesWhateverItsSource(t *testing.T) {
 	autoWf := &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}}
-	_, _, _, err = resolveSandboxSpec(autoWf, "", "", "", "ghcr.io/test/sandbox:v1")
-	if err == nil {
-		t.Fatal("explicit auto outside a repo must error")
+	// Outside a git repo: auto has no tree to mount. Both tiers degrade,
+	// visibly.
+	for _, tier := range []struct {
+		name   string
+		wf     *ir.Workflow
+		global string
+	}{
+		{"global default tier", &ir.Workflow{}, "auto"},
+		{"workflow block tier", autoWf, ""},
+	} {
+		spec, _, skipReason, err := resolveSandboxSpec(tier.wf, "", "", tier.global, "ghcr.io/test/sandbox:v1")
+		if err != nil {
+			t.Fatalf("%s: auto outside a repo must degrade, not error, got: %v", tier.name, err)
+		}
+		if spec != nil {
+			t.Fatalf("%s: expected nil spec, got %+v", tier.name, spec)
+		}
+		if skipReason == "" {
+			t.Errorf("%s: the degrade must be visible — skipReason is what becomes the sandbox_skipped event", tier.name)
+		}
 	}
 
-	// Unreadable devcontainer: default tier degrades WITH a visible
-	// skipReason; explicit request errors.
+	// A devcontainer the parser cannot read: a default image is what
+	// keeps such a run sandboxed; without one, the degrade is visible.
 	repo := t.TempDir()
 	if mkErr := os.MkdirAll(filepath.Join(repo, ".devcontainer"), 0o755); mkErr != nil {
 		t.Fatalf("mkdir: %v", mkErr)
@@ -513,7 +526,7 @@ func TestResolveSandboxSpecDefaultTierDegrades(t *testing.T) {
 	// With a default image available, a broken devcontainer falls back to
 	// it (still sandboxed); only WITHOUT a default image does the run
 	// degrade to unsandboxed with a visible skipReason.
-	spec, _, skipReason, err = resolveSandboxSpec(&ir.Workflow{}, repo, "", "auto", "ghcr.io/test/sandbox:v1")
+	spec, _, skipReason, err := resolveSandboxSpec(&ir.Workflow{}, repo, "", "auto", "ghcr.io/test/sandbox:v1")
 	if err != nil {
 		t.Fatalf("default-tier auto with a broken devcontainer must not error, got: %v", err)
 	}
@@ -533,8 +546,20 @@ func TestResolveSandboxSpecDefaultTierDegrades(t *testing.T) {
 	if skipReason == "" {
 		t.Error("no-default-image degrade must carry a skipReason (sandbox_skipped event)")
 	}
-	if _, _, _, err = resolveSandboxSpec(autoWf, repo, "", "", "ghcr.io/test/sandbox:v1"); err == nil {
-		t.Fatal("explicit auto with a broken devcontainer must error")
+	// Same broken devcontainer, same default image, mode written in the
+	// workflow instead of inherited: same answer. The engine always
+	// resolves a built-in default image, so this is the shape a bot
+	// declaring `sandbox: auto` meets on a repo whose devcontainer the
+	// parser refuses — iterion's own declares --privileged.
+	spec, _, skipReason, err = resolveSandboxSpec(autoWf, repo, "", "", "ghcr.io/test/sandbox:v1")
+	if err != nil {
+		t.Fatalf("workflow-tier auto with a broken devcontainer must fall back like the default tier, got err: %v", err)
+	}
+	if spec == nil || spec.Image != "ghcr.io/test/sandbox:v1" {
+		t.Fatalf("expected the default-image fallback spec, got %+v", spec)
+	}
+	if skipReason != "" {
+		t.Errorf("a fallback to the default image is still sandboxed — no skipReason expected, got %q", skipReason)
 	}
 }
 
@@ -575,10 +600,22 @@ func TestResolveSandboxSpecDefaultTierUnusableDevcontainerFallsBack(t *testing.T
 		t.Errorf("source = %q, want it to note the unusable devcontainer", source)
 	}
 
-	// Explicit workflow auto keeps the hard error.
+	// A workflow-declared auto reads the same refusal from the parser
+	// and takes the same fallback: the mode decides, not the tier that
+	// named it (#1425).
 	autoWf := &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}}
-	if _, _, _, err := resolveSandboxSpec(autoWf, repo, "", "", "ghcr.io/test/sandbox:v1"); err == nil {
-		t.Fatal("explicit auto with unusable devcontainer must error")
+	spec, source, skipReason, err = resolveSandboxSpec(autoWf, repo, "", "", "ghcr.io/test/sandbox:v1")
+	if err != nil {
+		t.Fatalf("workflow-tier auto with unusable devcontainer must not error, got: %v", err)
+	}
+	if spec == nil || spec.Image != "ghcr.io/test/sandbox:v1" {
+		t.Fatalf("expected default-image spec, got %+v", spec)
+	}
+	if skipReason != "" {
+		t.Fatalf("must not degrade to unsandboxed while a default image serves (skipReason %q)", skipReason)
+	}
+	if !strings.Contains(source, "devcontainer unusable") {
+		t.Errorf("source = %q, want it to note the unusable devcontainer", source)
 	}
 }
 

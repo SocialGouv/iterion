@@ -93,6 +93,12 @@ interface TabsState {
   // example fork) restores after a reload with no file param and cannot
   // reload its document.
   bindFile: (id: string, file: string) => void;
+  // unbindFile is bindFile's opposite: the tab's document stopped following
+  // anything (File → New, Import, Start blank), so the tab names nothing —
+  // no file, no draft — and takes the untitled label back. A tab that kept
+  // its previous file would fetch it over the author's work on the next
+  // mount; one that kept its draft would re-apply the draft.
+  unbindFile: (id: string) => void;
 }
 
 function generateId(): string {
@@ -144,17 +150,20 @@ function findExistingTab(
   tabs: Tab[],
   kind: TabKind,
   params: Record<string, string>,
+  projectKey: string | null,
 ): Tab | undefined {
+  // Reuse only tabs the current project's view can actually show.
+  const scopedTabs = tabs.filter((t) => tabInScope(t, projectKey));
   // A draft tab starts as `{draft}` and later gains `file` on Save As.
   // Exact paramsEqual would miss it and open a duplicate "Draft" tab
   // that steals focus from the saved file (R11c8b3).
   if (kind === "editor" && params.draft) {
-    const byDraft = tabs.find(
+    const byDraft = scopedTabs.find(
       (t) => t.kind === "editor" && t.params.draft === params.draft,
     );
     if (byDraft) return byDraft;
   }
-  return tabs.find((t) => t.kind === kind && paramsEqual(t.params, params));
+  return scopedTabs.find((t) => t.kind === kind && paramsEqual(t.params, params));
 }
 
 function activeIdField(kind: TabKind): "activeEditorTabId" | "activeRunTabId" {
@@ -170,7 +179,8 @@ export const useTabsStore = create<TabsState>()(
       currentProjectKey: null,
       runOpenNonce: {},
       openTab: (kind, params, label) => {
-        const existing = findExistingTab(get().tabs, kind, params);
+        const state = get();
+        const existing = findExistingTab(state.tabs, kind, params, state.currentProjectKey);
         if (existing) {
           set((s) => {
             const field = activeIdField(existing.kind);
@@ -232,12 +242,14 @@ export const useTabsStore = create<TabsState>()(
           const field = activeIdField(closed.kind);
           let activeId = s[field];
           if (activeId === id) {
-            const sameKind = tabs.filter((t) => t.kind === closed.kind);
+            const visibleKind = (t: Tab) =>
+              t.kind === closed.kind && tabInScope(t, s.currentProjectKey);
+            const sameKind = tabs.filter(visibleKind);
             // Prefer the tab immediately before the closed one within
-            // the same kind; fall back to the first remaining tab of
-            // that kind, then null.
+            // the same visible kind; fall back to the next remaining
+            // visible tab of that kind, then null.
             const closedIdxInKind = s.tabs
-              .filter((t) => t.kind === closed.kind)
+              .filter(visibleKind)
               .findIndex((t) => t.id === id);
             activeId = sameKind[closedIdxInKind - 1]?.id
               ?? sameKind[closedIdxInKind]?.id
@@ -327,6 +339,18 @@ export const useTabsStore = create<TabsState>()(
           return {
             tabs: s.tabs.map((t) =>
               t.id === id ? { ...t, params: { ...t.params, file } } : t,
+            ),
+          };
+        });
+      },
+      unbindFile: (id) => {
+        set((s) => {
+          const tab = s.tabs.find((t) => t.id === id);
+          if (!tab || tab.kind !== "editor") return s;
+          if (Object.keys(tab.params).length === 0 && tab.label === UNTITLED_TAB_LABEL) return s;
+          return {
+            tabs: s.tabs.map((t) =>
+              t.id === id ? { ...t, params: {}, label: UNTITLED_TAB_LABEL } : t,
             ),
           };
         });

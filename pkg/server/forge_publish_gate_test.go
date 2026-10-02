@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -253,6 +254,182 @@ func TestForgePublishReview_GateRefusedOnAClosedPullRequest(t *testing.T) {
 				t.Fatalf("the review comment is the one thing still worth posting: %+v", resp)
 			}
 		})
+	}
+}
+
+// A verdict is a statement about the revision the bot READ. The endpoint
+// resolves the head itself, so without a pin the two can differ: the bot audits
+// A, a push lands B, and A's verdict certifies B. With a required check, zero
+// required approvals and auto-merge armed, that is how an unaudited revision
+// reaches the default branch.
+func TestForgePublishReview_GateRefusedWhenTheHeadMovedSinceTheAudit(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	// The bot audited "aaaa11112222"; by the time it publishes, the head is "bbbb33334444".
+	gc := &fakeGateClient{headSHA: "bbbb33334444"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"aaaa11112222"}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("the review itself still lands: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("no status may certify a revision nobody audited, got %d write(s): %+v", gc.setCalls, gc.last)
+	}
+	if resp.GatePosted {
+		t.Fatalf("gate_posted must be false when the head moved: %+v", resp)
+	}
+	// Both revisions belong in the reason: one names what was judged, the other
+	// what the forge would have certified.
+	if !strings.Contains(resp.GateError, "aaaa1111") || !strings.Contains(resp.GateError, "bbbb3333") {
+		t.Fatalf("gate_error must name the audited revision AND the current head, got %q", resp.GateError)
+	}
+	if !resp.Published {
+		t.Fatalf("the review comment is the one thing still worth posting: %+v", resp)
+	}
+}
+
+func TestForgePublishReview_GatePostedWhenTheAuditedSHAIsTheHead(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "deadbeefcafe"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"deadbeefcafe"}`)))
+
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GatePosted || resp.GateState != "success" || resp.GateSHA != "deadbeefcafe" {
+		t.Fatalf("a pin that MATCHES must post exactly as before: %+v (gate_error=%q)", resp, resp.GateError)
+	}
+	if resp.GateSHAUnpinned {
+		t.Fatalf("a request carrying audited_sha is pinned, not unpinned: %+v", resp)
+	}
+	if gc.setCalls != 1 {
+		t.Fatalf("SetCommitStatus calls = %d, want 1", gc.setCalls)
+	}
+}
+
+// The pin is compared as a commit id, not as a string. The producing bundle's
+// own validity predicate accepts an abbreviation (`looks_like_sha`: 7+ hex), so
+// a full-string compare would refuse the RIGHT commit whenever a bot sent a
+// short one — permanently, since nothing else fills the check.
+func TestForgePublishReview_GateAcceptsAnAbbreviatedPinOfTheSameCommit(t *testing.T) {
+	const head = "1e2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c"
+	for _, pin := range []string{"1e2a3b4", "1e2a3b4c5d6e", "1E2A3B4C5D6E", head, strings.ToUpper(head)} {
+		t.Run(pin, func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+			gc := &fakeGateClient{headSHA: head}
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+			w := httptest.NewRecorder()
+			s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+				`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"`+pin+`"}`)))
+			var resp publishReviewResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if !resp.GatePosted {
+				t.Fatalf("pin %q names the head and must post: gate_error=%q", pin, resp.GateError)
+			}
+			// The status lands on the FORGE's spelling, never on the caller's.
+			if gc.lastSHA != head {
+				t.Fatalf("status posted on %q, want the forge's head %q", gc.lastSHA, head)
+			}
+		})
+	}
+}
+
+// A pin that is PRESENT and unreadable is a third state. Collapsing it into
+// "absent" degrades silently to the unpinned certificate (the unsubstituted
+// template this repo has paid for before); collapsing it into "the head moved"
+// sends the reader hunting a push that never happened.
+func TestForgePublishReview_GateRefusesAnUnreadablePinAsItsOwnFault(t *testing.T) {
+	for _, pin := range []string{
+		"{{outputs.prepare.head_sha}}", "null", "HEAD", "refs/heads/main", "none",
+		" ", "\n", "abc", "zzzzzzzz", "1e2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4cff",
+	} {
+		t.Run(strconv.Quote(pin), func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+			gc := &fakeGateClient{headSHA: "1e2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c"}
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+			w := httptest.NewRecorder()
+			body, _ := json.Marshal(map[string]any{"enabled": true, "context": "revi/review", "blocking_count": 0, "audited_sha": pin})
+			s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(string(body))))
+			var resp publishReviewResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if gc.setCalls != 0 || resp.GatePosted {
+				t.Fatalf("an unreadable pin must certify nothing, got posted=%v calls=%d", resp.GatePosted, gc.setCalls)
+			}
+			if resp.GateSHAUnpinned {
+				t.Fatal("a pin that was SENT is not an absent pin — reporting it unpinned hides a bot that meant to pin and rendered garbage")
+			}
+			if !strings.Contains(resp.GateError, "cannot be read") {
+				t.Fatalf("the reason must blame the pin, not invent a push: %q", resp.GateError)
+			}
+		})
+	}
+}
+
+// The refusal's whole job is to tell two revisions apart. Abbreviating both
+// sides is how it names the same one twice.
+func TestForgePublishReview_GateMismatchNamesBothRevisionsInFull(t *testing.T) {
+	const audited = "abcdef012345" + "1111111111111111111111111111"
+	const head = "abcdef012345" + "2222222222222222222222222222"
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: head}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0,"audited_sha":"`+audited+`"}`)))
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.GateError, audited) || !strings.Contains(resp.GateError, head) {
+		t.Fatalf("two revisions sharing their first 12 characters must both appear in full, got %q", resp.GateError)
+	}
+}
+
+// Until every bundle in the fleet sends the pin, an absent audited_sha still
+// posts — refusing outright would blank the required check on every repo whose
+// bundle predates this change. It is NOT silent: the response says so and the
+// server logs it, and that signal is what makes flipping the default to a
+// refusal a measurable decision instead of a blind one.
+func TestForgePublishReview_GateWithoutAnAuditedSHAIsReportedUnpinned(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "deadbeefcafe"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(
+		`{"enabled":true,"context":"revi/review","blocking_count":0}`)))
+
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GatePosted || resp.GateSHA != "deadbeefcafe" {
+		t.Fatalf("an unpinned gate still posts today: %+v", resp)
+	}
+	if !resp.GateSHAUnpinned {
+		t.Fatalf("an unpinned gate must SAY it is unpinned, else the fleet's readiness is unmeasurable: %+v", resp)
 	}
 }
 

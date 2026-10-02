@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -91,6 +92,12 @@ type Config struct {
 	// into the run bundle so the runner can materialise it for the
 	// CLI subprocess.
 	OAuthForfait secrets.OAuthStore
+	// RotatedOAuthKinds names the forfait kinds this server's refresh
+	// worker rotates (the kinds it has a client id for). A slot of such a
+	// kind names its record, which the runner follows; any other slot names
+	// none, and the runner keeps refreshing its own copy — a record nobody
+	// rotates would otherwise let a long run die at token expiry.
+	RotatedOAuthKinds []secrets.OAuthKind
 	// ForgeConnections, when non-nil, lets the publisher resolve the
 	// github_app connection a run's forge_token came from and thread its
 	// bot login to the runner, so an installation token's commits are
@@ -188,6 +195,7 @@ type Publisher struct {
 	runSecrets           secrets.RunSecretsStore
 	sealer               secrets.Sealer
 	oauthForfait         secrets.OAuthStore
+	rotatedOAuthKinds    map[string]bool
 	forgeConns           forge.ConnectionStore
 	pluginSources        *pluginsource.Resolver
 	sandboxImage         func(context.Context) string
@@ -313,6 +321,7 @@ func New(cfg Config) (*Publisher, error) {
 		runSecrets:           cfg.RunSecrets,
 		sealer:               cfg.Sealer,
 		oauthForfait:         cfg.OAuthForfait,
+		rotatedOAuthKinds:    rotatedOAuthKindSet(cfg.RotatedOAuthKinds),
 		forgeConns:           cfg.ForgeConnections,
 		pluginSources:        cfg.PluginSources,
 		sandboxImage:         cfg.SandboxImage,
@@ -340,6 +349,7 @@ var allKnownProviders = []secrets.Provider{
 	secrets.ProviderOpenRouter,
 	secrets.ProviderXAI,
 	secrets.ProviderZAI,
+	secrets.ProviderMoonshot,
 }
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
@@ -406,13 +416,31 @@ func (p *Publisher) appBotLoginForForgeToken(ctx context.Context, tenantID strin
 	return ""
 }
 
+// errUntrustedRequiresSecrets refuses a launch that pairs an untrusted
+// workspace with a workflow whose secrets are not optional. The two cannot be
+// honoured together — the tier that would resolve them is exactly the one an
+// untrusted workspace must not reach — so the launch stops here, named, rather
+// than starting a bot whose credential is silently unset.
+var errUntrustedRequiresSecrets = errors.New("untrusted workspace cannot be given the workflow's required secrets")
+
 // resolveAndSealCredentials looks up every provider key visible to
 // (tenantID, ownerID), pairs it with any OAuth-forfait the owner has
 // connected — falling back to a contributor's pooled subscription when the
 // tenant has none — seals the resulting bundle, and persists it under a
 // fresh secrets ref. An empty ref means no credentials are available; the
 // runner then falls back to env.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry) (credResolution, error) {
+//
+// trust decides whether the tenant's WORKFLOW secrets are part of that
+// bundle. It is a required parameter rather than a field read from somewhere
+// convenient precisely so a future caller cannot omit it: the compiler asks
+// every call site who wrote the code this bundle is about to be handed to.
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry, trust store.RunTrust, pinnedProviders []string) (credResolution, error) {
+	// The launch-frozen pinned set (store.Run.PinnedProviders), passed in
+	// rather than derived here: the resume path must replay the launch's
+	// answer, not re-derive it from a source that may have moved. Only the
+	// SHARED tiers read it — a tenant's own keys are never gated on a wire
+	// family, so nothing about this reaches them.
+	pinnedSet := pinnedProviderSet(pinnedProviders)
 	if p.runSecrets == nil || p.sealer == nil {
 		return credResolution{}, nil
 	}
@@ -452,6 +480,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		PoolSourced:        map[string]bool{},
 	}
 
+	// #2038: a run whose every LLM route is an openai_compatible route is
+	// funded by the RUNNER's environment — the walk acquires nothing for it:
+	// no BYOK, org or platform key, no forfait, no pool lease, no restore.
+	// Generic `secrets:` still resolve (their tier below is not skipped).
+	// An env-dependent route counts as UNRESOLVED, never env-funded: ${ROUTE}
+	// may resolve to the gateway on the publisher and to Anthropic on the
+	// runner. Mixed or unresolved runs keep today's behaviour.
+	envFunded := wf != nil && model.EffectiveProviders(wf, modelOverrides, runFallbacks, knownPoolProviders).OnlyEnvFunded()
+
 	// Refused-but-only keys, per provider, remembered across the tiers for
 	// the restore step — the api-key twin of skippedForfaits below.
 	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
@@ -466,6 +503,34 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// Every tier's walk reports here what its audience kept out, so the one
 	// thing a refusal does not leave behind — a trace — exists by the end.
 	withheld := newAudienceWithholdings(audienceBotID)
+	// The shared tiers' ordering, read ONCE: the org fill, the platform fill
+	// and the restore of this launch apply the same answer. The facade
+	// policy's `auto` asks each tier whether it holds an Anthropic-native
+	// credential, lazily — a tier the question never reaches costs no read.
+	policy := p.sharedTierPolicyFor(ctx)
+	// The probes stay unread for an env-funded run: no tier is consulted.
+	var tenantNative, orgNative, platformNative *tierNative
+	if envFunded {
+		// An env-funded run consults no tier, and the facade question is
+		// theirs: the probes stay unread.
+		policy.runNative = nil
+	} else {
+		tenantOwners := []string{ownerID}
+		if tenantID != "" {
+			tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
+		}
+		tenantNative = p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
+		platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
+		if orgID != "" {
+			orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+		}
+		// `auto` is the RUN's question, not a tier's (#1998): a native credential
+		// ANY tier holds — the team's own forfait or key, the org tier's, the
+		// platform tier's — keeps every tier's facade key off the wire's default.
+		// The composite is asked through the policy value the fill, the restore
+		// and the platform stage all receive.
+		policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
+	}
 	// Deferred, not called after the walk: a walk that returns an error exits
 	// before any trailing statement, and a launch that fails while a key was
 	// withheld is exactly when the reason matters most. Said once, whichever
@@ -473,8 +538,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// a team that scopes its keys at all.
 	defer func() { withheld.warn(p, runID) }()
 	res := credResolution{}
-	err := walkCredentialTiers(func() bool { return len(bundle.APIKeys) > 0 || len(bundle.OAuthCredentials) > 0 },
+	err := walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
 		func() bool { return res.grant != nil }, func(tier credentialTier) error {
+			if envFunded && tier != credentialTierGeneric {
+				// Nothing on this tier funds an openai_compatible route.
+				return nil
+			}
 			switch tier {
 			case credentialTierBYOK:
 				// 1. BYOK API keys.
@@ -515,7 +584,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// call parks on a durable usage-window retry, while a run published
 					// with an empty wire fails on a no-credential auth error nothing
 					// retries (or silently spends the runner pod's ambient env).
-					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys); len(refused) > 0 {
+					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
 						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID, refused, overrides, p.sealer, nil, withheld.note)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
@@ -547,6 +616,29 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				}
 
 			case credentialTierGeneric:
+				// An untrusted workspace resolves NO workflow secret. This is
+				// the tier that puts the tenant's forge_token into the run's
+				// credential bundle, and the runner writes that token into
+				// the clone's git credential store (pkg/runner/loop_gitws.go)
+				// — i.e. into a working tree whose content the PR author
+				// wrote. The refusal is loud rather than a silent skip: a bot
+				// whose manifest declares a secret it cannot be given here is
+				// a misconfigured lane, not a run to start anyway.
+				//
+				// The predicate is Trusted(), not "== fork": a trust value
+				// this binary does not recognise must lose the secrets too.
+				if !trust.Trusted() {
+					if wf != nil {
+						if missing := secrets.UnresolvedRequired(requiredSecretNamesForWorkflow(wf), nil); len(missing) > 0 {
+							return fmt.Errorf("cloudpublisher: run %s runs on an untrusted workspace (trust=%q), so no workflow secret is resolved — but its workflow REQUIRES %v: %w",
+								runID, string(trust), missing, errUntrustedRequiresSecrets)
+						}
+					}
+					if p.logger != nil && wf != nil && len(wf.Secrets) > 0 {
+						p.logger.Info("cloudpublisher: run %s: trust=%q — %d declared workflow secret(s) withheld from the run bundle", runID, string(trust), len(wf.Secrets))
+					}
+					return nil
+				}
 				// 2. Workflow/user generic secrets. A declared secret with an empty
 				// value means "resolve a stored secret of the same name" for this run.
 				if p.genericSecrets != nil && wf != nil && len(wf.Secrets) > 0 {
@@ -666,12 +758,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								// wire still empty, this forfait is restored — a
 								// parked run with a durable retry beats a stuck one.
 								if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-									skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint}
+									skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt}
 								}
 								continue
 							}
-							bundle.OAuthCredentials[string(rec.Kind)] = payload
-							setOAuthFingerprint(&bundle, string(rec.Kind), rec.Fingerprint)
+							setOAuthCredential(&bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID, rec.CreatedAt)
 							p.logger.Info("cloudpublisher: oauth-forfait(%s) used run=%s owner=%s kind=%s fp=%s", label, runID, ownerKey, rec.Kind, rec.Fingerprint)
 						}
 					}
@@ -691,7 +782,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    neither takes a stranger's donation while either is available.
 				//    Fills per WIRE FAMILY like the platform tier, so an org key can
 				//    never shadow a credential the team already holds in another shape.
-				p.fillFromOrg(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
+				p.fillFromOrg(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits, pinnedSet, policy, orgNative)
 
 			case credentialTierPool:
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -702,17 +793,18 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run therefore never reaches it — by construction, since the fill
 				//    above left the bundle non-empty.
 				if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
-					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, runFallbacks); grant != nil {
+					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, runFallbacks, bundle.PinnedAPIKeys); grant != nil {
 						// The lent credential goes in the slot its KIND belongs to, so
 						// the runner cannot tell a donation from the tenant's own.
 						switch grant.Source {
 						case credpool.SourceOAuth:
-							bundle.OAuthCredentials[grant.Ref] = grant.Payload
 							// The donor's own credential identity, so the borrower's
 							// meter follows the lent subscription rather than the slot
 							// it landed in: a donor who reconnects a fresh one is not
-							// parked by the readings of the account it replaced.
-							setOAuthFingerprint(&bundle, grant.Ref, grant.Fingerprint)
+							// parked by the readings of the account it replaced. The
+							// donor's record rides along: the borrower's runner
+							// follows it instead of exchanging the donor's token.
+							setOAuthCredential(&bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
 							bundle.PoolSourced[grant.Ref] = true
 						case credpool.SourceAPIKey:
 							prov := secrets.Provider(grant.Ref)
@@ -747,7 +839,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run runs on its donor — filling alongside would outrank the lent
 				//    credential while still consuming the donor's quota and slot.
 				if res.grant == nil {
-					p.fillFromPlatform(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits)
+					p.fillFromPlatform(ctx, runID, orgID, tenantID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits, pinnedSet, policy, platformNative)
 				}
 
 			case credentialTierRestore:
@@ -756,9 +848,27 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// second forfait, no pool grant, no platform credential — restore it:
 				// the run then parks on the provider refusal with a DURABLE
 				// usage-window retry, instead of failing on a no-credential auth
-				// error nothing retries. Keys before forfaits, in allKnownProviders
-				// order, matching both the delegate's precedence on a shared wire and
-				// the deterministic-winner rule of fillFromPlatform.
+				// error nothing retries. One per wire family, TIER BY TIER in the
+				// order the walk visits them — the tenant's own before the org's,
+				// the org's before the platform's — so the credential restored is
+				// the one a healthy launch would have used: within the tenant, its
+				// keys before its forfaits (the walk resolves BYOK first); within a
+				// shared tier, the order that tier fills in (sharedTierPolicy.inOrder).
+				// One exception: a tenant key whose provider's routes a shared tier
+				// already funded comes back last, and only into a family no tier
+				// refilled — those routes are served, the refused key is not.
+				// Keys among themselves in allKnownProviders order, so the winner is
+				// deterministic. A shared tier's key comes back in the channel its
+				// fill would have sealed it in (sealDecision): the default of a free
+				// family, or — beside the credential holding the family — only for
+				// the routes that name its provider. Those park on the key's own
+				// refusal, with its durable retry, instead of running without a
+				// credential of that provider: a claude_code facade hint is refused
+				// by name, a pi route or an `anthropic` hint beside no forfait falls
+				// to the pod's env, and claw's `anthropic/…` provider spends the
+				// family's holder — the z.ai key in a sandbox, or a Claude forfait it
+				// bills as extra usage. (claude_code spends a run's forfait before
+				// such a key.)
 				if len(skippedForfaits) > 0 || len(skippedAPIKeys) > 0 {
 					taken := map[string]bool{}
 					for prov := range bundle.APIKeys {
@@ -767,12 +877,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					for kind := range bundle.OAuthCredentials {
 						taken[secrets.WireFamily(kind)] = true
 					}
-					for _, prov := range allKnownProviders {
-						sk, ok := skippedAPIKeys[prov]
-						if !ok || taken[secrets.WireFamily(string(prov))] {
-							continue
-						}
-						bundle.APIKeys[prov] = sk.plaintext
+					natives := map[restoreTier]*tierNative{restoreTierOrg: orgNative, restoreTierPlatform: platformNative}
+					restoreKey := func(prov secrets.Provider, sk skippedAPIKey, outcome sealOutcome) {
+						pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, outcome)
 						apiKeyFPs[prov] = sk.fingerprint
 						if sk.platform {
 							bundle.PlatformSourced[string(prov)] = true
@@ -780,23 +887,94 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						if sk.org {
 							bundle.OrgSourced[string(prov)] = true
 						}
-						taken[secrets.WireFamily(string(prov))] = true
-						p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov)
+						p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov, map[bool]string{true: " (pinned route only)", false: ""}[pinnedOnly])
 					}
-					for kind, sf := range skippedForfaits {
-						if taken[secrets.WireFamily(kind)] {
+					// Tenant keys whose provider's routes a shared tier already
+					// funded: restored as the default, such a key would displace
+					// that healthy key — every route naming the provider reads the
+					// default first (APIKeyForRoute) — and park routes that can
+					// run. They wait for the shared tiers' own restore, which may
+					// refill the family (a closed Claude forfait under `auto`).
+					var deferredTenantKeys []secrets.Provider
+					restoreKeys := func(tier restoreTier) {
+						for _, prov := range allKnownProviders {
+							sk, ok := skippedAPIKeys[prov]
+							if !ok || restoreTierOf(sk.org, sk.platform) != tier {
+								continue
+							}
+							outcome := sealDefault
+							if tier == restoreTierTenant {
+								if taken[secrets.WireFamily(string(prov))] {
+									continue
+								}
+								if bundle.PinnedAPIKeys[prov] != "" {
+									deferredTenantKeys = append(deferredTenantKeys, prov)
+									continue
+								}
+							} else {
+								// A slot an earlier tier funded is not
+								// rewritten.
+								if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+									continue
+								}
+								// The shared tier's own rule, facade policy
+								// included: "nothing else serves the wire"
+								// must not hand back as the default a key the
+								// fill keeps off it.
+								outcome = sealDecision(prov, taken[secrets.WireFamily(string(prov))], pinnedSet[strings.ToLower(string(prov))],
+									func() bool { return policy.facadeMayDefault(natives[tier]) })
+								if outcome == sealNone {
+									continue
+								}
+							}
+							restoreKey(prov, sk, outcome)
+						}
+					}
+					restoreForfaits := func(tier restoreTier) {
+						for kind, sf := range skippedForfaits {
+							if restoreTierOf(sf.org, sf.platform) != tier || taken[secrets.WireFamily(kind)] {
+								continue
+							}
+							setOAuthCredential(&bundle, kind, sf.payload, sf.fp, sf.id, sf.connectedAt)
+							if sf.org {
+								bundle.OrgSourced[kind] = true
+							}
+							if sf.platform {
+								bundle.PlatformSourced[kind] = true
+							}
+							taken[secrets.WireFamily(kind)] = true
+							p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
+						}
+					}
+					restoreKeys(restoreTierTenant)
+					restoreForfaits(restoreTierTenant)
+					for _, tier := range []restoreTier{restoreTierOrg, restoreTierPlatform} {
+						policy.inOrder(func() { restoreForfaits(tier) }, func() { restoreKeys(tier) })
+					}
+					// A deferred tenant key is the family's last park point: it
+					// comes back only when no tier refilled the family and some
+					// route may read the family's default, as that default, over
+					// the shared route key — which leaves with its marks, so the
+					// slot names one credential. The routes naming its provider
+					// then park with the run: a wire left empty fails its
+					// default-reading routes on a no-credential error nothing
+					// retries, or spends the runner pod's ambient env. A run
+					// whose every route names its provider has no such route, and
+					// the key would only park routes the shared key serves.
+					for _, prov := range deferredTenantKeys {
+						if taken[secrets.WireFamily(string(prov))] {
+							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and another credential holds the wire", runID, prov)
 							continue
 						}
-						bundle.OAuthCredentials[kind] = sf.payload
-						setOAuthFingerprint(&bundle, kind, sf.fp)
-						if sf.org {
-							bundle.OrgSourced[kind] = true
+						if !mayReadWireDefault(wf, modelOverrides, runFallbacks, prov) {
+							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and no route reads the wire's default", runID, prov)
+							continue
 						}
-						if sf.platform {
-							bundle.PlatformSourced[kind] = true
-						}
-						taken[secrets.WireFamily(kind)] = true
-						p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
+						delete(bundle.PinnedAPIKeys, prov)
+						delete(bundle.PlatformSourced, string(prov))
+						delete(bundle.OrgSourced, string(prov))
+						p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key comes back as the default, over the shared key sealed for its routes: nothing else holds the wire", runID, prov)
+						restoreKey(prov, skippedAPIKeys[prov], sealDefault)
 					}
 				}
 
@@ -815,6 +993,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// no host detection report applies. Empty when nothing resolved: the
 	// runner's env fallback is unknowable here, and injecting "no family"
 	// facts about credentials we cannot see would be asserting a falsehood.
+	// bundle.APIKeys only, deliberately: a pinned key is spendable by the
+	// routes that name it, but these vars SHAPE THE PROGRAM (review_mode,
+	// llm_families), and widening a run's family set because one node pins a
+	// provider would switch a mono topology to dual behind the author's
+	// back. A node that wants a family pins it; funding it does not ask for
+	// a different review.
 	providers := make([]string, 0, len(bundle.APIKeys))
 	for prov := range bundle.APIKeys {
 		providers = append(providers, string(prov))
@@ -838,7 +1022,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	spend := spendableProviders(wf, modelOverrides, runFallbacks)
 	seen := map[string]bool{}
 	for prov, fp := range apiKeyFPs {
-		if fp != "" && !seen[fp] && spend.allows(strings.ToLower(string(prov))) {
+		if fp != "" && !seen[fp] && spend.spendsKey(bundle, prov) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
 		}
@@ -865,8 +1049,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// to remove. Deduplicated: a tier is a fact about the run, not a
 	// per-slot count.
 	tiers := map[string]bool{}
-	for prov := range bundle.APIKeys {
-		if spend.allows(strings.ToLower(string(prov))) {
+	for _, prov := range fundedAPIKeySlots(bundle) {
+		if spend.spendsKey(bundle, prov) {
 			tiers[credentialTierForSlot(bundle, res.grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
 		}
 	}
@@ -891,8 +1075,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// resolves a forge or tracker token into this same bundle, which is the
 	// most common cloud shape, so gating the Warn on the whole bundle would
 	// silence it exactly where it matters.
-	noLLMCred := len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0
-	if noLLMCred && (wf == nil || wf.UsesLLM()) {
+	noLLMCred := !holdsLLMCredential(bundle)
+	if envFunded {
+		if p.logger != nil {
+			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway; no LLM credential acquired", runID)
+		}
+	} else if noLLMCred && (wf == nil || wf.UsesLLM()) {
 		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, org, pool, platform; the runner falls back to its env or fails at the first LLM call",
 			runID, tenantID)
 	}
@@ -922,6 +1110,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// tier tags — bundle.PlatformSourced already tracks the platform
 	// vs tenant/tier split.
 	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.grant)
+	p.keepFollowableRecordRefs(&bundle)
 
 	sealed, err := secrets.SealRunBundle(p.sealer, runID, bundle)
 	if err != nil {
@@ -1010,7 +1199,36 @@ func (c credResolution) applyTo(r *store.Run) {
 // means every provider: the run has a route the walk could not resolve
 // (no pin, an explicit auto, a hint nobody knows, a model-answering node
 // with no LLMFields), and such a route takes whatever the process holds.
-type spendable struct{ pinned map[string]bool }
+type spendable struct {
+	pinned map[string]bool
+	// forfaitFirst are the providers whose every route runs on a consumer
+	// that spends the provider's forfait before a key pinned for the route
+	// (model.ProviderResolution.ForfaitFirst). Empty when the walk is not
+	// NarrowSafe: an unread route may spend anything.
+	forfaitFirst map[string]bool
+}
+
+// spendsKey is the one predicate the stamp and the funding tiers read for an
+// API key the bundle seals for prov: the run may spend it, unless the key
+// rides only for the routes that name prov and every one of those routes
+// spends a sealed forfait of prov first — then no route ever reaches it, and
+// counting it would hold a slot of its concurrency ceiling (and report a
+// funding tier) for a run that never draws on it.
+func (s spendable) spendsKey(bundle secrets.RunBundle, prov secrets.Provider) bool {
+	slot := strings.ToLower(string(prov))
+	if !s.allows(slot) {
+		return false
+	}
+	if bundle.APIKeys[prov] != "" || !s.forfaitFirst[slot] {
+		return true
+	}
+	for kind := range bundle.OAuthCredentials {
+		if providerOfOAuthKind(kind) == slot {
+			return false
+		}
+	}
+	return true
+}
 
 func (s spendable) allows(provider string) bool {
 	if s.pinned == nil || provider == "" {
@@ -1031,7 +1249,92 @@ func spendableProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFall
 	for _, p := range res.Providers {
 		pinned[p] = true
 	}
-	return spendable{pinned: pinned}
+	forfaitFirst := make(map[string]bool, len(res.ForfaitFirst))
+	for _, p := range res.ForfaitFirst {
+		forfaitFirst[p] = true
+	}
+	return spendable{pinned: pinned, forfaitFirst: forfaitFirst}
+}
+
+// pinnedProviderSet is the launch-frozen pinned set in the form the fill
+// tiers read it. Empty when the run pins nothing, which is what keeps a
+// workflow with no pin on exactly the behaviour it had before the rule.
+func pinnedProviderSet(pinned []string) map[string]bool {
+	if len(pinned) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(pinned))
+	for _, p := range pinned {
+		if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
+			out[p] = true
+		}
+	}
+	return out
+}
+
+// derivePinnedProviders reads the run's routes through the SAME walk and
+// vocabulary the pool's wants derivation and the run-doc fingerprint stamp
+// use (model.EffectiveProviders / knownPoolProviders), so the three
+// surfaces cannot disagree about what a run targets.
+//
+// It reads `Providers` and deliberately ignores NarrowSafe, which is where
+// it differs from spendableProviders next door: that one NARROWS a request
+// and must fail OPEN, treating an unresolvable route as "may spend
+// anything". Funding is the opposite direction — failing open would make
+// every slot fillable for every run and dissolve the one-key-per-family
+// rule. `Providers` is a sound LOWER BOUND either way: a name in it is
+// named by some resolved route; a route the walk cannot read contributes
+// nothing, so the slot it needed stays unfillable and its node is refused
+// by name, which is this feature's safe direction.
+func derivePinnedProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) []string {
+	return model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders).Providers
+}
+
+// fillAPIKeySlot puts a resolved key in the bundle and reports whether it
+// landed as PINNED-ONLY — the one function both shared tiers fill through,
+// because the choice of map is the whole safety property and a second copy
+// of it is where the next tier would get it wrong.
+//
+// A slot whose wire family is still free fills it normally: that is the
+// pre-existing rule, untouched. A slot only reachable because a route PINS
+// it — its family already filled — goes to PinnedAPIKeys, where no
+// default-precedence reader looks, and does NOT mark the family: it did
+// not fill it, and a later tier must still be able to serve a DIFFERENT
+// pinned slot on the same wire.
+func fillAPIKeySlot(bundle *secrets.RunBundle, taken map[string]bool, prov secrets.Provider, plaintext string) (pinnedOnly bool) {
+	family := secrets.WireFamily(string(prov))
+	if taken[family] {
+		if bundle.PinnedAPIKeys == nil {
+			bundle.PinnedAPIKeys = map[secrets.Provider]string{}
+		}
+		bundle.PinnedAPIKeys[prov] = plaintext
+		return true
+	}
+	bundle.APIKeys[prov] = plaintext
+	taken[family] = true
+	return false
+}
+
+// fundedAPIKeySlots returns every provider slot the bundle carries a key for,
+// in EITHER channel — the default one and the pinned one — in
+// allKnownProviders order so two readers never disagree about which came
+// first.
+//
+// This is the question every "what funded this run?" reader asks: the tier
+// stamp, the granted-credential audit line, the required-credential gate. A
+// pinned key funds its provider as surely as a default one — it just serves
+// only the routes that name it — so a reader that walks APIKeys alone reports
+// a run as unfunded while its credential is sealed in the same bundle. The
+// readers that must NOT see a pinned key ask a different question ("what may
+// the DEFAULT precedence spend?"), and they read bundle.APIKeys directly.
+func fundedAPIKeySlots(bundle secrets.RunBundle) []secrets.Provider {
+	out := make([]secrets.Provider, 0, len(bundle.APIKeys)+len(bundle.PinnedAPIKeys))
+	for _, prov := range allKnownProviders {
+		if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+			out = append(out, prov)
+		}
+	}
+	return out
 }
 
 // unfundedPinnedProviders returns the run's pinned providers, sorted, when
@@ -1044,7 +1347,11 @@ func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string
 		return nil
 	}
 	funded := make(map[string]bool, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
-	for prov := range bundle.APIKeys {
+	// Both channels: a pinned key is exactly the case this gate must not
+	// refuse — every route pins one provider, a shared tier funded it for
+	// that pin, and reading APIKeys alone would fail the launch claiming no
+	// tier holds a credential for it while the key is sealed in this bundle.
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		funded[strings.ToLower(string(prov))] = true
 	}
 	for kind := range bundle.OAuthCredentials {
@@ -1096,6 +1403,7 @@ func (s *skipTracker) note(until time.Time) {
 // credential inherits the exhausted readings of the account it replaced.
 // An empty fingerprint (a record predating stamping) is left absent rather
 // than written blank, so the historical key stays reachable.
+
 func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 	if fp == "" {
 		return
@@ -1104,6 +1412,55 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 		bundle.OAuthFingerprints = map[string]string{}
 	}
 	bundle.OAuthFingerprints[kind] = fp
+}
+
+func rotatedOAuthKindSet(kinds []secrets.OAuthKind) map[string]bool {
+	set := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		set[string(k)] = true
+	}
+	return set
+}
+
+// keepFollowableRecordRefs drops, from the bundle about to be sealed, the
+// record ref of every slot whose kind this server does not rotate: a run
+// following a record no refresher rotates would never renew its token, and
+// its self-refresh is the only one that record has.
+func (p *Publisher) keepFollowableRecordRefs(bundle *secrets.RunBundle) {
+	for kind := range bundle.OAuthRecordRefs {
+		if !p.rotatedOAuthKinds[kind] {
+			delete(bundle.OAuthRecordRefs, kind)
+			delete(bundle.OAuthRecordConnectedAt, kind)
+		}
+	}
+}
+
+// setOAuthCredential fills one OAuth slot: the payload, the subscription's
+// fingerprint, and the id and connect time of the store record it was read
+// from. Every tier fills its slot through here, so no slot can carry a
+// payload whose record the runner cannot follow — the ref is what lets a run
+// pick up the refresh worker's rotations instead of exchanging the token
+// itself. A slot filled without a record id keeps no stale ref: the runner
+// then refreshes its own copy, and logs that it does.
+func setOAuthCredential(bundle *secrets.RunBundle, kind string, payload []byte, fp, recordID string, connectedAt time.Time) {
+	bundle.OAuthCredentials[kind] = payload
+	setOAuthFingerprint(bundle, kind, fp)
+	delete(bundle.OAuthRecordConnectedAt, kind)
+	if recordID == "" {
+		delete(bundle.OAuthRecordRefs, kind)
+		return
+	}
+	if bundle.OAuthRecordRefs == nil {
+		bundle.OAuthRecordRefs = map[string]string{}
+	}
+	bundle.OAuthRecordRefs[kind] = recordID
+	if connectedAt.IsZero() {
+		return
+	}
+	if bundle.OAuthRecordConnectedAt == nil {
+		bundle.OAuthRecordConnectedAt = map[string]time.Time{}
+	}
+	bundle.OAuthRecordConnectedAt[kind] = connectedAt
 }
 
 // fillFromPlatform fills the API-key and OAuth slots still empty after the
@@ -1120,7 +1477,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait, pinned map[string]bool, policy sharedTierPolicy, native *tierNative) {
 	if p.sealer == nil {
 		return
 	}
@@ -1134,122 +1491,180 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 	for kind := range bundle.OAuthCredentials {
 		taken[secrets.WireFamily(kind)] = true
 	}
-	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] }
+	// One credential per wire family, EXCEPT a slot a route of the run
+	// pins: that one is fundable on its own name (fillAPIKeySlot then
+	// keeps it out of the default precedence). A run with no pin sees the
+	// original rule, unchanged.
+	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] || pinned[strings.ToLower(slot)] }
 
-	// Platform API keys live under the sentinel tenant; the ctx tenant must
-	// match or the store's isolation filter (correctly) returns nothing.
-	if p.apiKeys != nil {
-		missing := make([]secrets.Provider, 0, len(allKnownProviders))
-		for _, prov := range allKnownProviders {
-			if fillable(string(prov)) {
-				missing = append(missing, prov)
+	// Forfaits BEFORE keys. One credential per wire family, and the first to
+	// fill a family is what the run's UNPINNED nodes spend (default
+	// precedence): a subscription the deployment already pays for must win it
+	// over a key billed per token, which then funds only the routes that NAME
+	// it (fillAPIKeySlot keeps a pinned slot out of the default precedence) —
+	// the pool's poolWantOrder states the same doctrine. Keys first would
+	// let a platform z.ai key take the anthropic wire of every run whose team
+	// holds no credential of its own and serve their claude nodes GLM, the
+	// platform's Claude forfait unsealed beside it. A forfait whose window is
+	// closed is skipped below, and the wire it leaves free is exactly what
+	// the keys then fill: that is the capacity fall-through, not a loss.
+	fillForfaits := func() {
+		// Platform OAuth-forfait blobs under the reserved owner key. Skipped —
+		// like the api-key read below via its `missing` guard — when no OAuth
+		// kind is still fillable, so a run already funded on both wires costs
+		// zero extra store reads here.
+		if p.oauthForfait != nil &&
+			(fillable(string(secrets.OAuthKindClaudeCode)) || fillable(string(secrets.OAuthKindCodex))) {
+			records, err := p.oauthForfait.ListByUser(ctx, secrets.PlatformOwnerKey)
+			if err != nil {
+				p.logger.Warn("cloudpublisher: platform oauth list: %v", err)
+				return
+			}
+			for _, rec := range records {
+				if !fillable(string(rec.Kind)) {
+					continue
+				}
+				payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
+				if err != nil {
+					p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
+					continue
+				}
+				// The last tier can still hold several ranked accounts. Try the
+				// next rank before restoring a blocked credential for a durable
+				// usage-window retry when the entire chain is exhausted.
+				if until, why := p.forfaitWindowClosed(ctx, usagecap.ScopePlatform, rec.UserID, rec, payload); !until.IsZero() {
+					skips.note(until)
+					if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
+						skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, platform: true}
+					}
+					p.logger.Info("cloudpublisher: platform forfait SKIPPED run=%s kind=%s rank=%d fp=%s — %s", runID, rec.Kind, rec.Rank, rec.Fingerprint, why)
+					continue
+				}
+				bundle.PlatformSourced[string(rec.Kind)] = true
+				// The platform forfait is ONE meter for the whole deployment
+				// (ScopePlatform), which makes rotating it exactly the lived
+				// failure one tier up: without the identity, a super-admin who
+				// swaps in a fresh subscription inherits the exhausted
+				// readings of the one it replaced, fleet-wide.
+				setOAuthCredential(bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID, rec.CreatedAt)
+				taken[secrets.WireFamily(string(rec.Kind))] = true
+				p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s fp=%s", runID, rec.Kind, rec.Fingerprint)
 			}
 		}
-		if len(missing) > 0 {
-			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
-			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, missing, nil, p.sealer,
-				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips), withheld.note)
-			if err != nil {
-				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
-			} else {
-				now := time.Now().UTC()
-				usedIDs := make([]string, 0, len(resolved))
-				// Iterate `missing` (allKnownProviders order), NOT the
-				// resolved map: when the platform holds two keys on one wire
-				// family (anthropic + zai both map to "anthropic-wire"),
-				// fillable() lets only the first through — and map iteration
-				// order is randomised, so which key funds a run would flip
-				// between launches. The provider slice fixes the winner.
-				for _, prov := range missing {
-					r, ok := resolved[prov]
-					if !ok || len(r.Plaintext) == 0 || !fillable(string(prov)) {
-						continue
-					}
-					bundle.APIKeys[prov] = string(r.Plaintext)
-					bundle.PlatformSourced[string(prov)] = true
-					apiKeyFPs[prov] = r.Fingerprint
-					taken[secrets.WireFamily(string(prov))] = true
-					usedIDs = append(usedIDs, r.KeyID)
-					p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, prov)
+	}
+	fillKeys := func() {
+		mayDefault := func() bool { return policy.facadeMayDefault(native) }
+		// Platform API keys live under the sentinel tenant; the ctx tenant must
+		// match or the store's isolation filter (correctly) returns nothing.
+		if p.apiKeys != nil {
+			missing := make([]secrets.Provider, 0, len(allKnownProviders))
+			for _, prov := range allKnownProviders {
+				// A slot an earlier stage funded is NOT rewritten: the first
+				// tier to fill a slot owns it, and a later tier overwriting it
+				// would move the spend onto its own invoice in silence.
+				if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+					continue
 				}
-				if len(usedIDs) > 0 {
-					ids, t := usedIDs, now
-					p.goSafeDetached("platform-apikey-markused", func() {
-						bg, cancel := context.WithTimeout(store.WithTenant(context.Background(), secrets.PlatformTenantID), 5*time.Second)
-						defer cancel()
-						for _, id := range ids {
-							_ = p.apiKeys.MarkUsed(bg, id, t)
+				family := secrets.WireFamily(string(prov))
+				pin := pinned[strings.ToLower(string(prov))]
+				if sealDecision(prov, taken[family], pin, mayDefault) != sealNone {
+					missing = append(missing, prov)
+				}
+			}
+			if len(missing) > 0 {
+				pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
+				resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, missing, nil, p.sealer,
+					p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips), withheld.note)
+				if err != nil {
+					p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
+				} else {
+					now := time.Now().UTC()
+					usedIDs := make([]string, 0, len(resolved))
+					// Iterate `missing` (allKnownProviders order), NOT the
+					// resolved map: when the platform holds two keys on one wire
+					// family (anthropic + zai both map to "anthropic-wire"),
+					// fillable() lets only the first through — and map iteration
+					// order is randomised, so which key funds a run would flip
+					// between launches. The provider slice fixes the winner.
+					for _, prov := range missing {
+						r, ok := resolved[prov]
+						if !ok || len(r.Plaintext) == 0 {
+							continue
 						}
-					})
-				}
-			}
-			// This tier is the last DB-backed one and the runner's env
-			// backstop is invisible from here, so a refused platform key
-			// must not vanish outright — the rule the OAuth branch below
-			// states verbatim. It is remembered for the restore step
-			// instead, behind any tenant key of the same provider, whose
-			// restore takes precedence.
-			if refused := providersWithoutKey(missing, bundle.APIKeys); len(refused) > 0 {
-				fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, refused, nil, p.sealer, nil, withheld.note)
-				if ferr != nil {
-					p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
-				}
-				for prov, r := range fallback {
-					if len(r.Plaintext) == 0 {
-						continue
+						// Decided again: a key filled earlier in this loop
+						// may have taken the family since.
+						familyTaken := taken[secrets.WireFamily(string(prov))]
+						outcome := sealDecision(prov, familyTaken, pinned[strings.ToLower(string(prov))], mayDefault)
+						if outcome == sealNone {
+							continue
+						}
+						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), outcome)
+						bundle.PlatformSourced[string(prov)] = true
+						apiKeyFPs[prov] = r.Fingerprint
+						usedIDs = append(usedIDs, r.KeyID)
+						if pinnedOnly {
+							p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s (pinned route only — %s)", runID, prov, routeOnlyWhy(familyTaken, policy))
+						} else {
+							p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, prov)
+						}
 					}
-					if _, seen := skippedAPIKeys[prov]; seen {
-						continue
+					if len(usedIDs) > 0 {
+						ids, t := usedIDs, now
+						p.goSafeDetached("platform-apikey-markused", func() {
+							bg, cancel := context.WithTimeout(store.WithTenant(context.Background(), secrets.PlatformTenantID), 5*time.Second)
+							defer cancel()
+							for _, id := range ids {
+								_ = p.apiKeys.MarkUsed(bg, id, t)
+							}
+						})
 					}
-					skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true}
+				}
+				// This tier is the last DB-backed one and the runner's env
+				// backstop is invisible from here, so a refused platform key
+				// must not vanish outright — the rule the forfait branch above
+				// states verbatim. It is remembered for the restore step
+				// instead, behind any tenant key of the same provider, whose
+				// restore takes precedence.
+				if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
+					fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", botID, refused, nil, p.sealer, nil, withheld.note)
+					if ferr != nil {
+						p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
+					}
+					for prov, r := range fallback {
+						if len(r.Plaintext) == 0 {
+							continue
+						}
+						if _, seen := skippedAPIKeys[prov]; seen {
+							continue
+						}
+						skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true}
+					}
 				}
 			}
 		}
 	}
+	policy.inOrder(fillForfaits, fillKeys)
+}
 
-	// Platform OAuth-forfait blobs under the reserved owner key. Skipped —
-	// like the api-key read above via its `missing` guard — when no OAuth
-	// kind is still fillable, so a run already funded on both wires costs
-	// zero extra store reads here.
-	if p.oauthForfait != nil &&
-		(fillable(string(secrets.OAuthKindClaudeCode)) || fillable(string(secrets.OAuthKindCodex))) {
-		records, err := p.oauthForfait.ListByUser(ctx, secrets.PlatformOwnerKey)
-		if err != nil {
-			p.logger.Warn("cloudpublisher: platform oauth list: %v", err)
-			return
-		}
-		for _, rec := range records {
-			if !fillable(string(rec.Kind)) {
-				continue
-			}
-			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
-			if err != nil {
-				p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
-				continue
-			}
-			// The last tier can still hold several ranked accounts. Try the
-			// next rank before restoring a blocked credential for a durable
-			// usage-window retry when the entire chain is exhausted.
-			if until, why := p.forfaitWindowClosed(ctx, usagecap.ScopePlatform, rec.UserID, rec, payload); !until.IsZero() {
-				skips.note(until)
-				if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-					skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, platform: true}
-				}
-				p.logger.Info("cloudpublisher: platform forfait SKIPPED run=%s kind=%s rank=%d fp=%s — %s", runID, rec.Kind, rec.Rank, rec.Fingerprint, why)
-				continue
-			}
-			bundle.OAuthCredentials[string(rec.Kind)] = payload
-			bundle.PlatformSourced[string(rec.Kind)] = true
-			// The platform forfait is ONE meter for the whole deployment
-			// (ScopePlatform), which makes rotating it exactly the lived
-			// failure one tier up: without the identity, a super-admin who
-			// swaps in a fresh subscription inherits the exhausted
-			// readings of the one it replaced, fleet-wide.
-			setOAuthFingerprint(bundle, string(rec.Kind), rec.Fingerprint)
-			taken[secrets.WireFamily(string(rec.Kind))] = true
-			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s fp=%s", runID, rec.Kind, rec.Fingerprint)
-		}
+// restoreTier is the tier a skipped credential came from, in the order the
+// credential walk visits them; the restore step hands credentials back in the
+// same order.
+type restoreTier int
+
+const (
+	restoreTierTenant restoreTier = iota
+	restoreTierOrg
+	restoreTierPlatform
+)
+
+func restoreTierOf(org, platform bool) restoreTier {
+	switch {
+	case platform:
+		return restoreTierPlatform
+	case org:
+		return restoreTierOrg
 	}
+	return restoreTierTenant
 }
 
 // poolWantOrder is the order the pool is asked for a credential when a run
@@ -1276,6 +1691,10 @@ var poolWantOrder = func() []credpool.Credential {
 type skippedForfait struct {
 	payload []byte
 	fp      string
+	// id and connectedAt name the store record the forfait was read from,
+	// so a restored slot stays followable by the runner like any other.
+	id          string
+	connectedAt time.Time
 	// org marks a forfait the ORG tier passed over, so a restore re-stamps
 	// the provenance the metering scope depends on.
 	org      bool
@@ -1299,10 +1718,13 @@ type skippedAPIKey struct {
 
 // providersWithoutKey returns the subset of provs that filled no API-key
 // slot — the candidates for the refused-key fallback lookup.
-func providersWithoutKey(provs []secrets.Provider, apiKeys map[secrets.Provider]string) []secrets.Provider {
+func providersWithoutKey(provs []secrets.Provider, apiKeys, pinnedKeys map[secrets.Provider]string) []secrets.Provider {
 	var missing []secrets.Provider
 	for _, prov := range provs {
-		if apiKeys[prov] == "" {
+		// A PINNED fill funds the provider as surely as a default one — it
+		// just serves only the routes that name it. Counting it as
+		// unfunded would remember a key that was used as "refused".
+		if apiKeys[prov] == "" && pinnedKeys[prov] == "" {
 			missing = append(missing, prov)
 		}
 	}
@@ -1321,12 +1743,13 @@ const usageCapLookupTimeout = 5 * time.Second
 //   - the provider's own refusal (a fresh StatusRejected reading) — true
 //     without any operator policy, so the skip works on a deployment
 //     that never configured a cap;
-//   - the operator's HARD usage cap over the same readings (CapPolicy,
-//     usagecap.Preflight): the runner's pre-flight enforces it before
-//     any node runs, so a credential at a hard cap with a known reset
-//     is not a usable credential — granting it parks the run for that
-//     reset while a lower tier could have served. Soft caps warn, they
-//     never close a window here. (This deliberately supersedes the
+//   - the operator's usage cap over the same readings (CapPolicy,
+//     usagecap.Preflight's Blocked — a soft cap included: soft never
+//     interrupts work in flight, but it lets no NEW run start, and a
+//     launch is one): the runner's pre-flight enforces it before any
+//     node runs, so a credential at a cap with a known reset is not a
+//     usable credential — granting it parks the run for that reset
+//     while a lower tier could have served. (This deliberately supersedes the
 //     earlier evidence-only doctrine: it kept the walk from spending
 //     another tier to dodge a tenant budget, but the week cap is the
 //     operator's machine-wide posture, the fallthrough tiers are the
@@ -1624,16 +2047,12 @@ func usageBackendForKind(kind secrets.OAuthKind) string {
 }
 
 // usageBackendForProvider maps a BYOK api-key provider to the meter backend
-// its refusals are recorded under. Anthropic-shaped keys (the real one and
-// the z.ai facade) are spent by claude_code sessions, so that is where the
-// runner meters them. "" for a provider with no metered evidence — those
-// keys are never skipped.
+// its refusals are recorded under, "" for a provider with no metered
+// evidence — those keys are never skipped. Deferred to the delegate that
+// does the metering, so this walk and the credential view cannot classify a
+// new provider differently.
 func usageBackendForProvider(prov secrets.Provider) string {
-	switch prov {
-	case secrets.ProviderAnthropic, secrets.ProviderZAI:
-		return delegate.BackendClaudeCode
-	}
-	return ""
+	return delegate.UsageMeterBackendForProvider(prov)
 }
 
 // apiKeyUsable builds the Resolve predicate for one resolution: a key with
@@ -1786,6 +2205,40 @@ func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []mo
 	return out, res
 }
 
+// mayReadWireDefault reports whether some route of the run may spend prov's
+// slot as the run's DEFAULT credential rather than as a key its hint or spec
+// names — what the restore's last park point is for.
+func mayReadWireDefault(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry, prov secrets.Provider) bool {
+	return readsWireDefault(model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders), prov)
+}
+
+// readsWireDefault is mayReadWireDefault on a resolution already walked (the
+// preview's). "No" is proven only on the anthropic wire, for a walk that
+// resolved every route (model.ProviderResolution.AnthropicWireDefaultReads);
+// every other answer is "yes".
+func readsWireDefault(res model.ProviderResolution, prov secrets.Provider) bool {
+	if secrets.WireFamily(string(prov)) != secrets.WireFamilyAnthropic || !res.NarrowSafe {
+		return true
+	}
+	return slices.Contains(res.AnthropicWireDefaultReads, string(prov))
+}
+
+// withoutFundedProviders drops the wants whose provider a key sealed for its
+// routes already funds. The pool lends to a run with nothing to spend, and a
+// donation beside such a key would take its routes over — a default key comes
+// before a pinned one — spending a stranger's donation where the run's own
+// tier held a credential.
+func withoutFundedProviders(wants []credpool.Credential, funded func(provider string) bool) []credpool.Credential {
+	out := make([]credpool.Credential, 0, len(wants))
+	for _, w := range wants {
+		if prov := providerOfWant(w); prov != "" && funded(prov) {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
 // acquireFromPool asks the credential pool for a donor. Returns nil when no
 // pool is wired, none serves this requester, or every donor is currently
 // unavailable — all ordinary outcomes that must let the launch proceed
@@ -1794,7 +2247,7 @@ func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []mo
 // credential (platform tier) or fail at the LLM call, both worth a line an
 // operator can grep instead of half a day of investigation on a path that
 // decides who pays (#654).
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) *credpool.Grant {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry, pinned map[secrets.Provider]string) *credpool.Grant {
 	if p.credPool == nil {
 		// No pool at all — a static configuration fact. Debug, not Warn:
 		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
@@ -1814,6 +2267,14 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		// in `provider:` is worth one line, not a silently skipped tier.
 		p.logger.Warn("cloudpublisher: credential pool asked for the FULL order for run %s — provider hint(s) match no known provider: %s (%s)",
 			runID, strings.Join(res.Unknown, ","), providersSummary(res.Providers))
+	}
+	if asked := len(wants); asked > 0 {
+		wants = withoutFundedProviders(wants, func(prov string) bool { return pinned[secrets.Provider(prov)] != "" })
+		if len(wants) == 0 {
+			p.logger.Info("cloudpublisher: credential pool NOT CONSULTED for run %s — every provider it would lend is already funded by a key sealed for the routes that name it (%s)",
+				runID, providersSummary(res.Providers))
+			return nil
+		}
 	}
 	if len(wants) == 0 {
 		// Every route resolved to a KNOWN provider the pool never lends.
@@ -1860,6 +2321,14 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			// A wrapper we did not recognise still counts as an abstention;
 			// keep it visible instead of falling silently to the next tier.
 			p.logger.Warn("cloudpublisher: credential pool declined run %s — %v", runID, err)
+			return nil
+		}
+		if errors.Is(err, credpool.ErrRunHeldElsewhere) {
+			// The run id's open leases belong to another team: not this
+			// caller's to supersede. Best-effort tier — the launch proceeds
+			// on its own credentials, and the log names the refusal rather
+			// than a store blip.
+			p.logger.Warn("cloudpublisher: credential pool refused run %s — %v", runID, err)
 			return nil
 		}
 		// A store failure must not fail the launch: the pool is a
@@ -1924,14 +2393,18 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 	parts := make([]string, 0, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
 	// API keys — the provenance maps tell apart the shared tiers
 	// (deployment-wide fallback keys, the org's lent key) from tenant BYOK.
-	for _, prov := range allKnownProviders {
-		if _, ok := bundle.APIKeys[prov]; !ok {
-			continue
-		}
+	for _, prov := range fundedAPIKeySlots(bundle) {
 		tier := credentialTierForSlot(bundle, grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)
 		fp := apiKeyFPs[prov]
 		if fp == "" {
 			fp = "<unstamped>"
+		}
+		// A pinned key is named as such: it paid for part of the run, and an
+		// operator reading this line to answer "which credential funded that
+		// run?" must not have to infer why a fingerprint is there.
+		if bundle.APIKeys[prov] == "" && bundle.PinnedAPIKeys[prov] != "" {
+			parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s pinned-routes-only)", tier, prov, fp))
+			continue
 		}
 		parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s)", tier, prov, fp))
 	}
@@ -2011,6 +2484,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// One inputs map shared by the run doc and the RunMessage, so the
 	// credential-derived topology injection below reaches both carriers.
 	inputs := varsAsAny(spec.Vars)
+	// The #1757 input check, cloud side: refused HERE, synchronously —
+	// before a run doc is persisted or anything is queued — so the
+	// operator's 202 is never a lie about a run that would only fail (or
+	// worse, run on defaults) at runner pickup. The runner re-applies the
+	// check on its side; spec.AllowUnknownInputs is the operator's opt-out
+	// (--allow-unknown-inputs, the dispatcher's warn-and-proceed contract).
+	if unknown := ir.UnknownInputNames(wf, inputs); len(unknown) > 0 && !spec.AllowUnknownInputs {
+		return 0, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
+			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+	}
 	r := &store.Run{
 		FormatVersion: store.RunFormatVersion,
 		ID:            runID,
@@ -2038,6 +2521,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		OwnerID:         ownerID,
 		RepoURL:         spec.RepoURL,
 		RepoSHA:         spec.RepoRef,
+		Trust:           spec.Trust,
+		RepoSHAExpected: spec.RepoSHAExpected,
 		ProjectPath:     spec.ProjectPath,
 		BotID:           spec.BotID,
 		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
@@ -2117,7 +2602,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     NO run record behind (never a stray queued/running run for a launch
 	//     that could not resolve its mandatory credentials).
 	orgID := p.orgIDForTeam(ctx, tenantID)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
+	// The pinned set is derived ONCE, here, and stamped on the document
+	// before it is persisted: every later resolution of this run (every
+	// resume) replays it from the doc instead of re-reading a source that
+	// may have moved. Same doctrine as the model pins and the fallback
+	// chain above.
+	r.PinnedProviders = derivePinnedProviders(wf, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback), spec.Trust, r.PinnedProviders)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -2129,7 +2620,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if creds.grant != nil {
 		defer func() {
 			if !launched {
-				p.credPool.Release(ctx, runID)
+				p.credPool.ReleaseGrant(ctx, creds.grant)
 			}
 		}()
 	}
@@ -2217,15 +2708,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	persisted = true
 
 	msg := &queue.RunMessage{
-		V:                queue.SchemaVersion,
-		Contributions:    contributions,
-		RunID:            runID,
-		WorkflowName:     wf.Name,
-		WorkflowHash:     hash,
-		ExecutionContext: r.ExecutionContext.Clone(),
-		IRCompiled:       body,
-		Vars:             inputs,
-		SecretsRef:       creds.secretsRef,
+		V:                  queue.SchemaVersion,
+		Contributions:      contributions,
+		RunID:              runID,
+		WorkflowName:       wf.Name,
+		WorkflowHash:       hash,
+		ExecutionContext:   r.ExecutionContext.Clone(),
+		IRCompiled:         body,
+		Vars:               inputs,
+		AllowUnknownInputs: spec.AllowUnknownInputs,
+		SecretsRef:         creds.secretsRef,
 		// The stored-bundle ref THREADED from the launch surface's own
 		// resolution (never re-fetched here — a push racing the launch must
 		// not pair this compile's IR with newer resources). The runner
@@ -2233,6 +2725,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BotBundle:       queueBotBundleRef(spec.BotBundle),
 		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
@@ -2258,8 +2751,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// persisted run doc is the authoritative carrier of the slug.
 		RepoURL: spec.RepoURL,
 		RepoSHA: spec.RepoRef,
-		BotID:   spec.BotID,
-		Budget:  budget,
+		// Trust and the admitted commit ride the wire as well as the
+		// document: the runner compares before it has any reason to read
+		// the document, and a comparison that needs a second store round
+		// trip is one a degraded store turns off.
+		Trust:           spec.Trust,
+		RepoSHAExpected: spec.RepoSHAExpected,
+		BotID:           spec.BotID,
+		Budget:          budget,
 		// The operator's model/backend pins must ride the wire: the runner
 		// pod builds its own executor, so a pin only persisted on the run
 		// doc is display-only — the studio would show an override the
@@ -2519,12 +3018,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback))
+	// prior.PinnedProviders, never a fresh derivation: a resume re-resolves
+	// its source, so re-deriving would let a program the launch never
+	// approved decide which credentials this run is granted. Empty on runs
+	// launched before the field existed — the pre-existing
+	// one-key-per-family fill, which is what those runs already had.
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust, prior.PinnedProviders)
 	// Armed before the error check — see SubmitLaunch.
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
-				p.credPool.Release(ctx, spec.RunID)
+				p.credPool.ReleaseGrant(ctx, creds.grant)
 			}
 		}()
 	}
@@ -2571,6 +3075,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			Force:          spec.Force,
 			ExpectedStatus: spec.ExpectedStatus,
 			ReceiptID:      spec.ReceiptID,
+			PriorStatus:    priorStatus,
 		},
 		SecretsRef: creds.secretsRef,
 		// Re-resolved by the resume surface like credentials are re-sealed:
@@ -2579,6 +3084,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		BotBundle:       queueBotBundleRef(spec.BotBundle),
 		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      prior.PermissionOverride,
@@ -2618,7 +3124,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// is carried by the persisted run doc, not the wire.
 		RepoURL: prior.RepoURL,
 		RepoSHA: prior.RepoSHA,
-		BotID:   prior.BotID,
+		// A resume rebuilds the SAME workspace, so it inherits the same
+		// verdict on who wrote it — and the same pinned commit. Read off the
+		// prior document beside RepoURL/RepoSHA: an attempt that re-cloned
+		// the fork's head without them would resolve credentials as a
+		// trusted run and fetch whatever the ref points at now.
+		Trust:           prior.Trust,
+		RepoSHAExpected: prior.RepoSHAExpected,
+		BotID:           prior.BotID,
 	}
 	// The text this resume compiled, stamped WITH the hash of that same
 	// compile — the pair `rewind --auto` diffs against, and its only chance on
@@ -2943,7 +3456,11 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	case path != "":
 		body, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("cloudpublisher: read %s: %w", path, err)
+			// The refusal crosses to the client (a launch's 400, a
+			// resume's): name the file, not its absolute path on this
+			// server — the #1934 root cut, with the file's directory as
+			// the root the loader would have used (#1970).
+			return nil, fmt.Errorf("cloudpublisher: read %s: %s", filepath.Base(path), unit.RelTextRoot(filepath.Dir(path), err.Error()))
 		}
 		src = string(body)
 	default:
@@ -2992,14 +3509,18 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 			return nil, fmt.Errorf("cloudpublisher: %w — launch the bot as a bundle", runview.ErrInlineImport)
 		}
 	}
+	// The refusal below crosses to the client as the 400 body `launch: %v`:
+	// a disk-loaded unit's diagnostics are cut to the unit's relative names
+	// (#1934's rule, on the publish path: #1970) — a no-op for a files map.
+	u.RelDiagnostics()
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
-			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", parserPath, d.Error())
+			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", u.RelName(parserPath), d.Error())
 		}
 	}
 	file := u.Merged
 	if file == nil {
-		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", parserPath)
+		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", u.RelName(parserPath))
 	}
 	if source != "" && bundleDir == "" {
 		for _, p := range file.Prompts {
@@ -3019,9 +3540,11 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	}
 	// The AST that travels must compile on a pod that has none of the files
 	// beside the source: every include is resolved into its prompt body here,
-	// on the server that has them.
+	// on the server that has them. A refusal names the include as the prompt
+	// wrote it — the resolved path it stats is the server's, and rides the
+	// error rather than any diagnostic, so the root cut is the error's (#1970).
 	if err := ir.InlinePromptIncludes(file); err != nil {
-		return nil, fmt.Errorf("cloudpublisher: %w", err)
+		return nil, fmt.Errorf("cloudpublisher: %w", u.RelError(err))
 	}
 	body, err := ast.MarshalFile(file)
 	if err != nil {

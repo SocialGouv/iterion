@@ -195,7 +195,18 @@ func (e *Engine) executeWithResources(ctx context.Context, node ir.Node, input m
 	return e.executor.Execute(ctx, node, input)
 }
 
-var childResourcePaths = []string{"skills", "commands", "agents", "settings.json"}
+// childResourcePaths are the entries under a workspace's `.claude/` that a
+// child in place borrows from its parent: saved when its scope opens, replaced
+// by the child's own mirror, restored on every exit. The engine-owned skills
+// copy is one of them — the child's mirror resets it wholesale, and a parent
+// reading it afterwards must find its own bundle's names and bytes.
+//
+// It is the ONE list for every site acting on those entries: the host-side
+// snapshot below, the in-sandbox snapshot, restore and reset
+// (child_sandbox_resources.go), and the write-through that refills an adopted
+// sandbox (writeThroughMirroredSkills). An entry saved but not reset leaks the
+// parent's files to the child; reset but not saved, it destroys the parent's.
+var childResourcePaths = []string{"skills", "commands", "agents", ownedSkillsDirName, "settings.json"}
 
 // Copy only the directories the resource mirrors own. Other workspace edits,
 // including code produced by the child, are deliberately outside this scope.

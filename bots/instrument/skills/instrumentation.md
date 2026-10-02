@@ -136,6 +136,33 @@ entry points. Never wire tracing "while you're at it".
   format envs, and "how to point this at Sentry or GlitchTip" land in
   the repo's own docs, wherever it documents configuration. An
   undocumented env var does not exist.
+- **Capture-endpoint E2E (the net, not just the code path).** Boot the
+  instrumented process — or its entry seam — with the sink pointed at a
+  LOCAL capture endpoint (a tiny HTTP server collecting envelopes;
+  decode per `Content-Encoding` — gzip AND br, the Python SDK's default
+  when `brotli` is importable — and wait until every triggered envelope
+  is delivered) and assert over the WHOLE envelope set: FIRST that every
+  triggered error event arrived — batched items included: logs ship in
+  batches, so wait for the triggered record itself — (and, only when
+  tracing is in scope, one
+  transaction per unit of work with the sample rate forced to 1.0 for
+  the test), THEN that **no secret or identity appears anywhere**,
+  searched raw AND decoded (JSON-unescaped, percent-decoded until stable,
+  numbers and non-JSON items included — `lang-python` ships the capture
+  helper; on other stacks port its decoding AND its matching: any
+  8-character run of letters and digits of a planted value,
+  case-insensitive, a value without one whole — a truncated `sub[:8]` is
+  the leak a whole-value search misses, and a run across separators (a
+  uuid4's `-4xxx-8xxx-`) is too weak to count) — request fields including
+  the query string and cookies,
+  stack-trace frame-locals the SDK serializes, free-form message
+  interpolation, breadcrumbs, process argv included. Over an empty,
+  partial or undecoded capture, "nothing leaked" is vacuously true. The
+  mock-transport unit tests prove the code path; the capture test proves
+  the net. (Paid: in a campaign's own diff, an OAuth `code` crossed the
+  scrubber through the request's query string and the stack's
+  frame-locals, and a ProConnect `sub` through free-text log messages,
+  while every mock-transport test stayed green.)
 
 ## 5. Honesty
 

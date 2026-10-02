@@ -72,9 +72,19 @@ func modernizeLotVerify(t *testing.T, script, ws, lotID, base, exitGate string) 
 // modernizeLotVerifyEnv runs lot_verify with an optional environment override
 // and returns the parsed report plus the exit code (1 = typed refusal, the
 // contract could not be read).
-func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate string, env []string) (modernizeLotVerifyOut, int) {
+// credPath, when given, is what the platform credential's reference renders:
+// a file secret renders its MOUNTED PATH. Omitted, it renders the opaque
+// placeholder the engine emits for an unresolved optional secret — which is
+// what a run with no credential installed actually sees, and which must NOT
+// be exported as if it were a path.
+func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate string, env []string, credPath ...string) (modernizeLotVerifyOut, int) {
 	t.Helper()
-	body := strings.ReplaceAll(script, "{{vars.workspace_dir}}", strconv.Quote(ws))
+	cred := "iterion-secret-placeholder-deploy_credential"
+	if len(credPath) > 0 {
+		cred = credPath[0]
+	}
+	body := strings.ReplaceAll(script, "{{secrets.deploy_credential}}", strconv.Quote(cred))
+	body = strings.ReplaceAll(body, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{input.plan_path}}", strconv.Quote(".modernize/plan.yaml"))
 	body = strings.ReplaceAll(body, "{{input.lot_id}}", strconv.Quote(lotID))
 	body = strings.ReplaceAll(body, "{{input.base_sha}}", strconv.Quote(base))

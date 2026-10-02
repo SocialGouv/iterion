@@ -94,7 +94,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 
 	if p.Format == OutputJSON {
 		result := map[string]any{
-			"run": r,
+			"run": store.RedactRunForOutput(r),
 		}
 		if opts.Events || opts.Full {
 			events, err := s.LoadEvents(context.Background(), opts.RunID)
@@ -261,7 +261,7 @@ func listRuns(s store.RunStore, p *Printer) error {
 		for _, id := range ids {
 			r, err := s.LoadRun(context.Background(), id)
 			if err == nil {
-				runs = append(runs, r)
+				runs = append(runs, store.RedactRunForOutput(r))
 			}
 		}
 		p.JSON(runs)

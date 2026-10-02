@@ -1,0 +1,11 @@
+# refused: a var's matching constraint is an RE2 pattern, a string
+dsl: 2
+vars:
+  x: {type: string, matching: 3}
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

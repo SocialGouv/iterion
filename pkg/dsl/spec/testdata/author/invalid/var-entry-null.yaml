@@ -1,0 +1,11 @@
+# refused: a var needs its type; a bare name is no var
+dsl: 2
+vars:
+  x:
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

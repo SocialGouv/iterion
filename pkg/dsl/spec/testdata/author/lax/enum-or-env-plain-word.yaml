@@ -1,0 +1,8 @@
+# lax: `reasoning_effort: whatever` (a plain word outside the list) passes the schema (any string, since the .bot takes any QUOTED value for a run-time substitution and a schema cannot see the quotes) — the converter refuses the plain word, as the .bot refuses it bare (E051)
+dsl: 2
+nodes:
+  - agent: a
+    reasoning_effort: whatever
+workflow:
+  name: w
+  entry: a

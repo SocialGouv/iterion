@@ -10,14 +10,17 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -201,6 +204,14 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 		s.botSourceError(w, r, err)
 		return
 	}
+	// The same fold refusal as the per-file route (#1612), asked of the
+	// whole bundle: this is where the studio's CLOUD save of a bot in
+	// several files lands, and where a push that folds a stored value
+	// would otherwise replace it with a text its author never wrote. A
+	// slug that does not exist yet is a creation — no before, no claim.
+	if !s.bundleFoldsNothing(w, r, tenantID, slug, bs.Files) {
+		return
+	}
 	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
@@ -247,6 +258,18 @@ func (s *Server) platformPushWarnings(tenantID string, bs botsource.BotSource) [
 		bs.Slug)}
 }
 
+// botSourceFilePutReq is the per-file write's body. A named type so the
+// OpenAPI generator can declare it: the if-match token a client must present
+// is part of the route's contract, and a spec that hides it hands a generated
+// client last-write-wins without saying so.
+type botSourceFilePutReq struct {
+	Content string `json:"content"`
+	// Version, when non-zero, is an if-match token: the write is rejected
+	// with 409 if the stored version advanced (a concurrent editor wrote in
+	// between). Omitted = last-write-wins.
+	Version int `json:"version,omitempty"`
+}
+
 // handlePutBotSourceFile writes one file into an existing bundle — the editor's
 // per-file save. The whole bundle is re-validated so a bad edit to any file is
 // caught, not just main.bot.
@@ -268,10 +291,7 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		s.botSourceError(w, r, err)
 		return
 	}
-	var body struct {
-		Content string `json:"content"`
-		Version int    `json:"version,omitempty"`
-	}
+	var body botSourceFilePutReq
 	r.Body = http.MaxBytesReader(w, r.Body, maxBotSourceBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
@@ -286,12 +306,27 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	for k, v := range bs.Files {
 		files[k] = v
 	}
+	stored := bs.Files[path]
 	files[path] = body.Content
 	bs.Files = files
 	bs.Version = body.Version
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
+	}
+	// This route takes file CONTENT, not a document, so it cannot ask the
+	// writer whether it could have produced it. It can ask the only
+	// question the two texts it holds answer: would this write put on ONE
+	// line a value the stored file writes over several? That is the same
+	// refusal canon.Text makes of a document (#1612), and it belongs here
+	// because this is the one write a CLIENT performs — the studio's cloud
+	// single-file save and the files drawer, neither of which goes through
+	// a save path of ours.
+	if workflowfile.IsWorkflowFile(path) {
+		if line, size, folds := canon.Folds(path, stored, body.Content); folds {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
+			return
+		}
 	}
 	// The file put is what is checked: a companion workflow through its
 	// own unit, a fragment through every workflow that may import it.
@@ -335,6 +370,15 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "cannot delete %s (the bundle entry)", botsource.MainBotFile)
 		return
 	}
+	// The if-match token, the same one the file put takes in its body. It
+	// rides the query here because a DELETE carries no body of its own and
+	// one is not reliably forwarded. Absent = last-write-wins, which is what
+	// a caller holding no token gets; malformed is refused rather than read
+	// as absent, or a typo would silently buy the weaker guarantee.
+	version, ok := s.parseIfMatchVersion(w, r)
+	if !ok {
+		return
+	}
 	// Clone before mutating — same aliasing hazard as the file put above.
 	files := make(map[string]string, len(bs.Files))
 	for k, v := range bs.Files {
@@ -350,7 +394,7 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// manifest still declares the floor its sources need.
 	before := validateBundleCompileSelected(bs.Files, []string{path})
 	bs.Files = files
-	bs.Version = 0 // no if-match on a delete
+	bs.Version = version
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -388,6 +432,18 @@ func (s *Server) writeBotSource(w http.ResponseWriter, r *http.Request, tenantID
 		s.auditBotSource(r, tenantID, "updated", out)
 		s.writeJSONFor(w, r, botSourceView{BotSource: out, Warnings: warnings})
 	case errors.Is(err, botsource.ErrNotFound):
+		// An if-match token names a row the caller READ. Falling through to
+		// a create here would drop it and resurrect the bundle from that
+		// caller's snapshot — the bot was deleted between this handler's
+		// read and this one, and the token is exactly what says so.
+		//
+		// 404 and not the version conflict: the bot was DELETED, not written
+		// by someone else, and a client told "another editor wrote to it,
+		// reload to see" would offer a reload that cannot succeed.
+		if bs.Version != 0 {
+			s.httpErrorFor(w, r, http.StatusNotFound, "bot source %q no longer exists: it was deleted since you read version %d", bs.Slug, bs.Version)
+			return
+		}
 		bs.CreatedBy = userID
 		out, cerr := s.botSources.Create(ctx, bs)
 		if cerr != nil {
@@ -645,6 +701,31 @@ func newDiagnostics(before, after []string) []string {
 	return fresh
 }
 
+// parseIfMatchVersion reads the `version` query token a bodyless bot-source
+// write presents. Absent is 0, which both store twins read as "no if-match"
+// — last-write-wins, the behaviour a caller with no token has to get. A
+// token that is not a positive integer is REFUSED: read as absent it would
+// hand a caller that asked for the check the one that does not check, and
+// the client could not tell the two apart.
+func (s *Server) parseIfMatchVersion(w http.ResponseWriter, r *http.Request) (int, bool) {
+	// Presence, not emptiness: `Get` cannot tell an ABSENT key from one
+	// present and empty, and `?version=` is what `?version=${token ?? ""}`
+	// produces. Read as absent it hands a caller that asked for the check
+	// the one that does not check — the very thing the refusal below exists
+	// to prevent.
+	q := r.URL.Query()
+	if !q.Has("version") {
+		return 0, true
+	}
+	raw := strings.TrimSpace(q.Get("version"))
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 1 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "version must be a positive integer, got %q", raw)
+		return 0, false
+	}
+	return v, true
+}
+
 // botSourceError maps store errors to actionable status codes.
 func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
@@ -656,7 +737,40 @@ func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err erro
 		s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
 	case errors.Is(err, botsource.ErrTenantMissing):
 		s.httpErrorFor(w, r, http.StatusForbidden, "%v", err)
+	case errors.Is(err, bundle.ErrAuthorDocument):
+		s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
 	default:
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 	}
+}
+
+// bundleFoldsNothing reports whether a whole-bundle write leaves every
+// stored workflow's multi-line values over their lines, answering the
+// refusal itself when it does not. A slug with nothing stored is a
+// creation and folds nothing; a store that cannot be read is an error,
+// never a quiet "nothing to compare".
+func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, tenantID, slug string, files map[string]string) bool {
+	stored, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), tenantID), tenantID, slug)
+	if errors.Is(err, botsource.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		s.botSourceError(w, r, err)
+		return false
+	}
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths) // a stable name in the refusal, whatever the map order
+	for _, path := range paths {
+		if !workflowfile.IsWorkflowFile(path) {
+			continue
+		}
+		if line, size, folds := canon.Folds(path, stored.Files[path], files[path]); folds {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
+			return false
+		}
+	}
+	return true
 }

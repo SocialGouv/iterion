@@ -38,6 +38,11 @@ type PublicPort struct {
 	// domain the program accepts, carried so a reader of the contract is
 	// never told a wider one.
 	EnumValues []string `json:"enum,omitempty"`
+	// Matching is the RE2 pattern an input's var admits
+	// (`[matching: …]`), carried for the same reason as EnumValues: a
+	// reader of the contract is never told a wider domain than the
+	// program accepts.
+	Matching string `json:"matching,omitempty"`
 	// FromNode and FromField bind an output to its producer: the node, and
 	// for a value the field of its output schema; a file port, or a port
 	// typed with the node's output schema, names the node alone.

@@ -319,17 +319,34 @@ func OwningDir(path string) string {
 // prompts, skills, attachments and sandbox mount. A workflow outside a
 // bundle returns (nil, nil).
 func OpenForWorkflow(path string) (*Bundle, error) {
+	return openForWorkflow(path, false)
+}
+
+// OpenForWorkflowHandedOver is OpenForWorkflow for a workflow file the
+// caller compiles without reading it from disk — the .bot an author
+// document stands for, written or not: a manifest export naming it is that
+// workflow, never a missing file. Every other export is looked for as ever.
+func OpenForWorkflowHandedOver(path string) (*Bundle, error) {
+	return openForWorkflow(path, true)
+}
+
+func openForWorkflow(path string, handedOver bool) (*Bundle, error) {
 	if path == "" {
 		return nil, nil
 	}
-	if _, err := filepath.Abs(path); err != nil {
+	abs, err := filepath.Abs(path)
+	if err != nil {
 		return nil, fmt.Errorf("bundle: resolve workflow %s: %w", path, err)
 	}
 	dir := OwningDir(path)
 	if dir == "" {
 		return nil, nil
 	}
-	b, openErr := OpenDir(dir)
+	standIn := ""
+	if handedOver {
+		standIn = abs
+	}
+	b, openErr := openDir(dir, "", standIn)
 	if openErr != nil {
 		return nil, openErr
 	}

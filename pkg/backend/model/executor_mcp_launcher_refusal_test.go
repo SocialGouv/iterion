@@ -1,0 +1,856 @@
+package model
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+)
+
+// refusingExecutor builds an executor whose MCP catalog holds one
+// workflow-controlled server and whose start policy is the sandboxed one, so
+// every attempt to start that server is refused rather than attempted.
+func refusingExecutor(t *testing.T, extraTools ...string) *ClawExecutor {
+	t.Helper()
+	tr := tool.NewRegistry()
+	for _, name := range append([]string{"bash", "todo_write"}, extraTools...) {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"repo": {
+				Name: "repo", Origin: mcp.OriginProject,
+				Transport: mcp.TransportStdio, Command: "/bin/echo",
+			},
+		}, mcp.WithStartPolicy(mcp.StartOperatorServersOnly)),
+	}
+}
+
+// A server the launcher may not start is not a broken server, and the two
+// must not share an outcome. A boot failure fails the node at build time; a
+// refusal has to survive as far as EXECUTION, because a build error aborts
+// the node before its `fallbacks:` are walked — and the whole point of the
+// refusal is that another backend, which starts that server inside the
+// container, can serve this node.
+//
+// Both spellings are covered: the wildcard the ambient splice and `tools:`
+// use, and an exact `mcp.<server>.<tool>`. The exact one is the trap — its
+// tool is never registered (discovery never ran), so anything short of
+// skipping resolution for the whole server surfaces as "unknown tool" at
+// build time, which names neither the server nor the reason.
+func TestARefusedMCPServerReachesExecuteRatherThanFailingTheBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tools []string
+	}{
+		{"wildcard", []string{"bash", "mcp.repo.*"}},
+		{"exact name", []string{"bash", "mcp.repo.search"}},
+		// The claude_code FQN spelling, which Registry.Resolve accepts and
+		// which a bot author may legitimately write. A reader bound to the
+		// dotted form skipped it: the server was never recorded as refused,
+		// resolution went ahead, and the node died at build with "unknown
+		// tool" — the one outcome this whole path exists to avoid.
+		{"claude_code FQN spelling", []string{"bash", "mcp__repo__search"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := refusingExecutor(t)
+			node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+			f := backendFields{
+				id: "n", model: "anthropic/claude-opus-5",
+				tools: tc.tools, activeMCPServers: []string{"repo"},
+			}
+
+			task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+			if err != nil {
+				t.Fatalf("a refusal must not fail the build — the node's fallbacks would never run: %v", err)
+			}
+			if len(task.MCPServersRefusedOnLauncher) != 1 {
+				t.Fatalf("the refusal must travel on the task, got %v", task.MCPServersRefusedOnLauncher)
+			}
+			reason, ok := task.MCPServersRefusedOnLauncher["repo"]
+			if !ok {
+				t.Fatalf("the refusal must name the server: %v", task.MCPServersRefusedOnLauncher)
+			}
+			if !strings.Contains(reason.Reason, "project") {
+				t.Errorf("the reason must name the origin, so the operator can see WHY: %q", reason.Reason)
+			}
+			if !reason.CarriesRouteAdvice {
+				t.Errorf("a refusal with no health cause carries the route advice in its own text: %q",
+					reason.Reason)
+			}
+			for _, td := range task.ToolDefs {
+				if strings.HasPrefix(td.Name, "mcp_repo") || strings.HasPrefix(td.Name, "mcp.repo") {
+					t.Errorf("a refused server's tools must not be advertised: %q", td.Name)
+				}
+			}
+		})
+	}
+}
+
+// And at execution, the sandboxed claw route refuses BY TYPE, which is what
+// makes the fallback chain walk on to a route that can serve the node.
+func TestSandboxedClawRefusesARefusedMCPServerByCapability(t *testing.T) {
+	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	task := delegate.Task{
+		NodeID:  "n",
+		Sandbox: unmetSandboxRun{},
+		MCPServersRefusedOnLauncher: map[string]delegate.MCPLauncherRefusal{
+			"repo":  {Reason: "mcp: server \"repo\" (origin: project) is not started by the launcher"},
+			"other": {Reason: "mcp: server \"other\" (origin: workflow) is not started by the launcher"},
+		},
+	}
+
+	_, err := b.Execute(context.Background(), task)
+	var unsupported *delegate.ErrCapabilityUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected a typed capability refusal so the chain continues, got %v", err)
+	}
+	// Both names, in a stable order: the capability string is what a fallback
+	// decision is logged under, and one that reshuffles per run makes two
+	// identical runs look different.
+	if !strings.Contains(unsupported.Capability, `"other", "repo"`) {
+		t.Errorf("the capability must name every refused server in a stable order: %q", unsupported.Capability)
+	}
+}
+
+// An AMBIENT server — one the node never named, inherited from the target
+// repository or the plugin catalog — degrades instead: the node runs without
+// its tools, loudly. Failing the node there would make one repository's
+// `.mcp.json` able to stop every sandboxed claw node of every run.
+func TestAnAmbientRefusedServerDegradesTheNode(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+	}
+
+	task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err != nil {
+		t.Fatalf("an ambient refusal must not fail the node: %v", err)
+	}
+	if len(task.ToolDefs) == 0 {
+		t.Fatal("the node's own tools must survive")
+	}
+	if len(degraded) != 1 || degraded[0].Server != "repo" || degraded[0].Err == nil {
+		t.Fatalf("the drop must be observable via OnMCPServerDegraded: %+v", degraded)
+	}
+	// As FIELDS. A consumer filtering the timeline can otherwise not tell a
+	// repository's `.mcp.json` from the bot's own declaration, nor a refusal
+	// — where nothing is broken — from a server that genuinely cannot boot.
+	if degraded[0].Origin != "project" {
+		t.Errorf("the event must name the origin: %+v", degraded[0])
+	}
+	if !degraded[0].Refused {
+		t.Error("a server the launcher may not start did not fail to boot; the event must say which it was")
+	}
+	// An ambient server is not a declared dependency, so it does not refuse
+	// the node at execution either.
+	if len(task.MCPServersRefusedOnLauncher) != 0 {
+		t.Errorf("an ambient server must not turn into an execution-time refusal: %v",
+			task.MCPServersRefusedOnLauncher)
+	}
+}
+
+// A wildcard for a server the node cannot USE must not START that server.
+// The access check runs on the expanded tool names — after the server booted
+// — so a node that names `mcp.other.*` without `other` in its own `mcp:` set
+// would spawn a process beside the launcher and then refuse every tool it
+// offers. Least privilege reads the declaration first.
+func TestAWildcardDoesNotStartAServerTheNodeCannotUse(t *testing.T) {
+	started := false
+	tr := tool.NewRegistry()
+	if err := tr.RegisterBuiltin("bash", "bash", nil, func(context.Context, json.RawMessage) (string, error) {
+		return "ok", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"other": {
+				Name: "other", Origin: mcp.OriginPlugin,
+				Transport: mcp.TransportStdio,
+				// Any attempt to start it is observable as a boot failure.
+				Command: "/nonexistent/iterion-test-mcp-server",
+			},
+		}, mcp.WithStartPolicy(mcp.StartAllServers)),
+	}
+	e.hooks.OnMCPServerDegraded = func(string, MCPServerDegradedInfo) { started = true }
+
+	// The node's own MCP scope does not include "other".
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"allowed"}}
+	defs, refused, err := e.resolveToolsForNode(context.Background(), node, []string{"bash", "mcp.other.*"})
+	if err != nil {
+		t.Fatalf("an out-of-scope wildcard must not fail the node: %v", err)
+	}
+	if started {
+		t.Error("the server was started for a node that cannot reach its tools")
+	}
+	if len(refused) != 0 {
+		t.Errorf("nothing was refused by policy here — the node simply cannot use it: %v", refused)
+	}
+	if len(defs) != 1 || defs[0].Name != "bash" {
+		t.Errorf("the node's own tools must survive: %+v", defs)
+	}
+}
+
+// The degrade event says WHY the server was in this node's reach, and the
+// merged active set cannot answer that: a node's ActiveMCPServers holds the
+// ambient servers it inherited and the ones its own `mcp:` block named, in
+// one list. Reading "ambient" off the fact that the splice loop walks that
+// list sends a bot author reading the target repository's `.mcp.json` for a
+// line that is in their own `.bot`.
+func TestTheDegradeEventSaysWhetherTheNodeAskedForTheServer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mcp    *ir.MCPConfig
+		source string
+	}{
+		{"inherited", nil, "ambient"},
+		{"named by the node", &ir.MCPConfig{Servers: []string{"repo"}}, "declared"},
+		// `inherit: false` plus a name is the strongest declaration there
+		// is: the node threw the ambient set away and kept this one server.
+		{"the only server the node kept", &ir.MCPConfig{Inherit: boolPtr(false), Servers: []string{"repo"}}, "declared"},
+		// A node that names a DIFFERENT server has not asked for this one.
+		{"another server named", &ir.MCPConfig{Servers: []string{"elsewhere"}}, "ambient"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := refusingExecutor(t)
+			var degraded []MCPServerDegradedInfo
+			e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+				degraded = append(degraded, info)
+			}
+
+			node := &ir.AgentNode{
+				BaseNode: ir.BaseNode{ID: "n"}, MCP: tc.mcp,
+				ActiveMCPServers: []string{"repo"},
+			}
+			f := backendFields{
+				id: "n", model: "anthropic/claude-opus-5",
+				tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+			}
+
+			if _, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil); err != nil {
+				t.Fatalf("a refusal must not fail the node: %v", err)
+			}
+			if len(degraded) != 1 {
+				t.Fatalf("the drop must be observable exactly once: %+v", degraded)
+			}
+			if degraded[0].Source != tc.source {
+				t.Errorf("source = %q, want %q — the event must name where the server came from, "+
+					"not where the loop that reports it happens to read",
+					degraded[0].Source, tc.source)
+			}
+		})
+	}
+}
+
+// And the event must not fire at all for a server whose TOOLS the node
+// names: that server does not degrade. Its refusal travels on the task to
+// Execute, where the node's `fallbacks:` get a route that starts the server
+// in the container — so a sentence claiming its tools are missing is one the
+// next second contradicts, written into the run record where a gate reads it.
+func TestAServerWhoseToolsTheNodeNamesDoesNotDegrade(t *testing.T) {
+	for _, tools := range [][]string{
+		{"bash", "mcp.repo.*"},
+		{"bash", "mcp.repo.search"},
+		{"bash", "mcp__repo__search"},
+	} {
+		t.Run(strings.Join(tools, "+"), func(t *testing.T) {
+			e := refusingExecutor(t)
+			var degraded []MCPServerDegradedInfo
+			e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+				degraded = append(degraded, info)
+			}
+
+			node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+			f := backendFields{
+				id: "n", model: "anthropic/claude-opus-5",
+				tools: tools, activeMCPServers: []string{"repo"},
+			}
+
+			task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+			if err != nil {
+				t.Fatalf("a refusal must not fail the build: %v", err)
+			}
+			if len(degraded) != 0 {
+				t.Errorf("a named server's refusal is carried, not degraded: %+v", degraded)
+			}
+			if _, ok := task.MCPServersRefusedOnLauncher["repo"]; !ok {
+				t.Errorf("…and it must be carried: %v", task.MCPServersRefusedOnLauncher)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// Refused and broken are INDEPENDENT facts. checkStart asks the placement
+// question first on purpose — so a refusal stays typed and the node's
+// fallbacks are walked — which means a server that could not have started
+// anyway is reported as refused. If that were the only field, a consumer
+// reading `refused` as "nothing to fix here" would silently swallow a
+// malformed server definition, and the health problem would exist only
+// inside an error string nobody parses.
+func TestARefusedServerThatIsAlsoBrokenReportsBothFacts(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, name := range []string{"bash", "todo_write"} {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"repo": {
+				Name: "repo", Origin: mcp.OriginProject,
+				Transport: mcp.TransportStdio, Command: "/bin/echo",
+				StartErr: errors.New("auth: unsupported scheme \"magic\""),
+			},
+		}, mcp.WithStartPolicy(mcp.StartOperatorServersOnly)),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+	}
+
+	if _, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil); err != nil {
+		t.Fatalf("a refusal must not fail the node, broken or not: %v", err)
+	}
+	if len(degraded) != 1 {
+		t.Fatalf("the drop must be observable: %+v", degraded)
+	}
+	if !degraded[0].Refused {
+		t.Error("the placement question was answered first: this is a refusal")
+	}
+	if degraded[0].Cause == nil {
+		t.Fatalf("…and the server was ALSO broken; that fact must survive as a field: %+v", degraded[0])
+	}
+	if !strings.Contains(degraded[0].Cause.Error(), "magic") {
+		t.Errorf("the cause must be the server's own problem, not the refusal: %v", degraded[0].Cause)
+	}
+}
+
+// The common case stays clean: a healthy server refused on placement alone
+// carries no cause, so `cause` present in the timeline always means "there
+// is something to go and fix".
+func TestAHealthyRefusedServerCarriesNoCause(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+	}
+
+	if _, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil); err != nil {
+		t.Fatalf("a refusal must not fail the node: %v", err)
+	}
+	if len(degraded) != 1 || !degraded[0].Refused {
+		t.Fatalf("expected one refusal: %+v", degraded)
+	}
+	if degraded[0].Cause != nil {
+		t.Errorf("nothing was wrong with this server; a cause here makes every refusal look broken: %v",
+			degraded[0].Cause)
+	}
+}
+
+// A BARE tool name — `search`, which the registry resolves to
+// `mcp.repo.search` once that server is connected — cannot name its server,
+// so unlike the dotted and FQN spellings it cannot be carried to Execute
+// where a fallback route would serve it. The node dies here, and it used to
+// die on "unknown tool": a message that names neither the server nor the
+// reason, for a `.bot` that works unsandboxed and fails sandboxed.
+//
+// The refusal is deliberately NOT guessed onto the name — that would send the
+// node to a fallback for a tool which may not exist anywhere. The message
+// carries the fact instead.
+func TestABareToolNameOnARefusedServerFailsWithTheReason(t *testing.T) {
+	e := refusingExecutor(t)
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash", "search"}, activeMCPServers: []string{"repo"},
+	}
+
+	_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err == nil {
+		t.Fatal("a name nothing resolves must still fail — the refusal is not guessed onto it")
+	}
+	for _, want := range []string{"repo", "mcp.<server>.search", "fallbacks"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must carry %q so the author can act on it: %v", want, err)
+		}
+	}
+}
+
+// And the enrichment must not fire when nothing was refused: an ordinary
+// typo would otherwise be answered with advice about servers that are fine.
+func TestAnUnknownToolWithNoRefusalKeepsItsPlainError(t *testing.T) {
+	e := refusingExecutor(t)
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash", "typpo"},
+	}
+
+	_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err == nil {
+		t.Fatal("an unknown tool must fail")
+	}
+	if strings.Contains(err.Error(), "fallbacks") {
+		t.Errorf("no server was refused here; the advice is noise: %v", err)
+	}
+}
+
+// The FQN spelling names the server before the LAST `__`, so a tool whose own
+// name contains `__` cannot be written that way: `mcp__repo__list__all` is
+// served as `mcp.repo__list.all` and nothing else — the registry never reads
+// it as tool `list__all` on server `repo`.
+//
+// That matters at the boundary, because it decides which server a refusal is
+// recorded against. Widening it to "every reading" looked like a fix and was
+// the opposite: an ambient server sharing a name prefix got swept into the
+// refusal of the whole claw route, and its degrade event was swallowed.
+func TestTheFQNSpellingHasExactlyOneReading(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, s := range []struct{ server, name string }{
+		{"repo", "list__all"},
+		{"repo__list", "all"},
+		{"srv_", "tool"},
+	} {
+		if err := tr.RegisterMCP(s.server, s.name, "d", nil,
+			func(context.Context, json.RawMessage) (string, error) { return "x", nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ ref, want string }{
+		// The trap: the underscored TOOL name is unreachable through the FQN.
+		{"mcp__repo__list__all", "mcp.repo__list.all"},
+		{"mcp.repo.list__all", "mcp.repo.list__all"},
+		// A server name ending in `_` is reached correctly by both.
+		{"mcp__srv___tool", "mcp.srv_.tool"},
+		{"mcp.srv_.tool", "mcp.srv_.tool"},
+	} {
+		t.Run(tc.ref, func(t *testing.T) {
+			td, err := tr.Resolve(tc.ref)
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if td.QualifiedName != tc.want {
+				t.Fatalf("Resolve(%q) = %q, want %q", tc.ref, td.QualifiedName, tc.want)
+			}
+			// And the boundary must read the SAME server the registry did.
+			server, ok := tool.MCPServerOf(tc.ref)
+			if !ok {
+				t.Fatalf("MCPServerOf(%q) found no server for a name that resolves", tc.ref)
+			}
+			if wantServer, _, _ := tool.ParseMCPName(td.QualifiedName); server != wantServer {
+				t.Errorf("the boundary reads server %q where the registry served %q — a refusal would be "+
+					"recorded against the wrong server", server, wantServer)
+			}
+		})
+	}
+}
+
+// `mcp: servers:` at WORKFLOW level is the documented spelling for "these
+// servers, on every node", and PrepareWorkflow folds it into each node's
+// active set while leaving the node's own `mcp:` nil. A `source` read from
+// the node alone therefore called a server the BOT declared "ambient" — and
+// sent its author to read the target repository's `.mcp.json` for a line
+// that is in their own `.bot`. Exactly the misdirection this field removes,
+// reintroduced one level up.
+func TestAWorkflowLevelDeclarationIsNotAmbient(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		wfMCP  *ir.MCPConfig
+		source string
+	}{
+		{"the workflow named it", &ir.MCPConfig{Servers: []string{"repo"}}, "declared"},
+		{"the workflow named another", &ir.MCPConfig{Servers: []string{"elsewhere"}}, "ambient"},
+		{"no workflow block", nil, "ambient"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := refusingExecutor(t)
+			e.wfMCP = tc.wfMCP
+			var degraded []MCPServerDegradedInfo
+			e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+				degraded = append(degraded, info)
+			}
+
+			// The node itself declares nothing — it INHERITED the server.
+			node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+			f := backendFields{
+				id: "n", model: "anthropic/claude-opus-5",
+				tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+			}
+
+			if _, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil); err != nil {
+				t.Fatalf("a refusal must not fail the node: %v", err)
+			}
+			if len(degraded) != 1 {
+				t.Fatalf("expected one drop: %+v", degraded)
+			}
+			if degraded[0].Source != tc.source {
+				t.Errorf("source = %q, want %q", degraded[0].Source, tc.source)
+			}
+		})
+	}
+}
+
+// A drop is only a fact once the node is going to run. The bare MCP
+// shorthand makes the two collide: `tools: [search]` names no server, so the
+// splice degrades `repo` and announces a tool set built without it — and
+// resolution then fails the node one line later, so no task was built at all. A run record whose only
+// trace of the drop is a sentence the next line contradicts is worse than no
+// trace: a downstream gate reads it as "ran degraded".
+func TestNoDegradeEventWhenTheBuildFailsAnyway(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash", "search"}, activeMCPServers: []string{"repo"},
+	}
+
+	_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err == nil {
+		t.Fatal("premise broken: a bare name on a refused server must still fail the build")
+	}
+	if len(degraded) != 0 {
+		t.Errorf("the node never ran, so nothing may claim it ran degraded: %+v", degraded)
+	}
+}
+
+// A task whose claw route will be REFUSED still reports the servers its
+// tool set lacks, and carries the refusal beside it. Both facts, because
+// they are different facts: the task genuinely has no tools for `other`,
+// and `repo`'s refusal will send the node to a route that starts them in
+// its container.
+//
+// An earlier version suppressed the event here, on the theory that a
+// carried refusal means the node does not run degraded. That theory made
+// the event's subject the NODE's outcome, which no build-time predicate
+// can know — claw declines a task at five separate points in Execute, and
+// the gate saw only one of them. Worse, it suppressed a server that had
+// merely FAILED TO BOOT, a fact about the server that no route repairs.
+func TestARefusedRouteStillReportsTheToolsItsTaskLacks(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, name := range []string{"bash", "todo_write"} {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			"repo":  {Name: "repo", Origin: mcp.OriginProject, Transport: mcp.TransportStdio, Command: "/bin/echo"},
+			"other": {Name: "other", Origin: mcp.OriginProject, Transport: mcp.TransportStdio, Command: "/bin/echo"},
+		}, mcp.WithStartPolicy(mcp.StartOperatorServersOnly)),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo", "other"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools:            []string{"bash", "mcp.repo.search"},
+		activeMCPServers: []string{"repo", "other"},
+	}
+
+	task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err != nil {
+		t.Fatalf("a refusal must not fail the build: %v", err)
+	}
+	if _, ok := task.MCPServersRefusedOnLauncher["repo"]; !ok {
+		t.Fatalf("the named server's refusal must be carried: %v", task.MCPServersRefusedOnLauncher)
+	}
+	// The route really is refused — the premise of the retired theory.
+	_, execErr := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).Execute(context.Background(), task)
+	var unsupported *delegate.ErrCapabilityUnsupported
+	if !errors.As(execErr, &unsupported) {
+		t.Fatalf("premise broken: the carried refusal must refuse the whole route, got %v", execErr)
+	}
+
+	// …and the ambient server's absence from this task's tools is recorded
+	// anyway, because that is what the event claims.
+	if len(degraded) != 1 || degraded[0].Server != "other" {
+		t.Errorf("the task's tool set lacks `other`; that must be in the record whatever becomes of the "+
+			"task: %+v", degraded)
+	}
+	// The server the node NAMED is not reported here: its refusal travels
+	// on the task instead, so the two facts are not double-counted.
+	for _, d := range degraded {
+		if d.Server == "repo" {
+			t.Errorf("a named server's refusal is carried, not degraded: %+v", d)
+		}
+	}
+}
+
+// A server that merely FAILED TO BOOT is reported even when an unrelated
+// server was refused. Its health is nobody's route to repair: the
+// `claude_code` fallback forwards it and its CLI skips it silently, so the
+// suppressed event was the only trace that existed.
+func TestABrokenServerIsReportedEvenWhenAnotherWasRefused(t *testing.T) {
+	tr := tool.NewRegistry()
+	for _, name := range []string{"bash", "todo_write"} {
+		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &ClawExecutor{
+		logger:       iterlog.Nop(),
+		toolRegistry: tr,
+		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
+			// Refused by policy, and NAMED by the node, so its refusal is carried.
+			"repo": {Name: "repo", Origin: mcp.OriginProject, Transport: mcp.TransportStdio, Command: "/bin/echo"},
+			// The policy ALLOWS this one; it simply cannot boot.
+			"pluginsrv": {Name: "pluginsrv", Origin: mcp.OriginPlugin, Transport: mcp.TransportStdio,
+				Command: "/nonexistent/iterion-test-mcp-server"},
+		}, mcp.WithStartPolicy(mcp.StartOperatorServersOnly)),
+	}
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo", "pluginsrv"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools:            []string{"bash", "mcp.repo.search"},
+		activeMCPServers: []string{"repo", "pluginsrv"},
+	}
+
+	task, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+	if err != nil {
+		t.Fatalf("a refusal must not fail the build: %v", err)
+	}
+	if _, ok := task.MCPServersRefusedOnLauncher["repo"]; !ok {
+		t.Fatalf("premise broken: `repo`'s refusal must be carried: %v", task.MCPServersRefusedOnLauncher)
+	}
+
+	var boot *MCPServerDegradedInfo
+	for i := range degraded {
+		if degraded[i].Server == "pluginsrv" {
+			boot = &degraded[i]
+		}
+	}
+	if boot == nil {
+		t.Fatalf("the broken server has no other trace anywhere — the claude_code fallback forwards it and "+
+			"its CLI skips it silently: %+v", degraded)
+	}
+	if boot.Refused {
+		t.Errorf("this one was ALLOWED and could not boot; calling it refused sends the operator after the "+
+			"wrong thing: %+v", boot)
+	}
+	if boot.Origin != mcp.OriginPlugin.String() {
+		t.Errorf("origin = %q, want %q", boot.Origin, mcp.OriginPlugin)
+	}
+}
+
+// And the build can still fail AFTER resolution: a claw `session: persist`
+// node whose resume conversation did not survive its JSON round-trip is
+// refused several statements later. A node that never ran did not run
+// degraded.
+func TestNoDegradeEventWhenTheBuildFailsAfterResolution(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+		session: ir.SessionPersist,
+	}
+	// A conversation that round-tripped through JSON arrives as a string,
+	// which applyResumeContinuity drops — and the guard below then fails.
+	input := map[string]any{delegate.ResumeConversationKey: `[{"role":"user"}]`}
+
+	if _, err := e.buildTask(context.Background(), node, f, input, delegate.BackendClaw, nil); err == nil {
+		t.Fatal("premise broken: this build must fail after resolution")
+	}
+	if len(degraded) != 0 {
+		t.Errorf("the node never ran: %+v", degraded)
+	}
+}
+
+// One report, one clock. The `cause` comes from the error the gate produced
+// reading the config the server's own state holds; the `origin` used to come
+// from the catalog, which can already hold a newer config for a server that
+// started before the sandbox settled. A refusal carries its own origin —
+// take it from there, so the two fields describe the same moment.
+func TestTheDegradeEventTakesItsOriginFromTheRefusal(t *testing.T) {
+	e := refusingExecutor(t)
+	var degraded []MCPServerDegradedInfo
+	e.hooks.OnMCPServerDegraded = func(_ string, info MCPServerDegradedInfo) {
+		degraded = append(degraded, info)
+	}
+
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+	f := backendFields{
+		id: "n", model: "anthropic/claude-opus-5",
+		tools: []string{"bash"}, activeMCPServers: []string{"repo"},
+	}
+	if _, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil); err != nil {
+		t.Fatalf("a refusal must not fail the node: %v", err)
+	}
+	if len(degraded) != 1 {
+		t.Fatalf("expected one drop: %+v", degraded)
+	}
+	// The refusal's own origin, not a second lookup that may have moved on.
+	var notStartable *mcp.ServerNotStartableError
+	if !errors.As(degraded[0].Err, &notStartable) {
+		t.Fatalf("premise broken: this drop must be a typed refusal: %v", degraded[0].Err)
+	}
+	if degraded[0].Origin != notStartable.Origin.String() {
+		t.Errorf("origin = %q but the refusal that produced the event says %q — one report, two clocks",
+			degraded[0].Origin, notStartable.Origin)
+	}
+}
+
+// A node with no `fallbacks:` shows the remedy text and nothing else, so it
+// must carry EVERY refused server's reason — one of them may be the one with
+// a health cause attached. And it must not say the same thing twice: the
+// typed refusal already ends with the route-it-elsewhere advice.
+func TestTheRemedyCarriesEveryReasonExactlyOnce(t *testing.T) {
+	// The fixtures are built by the REAL producer, not hand-written: the
+	// typed refusal appends the route-it-elsewhere advice only when it has
+	// no cause to report instead, and it is the refusal that answers whether
+	// it did. A hand-written fixture would decide that for itself and the
+	// branch below would be tested against a fiction.
+	broken := launcherRefusal(&mcp.ServerNotStartableError{
+		Server: "aaa", Origin: mcp.OriginProject, Policy: mcp.StartOperatorServersOnly,
+		Cause: errors.New("auth: TOKEN is unset"),
+	})
+	healthy := launcherRefusal(&mcp.ServerNotStartableError{
+		Server: "zzz", Origin: mcp.OriginWorkflow, Policy: mcp.StartOperatorServersOnly,
+	})
+	if broken.CarriesRouteAdvice || !healthy.CarriesRouteAdvice {
+		t.Fatalf("premise broken: only the causeless refusal carries the advice (broken=%v healthy=%v)",
+			broken.CarriesRouteAdvice, healthy.CarriesRouteAdvice)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		refused map[string]delegate.MCPLauncherRefusal
+		wants   []string
+	}{
+		{
+			name:    "both, one of them broken",
+			refused: map[string]delegate.MCPLauncherRefusal{"aaa": broken, "zzz": healthy},
+			wants:   []string{"aaa", "zzz", "TOKEN is unset"},
+		},
+		{
+			// Only a broken one: its message carries no advice of its own,
+			// so the remedy must supply it or the operator has none.
+			name:    "only a refused-and-broken server",
+			refused: map[string]delegate.MCPLauncherRefusal{"aaa": broken},
+			wants:   []string{"aaa", "TOKEN is unset", "inside the container"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).
+				Execute(context.Background(), delegate.Task{NodeID: "n", MCPServersRefusedOnLauncher: tc.refused})
+			var unsupported *delegate.ErrCapabilityUnsupported
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("expected a typed refusal, got %v", err)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(unsupported.Remedy, want) {
+					t.Errorf("the remedy must carry %q — a node with no fallback sees nothing else: %q",
+						want, unsupported.Remedy)
+				}
+			}
+			// …and the advice exactly once, however many reasons there are.
+			if n := strings.Count(unsupported.Remedy, "inside the container"); n != 1 {
+				t.Errorf("the route-it-elsewhere advice must appear once, got %d: %q", n, unsupported.Remedy)
+			}
+		})
+	}
+}
+
+// The bare-name advice is for a name the REGISTRY could not resolve. It used
+// to wrap every error out of resolution, so a node-scope refusal of an
+// unrelated server was told to go and read the target repository's
+// `.mcp.json`. A typo of a builtin is NOT covered by that scoping and never
+// was: it resolves to `unknown tool`, so the advice still fires — the
+// sanitized spelling below is the one shape ruled out.
+func TestTheBareNameAdviceOnlyAnswersAnUnknownTool(t *testing.T) {
+	e := refusingExecutor(t)
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n"}, ActiveMCPServers: []string{"repo"}}
+
+	for _, tc := range []struct {
+		name  string
+		tools []string
+		wants bool
+	}{
+		// A bare name nothing resolves, with a refused server in reach.
+		{"a plausible MCP shorthand", []string{"bash", "search"}, true},
+		// The sanitized spelling iterion itself advertises: the advice
+		// would propose `mcp.<server>.mcp_repo_search`, which the registry
+		// can never serve.
+		{"the sanitized spelling", []string{"bash", "mcp_repo_search"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := backendFields{
+				id: "n", model: "anthropic/claude-opus-5",
+				tools: tc.tools, activeMCPServers: []string{"repo"},
+			}
+			_, err := e.buildTask(context.Background(), node, f, map[string]any{}, delegate.BackendClaw, nil)
+			if err == nil {
+				t.Fatal("premise broken: an unresolvable name must fail the build")
+			}
+			got := strings.Contains(err.Error(), "so the refusal reaches the node's fallbacks")
+			if got != tc.wants {
+				t.Errorf("advice present = %v, want %v: %v", got, tc.wants, err)
+			}
+		})
+	}
+}

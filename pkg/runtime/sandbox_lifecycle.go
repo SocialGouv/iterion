@@ -64,11 +64,16 @@ func schedulingSummary(driver sandbox.Driver) string {
 	return ""
 }
 
-// startNoopSandbox runs the Prepare+Start sequence for the noop driver.
-// We only land here when the operator explicitly opted into noop
-// (PreferredDriver="noop") for an active spec — DriverForSpec
-// hard-errors otherwise. The skip event still surfaces in
-// events.jsonl + reports so it's visible the run is NOT sandboxed.
+// startNoopSandbox runs the Prepare+Start sequence for the noop driver
+// against an ACTIVE spec, which requires a caller that pinned noop
+// through FactoryOptions.PreferredDriver: DriverForSpec refuses
+// otherwise. selectSandboxDriver never sets it, so NO run reaches this
+// today — it is the implementation of that seam, kept for a caller
+// that wires it (the option is exported). A `sandbox: auto` run on a
+// driverless host does not come through here: resolveAndStartSandbox
+// returns no sandbox and the run executes on the host. The skip event
+// surfaces in events.jsonl + reports so it's visible the run is NOT
+// sandboxed.
 func startNoopSandbox(
 	ctx context.Context,
 	driver sandbox.Driver,

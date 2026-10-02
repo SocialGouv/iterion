@@ -280,6 +280,8 @@ Agent workflows can also be shipped as **`.botz`** bundles — deterministic ZIP
 Here's the simplest possible workflow — an agent reviews code and decides pass/fail:
 
 ```iter
+dsl: 2
+
 prompt review_system:
   You are a code reviewer. Evaluate the submission
   and decide if it meets quality standards.

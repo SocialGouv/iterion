@@ -92,6 +92,16 @@ DEEPSEC_PROVIDER=claude-code \
   --record-dir {{vars.workspace_dir}}/.sec-audit/deepsec-records
 ```
 
+Seki's own pipeline does not read that path: the `run_deepsec_scanner`
+tool node exports to a per-run file
+(`{{vars.scan_dir}}/deepsec-out-<run.id>/deepsec.json`) and publishes it
+in `json_paths.deepsec`, the only route by which triage, `scan_health`,
+`bank_deepsec_findings` and `cap_findings` reach a deep-scan export. A
+flat `{{vars.scan_dir}}/deepsec.json` is the pre-0.1.4 shared slot — the
+scanner node removes it once a pass gets past its preflight, and no node
+harvests it — so a hand-run export reaches triage only through
+`json_paths`, never by sitting under `scan_dir`.
+
 Requirements:
 - `node --version` reports 22.x or higher.
 - `claude` is on `$PATH` and authenticated.

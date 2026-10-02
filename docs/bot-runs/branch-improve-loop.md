@@ -33,6 +33,24 @@
 - Lessons for next run: a two-commit scratch branch is enough to prove the
   loop's shape; the delivery tail needs a real forge and a real PR.
 
+## 2026-09-14 — #1207: automatic fixer stopped before execution by weekly quota
+
+- Status: **cancelled after quota rejection; no fix produced**. Run
+  [01a09e96-bcc7-7414-8108-5fc3b5aa5988](https://iterion.cloud/runs/01a09e96-bcc7-7414-8108-5fc3b5aa5988)
+  was automatically launched by the red Revi gate on head `3a434c2e729f`.
+- Result: `failed_resumable`, hard seven-day quota at 99% against a 95%
+  threshold; provider reset 2026-09-15 at 21:00 UTC. There were no node
+  executions, banked commits, branch pushes or finding ledger. The GitHub
+  pause notice correctly named a fixer and warned against concurrent pushes.
+- Handling: the interactive session cancelled the scheduled retry and
+  verified `cancelled`, with no final commit or branch, before publishing its
+  separately reproduced policy identity correction. This uses the explicit
+  weekly-cap exception in [revi-billy-loop.md](../revi-billy-loop.md).
+- Finding **Rda4616** remains deferred as a release condition: the provisional
+  alias engine floor must be anchored to the actual first release containing
+  the resolver before merge. PR #1207 remains draft; no gate override,
+  auto-merge, release or quota change was performed.
+
 ## 2026-09-09 — #1028: lazy cloud home, bank recovered after quota stop
 
 - Status: **bank recovered; delivery review interrupted by provider quota**.

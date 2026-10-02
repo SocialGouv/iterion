@@ -1,0 +1,10 @@
+# refused: a map's values are strings (an env var's value), not objects
+dsl: 2
+nodes:
+  - agent: a
+    sandbox:
+      image: img
+      env: {KEY: {nested: v}}
+workflow:
+  name: w
+  entry: a

@@ -219,7 +219,7 @@ func TestManagerHTTPDiscoveryAndCache(t *testing.T) {
 			Transport: TransportHTTP,
 			URL:       server.URL,
 		},
-	})
+	}, WithStartPolicy(StartAllServers))
 	registry := tool.NewRegistry()
 
 	if err := manager.EnsureServers(context.Background(), registry, []string{"github"}); err != nil {
@@ -258,7 +258,7 @@ func TestManagerStdioDiscoveryAndCall(t *testing.T) {
 			Command:   os.Args[0],
 			Args:      []string{"-test.run=TestManagerStdioDiscoveryAndCall", "--", "mcp-stdio-helper"},
 		},
-	})
+	}, WithStartPolicy(StartAllServers))
 	registry := tool.NewRegistry()
 
 	if err := manager.EnsureServers(context.Background(), registry, []string{"echo"}); err != nil {
@@ -346,7 +346,7 @@ func TestManagerHealthCheckHTTP(t *testing.T) {
 			Transport: TransportHTTP,
 			URL:       server.URL,
 		},
-	})
+	}, WithStartPolicy(StartAllServers))
 	defer manager.Close()
 
 	if err := manager.HealthCheck(context.Background(), []string{"test"}); err != nil {

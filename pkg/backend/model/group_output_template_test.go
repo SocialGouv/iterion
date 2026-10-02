@@ -19,7 +19,7 @@ func TestGroupOutputTemplatesUseDeclaredIdentity(t *testing.T) {
 	if got := e.resolveTemplate(raw+"/{{outputs.r2.gate.value}}/{{outputs.r1.nested.value}}", nil, td); got != "A; B/C/nested" {
 		t.Fatal(got)
 	}
-	if got := resolveCommandTemplate("echo "+raw, refs, nil, nil, td, ""); got != "echo 'A; B'" {
+	if got := resolveCommandTemplate("echo "+raw, refs, nil, nil, td, "", nil); got != "echo 'A; B'" {
 		t.Fatal(got)
 	}
 	if got := resolveScriptTemplate("let x = "+raw, refs, nil, nil, td, ""); got != `let x = "A; B"` {
@@ -29,7 +29,7 @@ func TestGroupOutputTemplatesUseDeclaredIdentity(t *testing.T) {
 	if got := e.resolveTemplate(raw, nil, td); got != raw {
 		t.Fatalf("missing node fell through to shorter node: %q", got)
 	}
-	if got := resolveCommandTemplate("echo "+raw, refs, nil, nil, td, ""); got != "echo "+raw {
+	if got := resolveCommandTemplate("echo "+raw, refs, nil, nil, td, "", nil); got != "echo "+raw {
 		t.Fatal(got)
 	}
 	if got := resolveScriptTemplate("let x = "+raw, refs, nil, nil, td, ""); got != "let x = null" {

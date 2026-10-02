@@ -33,15 +33,15 @@ func bankScript(t *testing.T) string {
 		if !strings.Contains(blk, "no deepsec export at ") {
 			continue
 		}
-		const marker = "python3 -c '"
+		const marker = "python3 -I -c '"
 		i := strings.Index(blk, marker)
 		if i < 0 {
-			t.Fatal("the banking command embeds no python3 -c body")
+			t.Fatal("the banking command embeds no python3 -I -c body")
 		}
 		start := i + len(marker)
 		end := strings.Index(blk[start:], "'")
 		if end < 0 {
-			t.Fatal("unterminated python3 -c body in the banking command")
+			t.Fatal("unterminated python3 -I -c body in the banking command")
 		}
 		// The body lives inside a '…' shell string, so ONE apostrophe closes it
 		// early and silently truncates the python — the trap the deepsec scanner
@@ -281,8 +281,8 @@ func TestBankSitsBesideTheTriagePath(t *testing.T) {
 // The byte budget is the sole knob deciding how much of the operator's
 // investigation survives the pod, and on a large audit it silently drops
 // findings — reported, but unrecoverable. A literal here is a ceiling nobody
-// can raise short of editing the bot, which is the shape CLAUDE.md principle 1
-// names a defect, and the opposite of what every sibling deepsec knob does
+// can raise short of editing the bot, which is the shape docs/philosophy.md
+// principle 1 names a defect, and the opposite of what every sibling deepsec knob does
 // (enable_deepsec, deepsec_concurrency, deepsec_process_limit, deepsec_root,
 // deepsec_out are all declared vars).
 func TestBankBudgetIsOperatorOverridable(t *testing.T) {

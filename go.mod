@@ -109,7 +109,7 @@ require (
 )
 
 require (
-	github.com/google/jsonschema-go v0.4.3 // indirect
+	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
@@ -120,7 +120,7 @@ require (
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
-	github.com/SocialGouv/claw-code-go v0.1.1-0.20260915172007-a55f2ff618a4
+	github.com/SocialGouv/claw-code-go v0.1.1-0.20261001152229-1e658b98c835
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.43.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.37

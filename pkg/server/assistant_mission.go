@@ -325,7 +325,11 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 	if receipt.State == assistantmission.ReceiptPrepared && receipt.Action == assistantmission.ActionRewind {
 		auto, _ := proposal.Args["auto"].(bool)
 		node, _ := proposal.Args["node_id"].(string)
-		currentPath, releaseBot, srcErr := c.rewindCurrentSource(mctx, m.TargetRunID)
+		// Preview pass: resolve the CURRENT row and PIN its botsource
+		// identity (row id + version) on the receipt, so the apply — a
+		// second coordinator pass that may run after a republication —
+		// resolves the same program this pivot was computed in (#1381).
+		currentPath, resolvedVersion, resolvedRowID, releaseBot, srcErr := c.rewindCurrentSourceAt(mctx, m.TargetRunID, 0, "")
 		defer releaseBot()
 		var pivot *runview.RewindPivot
 		pivotErr := srcErr
@@ -344,6 +348,8 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 			}
 		} else {
 			receipt.ExpectedPivot = pivot.NodeID
+			receipt.SourceVersion = resolvedVersion
+			receipt.SourceID = resolvedRowID
 		}
 	}
 	m.Receipts = append(m.Receipts, receipt)
@@ -374,19 +380,23 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 // materialization must reject the receipt, exactly as the HTTP endpoint on
 // this server answers 503/400.
 //
-// This surface never names a source of its own, so the resolution is always
-// wanted.
-func (c *assistantMissionCoordinator) rewindCurrentSource(ctx context.Context, runID string) (string, func(), error) {
+// This surface never names a source of the run's own, so the resolution is
+// always wanted. The pinned pair carries the #1381 pin: the preview passes
+// (0, "") — its own resolution IS the current row, and it records the
+// resolved identity on the receipt; the apply passes the receipt's
+// (SourceVersion, SourceID) so it resolves the same program the preview
+// certified, never whatever is current by the time the second pass runs.
+func (c *assistantMissionCoordinator) rewindCurrentSourceAt(ctx context.Context, runID string, pinnedVersion int, pinnedRowID string) (string, int, string, func(), error) {
 	release := func() {}
 	target, err := c.runs.RunStore().LoadRun(ctx, runID)
 	if err != nil {
-		return "", release, fmt.Errorf("load the run to rewind: %w", err)
+		return "", 0, "", release, fmt.Errorf("load the run to rewind: %w", err)
 	}
-	path, rel, err := c.server.currentStoredBotSource(ctx, target, true)
+	path, resolvedVersion, resolvedRowID, rel, err := c.server.storedBotSourceAtVersion(ctx, target, pinnedVersion, pinnedRowID, true)
 	if err != nil {
-		return "", release, fmt.Errorf("resolve the bot's current source: %w", err)
+		return "", 0, "", release, fmt.Errorf("resolve the bot's current source: %w", err)
 	}
-	return path, rel, nil
+	return path, resolvedVersion, resolvedRowID, rel, nil
 }
 
 func (c *assistantMissionCoordinator) reconcileDelivery(ctx context.Context, m *assistantmission.Mission, receipt *assistantmission.DeliveryReceipt, assistantID string, update func(assistantmission.Mission) bool) bool {
@@ -429,7 +439,13 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 		case assistantmission.ActionResume:
 			_, err = c.runs.Resume(ctx, runview.ResumeSpec{RunID: m.TargetRunID, FilePath: target.FilePath, ExpectedStatus: r.ExpectedStatus, ReceiptID: r.ID})
 		case assistantmission.ActionRewind:
-			currentPath, releaseBot, srcErr := c.rewindCurrentSource(ctx, m.TargetRunID)
+			// Apply pass: resolve the PINNED identity the preview certified,
+			// not the current row (#1381) — a bot republished, or deleted
+			// and re-authored under the same slug, between the two passes
+			// must not move the blast radius onto a graph the preview never
+			// saw. SourceVersion 0 (a baked-tier run, or a receipt from
+			// before the pin existed) keeps the current-row resolution.
+			currentPath, _, _, releaseBot, srcErr := c.rewindCurrentSourceAt(ctx, m.TargetRunID, r.SourceVersion, r.SourceID)
 			if srcErr != nil {
 				// No fallback: an empty path here would rewind against the
 				// baked twin and drop the wrong nodes, with nothing red.

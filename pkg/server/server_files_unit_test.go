@@ -38,6 +38,9 @@ type openedUnit struct {
 	Document    json.RawMessage `json:"document"`
 	Diagnostics []string        `json:"diagnostics"`
 	Unit        *unitInfo       `json:"unit"`
+	// False when the file did not parse: the document is the salvage, and
+	// the studio marks the buffer so the sites that write it refuse.
+	Bindable bool `json:"bindable"`
 }
 
 func openPath(t *testing.T, s *Server, path string) (*httptest.ResponseRecorder, openedUnit) {
@@ -57,7 +60,16 @@ func openPath(t *testing.T, s *Server, path string) (*httptest.ResponseRecorder,
 
 func savePath(t *testing.T, s *Server, path string, document json.RawMessage, revision string) (*httptest.ResponseRecorder, saveFileResponse) {
 	t.Helper()
-	body, _ := json.Marshal(saveFileRequest{Path: path, Document: document, Revision: revision})
+	return savePathClaimed(t, s, path, document, revision, nil)
+}
+
+// savePathClaimed is savePath carrying the unit's file list as the client
+// holds it (unit_files) — what a save after a per-file edit of a header
+// presents, so the file's profile and import lines are written from the
+// claim rather than rebuilt from the stored files.
+func savePathClaimed(t *testing.T, s *Server, path string, document json.RawMessage, revision string, unitFiles []unitFileInfo) (*httptest.ResponseRecorder, saveFileResponse) {
+	t.Helper()
+	body, _ := json.Marshal(saveFileRequest{Path: path, Document: document, Revision: revision, UnitFiles: unitFiles})
 	req := httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleSaveFile(rec, req)
@@ -333,5 +345,94 @@ func TestSaveAUnitRollsBackWhenAWriteFails(t *testing.T) {
 	}
 	if readFixture(t, workdir, "demo/lib/nodes.bot") != unitFixtureNodes || readFixture(t, workdir, "demo/main.bot") != unitFixtureMain {
 		t.Fatalf("a failed save left a file changed:\n%s\n%s", readFixture(t, workdir, "demo/main.bot"), readFixture(t, workdir, "demo/lib/nodes.bot"))
+	}
+}
+
+// A fragment whose parse errors the loader reports under its ABSOLUTE path:
+// the fixture of the root-cut tests below (#1934).
+const brokenFragmentFixture = "prompt p:\n  hi\n\nagent \n  model\n"
+
+// TestOpenAUnitAnswersDiagnosticsWithoutTheWorkspaceRoot: the unit an open
+// answers was read from DISK, and its diagnostics ride the 200 — citing
+// the fragment under its absolute path before the root cut (#1934). The
+// fragment is named by its unit-relative path, the position kept.
+func TestOpenAUnitAnswersDiagnosticsWithoutTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	main := "import \"lib/broken.bot\"\n\nworkflow w:\n  entry: done\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": main, "demo/lib/broken.bot": brokenFragmentFixture})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+
+	rec, opened := openPath(t, s, "demo/main.bot")
+	if rec.Code != http.StatusOK || len(opened.Diagnostics) == 0 {
+		t.Fatalf("the fixture is not the case under test: %d %v", rec.Code, opened.Diagnostics)
+	}
+	joined := strings.Join(opened.Diagnostics, "\n")
+	if !strings.Contains(joined, "lib/broken.bot:") {
+		t.Fatalf("the diagnostics do not cite the fragment by its relative path: %s", joined)
+	}
+	if strings.Contains(joined, workdir) {
+		t.Fatalf("the diagnostics disclose the server's directory layout: %s", joined)
+	}
+}
+
+// TestAUnitSaveRefusalNeverNamesTheWorkspaceRoot: the save reloads the unit
+// from DISK, and a fragment that does not parse there is a 422 whose body
+// quotes the loader's diagnostic — positioned under the fragment's
+// absolute path before the root cut (#1934).
+func TestAUnitSaveRefusalNeverNamesTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	main := "import \"lib/broken.bot\"\n\nworkflow w:\n  entry: done\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": main, "demo/lib/broken.bot": brokenFragmentFixture})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+	if opened.Unit == nil || opened.Unit.Revision == "" {
+		t.Fatalf("a unit that does not load opened with no revision: %+v", opened.Unit)
+	}
+
+	rec, _ := savePath(t, s, "demo/main.bot", opened.Document, opened.Unit.Revision)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("saving over a broken fragment: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "lib/broken.bot:") {
+		t.Fatalf("the refusal does not cite the fragment by its relative path: %s", body)
+	}
+	if strings.Contains(body, workdir) {
+		t.Fatalf("the refusal discloses the server's directory layout: %s", body)
+	}
+}
+
+// TestASiblingRefusalNeverNamesTheWorkspaceRoot: the sibling check reloads
+// the other main from DISK against the staged fragment, so its loader
+// diagnostics are positioned under absolute paths — and the refusal is
+// answered to the client (#1934). Here the staged fragment declares a
+// workflow of its own, so the sibling fails to LOAD (the loader's
+// diagnostic, not a compile verdict).
+func TestASiblingRefusalNeverNamesTheWorkspaceRoot(t *testing.T) {
+	workdir := t.TempDir()
+	sibling := "import \"lib/nodes.bot\"\n\nworkflow other:\n  entry: worker\n  worker -> done\n"
+	writeUnitFixture(t, workdir, map[string]string{"demo/main.bot": unitFixtureMain, "demo/lib/nodes.bot": unitFixtureNodes, "demo/other.bot": sibling})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+	edited := editDocument(t, opened.Document, func(m map[string]any) {
+		m["workflows"] = append(m["workflows"].([]any), map[string]any{"name": "rogue", "entry": "done", "file": "lib/nodes.bot"})
+	})
+
+	rec, _ := savePath(t, s, "demo/main.bot", edited, opened.Unit.Revision)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a save that breaks a sibling's load: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "other.bot") {
+		t.Fatalf("the refusal does not name the sibling: %s", body)
+	}
+	if !strings.Contains(body, "lib/nodes.bot:") {
+		t.Fatalf("the refusal does not cite the fragment by its relative path: %s", body)
+	}
+	if strings.Contains(body, workdir) {
+		t.Fatalf("the refusal discloses the server's directory layout: %s", body)
+	}
+	if readFixture(t, workdir, "demo/lib/nodes.bot") != unitFixtureNodes {
+		t.Fatal("a refused save wrote the fragment")
 	}
 }

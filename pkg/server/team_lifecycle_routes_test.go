@@ -200,6 +200,10 @@ func TestTeamLifecycle_putMemberRefusesADisabledUser(t *testing.T) {
 // The org-level twin. Without it handlePutTeamMember cannot serve the case
 // it exists for: a user with NO org at all is still reachable only by
 // email, so the round trip is merely moved one level up.
+//
+// Placing by account id is super-admin only: an org admin naming an id they
+// did not receive from its owner absorbs a stranger, reads their email off
+// the roster, and probes which ids exist. Their path is the invitation.
 func TestTeamLifecycle_putOrgMemberPlacesAnOrphanAccount(t *testing.T) {
 	s := newOrgCredsTestServer(t)
 	ctx := context.Background()
@@ -216,10 +220,21 @@ func TestTeamLifecycle_putOrgMemberPlacesAnOrphanAccount(t *testing.T) {
 		t.Fatalf("place as team admin: code=%d body=%s, want 403", w.Code, w.Body.String())
 	}
 
+	// And an org admin, who holds every OTHER write on this roster, is
+	// refused this one.
 	w = httptest.NewRecorder()
 	s.handlePutOrgMember(w, teamReq(orgAdminCtx(), "PUT", "/api/orgs/o1/members/orphan", `{"role":"member"}`, "o1", "orphan"))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("place as org admin: code=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+	if _, err := s.authStore().GetOrgMembership(ctx, "orphan", "o1"); err == nil {
+		t.Fatal("the refused placement still wrote an org membership")
+	}
+
+	w = httptest.NewRecorder()
+	s.handlePutOrgMember(w, teamReq(superAdminCtx(), "PUT", "/api/orgs/o1/members/orphan", `{"role":"member"}`, "o1", "orphan"))
 	if w.Code != http.StatusOK {
-		t.Fatalf("place as org admin: code=%d body=%s", w.Code, w.Body.String())
+		t.Fatalf("place as super-admin: code=%d body=%s", w.Code, w.Body.String())
 	}
 	om, err := s.authStore().GetOrgMembership(ctx, "orphan", "o1")
 	if err != nil || om.Role != identity.OrgRoleMember {

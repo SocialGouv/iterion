@@ -16,7 +16,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -56,6 +58,11 @@ type launchRunRequest struct {
 	// filesystem; FilePath is then advisory (used for display + as the
 	// AST parserPath). When both are set, Source wins.
 	Source string `json:"source,omitempty"`
+	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
+	// input check (--allow-unknown-inputs' API twin): an input naming no
+	// declared var rides the launch instead of refusing it. Absent = the
+	// refusal, the default the endpoint exists to give.
+	AllowUnknownInputs bool `json:"allow_unknown_inputs,omitempty"`
 	// RunSource is typed launch provenance. Deliberately not named `source`:
 	// that wire key already carries inline workflow DSL. The public endpoint
 	// admits only studio_chat; dispatcher/schedule provenance is stamped by
@@ -113,6 +120,10 @@ type launchRunRequest struct {
 	// ("on"|"off"). Empty inherits the workflow/node auto_memory: DSL then
 	// ITERION_AUTO_MEMORY. See docs/memory-and-knowledge.md.
 	AutoMemory string `json:"auto_memory,omitempty"`
+	// AmbientContext is the run-level ambient-context override ("none" |
+	// "workspace" | "operator" | "all", ADR-119). Empty inherits the
+	// workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT.
+	AmbientContext string `json:"ambient_context,omitempty"`
 	// LoopBudgetGuard is the run-level override for the loop back-edge
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
@@ -305,10 +316,27 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Launch admission: suspend → concurrency → rate → cost cap →
 	// monthly run quota (which also meters). Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	adm, d := s.gateLaunch(r.Context())
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
+	// The quota increment IS the metering, so every return between here and
+	// the call into the run service abandons an admitted launch and has to
+	// hand the MONTHLY unit back — a malformed body or an unresolvable bot
+	// would otherwise spend the org's month one request at a time. rollback is
+	// nil-safe and a no-op when nothing was metered (local mode, super-admin,
+	// the fail-open arms), so this is inert on those paths.
+	//
+	// It hands back the monthly unit AND the per-minute launch-rate token the
+	// gate spent (launchAdmission carries the bucket; #1726): a client looping
+	// a bad request no longer empties that bucket.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	// Root span for the launch path. Keeping it on the request ctx
 	// means the OTel HTTP middleware (when wired) sees it as a child
 	// of the inbound HTTP server span. The detached ctx below
@@ -328,6 +356,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	dropMaskedGrant(req.Vars)
 	runSource, err := validateLaunchRunSource(req.RunSource)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid run_source: %v", err)
@@ -337,6 +366,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if req.FilePath == "" && req.Source == "" && req.BotID == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path, source or bot_id is required")
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
+		return
+	}
+	// The identity the caller asked for is checked BEFORE bot resolution
+	// rewrites it and before any source is materialised: an author
+	// document is a draft, refused with a stable code, nothing written.
+	if workflowfile.IsAuthorDocument(req.FilePath) {
+		s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", bundle.AuthorDocumentError(req.FilePath))
+		span.SetStatus(codes.Error, "author document")
 		return
 	}
 	if req.RoutingPolicy != nil {
@@ -396,7 +433,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		var pathErr error
 		absPath, pathErr = s.resolveWorkflowPath(req.FilePath, req.Source)
 		if pathErr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+			s.httpSourcePathError(w, r, pathErr, "invalid file_path: %v")
 			span.SetStatus(codes.Error, "invalid file_path")
 			return
 		}
@@ -537,7 +574,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
 	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		vars, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		vars, minted, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
 		if err != nil {
 			// One table for the whole class (prLaunchContextStatus): an
 			// inadmissible request answers 422, the server's own grant
@@ -549,6 +586,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Vars = vars
+		defer func() {
+			if !runMayExist {
+				s.revokeUnlaunchedGrant(minted)
+			}
+		}()
 	}
 
 	// Detach lifecycle from the HTTP request context so a client
@@ -571,26 +613,28 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	retryTeamID := retryID.TeamID
 
 	spec := runview.LaunchSpec{
-		FilePath:          absPath,
-		Source:            req.Source,
-		BotID:             botID,
-		SourceRef:         runSource,
-		RunID:             req.RunID,
-		Vars:              req.Vars,
-		Preset:            req.Preset,
-		Timeout:           timeout,
-		MergeInto:         req.MergeInto,
-		BranchName:        req.BranchName,
-		MergeStrategy:     store.MergeStrategy(req.MergeStrategy),
-		AutoMerge:         req.AutoMerge,
-		AttachmentPromote: promote,
-		Backend:           req.Backend,
-		Compress:          req.Compress,
-		AutoMemory:        req.AutoMemory,
-		LoopBudgetGuard:   req.LoopBudgetGuard,
-		Supervisors:       req.Supervisors,
-		Permission:        req.Permission,
-		ReviewMode:        req.ReviewMode,
+		FilePath:           absPath,
+		Source:             req.Source,
+		BotID:              botID,
+		SourceRef:          runSource,
+		RunID:              req.RunID,
+		Vars:               req.Vars,
+		Preset:             req.Preset,
+		AllowUnknownInputs: req.AllowUnknownInputs,
+		Timeout:            timeout,
+		MergeInto:          req.MergeInto,
+		BranchName:         req.BranchName,
+		MergeStrategy:      store.MergeStrategy(req.MergeStrategy),
+		AutoMerge:          req.AutoMerge,
+		AttachmentPromote:  promote,
+		Backend:            req.Backend,
+		Compress:           req.Compress,
+		AutoMemory:         req.AutoMemory,
+		AmbientContext:     req.AmbientContext,
+		LoopBudgetGuard:    req.LoopBudgetGuard,
+		Supervisors:        req.Supervisors,
+		Permission:         req.Permission,
+		ReviewMode:         req.ReviewMode,
 		// The manual path resolves the retry chain like every automated
 		// one. Skipping it here would let a bot declaring
 		// `retry: usage_window: off` be auto-retried anyway whenever a
@@ -640,8 +684,27 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		spec.BundleDir = dir
 	}
+	// Past this statement the slot is spent unless the run service says
+	// otherwise. It is the callee that knows: an error out of Launch does NOT
+	// by itself mean no run started — spawnRun persists the run document and
+	// can still fail afterwards, and a cloud publish reports failure after the
+	// message landed — so the fact travels on the error (RunPersistedError)
+	// and the arm below reads it. Inferring it here, either way, is what the
+	// two failure modes are made of: keep every error and a repeatable launch
+	// failure charges per attempt; release every error and a run that started
+	// gets refunded.
+	runMayExist = true
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
+		// The callee reports whether anything durable happened; the caller no
+		// longer infers it. Absent that marker nothing was persisted and no
+		// message was handed to a runner, so the metered slot goes back — that
+		// is the ticket's headline case, a repeatable launch failure charging
+		// per attempt. Present, it stays: releasing a slot for a run that DID
+		// start is an under-count, and lets an org exceed its paid quota.
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
 			span.SetStatus(codes.Error, "server draining")
@@ -652,6 +715,18 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			// succeeds once the window reopens, and the message says when.
 			s.httpErrorFor(w, r, http.StatusTooManyRequests, "%v", err)
 			span.SetStatus(codes.Error, "usage cap reached")
+			return
+		}
+		if errors.Is(err, runview.ErrRunIDTaken) {
+			// A conflict, not a malformed request: the id names a run in
+			// any team, and the answer is the same for both.
+			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
+			span.SetStatus(codes.Error, "run id taken")
+			return
+		}
+		if errors.Is(err, bundle.ErrAuthorDocument) {
+			s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
+			span.SetStatus(codes.Error, "author document")
 			return
 		}
 		if s.writeQueueOutageError(w, r, "launch", err) {
@@ -695,10 +770,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	adm, d := s.gateLaunch(r.Context())
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
+	// Same rule as handleLaunchRun: the increment is the metering, so the
+	// returns that precede the resume hand the unit back.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	id := r.PathValue("id")
 	if id == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
@@ -757,7 +841,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		runMeta,
 	)
 	if pathErr != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", pathErr)
+		s.httpSourcePathError(w, r, pathErr, "%v")
 		span.SetStatus(codes.Error, "resume source unresolvable")
 		return
 	}
@@ -852,11 +936,29 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if resumeLB != nil {
 		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
 	}
+	// Past this statement the slot is spent unless the run service says
+	// otherwise — see handleLaunchRun. A resume publish can report an error
+	// after the runner already claimed the revision it published, and that is
+	// one of the cases the callee reports.
+	runMayExist = true
 	res, err := s.runs.Resume(ctx, resumeSpec)
 	if err != nil {
+		// Same rule as the launch arm, and it subsumes the lost-resume race:
+		// ErrRunNotResumable comes only from validateResumable, ahead of any
+		// compile, spawn or publish, so it carries no marker and the unit goes
+		// back. A parked gate has two legitimate resumers, so that race is
+		// routine and must not meter the studio's own chat.
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
 			span.SetStatus(codes.Error, "server draining")
+			return
+		}
+		if errors.Is(err, bundle.ErrAuthorDocument) {
+			s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", err)
+			span.SetStatus(codes.Error, "author document")
 			return
 		}
 		s.writeResumeError(w, r, err)
@@ -957,4 +1059,17 @@ func parseTimeout(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("timeout must not be negative")
 	}
 	return d, nil
+}
+
+// httpSourcePathError answers a workflow source the resolver refused. An
+// author document named as the source carries its stable error_code, so a
+// client tells that refusal from a bad path; anything else is the message
+// under the caller's format. Launch and resume answer through this one
+// function so the two doors cannot drift.
+func (s *Server) httpSourcePathError(w http.ResponseWriter, r *http.Request, pathErr error, format string) {
+	if errors.Is(pathErr, bundle.ErrAuthorDocument) {
+		s.httpErrorCode(w, r, http.StatusBadRequest, "author_document", "%v", pathErr)
+		return
+	}
+	s.httpErrorFor(w, r, http.StatusBadRequest, format, pathErr)
 }

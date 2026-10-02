@@ -25,7 +25,7 @@ func TestMigrateDSLRaisesTheFloorToWhatTheSourcesNeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "v3.141.0", Printer: &Printer{W: &out, Format: OutputHuman}})
+	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "v" + parser.ProfileSince[2], Printer: &Printer{W: &out, Format: OutputHuman}})
 	if err != nil {
 		t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
 	}

@@ -28,19 +28,29 @@ schema payload:
 schema result:
   received: int
 
+router fork:
+  mode: fan_out_all
+
 ## Trunk: compute the value to share, before fanning out.
 compute produce:
   output: num
   expr:
     n: "21 + 21"
 
-router fork:
-  mode: fan_out_all
+## Convergence (trunk): runs once both branches complete (wait_all).
+compute gather:
+  output: result
+  publish: gathered
+  await: wait_all
+  expr:
+    received: "outputs.pong.value"
 
 ## Producer branch: publish the value as event "ready".
 emit ping:
   event: "ready"
-  with { value: "{{outputs.produce.n}}" }
+  with {
+    value: "{{outputs.produce.n}}",
+  }
 
 ## Consumer branch: park until "ready", receive the payload.
 wait pong:
@@ -48,21 +58,21 @@ wait pong:
   timeout: "10s"
   output: payload
 
-## Convergence (trunk): runs once both branches complete (wait_all).
-compute gather:
-  await: wait_all
-  output: result
-  publish: gathered
-  expr:
-    received: "outputs.pong.value"
-
 workflow pingpong_wf:
+
+  entry: produce
+
   budget:
     max_parallel_branches: 4
-  entry: produce
+
   produce -> fork
+
   fork -> ping
+
   fork -> pong
+
   ping -> gather
+
   pong -> gather
+
   gather -> done

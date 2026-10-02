@@ -146,12 +146,26 @@ into a fresh file and refreshes it when it is at or past its expiry lead,
 so the *effective* token can differ even though the sealed blob does not.
 
 When a surface declines to bring a run back, it says so on the timeline:
-**`run_retry_skipped {reason: deterministic, code, error}`** — the
+**`run_retry_skipped {reason: deterministic, code, error, status?}`** — the
 counterpart of `run_retry_scheduled`. Without it a `failed_resumable` row
 whose redelivery was dropped on purpose reads exactly like one still
 waiting for a pod. Measured on run `01a07804` before the classification
 existed: seven resumes of one compute-expression failure in ten minutes,
 each a fresh pod, clone and sandbox.
+
+A cloud resume refused **before anything claims the run** — by the engine (a
+copy-based subbot child resumed on its own, an incompatible artifact contract,
+a scratch that did not travel) or by the runner itself (an IR it cannot load,
+an engine floor it is below) — would otherwise stay `queued`: the publisher
+flipped it there before publishing, and a refusal the runner acks is never
+redelivered. The runner puts the run back in the status the resume came from,
+which the publisher sends along (`ResumeSpec.PriorStatus`; `failed_resumable`
+from an older server): a paused run keeps its pending question, a cancelled
+one its cancel, and the refusal is its `error` (its failure code on
+`failed_resumable`). Only that attempt, and only while nobody claimed it — a
+newer resume or a run the engine claimed is left alone. The event then
+carries `status`, the status the run is back to. The revision the refused
+resume stamped stays recorded: resume with that source, or with `--force`.
 
 ## CLI
 
@@ -551,7 +565,12 @@ on the run (`workflow_sources`, beside `workflow_source` for the main), so an
 edit in a fragment is seen like one in the main. A run of such a bot that
 recorded its main alone — launched before the unit's files were recorded, or
 over the 1 MiB cap — is refused rather than diffed on the main, and asks for
-`--node`.
+`--node`. A run over that cap is also refused whenever `--new-inputs` CHANGES
+anything: the fork gate reads the recorded source to check the values against
+their var constraints, and refuses rather than admit an unchecked one. Forking
+it without changing an input — the recovery path — is unaffected, re-sending
+the parent's own values included; see
+[the fork command](cli-reference.md#iterion-fork).
 
 Detection is declaration-granular and resolves indirection:
 
@@ -924,6 +943,7 @@ would re-hit it identically and only spend a pod per attempt.
 | An invalid spec (`CreateContainerConfigError`, `CreateContainerError`) or a crash-looping container | — | `failed` |
 | The pod reached `Running` (or `Unknown`) but never Ready | — | `failed` — a container came up; nothing says the run did nothing |
 | The pod could not be inspected at all (RBAC, apiserver blip) | — | `failed` — no evidence, nothing claimed |
+| No driver can honour an EXPLICIT `sandbox: { mode: inline, … }` (no runtime on the host / no usable cluster) | `SANDBOX_DRIVER_UNAVAILABLE` | `failed` — every redelivery reaches the same absent runtime, so `pkg/retrypolicy` classes it Deterministic and the runner acks. `sandbox: auto` does not land here: it degrades to an unsandboxed run with a `sandbox_skipped` event (#1425) |
 
 Both resumable codes are re-offered by the cloud runner on a DELAY
 rather than at once: 2 minutes for `SANDBOX_SETUP_TIMEOUT` (the stall is

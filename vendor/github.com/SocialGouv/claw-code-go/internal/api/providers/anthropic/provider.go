@@ -23,6 +23,9 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodAPIKey }
 // NewClient creates an Anthropic HTTP client.
 // cfg.OAuthToken takes precedence over cfg.APIKey when both are set.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
+	if err := api.RefuseOpenAIOnlyOptions("anthropic", cfg); err != nil {
+		return nil, err
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL

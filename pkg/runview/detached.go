@@ -69,22 +69,30 @@ func runnerBinary() (string, error) {
 // from a LaunchSpec or ResumeSpec and turned into an os/exec command
 // by buildRunnerCmd.
 type detachedSpec struct {
-	Command    runnerCommand
-	RunID      string
-	FilePath   string
-	BundleDir  string            // Launch only: the bundle FilePath was admitted against, when FilePath is not at its main.bot path
-	Vars       map[string]string // Launch only
-	Answers    map[string]string // Resume only; CLI --answer accepts string values today
-	StoreDir   string
-	Force      bool
-	Timeout    time.Duration
-	MergeInto  string // worktree finalization, Launch only
-	BranchName string // worktree finalization, Launch only
+	Command   runnerCommand
+	RunID     string
+	FilePath  string
+	BundleDir string            // Launch only: the bundle FilePath was admitted against, when FilePath is not at its main.bot path
+	Vars      map[string]string // Launch only
+	Answers   map[string]string // Resume only; CLI --answer accepts string values today
+	StoreDir  string
+	Force     bool
+	// AllowUnknownInputs forwards the run-level #1757 opt-out as the CLI's
+	// --allow-unknown-inputs flag: the subprocess re-runs the input check
+	// from scratch, so anything not passed here refuses where the
+	// admitting boundary chose to ride.
+	AllowUnknownInputs bool
+	Timeout            time.Duration
+	MergeInto          string // worktree finalization, Launch only
+	BranchName         string // worktree finalization, Launch only
 	// AutoMemory forwards the run-level auto-memory override as the CLI's
 	// --auto-memory flag. The subprocess re-resolves the knob from scratch,
 	// so anything not passed here is silently replaced by the workflow's own
 	// value — which for `off` means running with memory ON.
 	AutoMemory string
+	// AmbientContext forwards the run-level ambient-context override as the
+	// CLI's --ambient-context flag, for the same re-resolution reason.
+	AmbientContext string
 	// LoopBudgetGuard forwards the run-level back-edge affordability
 	// override as the CLI's --loop-budget-guard flag, for the same reason
 	// AutoMemory is forwarded: the subprocess re-resolves the knob from
@@ -135,6 +143,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
 		}
+		if spec.AmbientContext != "" {
+			args = append(args, "--ambient-context", spec.AmbientContext)
+		}
 		if spec.LoopBudgetGuard != "" {
 			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
 		}
@@ -144,11 +155,17 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.Permission != "" {
 			args = append(args, "--permission", spec.Permission)
 		}
+		if spec.AllowUnknownInputs {
+			args = append(args, "--allow-unknown-inputs")
+		}
 		args = appendDetachedBudgetArgs(args, spec.Budget)
 	case runnerCommandResume:
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
+		}
+		if spec.AmbientContext != "" {
+			args = append(args, "--ambient-context", spec.AmbientContext)
 		}
 		if spec.LoopBudgetGuard != "" {
 			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
@@ -395,20 +412,22 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	s.prepareRunLogNoFile(runID)
 
 	res, err := s.spawnDetached(parent, detachedSpec{
-		Command:         runnerCommandRun,
-		RunID:           runID,
-		FilePath:        spec.FilePath,
-		BundleDir:       spec.BundleDir,
-		Vars:            spec.Vars,
-		StoreDir:        s.storeDir,
-		Timeout:         spec.Timeout,
-		MergeInto:       spec.MergeInto,
-		BranchName:      spec.BranchName,
-		AutoMemory:      spec.AutoMemory,
-		LoopBudgetGuard: spec.LoopBudgetGuard,
-		Supervisors:     spec.Supervisors,
-		Permission:      spec.Permission,
-		Budget:          spec.Budget,
+		Command:            runnerCommandRun,
+		RunID:              runID,
+		FilePath:           spec.FilePath,
+		BundleDir:          spec.BundleDir,
+		Vars:               spec.Vars,
+		StoreDir:           s.storeDir,
+		AllowUnknownInputs: spec.AllowUnknownInputs,
+		Timeout:            spec.Timeout,
+		MergeInto:          spec.MergeInto,
+		BranchName:         spec.BranchName,
+		AutoMemory:         spec.AutoMemory,
+		AmbientContext:     spec.AmbientContext,
+		LoopBudgetGuard:    spec.LoopBudgetGuard,
+		Supervisors:        spec.Supervisors,
+		Permission:         spec.Permission,
+		Budget:             spec.Budget,
 	})
 	if err != nil {
 		// The doc was pre-created above; without a runner it would sit
@@ -453,6 +472,7 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		Answers:         answers,
 		StoreDir:        s.storeDir,
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      permission,

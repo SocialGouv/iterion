@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
@@ -18,13 +20,49 @@ type ParseResult struct {
 }
 
 // Parse parses an iterion DSL source file and returns the AST and any diagnostics.
+//
+// A source holding a byte that is not UTF-8 is refused before it lexes
+// (E006), with the byte's line: the lexer reads runes, so the byte would
+// otherwise arrive everywhere as U+FFFD where its author wrote another
+// character, and the errors the parser reports then name positions the
+// author never wrote. The author document refuses the same byte by name
+// (E050, pkg/dsl/author/guard.go) — one rule at both doors.
 func Parse(filename, src string) *ParseResult {
+	if at := invalidUTF8(src); at >= 0 {
+		return &ParseResult{Diagnostics: []Diagnostic{{
+			Code:     DiagNotUTF8,
+			Severity: SeverityError,
+			Message:  fmt.Sprintf("the source is not UTF-8 text (byte %d): it is read as U+FFFD where its author wrote another character", at),
+			File:     filename,
+			Line:     1 + strings.Count(src[:at], "\n"),
+			Column:   1,
+			Hint:     HintFor(DiagNotUTF8),
+		}}}
+	}
 	p := &parser{
 		lex:  NewLexer(filename, src),
 		file: filename,
 	}
 	f := p.parseFile()
+	// Every `##` line goes back to the declaration it was written around,
+	// with the address the writer reads to put it back (comments.go).
+	attachComments(filename, f, p.lex.All())
 	return &ParseResult{File: f, Diagnostics: p.diags, ProfileReads: p.lex.ProfileReads()}
+}
+
+// invalidUTF8 is the offset of src's first byte that is not UTF-8, -1 when
+// every byte is. The parser's own twin of the author document's guard
+// (pkg/dsl/author/guard.go): parser cannot import author — author imports
+// parser — so the ten lines live on both sides of that seam.
+func invalidUTF8(src string) int {
+	for i := 0; i < len(src); {
+		r, size := utf8.DecodeRuneInString(src[i:])
+		if r == utf8.RuneError && size == 1 {
+			return i
+		}
+		i += size
+	}
+	return -1
 }
 
 // parser is the recursive-descent parser state.
@@ -302,7 +340,7 @@ func (p *parser) blockBodyAfter(colon Token) headerState {
 // (the JSON marshaller, the unparse path) would surface alongside the error.
 func (p *parser) isReservedName(tok Token, name, kind string) bool {
 	if ast.ReservedTargets[name] {
-		p.addError(DiagReservedName, tok, "cannot use reserved name '"+name+"' as "+kind+" name")
+		p.addError(DiagReservedName, tok, "cannot use reserved name "+strconv.Quote(name)+" as "+kind+" name")
 		return true
 	}
 	return false
@@ -518,7 +556,7 @@ func (p *parser) parseFile() *ast.File {
 			p.skipToNextTopLevel()
 
 		default:
-			p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' at top level")
+			p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" at top level")
 			p.next()
 			p.skipToNextTopLevel()
 		}
@@ -576,13 +614,13 @@ func (p *parser) parseDSLHeader(f *ast.File, declared bool) {
 	// no profile at all; the parser must refuse it too, or the file would
 	// carry one profile in its AST and another in its strings.
 	if rest := p.peek(); !lineEnds(rest) && rest.Type != TokenEOF {
-		p.addError(DiagUnknownProfile, rest, "dsl: takes only the profile number, alone on its line (`dsl: 2`), got '"+v.Value+" "+rest.Value+"'")
+		p.addError(DiagUnknownProfile, rest, "dsl: takes only the profile number, alone on its line (`dsl: 2`), got "+strconv.Quote(v.Value+" "+rest.Value))
 		p.skipToNewline()
 		return
 	}
 	switch {
 	case profile < 1:
-		p.addError(DiagUnknownProfile, v, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got '"+v.Value+"'")
+		p.addError(DiagUnknownProfile, v, "dsl: takes the syntax profile as a positive integer (`dsl: 2`), got "+strconv.Quote(v.Value))
 	case profile > MaxProfile:
 		p.addError(DiagUnknownProfile, v, fmt.Sprintf("unknown dsl profile %d — this build reads profiles 1 to %d", profile, MaxProfile))
 	case f.Profile != 0:
@@ -633,7 +671,7 @@ func (p *parser) parseDeclHeader(kind string) (start Token, name string, ok bool
 // message uses; the conformance test in pkg/dsl/spec holds the two sets of
 // names together.
 func (p *parser) unknownProperty(kind string, t Token, name string) {
-	p.addErrorHint(DiagUnknownProperty, t, "unknown "+kind+" property '"+name+"'", spec.UnknownPropertyHintIn(kind, p.blockHost, name))
+	p.addErrorHint(DiagUnknownProperty, t, "unknown "+kind+" property "+strconv.Quote(name)+"", spec.UnknownPropertyHintIn(kind, p.blockHost, name))
 }
 
 // skipIndentedBlock drops the indented block that follows a refused header,

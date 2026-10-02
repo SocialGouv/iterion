@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 
 import * as api from "@/api/client";
 import { errorMessage } from "@/lib/errorHints";
-import type { DocumentStore } from "@/store/document";
+import { stampEditor, stampHolds, unreachableSourceBuffer, type DocumentStore } from "@/store/document";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
@@ -61,6 +61,12 @@ export function useDocumentSaveAs() {
           "Save As isn't available in cloud — create a bot from the Bots page, or Duplicate & edit an existing one.",
           "warning",
         );
+        return false;
+      }
+      // One replacement at a time: an Open still loading in this tab is the
+      // author's latest request for it, and Save As is refused until it ends.
+      if (request.store.getState()._pendingIntent !== null) {
+        addToast("A file is still opening in this tab. Use Save As once it has opened.", "warning");
         return false;
       }
       if (request.store.getState().unit) {
@@ -125,19 +131,45 @@ export function useDocumentSaveAs() {
       return;
     }
 
+    if (state._pendingIntent !== null) {
+      setError("A file is still opening in this tab. Close this dialog and use Save As once it has opened.");
+      return;
+    }
     const path = trimmed.endsWith(".bot") ? trimmed : `${trimmed}.bot`;
-    const savedGeneration = state._generation;
     const document = state.document;
+    // The write holds the document of this moment. The answer binds the new
+    // name only if the tab still shows it — no replacement applied since —
+    // or a tab showing another document would be told it now lives in that
+    // file. Intrinsic, not left to the optional `isTargetCurrent`, which the
+    // Toolbar does not pass.
+    const asked = stampEditor(state);
     setBusy(true);
     setError(null);
     try {
       const result = await api.saveFile(path, document, { createOnly: true });
-      const stillCurrent = target.isTargetCurrent?.() !== false;
       const after = target.store.getState();
-      const clean = stillCurrent && after._generation === savedGeneration;
+      const holds = stampHolds(asked, after);
+      const stillCurrent = target.isTargetCurrent?.() !== false && holds.path && holds.replaced;
+      const clean = stillCurrent && holds.generation;
 
       if (stillCurrent) {
+        const heldSource = after.sourceBuffer;
+        // The tab is about another file from here: an answer asked about the
+        // old binding (a save still in flight) must not settle on it.
+        after.markReplaced();
         after.setCurrentFilePath(result.path);
+        // `setCurrentFilePath` drops the Source view's buffer. Save As is the
+        // SAME program under a new name, so un-applied text the view can
+        // still show there is carried to it; text it cannot show is said to be
+        // discarded rather than held where nothing reaches it. The question is
+        // the one the view's own release asks, put to the tab as it is now.
+        if (heldSource && heldSource.text !== heldSource.base) {
+          const carried = { ...heldSource, path: result.path };
+          const now = target.store.getState();
+          const unreachable = unreachableSourceBuffer(carried, now.currentFilePath, now.unit);
+          if (unreachable) addToast(unreachable, "warning", { persistent: true });
+          else after.setSourceBuffer(carried);
+        }
         after.setCurrentSource(result.source);
         if (clean) after.markSaved();
       }

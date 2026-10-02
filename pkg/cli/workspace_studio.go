@@ -251,7 +251,7 @@ func newWorkspaceProjectServer(opts StudioOptions, project projects.Project, log
 func importLegacyInstances(registry *projects.Config, logger *iterlog.Logger) error {
 	configPath := os.Getenv("ITERION_INSTANCES_CONFIG")
 	if configPath == "" {
-		configDir, err := os.UserConfigDir()
+		configDir, err := projects.ConfigDir()
 		if err != nil {
 			return nil
 		}

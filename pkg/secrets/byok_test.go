@@ -121,6 +121,7 @@ func TestProviderValid(t *testing.T) {
 	valid := []Provider{
 		ProviderAnthropic, ProviderOpenAI, ProviderBedrock, ProviderVertex,
 		ProviderAzure, ProviderOpenRouter, ProviderXAI, ProviderZAI,
+		ProviderMoonshot,
 	}
 	for _, p := range valid {
 		if !p.Valid() {
@@ -144,6 +145,10 @@ func TestParseProvider(t *testing.T) {
 		{"openai", ProviderOpenAI, false},
 		{"  OpenAI  ", ProviderOpenAI, false}, // trim + lowercase
 		{"ZAI", ProviderZAI, false},
+		// `api-keys create --provider moonshot` is accepted through this one
+		// function; a provider missing from Valid() is refused at the route.
+		{"moonshot", ProviderMoonshot, false},
+		{" MOONSHOT ", ProviderMoonshot, false},
 		{"ANTHROPIC", ProviderAnthropic, false},
 		{"nope", "", true},
 		{"", "", true},
@@ -342,4 +347,30 @@ func TestMemoryApiKey_MarkFingerprintUsed(t *testing.T) {
 			t.Fatalf("k2.last_used_at = %v, want nil (only k1's fingerprint was metered)", got2.LastUsedAt)
 		}
 	})
+}
+
+// Every slot of AnthropicWireSlotOrder must BE on the anthropic wire, and
+// every anthropic-wire slot must be IN the order. A provider added to one
+// and not the other is the drift the list exists to stop: the resolver would
+// treat it as its own wire family (and hand the run a second credential for
+// one wire) while the delegate ranked it, or the reverse.
+func TestAnthropicWireSlotOrderMatchesWireFamily(t *testing.T) {
+	inOrder := map[string]bool{}
+	for _, slot := range AnthropicWireSlotOrder {
+		inOrder[slot] = true
+		if fam := WireFamily(slot); fam != WireFamilyAnthropic {
+			t.Errorf("AnthropicWireSlotOrder holds %q, whose WireFamily is %q — want %q", slot, fam, WireFamilyAnthropic)
+		}
+	}
+	every := []string{
+		string(ProviderAnthropic), string(ProviderOpenAI), string(ProviderBedrock),
+		string(ProviderVertex), string(ProviderAzure), string(ProviderOpenRouter),
+		string(ProviderXAI), string(ProviderZAI), string(ProviderMoonshot),
+		string(OAuthKindClaudeCode), string(OAuthKindCodex),
+	}
+	for _, slot := range every {
+		if WireFamily(slot) == WireFamilyAnthropic && !inOrder[slot] {
+			t.Errorf("slot %q is on the anthropic wire but absent from AnthropicWireSlotOrder — the delegate would rank it nowhere and the meter would charge it to another key", slot)
+		}
+	}
 }

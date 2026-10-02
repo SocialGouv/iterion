@@ -66,19 +66,19 @@ export interface UseDocumentFileOpsResult {
   handleRemoveWorkflow: () => void;
 }
 import { applyOpenedFile } from "@/lib/openedFile";
+import { ReplaceDeadlineError, replaceDocument, replaceDocumentNow } from "@/lib/replaceDocument";
+import { offerReload } from "@/lib/reloadOffer";
+import { stampEditor, stampHolds } from "@/store/document";
 
 export function useDocumentFileOps({
   confirm,
 }: UseDocumentFileOpsArgs): UseDocumentFileOpsResult {
   // Document/UI/recents stores — selected one-at-a-time so the hook
   // only re-runs when the slices it actually depends on change.
-  const setDocument = useDocumentStore((s) => s.setDocument);
   const documentStore = useDocumentStoreInstance();
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
-  const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
-  const setSalvaged = useDocumentStore((s) => s.setSalvaged);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const unit = useDocumentStore((s) => s.unit);
   const setUnit = useDocumentStore((s) => s.setUnit);
@@ -96,7 +96,7 @@ export function useDocumentFileOps({
   const READ_ONLY_MSG = sharedBundle
     ? "This workflow comes from a locked shared bundle. Edit its source bundle, update bots.lock, then run iterion bots sync."
     : "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
-  const isDirty = useDocumentStore((s) => s.isDirty);
+  const hasUnsavedWork = useDocumentStore((s) => s.hasUnsavedWork);
   const addWorkflow = useDocumentStore((s) => s.addWorkflow);
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
@@ -110,26 +110,23 @@ export function useDocumentFileOps({
   const [loading, setLoading] = useState(false);
   const [confirmRemoveWorkflow, setConfirmRemoveWorkflow] = useState(false);
 
+  // `hasUnsavedWork`, not `isDirty`: the Source view's un-applied text is
+  // work this discard takes too, and it moves no document generation (#1662).
   const confirmDiscard = useCallback(async () => {
-    if (!isDirty()) return true;
+    if (!hasUnsavedWork()) return true;
     return confirm(DISCARD_CHANGES_PROMPT);
-  }, [isDirty, confirm]);
+  }, [hasUnsavedWork, confirm]);
 
   const handleNew = useCallback(async () => {
     if (!(await confirmDiscard())) return;
-    setDocument(createEmptyDocument());
-    setDiagnostics([], []);
-    setCurrentFilePath(null);
-    setCurrentSource(null);
-    markSaved();
-  }, [
-    setDocument,
-    setDiagnostics,
-    setCurrentFilePath,
-    setCurrentSource,
-    markSaved,
-    confirmDiscard,
-  ]);
+    replaceDocumentNow(documentStore, (s) => {
+      s.setDocument(createEmptyDocument());
+      s.setDiagnostics([], []);
+      s.setCurrentFilePath(null);
+      s.setCurrentSource(null);
+      s.markSaved();
+    });
+  }, [documentStore, confirmDiscard]);
 
   const handlePickFile = useCallback(
     async (kind: "file" | "example", path: string) => {
@@ -137,32 +134,16 @@ export function useDocumentFileOps({
       setLoading(true);
       try {
         if (kind === "file") {
-          const result = await api.openFile(path);
-          applyOpenedFile(result, {
-            setDocument,
-            setDiagnostics,
-            setCurrentSource,
-            setCurrentFilePath,
-            setSalvaged,
-            setUnit,
-            markSaved,
+          await replaceDocument(documentStore, path, (signal) => api.openFile(path, { signal }), (result, s) => {
+            applyOpenedFile(result, s);
+            if (result.path) pushRecent(result.path);
           });
-          if (result.path) pushRecent(result.path);
         } else {
           // The shared helper binds the path the server names for a file
-          // inside the workspace, else bots/<name> (so Save works and the
-          // Run button enables instead of "Save the workflow first"), and
-          // keeps the example's source + diagnostics. Same path as
-          // RecentFilesPanel and CanvasEmpty.
-          await openExampleIntoStore(path, {
-            setDocument,
-            setDiagnostics,
-            setCurrentSource,
-            setCurrentFilePath,
-            setSalvaged,
-            setUnit,
-            markSaved,
-          });
+          // inside the workspace, else bots/<name> (so Save works and Run
+          // launches it by path), and keeps the example's source +
+          // diagnostics. Same path as RecentFilesPanel and CanvasEmpty.
+          await openExampleIntoStore(path, documentStore);
         }
       } catch (err) {
         console.error("Open failed:", err);
@@ -173,30 +154,18 @@ export function useDocumentFileOps({
         // picker opens, the dead row is gone — instead of the user
         // having to manually click the trash icon on every stale row.
         const message = errorMessage(err) ?? "";
-        const isMissing = /file not found|no such file|404/i.test(message);
+        const isMissing = !(err instanceof ReplaceDeadlineError) && /file not found|no such file|404/i.test(message);
         if (kind === "file" && isMissing) {
           removeRecent(path);
           addToast(`Removed missing file from recents: ${path}`, "warning");
         } else {
-          addToast("Open failed", "error");
+          toastError(addToast, err, "Open failed");
         }
       } finally {
         setLoading(false);
       }
     },
-    [
-      setDocument,
-      setDiagnostics,
-      setCurrentFilePath,
-      setSalvaged,
-      setCurrentSource,
-      setUnit,
-      markSaved,
-      confirmDiscard,
-      pushRecent,
-      removeRecent,
-      addToast,
-    ],
+    [documentStore, confirmDiscard, pushRecent, removeRecent, addToast],
   );
 
   const handleImport = useCallback(
@@ -212,40 +181,51 @@ export function useDocumentFileOps({
         e.target.value = "";
         return;
       }
-      const text = await file.text();
       try {
-        const result = await api.parseSource(text);
-        setDiagnostics(result.diagnostics);
-        // The path first — it clears the salvage flag — then the document and
-        // the verdict together. Unbinding does NOT protect an import: Save As
-        // is the only write an unbound buffer offers, and it would put a file
-        // missing what the parser could not read under the name the author
-        // chose.
-        setCurrentFilePath(null);
-        applyParsedSource(result, { setDocument, setSalvaged });
-        // Imported files are off-disk; the original text is the source.
-        setCurrentSource(text);
+        // The file is read inside the load: the confirm was answered for the
+        // work present NOW, and an edit made while the file is read or
+        // parsed is work nobody was asked about.
+        await replaceDocument(
+          documentStore,
+          file.name,
+          async (signal) => {
+            const text = await file.text();
+            return { text, result: await api.parseSource(text, { signal }) };
+          },
+          ({ text, result }, s) => {
+            s.setDiagnostics(result.diagnostics);
+            // The path first — it clears the salvage flag — then the document
+            // and the verdict together. Unbinding does NOT protect an import:
+            // Save As is the only write an unbound buffer offers, and it would
+            // put a file missing what the parser could not read under the name
+            // the author chose.
+            s.setCurrentFilePath(null);
+            applyParsedSource(result, s);
+            // Imported files are off-disk; the original text is the source.
+            s.setCurrentSource(text);
+          },
+        );
       } catch (err) {
         console.error("Import failed:", err);
         toastError(addToast, err, "Import failed");
       }
       e.target.value = "";
     },
-    [
-      setDocument,
-      setDiagnostics,
-      setCurrentFilePath,
-      setCurrentSource,
-      setSalvaged,
-      confirmDiscard,
-      addToast,
-    ],
+    [documentStore, confirmDiscard, addToast],
   );
 
   const handleValidate = useCallback(async () => {
     if (!document) return;
+    // The diagnostics describe THIS document of THIS file: an answer that
+    // lands after either moved is about something no longer on screen.
+    const asked = stampEditor(documentStore.getState());
     try {
       const result = await api.validate(document, undefined, currentFilePath);
+      const holds = stampHolds(asked, documentStore.getState());
+      if (!holds.path || !holds.generation) {
+        addToast("The editor changed while validating, so the result was not shown. Validate again.", "warning");
+        return;
+      }
       setDiagnostics(result.diagnostics, result.warnings, result.issues);
       const errorCount = (result.diagnostics ?? []).length;
       const warnCount = (result.warnings ?? []).length;
@@ -263,7 +243,7 @@ export function useDocumentFileOps({
       console.error("Validation failed:", err);
       addToast(`Validation failed: ${errorMessage(err)}`, "error");
     }
-  }, [document, currentFilePath, setDiagnostics, addToast, openDiagnosticsPanel]);
+  }, [document, currentFilePath, documentStore, setDiagnostics, addToast, openDiagnosticsPanel]);
 
   const handleSave = useCallback(async () => {
     if (!document) return;
@@ -278,18 +258,52 @@ export function useDocumentFileOps({
       return;
     }
     if (currentFilePath) {
+      const path = currentFilePath;
+      const asked = stampEditor(documentStore.getState());
       try {
         // A bot in several files presents the revision it was opened at,
-        // and keeps the one the save returns.
-        const result = await api.saveFile(currentFilePath, document, unit ? { revision: unit.revision } : undefined);
+        // and keeps the one the save returns. Its file list goes with it:
+        // a per-file Apply may have changed a file's `import` lines or its
+        // `dsl:` profile — the two header fields the document does not
+        // carry — and the save writes them from the claim.
+        const result = await api.saveFile(path, document, unit ? { revision: unit.revision, unitFiles: unit.files } : undefined);
+        pushRecent(path);
+        // The answer is about the document it wrote. A tab that has moved to
+        // another file meanwhile — or reopened this same one, which is a new
+        // document under the same name — takes none of it: not this write's
+        // source, not its unit revision, not a "saved" mark over work it did
+        // not write. A replacement ASKED for and not applied (it failed, or
+        // was refused) left the written document on screen, and does not
+        // stop it being settled.
+        const now = documentStore.getState();
+        const holds = stampHolds(asked, now);
+        if (!holds.path || !holds.replaced) {
+          // Reopened under the same name while the write was in flight: a
+          // reading taken before the write shows the file as it no longer
+          // is, marked saved, and the next save would write it back.
+          if (holds.path && now.currentSource !== result.source) {
+            offerReload(documentStore, path, `Saved ${path} — the tab was reopened meanwhile and does not show what was saved.`);
+          } else {
+            addToast(`Saved ${path}`, "success");
+          }
+          return;
+        }
         setCurrentSource(result.source);
-        if (unit) setUnit({ ...unit, revision: result.revision ?? unit.revision });
-        markSaved();
-        addToast("Saved successfully", "success");
-        pushRecent(currentFilePath);
+        // The revision goes onto the unit as it is NOW: a per-file Apply
+        // during the write may have changed its files.
+        if (now.unit) setUnit({ ...now.unit, revision: result.revision ?? now.unit.revision });
+        const clean = holds.generation;
+        if (clean) markSaved();
+        addToast(
+          clean ? "Saved successfully" : "Saved, but newer editor changes remain unsaved",
+          clean ? "success" : "warning",
+        );
       } catch (err) {
         console.error("Save failed:", err);
-        addToast("Save failed", "error");
+        // The server's own sentence: a save refused because the writer
+        // cannot reproduce the file (#1612) names the file, the line and
+        // what to do. "Save failed" alone leaves the author nowhere.
+        toastError(addToast, err, "Save failed", { persistent: true });
       }
     } else {
       saveAs.requestSaveAs({ store: documentStore });
@@ -330,15 +344,52 @@ export function useDocumentFileOps({
       return;
     }
     try {
-      const source = await api.unparse(document);
+      const { source, refused, stored } = await api.unparse(document, {
+        // A bot in several files downloads as its PROGRAM: one text, which
+        // is what a `.bot` on the author's disk means. The path travels
+        // with it so the answer can still name which of the bot's files
+        // the writer cannot reproduce.
+        ...(unit ? { flatten: true } : {}),
+        path: documentStore.getState().currentFilePath,
+      });
+      // A third shape of the same harm: the writer has no multi-line form
+      // for one of this file's values (#1612), so the .bot it would hand
+      // over puts on one line what the author wrote over several. Same
+      // program, and not the same file.
+      if (refused) {
+        // Handing over `source` is a better export than refusing — the
+        // author gets their file, never a collapsed render of it — but
+        // ONLY where `source` is a file: `stored` says so, and the merged
+        // answer a bot in several files takes is a render of a program
+        // that is no file at all. Reading `refused` alone as "so source is
+        // the file" is right three times out of four.
+        //
+        // The other case it is wrong is a canvas holding edits that text
+        // does not carry, which is what isDirty() says.
+        if (!stored || documentStore.getState().isDirty()) {
+          addToast(
+            stored
+              ? `This bot cannot be downloaded as .bot source: ${refused}. Save your changes first — the file as stored can be downloaded once the canvas matches it.`
+              : `This bot cannot be downloaded as .bot source: ${refused}. A bot in several files has no single file to hand over instead.`,
+            "warning",
+            { persistent: true },
+          );
+          return;
+        }
+        addToast(
+          `Downloaded this bot as it is stored: iterion cannot rewrite it (${refused}).`,
+          "warning",
+          { persistent: true },
+        );
+      }
       const blob = new Blob([source], { type: "text/plain" });
       const name = document.workflows?.[0]?.name || "workflow";
       downloadBlob(blob, `${name}.bot`);
     } catch (err) {
       console.error("Download failed:", err);
-      addToast("Download failed", "error");
+      addToast(err instanceof Error ? `Download failed: ${err.message}` : "Download failed", "error");
     }
-  }, [document, addToast, documentStore, openDiagnosticsPanel]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel, unit]);
 
   const handleCopySource = useCallback(async () => {
     if (!document) return;
@@ -351,14 +402,41 @@ export function useDocumentFileOps({
       return;
     }
     try {
-      const source = await api.unparse(document);
+      const { source, refused, stored } = await api.unparse(document, {
+        // A bot in several files downloads as its PROGRAM: one text, which
+        // is what a `.bot` on the author's disk means. The path travels
+        // with it so the answer can still name which of the bot's files
+        // the writer cannot reproduce.
+        ...(unit ? { flatten: true } : {}),
+        path: documentStore.getState().currentFilePath,
+      });
+      if (refused) {
+        // Same as the download: only where `source` is a file.
+        if (!stored || documentStore.getState().isDirty()) {
+          addToast(
+            stored
+              ? `This bot cannot be copied as .bot source: ${refused}. Save your changes first — the file as stored can be copied once the canvas matches it.`
+              : `This bot cannot be copied as .bot source: ${refused}. A bot in several files has no single file to hand over instead.`,
+            "warning",
+            { persistent: true },
+          );
+          return;
+        }
+        addToast(
+          `Copied this bot as it is stored: iterion cannot rewrite it (${refused}).`,
+          "warning",
+          { persistent: true },
+        );
+        await navigator.clipboard.writeText(source);
+        return;
+      }
       await navigator.clipboard.writeText(source);
       addToast("Source copied to clipboard", "success");
     } catch (err) {
       console.error("Copy failed:", err);
-      addToast("Copy failed", "error");
+      addToast(err instanceof Error ? `Copy failed: ${err.message}` : "Copy failed", "error");
     }
-  }, [document, addToast, documentStore, openDiagnosticsPanel]);
+  }, [document, addToast, documentStore, openDiagnosticsPanel, unit]);
 
   const handleAddWorkflow = useCallback(() => {
     if (!document) return;

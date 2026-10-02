@@ -176,6 +176,14 @@ func (e *scenarioExecutor) UnpackSession(context.Context, string, string, []byte
 
 func (e *scenarioExecutor) HasSession(context.Context, string, string) bool { return true }
 
+// EffectiveToolNames answers the engine's tool-surface seam: the scenario
+// executor runs no backend, so it grants nothing beyond a node's declaration.
+func (e *scenarioExecutor) EffectiveToolNames(ir.Node, bool) []string { return nil }
+
+// EffectiveBackendName answers the engine's backend seam: the scenario executor
+// routes no node anywhere, so the IR's backend is all there is.
+func (e *scenarioExecutor) EffectiveBackendName(ir.Node) string { return "" }
+
 func (e *scenarioExecutor) callCount(nodeID string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()

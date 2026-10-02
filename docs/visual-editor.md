@@ -84,7 +84,7 @@ team store.
 
 ### Authoring
 
-**Source view** — the raw `.bot` source mirrored beside the graph, edits in either stay in sync.
+**Source view** — the raw `.bot` source mirrored beside the graph, edits in either stay in sync. For a [bot in several files](dsl.md#import--a-bot-in-several-files) it is a picker over the unit's files, showing ONE file's text at a time with the merged program as a read-only entry beside them: an edit there rebuilds the bot from its files as they are stored plus that one text, so unsaved canvas edits to its other files are not carried and the view asks before replacing them.
 
 ![Studio source view — graph and .bot source side by side](images/studio/editor-source.png)
 

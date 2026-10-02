@@ -72,7 +72,7 @@ workflow w:
 	var seen []store.RunStatus
 	exec := newStubExecutor()
 	exec.on("work", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
-	observe := WithOnNodeFinished(func(rid, nodeID string, out map[string]any) {
+	observe := WithOnNodeFinished(func(_ context.Context, rid, nodeID string, out map[string]any) {
 		if run, lerr := st.LoadRun(context.Background(), rid); lerr == nil {
 			seen = append(seen, run.Status)
 		}

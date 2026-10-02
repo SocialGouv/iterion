@@ -1,0 +1,11 @@
+# refused: the frontmatter carries name, description, triggers and capabilities only
+dsl: 2
+catalog:
+  author: me
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

@@ -7,14 +7,16 @@
    INDENT/DEDENT are virtual tokens emitted by the indentation-aware lexer.
    Comments open with # (## is the same comment) and, like blank lines, are
    ignored between constructs; inside a string, a prompt body or a block
-   scalar a # is text.
+   scalar a # is text. Ignored by the GRAMMAR only: the parser keeps each
+   comment with the declaration it was written around, and a rewrite - a
+   studio save, iterion fmt - puts it back at the place it was written.
 *)
 
 file = [ dsl_header ] { import_decl } { top_level_decl } ;
 
 (* The syntax profile (ADR-098). The header, when present, is the file's
    first significant line — after blank lines and comments; absent means
-   profile 1, today's grammar, frozen. The profile governs changes of
+   profile 1, the grammar at the 1.0 cut, frozen. The profile governs changes of
    MEANING only: under profile 2 a "…" string reads the standard escapes
    (\" \\ \n \t \r \0) with no directive, a blank line inside a prompt body
    is kept as a paragraph break, and the profile-1 `## strict-escape: on`
@@ -49,7 +51,14 @@ top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
    rule as the empty declarations (see prompt_decl); fallbacks_block is the
    exception, see there. *)
 vars_decl = "vars" ":" NEWLINE [ INDENT { var_field } DEDENT ] ;
-var_field = IDENT ":" type_expr [ enum_constraint ] [ "=" literal ] NEWLINE ;
+(* A var carries at most one of each constraint, in either order; a
+   repeated bracket is a parse error, because merging two would either drop
+   a pattern or widen an accepted set in silence. `matching_constraint` is
+   var-only: a schema field constrains model output, a different guarantee. *)
+var_field = IDENT ":" type_expr [ var_constraints ] [ "=" literal ] NEWLINE ;
+var_constraints = enum_constraint [ matching_constraint ]
+                | matching_constraint [ enum_constraint ] ;
+matching_constraint = "[" "matching" ":" STRING "]" ;
 
 type_expr = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
 literal = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;
@@ -198,19 +207,25 @@ llm_prop = "description" ":" str_value NEWLINE
          | "await" ":" await_mode NEWLINE
          | "compress" ":" compress_mode NEWLINE
          | "auto_memory" ":" auto_memory_mode NEWLINE
+         | "ambient_context" ":" ambient_context_mode NEWLINE
          | "permission" ":" permission_mode NEWLINE
+         | "allow" ":" string_list NEWLINE
+         | "ask" ":" string_list NEWLINE
+         | "deny" ":" string_list NEWLINE
          | "needs" ":" needs_value NEWLINE
          | mcp_config_block | compaction_block | memory_block
          | sandbox_decl | cursors_block ;
 
 session_mode = "fresh" | "inherit" | "inherit_if_available"
              | "fork" | "artifacts_only" | "persist" ;
-reasoning_effort = "low" | "medium" | "high" | "xhigh" | "max"
+reasoning_effort = "none" | "low" | "medium" | "high" | "xhigh" | "max"
                  | "ultracode" | STRING_LIT ;
 await_mode = "wait_all" | "best_effort" ;
-interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review" ;
+interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review"
+                 | "async" | "human_or_host" ;
 compress_mode = "off" | "on" | "ultra" ;
 auto_memory_mode = "off" | "on" ;
+ambient_context_mode = "none" | "workspace" | "operator" | "all" ;
 loop_budget_guard_mode = "off" | "on" ;
 repo_devbox_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;
@@ -398,6 +413,7 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "worktree" ":" worktree_mode NEWLINE
                 | "compress" ":" compress_mode NEWLINE
                 | "auto_memory" ":" auto_memory_mode NEWLINE
+                | "ambient_context" ":" ambient_context_mode NEWLINE
                 | "loop_budget_guard" ":" loop_budget_guard_mode NEWLINE
                 | "repo_devbox" ":" repo_devbox_mode NEWLINE
                 | "workspace_checkpoint" ":" ( "on" | "off" ) NEWLINE
@@ -540,8 +556,11 @@ additive = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
 unary = "-" unary | postfix ;
 postfix = primary { "[" expression "]" } ;
-primary = NUMBER_LIT | EXPR_STRING | BOOL_LIT | path | function_call
-        | lambda_combinator | "(" expression ")" ;
+primary = NUMBER_LIT | EXPR_STRING | BOOL_LIT | list_literal | object_literal
+        | path | function_call | lambda_combinator | "(" expression ")" ;
+list_literal = "[" [ expression { "," expression } ] "]" ;
+object_literal = "{" [ object_pair { "," object_pair } ] "}" ;
+object_pair = ( IDENT | EXPR_STRING ) ":" expression ;
 path = IDENT { "." IDENT } ;
 function_call = IDENT "(" [ expression { "," expression } ] ")" ;
 lambda_combinator = ( "map" | "filter" ) "(" expression "," lambda ")"
@@ -551,7 +570,10 @@ lambda = ( IDENT | "(" IDENT { "," IDENT } ")" ) "=>" expression ;
 (* `compute` expressions and quoted `when` clauses carry this language inside
    a DSL STRING_LIT. Standard namespaces are vars, input, outputs, artifacts,
    loop, and run. Built-ins are length, concat, unique, contains, join, tail,
-   if, sort, keys, values, slice, sum, min, max, flatten, map, filter, reduce. *)
+   if, sort, keys, values, slice, sum, min, max, flatten, map, filter, reduce.
+   A list literal evaluates to an array, an object literal to a JSON object;
+   a repeated object key is refused at parse, neither form takes a trailing
+   comma. *)
 
 (* ---------- Template references ---------- *)
 
@@ -572,19 +594,25 @@ template_namespace = "vars" | "input" | "outputs" | "artifacts"
    word — two words, a number with a unit — is still an error (E002). *)
 str_value = STRING_LIT | IDENT ;
 
+(* A word from a fixed list — session_mode, await_mode, router_mode,
+   mcp_transport, interaction_mode — reads quoted as well as bare
+   (`session: "fresh"` is `session: fresh`); a word outside the list is
+   refused either way. The productions below name the words. *)
+
 (* Every list may be written inline, or as one `- item` per line indented
    under the property (comment lines allowed between items); both read as
-   the same list. `[]` is the empty list's only form. *)
-ident_list = "[" [ IDENT { "," IDENT } ] "]"
+   the same list. `[]` is the empty list's only form. A trailing comma before
+   the `]` is accepted and reads as no element, as in JSON5. *)
+ident_list = "[" [ IDENT { "," IDENT } [ "," ] ] "]"
            | NEWLINE INDENT { "-" IDENT NEWLINE } DEDENT ;
-string_list = "[" [ str_value { "," str_value } ] "]"
+string_list = "[" [ str_value { "," str_value } [ "," ] ] "]"
             | NEWLINE INDENT { "-" str_value NEWLINE } DEDENT ;
-string_or_ident_list = "[" [ string_or_ident { "," string_or_ident } ] "]"
+string_or_ident_list = "[" [ string_or_ident { "," string_or_ident } [ "," ] ] "]"
                      | NEWLINE INDENT { "-" string_or_ident NEWLINE } DEDENT ;
-tool_ref_list = "[" [ tool_ref_elem { "," tool_ref_elem } ] "]"
+tool_ref_list = "[" [ tool_ref_elem { "," tool_ref_elem } [ "," ] ] "]"
               | NEWLINE INDENT { "-" tool_ref_elem NEWLINE } DEDENT ;
 tool_ref_elem = tool_ref | STRING_LIT ;  (* a quoted element is the literal name *)
-skill_ref_list = "[" [ skill_ref { "," skill_ref } ] "]"
+skill_ref_list = "[" [ skill_ref { "," skill_ref } [ "," ] ] "]"
                | NEWLINE INDENT { "-" skill_ref NEWLINE } DEDENT ;
 
 tool_ref = IDENT { "." IDENT } [ "." "*" ] ;

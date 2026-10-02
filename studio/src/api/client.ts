@@ -1,5 +1,6 @@
-import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo } from "./types";
+import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo, UnitFileInfo } from "./types";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
+import { isWorkflowFile } from "@/lib/workflowFile";
 
 const BASE_URL = apiBase();
 
@@ -247,6 +248,7 @@ export interface DiagnosticIssue {
 
 export async function parseSource(
   source: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   document: IterDocument;
   diagnostics: string[];
@@ -259,19 +261,134 @@ export async function parseSource(
   return request("/parse", {
     method: "POST",
     body: JSON.stringify({ source }),
+    signal: options?.signal,
   });
+}
+
+/** UnparsedSource is a document rendered as .bot source, with the reason
+ *  the writer cannot reproduce the file it came from when that is the
+ *  case. */
+export interface UnparsedSource {
+  source: string;
+  /** Set when a value the file writes over several lines would come back
+   *  as one (#1612, pkg/dsl/canon). Folding is a before/after property, so
+   *  it is answered only where the server holds the file's current text:
+   *  the server READS that text itself, from `path` or from the unit's
+   *  files, and the client never supplies it. `source` is then the file's
+   *  own text, never the writer's. The paths that WRITE refuse outright;
+   *  this is what the ones that DISPLAY get instead, so the author reads
+   *  their file rather than nothing. */
+  refused?: string;
+  /** True when `source` is the bytes the server READ — the file as it is
+   *  kept — and not a render of the document. It decides whether the
+   *  answer may be handed to the author AS their file: the per-file and
+   *  single-file refusals read a file, the merged (`flatten`) one renders
+   *  a program that is no file at all. Reading `refused` as "so source is
+   *  the file" is right three times out of four and hands over a
+   *  collapsed render the fourth. */
+  stored?: boolean;
 }
 
 /** unparse renders a document as .bot source. `flatten` renders the merged
  *  program of a bot in several files for DISPLAY only: the server refuses
  *  to render such a document as one file otherwise, since a save of that
- *  text would fold every file into the main. */
-export async function unparse(document: IterDocument, options?: { flatten?: boolean }): Promise<string> {
-  const res = await request<{ source: string }>("/unparse", {
+ *  text would fold every file into the main.
+ *
+ *  `path` is the workspace file the document was opened from, and it is
+ *  what lets the answer carry `refused`: a fold is a before/after property
+ *  and the server reads that before itself. Passing the text instead would
+ *  make the guard depend on a field the client overwrites — `currentSource`
+ *  is the launch's inline text, not the file's. */
+export async function unparse(
+  document: IterDocument,
+  options?: { flatten?: boolean; path?: string | null },
+): Promise<UnparsedSource> {
+  const bs = options?.path ? parseBotSourceEditorPath(options.path) : null;
+  if (bs) {
+    // A cloud bot has a before too — the bundle holds it — and the server
+    // cannot read one off a `botsource://` path, which resolves to no file
+    // on its disk. Both shapes carry the files map instead: a per-file
+    // render for a bot in one file (a unit of one, whose single part is
+    // the whole document), and the bundle's files beside the merged text
+    // so a flatten can name what that text no longer carries.
+    const bundle = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
+    const files = bundle.files ?? {};
+    return request("/unparse", {
+      method: "POST",
+      body: JSON.stringify(
+        options?.flatten
+          ? { document, files, main: bs.rel, flatten: true }
+          : { document, files, main: bs.rel, file: bs.rel },
+      ),
+    });
+  }
+  const res = await request<UnparsedSource>("/unparse", {
     method: "POST",
-    body: JSON.stringify(options?.flatten ? { document, flatten: true } : { document }),
+    body: JSON.stringify({
+      document,
+      ...(options?.flatten ? { flatten: true } : {}),
+      ...(options?.path ? { path: options.path } : {}),
+    }),
   });
-  return res.source;
+  return { source: res.source, refused: res.refused, stored: res.stored };
+}
+
+/** unparseUnitFile renders ONE file of a bot in several files: what the
+ *  Source view's picker shows for the file it is on. Read-only — it
+ *  presents no revision and writes nothing — so a file the writer cannot
+ *  reproduce still comes back, as ITS OWN text, with the reason. */
+export async function unparseUnitFile(
+  document: IterDocument,
+  editorPath: string,
+  rel: string,
+  unitFiles?: UnitFileInfo[],
+): Promise<UnparsedSource> {
+  const bs = parseBotSourceEditorPath(editorPath);
+  if (bs) {
+    const bundle = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
+    return request("/unparse", {
+      method: "POST",
+      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
+    });
+  }
+  return request("/unparse", {
+    method: "POST",
+    body: JSON.stringify({ document, path: editorPath, file: rel, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
+  });
+}
+
+/** parseUnitFile re-parses a bot in several files with ONE of them
+ *  replaced by the text the Source view holds: the author edits a real
+ *  file, and the merged document the canvas and the save work from is
+ *  rebuilt from it.
+ *
+ *  It answers NO revision, and the caller keeps the one it opened at: a
+ *  revision is a claim about the files at rest, and an overlay moved none.
+ *  Taking the staged unit's digest would make the very next save a false
+ *  conflict; taking the current one would adopt a colleague's edit. */
+export async function parseUnitFile(
+  editorPath: string,
+  rel: string,
+  source: string,
+): Promise<{ document: IterDocument; diagnostics: string[]; unit?: UnitInfo; bindable?: boolean }> {
+  const bs = parseBotSourceEditorPath(editorPath);
+  if (bs) {
+    const bundle = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
+    return request("/parse", {
+      method: "POST",
+      body: JSON.stringify({ files: bundle.files ?? {}, main: bs.rel, file: rel, source }),
+    });
+  }
+  return request("/parse", {
+    method: "POST",
+    body: JSON.stringify({ path: editorPath, file: rel, source }),
+  });
 }
 
 /** A bot in several files has an `import "lib/x.bot"` line at the head of
@@ -286,6 +403,7 @@ export function importsFragments(source: string): boolean {
 export async function parseUnit(
   files: Record<string, string>,
   main: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   document: IterDocument;
   diagnostics: string[];
@@ -298,6 +416,7 @@ export async function parseUnit(
   return request("/parse", {
     method: "POST",
     body: JSON.stringify({ files, main }),
+    signal: options?.signal,
   });
 }
 
@@ -312,10 +431,11 @@ export async function unparseUnit(
   files: Record<string, string>,
   main: string,
   revision: string,
+  unitFiles?: UnitFileInfo[],
 ): Promise<{ source: string; files: Record<string, string>; revision?: string }> {
   const res = await request<{ source: string; files?: Record<string, string>; revision?: string }>("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document, files, main, revision }),
+    body: JSON.stringify({ document, files, main, revision, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
   });
   return { source: res.source, files: res.files ?? {}, revision: res.revision };
 }
@@ -365,6 +485,7 @@ export async function listExamples(): Promise<string[]> {
 
 export async function loadExample(
   name: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   source: string;
   document: IterDocument;
@@ -391,7 +512,7 @@ export async function loadExample(
   // Encode each path segment but keep the slashes so subdirectory
   // examples (e.g. "feature_dev/main.bot") route correctly.
   const encoded = name.split("/").map(encodeURIComponent).join("/");
-  return request(`/examples/${encoded}`);
+  return request(`/examples/${encoded}`, { signal: options?.signal });
 }
 
 // File management
@@ -447,6 +568,7 @@ interface BotSourceFilesResponse {
 
 export async function openFile(
   path: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   source: string;
   document: IterDocument;
@@ -470,14 +592,15 @@ export async function openFile(
   if (bs) {
     const bundle = await apiRequest<BotSourceFilesResponse>(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+      { signal: options?.signal },
     );
     const source = bundle.files?.[bs.rel] ?? "";
-    if (bs.rel.endsWith(".bot") && importsFragments(source)) {
+    if (isWorkflowFile(bs.rel) && importsFragments(source)) {
       // A workflow in several files — the bundle's main, or a companion
       // workflow of its own: the unit is parsed from the whole files map
       // with that file as its main, so the fragments its imports reach
       // are in the document.
-      const parsed = await parseUnit(bundle.files ?? {}, bs.rel);
+      const parsed = await parseUnit(bundle.files ?? {}, bs.rel, options);
       // The server's verdict, not a hardcoded true: a unit that does not
       // LOAD stays writable — its write back is refused there, naming the
       // fragment — but a main that did not PARSE makes the merged document a
@@ -491,7 +614,7 @@ export async function openFile(
         bindable: parsed.bindable !== false,
       };
     }
-    const parsed = await parseSource(source);
+    const parsed = await parseSource(source, options);
     // The verdict travels with the answer, the way /api/files/open carries it
     // for a file on disk. It has to: this path's save is a versioned PUT of
     // `unparse(document)`, and the compile guard behind it PASSES a salvage —
@@ -507,13 +630,14 @@ export async function openFile(
   return request("/files/open", {
     method: "POST",
     body: JSON.stringify({ path }),
+    signal: options?.signal,
   });
 }
 
 export async function saveFile(
   path: string,
   document: IterDocument,
-  options?: { createOnly?: boolean; revision?: string },
+  options?: { createOnly?: boolean; revision?: string; unitFiles?: UnitFileInfo[] },
 ): Promise<SaveFileResponse> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
@@ -534,8 +658,11 @@ export async function saveFile(
       // — only the files whose program changed come back — patched into
       // the whole bundle the store holds, and written as ONE versioned
       // PUT, so manifest, prompts, skills and every other file survive and
-      // a concurrent editor is a conflict, never a silent overwrite.
-      const rewritten = await unparseUnit(document, current.files ?? {}, bs.rel, options.revision);
+      // a concurrent editor is a conflict, never a silent overwrite. The
+      // file list the client holds (unit.files) goes with it: a per-file
+      // edit may have changed a file's `import` lines or its `dsl:`
+      // profile, which the document does not carry.
+      const rewritten = await unparseUnit(document, current.files ?? {}, bs.rel, options.revision, options.unitFiles);
       const files = { ...(current.files ?? {}), ...rewritten.files };
       await apiRequest(
         `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
@@ -543,7 +670,7 @@ export async function saveFile(
       );
       return { path, source: rewritten.source, files: Object.keys(rewritten.files).sort(), revision: rewritten.revision };
     }
-    const source = await unparse(document);
+    const { source } = await unparse(document);
     await apiRequest(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
       { method: "PUT", body: JSON.stringify({ content: source, version: current.version }) },
@@ -557,6 +684,7 @@ export async function saveFile(
       document,
       ...(options?.createOnly ? { create_only: true } : {}),
       ...(options?.revision ? { revision: options.revision } : {}),
+      ...(options?.unitFiles ? { unit_files: options.unitFiles } : {}),
     }),
   });
 }

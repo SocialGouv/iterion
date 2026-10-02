@@ -492,6 +492,10 @@ func InstallationInfo(ctx context.Context, httpClient *http.Client, apiBase stri
 		return Installation{}, forge.ErrUnauthorized
 	}
 	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err := forge.RateLimitErr("github", "GET /app/installations/{id}", resp.StatusCode, resp.Header, raw); err != nil {
+			return Installation{}, err
+		}
 		return Installation{}, statusErr("GET /app/installations/{id}", resp.StatusCode)
 	}
 	var out struct {
@@ -534,6 +538,10 @@ func AppSlug(ctx context.Context, httpClient *http.Client, apiBase string, cfg A
 		return "", forge.ErrUnauthorized
 	}
 	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err := forge.RateLimitErr("github", "GET /app", resp.StatusCode, resp.Header, raw); err != nil {
+			return "", err
+		}
 		return "", statusErr("GET /app", resp.StatusCode)
 	}
 	var out struct {
@@ -615,7 +623,11 @@ func MintInstallationTokenWithPermissions(ctx context.Context, httpClient *http.
 		// … installation", or an ungranted permission). Surfacing it turns an
 		// opaque "HTTP 422" into an actionable message instead of masking the
 		// root cause (erreurs-explicites).
-		err := mintTokenErr(resp)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err := forge.RateLimitErr("github", "mint installation token", resp.StatusCode, resp.Header, raw); err != nil {
+			return forge.RefreshedToken{}, err
+		}
+		err := mintTokenErr(resp.StatusCode, raw)
 		// A 422 whose body reports the requested permissions are NOT GRANTED is
 		// a permanent config mismatch (the install was approved with a narrower
 		// permission set than iterion now requests). Classify it as the terminal
@@ -684,10 +696,9 @@ func LastMintedPermissions(installationID int64) (map[string]string, bool) {
 // the response body (message + first field error), so a 422 says WHY. The body
 // is a short GitHub error JSON; a decode failure falls back to the bare status
 // error. Never includes any token (this is the pre-auth mint call).
-func mintTokenErr(resp *http.Response) error {
-	base := statusErr("mint installation token", resp.StatusCode)
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if err != nil || len(raw) == 0 {
+func mintTokenErr(code int, raw []byte) error {
+	base := statusErr("mint installation token", code)
+	if len(raw) == 0 {
 		return base
 	}
 	var ghErr struct {

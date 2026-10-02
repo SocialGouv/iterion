@@ -74,9 +74,9 @@ deterministic `workspace_probe` entry precondition and the plan phase —
 both described under their own headings below.)
 
 - **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it
-  runs `git add -N -- ':/' ':(exclude,top).claude'` then reads the branch diff, builds a living todo list of
+  runs `git add -N -- ':/' $ITERION_TREE_NOISE` then reads the branch diff, builds a living todo list of
   the real issues in the diff, and fixes them one at a time — locate → smallest
-  fix → build → test → **commit** (`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name) incl. untracked, semantic
+  fix → build → test → **commit** (`git add -A -- ':/' $ITERION_TREE_NOISE` (a deliverable under `.claude/` — or a deliberate `devbox.lock` update —: stage it by name) incl. untracked, semantic
   message) — until a fresh re-review finds no real issue left. It emits a
   **termination contract** (`branch_clean`, `commits_this_pass`,
   `issues_remaining`, …). It may pause for the operator on a genuine mid-flight
@@ -140,10 +140,10 @@ never inside the target worktree).
 ## Right artifact (anti-Goodhart)
 
 `git diff` omits **untracked** files, so a branch that ADDS files would be
-reviewed incomplete. The campaign runs `git add -N -- ':/' ':(exclude,top).claude'` (intent-to-add) BEFORE
+reviewed incomplete. The campaign runs `git add -N -- ':/' $ITERION_TREE_NOISE` (intent-to-add) BEFORE
 diffing so new files show in the branch diff, and commits the uncommitted
 working tree after its own build+test passes, staging untracked files
-(`git add -A -- ':/' ':(exclude,top).claude'` (a deliverable under `.claude/`: stage it by name)) so a fix that adds a test/helper actually lands. The
+(`git add -A -- ':/' $ITERION_TREE_NOISE` (a deliverable under `.claude/` — or a deliberate `devbox.lock` update —: stage it by name)) so a fix that adds a test/helper actually lands. The
 deterministic `verify_build`/`verify_run` gate then re-checks the committed
 tree. See
 [docs/workflow_authoring_pitfalls.md](../../docs/workflow_authoring_pitfalls.md).
@@ -203,7 +203,7 @@ read-only); `plan_phase: off` is the explicit opt-out (plan in stride, the
 v2 shape). `plan_review: auto` resolves at launch from the run's
 credentials and gates ONLY the peer review: when a SECOND model family is
 available, the triage is critiqued by a cross-family peer (`claw` +
-`openai/gpt-5.6-sol` by default) and revised by the SAME author session
+`openai/gpt-6-astra` by default) and revised by the SAME author session
 before the campaign fixes; otherwise the campaign receives the author's
 triage stamped as unreviewed (`plan_provenance`, relayed through the
 budget gate). `plan_review_policy` picks the mid-run peer-unavailability

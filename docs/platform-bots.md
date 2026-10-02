@@ -143,8 +143,9 @@ and a run only sees it when both have moved:
   nothing until the digest is bumped;
 - the **server** — the process that RESOLVES the bot at launch (team →
   platform → baked, `pkg/server/bot_resolver.go`) from ITS OWN baked catalog
-  and stamps the ref on the queue message; it follows `:edge`, so a
-  `kubectl rollout restart deploy/iterion` is the bump.
+  and stamps the ref on the queue message. On a digest-pinned deployment,
+  move `image.digest` in its GitOps values as well as `runner.image`;
+  restarting the server or changing `image.tag` keeps the pinned image.
 
 Bump the runner and forget the server, and every launch still resolves the
 OLD bot (2026-09-06: Billy 1.6.0 on the runner, 1.5.x served — no
@@ -156,10 +157,14 @@ and the failure auto-resumes in a loop (#857, #858). The order that works:
 
 1. bump the runner digest to an image built from the main that carries the
    bot AND the engine it needs (`docs/cloud-deployment.md` § pinning);
-2. `kubectl rollout restart deploy/iterion` so the server resolves the new
-   baked catalog;
-3. only then dogfood; a platform override is for iterating on a bot the
-   deployed engine already supports.
+2. bump the server digest to that release too, then verify the applied
+   Deployment generations and image IDs;
+3. reconcile stored platform and team overrides: they still win over baked
+   sources regardless of their version. Preserve customizations and use a
+   version-guarded write; an image update does not replace stored sources;
+4. only then dogfood; a platform override is for iterating on a bot the
+   deployed engine already supports. See [model rollout](current-bot-models.md)
+   for the live-variable and active-run precautions.
 
 ## A bundle may declare the engine it needs — `requires.iterion`
 
@@ -186,8 +191,7 @@ baked-catalog change), or push anyway with --force
 
 The floor is the **minimum** of this server's own build and every runner build
 observed on runs in the last 7 days (`Run.runner_version`, the build each
-runner stamps on what it executes — there is no other channel: the server
-follows `:edge`, the runners are pinned by digest). Both halves count: the
+runner stamps on what it executes). Both halves count: the
 server compiles the bot at launch, the runners evaluate it, and a queued run
 lands on whichever pod takes it.
 

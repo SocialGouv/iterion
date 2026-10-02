@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -119,6 +121,12 @@ func validateRoutingPolicyForLaunch(p *store.RoutingPolicy, wf *ir.Workflow) err
 	return nil
 }
 
+// ErrRunIDTaken reports a launch whose caller-supplied run id already
+// names a run, in any team — the same contract CreateRun's exclusive
+// create enforces as the race backstop, enforced earlier: before the
+// launch reaches anything that acts on the id.
+var ErrRunIDTaken = errors.New("runview: run id already exists")
+
 // Launch starts a workflow asynchronously and returns once the run
 // handle has been registered with the manager (i.e. Cancel will work
 // from the moment Launch returns nil error).
@@ -132,6 +140,22 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 	if spec.FilePath == "" && spec.Source == "" {
 		return nil, errors.New("runview: file_path or source is required")
+	}
+	if workflowfile.IsAuthorDocument(spec.FilePath) {
+		// A draft is refused before anything is reserved, admitted or
+		// queued: the pipeline queue persists a run before compiling it,
+		// so the compile floor alone would leave a queued run behind.
+		return nil, bundle.AuthorDocumentError(spec.FilePath)
+	}
+	// Only the cloud publisher persists Trust and RepoSHAExpected onto the run
+	// document. The in-process path builds its run from its own field list, so
+	// an untrusted launch would land as a run reading TRUSTED — and every
+	// enforcement site downstream (the publish grant, the credential resolve,
+	// a resume, a forked child) reads the marker off that document. Refuse
+	// rather than carry a fact this path cannot keep: silently downgrading an
+	// untrusted launch to a trusted run is worse than not launching it.
+	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "") && s.publisher == nil {
+		return nil, fmt.Errorf("runview: refusing a launch the in-process path cannot describe (trust=%q, pinned_commit=%v): it persists neither marker, so the run would read as trusted and unpinned", string(spec.Trust), spec.RepoSHAExpected != "")
 	}
 	if spec.BranchName != "" {
 		if err := gitlib.ValidateBranchName(spec.BranchName); err != nil {
@@ -152,6 +176,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
 	}
+	if err := ambient.Validate(spec.AmbientContext); err != nil {
+		return nil, fmt.Errorf("ambient_context: %w", err)
+	}
 	runID := spec.RunID
 	if runID == "" {
 		generated, err := store.GenerateRunID()
@@ -159,6 +186,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 			return nil, fmt.Errorf("mint run id: %w", err)
 		}
 		runID = generated
+	} else if _, err := s.store.LoadRun(store.TeamBlind(context.WithoutCancel(parent)), runID); err == nil || errors.Is(err, store.ErrRunDeleted) {
+		// The id names a run in ANY team: refuse it before the launch
+		// reaches anything that acts on the id — the credential pool
+		// supersedes a run id's leases, and its lease query knows no
+		// team. The lookup is team-blind on purpose: a plain detached
+		// context would keep the caller's tenant stamp, and the query
+		// would only see the caller's own team.
+		return nil, fmt.Errorf("%w: %q", ErrRunIDTaken, runID)
 	}
 
 	// Cloud-mode: hand off to the runner pool via the queue. The
@@ -207,9 +242,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// refusing it — here the operator is present, so an immediate refusal
 	// is the honest answer.
 	if blocked, reason := usagePreflightFrom(s.usageCapSource); blocked {
-		// …unless this workflow cannot call a model at all, in which case
-		// the cap guards nothing it could spend. The compile is paid ONLY
-		// on the blocked path, so the common case stays free.
+		// …unless this workflow has a model-free path (the collect half of
+		// a two-mode bot): refusing it loses what only it fetches. The
+		// mid-run guard stops its claude_code calls under a HARD cap; a soft
+		// cap, or a backend that reports no readings, lets it finish
+		// (docs/usage-caps.md). The compile is paid ONLY on
+		// the blocked path, so the common case stays free.
 		if wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); err != nil || wf.AlwaysReachesLLM() {
 			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
 		}
@@ -314,9 +352,13 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Inbox:          s.inboxBinder(),
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
-		SandboxDefault: s.sandboxDefault,
-		ModelOverrides: toModelOverrides(spec.ModelOverrides),
-		RunFallback:    toRunFallback(spec.Fallback),
+		// The engine of a LAUNCH receives this default and no
+		// CLI-strength override (ex.sandboxOverride is set on the resume
+		// path only), so these are its exact tiers.
+		SandboxDefault:    s.sandboxDefault,
+		SandboxTiersKnown: true,
+		ModelOverrides:    toModelOverrides(spec.ModelOverrides),
+		RunFallback:       toRunFallback(spec.Fallback),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
 		// launched by path (the studio's own file picker), and the executor
 		// would then fall back to the workflow name — while a RESUME of that
@@ -326,6 +368,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		BoardRegister:   s.boardRegister,
 		Compress:        spec.Compress,
 		AutoMemory:      spec.AutoMemory,
+		AmbientContext:  spec.AmbientContext,
 		Permission:      spec.Permission,
 		LocalSecrets:    s.localSecrets,
 		LocalSealer:     s.localSealer,
@@ -370,6 +413,27 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	}
 	for k, v := range spec.Vars {
 		inputs[k] = v
+	}
+
+	// An input that names no var of the workflow is refused, not dropped:
+	// the run would execute on defaults while the operator believes it was
+	// parameterised (#1757) — the verdict, the report and the journal would
+	// all be about a configuration that was never applied. Naming the key
+	// and the declared set. Spec.AllowUnknownInputs is the operator's
+	// explicit opt-out (CLI --allow-unknown-inputs, the dispatcher's
+	// warn-and-proceed contract): the keys ride, said at warn — forwarding
+	// an undeclared payload key to a subbot through {{input.*}} is their
+	// legitimate use (C149), a typo'd key is the default's refusal. The
+	// runner re-applies the same check on the queued path, so a cloud run
+	// cannot skip it by having been admitted here.
+	if unknown := ir.UnknownInputNames(wf, spec.Vars); len(unknown) > 0 {
+		if !spec.AllowUnknownInputs {
+			s.dropRunLog(runID)
+			return nil, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
+				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		}
+		runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
+			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 	}
 
 	// Resolve the credential-derived topology vars (review_mode +
@@ -483,6 +547,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
+	}
+	if err := ambient.Validate(spec.AmbientContext); err != nil {
+		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
 	// E3 (part of #652 review round 1): validate the resume budget
 	// ask synchronously — a malformed max_duration ("4 hours") would
@@ -685,6 +752,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 
 	executorSpec := s.resumeExecutorSpec(wf, r, runLogger, spec.AutoMemory)
+	executorSpec.AmbientContext = spec.AmbientContext
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
 	if err != nil {
@@ -772,6 +840,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 // It matters most where it is least visible. A conversational run pauses on
 // its chat node and every operator reply is a Resume, so the chosen model
 // applied to exactly the first turn and nothing after it.
+// runSandboxOverride reads the CLI-strength sandbox tier a run recorded
+// at launch, tolerating a nil run the way the rest of this file does.
+func runSandboxOverride(r *store.Run) string {
+	if r == nil {
+		return ""
+	}
+	return r.SandboxOverride
+}
+
 func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *iterlog.Logger, autoMemory string) ExecutorSpec {
 	runWorkDir := ""
 	if r != nil {
@@ -782,9 +859,16 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		Store:    s.store,
 		Logger:   runLogger,
 		StoreDir: s.storeDir,
-		WorkDir:  s.effectiveWorkDir(runWorkDir),
-		Inbox:    s.inboxBinder(),
-		AsyncAsk: s.asyncAskBinder(),
+		// The resumed engine re-resolves the sandbox from the override the
+		// run recorded and the service's default (see the engine options
+		// built for a resume). Predict from the same two, or the executor
+		// would answer for a run that is not the one about to execute.
+		SandboxOverride:   runSandboxOverride(r),
+		SandboxDefault:    s.sandboxDefault,
+		SandboxTiersKnown: true,
+		WorkDir:           s.effectiveWorkDir(runWorkDir),
+		Inbox:             s.inboxBinder(),
+		AsyncAsk:          s.asyncAskBinder(),
 		// Same hook-seam wiring as a launch: a resume-spawned supervisor
 		// (or any live subscriber) is otherwise blind to assistant_text /
 		// tool_* events, which never fire the engine's observer.
@@ -893,6 +977,11 @@ func (s *Service) spawnRun(
 		return nil, regErr
 	}
 
+	// startedRun records the one fact a caller cannot reconstruct: whether
+	// THIS call brought a run into being. Written from what each write
+	// returned, never re-read from the store — see RunPersistedError.
+	startedRun := false
+
 	// Launch path only (nil on resume, whose doc already exists): persist
 	// the run doc BEFORE returning, so a GET /api/runs/{id} issued right
 	// after the launch response never 404s on the engine goroutine still
@@ -910,22 +999,35 @@ func (s *Service) spawnRun(
 		if parentRunID != "" {
 			if pc := store.AsParentedRunCreator(s.store); pc != nil {
 				_, createErr = pc.CreateChildRun(context.Background(), runID, wf.Name, parentRunID, precreateInputs)
+				startedRun = createErr == nil
 			} else {
 				var created *store.Run
 				created, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
 				if createErr == nil {
+					// THIS call made the document. Recorded here, from what
+					// the call returned, and never re-read from the store: a
+					// launch whose client-supplied run_id already exists
+					// creates nothing (CreateRun is an exclusive create) and
+					// a store probe would find someone else's run and charge
+					// for it, once per attempt.
+					startedRun = true
 					created.ParentRunID = parentRunID
 					createErr = s.store.SaveRun(context.Background(), created)
 				}
 			}
 		} else {
 			_, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+			startedRun = createErr == nil
 		}
 		if createErr != nil {
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
-			return nil, fmt.Errorf("runview: create run: %w", createErr)
+			err := fmt.Errorf("runview: create run: %w", createErr)
+			if startedRun {
+				return nil, &RunPersistedError{RunID: runID, Err: err}
+			}
+			return nil, err
 		}
 	}
 
@@ -953,7 +1055,15 @@ func (s *Service) spawnRun(
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
-			return nil, fmt.Errorf("runview: persist budget override: %w", saveErr)
+			err := fmt.Errorf("runview: persist budget override: %w", saveErr)
+			// Only when THIS call made the run. On a resume the document
+			// existed all along and nothing has been published yet, so
+			// nothing started — and the question a meter asks is whether
+			// this call started work, never whether a document exists.
+			if startedRun {
+				return nil, &RunPersistedError{RunID: runID, Err: err}
+			}
+			return nil, err
 		}
 	}
 
@@ -1407,7 +1517,7 @@ func consumeArtifactResumePreflight(opts []runtime.EngineOption, ex *launchExtra
 // future board transitions back to this run. The convention lives here,
 // not in the generic engine, so the runtime stays decoupled from a
 // bot-specific schema field.
-func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]any) {
+func (s *Service) stampWatchedFromOutput(ctx context.Context, runID, _ string, output map[string]any) {
 	if output == nil {
 		return
 	}
@@ -1415,7 +1525,14 @@ func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]any)
 	if len(ids) == 0 {
 		return
 	}
-	if _, err := s.store.AddWatchedIssues(context.Background(), runID, ids); err != nil {
+	if ctx == nil {
+		// A nil ctx here would be a wiring bug, and Background is the
+		// valueless call a tenant-filtered store panics on (#1805): drop
+		// the stamp loudly instead of smuggling a bypass through.
+		s.logger.Warn("runview: stamp watched issues on run %s: no context — not stamped", runID)
+		return
+	}
+	if _, err := s.store.AddWatchedIssues(ctx, runID, ids); err != nil {
 		s.logger.Warn("runview: stamp watched issues on run %s: %v", runID, err)
 	}
 }

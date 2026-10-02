@@ -3,6 +3,9 @@ package bots
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func TestCopilotReviewerUsesExternalFallbackOrder(t *testing.T) {
@@ -11,32 +14,49 @@ func TestCopilotReviewerUsesExternalFallbackOrder(t *testing.T) {
 		t.Fatalf("read copilot: %v", err)
 	}
 	src := string(raw)
-	start := strings.Index(src, "judge judge:")
-	if start < 0 {
+	pr := parser.Parse("copilot/main.bot", src)
+	if pr.File == nil {
+		t.Fatal("copilot/main.bot does not parse")
+	}
+	var judge *ast.JudgeDecl
+	for _, j := range pr.File.Judges {
+		if j.Name == "judge" {
+			judge = j
+		}
+	}
+	if judge == nil {
 		t.Fatal("could not find Copi judge node")
 	}
-	end := strings.Index(src[start:], "\ncompute judge_route:")
-	if end < 0 {
-		t.Fatal("could not isolate Copi judge node")
-	}
-	review := src[start : start+end]
-	if !strings.Contains(review, "model: \"${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5}\"") {
+	if judge.Model != "${ITERION_COPILOT_REVIEWER_MODEL:-claude-opus-5-5}" {
 		t.Fatal("Copi reviewer must default to Claude Opus")
 	}
 
-	const kimi = "    kimi:\n      backend: \"kimi\"\n      model: \"kimi-code/k3\"\n      on: [usage_window, unavailable]"
-	// Grok is the final external reviewer rescue: it must take a Kimi route that
-	// exhausted its own transient retry budget, but no unrelated category.
-	const grok = "    grok:\n      backend: \"grok\"\n      model: \"grok-4.6\"\n      on: [usage_window, unavailable, transient_exhausted]"
-	const unavailable = "    reviewer_unavailable:\n      action: skip\n      on: [usage_window, unavailable, transient_exhausted]"
-	first := strings.Index(review, kimi)
-	second := strings.Index(review, grok)
-	third := strings.Index(review, unavailable)
-	if first < 0 || second < 0 || third < 0 || first >= second || second >= third {
-		t.Fatalf("Copi reviewer fallbacks must be Kimi, Grok, then terminal skip, got:\n%s", review)
+	// Kimi first; Grok is the final external reviewer rescue: it must take a
+	// Kimi route that exhausted its own transient retry budget, but no
+	// unrelated category; then the terminal skip.
+	want := []struct {
+		name                   string
+		backend, model, action string
+		on                     string
+	}{
+		{name: "kimi", backend: "kimi", model: "kimi-code/k3", on: "usage_window, unavailable"},
+		{name: "grok", backend: "grok", model: "grok-4.6", on: "usage_window, unavailable, transient_exhausted"},
+		{name: "reviewer_unavailable", action: "skip", on: "usage_window, unavailable, transient_exhausted"},
 	}
-	if strings.Contains(review, "backend: \"claw\"") || strings.Contains(review, "openai/gpt-") {
-		t.Fatal("Copi reviewer must not fall back to Copi's OpenAI family")
+	if len(judge.Fallbacks) != len(want) {
+		t.Fatalf("Copi reviewer must fall back Kimi, Grok, then terminal skip, has %d routes", len(judge.Fallbacks))
+	}
+	for i, w := range want {
+		fb := judge.Fallbacks[i]
+		if fb.Name != w.name || fb.Backend != w.backend || fb.Model != w.model || fb.Action != w.action ||
+			strings.Join(fb.On, ", ") != w.on {
+			t.Errorf("Copi reviewer fallback %d must be %s, got %+v", i+1, w.name, fb)
+		}
+	}
+	for _, fb := range judge.Fallbacks {
+		if fb.Backend == "claw" || strings.HasPrefix(fb.Model, "openai/gpt-") {
+			t.Fatal("Copi reviewer must not fall back to Copi's OpenAI family")
+		}
 	}
 }
 

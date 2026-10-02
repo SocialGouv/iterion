@@ -111,7 +111,12 @@ workflow w:
 ```
 
 - The child's **terminal-node output** is mapped to `outputs.<subbot>.<field>`,
-  so downstream `when`/`with` reference it normally.
+  so downstream `when`/`with` reference it normally. A child that keeps a
+  [contract](dsl.md#the-public-contract--contract) instead hands its parent
+  the contract's output ports, projected from the child's per-node outputs —
+  a `from: <node>.<field>` port carries that field, a whole-schema or file
+  port carries the node's whole output, and a port the child did not produce
+  is an absent key.
 - `needs:` leases a resource for the duration of the child run; the leased
   instance id (from a named pool) is passed to the child as `_lease_<resource>`
   so it can pick e.g. a worktree index.

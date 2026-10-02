@@ -29,7 +29,7 @@ func TestSyntaxRequirementsRecordImportsAndAskForTheirRelease(t *testing.T) {
 	if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + parser.ImportSince}}, one); !pf.OK {
 		t.Fatalf("the import release declared: %+v", pf)
 	}
-	if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= 3.141.0"}}, one); pf.OK {
+	if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + parser.ProfileSince[2]}}, one); pf.OK {
 		t.Fatalf("the profile release alone passed for import: %+v", pf)
 	}
 	// Profile 2 and import: the higher of the two releases.

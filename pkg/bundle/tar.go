@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/safepath"
 )
 
 // defaultMaxBundleBytes is the upper bound on the total uncompressed
@@ -83,10 +85,13 @@ func extractTarGz(r io.Reader, dest string) (int, error) {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := lim.makeDir(hdr.Name); err != nil {
-				return lim.written, err
-			}
+			// A directory entry creates nothing (see extractZip): the
+			// extracted tree is its files' alone.
+			continue
 		case tar.TypeReg, tar.TypeRegA: //nolint:staticcheck // TypeRegA marks regular files in legacy tar archives we must still read
+			if IsDraftEntry(hdr.Name, false) {
+				continue // an author document never leaves an archive (see extractZip)
+			}
 			if err := lim.writeFile(hdr.Name, fileMode(hdr.Mode), hdr.Size, tr); err != nil {
 				return lim.written, err
 			}
@@ -115,11 +120,15 @@ func extractZip(zr *zip.Reader, dest string) (int, error) {
 			return lim.written, err
 		}
 		mode := zf.Mode()
-		// Directory entries carry a trailing slash by ZIP convention.
+		// Directory entries carry a trailing slash by ZIP convention. They
+		// create nothing: the directories of the extracted tree are the
+		// parents of its files (writeFile), so the tree is a function of the
+		// files alone — the content the hash sees — and two archives that
+		// hash alike land the same tree in the shared cache slot whichever
+		// is opened first. A directory whose only member was left out (a
+		// draft) does not survive as an empty directory the bundle then
+		// reads as a resource (prompts/, skills/).
 		if strings.HasSuffix(name, "/") || mode.IsDir() {
-			if err := lim.makeDir(name); err != nil {
-				return lim.written, err
-			}
 			continue
 		}
 		if mode&os.ModeSymlink != 0 {
@@ -127,6 +136,14 @@ func extractZip(zr *zip.Reader, dest string) (int, error) {
 		}
 		if !mode.IsRegular() {
 			return lim.written, fmt.Errorf("bundle: unsupported entry type for %s (only regular files and directories allowed)", name)
+		}
+		if IsDraftEntry(name, false) {
+			// An author document never leaves an archive: one packed before
+			// the rule, or by hand, may carry a draft, and the extracted tree
+			// has to be a function of the content hash — which does not see
+			// drafts — because Open shares one cache slot between every
+			// archive that hashes alike. Not written, not counted as written.
+			continue
 		}
 		rc, err := zf.Open()
 		if err != nil {
@@ -148,17 +165,6 @@ func (lim *extractLimits) countEntry() error {
 	lim.entries++
 	if lim.entries > lim.maxEntries {
 		return fmt.Errorf("bundle: too many entries (>%d)", lim.maxEntries)
-	}
-	return nil
-}
-
-func (lim *extractLimits) makeDir(name string) error {
-	target, err := safeJoin(lim.absDest, name)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		return fmt.Errorf("bundle: mkdir %s: %w", target, err)
 	}
 	return nil
 }
@@ -211,17 +217,8 @@ func (lim *extractLimits) writeFile(name string, mode os.FileMode, declaredSize 
 // guardName checks an archive entry name for the simple bans (absolute
 // paths, "..", non-portable separators) before any filesystem operation.
 func guardName(name string) error {
-	clean := filepath.ToSlash(filepath.Clean(name))
-	if clean == "" || clean == "." {
-		return nil
-	}
-	if strings.HasPrefix(clean, "/") {
-		return fmt.Errorf("bundle: absolute path not allowed: %s", name)
-	}
-	for _, part := range strings.Split(clean, "/") {
-		if part == ".." {
-			return fmt.Errorf("bundle: path traversal not allowed: %s", name)
-		}
+	if err := safepath.GuardName(name); err != nil {
+		return fmt.Errorf("bundle: %w", err)
 	}
 	return nil
 }
@@ -244,6 +241,13 @@ func collectContentHash(dir string) (string, error) {
 		rel, relErr := filepath.Rel(dir, path)
 		if relErr != nil {
 			return relErr
+		}
+		// The extraction-side walker applies the packer's draft rule too,
+		// so the two hash walkers agree on any tree: an extracted tree —
+		// where no draft was written — hashes as the packer hashed its
+		// source, and a tree with a draft on disk hashes as one without.
+		if IsDraftEntry(rel, false) {
+			return nil
 		}
 		files = append(files, filepath.ToSlash(rel))
 		return nil
@@ -269,69 +273,16 @@ func collectContentHash(dir string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// safeJoin joins root and rel, then verifies the result stays under
-// root. Defends against symlink-free traversal: an entry named
-// `./foo/../../etc/passwd` would clean to `../etc/passwd` and escape
-// even without symlinks.
-//
-// Also walks every existing component of the resolved path and
-// rejects the entry if any intermediate component is a symlink that
-// resolves outside root. Without that check a pre-existing
-// `dest/foo → /etc` lets an entry `foo/bar.txt` land outside root
-// even though the lexical join stays inside (the OS follows the
-// symlink at open time).
+// safeJoin joins root and rel and verifies the result stays under root —
+// lexically, and through every existing component of the path. The shared
+// rules live in internal/safepath: a bundle and a sandbox export read names
+// chosen by someone else, and one copy of that reasoning is enough.
 func safeJoin(root, rel string) (string, error) {
-	joined := filepath.Join(root, filepath.FromSlash(rel))
-	abs, err := filepath.Abs(joined)
+	abs, err := safepath.Join(root, rel)
 	if err != nil {
-		return "", fmt.Errorf("bundle: resolve %s: %w", rel, err)
-	}
-	if abs != root && !strings.HasPrefix(abs, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("bundle: entry escapes bundle root: %s", rel)
-	}
-	if err := assertNoEscapingSymlink(root, abs); err != nil {
-		return "", err
+		return "", fmt.Errorf("bundle: %w", err)
 	}
 	return abs, nil
-}
-
-// assertNoEscapingSymlink walks every existing prefix of abs (root..abs)
-// and refuses the path if a component is a symlink whose resolved
-// target escapes root. New (not-yet-created) suffix components are
-// ignored — they cannot be symlinks since they don't exist.
-func assertNoEscapingSymlink(root, abs string) error {
-	if !strings.HasPrefix(abs, root) {
-		return fmt.Errorf("bundle: internal: abs %s outside root %s", abs, root)
-	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil {
-		return fmt.Errorf("bundle: rel %s: %w", abs, err)
-	}
-	cur := root
-	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-		if part == "" || part == "." {
-			continue
-		}
-		cur = filepath.Join(cur, part)
-		info, err := os.Lstat(cur)
-		if os.IsNotExist(err) {
-			return nil // remaining suffix doesn't exist yet
-		}
-		if err != nil {
-			return fmt.Errorf("bundle: stat %s: %w", cur, err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		resolved, err := filepath.EvalSymlinks(cur)
-		if err != nil {
-			return fmt.Errorf("bundle: eval symlink %s: %w", cur, err)
-		}
-		if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
-			return fmt.Errorf("bundle: refusing entry: component %s is a symlink escaping bundle root", cur)
-		}
-	}
-	return nil
 }
 
 // fileMode masks the supplied mode to the subset we permit on disk.

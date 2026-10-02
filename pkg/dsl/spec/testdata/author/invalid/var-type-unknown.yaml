@@ -1,0 +1,11 @@
+# refused: a var's type is one of string, bool, int, float, json, string[]
+dsl: 2
+vars:
+  x: text
+nodes:
+  - agent: a
+    model: m
+workflow:
+  name: w
+  entry: a
+  edges: [a -> done]

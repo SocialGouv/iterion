@@ -1,6 +1,9 @@
 package ir
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const reviewGateSrc = `
 schema review_verdict:
@@ -172,4 +175,65 @@ workflow wf:
 `
 	r := compileFile(t, src)
 	expectDiag(t, r, DiagMissingModelOrBackend)
+}
+
+// C156: a review gate's posture / merge_strategy outside the enumerated
+// values is refused at compile — an unknown word used to read as the
+// DEFAULT (human_required / squash), fail-safe for the tree but a silent
+// replacement of the author's explicit choice, the shape C142 refuses for
+// worktree:. The IR keeps the fail-safe default so a launch surface that
+// ignores compile errors still gates on a human and still squashes.
+func TestReviewGateRejectsAnUnknownPostureOrStrategy(t *testing.T) {
+	const head = `
+schema v:
+  decision: string
+
+human gate:
+  interaction: review
+  model: "test-model"
+  output: v
+`
+	const tail = `
+workflow wf:
+  entry: gate
+  worktree: auto
+  gate -> done when "decision == 'approved'"
+`
+	// The IR check reads the prop's leading word ("posture" / "merge_strategy").
+	irValue := func(n *HumanNode, prop string) string {
+		if strings.HasPrefix(prop, "  posture") {
+			return n.Posture
+		}
+		return n.MergeStrategy
+	}
+	for name, tc := range map[string]struct {
+		prop     string
+		wantIR   string // the fail-safe value the IR must keep
+		wantText string
+	}{
+		"a posture typo":          {"  posture: agent_said_ok\n", PostureHumanRequired, `invalid posture "agent_said_ok"`},
+		"a strategy typo":         {"  merge_strategy: rebase\n", "squash", `invalid merge_strategy "rebase"`},
+		"the other posture":       {"  posture: human_required\n", "", ""},
+		"the other strategy":      {"  merge_strategy: merge\n", "", ""},
+		"both omitted":            {"", "", ""},
+		"the listed non-defaults": {"  posture: agent_verdict_ok\n  merge_strategy: merge\n", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileFile(t, head+tc.prop+tail)
+			if tc.wantText == "" {
+				expectNoDiag(t, r, DiagInvalidReviewGateValue)
+				return
+			}
+			expectDiagMessage(t, r, DiagInvalidReviewGateValue, tc.wantText)
+			for _, d := range r.Diagnostics {
+				if d.Code == DiagInvalidReviewGateValue && d.Severity != SeverityError {
+					t.Errorf("C156 must be an error, got %v", d.Severity)
+				}
+			}
+			n := r.Workflow.Nodes["gate"].(*HumanNode)
+			if got := irValue(n, tc.prop); got != tc.wantIR {
+				t.Errorf("IR value = %q, want the fail-safe %q", got, tc.wantIR)
+			}
+		})
+	}
 }

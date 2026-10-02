@@ -10,14 +10,44 @@ published default image). Opting out is explicit and discouraged —
 `sandbox: none` in the workflow (flagged by the C128 warning
 diagnostic), `--sandbox none`, or `ITERION_SANDBOX_DEFAULT=none` —
 because an unsandboxed run executes with the host's credentials and
-filesystem. The ambient default degrades gracefully instead of
-failing: outside a git repository it is silently not applicable, and
-on a host with no container runtime the run proceeds unsandboxed with
-a visible `sandbox_skipped` event. An EXPLICIT sandbox request (CLI
-flag or workflow block) never degrades — it errors. (The cloud runner
-currently pins `ITERION_SANDBOX_OVERRIDE=none` — the runner pod is the
-isolation boundary there until the k8s sandbox path carries worktree
-git access and interactive channels end-to-end.)
+filesystem. Two branches, two guarantees when the host cannot sandbox
+(#1425 — 107 scheduled ticks used to die here on the operator's own
+host):
+
+- **`sandbox: auto`** (the default reading of "isolate if you can") —
+  on a host with **no container runtime** the run proceeds
+  **unsandboxed** with a visible `sandbox_skipped` event on its own
+  stream. Whether the mode came from the workflow's own block,
+  `--sandbox=auto` or the built-in default, the answer is the same —
+  the MODE decides, not the tier that named it. One cost the event
+  states explicitly (`file_secrets_dropped: true`): an unsandboxed run
+  has nowhere to mount `as: file` secrets, so a workflow that declares
+  them will not find them. (The resolver degrades the same way when it
+  can resolve no repository root, or no image at all for a
+  `devcontainer.json` it cannot read — both need a library caller that
+  supplies neither, since `iterion run`, studio and the runner always
+  resolve a repo root and a default image.)
+- **`sandbox: { mode: inline, image/build: … }`** — an EXPLICIT
+  container the author wired. The refusal is a guarantee: the run
+  parks with `FailureCode = SANDBOX_DRIVER_UNAVAILABLE` (the typed
+  code persisted on the run as `failure_code`, repeated in its error
+  text, and copied onto the schedule record's `last_run_error_code`,
+  #1426), and `pkg/retrypolicy` classes it
+  Deterministic so a redelivery is acked rather than spun against the
+  same absent runtime. To run it anyway, ask for it: `--sandbox none`
+  (or `sandbox: none`) executes on the host, deliberately.
+
+Either verdict is readable where an operator looks: the event in
+`events.jsonl` and `iterion inspect --events`, and a line of its own in
+`iterion report` — "Sandbox skipped — the run is NOT isolated: …", or
+"Sandbox refused [SANDBOX_DRIVER_UNAVAILABLE]: …".
+
+(The cloud runner was long assumed to pin `ITERION_SANDBOX_OVERRIDE=none`
+— the runner pod as the isolation boundary — but the production
+deployment measured on 2026-08-05 does NOT: it carries
+`ITERION_SANDBOX_DEFAULT=auto` with an EMPTY override, so cloud runs do
+get the k8s sandbox. Anything needing a bind-mounted workspace there
+must declare `sandbox: none`.)
 
 ## Quick start
 
@@ -280,9 +310,23 @@ on shared infrastructure. The `kubernetes` driver hard-errors on
 `host_state: auto` for the same reason: cloud pods have no host
 filesystem to bind and the design refuses to fake it.
 
+**host_state mounts only the state the operator chose.** The iterion home
+(`$ITERION_HOME`, else `~/.iterion`) and the scratch dir under it are
+bind-mounted read-write only when that home is the one the operator chose —
+the value they exported, not one a project `.env` filled in
+(`store.InheritedIterionDataDir`); the shared `<tmp>/iterion-data` fallback a
+process without a home dir writes to is never mounted. Likewise host_state
+binds nothing under a home dir a `.env` set (`~/.claude`, `~/.codex`,
+`~/.gitconfig`, the caches). Mounting any of them would let a repository pick a host directory
+the sandboxed agent can write. The run still starts: the backend keeps its
+per-run state in the checkout's `.iterion/`, as with `host_state: none`, and
+`${PROJECT_SCRATCH_DIR}` stays container-local.
+
 Audit trail: the `sandbox_host_state_mounted` event in `events.jsonl`
 lists the resolved source (CLI / workflow / env / default), the
-container workspace path, and every mount that landed.
+container workspace path, every mount that landed,
+`iterion_home_not_mounted` when the iterion home was left out, and
+`home_not_mounted` when a `.env` set the home dir.
 
 ### Network policy
 
@@ -411,12 +455,16 @@ against the workflow workspace before starting the container. `env:`,
 and auto-mode fallback cases.
 
 Per-node overrides accept the same short or block form on `agent`,
-`judge`, and `tool`:
+`judge`, and `tool`. They are parsed, but **not honoured at dispatch
+today**: every node of a run shares the run's sandbox, so the example
+below still runs `shell_helper` in it (a node-level `sandbox: none` draws
+the C128 warning saying so; a node-level block draws none yet). To run on
+the host, opt the workflow out (`sandbox: none` / `--sandbox none`).
 
 ```iter fragment
 agent shell_helper:
-  sandbox: none      # this node runs on the host even though the
-                     # workflow has sandbox: auto
+  sandbox: none      # parsed (C128 warns); not yet honoured:
+                     # the node shares the workflow's sandbox
 
 agent custom_env:
   sandbox:
@@ -477,14 +525,24 @@ iterion sandbox doctor                 # report driver + capabilities
 
 ### Precedence (highest → lowest)
 
-1. Per-node `sandbox:` declaration (DSL)
-2. CLI `--sandbox` flag
-3. Workflow-level `sandbox:` declaration (DSL)
-4. `ITERION_SANDBOX_DEFAULT` env var
-5. Built-in `auto` at product entry points (sandbox-by-default;
-   degrades gracefully outside a git repo or without a container
-   runtime). Engines embedded without an explicit default (tests,
-   library use) stay neutral: no sandbox.
+1. CLI `--sandbox` flag — except that `--sandbox=auto` yields to a
+   workflow block naming its own container (`image:` or `build:`);
+   `--sandbox none` wins everywhere
+2. Workflow-level `sandbox:` declaration (DSL)
+3. `ITERION_SANDBOX_DEFAULT` env var
+4. Built-in `auto` at product entry points (sandbox-by-default).
+   Engines embedded without an explicit default (tests, library use)
+   stay neutral: no sandbox.
+
+There is no per-node tier: a node-level `sandbox:` is parsed but not
+honoured at run time, so every node runs where the run does. Under a
+workflow `sandbox: none`, a node declaring `sandbox: auto` or its own
+block still runs on the host — isolate a risky step by sandboxing the
+whole workflow, not the node.
+
+The tier decides only WHO asked, never what happens when the host
+cannot comply: any `auto` degrades gracefully, any explicit `inline`
+is refused (see the two branches at the top of this page).
 
 The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and
@@ -502,7 +560,10 @@ pinned to the running iterion version:
 | **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go (+ `g`), Python 3, pnpm, fnm, direnv, gh, yq (mikefarah), kubectl, helm, k9s              |
 
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
-Snapshot/dev binaries pull the `:edge` tag.
+Snapshot/dev binaries pull the `:edge` tag. The published images can also
+ship a **static** `iterion` on their own PATH, which sidesteps the
+host-binary bind-mount entirely (`CGO_ENABLED=0`; a nix-dynamic build dies
+in-container — see [the dogfood note](agents/workflow/dogfood.md)).
 
 **Why two variants?** The slim image is small enough to pull on
 demand and supports the common workflow (the agent calls `devbox install`
@@ -600,6 +661,19 @@ lets the run proceed. The same happens when the image has no `devbox` on
 `PATH`. Nothing is dressed up as success — a missing binary would
 otherwise read as an agent bug.
 
+Every in-sandbox tool script — and every host tool command, and an agent
+node's own environment — also receives `ITERION_TREE_NOISE`: the canonical
+tree-noise pathspecs (pkg/treenoise) a scope gate or a whole-tree staging
+pastes into its git command, so the gates filter the tree with the engine's
+list and not with a literal of their own (#1464). The variable is set when
+the spec is built, before the container starts, and the engine's entry is
+appended only where nothing set the variable before it — the operator's
+own environment, the run's env and the node's env map each win. An
+explicitly EMPTY value is not a claim: an empty exclusion list is the
+silent-gate failure this list exists to prevent, so the canonical entry
+applies. Tool scripts read it UNQUOTED: the value is space-separated and
+must word-split into one pathspec per entry.
+
 Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
 `errors` on the host target when something failed, and `lock_kept` on the
@@ -696,11 +770,12 @@ your repo root and `sandbox: auto` will pick them up.
 | ------------- | ----------------------------------------------------- |
 | `claude_code` | **fully sandboxed** (CLI runs inside the container)   |
 | `pi`          | **fully sandboxed** in both RPC and print transports |
-| `kimi` / `grok` | **fully sandboxed** (CLI runs inside the container) |
+| `kimi` / `grok` | architecturally sandboxable, but **not in the stock image** — same as `opencode` below |
+| `opencode`    | **not shipped in the stock image** (the cloud runner image has the same gap) — the published sandbox image bakes claude-code and pi (and carries codex in node_modules), so a sandboxed `opencode`, `kimi` or `grok` node dies at `exec: not found` unless a custom image or a PATH inside the container supplies the binary. Nothing refuses it earlier: the limit is the image's contents, not the backend. |
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
-| Tool nodes    | **fully sandboxed** (`bash -c` runs inside the container) |
-| MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers remain host-side for Claude Code, but pi RPC starts them beside pi (inside the sandbox). See [MCP tools in a sandbox](#mcp-tools-in-a-sandbox). |
+| Tool nodes    | **sandboxed**: shell and script recipes run inside the container (`bash -c`); a registry-tool recipe (`command: <tool>`) is a launcher closure, so it runs only for a launcher-placed tool and is refused otherwise — under a Verified Action (`postcondition:`) that refusal fails the node whatever its `policy:`, since no rung can make the recipe runnable |
+| MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers are started by the `claude_code` CLI itself (in the container when the node is sandboxed) and beside pi for pi RPC. claw connects them in the LAUNCHER, so under an active sandbox it starts only the operator's — a builtin, or a plugin installed under the iterion home the operator's own environment names, enabled and configured by the operator in both cases — see [MCP servers under a sandbox](#mcp-servers-under-a-sandbox). |
 
 ### Claw backend in sandbox
 
@@ -744,8 +819,84 @@ line is one envelope of typed payload (`task`, `tool_call`,
 [delegate.Multiplexer] dispatches runner-initiated envelopes
 (tool_call, ask_user, …) to handlers wired against the engine's
 existing tool registry / MCP manager / ask_user channel; the runner
-builds proxy ToolDef closures that round-trip each invocation back
+executes the in-container tools itself and builds, for each
+launcher-placed one, a proxy ToolDef closure that round-trips the call
 across the channel.
+
+> **Where an advertised tool executes is a boundary, not a fallback.**
+> A tool the runner proxies runs on the HOST, with the launcher's
+> process, cwd, filesystem and network position — so the routing cannot
+> be "local when we happen to know the name". Every tool iterion
+> registers for claw carries an explicit placement
+> (`tool.SandboxPlacementOf`, `pkg/backend/tool/sandbox_placement.go`);
+> a claw tool iterion does not register (`image_gen`, …) has none and
+> is refused:
+>
+> - **sandbox** — it starts a process, reaches a filesystem or opens a
+>   model-supplied URL, so the runner executes it in-container:
+>   `bash`, `diagnostic_shell`, `repl`, `read_file`, `write_file`,
+>   `file_edit`, `notebook_edit`, `glob`, `grep`, `workspace_grep`,
+>   `skill`, `read_image`, `web_fetch`, `remote_trigger`,
+>   `send_user_message`, `sleep`, `structured_output`, and `agent` (the
+>   runner registers claw's agent tool in the container — the same
+>   metadata-only form as an unsandboxed node gets, which starts no child
+>   conversation). A missing local registration is a fatal runner error,
+>   never a proxy.
+> - **launcher** — launcher-owned state, run with the launcher's process:
+>   `ask_user` and the async pair, every `mcp.*` / `mcp_*` / `mcp__*`
+>   tool, `list_mcp_resources`, `read_mcp_resource`, `mcp_auth`, the
+>   `task_*` / `team_*` / `cron_*` registries and `run_task_packet`
+>   (which is one of them despite the name), `todo_write`, `config`,
+>   `tool_search`, the plan-mode pair, the privacy pair, `web_search`.
+>   Three caveats: the MCP tools and the resource pair reach servers
+>   through the launcher's MCP manager, which connects a server where it
+>   runs — for a stdio server, it starts the process on the launcher; the
+>   plan-mode and privacy state live under the run's store directory,
+>   which a container can write when that directory is mounted into it
+>   (`host_state: auto`, or a project-local `<repo>/.iterion` store with
+>   `worktree: none`); and the async question pair (`ask_user_async`,
+>   `await_answers`) is not bound to the run's question channel on this
+>   path yet, so `interaction: async` on a sandboxed claw node is refused
+>   by type when the node executes (`CAPABILITY_UNSUPPORTED`) — a fallback
+>   route on another backend can serve it.
+> - **refused** — no in-container form at all, so a sandboxed node that
+>   declares one is refused when it executes, with the remedy in the
+>   message (its `fallbacks:` still get their turn — like the Ask refusal
+>   it is an unclassified failure, which every non-`skip` route accepts
+>   whatever its `on:` filter): `lsp` (the language
+>   servers are the launcher's children), `screenshot` / `computer_use`
+>   (the launcher host's display), and the nine `worker_*` tools (a worker
+>   is keyed on a model-supplied working directory the launcher reads and
+>   writes). Drop the tool, or run the workflow unsandboxed
+>   (`sandbox: none` / `--sandbox none`) — a node-level `sandbox:` is not
+>   honoured at run time.
+>
+> A name nothing classifies — a claw bump's new tool — is refused, not
+> proxied: the default direction is the safe one. A name that merely
+> starts like an MCP tool (`mcp_bash`) is not one: the MCP rule needs a
+> server and a tool segment.
+>
+> **The launcher holds the boundary, not the runner.** The runner is the
+> contained side — on Kubernetes an older binary baked into the sandbox
+> image, and its IPC stdout is writable by anything in the container
+> running as its uid — so its routing is a request: the launcher executes
+> a forwarded call only for a tool advertised to the node under that exact
+> name, only if it is launcher-placed, and only if the run's `permission:`
+> policy allows it. That gate is evaluated again on the launcher, on the
+> tool's identity rather than one spelling: a rule written for the
+> advertised name (`mcp_<server>_<tool>`) or for the claude_code FQN
+> (`mcp__<server>__<tool>`) applies either way, an explicit deny winning.
+> Every refusal is logged and emitted as a failed tool call by the
+> launcher itself.
+>
+> **`tool_policy` and the tool classifier.** The launcher's call-time
+> guard never sees a call the runner executes in-container, so for a
+> sandboxed node the `tool_policy` allowlist is applied when the node is
+> built: an in-container tool it denies is not advertised at all.
+> Launcher-placed tools keep the call-time guard. The LLM tool classifier
+> (`ITERION_LLM_CLASSIFIER_MODEL`) reads each call's input and cannot be
+> consulted ahead of time; a sandboxed node whose in-container calls it
+> therefore does not see logs a warning naming them.
 
 **Status of V1 limitations**:
 
@@ -874,9 +1025,12 @@ Each request is authenticated by an ephemeral `X-Iterion-Run` token the
 runtime mints and registers for the run, so a sandboxed agent can call
 these tools but nothing else can. Outside a sandbox the same capabilities
 are wired as host-side stdio MCP servers (`iterion __mcp-board` /
-`iterion __mcp-ask-user`). Arbitrary user-declared stdio MCP servers on
-`claude_code` still run host-side; running them container-side is a future
-item.
+`iterion __mcp-ask-user`). A user-declared stdio MCP server on `claude_code`
+is started by the CLI itself, from the config iterion hands it on
+`--mcp-config` — so it runs wherever the CLI runs, in the container for a
+sandboxed node. That config is logged redacted: it carries each server's
+`env` and `headers` inline, and on a cloud run the backend's log is persisted
+with the run.
 
 Pi's RPC extension owns a separate MCP client. In a sandbox it uses the same
 per-run HTTP board endpoint, while `ask_user` and async questions ride its
@@ -885,6 +1039,112 @@ are contacted from the pi process, and declared stdio servers are spawned next
 to that process — therefore container-side when pi itself is sandboxed. Pi
 print mode loads no extension and gets none of these bridges.
 
+### MCP servers under a sandbox
+
+An external MCP server is a PROCESS, and where it runs is not where its tools
+appear. `claude_code` and pi start their own servers, so a sandboxed node's
+servers run in the container with it. claw connects them in the launcher
+process — the operator's machine, or the cloud runner pod — so for claw, and
+only for claw, a declared server would run OUTSIDE the isolation the run
+asked for, with the launcher's environment.
+
+The launcher therefore starts a server only when the OPERATOR is the one who
+put it there. What decides is the server's origin — who controls its
+definition, not who benefits from it:
+
+| Origin | Where the definition comes from | Started by the launcher of a SANDBOXED run |
+|---|---|---|
+| `plugin` | an enabled plugin that is the operator's in three respects: its CODE (a builtin, or a manifest under the iterion home the *inherited* environment names), the decision that ENABLED it, and the CONFIGURATION it runs with | yes, as before |
+| `project` | `.mcp.json` next to the `.bot`, or at the root of the repository the cloud runner cloned | no |
+| `workflow` | the DSL `mcp_server:` block | no |
+| unknown (the zero value) | — | no |
+
+Consequences for a claw node under an active sandbox:
+
+- a server whose tools it does not name is dropped with an
+  `mcp_server_degraded` event naming the origin and whether the node had
+  declared the server (`source: declared`) or inherited it (`source:
+  ambient`) — the task is built without those tools, loudly;
+- a server whose TOOLS it names (`tools: [mcp.srv.*]`, or an exact
+  `mcp.srv.tool`) refuses the node at execution time, as a typed capability
+  refusal — so the node's `fallbacks:` are walked and a `claude_code` or pi
+  route, which starts the server in the container, can serve it. No degrade
+  event is emitted there: the node is not running without those tools, it is
+  taking another route;
+- the pre-run health check skips those servers rather than probing them: the
+  probe IS a connection, and for a stdio server a spawn.
+
+**Name the server when you name a refused server's tool.** The registry also
+resolves a BARE tool name (`search` → `mcp.repo.search`) once that server is
+connected, but a refused server never connects, so nothing links the bare name
+to it — and a refusal that cannot name its server cannot be carried to
+execution. Such a node fails at build instead of falling back; the error names
+the servers this launcher did not start and the spelling that restores the
+fallback. Write `mcp.<server>.<tool>` (or `mcp__<server>__<tool>`) on any
+server that may be refused.
+
+Unsandboxed runs keep every server: the run already executes beside the
+launcher, so a workflow-controlled server there adds no exposure the run does
+not have. The `${VAR}` expansion below follows the same rule and is unchanged
+unsandboxed. The per-node scope, however, is not a sandbox rule at all and
+applies to every run — see the three facts under it.
+
+Two related rules travel with this one. A workflow-controlled server's
+`command`/`args`/`url` no longer expand `${VAR}` against the launcher's
+environment (`ITERION_MCP_EXPAND_UNTRUSTED_ENV=true` restores it, and only
+when the operator's own environment carries it — a value a project `.env`
+planted does not enable the hatch *through that variable*; the expansion also
+follows the sandbox, and the two sandbox tiers ARE read live, so a `.env`
+setting `ITERION_SANDBOX_DEFAULT=none` reaches the same place — tracked
+separately); and `list_mcp_resources`,
+`read_mcp_resource` and `mcp_auth`, which take a server NAME the model writes,
+are restricted to the node's own active MCP servers — and withheld outright
+from an LLM node whose active set is empty, where every call they could make
+would be refused. A `tool:` node keeps them: it has no `mcp:` block, so an
+empty set means "unrestricted" there, not "nothing".
+
+Three facts about that per-node scope, none of them sandbox-conditional:
+
+- it holds **whether or not a `tool_policy` is configured** — the node's
+  `mcp:` block is the author's declaration, not a permission rule, so it is
+  applied outside the policy branch and on unsandboxed runs too;
+- the check travels **on the tool definition**, so it applies in-process and
+  on the launcher's side of a sandboxed run, which executes those same
+  definitions;
+- it reads the `server` argument **exactly as the tool underneath reads it** —
+  out of a `map[string]any` by the literal key, defaulting a missing or
+  non-string value to `"default"` as claw does. A guard that decoded it any
+  other way would judge a value nobody uses.
+
+Why the qualifier on `plugin`: iterion fills unset variables from the nearest
+`.env` walking up from the working directory, before any subcommand runs. That
+file sits in a repository — including one under review — and `ITERION_HOME`
+selects where plugins are installed, `ITERION_PLUGINS_ENABLE` turns one on,
+and `<home>/plugins.yaml` and `ITERION_PLUGIN_<NAME>_<KEY>` decide what an
+enabled plugin is configured with (firecrawl's API endpoint and key among
+them). A planted value keeps working — it simply does not speak for the
+operator, and the record travels to child processes so a fork cannot launder
+it. See `internal/envtrust`.
+
+One limitation to know: under `host_state: auto` the operator's iterion home
+is bind-mounted read-write into the sandbox, so a sandboxed agent can write a
+manifest at the operator's own path. The trust root above answers "did the
+operator put this here", not "could a previous run have". Narrowing that mount
+is tracked separately.
+
+**Rollout order on a cluster: the sandbox image before the launcher.** The
+placement decision is the launcher's, and it refuses what it will not proxy —
+so a new launcher paired with an OLDER sandbox image refuses tools that image's
+runner would have proxied, and the node fails where it used to work. The
+reverse pairing is harmless: an older launcher proxies what a newer runner can
+also execute locally. Roll the runner/sandbox image out first, confirm it is
+serving, then the server and dispatcher —
+[cloud-deployment.md](cloud-deployment.md) for the pinning mechanics (both
+sides by digest, never a moving tag).
+
+Running claw's own MCP servers inside the container — parity with
+`claude_code` and pi — is the end state, and a follow-up.
+
 ## Drivers
 
 | Driver       | When selected                              | Status   |
@@ -892,7 +1152,7 @@ print mode loads no extension and gets none of these bridges.
 | `docker`     | host has `docker` on PATH                  | Phase 1 ✅ |
 | `podman`     | host has `podman` on PATH (no `docker`)    | Phase 1 ✅ (shares the docker code path) |
 | `kubernetes` | running in-cluster (`ITERION_MODE=cloud`)  | Phase 5 V1 ✅ + V2-5 NetworkPolicy |
-| `noop`       | always available; emits `sandbox_skipped` event when an active mode is requested but no real driver is usable | ✅ |
+| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`) | ✅ |
 
 `iterion sandbox doctor` reports which driver is selected on the
 current host and what capabilities it advertises.
@@ -919,7 +1179,7 @@ Checks (each `pass` / `warn` / `fail`):
 
 | Check | What it verifies | Failure means |
 | ----- | ---------------- | ------------- |
-| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman, or `--sandbox-driver=noop` to bypass — **downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
+| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman — the doctor is deliberately strict: a `sandbox: auto` run would still execute, degraded to the host with a `sandbox_skipped` event, and an explicit `mode: inline` would park with `SANDBOX_DRIVER_UNAVAILABLE`. **Downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
 | **spec valid** | `Spec.Validate` (image XOR build, inline needs image, absolute `workspace_folder`, valid network mode/inherit, valid `host_state`) | fix the `sandbox:` block |
 | **docker daemon** | the daemon answers `version --format {{.Server.Version}}` | start Docker Desktop / `systemctl start docker` |
 | **spec safety** | no `source=` bind of `docker.sock`, `/proc`, `/sys`, or host credentials; no flag injection on image/user/workdir; no env-var name/value injection | remove/fix the offending bind, arg, or env var |

@@ -47,6 +47,11 @@ type ForkSpec struct {
 	// NewInputs, when non-nil, replaces the child run's Inputs map
 	// (merged onto the parent's). Useful for "fork with a different
 	// prompt vars" workflows from the studio's ForkDialog JSON editor.
+	//
+	// The values an operator CHANGES here cross the same var-constraint gate
+	// a launch crosses (`[enum: …]`, `[matching: "<re>"]`) — see
+	// gateForkInputs. A value re-sent unchanged does not: the parent was
+	// already admitted with it.
 	NewInputs map[string]any
 }
 
@@ -100,6 +105,16 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	childID, err := store.GenerateRunID()
 	if err != nil {
 		return nil, fmt.Errorf("generate child run id: %w", err)
+	}
+	// The var-constraint gate, on the ONE surface that writes operator var
+	// values into a run without entering Engine.Run. Before CreateRun, so a
+	// refusal leaves nothing behind and the atomic contract is untouched: the
+	// caller receives no child id, exactly as for every other early error.
+	// The child inherits the parent's publish grant from the record; a value
+	// sent under that name — the mask the fork dialog was shown — is not it.
+	spec.NewInputs = store.DropServerMintedVars(spec.NewInputs)
+	if err := s.gateForkInputs(parent, spec.NewInputs); err != nil {
+		return nil, err
 	}
 	childInputs := map[string]any{}
 	for k, v := range parent.Inputs {
@@ -194,6 +209,16 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// parent.HEAD. Best-effort — failure of the worktree-side step
 	// fails the whole fork (the child is meaningless without a code
 	// landing spot).
+	// Provenance first, and OUTSIDE the three-way branch: who wrote the
+	// parent's code is a fact about the parent, not about how its workspace
+	// was materialised. Every branch below produces a child that re-executes
+	// that same code — a worktree of it, its own clone of it, or the parent's
+	// own directory — so a child that loses the marker re-resolves the
+	// tenant's secrets and can be handed a publish grant, whichever branch it
+	// took. Inside the repo-targeted branch this was carried; the worktree
+	// branch (checked FIRST, and taken by any workflow declaring
+	// `worktree: auto`) and the local branch silently dropped it.
+	child.Trust = parent.Trust
 	if parent.Worktree {
 		// A fork materialises a checkout without entering Engine.Run, so it
 		// must ask the same shared-pool bound itself before growing the pool.
@@ -221,6 +246,16 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		child.ProjectPath = parent.ProjectPath
 		child.BotID = parent.BotID
 		child.SecretOverrides = parent.SecretOverrides
+		// The pin belongs HERE and not above the branch, beside the
+		// RepoURL/RepoSHA it certifies. Hoisted, it produced a child with an
+		// admitted commit and nothing to clone — a document the runner
+		// refuses outright, manufactured by the very commit that added the
+		// refusal. On the worktree and local arms there is no clone and no
+		// fetch, so there is nothing for a pin to certify: the child
+		// re-executes a tree already materialised from the parent's own
+		// verified checkout. Trust stays hoisted — it has no such
+		// precondition, and the child inherits every withdrawal.
+		child.RepoSHAExpected = parent.RepoSHAExpected
 	} else {
 		// Non-worktree local parent: child inherits the parent's WorkDir
 		// (typically the user's cwd). Rewind is meaningless; ignore

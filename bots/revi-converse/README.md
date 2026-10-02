@@ -41,7 +41,7 @@ converse_health (tool, deterministic — no LLM)
 done
 ```
 
-The agent's model is `${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}` and its
+The agent's model is `${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}` and its
 effort `${ITERION_VIBE_EFFORT_CONVERSE:-medium}`. The system prompt bans a
 reply body that *begins* with the literal `/revi` (or `/ask`) token — that
 would re-fire the webhook and loop forever; `skills/forge-reply.md` restates

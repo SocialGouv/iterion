@@ -74,6 +74,20 @@ export function deleteBotSource(teamID: string, slug: string): Promise<void> {
   });
 }
 
+// The if-match token every per-file write of a bundle presents: the
+// `version` of the bundle the caller READ. The store rejects a write whose
+// token no longer matches (409), so a second editor's change is a refusal
+// rather than a silent overwrite. Omitting it is last-write-wins — a
+// `version` of 0 means "no if-match" in both store twins
+// (pkg/botsource/memory.go, mongo.go), which is why the parameter is
+// required rather than optional: a caller that has no token has to say so
+// in its own words.
+export type BotSourceVersion = number | "unchecked";
+
+function ifMatch(version: BotSourceVersion): number | undefined {
+  return version === "unchecked" ? undefined : version;
+}
+
 // putBotSourceFile writes one raw file into an existing bundle (skills/*.md,
 // manifest.yaml, …). Distinct from the editor's document save path (which
 // unparses a .bot document first) — this takes verbatim text. The server
@@ -83,22 +97,30 @@ export function putBotSourceFile(
   slug: string,
   rel: string,
   content: string,
+  version: BotSourceVersion,
 ): Promise<BotSourceFull> {
   const path = rel.split("/").map(encodeURIComponent).join("/");
   return apiRequest<BotSourceFull>(
     `${base(teamID)}/${encodeURIComponent(slug)}/files/${path}`,
-    { method: "PUT", body: JSON.stringify({ content }) },
+    { method: "PUT", body: JSON.stringify({ content, version: ifMatch(version) }) },
   );
 }
 
+// deleteBotSourceFile removes one file from an existing bundle. The token
+// travels in the query rather than the body: a DELETE body is legal but not
+// reliably forwarded, and this is the one route of the family with no body
+// of its own.
 export function deleteBotSourceFile(
   teamID: string,
   slug: string,
   rel: string,
+  version: BotSourceVersion,
 ): Promise<BotSourceFull> {
   const path = rel.split("/").map(encodeURIComponent).join("/");
+  const match = ifMatch(version);
+  const query = match === undefined ? "" : `?version=${encodeURIComponent(String(match))}`;
   return apiRequest<BotSourceFull>(
-    `${base(teamID)}/${encodeURIComponent(slug)}/files/${path}`,
+    `${base(teamID)}/${encodeURIComponent(slug)}/files/${path}${query}`,
     { method: "DELETE" },
   );
 }

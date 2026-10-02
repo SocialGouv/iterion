@@ -34,6 +34,10 @@ type RemoteRunsListOptions struct {
 	Repo     string
 	Since    string // RFC3339, passed through verbatim
 	Limit    int
+	// Team scopes the listing to a team the caller can view (the
+	// server's resolveTenantScope reads it as ?team_id=). Empty = the
+	// caller's active team.
+	Team string
 }
 
 type RemoteRunsMissionStartOptions struct {
@@ -79,6 +83,9 @@ func RemoteRunsList(ctx context.Context, c *RemoteClient, p *Printer, opts Remot
 	if opts.Limit > 0 {
 		q["limit"] = fmt.Sprintf("%d", opts.Limit)
 	}
+	if opts.Team != "" {
+		q["team_id"] = opts.Team
+	}
 	path := "/api/runs" + QueryString(q)
 	if p.Format == OutputJSON {
 		return RemoteGetPrint(ctx, c, p, path)
@@ -111,6 +118,7 @@ type RemoteRunsLaunchOptions struct {
 	Backend         string
 	Compress        string
 	AutoMemory      string
+	AmbientContext  string
 	LoopBudgetGuard string
 	Permission      string
 	ReviewMode      string
@@ -161,6 +169,7 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		"backend":           opts.Backend,
 		"compress":          opts.Compress,
 		"auto_memory":       opts.AutoMemory,
+		"ambient_context":   opts.AmbientContext,
 		"loop_budget_guard": opts.LoopBudgetGuard,
 		"permission":        opts.Permission,
 		"review_mode":       opts.ReviewMode,

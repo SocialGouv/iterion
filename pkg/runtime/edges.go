@@ -36,7 +36,7 @@ func (e *Engine) edgeConditionHolds(edge *ir.Edge, fromNodeID, logPrefix string,
 		if *exprCtx == nil {
 			*exprCtx = e.exprContext(rs, output)
 		}
-		ok, err := edge.Expression.EvalBool(*exprCtx)
+		ok, err := e.edgeWhenHolds(edge, fromNodeID, *exprCtx)
 		if err != nil {
 			// Selection reports the failure; staying quiet here avoids
 			// logging the same broken expression twice per crossing.
@@ -223,7 +223,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 			if exprCtx == nil {
 				exprCtx = e.exprContext(rs, output)
 			}
-			ok, err := edge.Expression.EvalBool(exprCtx)
+			ok, err := e.edgeWhenHolds(edge, fromNodeID, exprCtx)
 			if err != nil {
 				e.logger.Warn("%s: node %q: edge `when` expression %q failed: %v — edge to %q skipped",
 					logPrefix, fromNodeID, edge.ExpressionSrc, err, edge.To)

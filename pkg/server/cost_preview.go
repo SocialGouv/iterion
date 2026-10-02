@@ -71,16 +71,18 @@ type previewEffectiveKnob struct {
 }
 
 type previewEffectiveSettings struct {
-	Compress   previewEffectiveKnob `json:"compress"`
-	AutoMemory previewEffectiveKnob `json:"auto_memory"`
-	Permission previewEffectiveKnob `json:"permission"`
-	Backend    previewEffectiveKnob `json:"backend"`
+	Compress       previewEffectiveKnob `json:"compress"`
+	AutoMemory     previewEffectiveKnob `json:"auto_memory"`
+	AmbientContext previewEffectiveKnob `json:"ambient_context"`
+	Permission     previewEffectiveKnob `json:"permission"`
+	Backend        previewEffectiveKnob `json:"backend"`
 }
 
 // Token envelopes are intentionally generous — the goal is to flag
 // $5 workflows before launch, not to predict to the cent. Refresh
 // when provider pricing or claw effort defaults shift.
 var effortTokens = map[string]struct{ in, out int }{
+	"none":   {2_000, 1_000},
 	"low":    {3_000, 1_500},
 	"medium": {12_000, 4_000},
 	"high":   {32_000, 8_000},

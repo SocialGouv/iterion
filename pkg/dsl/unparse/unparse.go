@@ -2,8 +2,11 @@
 package unparse
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
+	"math"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -25,9 +28,9 @@ func Unparse(f *ast.File) string {
 	profile := f.EffectiveProfile()
 	if profile > ast.DefaultProfile {
 		text, _ := render(f, true, profile)
-		return text
+		return placeComments(sourceFile(f), text, f)
 	}
-	strict := hasStrictEscapeDirective(f.Comments)
+	strict := hasStrictEscapeDirective(ast.AllCommentTexts(f))
 	text, needsStrict := render(f, strict, profile)
 	if needsStrict && !strict {
 		// A value no v1 form can hold (a backtick together with a quote,
@@ -36,7 +39,10 @@ func Unparse(f *ast.File) string {
 		// form.
 		text, _ = render(f, true, profile)
 	}
-	return text
+	// The comments each declaration carries go back last, into the text
+	// the writers produced: they are written around the program, never in
+	// it, so nothing the writers do depends on them (comments.go).
+	return placeComments(sourceFile(f), text, f)
 }
 
 // strictEscapeDirective is the leading comment that opts a profile-1 file
@@ -44,12 +50,15 @@ func Unparse(f *ast.File) string {
 const strictEscapeDirective = "strict-escape: on"
 
 // hasStrictEscapeDirective mirrors the lexer's recognition of the directive
-// among the file's comments. Unparse writes every comment at the top, so a
-// directive anywhere in f.Comments is a leading one in the output — the mode
-// the OUTPUT is read in is what the quoting has to match.
-func hasStrictEscapeDirective(comments []*ast.Comment) bool {
-	for _, c := range comments {
-		if parser.IsStrictEscapeDirective(c.Text) {
+// among EVERY comment of the document, not only the file's head: a comment
+// is carried by the declaration it was written around, so a directive can
+// sit on one, and the writer places it at the head all the same
+// (writeDirective). The mode the OUTPUT is read in is what the quoting has
+// to match — reading only the head rendered the file unescaped and wrote a
+// directive above it.
+func hasStrictEscapeDirective(texts []string) bool {
+	for _, t := range texts {
+		if parser.IsStrictEscapeDirective(t) {
 			return true
 		}
 	}
@@ -60,14 +69,29 @@ func hasStrictEscapeDirective(comments []*ast.Comment) bool {
 // strict one. The directive's own comment lines are never copied: in
 // profile 1 the writer places the directive itself (writeHead), and from
 // profile 2 the header replaces it.
+//
+// A strict render is two passes over the multi-line form (#1612). The first
+// writes every value the block scalar carries as one; if a value it cannot
+// carry still had to fold onto one line, the whole file is rendered again
+// without the form — the writer's output is all-or-nothing, which is what
+// canon.Folds reads a spread value as proof of (nothing folded).
 func render(f *ast.File, strict bool, profile int) (string, bool) {
 	w := &fileWriter{
-		b:              buf{strict: strict, inline: inlineBodies(f.Prompts)},
+		b:              buf{strict: strict, block: true, inline: inlineBodies(f.Prompts)},
 		profile:        profile,
 		skipDirective:  true,
 		writeDirective: strict && profile <= ast.DefaultProfile,
 	}
 	w.writeFile(f)
+	if strict && w.b.folded {
+		w = &fileWriter{
+			b:              buf{strict: strict, inline: inlineBodies(f.Prompts)},
+			profile:        profile,
+			skipDirective:  true,
+			writeDirective: strict && profile <= ast.DefaultProfile,
+		}
+		w.writeFile(f)
+	}
 	return w.b.String(), w.b.needsStrict
 }
 
@@ -109,15 +133,85 @@ type buf struct {
 	strings.Builder
 	strict      bool
 	needsStrict bool
+	// block lets a property writer give a value that holds a newline the
+	// block-scalar form (`key: |` and the body indented under it) — the
+	// multi-line form #1612 adds. It is on for every render but the
+	// all-or-nothing retry (render): one value the form cannot carry turns
+	// it off for the whole file.
+	block bool
+	// folded is set when a value holding a newline was written on ONE line
+	// (a strict-escape `"…\n…"`). A strict render that folds anything is
+	// discarded and run again with the block form off.
+	folded bool
+	// blockTail is set just after a block scalar's body was written: the
+	// reader absorbs a blank line following the body into the value, so the
+	// next blank line the section writers emit is suppressed (WriteByte /
+	// WriteString).
+	blockTail bool
+	// last is the last byte written, what tells "this '\n' opens a blank
+	// line" (the buffer already ends a line) from a line's own terminator.
+	last byte
 	// nested is set on the writer of a group body, whose text is indented
 	// after the fact: a raw string spanning lines would have its
 	// continuation lines indented too, changing the value, so a value with
-	// a newline needs the strict form there.
+	// a newline needs the strict form there — unless the block scalar
+	// carries it (its lines are indented uniformly, which the strip prefix
+	// undoes).
 	nested bool
 	// inline is the body of each Inline prompt of the file by name: a
 	// property referring to one is written as that text, and the prompt is
 	// not written as a declaration.
 	inline map[string]string
+}
+
+// WriteByte is strings.Builder's, minus one byte: a blank line written
+// immediately after a block scalar's body, which the reader would absorb
+// into the value. Everything a line's terminator writes follows content, so
+// a '\n' arriving when the buffer already ends a line is always such a
+// separator.
+func (b *buf) WriteByte(c byte) error {
+	if b.blockTail {
+		b.blockTail = false
+		if c == '\n' && b.last == '\n' {
+			return nil
+		}
+	}
+	b.last = c
+	return b.Builder.WriteByte(c)
+}
+
+// Write is strings.Builder's (what fmt.Fprintf reaches) with the same
+// suppression as WriteByte.
+func (b *buf) Write(p []byte) (int, error) {
+	if b.blockTail {
+		b.blockTail = false
+		if b.last == '\n' {
+			p = bytes.TrimPrefix(p, []byte("\n"))
+		}
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	b.last = p[len(p)-1]
+	return b.Builder.Write(p)
+}
+
+// WriteString is strings.Builder's with the same suppression as WriteByte:
+// the leading '\n' of a write that opens with a blank line (" \n  budget:",
+// the separator before a workflow's edges) right after a block scalar's
+// body.
+func (b *buf) WriteString(s string) (int, error) {
+	if b.blockTail {
+		b.blockTail = false
+		if b.last == '\n' {
+			s = strings.TrimPrefix(s, "\n")
+		}
+	}
+	if s == "" {
+		return 0, nil
+	}
+	b.last = s[len(s)-1]
+	return b.Builder.WriteString(s)
 }
 
 // inlineBodies indexes the Inline prompts of a file by name.
@@ -167,6 +261,22 @@ func QuoteStrict(v string) string {
 // str renders v as a string literal the lexer reads back as exactly v.
 func (b *buf) str(v string) string {
 	if b.strict {
+		if b.block && strings.Contains(v, "\n") && !strings.ContainsAny(v, "`\r") && !b.nested {
+			// A raw string reads the same in every mode, strict included,
+			// and keeps the value over its lines — the form for a value the
+			// block scalar cannot carry (one whose trailing newline the
+			// reader would not give back) and for the inline positions (a
+			// list, a `with { … }` entry) the block scalar has no form for.
+			// Gated on block like the block scalar itself: the all-or-
+			// nothing retry renders without either multi-line form.
+			return "`" + v + "`"
+		}
+		if strings.Contains(v, "\n") {
+			// The value comes back on one line: render refuses the mix and
+			// runs again without the block form, so the file folds as a
+			// whole or not at all.
+			b.folded = true
+		}
 		return strictQuote(v)
 	}
 	if !strings.ContainsAny(v, "\"\\\n\r") {
@@ -180,6 +290,83 @@ func (b *buf) str(v string) string {
 	}
 	b.needsStrict = true
 	return strconv.Quote(v) // discarded: the file is rendered again in strict mode
+}
+
+// blockScalarable reports whether the `key: |` block scalar reads back as
+// exactly v (parser.scanBlockScalar): the reader strips the indent the
+// first content line sets — the TOTAL leading spaces of that line as
+// written, the writer's indent plus the value's own — and closes every
+// line with one newline, so v must hold a newline (else the quoted form is
+// the form), end with one, hold no carriage return (the lexer folds CRLF
+// before anything is read), open with content (blank lines before the
+// first content line are dropped) at column 0 (a first line with its own
+// leading spaces would pull the strip prefix past the writer's indent and
+// read EVERY line back de-dented), and hold no whitespace-only line (one
+// reads as a blank line — its spaces are lost). A value that fails this
+// and holds a newline takes the raw string, or — when that cannot hold it
+// either — is the fold #1612 refuses by name (canon.ErrRefused).
+func blockScalarable(v string) bool {
+	if !strings.Contains(v, "\n") || !strings.HasSuffix(v, "\n") ||
+		strings.HasPrefix(v, "\n") || strings.ContainsRune(v, '\r') {
+		return false
+	}
+	lines := strings.Split(v, "\n")
+	if strings.Trim(lines[0], " \t") == "" {
+		return false // a first line of only spaces reads as a dropped blank line
+	}
+	if leadingSpaces(lines[0]) != 0 {
+		return false // the reader's strip prefix is the first line's TOTAL indent
+	}
+	for _, line := range lines[1 : len(lines)-1] {
+		if line != "" && strings.Trim(line, " \t") == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// leadingSpaces counts the spaces a line opens with — a tab is content, not
+// indentation, here exactly as the block-scalar reader counts it.
+func leadingSpaces(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
+// blockScalarOK reports whether the writer gives v the block-scalar form at
+// a property line: the form is on for this render, the value is one the
+// reader gives back exactly, and the mode calls for it — a strict render
+// (whose only other multi-line form is the raw string, for values this
+// form cannot carry), a group body (whose after-the-fact indentation a raw
+// string would not survive), or a profile-1 value the raw string cannot
+// hold (one with a backtick: today that flips the whole file to
+// strict-escape and folds every other value).
+func (b *buf) blockScalarOK(v string) bool {
+	if !b.block || !blockScalarable(v) {
+		return false
+	}
+	if b.strict || b.nested {
+		return true
+	}
+	return strings.ContainsRune(v, '`')
+}
+
+// writeBlockScalar writes `indent+key: |` and v's lines one indent level
+// under it — blank lines written blank, which is how the reader gives them
+// back — then marks the tail so the blank line the next section opens with
+// is not absorbed into the value.
+func (b *buf) writeBlockScalar(indent, key, v string) {
+	fmt.Fprintf(b, "%s%s: |\n", indent, key)
+	body := indent + "  "
+	lines := strings.Split(v, "\n")
+	for _, line := range lines[:len(lines)-1] {
+		if line == "" {
+			b.WriteByte('\n')
+			continue
+		}
+		b.WriteString(body)
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	b.blockTail = true
 }
 
 // strictQuote is the `"…"` form under `## strict-escape: on`: the escapes
@@ -219,7 +406,7 @@ func (w *fileWriter) writeGroups(groups []*ast.GroupDecl) {
 		} else {
 			fmt.Fprintf(&w.b, "group %s:\n", g.Name)
 		}
-		sub := &fileWriter{b: buf{strict: w.b.strict, nested: true, inline: w.b.inline}}
+		sub := &fileWriter{b: buf{strict: w.b.strict, block: w.b.block, nested: true, inline: w.b.inline}}
 		sub.writeAgents(g.Agents)
 		sub.writeJudges(g.Judges)
 		sub.writeRouters(g.Routers)
@@ -229,7 +416,15 @@ func (w *fileWriter) writeGroups(groups []*ast.GroupDecl) {
 		if sub.b.needsStrict {
 			w.b.needsStrict = true
 		}
+		if sub.b.folded {
+			w.b.folded = true
+		}
 		w.b.WriteString(indentBlock(sub.b.String(), "  "))
+		// A member ending on a block scalar's body leaves the tail marked:
+		// the separator before the group's edges must not land in the value.
+		if sub.b.blockTail {
+			w.b.blockTail = true
+		}
 		if len(g.Edges) > 0 {
 			w.b.WriteByte('\n')
 		}
@@ -326,12 +521,17 @@ func (w *fileWriter) blankLine() {
 // the first line of code, then the other comments, then, from profile 2,
 // the `dsl: N` header on the first significant line (parser.ReadPreamble).
 func (w *fileWriter) writeHead(comments []*ast.Comment, imports []*ast.ImportDecl) {
+	comments = fileHeadComments(comments)
 	fm := frontmatterLen(comments)
-	w.writeComments(comments[:fm])
+	// `first` runs through BOTH calls: the frontmatter fence and what
+	// follows it are one run, and a paragraph break written under the
+	// closing fence belongs to it.
+	first := w.writeComments(comments[:fm], true)
 	if w.writeDirective {
 		w.writeComment(strictEscapeDirective)
+		first = false
 	}
-	w.writeComments(comments[fm:])
+	w.writeComments(comments[fm:], first)
 	if w.profile > ast.DefaultProfile {
 		if w.b.Len() > 0 {
 			w.b.WriteByte('\n')
@@ -348,6 +548,14 @@ func (w *fileWriter) writeHead(comments []*ast.Comment, imports []*ast.ImportDec
 		for _, im := range imports {
 			fmt.Fprintf(&w.b, "import %s\n", QuoteStrict(im.Path))
 		}
+		w.needBlank = true
+	}
+	if w.b.Len() > 0 {
+		// A blank line closes the head. It is what tells the file's own
+		// comments from the ones leading its first declaration, which the
+		// writer emits right after them: glued together, the next parse
+		// would read the whole run as the file's head and the comment
+		// that described a declaration would stop travelling with it.
 		w.needBlank = true
 	}
 }
@@ -367,20 +575,27 @@ func frontmatterLen(comments []*ast.Comment) int {
 	return 0
 }
 
-func (w *fileWriter) writeComments(comments []*ast.Comment) {
+func (w *fileWriter) writeComments(comments []*ast.Comment, first bool) bool {
 	for _, c := range comments {
 		if w.skipDirective && parser.IsStrictEscapeDirective(c.Text) {
 			continue
 		}
+		if c.Blank && !first {
+			// The author's paragraph break inside the run. Never before
+			// the first line of it: what separates the run from what
+			// comes above is blankLine's business.
+			w.b.WriteByte('\n')
+		}
 		w.writeComment(c.Text)
+		first = false
 	}
+	return first
 }
 
 func (w *fileWriter) writeComment(text string) {
 	w.blankLine()
 	w.needBlank = false // comments don't need blank line between them
-	w.b.WriteString("## ")
-	w.b.WriteString(text)
+	w.b.WriteString(commentLine("", text))
 	w.b.WriteByte('\n')
 }
 
@@ -503,13 +718,13 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 			fmt.Fprintf(&w.b, "  watches: [%s]\n", strings.Join(s.Watches, ", "))
 		}
 		if s.Model != "" {
-			fmt.Fprintf(&w.b, "  model: %s\n", w.b.str(s.Model))
+			writeQuotedProp(&w.b, "model", s.Model)
 		}
 		if s.System != "" {
 			writePromptRef(&w.b, "system", s.System)
 		}
 		if s.Cooldown != "" {
-			fmt.Fprintf(&w.b, "  cooldown: %s\n", w.b.str(s.Cooldown))
+			writeQuotedProp(&w.b, "cooldown", s.Cooldown)
 		}
 		if s.MaxEvals != 0 {
 			fmt.Fprintf(&w.b, "  max_evals: %d\n", s.MaxEvals)
@@ -544,7 +759,8 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			Timeout:  a.Timeout,
 			Readonly: a.Readonly, FullAccess: a.FullAccess, Images: a.Images, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, AutoMemory: a.AutoMemory, Permission: a.Permission, Needs: a.Needs,
+			Compress: a.Compress, AutoMemory: a.AutoMemory, AmbientContext: a.AmbientContext, Permission: a.Permission,
+			Allow: a.Allow, Ask: a.Ask, Deny: a.Deny, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
 			writeCompaction(&w.b, a.Compaction, "  ", false)
@@ -581,7 +797,8 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			Timeout:  j.Timeout,
 			Readonly: j.Readonly, FullAccess: j.FullAccess, Images: j.Images, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, AutoMemory: j.AutoMemory, Permission: j.Permission, Needs: j.Needs,
+			Compress: j.Compress, AutoMemory: j.AutoMemory, AmbientContext: j.AmbientContext, Permission: j.Permission,
+			Allow: j.Allow, Ask: j.Ask, Deny: j.Deny, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
 			writeCompaction(&w.b, j.Compaction, "  ", false)
@@ -667,12 +884,15 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeProp(&w.b, "publish", h.Publish)
 		}
 		writeArtifactLabels(&w.b, h.ArtifactLabels, "  ")
-		// Skip when it matches the implicit Human default. Emitting it
-		// unconditionally introduced parse → unparse → re-parse noise
-		// (every authored human node gained a synthetic
-		// `interaction: human` line), and mirrors the same skip-if-default
-		// guard already applied to `session:` further down.
-		if h.Interaction != ast.InteractionHuman {
+		// Only the ZERO is skipped. A human node with no `interaction:`
+		// parses to InteractionNone, which the compiler reads as the
+		// node's default (ir/compile.go) — writing that zero back as
+		// `interaction: none` made the writer's own output parse to a
+		// document it would then write differently. An explicit
+		// `interaction: human` is NOT the zero and is not the same
+		// thing either: under a workflow-level `interaction:` default it
+		// PINS the node to human, and dropping it changed the program.
+		if h.Interaction != ast.InteractionNone {
 			writeProp(&w.b, "interaction", h.Interaction.String())
 		}
 		if h.InteractionPrompt != "" {
@@ -763,7 +983,7 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 				// two diagnostics. unparse.Verify then refuses the save naming
 				// generated text rather than the field. The AST also arrives
 				// from the JSON transport, where nothing constrains the shape.
-				writeQuotedProp(&w.b, "  "+identOrStr(&w.b, p.Key), p.Value)
+				writeStrProp(&w.b, "    ", identOrStr(&w.b, p.Key), p.Value)
 			}
 		}
 		// Quoted when they are not a bare scalar, for the same reason
@@ -838,10 +1058,10 @@ func writeRecoveryBlock(b *buf, r *ast.RecoveryBlock, indent string) {
 		fmt.Fprintf(b, "%smax_agent_attempts: %d\n", inner, r.MaxAgentAttempts)
 	}
 	if r.Model != "" {
-		fmt.Fprintf(b, "%smodel: %s\n", inner, b.str(r.Model))
+		writeStrProp(b, inner, "model", r.Model)
 	}
 	if len(r.AgentTools) > 0 {
-		fmt.Fprintf(b, "%sagent_tools: [%s]\n", inner, strings.Join(r.AgentTools, ", "))
+		fmt.Fprintf(b, "%sagent_tools: [%s]\n", inner, refList(b, r.AgentTools))
 	}
 }
 
@@ -900,7 +1120,7 @@ func (w *fileWriter) writeComputes(computes []*ast.ComputeDecl) {
 		if len(c.Expr) > 0 {
 			w.b.WriteString("  expr:\n")
 			for _, e := range c.Expr {
-				fmt.Fprintf(&w.b, "    %s: %s\n", e.Key, w.b.str(e.Expr))
+				writeStrProp(&w.b, "    ", e.Key, e.Expr)
 			}
 		}
 		w.ensureBody(mark)
@@ -1016,11 +1236,11 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		}
 
 		if len(wf.ToolPolicy) > 0 {
-			fmt.Fprintf(&w.b, "  tool_policy: [%s]\n", strings.Join(wf.ToolPolicy, ", "))
+			fmt.Fprintf(&w.b, "  tool_policy: [%s]\n", refList(&w.b, wf.ToolPolicy))
 		}
 
 		if len(wf.Capabilities) > 0 {
-			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", strings.Join(wf.Capabilities, ", "))
+			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", refList(&w.b, wf.Capabilities))
 		}
 		if len(wf.Skills) > 0 {
 			fmt.Fprintf(&w.b, "  skills: [%s]\n", quoteList(&w.b, wf.Skills))
@@ -1036,6 +1256,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 
 		if wf.AutoMemory != "" {
 			writeProp(&w.b, "auto_memory", wf.AutoMemory)
+		}
+
+		if wf.AmbientContext != "" {
+			writeProp(&w.b, "ambient_context", wf.AmbientContext)
 		}
 
 		if wf.LoopBudgetGuard != "" {
@@ -1097,7 +1321,19 @@ func writeProp(b *buf, key, value string) {
 }
 
 func writeQuotedProp(b *buf, key, value string) {
-	fmt.Fprintf(b, "  %s: %s\n", key, b.str(value))
+	writeStrProp(b, "  ", key, value)
+}
+
+// writeStrProp emits the `indent+key: value` line, giving a value that
+// holds a newline the block-scalar form when the render carries one
+// (buf.blockScalarOK) — `key: |` and the body indented under it — instead
+// of the one escaped line strict-escape would make of it (#1612).
+func writeStrProp(b *buf, indent, key, value string) {
+	if b.blockScalarOK(value) {
+		b.writeBlockScalar(indent, key, value)
+		return
+	}
+	fmt.Fprintf(b, "%s%s: %s\n", indent, key, b.str(value))
 }
 
 // writeIdentProp emits an identifier-shaped property (input, output,
@@ -1242,12 +1478,22 @@ func writeVarsBlock(b *buf, vars *ast.VarsBlock, indent string) {
 		b.WriteString(": ")
 		b.WriteString(v.Type.String())
 		writeEnumConstraint(b, v.EnumValues)
+		writeMatchingConstraint(b, v.Matching)
 		if v.Default != nil {
 			b.WriteString(" = ")
 			writeLiteral(b, v.Default)
 		}
 		b.WriteByte('\n')
 	}
+}
+
+// writeMatchingConstraint emits ` [matching: "<re>"]` after a type for a var
+// declaration. No-op on an empty pattern, which is the unconstrained state.
+func writeMatchingConstraint(b *buf, pattern string) {
+	if pattern == "" {
+		return
+	}
+	fmt.Fprintf(b, " [matching: %s]", b.str(pattern))
 }
 
 // writeEnumConstraint emits ` [enum: "a", "b"]` after a type for schema
@@ -1274,6 +1520,10 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 		// hosts, file materialisation, env wiring, or a description
 		// accompany it.
 		hasProps := s.As != "" || s.MountPath != "" || s.Env != "" || len(s.Hosts) > 0 || s.Description != ""
+		if !hasProps && b.blockScalarOK(s.Value) {
+			b.writeBlockScalar(indent+"  ", s.Name, s.Value)
+			continue
+		}
 		b.WriteString(indent)
 		b.WriteString("  ")
 		b.WriteString(s.Name)
@@ -1283,16 +1533,16 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 		}
 		b.WriteString(":\n")
 		if s.Value != "" {
-			fmt.Fprintf(b, "%s    value: %s\n", indent, b.str(s.Value))
+			writeStrProp(b, indent+"    ", "value", s.Value)
 		}
 		if s.As != "" {
 			fmt.Fprintf(b, "%s    as: %s\n", indent, s.As)
 		}
 		if s.MountPath != "" {
-			fmt.Fprintf(b, "%s    mount_path: %s\n", indent, b.str(s.MountPath))
+			writeStrProp(b, indent+"    ", "mount_path", s.MountPath)
 		}
 		if s.Env != "" {
-			fmt.Fprintf(b, "%s    env: %s\n", indent, b.str(s.Env))
+			writeStrProp(b, indent+"    ", "env", s.Env)
 		}
 		if s.Optional {
 			fmt.Fprintf(b, "%s    optional: true\n", indent)
@@ -1301,7 +1551,7 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 			fmt.Fprintf(b, "%s    hosts: [%s]\n", indent, quoteList(b, s.Hosts))
 		}
 		if s.Description != "" {
-			fmt.Fprintf(b, "%s    description: %s\n", indent, b.str(s.Description))
+			writeStrProp(b, indent+"    ", "description", s.Description)
 		}
 	}
 }
@@ -1321,6 +1571,10 @@ func writePresetsBlock(b *buf, pb *ast.PresetsBlock, indent string) {
 		e := byName[name]
 		fmt.Fprintf(b, "%s  %s:\n", indent, e.Name)
 		for _, pv := range e.Values {
+			if pv.Value != nil && pv.Value.Kind == ast.LitString && b.blockScalarOK(pv.Value.StrVal) {
+				b.writeBlockScalar(indent+"    ", pv.Key, pv.Value.StrVal)
+				continue
+			}
 			fmt.Fprintf(b, "%s    %s: ", indent, pv.Key)
 			if pv.Value != nil {
 				writeLiteral(b, pv.Value)
@@ -1347,7 +1601,7 @@ func writeAttachmentsBlock(b *buf, ab *ast.AttachmentsBlock, indent string) {
 		}
 		// Block form sub-properties (4-space indent under the field).
 		if f.Description != "" {
-			fmt.Fprintf(b, "%s    description: %s\n", indent, b.str(f.Description))
+			writeStrProp(b, indent+"    ", "description", f.Description)
 		}
 		if len(f.AcceptMIME) > 0 {
 			fmt.Fprintf(b, "%s    accept_mime: [%s]\n", indent, quoteList(b, f.AcceptMIME))
@@ -1365,7 +1619,7 @@ func writeLiteral(b *buf, lit *ast.Literal) {
 	case ast.LitInt:
 		fmt.Fprintf(b, "%d", lit.IntVal)
 	case ast.LitFloat:
-		fmt.Fprintf(b, "%g", lit.FloatVal)
+		b.WriteString(floatLiteral(lit))
 	case ast.LitBool:
 		if lit.BoolVal {
 			b.WriteString("true")
@@ -1377,23 +1631,40 @@ func writeLiteral(b *buf, lit *ast.Literal) {
 	}
 }
 
+// A parsed decimal spelling preserves precision and trailing zeros, but Raw
+// may be stale after an AST edit. Only reuse it when it still names this value.
+var decimalFloat = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+
+func floatLiteral(lit *ast.Literal) string {
+	if decimalFloat.MatchString(lit.Raw) {
+		if value, err := strconv.ParseFloat(lit.Raw, 64); err == nil && math.Float64bits(value) == math.Float64bits(lit.FloatVal) {
+			return lit.Raw
+		}
+	}
+	s := strconv.FormatFloat(lit.FloatVal, 'f', -1, 64)
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	return s
+}
+
 func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
 	b.WriteString("  auth:\n")
 	defer endBlock(b, b.Len())
 	if auth.Type != "" {
-		fmt.Fprintf(b, "    type: %s\n", b.str(auth.Type))
+		writeStrProp(b, "    ", "type", auth.Type)
 	}
 	if auth.AuthURL != "" {
-		fmt.Fprintf(b, "    auth_url: %s\n", b.str(auth.AuthURL))
+		writeStrProp(b, "    ", "auth_url", auth.AuthURL)
 	}
 	if auth.TokenURL != "" {
-		fmt.Fprintf(b, "    token_url: %s\n", b.str(auth.TokenURL))
+		writeStrProp(b, "    ", "token_url", auth.TokenURL)
 	}
 	if auth.RevokeURL != "" {
-		fmt.Fprintf(b, "    revoke_url: %s\n", b.str(auth.RevokeURL))
+		writeStrProp(b, "    ", "revoke_url", auth.RevokeURL)
 	}
 	if auth.ClientID != "" {
-		fmt.Fprintf(b, "    client_id: %s\n", b.str(auth.ClientID))
+		writeStrProp(b, "    ", "client_id", auth.ClientID)
 	}
 	if len(auth.Scopes) > 0 {
 		fmt.Fprintf(b, "    scopes: [%s]\n", quoteList(b, auth.Scopes))
@@ -1415,6 +1686,21 @@ func writeMCPConfigBlock(b *buf, cfg *ast.MCPConfigDecl, indent string) {
 	if len(cfg.Disable) > 0 {
 		fmt.Fprintf(b, "%s  disable: [%s]\n", indent, strings.Join(cfg.Disable, ", "))
 	}
+}
+
+// Reference lists accept dotted names and trailing wildcards, as well as
+// strings such as "allow:Read". Quote anything outside the bare grammar with
+// the current profile's escaping, while keeping ordinary references readable.
+func refList(b *buf, vals []string) string {
+	refs := make([]string, len(vals))
+	for i, v := range vals {
+		if dottedIdent(strings.TrimSuffix(v, ".*")) {
+			refs[i] = v
+		} else {
+			refs[i] = b.str(v)
+		}
+	}
+	return strings.Join(refs, ", ")
 }
 
 func quoteList(b *buf, vals []string) string {
@@ -1452,7 +1738,9 @@ type llmFields struct {
 	Await                               ast.AwaitMode
 	Compress                            string
 	AutoMemory                          string
+	AmbientContext                      string
 	Permission                          string
+	Allow, Ask, Deny                    []string
 	Needs                               []string
 }
 
@@ -1496,14 +1784,18 @@ func writeAgentFields(b *buf, f llmFields) {
 	if f.SessionSlot != "" {
 		writeIdentProp(b, "session_slot", f.SessionSlot)
 	}
-	if len(f.Tools) > 0 {
-		fmt.Fprintf(b, "  tools: [%s]\n", strings.Join(f.Tools, ", "))
+	// A DECLARED empty list is written back as `tools: []`: it is the
+	// author saying "this node has no tools", and dropping the line would
+	// turn it into an undeclared surface — the CLI backends' "no
+	// restriction". Only an absent (nil) list writes nothing.
+	if f.Tools != nil {
+		fmt.Fprintf(b, "  tools: [%s]\n", refList(b, f.Tools))
 	}
 	if len(f.ToolPolicy) > 0 {
-		fmt.Fprintf(b, "  tool_policy: [%s]\n", strings.Join(f.ToolPolicy, ", "))
+		fmt.Fprintf(b, "  tool_policy: [%s]\n", refList(b, f.ToolPolicy))
 	}
 	if len(f.Capabilities) > 0 {
-		fmt.Fprintf(b, "  capabilities: [%s]\n", strings.Join(f.Capabilities, ", "))
+		fmt.Fprintf(b, "  capabilities: [%s]\n", refList(b, f.Capabilities))
 	}
 	if len(f.Skills) > 0 {
 		fmt.Fprintf(b, "  skills: [%s]\n", quoteList(b, f.Skills))
@@ -1547,8 +1839,20 @@ func writeAgentFields(b *buf, f llmFields) {
 	if f.AutoMemory != "" {
 		writeProp(b, "auto_memory", f.AutoMemory)
 	}
+	if f.AmbientContext != "" {
+		writeProp(b, "ambient_context", f.AmbientContext)
+	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)
+	}
+	if len(f.Allow) > 0 {
+		fmt.Fprintf(b, "  allow: [%s]\n", quoteList(b, f.Allow))
+	}
+	if len(f.Ask) > 0 {
+		fmt.Fprintf(b, "  ask: [%s]\n", quoteList(b, f.Ask))
+	}
+	if len(f.Deny) > 0 {
+		fmt.Fprintf(b, "  deny: [%s]\n", quoteList(b, f.Deny))
 	}
 	if len(f.Needs) > 0 {
 		fmt.Fprintf(b, "  needs: [%s]\n", strings.Join(f.Needs, ", "))
@@ -1581,24 +1885,24 @@ func writeSandboxBlock(b *buf, sb *ast.SandboxBlock, indent string) {
 		fmt.Fprintf(b, "%smode: %s\n", inner, sb.Mode)
 	}
 	if sb.Image != "" {
-		fmt.Fprintf(b, "%simage: %s\n", inner, b.str(sb.Image))
+		writeStrProp(b, inner, "image", sb.Image)
 	}
 	if sb.User != "" {
-		fmt.Fprintf(b, "%suser: %s\n", inner, b.str(sb.User))
+		writeStrProp(b, inner, "user", sb.User)
 	}
 	if sb.WorkspaceFolder != "" {
-		fmt.Fprintf(b, "%sworkspace_folder: %s\n", inner, b.str(sb.WorkspaceFolder))
+		writeStrProp(b, inner, "workspace_folder", sb.WorkspaceFolder)
 	}
 	if sb.HostState != "" {
 		fmt.Fprintf(b, "%shost_state: %s\n", inner, sb.HostState)
 	}
 	if sb.PostCreate != "" {
-		fmt.Fprintf(b, "%spost_create: %s\n", inner, b.str(sb.PostCreate))
+		writeStrProp(b, inner, "post_create", sb.PostCreate)
 	}
 	if len(sb.Env) > 0 {
 		fmt.Fprintf(b, "%senv:\n", inner)
 		for _, k := range slices.Sorted(maps.Keys(sb.Env)) {
-			fmt.Fprintf(b, "%s  %s: %s\n", inner, k, b.str(sb.Env[k]))
+			writeStrProp(b, inner+"  ", k, sb.Env[k])
 		}
 	}
 	if len(sb.Mounts) > 0 {
@@ -1643,15 +1947,15 @@ func writeSandboxBuildBlock(b *buf, bb *ast.SandboxBuildBlock, indent string) {
 	defer endBlock(b, b.Len())
 	inner := indent + "  "
 	if bb.Dockerfile != "" {
-		fmt.Fprintf(b, "%sdockerfile: %s\n", inner, b.str(bb.Dockerfile))
+		writeStrProp(b, inner, "dockerfile", bb.Dockerfile)
 	}
 	if bb.Context != "" {
-		fmt.Fprintf(b, "%scontext: %s\n", inner, b.str(bb.Context))
+		writeStrProp(b, inner, "context", bb.Context)
 	}
 	if len(bb.Args) > 0 {
 		fmt.Fprintf(b, "%sargs:\n", inner)
 		for _, k := range slices.Sorted(maps.Keys(bb.Args)) {
-			fmt.Fprintf(b, "%s  %s: %s\n", inner, k, b.str(bb.Args[k]))
+			writeStrProp(b, inner+"  ", k, bb.Args[k])
 		}
 	}
 }
@@ -1707,7 +2011,7 @@ func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
 		fmt.Fprintf(b, "%s  enabled: %t\n", indent, *m.Enabled)
 	}
 	if m.Scope != nil {
-		fmt.Fprintf(b, "%s  scope: %s\n", indent, b.str(*m.Scope))
+		writeStrProp(b, indent+"  ", "scope", *m.Scope)
 	}
 	if len(m.Autoload) > 0 {
 		quoted := make([]string, len(m.Autoload))
@@ -1729,7 +2033,7 @@ func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
 		fmt.Fprintf(b, "%s  project_root: %t\n", indent, *m.ProjectRoot)
 	}
 	if m.Visibility != nil {
-		fmt.Fprintf(b, "%s  visibility: %s\n", indent, b.str(*m.Visibility))
+		writeStrProp(b, indent+"  ", "visibility", *m.Visibility)
 	}
 }
 
@@ -1740,18 +2044,18 @@ func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
 func writeCursorDecl(b *buf, c *ast.CursorDecl) {
 	fmt.Fprintf(b, "cursor %s:\n", c.Name)
 	if c.Description != "" {
-		fmt.Fprintf(b, "  description: %s\n", b.str(c.Description))
+		writeStrProp(b, "  ", "description", c.Description)
 	}
 	if len(c.Values) > 0 {
 		b.WriteString("  values:\n")
 		for _, v := range c.Values {
-			fmt.Fprintf(b, "    %s: %s\n", v.Name, b.str(v.Prompt))
+			writeStrProp(b, "    ", v.Name, v.Prompt)
 		}
 	}
 	if len(c.Bands) > 0 {
 		b.WriteString("  bands:\n")
 		for _, band := range c.Bands {
-			fmt.Fprintf(b, "    %s: %s\n", b.str(band.Range), b.str(band.Prompt))
+			writeStrProp(b, "    ", b.str(band.Range), band.Prompt)
 		}
 	}
 }
@@ -1767,6 +2071,10 @@ func writeCursorsBlock(b *buf, cb *ast.CursorBlock, indent string) {
 		fmt.Fprintf(b, "%s  enabled: false\n", indent)
 	}
 	for _, s := range cb.Settings {
+		if b.blockScalarOK(s.Value) {
+			b.writeBlockScalar(indent+"  ", s.Key, s.Value)
+			continue
+		}
 		if isCursorValueBareIdent(s.Value) {
 			fmt.Fprintf(b, "%s  %s: %s\n", indent, s.Key, s.Value)
 		} else {
@@ -1808,13 +2116,13 @@ func writeFallbacksBlock(b *buf, fbs []*ast.FallbackDecl, indent string) {
 		}
 		fmt.Fprintf(b, "%s  %s:\n", indent, fb.Name)
 		if fb.Backend != "" {
-			fmt.Fprintf(b, "%s    backend: %s\n", indent, b.str(fb.Backend))
+			writeStrProp(b, indent+"    ", "backend", fb.Backend)
 		}
 		if fb.Model != "" {
-			fmt.Fprintf(b, "%s    model: %s\n", indent, b.str(fb.Model))
+			writeStrProp(b, indent+"    ", "model", fb.Model)
 		}
 		if fb.Provider != "" {
-			fmt.Fprintf(b, "%s    provider: %s\n", indent, b.str(fb.Provider))
+			writeStrProp(b, indent+"    ", "provider", fb.Provider)
 		}
 		if len(fb.On) > 0 {
 			fmt.Fprintf(b, "%s    on: [%s]\n", indent, strings.Join(fb.On, ", "))
@@ -1826,7 +2134,7 @@ func writeFallbacksBlock(b *buf, fbs []*ast.FallbackDecl, indent string) {
 			fmt.Fprintf(b, "%s    action: %s\n", indent, fb.Action)
 		}
 		if fb.When != "" {
-			fmt.Fprintf(b, "%s    when: %s\n", indent, b.str(fb.When))
+			writeStrProp(b, indent+"    ", "when", fb.When)
 		}
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -14,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
@@ -115,10 +115,14 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			Ctx:      ctx,
 			Workflow: childWf,
 			Store:    s,
-			RunID:    childRunID,
-			Logger:   logger,
-			StoreDir: storeDir,
-			WorkDir:  childWorkDir,
+			// Same as the dispatcher's own runs: no tier is set on the
+			// child's engine, so the child workflow's block decides.
+			SandboxTiersKnown: true,
+			RunID:             childRunID,
+			ParentRunID:       req.ParentRunID,
+			Logger:            logger,
+			StoreDir:          storeDir,
+			WorkDir:           childWorkDir,
 			// A subbot is a DIFFERENT bot from its parent, so it keys its own
 			// bot-scoped memory — derived from the CHILD's path, exactly as the
 			// CLI and studio runners do. Without it the executor falls back to
@@ -159,13 +163,12 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		}
 		childExec.SetRunExtraEnv(projectEnv)
 
-		// Capture the child's terminal-node output (the last node before Done)
-		// as the subbot's result. The callback fires concurrently when the
-		// child fans out parallel branches, so the capture is mutex-guarded.
-		var (
-			lastMu sync.Mutex
-			last   map[string]any
-		)
+		// Capture what the child emits — the terminal-node output (the last
+		// node before Done) a contractless subbot returns, plus the per-node
+		// outputs a contract's projection reads (#1280). The callback fires
+		// concurrently when the child fans out parallel branches, so the
+		// capture is mutex-guarded.
+		var capture runview.SubbotOutputCapture
 		opts := []runtime.EngineOption{
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
@@ -183,12 +186,8 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// de zéro sur un enfant `failed`, la reprise du dispatcher repaierait
 			// tout son travail déjà fait.
 			runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
-			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
-				if out != nil {
-					lastMu.Lock()
-					last = out
-					lastMu.Unlock()
-				}
+			runtime.WithOnNodeFinished(func(_ context.Context, _, nodeID string, out map[string]any) {
+				capture.Record(nodeID, out)
 			}),
 		}
 		if len(projectEnv) > 0 {
@@ -252,6 +251,9 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, s, req)
-		return last, nil
+		if contract := childWf.Contract; contract != nil {
+			return subbotcontracts.ProjectOutput(contract, capture.ByNode()), nil
+		}
+		return capture.Terminal(), nil
 	}
 }

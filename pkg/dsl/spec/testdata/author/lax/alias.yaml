@@ -1,0 +1,10 @@
+# lax: an alias (*m) is resolved by the generic YAML decoder the schema validates through, so the document passes the schema — the converter refuses anchors and aliases (E050): a value is written where it is used
+dsl: 2
+nodes:
+  - agent: a
+    model: &m anthropic/claude-opus-5
+  - judge: j
+    model: *m
+workflow:
+  name: w
+  entry: a

@@ -4,8 +4,8 @@ description: How to push the current run's branch and open ONE pull request (mer
 ---
 
 <!-- DUPLICATE — byte-identical copies across bundles (iterion has no
-     skill-sharing primitive; see CLAUDE.md "If a skill ends up duplicated
-     across multiple bundles"). Edit one, edit the others:
+     skill-sharing primitive; see docs/agents/bots/skills.md, "Skills live
+     with their bundle"). Edit one, edit the others:
        bots/app-dev/skills/forge-mr-create.md
        bots/branch-improve-loop/skills/forge-mr-create.md
        bots/feature-dev/skills/forge-mr-create.md

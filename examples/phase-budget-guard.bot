@@ -13,6 +13,9 @@
 
 dsl: 2
 
+prompt plan_task:
+  Draft the implementation plan. Keep it short.
+
 schema note:
   value: string
 
@@ -20,13 +23,15 @@ schema gauge:
   used_pct: int
   exhausted: bool
 
-prompt plan_task:
-  Draft the implementation plan. Keep it short.
-
 agent plan:
   model: "anthropic/claude-sonnet-4-6"
-  user: plan_task
   output: note
+  user: plan_task
+
+agent implement:
+  model: "anthropic/claude-sonnet-4-6"
+  output: note
+  user: plan_task
 
 compute plan_budget_gate:
   output: gauge
@@ -38,11 +43,6 @@ compute plan_budget_gate:
     used_pct: "if(run.max_duration_seconds > 0, floor(run.elapsed_seconds * 100 / run.max_duration_seconds), 0)"
     exhausted: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.33"
 
-agent implement:
-  model: "anthropic/claude-sonnet-4-6"
-  user: plan_task
-  output: note
-
 fail plan_exhausted:
   description: "the plan phase outgrew its share of the budget"
   code: PLAN_BUDGET_EXHAUSTED
@@ -52,6 +52,7 @@ fail plan_exhausted:
   resumable: true
 
 workflow phase_budget_guard:
+
   entry: plan
 
   budget:
@@ -59,6 +60,9 @@ workflow phase_budget_guard:
     max_cost_usd: 5
 
   plan -> plan_budget_gate
+
   plan_budget_gate -> plan_exhausted when exhausted
+
   plan_budget_gate -> implement else
+
   implement -> done

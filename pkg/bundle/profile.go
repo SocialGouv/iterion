@@ -2,14 +2,16 @@ package bundle
 
 import (
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
 // sourceState is what a reader could do with a subbot child's source.
@@ -65,6 +67,18 @@ func MaxSyntaxRequirements(files map[string]string) SyntaxRequirements {
 // there; a source that resolves beyond the collection, through `..` or a
 // symlink, is not read and is reported as unread.
 func MaxSyntaxRequirementsDir(dir string) SyntaxRequirements {
+	return maxSyntaxRequirementsDir(dir, nil)
+}
+
+// MaxSyntaxRequirementsDirWithMain is MaxSyntaxRequirementsDir for a bundle
+// whose main is handed over as text rather than read from disk — an author
+// document validated in its bundle: the document's own profile, imports and
+// contract count, and a stale main.bot beside it is not read in its place.
+func MaxSyntaxRequirementsDirWithMain(dir, mainRel, mainText string) SyntaxRequirements {
+	return maxSyntaxRequirementsDir(dir, map[string]string{mainRel: mainText})
+}
+
+func maxSyntaxRequirementsDir(dir string, staged map[string]string) SyntaxRequirements {
 	root, collection, ok := collectionOf(dir)
 	if !ok {
 		root = filepath.Clean(dir) // not there: every source of it is missing
@@ -78,7 +92,15 @@ func MaxSyntaxRequirementsDir(dir string) SyntaxRequirements {
 			}
 		}
 	}
+	for rel := range staged {
+		if isRootEntry(rel) && !slices.Contains(entries, rel) {
+			entries = append(entries, rel)
+		}
+	}
 	return walkSyntax(entries, func(rel string) (string, sourceState) {
+		if src, ok := staged[rel]; ok {
+			return src, sourceRead // the text handed over, whatever the disk holds under that name
+		}
 		if strings.HasPrefix(rel, "../../") || rel == "../.." {
 			return "", sourceOutside // two levels up leaves the collection by construction
 		}
@@ -121,7 +143,7 @@ func isRootEntry(rel string) bool {
 
 func walkSyntax(entries []string, read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
-	var declaredBy, unread, importedBy, contractedBy []string
+	var declaredBy, unread, importedBy, contractedBy, aliasBy, matchingBy, emptyToolsBy []string
 	visited := map[string]bool{}
 	var visit func(rel string)
 	visit = func(rel string) {
@@ -171,6 +193,15 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 			if f.AST != nil && len(f.AST.Contracts) > 0 {
 				contractedBy = append(contractedBy, f.Name)
 			}
+			if f.AST != nil && len(aliasUses(f.AST)) > 0 {
+				aliasBy = append(aliasBy, f.Name)
+			}
+			if f.AST != nil && declaresVarMatching(f.AST) {
+				matchingBy = append(matchingBy, f.Name)
+			}
+			if f.AST != nil && declaresEmptyTools(f.AST) {
+				emptyToolsBy = append(emptyToolsBy, f.Name)
+			}
 			p := f.Profile
 			switch {
 			case p > profile:
@@ -208,7 +239,63 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 	unread = slices.Compact(slices.Sorted(slices.Values(unread)))
 	importedBy = slices.Compact(slices.Sorted(slices.Values(importedBy)))
 	contractedBy = slices.Compact(slices.Sorted(slices.Values(contractedBy)))
-	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, Unread: unread}
+	aliasBy = slices.Compact(slices.Sorted(slices.Values(aliasBy)))
+	matchingBy = slices.Compact(slices.Sorted(slices.Values(matchingBy)))
+	emptyToolsBy = slices.Compact(slices.Sorted(slices.Values(emptyToolsBy)))
+	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, MatchingBy: matchingBy, EmptyToolsBy: emptyToolsBy, Unread: unread}
+}
+
+// aliasUses collects the tool-name spellings of one file's AST that resolve
+// only through the Claw alias tier (toolcatalog.BuiltinAlias): the
+// agent/judge `tools:` and `tool_policy:` lists, the workflow-level
+// `tool_policy:`, a Verified Action's rung-4 `agent_tools:`, and a tool
+// node's `command:` spelled as a bare registry-tool name. The exact
+// spellings only — a pattern, a ${VAR} or an mcp-qualified name is resolved
+// where it is used, exactly as the runtime resolves it. `capabilities:` is
+// not a tool list: host rights are C081's domain and never alias.
+func aliasUses(f *ast.File) []string {
+	var out []string
+	add := func(list []string) {
+		for _, n := range list {
+			if toolcatalog.BuiltinAlias(n) != "" {
+				out = append(out, n)
+			}
+		}
+	}
+	for _, a := range f.Agents {
+		add(a.Tools)
+		add(a.ToolPolicy)
+	}
+	for _, j := range f.Judges {
+		add(j.Tools)
+		add(j.ToolPolicy)
+	}
+	for _, g := range f.Groups {
+		for _, a := range g.Agents {
+			add(a.Tools)
+			add(a.ToolPolicy)
+		}
+		for _, j := range g.Judges {
+			add(j.Tools)
+			add(j.ToolPolicy)
+		}
+		for _, t := range g.Tools {
+			add([]string{t.Command})
+			if t.Recovery != nil {
+				add(t.Recovery.AgentTools)
+			}
+		}
+	}
+	for _, t := range f.Tools {
+		add([]string{t.Command})
+		if t.Recovery != nil {
+			add(t.Recovery.AgentTools)
+		}
+	}
+	for _, w := range f.Workflows {
+		add(w.ToolPolicy)
+	}
+	return out
 }
 
 // MaxSyntaxProfile is MaxSyntaxRequirements projected on the profile.
@@ -238,6 +325,19 @@ type SyntaxRequirements struct {
 	// public contract needs the release that reads one
 	// (parser.ContractSince), whatever its profile.
 	ContractedBy []string
+	// AliasBy names the files that spell a Claw tool alias (`Read`, `Bash`,
+	// `Grep`) in a tool list: the names resolve only on a runner carrying
+	// the alias resolver (ToolAliasesSince), whatever their profile.
+	AliasBy []string
+	// MatchingBy names the files that declare a var's `[matching: "<re>"]`
+	// constraint: the form is unknown below parser.VarMatchingSince, where
+	// it is a parse error on the file rather than an unmet requirement on
+	// the bundle.
+	MatchingBy []string
+	// EmptyToolsBy names the files where an agent or judge declares
+	// `tools: []`: below DeclaredEmptyToolsSince that list reads as absent,
+	// which is the opposite bound on every CLI backend.
+	EmptyToolsBy []string
 	Unread       []string
 }
 
@@ -246,6 +346,17 @@ func (r SyntaxRequirements) UsesImport() bool { return len(r.ImportedBy) > 0 }
 
 // UsesContract reports whether any source of the bundle declares a contract.
 func (r SyntaxRequirements) UsesContract() bool { return len(r.ContractedBy) > 0 }
+
+// UsesVarMatching reports whether any source declares a var pattern.
+func (r SyntaxRequirements) UsesVarMatching() bool { return len(r.MatchingBy) > 0 }
+
+// UsesToolAliases reports whether any source of the bundle spells a Claw
+// tool alias in a tool list.
+func (r SyntaxRequirements) UsesToolAliases() bool { return len(r.AliasBy) > 0 }
+
+// UsesDeclaredEmptyTools reports whether any source declares an empty
+// agent/judge `tools:` list.
+func (r SyntaxRequirements) UsesDeclaredEmptyTools() bool { return len(r.EmptyToolsBy) > 0 }
 
 // Asks reports whether the sources use anything a floor is asked for — the
 // one predicate the push admission, `validate` and the scaffold read, so a
@@ -267,6 +378,15 @@ func (r SyntaxRequirements) Describe() string {
 	}
 	if r.UsesContract() {
 		parts = append(parts, fmt.Sprintf("`contract` (%s)", strings.Join(r.ContractedBy, ", ")))
+	}
+	if r.UsesVarMatching() {
+		parts = append(parts, fmt.Sprintf("a var `[matching: ...]` constraint (%s)", strings.Join(r.MatchingBy, ", ")))
+	}
+	if r.UsesToolAliases() {
+		parts = append(parts, fmt.Sprintf("the Claw tool alias (%s)", strings.Join(r.AliasBy, ", ")))
+	}
+	if r.UsesDeclaredEmptyTools() {
+		parts = append(parts, fmt.Sprintf("an empty `tools: []` declaration (%s)", strings.Join(r.EmptyToolsBy, ", ")))
 	}
 	return strings.Join(parts, " and ")
 }
@@ -354,6 +474,75 @@ var syntaxFloors = []syntaxFloor{
 			return parser.ContractSince, "contract", req.UsesContract()
 		},
 	},
+	{
+		pins: map[string]string{"bundle.ToolAliasesSince": ToolAliasesSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return ToolAliasesSince, "the Claw tool alias", req.UsesToolAliases()
+		},
+	},
+	{
+		pins: map[string]string{"bundle.DeclaredEmptyToolsSince": DeclaredEmptyToolsSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return DeclaredEmptyToolsSince, "an empty `tools: []` declaration", req.UsesDeclaredEmptyTools()
+		},
+	},
+	{
+		pins: map[string]string{"parser.VarMatchingSince": parser.VarMatchingSince},
+		need: func(req SyntaxRequirements) (string, string, bool) {
+			return parser.VarMatchingSince, `a var's [matching: "<re>"] constraint`, req.UsesVarMatching()
+		},
+	},
+}
+
+// declaresEmptyTools reports whether any agent or judge of the file — top
+// level or inside a group — declares an EMPTY `tools:` list. Nilness is the
+// carrier (toolcatalog.ToolsDeclared): a non-nil list of length zero is the
+// declaration, an absent one is nil.
+func declaresEmptyTools(f *ast.File) bool {
+	empty := func(tools []string) bool { return tools != nil && len(tools) == 0 }
+	for _, a := range f.Agents {
+		if empty(a.Tools) {
+			return true
+		}
+	}
+	for _, j := range f.Judges {
+		if empty(j.Tools) {
+			return true
+		}
+	}
+	for _, g := range f.Groups {
+		for _, a := range g.Agents {
+			if empty(a.Tools) {
+				return true
+			}
+		}
+		for _, j := range g.Judges {
+			if empty(j.Tools) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// declaresVarMatching reports whether any var of the file — top-level or
+// workflow-level — carries a pattern constraint.
+func declaresVarMatching(f *ast.File) bool {
+	blocks := []*ast.VarsBlock{f.Vars}
+	for _, w := range f.Workflows {
+		blocks = append(blocks, w.Vars)
+	}
+	for _, vb := range blocks {
+		if vb == nil {
+			continue
+		}
+		for _, field := range vb.Fields {
+			if field != nil && field.Matching != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func profilePins() map[string]string {

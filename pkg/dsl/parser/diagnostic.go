@@ -12,6 +12,13 @@ const (
 	DiagBadIndentation  DiagCode = "E003" // indentation mismatch (tabs, misaligned dedent, nesting depth)
 	DiagUnterminatedStr DiagCode = "E004" // unterminated string literal
 	DiagBadEscape       DiagCode = "E005" // unknown escape sequence in a quoted string (strict-escape mode)
+	// DiagNotUTF8 refuses a source holding a byte that is not UTF-8, before
+	// it lexes: the lexer reads runes, and a byte that is not UTF-8 arrives
+	// at every reader of the program as U+FFFD where its author wrote
+	// another character — measured in #1808 as misleading E002s at wrong
+	// positions instead of the cause. The author document refuses the same
+	// byte by name (E050); the .bot does so from here.
+	DiagNotUTF8 DiagCode = "E006" // the source holds a byte that is not UTF-8
 
 	// Declaration errors
 	DiagDuplicateDecl   DiagCode = "E010" // duplicate declaration name
@@ -40,6 +47,15 @@ const (
 	DiagBadImportPath    DiagCode = "E045" // an import path that is not a quoted, relative, slash-separated `.bot` path into lib/
 	DiagImportUnreadable DiagCode = "E046" // an imported fragment that cannot be read: missing, or beyond what the unit may read
 	DiagImportCycle      DiagCode = "E047" // a fragment that imports itself, through however many files
+	DiagFilesystemRoot   DiagCode = "E048" // the unit's root is the filesystem's own root: the client-boundary root cut is refused, not trusted
+
+	// Author-document errors (the YAML twin of a .bot, pkg/dsl/author)
+	DiagAuthorDocument      DiagCode = "E050" // the YAML document itself is refused: not exactly one document, an anchor, an alias, a merge key or an explicit tag, a duplicate or non-string key, too deep or too large
+	DiagAuthorValue         DiagCode = "E051" // a value that is not the shape its property or part takes, or one the .bot cannot write: a negative or non-finite number, a float where an integer, a word where a bool, a key the document's top level does not have
+	DiagAuthorHeader        DiagCode = "E052" // no `dsl:` key — the author document names its syntax profile, always
+	DiagAuthorPromptBody    DiagCode = "E053" // a text the .bot reads otherwise than the document wrote it — a prompt body the lexer settles, a block scalar holding a line separator, a ` #` that ends a plain text value in a comment: a warning names what changed, an error what has no written form
+	DiagAuthorNoWrittenForm DiagCode = "E054" // the document reads, but the program it describes has no written .bot form: the text the writer produces reads back as another program (unparse.Verify names the cause)
+	DiagAuthorSeparators    DiagCode = "E055" // the document holds invisible line separators (U+0085 NEL, U+2028 LS, U+2029 PS): the scanner ends a line at each — inside a block body one is read as a newline, on a trailing line it is chomped like a blank line; a document-level warning lists every line that holds one (#1663)
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -50,6 +66,7 @@ var hints = map[DiagCode]string{
 	DiagExpectedToken:       "Give this position the shape the parser wanted: a bare name for a prompt/schema/node reference, a quoted string for a value, an indented block under a header, an inline `[a, b]` list.",
 	DiagBadIndentation:      "Indent with spaces only, by the same width at every level, and align the line with an enclosing block.",
 	DiagUnterminatedStr:     "Close the quote, or use a backtick raw string / a `|` block scalar for multi-line content.",
+	DiagNotUTF8:             "Every reader of a .bot reads UTF-8: save the file as UTF-8 — the byte named here is a character written in another encoding (Latin-1, Windows-1252), read as U+FFFD (�) where its author wrote another character.",
 	DiagBadEscape:           "In strict-escape mode a backslash only escapes `\\\"`, `\\\\`, `\\n`, `\\t`, `\\r` and `\\0`: double the backslash for a literal one, or move the text to a backtick raw string / a `|` block scalar.",
 	DiagDuplicateDecl:       "Rename one of the two declarations.",
 	DiagReservedName:        "`done` and `fail` are the reserved terminal targets; pick another name.",
@@ -69,6 +86,13 @@ var hints = map[DiagCode]string{
 	DiagBadImportPath:       "Write `import \"lib/<name>.bot\"`: a quoted, relative, slash-separated path to a `.bot` fragment under the bot's `lib/` directory, one import per line.",
 	DiagImportUnreadable:    "Create the fragment under the bot's `lib/` directory, or fix the path; a symlink, an absolute path or a path leaving the bot's directory is never read.",
 	DiagImportCycle:         "A fragment may not import a file that imports it back: move the shared declarations into a third fragment both import.",
+	DiagFilesystemRoot:      "Load the bot from a directory, not the filesystem root: a unit rooted at `/` puts the whole filesystem inside the unit, and no name cut is safe there.",
+	DiagAuthorDocument:      "Write one plain YAML document: no `---` document separator, no anchor (`&a`) or alias (`*a`), no `<<` merge key, no explicit `!!tag`, every key once per mapping and written as a plain word.",
+	DiagAuthorValue:         "Give the value the shape the property's form takes (docs/references/author-schema.md, § Values): a string, an integer as digits, `true`/`false`, a list as `[a, b]`, a block as an indented mapping. A number is written as the .bot writes one — digits, no leading 0, no exponent, no `.inf`, no sign where a number is taken (where the value is always text — a `with` value, a parameter — its `-` is its own) — and a text YAML would read as a number or a bool is quoted.",
+	DiagAuthorHeader:        "Add `dsl: 2` (or `dsl: 1`) at the top of the document: the syntax profile the .bot is written in. The author document never guesses one.",
+	DiagAuthorNoWrittenForm: "The .bot this document describes cannot be written so that it reads back as the same program; the message names the cause — a prompt body the .bot syntax cannot hold, a fallback route without a name, a profile-1 catalog long enough to push the strict-escape directive out of the lexer's window while a value needs it. Change what it names (`dsl: 2`, a shorter catalog, a named route, a reindented body): the written .bot would otherwise mean another program.",
+	DiagAuthorPromptBody:    "A prompt's text is read as the .bot lexer reads a body: leading and trailing blank lines dropped, the first line's indentation taken off every line, interior blank lines dropped in profile 1. A block scalar's line separator (U+2028, U+2029) is read as the line break the scanner meant, in a literal block; a folded block cannot say it. Write the text as it will be read, or accept the reading.",
+	DiagAuthorSeparators:    "Write a newline, or remove the invisible character: the lines the message names hold a U+0085 (NEL), U+2028 (LS) or U+2029 (PS), which an editor shows as nothing.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is

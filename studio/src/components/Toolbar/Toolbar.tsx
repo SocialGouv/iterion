@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { useRecentsStore } from "@/store/recents";
-import { useBackendDetectStore } from "@/store/backendDetect";
 import * as api from "@/api/client";
 import ConfirmDialog from "../shared/ConfirmDialog";
 import { useConfirm } from "@/hooks/useConfirm";
+import { useLatchedBundleRef } from "@/hooks/useLatchedBundleRef";
 import { Spinner } from "@/components/ui/Spinner";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
 import FilePicker from "../FilePicker/FilePicker";
@@ -19,6 +19,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui";
 import ToolbarGroup from "./ToolbarGroup";
+import RunButton from "./RunButton";
 import { useDocumentFileOps } from "./useDocumentFileOps";
 import BundleFilesDrawer from "@/components/Editor/BundleFilesDrawer";
 import { forkBotSource } from "@/api/botSources";
@@ -50,7 +51,6 @@ import {
   StackIcon,
   FrameIcon,
   ListBulletIcon,
-  PlayIcon,
 } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
@@ -63,7 +63,10 @@ export default function Toolbar() {
   const redo = useDocumentStore((s) => s.redo);
   const canUndo = useDocumentStore((s) => s.canUndo);
   const canRedo = useDocumentStore((s) => s.canRedo);
-  const isDirty = useDocumentStore((s) => s.isDirty);
+  // A VALUE, not the function: the badge has to re-render when the Source
+  // view's buffer moves, and a selector returning `s.hasUnsavedWork` would
+  // hand back the same stable function reference every time.
+  const hasUnsavedWork = useDocumentStore((s) => s.isDirty() || s.isSourceDirty());
   const addToast = useUIStore((s) => s.addToast);
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
   const toggleSourceView = useUIStore((s) => s.toggleSourceView);
@@ -82,10 +85,6 @@ export default function Toolbar() {
   const setFilePickerOpen = useUIStore((s) => s.setFilePickerOpen);
   const recents = useRecentsStore((s) => s.recents);
   const clearRecents = useRecentsStore((s) => s.clearRecents);
-  const hasResolvedBackend = useBackendDetectStore((s) => !!s.report?.resolved_default);
-  // `report != null` once the host probe has returned (success or fail) —
-  // gates the missing-credential nudge so it doesn't flash during the boot probe.
-  const backendProbed = useBackendDetectStore((s) => s.report != null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   // Examples list for the File menu submenu — fetched lazily the first
@@ -161,8 +160,18 @@ export default function Toolbar() {
   // A team-authored cloud bot is a multi-file bundle: expose its files (skills,
   // manifest, …) via the Bundle-files drawer. Detected from the botsource://
   // virtual path the editor loads a tenant bot under.
-  const bundleRef = api.parseBotSourceEditorPath(currentFilePath ?? "");
+  const parsedBundleRef = api.parseBotSourceEditorPath(currentFilePath ?? "");
   const [bundleDrawerOpen, setBundleDrawerOpen] = useState(false);
+  // The drawer is mounted conditionally on this, so losing it UNMOUNTS the
+  // drawer — past its own discard gate, which is the one place that can ask
+  // about the buffer it holds (that buffer is component state, invisible to
+  // `hasUnsavedWork()`). File → New, Import and "Start blank" all reach here
+  // after their own guard said "nothing to lose", because none of them can
+  // see it. Latching the last bundle while the drawer is OPEN keeps the
+  // drawer mounted so its gate is reachable; it also keeps `onOpenChange`
+  // firing, without which the parent still believes the drawer is open and
+  // pops it back up on the next bundle.
+  const bundleRef = useLatchedBundleRef(parsedBundleRef, bundleDrawerOpen);
 
   // "Duplicate & edit" for a read-only catalog bot open in the cloud editor:
   // fork it into the team's bot store and reopen the editable tenant copy.
@@ -458,57 +467,9 @@ export default function Toolbar() {
           <FileStatusBadge
             currentFilePath={currentFilePath}
             hasDocument={!!document}
-            isDirty={isDirty()}
+            isDirty={hasUnsavedWork}
           />
-          {backendProbed && !hasResolvedBackend && currentFilePath && (
-            // Run is disabled for two reasons (no file / no credential) but
-            // both share one tooltip. When the *credential* is the blocker,
-            // surface a clickable nudge straight to Preferences → Backends —
-            // otherwise the only signal is a silently greyed-out button.
-            <IconButton
-              variant="warning"
-              size="sm"
-              label="No LLM credential detected — open Preferences → Backends"
-              tooltip="No LLM credential detected — click to open Preferences → Backends"
-              onClick={() =>
-                window.dispatchEvent(
-                  new CustomEvent("iterion:open-settings", {
-                    detail: { tab: "backends" },
-                  }),
-                )
-              }
-            >
-              <ExclamationTriangleIcon />
-            </IconButton>
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            leadingIcon={<PlayIcon />}
-            onClick={() =>
-              setLocation(
-                currentFilePath
-                  ? `/runs/new?file=${encodeURIComponent(currentFilePath)}`
-                  : // Unsaved buffer — launch off inline source (LaunchView
-                    // reads the document store). The only launch path in cloud
-                    // mode, where the pod rootfs is read-only and a workflow
-                    // can never be saved to disk.
-                    `/runs/new`,
-              )
-            }
-            disabled={(!currentFilePath && !document) || !hasResolvedBackend}
-            title={
-              !currentFilePath && !document
-                ? "Write or open a workflow first to launch a run"
-                : !hasResolvedBackend
-                ? "No LLM credentials detected — open Preferences → Backends to configure."
-                : currentFilePath
-                ? `Launch ${currentFilePath}`
-                : "Launch the unsaved workflow"
-            }
-          >
-            Run
-          </Button>
+          <RunButton />
         </div>
         <div className="flex items-center gap-1 pl-2 border-l border-border-default">
           <IconButton

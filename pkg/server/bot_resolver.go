@@ -74,6 +74,11 @@ type launchBot struct {
 	BundleDir string
 	// Ref carries the snapshot and, for stored origins, the row provenance.
 	Ref *runview.BotBundleRef
+	// sourceRowID is the botsource row id a STORED origin resolved from —
+	// the identity half of the #1381 version pin: a delete-and-recreate of
+	// the same slug mints a new id, so a pin taken on the old incarnation
+	// can never be served by the new one. Empty for non-stored tiers.
+	sourceRowID string
 	// Manifest describes the exact tier that supplied Source.
 	Manifest        *bundle.Manifest
 	cleanupSnapshot func()
@@ -275,13 +280,14 @@ func (s *Server) storedLaunchBot(bs botsource.BotSource, origin string) (*launch
 		s.warnIfOverrideShadowsNewerBake(bs.TenantID, bs.Slug, origin, m.Version)
 	}
 	return &launchBot{
-		BotID:     bs.Slug,
-		Origin:    origin,
-		Path:      "bots/" + bs.Slug + "/" + botsource.MainBotFile,
-		Source:    main,
-		BundleDir: dir,
-		Ref:       &runview.BotBundleRef{TenantID: bs.TenantID, Slug: bs.Slug, Version: bs.Version},
-		Manifest:  bs.Manifest(),
+		BotID:       bs.Slug,
+		Origin:      origin,
+		Path:        "bots/" + bs.Slug + "/" + botsource.MainBotFile,
+		Source:      main,
+		BundleDir:   dir,
+		Ref:         &runview.BotBundleRef{TenantID: bs.TenantID, Slug: bs.Slug, Version: bs.Version},
+		sourceRowID: bs.ID,
+		Manifest:    bs.Manifest(),
 	}, nil
 }
 

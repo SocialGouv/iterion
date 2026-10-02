@@ -17,19 +17,7 @@ dsl: 2
 
 vars:
   feature_prompt: string = "Add a one-line CHANGELOG entry describing a notable recent change."
-  review_env_prompt: string = ""   ## optional: how to make the change testable (serve/deploy/build)
-
-schema impl_result:
-  summary: string
-
-schema review_verdict:
-  decision: string      ## approved | changes_requested
-  confidence: string    ## low | medium | high
-  blockers: string[]
-
-schema provision_result:
-  url: string
-  notes: string
+  review_env_prompt: string = "" ## optional: how to make the change testable (serve/deploy/build)
 
 prompt provision_system:
   You provision a review environment so a human can test the change.
@@ -63,33 +51,51 @@ prompt companion_system:
   needs_human_input=false only once you have a confident verdict. Keep
   every message short and concrete.
 
+schema impl_result:
+  summary: string
+
+schema review_verdict:
+  decision: string ## approved | changes_requested
+  confidence: string ## low | medium | high
+  blockers: string[]
+
+schema provision_result:
+  url: string
+  notes: string
+
 agent provision_review_env:
   backend: "claude_code"
-  system: provision_system
   output: provision_result
+  system: provision_system
 
 agent implement:
   backend: "claude_code"
+  output: impl_result
   system: impl_system
   user: impl_user
-  output: impl_result
 
 human ship_review:
+  output: review_verdict
   interaction: review
   model: "anthropic/claude-sonnet-4-6"
   system: companion_system
-  output: review_verdict
   review_url: "{{outputs.provision_review_env.url}}"
   posture: human_required
   merge_strategy: squash
-  merge_into: current
+  merge_into: "current"
   max_turns: 8
 
 workflow review_merge_gate:
-  entry: provision_review_env
   worktree: auto
+
+  entry: provision_review_env
+
   provision_review_env -> implement
+
   implement -> ship_review
+
   ship_review -> done when "decision == 'approved'"
+
   ship_review -> implement when "decision == 'changes_requested'" as fix_loop(5)
+
   ship_review -> fail

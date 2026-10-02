@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -15,19 +16,7 @@ import (
 // Report. Detection sondes are not mocked — we run them against a scrubbed
 // env so the result is deterministic ("nothing available").
 func TestBackendsDetectRouteShape(t *testing.T) {
-	for _, k := range []string{
-		"ITERION_BACKEND_PREFERENCE",
-		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		"OPENAI_API_KEY", "XAI_API_KEY",
-		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
-		"AWS_REGION", "AWS_DEFAULT_REGION",
-		"GOOGLE_CLOUD_PROJECT",
-		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
-		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
-		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR", "ITERION_PI_AGENT_DIR",
-	} {
-		t.Setenv(k, "")
-	}
+	clearBackendDetectEnv(t)
 	t.Setenv("HOME", t.TempDir())
 
 	srv := New(Config{DisableAuth: true}, iterlog.New(iterlog.LevelError, nil))
@@ -86,22 +75,7 @@ func TestBackendsDetectRouteShape(t *testing.T) {
 // TestBackendsDetectReflectsAnthropic verifies that setting an env var is
 // reflected in the JSON shape and that ResolvedDefault flips to claw.
 func TestBackendsDetectReflectsAnthropic(t *testing.T) {
-	for _, k := range []string{
-		"ITERION_BACKEND_PREFERENCE",
-		"ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "XAI_API_KEY",
-		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
-		"AWS_REGION", "AWS_DEFAULT_REGION",
-		"GOOGLE_CLOUD_PROJECT",
-		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
-		// ANTHROPIC_BASE_URL / ZAI_API_KEY steer detection onto the
-		// z.ai facade (hasZAIBaseURL), which suppresses the "anthropic"
-		// provider and would leave claw unresolved. Clear them so the
-		// test is isolated from a host running against z.ai/bigmodel.
-		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
-		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR", "ITERION_PI_AGENT_DIR",
-	} {
-		t.Setenv(k, "")
-	}
+	clearBackendDetectEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
@@ -148,6 +122,61 @@ func TestBackendsDetect_NoSensitiveLeak(t *testing.T) {
 	for _, banned := range []string{"sealed_payload", "access_token", "refresh_token"} {
 		if strings.Contains(rec.Body.String(), banned) {
 			t.Fatalf("response contains banned field %q", banned)
+		}
+	}
+}
+
+// clearBackendDetectEnv removes the variables backend detection reads (the
+// list mirrors pkg/backend/detect; a missing one lets the host's credentials
+// steer the test), for the rest of the test — unset, not emptied: a CLI started with
+// CLAUDE_CONFIG_DIR="" or CODEX_HOME="" takes the empty string for a relative
+// directory and writes its config backups into the test's working directory,
+// the package source dir. ANTHROPIC_BASE_URL / ZAI_API_KEY steer detection
+// onto the z.ai facade (hasZAIBaseURL), which suppresses the "anthropic"
+// provider: clearing them isolates a test from a host running against
+// z.ai/bigmodel.
+func clearBackendDetectEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"ITERION_BACKEND_PREFERENCE",
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+		"OPENAI_API_KEY", "XAI_API_KEY",
+		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+		"AWS_REGION", "AWS_DEFAULT_REGION",
+		"GOOGLE_CLOUD_PROJECT",
+		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
+		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
+		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR", "ITERION_PI_AGENT_DIR",
+		"MOONSHOT_API_KEY", "OPENAI_BASE_URL", "ITERION_OPENAI_USE_OAUTH",
+		"XDG_DATA_HOME", "ITERION_OPENCODE_BIN",
+	} {
+		t.Setenv(k, "") // registers the restore of the operator's value
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatalf("unset %s: %v", k, err)
+		}
+	}
+}
+
+// The detection variables are ABSENT for the rest of the test, as a child CLI
+// inherits them — an emptied CLAUDE_CONFIG_DIR is a relative directory to
+// the claude CLI, which then writes backups into the package source dir —
+// and the operator's values are back once the test ends.
+func TestClearBackendDetectEnv_UnsetsRatherThanEmpties(t *testing.T) {
+	keys := []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "ITERION_PI_AGENT_DIR"}
+	for _, k := range keys {
+		t.Setenv(k, "/operator/value")
+	}
+	t.Run("cleared", func(t *testing.T) {
+		clearBackendDetectEnv(t)
+		for _, k := range keys {
+			if v, present := os.LookupEnv(k); present {
+				t.Errorf("%s is present (%q) after clearBackendDetectEnv, want it unset", k, v)
+			}
+		}
+	})
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "/operator/value" {
+			t.Errorf("%s = %q after the test that cleared it, want the operator's value back", k, v)
 		}
 	}
 }

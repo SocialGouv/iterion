@@ -157,6 +157,50 @@ const (
 	RunEndReasonSuperseded RunEndReason = "superseded"
 )
 
+// RunTrust says who wrote the code in a run's workspace. It rides the run
+// document, not the launching surface, because the decisions it governs are
+// taken again long after the launch: a resume and a usage-window retry
+// re-resolve credentials from the stored run, and a forked child inherits its
+// parent's repository target.
+//
+// It is deliberately a named string rather than a bool so a third class can
+// be added later — and so the predicate every enforcement site calls is
+// Trusted(), which admits ONE value and refuses everything else. A future
+// RunTrust therefore has to state its own policy instead of inheriting the
+// trusted one by being unrecognised.
+type RunTrust string
+
+const (
+	// RunTrustDefault is the zero value: the workspace is the operator's own
+	// checkout, or a repository the tenant controls. Every run written before
+	// this field existed decodes to it, which is what those runs are.
+	RunTrustDefault RunTrust = ""
+	// RunTrustFork marks a workspace whose content was authored by someone
+	// outside the tenant — today, the head of a fork pull request served by
+	// the opt-in fork review lane. It WITHDRAWS, wherever it is read:
+	// the forge publish grant (no status, no review, no comment), the
+	// tenant's workflow/generic secrets (no forge_token in the run's
+	// credential bundle, hence none written into the workspace's git
+	// credential store), and any mutating bot. It does NOT withdraw the LLM
+	// credential: the lane's whole purpose is to produce a review, and its
+	// spend is bounded by the per-author budget instead.
+	RunTrustFork RunTrust = "fork"
+)
+
+// Trusted is the predicate EVERY enforcement site calls, and it admits
+// exactly one value. Written this way round on purpose: the negative form
+// (`t == RunTrustFork`) would read an unknown value — a document written by a
+// newer replica mid-rollout, a hand-edited row — as trusted and hand it the
+// publish grant and the tenant's secrets. `if !run.Trust.Trusted()` withdraws
+// for "fork" AND for anything this binary does not recognise, which is the
+// only safe answer to "I do not know who wrote this code".
+func (t RunTrust) Trusted() bool { return t == RunTrustDefault }
+
+// IsFork names the one untrusted class this binary knows, for the sites that
+// must WORD a refusal or pick a lane rather than withhold a capability.
+// Never use it to gate a capability — Trusted() is that predicate.
+func (t RunTrust) IsFork() bool { return t == RunTrustFork }
+
 // Message is the human sentence a reason writes into run.Error — what the run
 // list, the board cards and the merge-gate synthetic status quote. An unknown
 // or empty reason reads as a bare "cancelled": an automated stop that cannot
@@ -400,7 +444,7 @@ type NodeServed struct {
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
 	// Fingerprint is the provider fingerprint the backend reported for the
-	// session behind this record ("anthropic-oauth", "facade:<base url>",
+	// session behind this record ("anthropic-oauth", "facade:<slot>:<base url>",
 	// …). A model id alone cannot tell that an Anthropic-shaped facade
 	// answered a claude id with whatever it aliases it to; the fingerprint
 	// can. It names the route that SERVED on a success and the one that
@@ -612,6 +656,32 @@ type Run struct {
 	// fields; aggregation is by polling children's terminal status.
 	ParentRunID string `json:"parent_run_id,omitempty" bson:"parent_run_id,omitempty"`
 
+	// PinnedProviders are the provider names some resolved route of this
+	// run NAMES — a node's `provider:` chain, a launch-time provider
+	// override, a `provider/model` prefix, a fallback route — sorted,
+	// lower-cased, restricted to the vocabulary the publisher can fund.
+	// It lets a pinned facade provider be funded at the org and platform
+	// tiers even when another slot already fills its wire family
+	// (cloudpublisher fillFromOrg / fillFromPlatform).
+	//
+	// LAUNCH-FROZEN, unlike CredFingerprints below: stamped once by the
+	// launch that derived it, replayed from here by every resume — the
+	// same replay-from-the-doc doctrine as ModelOverrides and Fallback.
+	// A resume re-resolves its source, so re-deriving would let a source
+	// that moved between launch and resume change which credentials the
+	// run is granted: a funding decision taken from a program the launch
+	// never approved.
+	//
+	// Empty means "nothing pinned, or a run that predates this field":
+	// the tiers then fill one credential per wire family exactly as
+	// before. It is a LOWER BOUND, never a claim of completeness — a
+	// route the walk cannot resolve (a subbot's inner nodes, an `auto`
+	// hint, a `{{vars.…}}` provider) contributes nothing, so the slot it
+	// would have needed stays unfillable and its node is refused by name.
+	// That is the safe direction: a missing pin costs a loud refusal, an
+	// invented one would hand a run a credential nobody asked for.
+	PinnedProviders []string `json:"pinned_providers,omitempty" bson:"pinned_providers,omitempty"`
+
 	// CredFingerprints are the stable audit identities of the credentials
 	// the publisher sealed for this run (API-key and OAuth fingerprints —
 	// never secrets). Stamped at launch and RE-stamped at every resume,
@@ -674,6 +744,14 @@ type Run struct {
 
 	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
 	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
+	// PublicContract is the bound `contract` of the program this run
+	// executes, in its wire form — the engine stamps it at launch and
+	// mirrors it on every pass (a resume whose program dropped the contract
+	// clears it). A parent that re-attaches to a finished `subbot` child
+	// projects the output from THIS contract — the one the run executed —
+	// not from a source recompiled after the fact, which may have changed
+	// or vanished (#1280, ADR-099).
+	PublicContract json.RawMessage `json:"public_contract,omitempty" bson:"public_contract,omitempty"`
 	// ArtifactCompatibilityRevision records the workflow revision for which an
 	// operator explicitly accepted the source-derived portions of every
 	// retained artifact contract with --force. Artifact bodies remain immutable;
@@ -700,8 +778,10 @@ type Run struct {
 	// whole reason you are rewinding.
 	//
 	// Best-effort and size-capped (see runtime.maxPersistedWorkflowSource):
-	// an unreadable or oversized source simply disables auto-targeting,
-	// leaving `--node` to work as before.
+	// an unreadable or oversized source disables auto-targeting, leaving
+	// `--node` to work as before, and makes `fork --new-inputs` refuse —
+	// the fork gate checks operator-supplied values against the var
+	// constraints declared in the source the run executed.
 	WorkflowSource string `json:"workflow_source,omitempty" bson:"workflow_source,omitempty"`
 	// WorkflowSources is every file of the unit the run executed — the
 	// main and the fragments its imports reach — by slash path from the
@@ -1072,6 +1152,20 @@ type Run struct {
 	// the run. Empty in local mode (workspace is the user's cwd).
 	RepoURL string `json:"repo_url,omitempty" bson:"repo_url,omitempty"`
 	RepoSHA string `json:"repo_sha,omitempty" bson:"repo_sha,omitempty"`
+	// Trust classifies WHO WROTE the code this run's workspace holds, and it
+	// is a property of the RUN rather than of its launching surface: a
+	// resume, a retry after a usage window and a forked child all rebuild
+	// their credentials from THIS document, long after the lane that admitted
+	// the work is out of scope. Empty (RunTrustDefault) is every run that
+	// exists today; see RunTrust for what RunTrustFork withdraws.
+	Trust RunTrust `json:"trust,omitempty" bson:"trust,omitempty"`
+	// RepoSHAExpected pins the commit the launch ADMITTED, for a lane whose
+	// RepoSHA is a mutable name an untrusted party can move between the
+	// admission and the checkout (a fork pull request's head ref). The runner
+	// fetches RepoSHA, then refuses the run when the fetched commit is not
+	// this one. Empty disables the comparison — every lane whose ref no
+	// untrusted party can move.
+	RepoSHAExpected string `json:"repo_sha_expected,omitempty" bson:"repo_sha_expected,omitempty"`
 	// ProjectPath is the stable forge slug ("group/project" on GitLab,
 	// "owner/repo" on GitHub/Forgejo) the run targets. Distinct from the
 	// raw RepoURL clone URL: it is the normalized, human-meaningful
@@ -1675,10 +1769,14 @@ type Checkpoint struct {
 	// BudgetUnpricedTokens / BudgetUnpricedNodes carry the volume the cost
 	// axis could not price. Absent from checkpoints written before they
 	// existed, which restores as zero — the prior behaviour.
-	BudgetUnpricedTokens int   `json:"budget_unpriced_tokens,omitempty" bson:"budget_unpriced_tokens,omitempty"`
-	BudgetUnpricedNodes  int   `json:"budget_unpriced_nodes,omitempty" bson:"budget_unpriced_nodes,omitempty"`
-	BudgetIterationsUsed int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
-	BudgetElapsedNS      int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
+	BudgetUnpricedTokens int `json:"budget_unpriced_tokens,omitempty" bson:"budget_unpriced_tokens,omitempty"`
+	BudgetUnpricedNodes  int `json:"budget_unpriced_nodes,omitempty" bson:"budget_unpriced_nodes,omitempty"`
+	// BudgetUnreportedCalls counts the LLM calls whose usage the provider
+	// did not report in full. Absent from earlier checkpoints, which
+	// restores as zero — the prior behaviour.
+	BudgetUnreportedCalls int   `json:"budget_unreported_calls,omitempty" bson:"budget_unreported_calls,omitempty"`
+	BudgetIterationsUsed  int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
+	BudgetElapsedNS       int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
 	// CostUSDTotal is the run's cumulative LLM spend across ALL execution
 	// segments. Persisted so the daily-spend-cap ledger (a monotonic max of
 	// the per-run cumulative) keeps climbing after a resume instead of

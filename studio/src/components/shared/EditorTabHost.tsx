@@ -9,6 +9,7 @@ import {
 } from "react";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
+import { useStore } from "zustand";
 
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import MainSpinner from "@/components/shared/MainSpinner";
@@ -16,6 +17,8 @@ import {
   DocumentStoreProvider,
   getOrCreateDocumentStore,
   useDocumentStore,
+  type DocumentState,
+  type SourceBuffer,
 } from "@/store/document";
 import {
   SelectionStoreProvider,
@@ -30,6 +33,7 @@ import { editorDraftKey } from "@/hooks/useDraftBot";
 import { applyOpenedFile } from "@/lib/openedFile";
 import { applyParsedSource } from "@/lib/salvage";
 import { isDefaultTabLabel, useTabsStore } from "@/store/tabs";
+import { useDropEditorTab } from "@/hooks/useDropEditorTab";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 import { botDisplayLabel } from "@/lib/botLabel";
@@ -179,6 +183,18 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
   });
 
   const appliedRef = useRef<string | null>(null);
+  // What the last hydration INSTALLED: the generation it left the document
+  // at, and the Source buffer as it was. The canvas is the author's once
+  // either moved — a canvas edit moves the generation and not
+  // `currentSource`, which is why comparing the source alone let a later
+  // draft replace canvas edits.
+  const installedRef = useRef<{ generation: number; source: SourceBuffer | null } | null>(null);
+  // An explicit replacement the author asked for (an Open still loading)
+  // wins: a draft landing first would get its answer refused for edits
+  // nobody made. The draft waits, and is looked at again once it ends.
+  // Read from `docStore` itself: this host sits ABOVE the provider it
+  // renders, so the context hook would answer for another store.
+  const replacementPending = useStore(docStore, (s) => s._pendingIntent !== null);
   useEffect(() => {
     if (!draft || file) return;
     const source = draftQuery.data;
@@ -206,25 +222,28 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
     }
     if (source === appliedRef.current) return;
 
-    const st = docStore.getState();
     // Never clobber the operator. We own the buffer only while it still holds
-    // exactly what we last put there; the moment they edit it, the canvas is
-    // theirs and a new draft waits for them to ask for it.
-    if (st.currentSource !== null && st.currentSource !== appliedRef.current) {
-      return;
-    }
+    // exactly what we last put there; the moment they edit it — the source,
+    // the canvas, or the Source view's text — it is theirs, and a new draft
+    // waits for them to ask for it.
+    const theirs = (st: DocumentState) => {
+      if (st.currentSource !== null && st.currentSource !== appliedRef.current) return true;
+      const installed = installedRef.current;
+      return !!installed && (st._generation !== installed.generation || st.sourceBuffer !== installed.source);
+    };
+    if (replacementPending || theirs(docStore.getState())) return;
 
     let cancelled = false;
     void parseSource(source)
       .then((parsed) => {
         if (cancelled) return;
         const st2 = docStore.getState();
-        if (
-          st2.currentSource !== null &&
-          st2.currentSource !== appliedRef.current
-        ) {
-          return; // they started typing while we were parsing
-        }
+        // They started editing while we were parsing, or asked for another
+        // document.
+        if (st2._pendingIntent !== null || theirs(st2)) return;
+        // A replacement: a Save As still writing the previous draft does
+        // not bind its name to this one.
+        st2.markReplaced();
         // Document and verdict together: a draft whose source does not parse
         // whole is a salvage, and writing it back would drop what the parser
         // could not read.
@@ -232,6 +251,8 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         st2.setCurrentSource(source);
         st2.setDiagnostics(parsed.diagnostics);
         appliedRef.current = source;
+        const after = docStore.getState();
+        installedRef.current = { generation: after._generation, source: after.sourceBuffer };
         setLoadState("ready");
       })
       .catch((err) => {
@@ -248,6 +269,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
     draft,
     file,
     docStore,
+    replacementPending,
     toastIfOnScreen,
     draftQuery.data,
     draftQuery.isPending,
@@ -327,26 +349,35 @@ function TabLoadErrorState({
   onRetry?: () => void;
 }) {
   const [, setLocation] = useLocation();
+  // Through the same guard as every other editor-tab close: the tab's store
+  // can still hold unsaved work under this card — a draft tab shown again
+  // after its draft stopped being readable keeps what the author was
+  // editing — and closing disposes it.
+  const { guardDroppingEditorTab, dialog } = useDropEditorTab();
   const closeButton = (
     <Button
       variant="secondary"
       size="sm"
-      onClick={() => {
-        useTabsStore.getState().closeTab(tabId);
-        const next = useTabsStore.getState();
-        const newActive = next.tabs.find(
-          (t) => t.id === next.activeEditorTabId,
-        );
-        const f = newActive?.params.file ?? "";
-        setLocation(f ? `/editor?file=${encodeURIComponent(f)}` : "/editor", {
-          replace: true,
-        });
-      }}
+      onClick={() =>
+        void guardDroppingEditorTab(() => {
+          useTabsStore.getState().closeTab(tabId);
+          const next = useTabsStore.getState();
+          const newActive = next.tabs.find(
+            (t) => t.id === next.activeEditorTabId,
+          );
+          const f = newActive?.params.file ?? "";
+          setLocation(f ? `/editor?file=${encodeURIComponent(f)}` : "/editor", {
+            replace: true,
+          });
+        }, tabId)
+      }
     >
       Close tab
     </Button>
   );
   return (
+    <>
+    {dialog}
     <EmptyState
       className="bg-surface-0"
       icon={<ExclamationTriangleIcon className="h-6 w-6 text-warning" />}
@@ -363,6 +394,7 @@ function TabLoadErrorState({
       }
       secondaryAction={onRetry ? closeButton : undefined}
     />
+    </>
   );
 }
 
@@ -375,27 +407,53 @@ function TabLoadErrorState({
 //
 // Uses botDisplayLabel so a bundle's `main.bot` shows the persona
 // display_name (e.g. "Featurly") / technical id ("feature-dev") rather
-// than the non-distinctive basename "main.bot". Only acts when
-// `currentFilePath` is non-null. Resetting label/params whenever path is
-// null would race the openFile resolution on every new tab open and
-// clobber values set by the caller.
+// than the non-distinctive basename "main.bot".
+//
+// The mirror runs both ways, on two different facts. A path binds. A null
+// path unbinds — params and label — only when the store says the document
+// was DETACHED (File → New, Import, Start blank): a tab that kept naming its
+// previous file or draft would fetch it over the author's work on the next
+// mount. The null of a store that has not resolved yet is left alone: a tab
+// just opened for a file carries the param its load is for, and dropping it
+// then would cancel the load and clobber the caller's label.
+//
+// The URL is part of the same binding. EditorTabsView re-asserts "the URL's
+// document is on screen" on every change of the tabs, and opens a tab for a
+// document no tab names — so when the ACTIVE tab stops naming what the URL
+// names (a file, or a draft it never saved), the URL is rewritten bare
+// first, the way a tab click rewrites it; on a rebind, to the new file. The
+// initial load, where the param already names the path, writes nothing: the
+// deep link's `?node=` and `?from=` must reach EditorView.
 function TabBindingSync({ tabId }: { tabId: string }) {
   const path = useDocumentStore((s) => s.currentFilePath);
+  const detached = useDocumentStore((s) => s.detached);
   const bots = useBotsStore((s) => s.bots);
   const fetchBots = useBotsStore((s) => s.fetch);
+  const [, setLocation] = useLocation();
   useEffect(() => {
     // A bot bundle's main.bot needs the catalog to resolve its persona
     // name; fetch it lazily so the tab can settle on "Featurly".
     if (path && bots === null) void fetchBots();
   }, [path, bots, fetchBots]);
   useEffect(() => {
-    if (!path) return;
-    useTabsStore.getState().bindFile(tabId, path);
+    const tabsStore = useTabsStore.getState();
+    const current = tabsStore.tabs.find((t) => t.id === tabId);
+    if (!current) return;
+    const onScreen = tabsStore.activeEditorTabId === tabId;
+    if (!path) {
+      if (!detached) return;
+      if (onScreen && (current.params.file || current.params.draft))
+        setLocation("/editor", { replace: true });
+      tabsStore.unbindFile(tabId);
+      return;
+    }
+    if (current.params.file !== path) {
+      if (onScreen) setLocation(`/editor?file=${encodeURIComponent(path)}`, { replace: true });
+      tabsStore.bindFile(tabId, path);
+    }
     const next = botDisplayLabel(path, bots);
-    const tabs = useTabsStore.getState().tabs;
-    const current = tabs.find((t) => t.id === tabId);
-    if (!current || current.label === next) return;
-    useTabsStore.getState().rename(tabId, next);
-  }, [path, bots, tabId]);
+    if (current.label === next) return;
+    tabsStore.rename(tabId, next);
+  }, [path, detached, bots, tabId, setLocation]);
   return null;
 }

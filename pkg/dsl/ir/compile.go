@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -720,6 +719,7 @@ func (c *compiler) compile() *Workflow {
 		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
+		AmbientContext:      wf.AmbientContext,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
 		RepoDevbox:          wf.RepoDevbox,
 		WorkspaceCheckpoint: wf.WorkspaceCheckpoint,
@@ -869,11 +869,16 @@ func cloneBool(v *bool) *bool {
 	return &out
 }
 
+// resolveSupervisorModel is the model of an agent, a judge or an llm router
+// that names none: ITERION_DEFAULT_SUPERVISOR_MODEL through LookupEnv — the
+// reading the executor's router fallback and the supervisor apply at run
+// time — so a stored bot var repins those nodes in the compiled program too
+// (ADR-093), not only at run time.
 func resolveSupervisorModel(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	return os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+	return LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 }
 
 // defaultWorktreeMode resolves the workflow's `worktree:` field into the
@@ -1070,7 +1075,11 @@ func (c *compiler) compileAgents() {
 			Fallbacks:         compileFallbacks(a.Fallbacks),
 			Compress:          a.Compress,
 			AutoMemory:        a.AutoMemory,
+			AmbientContext:    a.AmbientContext,
 			Permission:        a.Permission,
+			PermissionAllow:   a.Allow,
+			PermissionAsk:     a.Ask,
+			PermissionDeny:    a.Deny,
 			Needs:             a.Needs,
 		}
 	}
@@ -1108,7 +1117,11 @@ func (c *compiler) compileJudges() {
 			Fallbacks:         compileFallbacks(j.Fallbacks),
 			Compress:          j.Compress,
 			AutoMemory:        j.AutoMemory,
+			AmbientContext:    j.AmbientContext,
 			Permission:        j.Permission,
+			PermissionAllow:   j.Allow,
+			PermissionAsk:     j.Ask,
+			PermissionDeny:    j.Deny,
 			Needs:             j.Needs,
 		}
 	}
@@ -1287,11 +1300,34 @@ func (c *compiler) compileHumans() {
 
 		// Review-gate configuration: defaults + ReviewURL ref parsing.
 		if interaction == InteractionReview {
+			// An unknown posture/merge_strategy used to read as the DEFAULT
+			// (human_required / squash): fail-safe for the tree, but a silent
+			// replacement of the author's explicit choice — the shape C142
+			// refuses for worktree:. Refused here, at the choke point where
+			// the default is applied; the IR keeps the fail-safe value so a
+			// launch surface that ignores compile errors still gates on a
+			// human and still squashes.
 			node.Posture = h.Posture
+			switch node.Posture {
+			case "", PostureHumanRequired, PostureAgentVerdictOK:
+			default:
+				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+					"human %q has invalid posture %q; valid values are %s, %s",
+					h.Name, h.Posture, PostureHumanRequired, PostureAgentVerdictOK)
+				node.Posture = ""
+			}
 			if node.Posture == "" {
 				node.Posture = PostureHumanRequired
 			}
 			node.MergeStrategy = h.MergeStrategy
+			switch node.MergeStrategy {
+			case "", "squash", "merge":
+			default:
+				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+					"human %q has invalid merge_strategy %q; valid values are squash, merge",
+					h.Name, h.MergeStrategy)
+				node.MergeStrategy = ""
+			}
 			if node.MergeStrategy == "" {
 				node.MergeStrategy = "squash"
 			}
@@ -1531,6 +1567,11 @@ func (c *compiler) compileSubbots() {
 		}
 		if sd.Source == "" {
 			c.errorfAt(DiagSubbotNoSource, sd.Name, "", "subbot %q has no `source:` — a child .bot path is required", sd.Name)
+		} else if workflowfile.IsAuthorDocument(sd.Source) {
+			// Refused where the parent is compiled — validate and launch
+			// alike — not in the runtime resolver, which runs after the
+			// parent has launched and which a snapshot bypasses.
+			c.errorfAt(DiagSubbotAuthorSource, sd.Name, "", "subbot %q names an author document as its source (%s): a child is a .bot; `iterion fmt --to bot` writes the one it stands for — name that", sd.Name, sd.Source)
 		}
 		if sd.Output != "" {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)
@@ -1860,6 +1901,9 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 			if len(f.EnumValues) > 0 {
 				v.EnumValues = c.compileVarEnum(f)
 			}
+			if f.Matching != "" {
+				v.Matching = c.compileVarMatching(f)
+			}
 			if f.Default != nil {
 				v.HasDefault = true
 				// Reuse the preset coercion so a var default is validated and
@@ -1879,13 +1923,44 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 					}
 				}
 			}
-			// A default on an enum-constrained var must be one of the
-			// declared values. A non-string default is C109 territory
+			// A default on a constrained var is checked HERE and nowhere
+			// else: the launch gate reads the operator's values, never a
+			// default, so a default excused at compile time is checked on
+			// no path at all while its declaration reads as constrained.
+			// checkConstrainedVarDefault compares a LITERAL default as
+			// written (C126/C161, errors) and gives a default carrying an
+			// env reference the honest semantics of #1610 — expand what has
+			// an answer with no environment, then name what stays
+			// unverifiable (C181) or violates the compile-time reading
+			// (C182), both warnings. A non-string default is C109 territory
 			// (type mismatch) and deliberately not double-flagged here.
-			if len(v.EnumValues) > 0 && v.HasDefault {
-				if s, ok := v.Default.(string); ok && !slices.Contains(v.EnumValues, s) {
-					c.errorf(DiagVarDefaultNotInEnum,
-						"var %q default %q is not one of the enum values (%s)", f.Name, s, quoteList(v.EnumValues))
+			if v.HasDefault && (len(v.EnumValues) > 0 || v.Matching != "") {
+				if s, ok := v.Default.(string); ok {
+					c.checkConstrainedVarDefault(f, v, s)
+				}
+			}
+			// A workflow-level `vars:` entry REPLACES the top-level one of
+			// the same name — so a redeclaration carrying NO constraint
+			// deletes the earlier one's, with no diagnostic and no launch
+			// refusal. The duplicate is already an error INSIDE one block
+			// (E010); the rule simply stopped at the block boundary.
+			//
+			// It asks only that the redeclaration constrain the var at all:
+			// which constraint is the author's business (an `[enum: "a"]`
+			// may legitimately become `[matching: "^a$"]`), and comparing
+			// two patterns for equivalence is undecidable — a REPLACED
+			// constraint is not diagnosed, an ABSENT one is.
+			//
+			// It reads what the author WROTE (the AST), not what the
+			// compiler kept: a constraint refused for another reason
+			// (C125/C160/C162) is zeroed on the IR, and calling it absent
+			// would send the author to repeat a line already on the page.
+			if prev, ok := vars[f.Name]; ok {
+				carried := len(prev.EnumValues) > 0 || prev.Matching != ""
+				declares := len(f.EnumValues) > 0 || f.Matching != ""
+				if carried && !declares {
+					c.errorfAtSpan(DiagVarRedeclaredUnconstrained, f.Span,
+						"var %q is redeclared with no constraint while its earlier declaration carries one; the redeclaration REPLACES it, so the guard would be removed in silence", f.Name)
 				}
 			}
 			vars[f.Name] = v
@@ -1906,7 +1981,7 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 func (c *compiler) compileVarEnum(f *ast.VarField) []string {
 	vt := convertVarType(f.Type)
 	if vt != VarString {
-		c.errorf(DiagVarEnumNonString,
+		c.errorfAtSpan(DiagVarEnumNonString, f.Span,
 			"var %q: [enum: ...] is only valid on string vars, not %s", f.Name, vt.String())
 		return nil
 	}
@@ -1914,7 +1989,7 @@ func (c *compiler) compileVarEnum(f *ast.VarField) []string {
 	vals := make([]string, 0, len(f.EnumValues))
 	for _, ev := range f.EnumValues {
 		if seen[ev] {
-			c.warnf(DiagVarEnumDuplicate,
+			c.warnfAtSpan(DiagVarEnumDuplicate, f.Span,
 				"var %q: duplicate enum value %q — keeping first occurrence", f.Name, ev)
 			continue
 		}
@@ -1988,6 +2063,7 @@ func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) ma
 			continue
 		}
 		values := make(map[string]any, len(entry.Values))
+		landed := make(map[string]*ast.PresetValue, len(entry.Values))
 		for _, pv := range entry.Values {
 			v, ok := vars[pv.Key]
 			if !ok {
@@ -2004,6 +2080,34 @@ func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) ma
 				continue
 			}
 			values[pv.Key] = coerced
+			landed[pv.Key] = pv
+		}
+		// Judged after the loop, so the value judged is the one that
+		// LANDS: a key written twice in one preset keeps the last, and the
+		// earlier text is read by no run. The `landed` check is what keeps
+		// that key from being reported once per occurrence — the value
+		// read is the map's either way. Walked over the slice, not the
+		// map, so the diagnostics keep a deterministic order.
+		for _, pv := range entry.Values {
+			winner := landed[pv.Key]
+			if winner != pv {
+				// Every earlier occurrence of a written-twice key is dead
+				// text — a duplicate var is E010, a duplicate preset NAME
+				// C072, a duplicate enum value C127; this one used to be
+				// silence. A warning like C127's: the last value wins, so
+				// the program is unambiguous and nothing is broken — the
+				// author has written a line that does nothing (#1661).
+				// A nil winner means EVERY occurrence of the key was
+				// already refused above (unknown var or type mismatch) —
+				// there is no third thing to say about it.
+				if winner != nil {
+					c.warnfAtSpan(DiagPresetKeyShadowed, pv.Span,
+						"preset %q sets %q more than once — this value is replaced by the one at line %d",
+						entry.Name, pv.Key, winner.Span.Start.Line)
+				}
+				continue
+			}
+			c.checkPresetConstraint(entry.Name, pv, vars[pv.Key], values[pv.Key])
 		}
 		out[entry.Name] = Preset{Name: entry.Name, Values: values}
 	}

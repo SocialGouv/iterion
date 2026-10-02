@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -68,6 +69,7 @@ var reasoningEffortBackends = map[string]bool{
 	"pi":          true,
 	"grok":        true,
 	"codex":       true,
+	"opencode":    true,
 }
 
 // clawBackendName is the literal value of the in-process backend.
@@ -108,7 +110,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		// fallbacks let `backend: grok` + `permission: deny` compile and run
 		// silently ungated — worse than a loud C176 refusal.
 		if nodeBackend != "" {
-			if reason := UngatedCrossingReasonForAskRules(nodeBackend, effectivePermission, w.PermissionAsk); reason != "" {
+			if reason := UngatedCrossingReasonForAskRules(nodeBackend, effectivePermission, EffectiveAskRules(nn, w)); reason != "" {
 				c.errorfAt(DiagFallbackUnsafeCross, id, "",
 					"%s %q: primary route %s", kind, id, reason)
 			}
@@ -133,7 +135,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
 			c.checkFallbackWhen(w, kind, id, fb)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, w.PermissionAsk)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, EffectiveAskRules(nn, w))
 		}
 	}
 }
@@ -151,8 +153,9 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 	if mode == "" || mode == "off" {
 		return
 	}
-	// nodeSandboxSpec (validate_sandbox.go) takes a Node; every LLMNode is one.
-	if sandboxOptsOut(nodeSandboxSpec(nn.(Node))) || sandboxOptsOut(w.Sandbox) {
+	// Only the workflow's opt-out counts: a node-level `sandbox:` is not
+	// honoured at run time, so it cannot take this node out of the sandbox.
+	if sandboxOptsOut(w.Sandbox) {
 		return
 	}
 	routes := []string{}
@@ -160,8 +163,8 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 		routes = append(routes, nodeBackend)
 	}
 	for _, fb := range nn.GetFallbacks() {
-		if externalHookGateBackends[fb.Backend] {
-			routes = append(routes, fb.Backend)
+		if route := sourceBackend.routeName(fb.Backend); externalHookGateBackends[route] {
+			routes = append(routes, route)
 		}
 	}
 	if len(routes) > 0 {
@@ -179,20 +182,21 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 	// warning-not-error rationale as above: --sandbox none and
 	// ITERION_SANDBOX_DEFAULT=none make the run legal without the
 	// workflow saying anything.
-	if mode == "ask" || len(w.PermissionAsk) > 0 {
+	askRules := EffectiveAskRules(nn, w)
+	if mode == "ask" || len(askRules) > 0 {
 		clawRoutes := []string{}
 		if nodeBackend == clawBackendName {
 			clawRoutes = append(clawRoutes, nodeBackend)
 		}
 		for _, fb := range nn.GetFallbacks() {
-			if fb.Backend == clawBackendName {
-				clawRoutes = append(clawRoutes, fb.Backend)
+			if sourceBackend.routeName(fb.Backend) == clawBackendName {
+				clawRoutes = append(clawRoutes, clawBackendName)
 			}
 		}
 		if len(clawRoutes) > 0 {
 			c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
 				"%s %q: the permission policy can produce an Ask decision (mode %s%s), which a sandboxed claw route cannot pause for — this node will FAIL at run time on %s unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
-				kind, id, mode, askRuleSuffix(len(w.PermissionAsk)), strings.Join(dedupeStrings(clawRoutes), ", "))
+				kind, id, mode, askRuleSuffix(len(askRules)), strings.Join(dedupeStrings(clawRoutes), ", "))
 		}
 	}
 }
@@ -301,10 +305,10 @@ func (c *compiler) checkFallbackShape(kind, id string, fb Fallback, seen map[str
 	}
 	// A backend change with an inherited model cannot work: the
 	// model-spec forms are mutually incompatible across backends.
-	if fb.Backend != "" && fb.Model == "" && !strings.Contains(fb.Backend, "${") {
+	if route := sourceBackend.routeName(fb.Backend); route != "" && fb.Model == "" {
 		c.errorfAt(DiagFallbackMalformed, id, "",
 			"%s %q: fallback %s switches to backend %q without its own model: — model specs are not portable across backends (claw needs `provider/model`, claude_code accepts only a bare id or an `anthropic/` prefix)",
-			kind, id, label, fb.Backend)
+			kind, id, label, route)
 	}
 }
 
@@ -327,8 +331,11 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 // run-level route is screened by — so an operator cannot reach through
 // `--fallback` a crossing the compiler refuses in the .bot.
 func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, askRules []string) {
-	// An env-ref backend is not knowable here; defer to the runtime.
-	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
+	// The route's backend, read as the run reads it: a dial's default is
+	// the route this chain takes, and screening only the literal spelling
+	// left every dialled route unscreened.
+	routeBackend := sourceBackend.routeName(fb.Backend)
+	if routeBackend == "" {
 		return
 	}
 	label := fallbackLabel(fb)
@@ -338,7 +345,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := UngatedCrossingReasonForAskRules(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
+	if reason := UngatedCrossingReasonForAskRules(routeBackend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -348,11 +355,11 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	if nodeBackend == "" {
 		return
 	}
-	if reason := toolsInversionReason(nodeBackend, fb.Backend, nn.GetTools()); reason != "" {
+	if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
-	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, fb.Backend); reason != "" {
+	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -362,10 +369,10 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// the crossing, and it applies to the node's own backend too.
 
 	// Reasoning effort degrades rather than misleads, so it warns.
-	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[fb.Backend] {
+	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[routeBackend] {
 		c.warnfAt(DiagFallbackDrift, id, "",
 			"%s %q: fallback %s runs on backend %q, which has no reasoning-effort dial; the node's reasoning_effort: %s is ignored on that route",
-			kind, id, label, fb.Backend, effort)
+			kind, id, label, routeBackend, effort)
 	}
 }
 
@@ -378,6 +385,45 @@ func EffectivePermission(nodePermission, workflowPermission string) string {
 		return p
 	}
 	return strings.TrimSpace(workflowPermission)
+}
+
+// EffectivePermissionRules resolves ONE permission rule list for a node:
+// a non-empty node list REPLACES the workflow list of the same kind, an
+// empty one inherits it. Replacement rather than union is the whole point
+// of the per-node form — a union can only widen, and the shape that needs
+// expressing (a converge node that must NOT hold the shell its reviewers
+// need) is a narrowing.
+//
+// "Declared" is len > 0, not nil-vs-empty: the AST's JSON seam carries
+// these lists with `omitempty`, which erases that distinction, so a rule
+// built on it would hold in the .bot and break through the studio.
+//
+// This is the single implementation of the precedence. The compiler's
+// screens and the executor's policy builder both call it, so a node whose
+// rules the compiler judged can never be the node the runtime gates.
+func EffectivePermissionRules(nodeRules, workflowRules []string) []string {
+	if permissionRulesDeclared(nodeRules) {
+		return nodeRules
+	}
+	return workflowRules
+}
+
+// permissionRulesDeclared is the single answer to "did the author declare
+// this list". Both the resolver above and C111 read it, so "declared"
+// cannot come to mean two things in the compiler and the runtime.
+func permissionRulesDeclared(rules []string) bool { return len(rules) > 0 }
+
+// EffectiveAskRules is EffectivePermissionRules for the ask list, taking
+// the node and the workflow so no caller can pair a node with the wrong
+// workflow list. Every admission screen that asks "can this route pause
+// for this node's asks" reads it: passing w.PermissionAsk directly would
+// make a node-declared ask: invisible to the screen, which is exactly the
+// silent ungating C176 exists to prevent.
+func EffectiveAskRules(nn LLMNode, w *Workflow) []string {
+	if w == nil {
+		return nn.GetPermissionAsk()
+	}
+	return EffectivePermissionRules(nn.GetPermissionAsk(), w.PermissionAsk)
 }
 
 // UngatedCrossingReason returns why a route may not serve a gated node,
@@ -393,7 +439,7 @@ func UngatedCrossingReason(routeBackend, permission string, hasAskRules bool) st
 			return ""
 		}
 		return fmt.Sprintf(
-			"runs on backend %q, which can enforce permission: %s but cannot pause for the workflow's explicit ask: rules — the run would not preserve the declared gate",
+			"runs on backend %q, which can enforce permission: %s but cannot pause for the explicit ask: rules in force for this node — the run would not preserve the declared gate",
 			routeBackend, mode)
 	}
 	return fmt.Sprintf(
@@ -439,8 +485,10 @@ func askRulesReachableByBackend(routeBackend string, askRules []string) bool {
 //     falls through — and the parallel-branch admission was already
 //     computed on the claw reading.
 //   - CLI → claw restricts, which is only a hazard when the list is
-//     EMPTY: on claw that means zero tools, so the node becomes a
-//     schema-shaped narrator with no way to verify anything.
+//     UNDECLARED: on claw that means zero tools, so the node becomes a
+//     schema-shaped narrator with no way to verify anything. A DECLARED
+//     `tools: []` says the same thing on both sides and is not an inversion
+//     (a route that cannot receive the list at all is C270's subject).
 //
 // Both backends must be statically known for the comparison to mean
 // anything.
@@ -454,12 +502,16 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 		return ""
 	}
 	if nodeClaw {
-		return "routes a claw node to a CLI backend, which ignores the lowercase tools: list under bypassPermissions and always carries the full native toolset — the route silently un-restricts this node (and the parallel-branch admission was already decided on the claw reading); declare the node on the CLI backend instead, or route to another claw model"
+		return "routes a claw node to a CLI backend, where the tools: list does not mean what it means on claw — claude_code narrows only its own 14-name native roster (every MCP tool and every name outside it survives), codex maps the list onto a sandbox mode, and pi/kimi/grok never receive it at all — so the route changes what this node can do, and the parallel-branch admission was already decided on the claw reading; declare the node on the CLI backend instead, or route to another claw model"
 	}
-	if len(tools) > 0 {
+	// A DECLARED list — `tools: []` included — says the same thing on both
+	// sides, so there is nothing to invert. Only an UNDECLARED list does:
+	// "everything" on the CLI side, "nothing" on claw. A declared-empty list
+	// on a route that drops it is C270's subject, not this one.
+	if toolcatalog.ToolsDeclared(tools) {
 		return ""
 	}
-	return "crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list"
+	return "crosses the claw⇄CLI boundary on a node with no tools: list — an undeclared list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list (`tools: []` for none)"
 }
 
 // ToolRestrictionLossReason reports the non-security capability drift the
@@ -472,10 +524,25 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 // fallback is automatic. A launch picker may still offer this deliberate
 // crossing, but must never present it as capability-neutral.
 func ToolRestrictionLossReason(nodeBackend, routeBackend string, tools []string) string {
-	if nodeBackend != clawBackendName || routeBackend == clawBackendName || len(tools) == 0 {
+	if nodeBackend != clawBackendName || routeBackend == clawBackendName || !toolcatalog.ToolsDeclared(tools) {
 		return ""
 	}
-	return "this claw node's tools: restriction is not enforced by the selected CLI backend; the permission gate remains active, but the backend's full native toolset becomes available"
+	if !toolcatalog.ReceivesToolList(routeBackend) {
+		// The crossing that really loses the list, and the one worth the
+		// loudest sentence: pi, kimi and grok never receive it, so an EMPTY
+		// declaration — the strictest thing an author can write — becomes
+		// that CLI's whole toolset.
+		return "this claw node's tools: list is never passed to the selected backend, which runs its own full toolset whatever the list says — an empty list included; the permission gate remains active"
+	}
+	if len(tools) == 0 {
+		// claude_code turns it into --disallowedTools over its whole native
+		// roster and codex drops to the read-only sandbox: an empty
+		// declaration is narrower there, not wider, so there is nothing to
+		// disclose. (What still reaches such a node — MCP tools, and the
+		// natives outside claudeNativeTools — is C270's and the docs' subject.)
+		return ""
+	}
+	return "this claw node's tools: list is narrowed rather than enforced by the selected backend: claude_code removes only the native names the list does not carry (MCP tools, and Agent/TaskOutput/Monitor, survive it), codex maps the list onto a sandbox mode; the permission gate remains active"
 }
 
 // sessionContinuityCrossingReason refuses inherit / inherit_if_available /
@@ -492,24 +559,229 @@ func sessionContinuityCrossingReason(session SessionMode, nodeBackend, routeBack
 	}
 }
 
-// effectiveNodeBackend mirrors the runtime precedence knowable at
-// compile time: the node's own `backend:` wins, an empty/`auto` one
-// falls back to the workflow default. An env-ref or still-empty result
-// is returned as "" — the literal text is not the resolved backend, so
-// a check keyed on it would misfire.
+// backendReader is how a backend field is read. Two readings exist, and
+// the difference is which environment answers a `${…}`:
+//
+//   - sourceBackend — what the SOURCE declares. A dial is read by its
+//     DEFAULT and never by the shell that happens to be compiling: a
+//     compile verdict that moved with the ambient environment would make
+//     one artifact compile on one machine and fail on another, and the
+//     compiler here runs in the server and runner pods, neither of which
+//     is the process that will dispatch the node.
+//   - runBackend — what the RUN resolves, process environment included.
+//     The launch-time screen uses it, because there the environment IS
+//     the route.
+//
+// Before either existed, every screen keyed on the literal text, so a
+// backend written `${ITERION_SEC_AUDIT_BACKEND:-claude_code}` was "no
+// opinion" and `""` short-circuited every comparison: the `tools:`
+// inversion, the session-continuity refusal, the effort drift and the
+// primary-route gate check all silently stopped applying to it (#1389).
+// A dial's default is exactly as knowable as a literal.
+type backendReader struct {
+	lookup func(string) string
+	// asWritten keeps a reference nothing answers as written, so
+	// `${X}` with no `:-` reads as a field the SOURCE does not decide
+	// rather than as an absent one.
+	asWritten bool
+	// vars is the launch's vars view a `{{vars.<name>}}` reference
+	// resolves against — nil for a reading that has no vars (the
+	// compiler's, where a launch may still override the var, so the
+	// reference stays undecided). The launch-time screen carries it:
+	// there the vars are as fixed as the process environment. Values are
+	// typed as resolveVars types them: a `json` var is its parsed
+	// document, so a dotted `{{vars.cfg.backend}}` drills into it.
+	vars map[string]any
+}
+
+// withVars returns the reading resolved against a launch's vars — the
+// runtime's own order (resolveRoutingField): the `{{vars.<name>}}`
+// template first, the field's `${…}` expansion after.
+func (r backendReader) withVars(vars map[string]any) backendReader {
+	r.vars = vars
+	return r
+}
+
+var (
+	sourceBackend = backendReader{lookup: noEnvLookup, asWritten: true}
+	runBackend    = backendReader{lookup: lookupEnv}
+)
+
+// field answers what one backend field resolves to, and whether anything
+// at this level DECIDES it:
+//
+//	("claw", true)  — a name
+//	("", true)      — absent or `auto`: the next step of the chain decides
+//	("", false)     — present, and this reading cannot decide it: a
+//	                  `{{vars.x}}` a launch may override, a `${X}` or a
+//	                  bare `$X` the source does not answer. Which branch
+//	                  the run takes is not knowable here — an undeclared
+//	                  `{{vars.zz}}` reaches the registry as that text,
+//	                  while a set `${X}` names a backend — so a screen may
+//	                  neither name one nor substitute the workflow default.
+func (r backendReader) field(name string) (string, bool) {
+	if resolved, ok := r.resolve(name); ok {
+		if resolved == "auto" {
+			return "", true
+		}
+		return resolved, true
+	}
+	return "", false
+}
+
+// resolve expands a backend field and says whether the result is a name at
+// all. A reference the reading could not answer — `${X}` with no `:-`, a
+// bare `$X`, a `{{vars.x}}` a launch may override, an unterminated `${` —
+// is NOT a backend called that: the text is what the source wrote, and
+// naming a backend `$MY_BACKEND` refused a gated workflow that was fine
+// and passed a claw⇄CLI crossing that was not.
+func (r backendReader) resolve(name string) (string, bool) {
+	expanded := expandVarsRefs(name, r.vars)
+	expanded, _ = expandWithDefault(expanded, r.lookup, expandPolicy{keepUnresolved: r.asWritten})
+	expanded = strings.TrimSpace(expanded)
+	if strings.ContainsRune(expanded, '$') || strings.Contains(expanded, "{{") {
+		return "", false
+	}
+	return expanded, true
+}
+
+// expandVarsRefs substitutes the `{{vars.<name>}}` spans of a routing
+// field from the launch's vars view — the one namespace a routing field
+// resolves (DiagRoutingFieldRef). A dotted path drills into a `json`
+// var's document, the executor's own semantics (drillTemplatePath: maps
+// only, a missing member or a non-map segment is not found). A span the
+// view cannot answer — an undeclared var, a drilled `{{vars.cfg.on}}`
+// with no such member — is kept as written, so the residual-`{{` check
+// above still reads the field as one nothing decided. A nil view
+// resolves nothing, which is exactly the compiler's reading.
+func expandVarsRefs(s string, vars map[string]any) string {
+	if len(vars) == 0 || !strings.Contains(s, "{{") {
+		return s
+	}
+	var b strings.Builder
+	remaining := s
+	for {
+		start := strings.Index(remaining, "{{")
+		if start == -1 {
+			b.WriteString(remaining)
+			break
+		}
+		end := strings.Index(remaining[start:], "}}")
+		if end == -1 {
+			b.WriteString(remaining)
+			break
+		}
+		end += start + 2
+		b.WriteString(remaining[:start])
+		if path, ok := strings.CutPrefix(strings.TrimSpace(remaining[start+2:end-2]), "vars."); ok {
+			if v, found := drillVarsView(vars, strings.Split(path, ".")); found {
+				b.WriteString(formatVarValue(v))
+				remaining = remaining[end:]
+				continue
+			}
+		}
+		b.WriteString(remaining[start:end])
+		remaining = remaining[end:]
+	}
+	return b.String()
+}
+
+// drillVarsView is drillTemplatePath's twin
+// (pkg/backend/model/executor_template.go) for the launch view: the vars
+// map is the root, the path's first segment names the var, and every
+// further segment walks nested maps — a missing key or a non-map segment
+// is not found. The layering forbids importing the executor's version;
+// keep the two in sync.
+func drillVarsView(vars map[string]any, path []string) (any, bool) {
+	var cur any = vars
+	for _, p := range path {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		v, ok := m[p]
+		if !ok {
+			return nil, false
+		}
+		cur = v
+	}
+	return cur, true
+}
+
+// formatVarValue renders a drilled value the way the template resolver's
+// formatValue prints it: a string as is, nil as empty, anything else as
+// JSON — so `{{vars.cfg}}` substitutes the same text dispatch shows.
+func formatVarValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case nil:
+		return ""
+	default:
+		b, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", val)
+		}
+		return string(b)
+	}
+}
+
+// name is field without the decision bit, for a site that only screens a
+// backend it can name.
+func (r backendReader) name(field string) string {
+	n, _ := r.field(field)
+	return n
+}
+
+// routeName is the reading a ROUTE's backend takes, where `auto` is a NAME
+// rather than a step of a chain.
+//
+// The difference is the runtime's: resolveChain normalises `auto` on a
+// route's `provider:` and never on its `backend:`, so an explicit
+// `backend: "auto"` reaches the registry, which has no backend by that
+// name — the route dies at the moment the chain is needed. Reading it as
+// "the chain decides" would take every screen off a route that cannot run.
+func (r backendReader) routeName(field string) string {
+	n, _ := r.resolve(field)
+	return n
+}
+
+// effective mirrors the runtime precedence: the node's own `backend:`
+// wins, and only an ABSENT or `auto` one falls through to the workflow
+// default — exactly the two cases resolveBackendName falls through on.
+func (r backendReader) effective(nodeBackend, workflowDefault string) string {
+	if n, decides := r.field(nodeBackend); n != "" || !decides {
+		return n
+	}
+	return r.name(workflowDefault)
+}
+
+// SourceBackendName is the source reading of ONE backend field, for a host
+// outside this package: the Studio's launch preview screens a node the same
+// way the compiler does, and reading the raw text there made a dialled node
+// look like a backend nobody has — so the capability-drift disclosure the
+// picker owes the operator simply disappeared. "" means the source does not
+// name a backend (empty, `auto`, or a reference this reading cannot answer).
+func SourceBackendName(name string) string {
+	return sourceBackend.name(name)
+}
+
+// SourceNodeBackendName is the source reading of a node's route, for a host
+// outside this package: the node's own `backend:` wins, and only an absent or
+// `auto` one falls through to the workflow's `default_backend:` — each field
+// read as SourceBackendName reads it. "" means the source does not decide the
+// route.
+func SourceNodeBackendName(nodeBackend, workflowDefault string) string {
+	return effectiveNodeBackend(nodeBackend, workflowDefault)
+}
+
+// effectiveNodeBackend is the compile-time reading of a node's route.
 //
 // Copied from validateCommand rather than validateProviders, which
 // reads f.Backend raw and therefore under-fires on every node that
 // inherits `default_backend:`.
 func effectiveNodeBackend(nodeBackend, workflowDefault string) string {
-	backend := nodeBackend
-	if backend == "" || backend == "auto" {
-		backend = workflowDefault
-	}
-	if backend == "" || backend == "auto" || strings.Contains(backend, "${") {
-		return ""
-	}
-	return backend
+	return sourceBackend.effective(nodeBackend, workflowDefault)
 }
 
 // fallbackLabel renders a route for a diagnostic message.

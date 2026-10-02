@@ -1,0 +1,8 @@
+# refused: a misspelt property (modle) is not a property; the schema is closed
+dsl: 2
+nodes:
+  - agent: a
+    modle: m
+workflow:
+  name: w
+  entry: a

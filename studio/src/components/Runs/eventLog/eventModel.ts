@@ -119,6 +119,10 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     "to_model",
     // delegate_finished on a skipped node: nothing served it.
     "skipped",
+    // A schema re-ask: how the model's work was continued, and the
+    // attempt its own delegate events belong to.
+    "reask",
+    "attempt",
     "loop",
     "iteration",
     "error",

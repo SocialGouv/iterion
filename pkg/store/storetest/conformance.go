@@ -55,12 +55,15 @@ type Opts struct {
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
+	t.Run("RunTrustRoundTrip", func(t *testing.T) { testRunTrustRoundTrip(t, factory(t)) })
+	t.Run("RunTrustImmutable", func(t *testing.T) { testRunTrustImmutable(t, factory(t)) })
 	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
+	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
@@ -481,6 +484,58 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 }
 
+// testQueuedResumeRelease: a resume nobody claimed goes back to the status
+// it came from — a paused run with its pending question — only for its own
+// attempt, and never to a status a resume does not come from.
+func testQueuedResumeRelease(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rel := store.AsQueuedResumeReleaser(s)
+	if rel == nil {
+		t.Skip("backend does not implement QueuedResumeReleaser")
+	}
+	ctx := testCtx()
+	const runID = "run-queued-release"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.PauseRun(ctx, runID, &store.Checkpoint{NodeID: "gate", InteractionID: runID + "_gate"}); err != nil {
+		t.Fatalf("PauseRun: %v", err)
+	}
+	changed, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusPausedWaitingHuman})
+	if err != nil || !changed {
+		t.Fatalf("queued flip = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.QueuedAt == nil {
+		t.Fatalf("LoadRun queued marker = (%v, %v), want non-nil", r, err)
+	}
+	meta := store.RunOutcomeMeta{Code: store.FailureResumeInvalid}
+	if _, err := rel.ReleaseQueuedRunIfAttempt(ctx, runID, store.RunStatusRunning, "refused", r.QueuedAt.Add(time.Second), meta); err == nil {
+		t.Fatal("released to running: want an error, running is not a status a resume comes from")
+	}
+	changed, err = rel.ReleaseQueuedRunIfAttempt(ctx, runID, store.RunStatusPausedWaitingHuman, "refused", r.QueuedAt.Add(-time.Second), meta)
+	if err != nil || changed {
+		t.Fatalf("stale attempt release = (%t, %v), want (false, nil)", changed, err)
+	}
+	changed, err = rel.ReleaseQueuedRunIfAttempt(ctx, runID, store.RunStatusPausedWaitingHuman, "resume refused before its claim", r.QueuedAt.Add(time.Second), meta)
+	if err != nil || !changed {
+		t.Fatalf("current attempt release = (%t, %v), want (true, nil)", changed, err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunStatusPausedWaitingHuman || got.Error != "resume refused before its claim" {
+		t.Fatalf("released run = %s %q, want paused_waiting_human with the refusal", got.Status, got.Error)
+	}
+	if got.Checkpoint == nil || got.Checkpoint.InteractionID != runID+"_gate" {
+		t.Fatalf("the released run lost its pending question: %+v", got.Checkpoint)
+	}
+	if got.FailureCode != "" {
+		t.Fatalf("a paused run carries failure code %q", got.FailureCode)
+	}
+}
+
 func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	t.Helper()
 	attempts := store.AsQueuedAttemptStore(s)
@@ -529,6 +584,139 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 	if got.ContinuationState != store.ContinuationFinal {
 		t.Fatalf("ContinuationState after the admission park = %q, want final (nothing on the platform wakes a parked run)", got.ContinuationState)
+	}
+}
+
+// testRunTrustRoundTrip pins the untrusted-workspace marker across BOTH store
+// implementations. It is a conformance row rather than a per-store test
+// because the credential resolver, the publish grant and the runner's commit
+// check all read Trust off a run they LOADED: a backend that accepts the
+// field and returns it empty turns every one of those controls off, silently
+// and only in the deployment that uses that backend.
+//
+// RepoSHAExpected rides along for the same reason — a run whose pinned commit
+// does not survive a round trip is fetched at whatever its ref points at now.
+func testRunTrustRoundTrip(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const id = "run_trust_roundtrip"
+	if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// The zero value is the trusted default, and it must READ as trusted:
+	// every run written before this field existed decodes to it.
+	if !r.Trust.Trusted() {
+		t.Fatalf("a freshly created run reads Trust = %q; want the trusted default", r.Trust)
+	}
+	r.Trust = store.RunTrustFork
+	r.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	got, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after save: %v", err)
+	}
+	if got.Trust != store.RunTrustFork {
+		t.Errorf("persisted Trust = %q; want %q — a backend that drops it turns off the secret, grant and commit controls that read it back", got.Trust, store.RunTrustFork)
+	}
+	if got.Trust.Trusted() {
+		t.Errorf("persisted Trust %q reads as TRUSTED after a round trip; want untrusted", got.Trust)
+	}
+	if got.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Errorf("persisted RepoSHAExpected = %q; want the pinned commit", got.RepoSHAExpected)
+	}
+}
+
+// testRunTrustImmutable pins the marker as WRITE-ONCE in both stores. A run's
+// answer to "who wrote this code" never legitimately changes, and every
+// capability the run is denied is read back from it — so a saver carrying the
+// zero value (a binary too old to know the field, a stale full-document save)
+// must not be able to clear it. A marker that can be cleared is one an
+// attacker only has to race.
+func testRunTrustImmutable(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const id = "run_trust_immutable"
+	if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// FIRST, the order the product actually produces: every launcher alive
+	// today saves a run knowing nothing about trust, and only THEN does a lane
+	// mark it. A backend that MATERIALISES the empty value on that first save
+	// can never be marked afterwards — and an empty marker reads as
+	// RunTrustDefault, i.e. TRUSTED, so the failure is silent and fail-OPEN:
+	// every capability keyed on it stays granted. This is a different case
+	// from the stale and rival saves below, and it is the one a write-once
+	// rule most has to get right.
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun (a saver that knows no trust): %v", err)
+	}
+	marking, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun (marking): %v", err)
+	}
+	marking.Trust = store.RunTrustFork
+	marking.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	if err := s.SaveRun(ctx, marking); err != nil {
+		t.Fatalf("SaveRun (marking): %v", err)
+	}
+	if marked, lerr := s.LoadRun(ctx, id); lerr != nil {
+		t.Fatalf("LoadRun after marking: %v", lerr)
+	} else if marked.Trust != store.RunTrustFork {
+		t.Fatalf("Trust = %q after a lane marked the run fork; want %q — a backend that materialised the empty value on the earlier save can never be marked, and an empty marker reads as TRUSTED", marked.Trust, store.RunTrustFork)
+	}
+	// A saver that does not know the fields: load, blank them, save.
+	stale, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun (stale): %v", err)
+	}
+	stale.Trust = ""
+	stale.RepoSHAExpected = ""
+	if err := s.SaveRun(ctx, stale); err != nil {
+		t.Fatalf("SaveRun (stale): %v", err)
+	}
+	got, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after the stale save: %v", err)
+	}
+	if got.Trust != store.RunTrustFork {
+		t.Errorf("Trust = %q after a save that carried the zero value; want %q — a cleared marker re-grants the publish grant, the tenant's secrets and the merge-time forge token", got.Trust, store.RunTrustFork)
+	}
+	if got.RepoSHAExpected == "" {
+		t.Errorf("RepoSHAExpected was cleared by a stale save; want the pinned commit to survive")
+	}
+	// And a saver carrying a DIFFERENT non-empty value must not overwrite it
+	// either: write-once means the first answer stands, whatever a later
+	// writer believes. The two store twins disagreed here — one kept the
+	// persisted value, the other let a non-empty incoming value win — and a
+	// guarantee that depends on which store a deployment runs is not one.
+	rival, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun (rival): %v", err)
+	}
+	rival.Trust = store.RunTrustDefault + "some-other-class"
+	rival.RepoSHAExpected = "1111111111111111111111111111111111111111"
+	if err := s.SaveRun(ctx, rival); err != nil {
+		t.Fatalf("SaveRun (rival): %v", err)
+	}
+	after, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after the rival save: %v", err)
+	}
+	if after.Trust != store.RunTrustFork {
+		t.Errorf("Trust = %q after a save carrying another class; want %q to stand — write-once means the first answer wins", after.Trust, store.RunTrustFork)
+	}
+	if after.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Errorf("RepoSHAExpected = %q after a rival save; want the original pin", after.RepoSHAExpected)
 	}
 }
 

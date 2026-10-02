@@ -181,31 +181,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err := runSecretsStore.EnsureSchema(rootCtx); err != nil {
 		return fmt.Errorf("runner: ensure run_secrets schema: %w", err)
 	}
-	// Tell pkg/backend/model how to read per-run credentials from
-	// ctx. We translate provider names (string) ↔ secrets.Provider
-	// enum here so the model package stays free of pkg/secrets imports.
-	model.SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
-		creds, ok := secrets.CredentialsFromContext(ctx)
-		if !ok {
-			return nil, false
-		}
-		return func(provider string) string {
-			return creds.APIKey(secrets.Provider(provider))
-		}, true
-	})
-	// Per-run OAuth-forfait dirs (codex / claude_code) the runner materialised
-	// at claim time. Lets the in-process claw model factory consume a tenant's
-	// resolved subscription in cloud mode, where the pod has neither ~/.codex
-	// nor ~/.claude: codex → openai, claude_code → anthropic.
-	model.SetOAuthDirLookup(func(ctx context.Context) (func(string) string, bool) {
-		creds, ok := secrets.CredentialsFromContext(ctx)
-		if !ok {
-			return nil, false
-		}
-		return func(kind string) string {
-			return creds.OAuthDir(kind)
-		}, true
-	})
+	// Tell pkg/backend/model how to read the run's credentials — keys and
+	// materialised forfait dirs — from ctx.
+	model.SetCredentialsLookup(model.RunCredentialsLookup)
+	model.SetOAuthDirLookup(model.RunOAuthDirLookup)
 
 	// Shared knowledge memory persists in the tenant's document store
 	// (not the pod's ephemeral disk) so it survives across runs/pods.
@@ -269,14 +248,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// no restart. Precedence: setting > pod env > .bot default.
 	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](
 		platformcfg.NewMongoBotVars(st.DB()), logger.Warn)
-	ir.SetEnvOverlay(func(name string) (string, bool) {
-		rec := botVarsResolver.Get(context.Background())
-		if rec == nil {
-			return "", false
-		}
-		v, ok := rec.Vars[name]
-		return v, ok
-	})
+	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
+	// Workflow text never reads a credential-shaped name from this process's
+	// environment: it holds the platform's credentials, not the tenant's.
+	ir.SetProcessEnvPolicy(platformcfg.CloudProcessEnvPolicy())
 	// The schema is ensured unconditionally: a cap disabled in env can be
 	// armed at runtime through the settings record, and the readings
 	// ledger must exist by then.
@@ -338,6 +313,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		RunSecrets:          runSecretsStore,
 		Sealer:              sealer,
 		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
+		// The forfait records a run follows mid-run instead of refreshing
+		// its own copy (see runner.Config.OAuthForfaits).
+		OAuthForfaits: secrets.NewMongoOAuthStore(st.DB()),
 		// BYOK store shared with the publisher — the runner bumps
 		// `last_used_at` at metering time so the studio distinguishes an
 		// idle key from one currently serving (#659 pt 2).
@@ -379,6 +357,12 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch superseded while bootstrapping — staying live but non-ready; no queue consumer started")
 		<-rootCtx.Done()
 		return nil
+	}
+
+	// Every boot reader of the deployment's own credentials is done: none of
+	// them stays in the environment the runs and their children see.
+	if err := iterconfig.ScrubPlatformSecrets(); err != nil {
+		return fmt.Errorf("runner: %w", err)
 	}
 
 	// SIGTERM handling: stop fetching, then drain per DrainMode — lame-duck

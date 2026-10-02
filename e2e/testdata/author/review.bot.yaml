@@ -1,0 +1,25 @@
+dsl: 2
+schemas:
+  verdict:
+    ready: bool
+prompts:
+  ask: Review the change and say whether it is ready to merge.
+  fix_it: Fix what the review found.
+nodes:
+  - agent: reviewer
+    model: anthropic/claude-sonnet-4-6
+    output: verdict
+    system: ask
+  - agent: fixer
+    model: anthropic/claude-sonnet-4-6
+    system: fix_it
+workflow:
+  name: review
+  entry: reviewer
+  sandbox: none
+  worktree: none
+  edges:
+    - reviewer -> done when ready
+    - reviewer -> fixer when not ready
+    - fixer -> reviewer as again(2)
+    - fixer -> fail

@@ -19,6 +19,7 @@ var runOpts struct {
 	noInteractive       bool
 	skipMCPHealth       bool
 	varFlags            []string
+	allowUnknownInputs  bool
 	modelFor            []string
 	backendFor          []string
 	fallback            string
@@ -34,6 +35,7 @@ var runOpts struct {
 	sandboxHostState    string
 	compress            string
 	autoMemory          string
+	ambientContext      string
 	loopBudgetGuard     string
 	supervisors         string
 	repoDevbox          string
@@ -77,7 +79,9 @@ var runCmd = &cobra.Command{
 			SandboxDefaultImage: runOpts.sandboxDefaultImage,
 			SandboxHostState:    runOpts.sandboxHostState,
 			Compress:            runOpts.compress,
+			AllowUnknownInputs:  runOpts.allowUnknownInputs,
 			AutoMemory:          runOpts.autoMemory,
+			AmbientContext:      runOpts.ambientContext,
 			LoopBudgetGuard:     runOpts.loopBudgetGuard,
 			Supervisors:         runOpts.supervisors,
 			RepoDevbox:          runOpts.repoDevbox,
@@ -114,6 +118,7 @@ var runCmd = &cobra.Command{
 func init() {
 	f := runCmd.Flags()
 	f.StringArrayVar(&runOpts.varFlags, "var", nil, "Set workflow variable (key=value, repeatable)")
+	f.BoolVar(&runOpts.allowUnknownInputs, "allow-unknown-inputs", false, "Let an input that names no declared var ride the launch instead of refusing it - for forwarding an undeclared payload key to a subbot through {{input.*}}")
 	f.StringVar(&runOpts.recipe, "recipe", "", "Recipe JSON file")
 	f.StringVar(&runOpts.preset, "preset", "", "Apply a named in-source preset (presets: block) before --var overrides")
 	f.StringArrayVar(&runOpts.skills, "skill", nil, "Add a skill-library skill to this run, on top of whatever the bot declares (repeatable). Also settable machine-wide with ITERION_SKILLS=a,b. Manage the library with `iterion skill`.")
@@ -136,6 +141,7 @@ func init() {
 	f.StringVar(&runOpts.sandboxHostState, "sandbox-host-state", "", "Bind host ~/.iterion and ~/.claude into the sandbox so persistent memory survives across runs: \"auto\" (default) | \"none\". Empty inherits ITERION_SANDBOX_HOST_STATE then the built-in default \"auto\". Use \"none\" on multi-tenant/cloud runners to avoid leaking host OAuth credentials. See docs/sandbox.md.")
 	f.StringVar(&runOpts.compress, "compress", "", "command-output compression via the active rewriter plugin chain (rtk by default): \"on\" rewrites agent shell commands to their compact form (e.g. \"rtk <cmd>\"), \"ultra\" requests the densest output, \"off\" disables. Empty inherits the workflow/node compress: DSL then ITERION_COMPRESS. Needs an enabled rewriter plugin whose binary is on PATH. See docs/plugins.md.")
 	f.StringVar(&runOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md): \"on\" lets agent/judge nodes read and maintain a persistent MEMORY.md across runs of this bot on this project, \"off\" disables. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY; the default is off, so a run is hermetic unless it opts in. Honoured by claude_code, claw and pi. See docs/memory-and-knowledge.md.")
+	f.StringVar(&runOpts.ambientContext, "ambient-context", "", "ambient context: what agent/judge nodes inherit besides their prompt (ADR-119). \"workspace\" (the default) gives the repository's instruction files (CLAUDE.md, .claude/rules, AGENTS.md) and not the operator's personal setup; \"operator\" gives the operator's setup only; \"all\" both; \"none\" nothing. Empty inherits the workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT. Enforced on claude_code, claw, codex and pi. See docs/adr/119-ambient-context-policy.md")
 	f.StringVar(&runOpts.repoDevbox, "repo-devbox", "", "install the TARGET repository's devbox.json for this run: \"on\" (default) | \"off\" to skip it when the run does not build that repo (a review, an audit) and would otherwise pay its whole Nix toolchain. The BOT's own devbox.json is unaffected. Empty inherits the workflow repo_devbox: DSL then ITERION_REPO_DEVBOX. See docs/dsl.md.")
 	f.StringVar(&runOpts.loopBudgetGuard, "loop-budget-guard", "", "refuse a loop iteration the budget cannot fund, so the run leaves through its own exit path (a PR tail, a report) with the work it banked instead of dying mid-iteration: \"on\" (default) | \"off\" to run at the cap head-on. Empty inherits the workflow loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.")
 	f.StringVar(&runOpts.supervisors, "supervisors", "", "spawn the workflow's DSL-declared supervisor watchers: \"on\" (default) | \"off\" to run unsupervised (cost control / isolating a suspect steering policy). Empty inherits ITERION_SUPERVISORS. See docs/supervisors.md.")
@@ -146,8 +152,8 @@ func init() {
 	f.StringVar(&runOpts.reviewMode, "review-mode", "", "For bots that opt into the mono/dual review-loop topology by declaring a review_mode var (ADR-052): \"mono\" (one model family, ~half the calls), \"dual\" (alternate two families), or \"auto\" (default: dual when two provider families are detected, else mono). The shipped catalog no longer declares it (ADR-058 v2 campaigns); the surface stays for third-party or future reviewer-loop bots. No-op otherwise.")
 	f.StringArrayVar(&runOpts.modelFor, "model", nil, "Per-node/-group model override (repeatable): \"selector=model\" or a bare \"model\" for every LLM node. Selector = node id (reviewer_claude), id glob (reviewer_*, fix_*), or node kind (agent|judge). Wins over the node's DSL model:. E.g. --model 'reviewer_*=anthropic/claude-fable-5' --model 'fix_*=claude-sonnet-5'. Composes with --review-mode.")
 	f.StringVar(&runOpts.fallback, "fallback", "", "Run-level fallback route \"<backend>:<model>\" taken when an agent node's primary fails (e.g. --fallback 'claw:openai/gpt-5.5'). Applies only to agent nodes that declare no fallbacks: of their own, and never to judges. Uses the default trigger set (usage_window, unavailable); author a fallbacks: block for anything finer. See ADR-087.")
-	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code|codex|pi|kimi|grok). Same selector syntax as --model; wins over the node's DSL backend:.")
-	f.StringArrayVar(&runOpts.effortFor, "effort-for", nil, "Per-node/-group reasoning_effort override (repeatable): \"selector=effort\" or a bare \"effort\" for every LLM node (low|medium|high|xhigh|max|ultracode). Same selector syntax as --model; wins over the node's DSL reasoning_effort: AND over a dynamic _reasoning_effort edge mapping.")
+	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code|codex|pi|kimi|grok|opencode). Same selector syntax as --model; wins over the node's DSL backend:.")
+	f.StringArrayVar(&runOpts.effortFor, "effort-for", nil, "Per-node/-group reasoning_effort override (repeatable): \"selector=effort\" or a bare \"effort\" for every LLM node (none|low|medium|high|xhigh|max|ultracode). Same selector syntax as --model; wins over the node's DSL reasoning_effort: AND over a dynamic _reasoning_effort edge mapping.")
 	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches, &runOpts.unlimitedWorkflow)
 	registerAutoResumeFlag(f, &runOpts.autoResume)
 	rootCmd.AddCommand(runCmd)

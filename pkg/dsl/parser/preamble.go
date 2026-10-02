@@ -18,15 +18,16 @@ const MaxProfile = 2
 // `requires.iterion`, so a runner below it refuses the bundle at admission
 // instead of failing at its first parse of a subbot child
 // (bundle.CheckProfileFloor). Profile 2 ships in v3.141.0 (lot 2 of #1010);
-// should the release number shift before it ships, this entry moves with it.
+// the release cut realigns the entry to the version it releases
+// (internal/floorsalign, release-it's before:git:beforeRelease hook), and a
+// shape it cannot realign refuses the release.
 var ProfileSince = map[int]string{2: "3.141.0"}
 
 // ImportSince names the release that first reads `import "lib/x.bot"` — the
 // floor a bot in several files must declare in `requires.iterion`, whatever
 // its profile: a runner below it fails at its first parse of a fragment, or
 // of a subbot child that imports (bundle.CheckSyntaxFloor). Lot 3 of #1010
-// ships in v3.145.0; should the release number shift before it ships, this
-// entry moves with it.
+// ships in v3.145.0; the release cut realigns this entry the same way.
 const ImportSince = "3.145.0"
 
 // Preamble is what the head of a file says about how the rest of it is read,

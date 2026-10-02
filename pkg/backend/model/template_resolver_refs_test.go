@@ -37,7 +37,7 @@ func TestTheRendererNamesWhatItLeaves(t *testing.T) {
 		t.Fatal(err)
 	}
 	var left []string
-	got := RenderCommand(body, refs, map[string]any{}, map[string]any{}, td, "run-1", func(ref string) { left = append(left, ref) })
+	got := RenderCommand(body, refs, map[string]any{}, map[string]any{}, td, "run-1", nil, func(ref string) { left = append(left, ref) })
 	if got != "echo 'fill {{vars.goal}} in' {{input.missing}} {{ ! vars.absent }} {{each.items.item}}" {
 		t.Fatalf("command rendered %q", got)
 	}
@@ -78,7 +78,7 @@ func TestAnUnsignedAttachmentURLIsNotFound(t *testing.T) {
 	}
 	body := "curl -o out {{attachments.spec.url}}"
 	var left []string
-	got := RenderCommand(body, mustRefs(body), nil, nil, failing, "run-1", func(ref string) { left = append(left, ref) })
+	got := RenderCommand(body, mustRefs(body), nil, nil, failing, "run-1", nil, func(ref string) { left = append(left, ref) })
 	if got != body || strings.Join(left, " ") != "attachments.spec.url" {
 		t.Fatalf("a command with an unsignable url rendered %q, named %v", got, left)
 	}
@@ -103,7 +103,7 @@ func TestAnUndeclaredLoopResolvesToNothing(t *testing.T) {
 	}
 	body := "if [ {{loop.TYPO.iteration}} -ge {{loop.TYPO.max}} ]; then exit 1; fi"
 	var left []string
-	got := RenderCommand(body, mustRefs(body), nil, nil, td, "run-1", func(ref string) { left = append(left, ref) })
+	got := RenderCommand(body, mustRefs(body), nil, nil, td, "run-1", nil, func(ref string) { left = append(left, ref) })
 	if got != body || len(left) != 2 {
 		t.Fatalf("an undeclared loop in a command rendered %q, named %v", got, left)
 	}
@@ -115,7 +115,7 @@ func TestADottedInputReferenceDrillsInAToolBody(t *testing.T) {
 	input := map[string]any{"a": map[string]any{"b": "leaf", "n": 2}}
 	body := "echo {{input.a.b}} {{input.a.n}} {{input.a}} {{input.a.nope}}"
 	var left []string
-	got := RenderCommand(body, mustRefs(body), input, nil, nil, "run-1", func(ref string) { left = append(left, ref) })
+	got := RenderCommand(body, mustRefs(body), input, nil, nil, "run-1", nil, func(ref string) { left = append(left, ref) })
 	if got != `echo 'leaf' '2' '{"b":"leaf","n":2}' {{input.a.nope}}` {
 		t.Fatalf("command rendered %q", got)
 	}

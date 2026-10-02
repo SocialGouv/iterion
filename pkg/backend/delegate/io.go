@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
@@ -35,12 +36,12 @@ import (
 // session_capture / event) and finishes with one [EnvelopeResult]
 // wrapping an [IOResult].
 //
-// V2-2: the [Task.ToolDefs] slice is now carried over the wire as
+// V2-2: the [Task.ToolDefs] slice is carried over the wire as
 // [IOToolDef] entries — the [ToolDef.Execute] closure is dropped (it
-// captures launcher-side state like the MCP manager) and the runner
-// builds proxy ToolDefs whose Execute emits [EnvelopeToolCall] and
-// blocks on the matching [EnvelopeToolResult]. This unblocks the
-// MCP-tools-in-sandbox path that V1 couldn't support.
+// captures launcher-side state like the MCP manager). The runner executes
+// the in-container tools itself and builds, for each launcher-placed one,
+// a proxy ToolDef whose Execute emits [EnvelopeToolCall] and blocks on the
+// matching [EnvelopeToolResult] (placement: tool.SandboxPlacementOf).
 type IOTask struct {
 	NodeID                 string                `json:"node_id"`
 	Iteration              int                   `json:"iteration,omitempty"`
@@ -49,6 +50,7 @@ type IOTask struct {
 	UserPrompt             string                `json:"user_prompt,omitempty"`
 	UserContent            []ContentBlock        `json:"user_content,omitempty"`
 	AllowedTools           []string              `json:"allowed_tools,omitempty"`
+	ToolsDeclared          bool                  `json:"tools_declared,omitempty"`
 	Readonly               bool                  `json:"readonly,omitempty"`
 	Capabilities           []string              `json:"capabilities,omitempty"`
 	StoreDir               string                `json:"store_dir,omitempty"`
@@ -88,6 +90,7 @@ type IOTask struct {
 	Memory                 *MemorySpec           `json:"memory,omitempty"`
 	AutoMemoryDir          string                `json:"auto_memory_dir,omitempty"`
 	AutoMemoryPrompt       string                `json:"auto_memory_prompt,omitempty"`
+	AmbientContext         string                `json:"ambient_context,omitempty"`
 	CompressMode           string                `json:"compress_mode,omitempty"`
 	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
 }
@@ -127,7 +130,7 @@ type IOResult struct {
 // ToIOTask converts a [Task] to its wire form. The Sandbox handle and
 // closure fields are dropped; the [ToolDef.Execute] closures are
 // replaced by metadata-only [IOToolDef] entries (V2-2 — the runner
-// builds proxy ToolDefs).
+// executes the in-container tools and proxies the launcher-placed ones).
 func ToIOTask(t Task) IOTask {
 	var ioToolDefs []IOToolDef
 	if len(t.ToolDefs) > 0 {
@@ -148,6 +151,7 @@ func ToIOTask(t Task) IOTask {
 		UserPrompt:             t.UserPrompt,
 		UserContent:            t.UserContent,
 		AllowedTools:           t.AllowedTools,
+		ToolsDeclared:          t.ToolsDeclared,
 		Readonly:               t.Readonly,
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
@@ -187,6 +191,7 @@ func ToIOTask(t Task) IOTask {
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
+		AmbientContext:         t.AmbientContext.String(),
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 	}
@@ -206,6 +211,7 @@ func FromIOTask(t IOTask) Task {
 		UserPrompt:             t.UserPrompt,
 		UserContent:            t.UserContent,
 		AllowedTools:           t.AllowedTools,
+		ToolsDeclared:          t.ToolsDeclared,
 		Readonly:               t.Readonly,
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
@@ -244,6 +250,7 @@ func FromIOTask(t IOTask) Task {
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
+		AmbientContext:         ambientFromIO(t.AmbientContext),
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 	}
@@ -287,4 +294,11 @@ func FromIOResult(r IOResult) Result {
 		PendingConversation: r.PendingConversation,
 		PendingToolUseID:    r.PendingToolUseID,
 	}
+}
+
+// ambientFromIO decodes the wire spelling of an ambient-context policy. An
+// empty or unknown value, from a host older than the field, is the default.
+func ambientFromIO(s string) ambient.Policy {
+	p, _ := ambient.Parse(s)
+	return p
 }

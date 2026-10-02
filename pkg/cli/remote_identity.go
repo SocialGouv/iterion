@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,6 +57,10 @@ func RemoteTokensList(ctx context.Context, c *RemoteClient, p *Printer) error {
 func RemoteTokensCreate(ctx context.Context, c *RemoteClient, p *Printer, name, teamID string, expiresInDays int) error {
 	req := map[string]any{"name": name, "expires_in_days": expiresInDays}
 	if teamID != "" {
+		teamID, err := resolveRemoteTeamID(ctx, c, teamID)
+		if err != nil {
+			return err
+		}
 		req["team_id"] = teamID
 	}
 	var out struct {
@@ -116,6 +121,44 @@ func RemoteTeamsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 	return nil
 }
 
+// teamUUIDShape matches a canonical team UUID — the form the mint pins
+// verbatim and every identity path resolves.
+var teamUUIDShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// resolveRemoteTeamID passes a UUID through untouched (lower-cased — the
+// mint pins the value verbatim and the store's lookup is exact) and
+// resolves a slug against the account's org tree via /api/auth/me. Team
+// NAMES are deliberately not matched: slugs are globally unique, names
+// are not, and a silent first-match across orgs pins an identity the
+// operator did not choose.
+func resolveRemoteTeamID(ctx context.Context, c *RemoteClient, arg string) (string, error) {
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	if teamUUIDShape.MatchString(arg) {
+		return arg, nil
+	}
+	me, err := c.Me(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolving team %q: %w — pass the team UUID (see `iterion remote teams list`)", arg, err)
+	}
+	hits, found := 0, ""
+	for _, org := range me.Orgs {
+		for _, t := range org.Teams {
+			if arg == strings.ToLower(t.TeamID) || arg == strings.ToLower(t.TeamSlug) {
+				hits++
+				found = t.TeamID
+			}
+		}
+	}
+	switch {
+	case hits == 1:
+		return found, nil
+	case hits > 1:
+		return "", fmt.Errorf("team %q matches %d teams — pass the team UUID (see `iterion remote teams list`)", arg, hits)
+	default:
+		return "", fmt.Errorf("no team matches %q by slug or UUID (see `iterion remote teams list`)", arg)
+	}
+}
+
 // RemoteTeamsSwitch changes the CLI's default team. A PAT's identity
 // team is pinned at mint time, so switching means minting a NEW token
 // pinned to the target team, persisting it, and revoking the previous
@@ -124,6 +167,12 @@ func RemoteTeamsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID, tokenName string) error {
 	if strings.TrimSpace(teamID) == "" {
 		return fmt.Errorf("team id required (see `iterion remote teams list`)")
+	}
+	// Resolution is read-only and comes before the env-mode refusal so the
+	// advice it prints carries the UUID, not the raw argument.
+	teamID, err := resolveRemoteTeamID(ctx, c, teamID)
+	if err != nil {
+		return err
 	}
 	if os.Getenv("ITERION_REMOTE_URL") != "" {
 		return fmt.Errorf("teams switch mutates the stored credential and cannot run in ITERION_REMOTE_URL env mode — mint a team-pinned token instead: `iterion remote tokens create --team %s`", teamID)

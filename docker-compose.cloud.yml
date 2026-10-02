@@ -1,6 +1,6 @@
-# Local-dev cloud stack: Mongo + NATS (with JetStream + KV) + MinIO +
-# iterion server, exercising the full ITERION_MODE=cloud path. Boots
-# MinIO with a single bucket via docker/minio-init.sh.
+# Local-dev cloud stack: Mongo + NATS (with JetStream + KV) + SeaweedFS
+# (the S3 object store, as in prod) + iterion server, exercising the full
+# ITERION_MODE=cloud path. docker/s3-init.sh creates the bucket.
 #
 # Quick start:
 #   task cloud:up           # bring everything up
@@ -52,39 +52,60 @@ services:
       interval: 5s
       retries: 20
 
-  minio:
-    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z@sha256:1dce27c494a16bae114774f1cec295493f3613142713130c2d22dd5696be6ad3
+  seaweedfs:
+    # SeaweedFS 4.48, the release and digest prod runs, in one process:
+    # master + volume + filer + S3 gateway. The S3 identity comes from
+    # docker/seaweedfs-s3.json (no anonymous identity: every request to the
+    # S3 port is signed). The filer, master and volume ports of this one
+    # process answer unsigned requests; they are published nowhere and stay
+    # on the compose network. -s3.autoCreateBucket=false: a PUT into a
+    # missing bucket fails instead of creating it, so a wrong
+    # ITERION_S3_BUCKET shows. -master.telemetry=false: no anonymous
+    # cluster statistics sent to seaweedfs.com (on by default, from 10 GiB).
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
     command:
       - server
-      - /data
-      - --console-address
-      - ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      - -dir=/data
+      - -s3
+      - -s3.config=/etc/seaweedfs/s3.json
+      - -s3.autoCreateBucket=false
+      - -master.volumeSizeLimitMB=1024
+      - -master.telemetry=false
+      - -volume.max=0
     ports:
-      - "9000:9000"        # S3 API
-      - "9001:9001"        # web console
+      - "8333:8333"        # S3 API
     volumes:
-      - minio-data:/data
+      - seaweedfs-data:/data
+      - ./docker/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      # The S3 gateway's own status endpoint (unauthenticated). 127.0.0.1,
+      # not localhost: localhost resolves to ::1 in this image and the
+      # gateway listens on IPv4 only.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8333/healthz"]
       interval: 5s
-      retries: 20
+      retries: 30
 
-  minio-init:
-    image: minio/mc:RELEASE.2024-11-21T17-21-54Z@sha256:993e8c454a7ec632923f7e3e61adf1d473261da6354cefd641aedd33a2cfe112
+  s3-init:
+    # rclone 1.71.1, the release and digest of prod's bucket and
+    # migration Jobs.
+    image: rclone/rclone:1.71.1@sha256:d5971950c2b370fb04dd3292541b5bda6d9103143fd7e345aeb435a399388afc
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
     environment:
-      ITERION_S3_ENDPOINT: http://minio:9000
-      ITERION_S3_ACCESS_KEY_ID: minioadmin
-      ITERION_S3_SECRET_ACCESS_KEY: minioadmin
+      RCLONE_CONFIG_S3_TYPE: s3
+      RCLONE_CONFIG_S3_PROVIDER: Other
+      RCLONE_CONFIG_S3_ENDPOINT: http://seaweedfs:8333
+      RCLONE_CONFIG_S3_REGION: us-east-1
+      RCLONE_CONFIG_S3_FORCE_PATH_STYLE: "true"
+      RCLONE_CONFIG_S3_ACCESS_KEY_ID: iterion-dev
+      RCLONE_CONFIG_S3_SECRET_ACCESS_KEY: iterion-dev-secret
       ITERION_S3_BUCKET: iterion-artifacts
+      # The bucket of the S3 compatibility bench (task cloud:test:s3).
+      ITERION_TEST_S3_BUCKET: iterion-compat-bench
     volumes:
-      - ./docker/minio-init.sh:/usr/local/bin/minio-init.sh:ro
-    entrypoint: ["/bin/sh", "/usr/local/bin/minio-init.sh"]
+      - ./docker/s3-init.sh:/usr/local/bin/s3-init.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/s3-init.sh"]
 
   iterion-server:
     image: ghcr.io/socialgouv/iterion:edge
@@ -99,7 +120,7 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
     environment:
       # Mode + persistence
@@ -107,11 +128,11 @@ services:
       ITERION_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       ITERION_MONGO_DB: iterion
       ITERION_NATS_URL: nats://nats:4222
-      ITERION_S3_ENDPOINT: http://minio:9000
+      ITERION_S3_ENDPOINT: http://seaweedfs:8333
       ITERION_S3_REGION: us-east-1
       ITERION_S3_BUCKET: iterion-artifacts
-      ITERION_S3_ACCESS_KEY_ID: minioadmin
-      ITERION_S3_SECRET_ACCESS_KEY: minioadmin
+      ITERION_S3_ACCESS_KEY_ID: iterion-dev
+      ITERION_S3_SECRET_ACCESS_KEY: iterion-dev-secret
       ITERION_S3_USE_PATH_STYLE: "true"
       ITERION_LOG_FORMAT: json
       ITERION_LOG_LEVEL: info
@@ -144,10 +165,16 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - "4891:4891"
+    # It exits when NATS is not reachable at startup; come back rather than
+    # stay down.
+    restart: on-failure
     healthcheck:
-      # /readyz pings Mongo+NATS+S3 with a 1s deadline per dep, so a
-      # backend hiccup flips the iterion-server container to unhealthy
-      # without restarting the pod.
+      # /readyz pings Mongo+NATS+S3 with a 1s deadline per dep. Only Mongo
+      # is critical: with it down /readyz answers 503, and after 30 failed
+      # checks (~150 s) the container turns unhealthy, without a restart.
+      # With NATS or the object store down it answers 200,
+      # "status":"degraded", the failure in that dependency's check, and
+      # the container stays healthy.
       test: ["CMD", "curl", "-fsS", "http://localhost:4891/readyz"]
       interval: 5s
       retries: 30
@@ -165,20 +192,32 @@ services:
       iterion-server:
         condition: service_healthy
     command: ["runner"]
+    # It exits when NATS is not reachable yet (a `docker compose restart`
+    # restarts both at once); come back rather than stay down.
+    restart: on-failure
     environment:
       ITERION_MODE: cloud
       ITERION_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       ITERION_MONGO_DB: iterion
       ITERION_NATS_URL: nats://nats:4222
-      ITERION_S3_ENDPOINT: http://minio:9000
+      ITERION_S3_ENDPOINT: http://seaweedfs:8333
       ITERION_S3_REGION: us-east-1
       ITERION_S3_BUCKET: iterion-artifacts
-      ITERION_S3_ACCESS_KEY_ID: minioadmin
-      ITERION_S3_SECRET_ACCESS_KEY: minioadmin
+      ITERION_S3_ACCESS_KEY_ID: iterion-dev
+      ITERION_S3_SECRET_ACCESS_KEY: iterion-dev-secret
       ITERION_S3_USE_PATH_STYLE: "true"
+      # The volume is mounted on a directory the image gives to the iterion
+      # user, so a fresh volume starts owned by the runner, which creates
+      # work/ in it. The workdir must be a path the server container does
+      # not have: the server stats a run's workdir to decide whether it can
+      # serve the run's files itself, and an empty /var/lib/iterion exists
+      # in its image too.
       ITERION_RUNNER_WORKDIR: /var/lib/iterion/work
       ITERION_LOG_FORMAT: json
       ITERION_LOG_LEVEL: info
+      # Cloud mode refuses to start without a JWT secret: the same value
+      # as the server's.
+      ITERION_JWT_SECRET: ${ITERION_JWT_SECRET:-ZGV2LWp3dC1zZWNyZXQtcGxlYXNlLXJvdGF0ZS1iZWZvcmUtcHJvZHVjdGlvbi11c2U=}
       # The runner needs the same ITERION_SECRETS_KEY as the server so
       # it can unseal the per-run RunBundle (BYOK + OAuth-forfait).
       # Phase C+D.
@@ -186,10 +225,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
-      - runner-work:/var/lib/iterion/work
+      - runner-data:/var/lib/iterion
 
 volumes:
   mongo-data:
   nats-data:
-  minio-data:
-  runner-work:
+  seaweedfs-data:
+  runner-data:

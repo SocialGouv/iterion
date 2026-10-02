@@ -45,6 +45,16 @@ func TestBuildArgs_SettingSources(t *testing.T) {
 	if hasFlag(buildArgs(processConfig{}, true), "--setting-sources") {
 		t.Error("--setting-sources must be omitted when no sources are configured")
 	}
+
+	// An explicitly empty list loads NO source, and must still be emitted:
+	// omitted, the CLI would load every source, `local` included.
+	none := buildArgs(processConfig{SettingSources: []SettingSource{}}, true)
+	if !hasFlag(none, "--setting-sources") {
+		t.Fatal("an empty, non-nil list must emit --setting-sources")
+	}
+	if got := flagValue(none, "--setting-sources"); got != "" {
+		t.Errorf("--setting-sources = %q, want the empty string", got)
+	}
 }
 
 func TestBuildArgs_ThinkingDisplay(t *testing.T) {
@@ -107,5 +117,37 @@ func TestBuildArgs_DisallowedTools(t *testing.T) {
 	}
 	if hasFlag(buildArgs(processConfig{}, true), "--disallowedTools") {
 		t.Error("--disallowedTools must be omitted when no native tools are restricted")
+	}
+}
+
+// Both tool flags are SETS, and both options APPEND, so a caller composing
+// several bounds onto one spawn legitimately produces the same name twice —
+// the gated structured-output pass withholds a roster that already carries
+// `Task` plus an orchestration list that carries it too. The argv must still
+// name it once, in first-occurrence order (the lists are read in logs and
+// pinned by tests, so a sorted result would churn both).
+func TestBuildArgs_DedupesBothToolFlagsKeepingFirstOccurrenceOrder(t *testing.T) {
+	args := buildArgs(processConfig{
+		AllowedTools:    []string{"Read", "Glob", "Read", "Bash"},
+		DisallowedTools: []string{"Task", "Agent", "Task", "Workflow", "Agent"},
+	}, false)
+	if got := flagValue(args, "--allowedTools"); got != "Read,Glob,Bash" {
+		t.Errorf("--allowedTools = %q, want Read,Glob,Bash", got)
+	}
+	if got := flagValue(args, "--disallowedTools"); got != "Task,Agent,Workflow" {
+		t.Errorf("--disallowedTools = %q, want Task,Agent,Workflow", got)
+	}
+}
+
+func TestWithNoSettingSourcesIsDistinctFromNoOption(t *testing.T) {
+	var c config
+	WithNoSettingSources()(&c)
+	if c.settingSources == nil || len(c.settingSources) != 0 {
+		t.Fatalf("WithNoSettingSources set %#v, want an empty non-nil list", c.settingSources)
+	}
+	var unset config
+	WithSettingSources()(&unset)
+	if unset.settingSources != nil {
+		t.Fatalf("WithSettingSources() with no source set %#v, want nil (CLI default)", unset.settingSources)
 	}
 }

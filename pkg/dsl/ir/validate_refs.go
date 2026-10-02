@@ -479,6 +479,8 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 			c.validateSecretsRef(w, rc)
 		case RefLoop:
 			c.validateLoopRef(w, rc)
+		case RefRun:
+			c.validateRunRef(w, rc)
 		}
 	}
 }
@@ -516,6 +518,34 @@ func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
 			"%s: reference %s uses unknown loop field %q (expected: iteration, max, previous_output)",
 			rc.Location, rc.Ref.Raw, field)
 	}
+}
+
+// validateRunRef warns of a {{run.X}} reference whose member the run
+// namespace does not carry (C153). A warning, not an error, for the same
+// reason validateLoopRef is one: the runtime renders no value for an
+// unknown member, so yesterday's bot keeps compiling — and the defect is
+// still named at validate time, because "renders empty" is exactly how an
+// exclusion list vanishes from a prompt-carried scope gate's git command (#1464; on an
+// executable command the preserved placeholder fails loudly instead — git
+// refuses the pathspec it cannot match).
+func (c *compiler) validateRunRef(w *Workflow, rc refContext) {
+	if len(rc.Ref.Path) == 0 {
+		return
+	}
+	member := rc.Ref.Path[0]
+	for _, known := range RunMembers {
+		if member == known {
+			if len(rc.Ref.Path) > 1 {
+				c.refWarnf(rc, DiagUnknownRunMember,
+					"%s: reference %s has no sub-field — run.%s is a scalar value",
+					rc.Location, rc.Ref.Raw, member)
+			}
+			return
+		}
+	}
+	c.refWarnf(rc, DiagUnknownRunMember,
+		"%s: reference %s uses unknown run member %q (known: %s)",
+		rc.Location, rc.Ref.Raw, member, strings.Join(RunMembers, ", "))
 }
 
 // validateSecretsRef flags a {{secrets.X}} reference whose secret X is

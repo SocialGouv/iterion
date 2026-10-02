@@ -33,6 +33,16 @@ dsl: 2
 vars:
   purpose: string = "background music for the episode"
 
+prompt upload_instructions:
+  # Provide the audio track
+
+  We need {{vars.purpose}}.
+
+  Drop the file below, tick **confirmed**, and add a note if the take
+  needs context. You can also use the 📎 button to attach anything
+  else (a reference mix, a screenshot of the waveform) — that works on
+  EVERY human gate, with no `file` field declared.
+
 schema upload_decision:
   ## `file` → rendered as a drop zone. Only a HUMAN node may declare
   ## one: no LLM can produce bytes, so the compiler rejects a `file`
@@ -56,20 +66,10 @@ schema track_ref:
 schema inspection:
   report: string
 
-prompt upload_instructions:
-  # Provide the audio track
-
-  We need {{vars.purpose}}.
-
-  Drop the file below, tick **confirmed**, and add a note if the take
-  needs context. You can also use the 📎 button to attach anything
-  else (a reference mix, a screenshot of the waveform) — that works on
-  EVERY human gate, with no `file` field declared.
-
 human collect_track:
-  instructions: upload_instructions
   output: upload_decision
   interaction: human
+  instructions: upload_instructions
 
 ## Deterministic proof that the upload really landed somewhere the
 ## workflow can open. `.path` resolves to a host path on an ordinary
@@ -81,9 +81,6 @@ human collect_track:
 ## 12-second clip for a 3-minute episode, refuse a video/* where audio
 ## was expected) instead of discovering it three nodes later.
 tool inspect_track:
-  input:  track_ref
-  output: inspection
-  publish: track_report
   command: |
     set -eu
     ## No quotes around a reference: the runtime shell-quotes every one, and
@@ -97,17 +94,25 @@ tool inspect_track:
     test -r "$path" || { echo "unreadable: $path" >&2; exit 1; }
     printf 'on-disk size: %s\n' "$(wc -c < "$path")"
 
+  input: track_ref
+  output: inspection
+  publish: track_report
+
 workflow human_file_upload:
+
   entry: collect_track
+
   ## `with {}` threads the descriptor's fields into the tool's input.
   ## Values must be strings — hence the quotes (and `size: string` in
   ## track_ref, even though the descriptor carries a number).
   collect_track -> inspect_track when confirmed with {
-    path:     "{{outputs.collect_track.track.path}}",
+    path: "{{outputs.collect_track.track.path}}",
     filename: "{{outputs.collect_track.track.filename}}",
-    mime:     "{{outputs.collect_track.track.mime}}",
-    size:     "{{outputs.collect_track.track.size}}",
-    sha256:   "{{outputs.collect_track.track.sha256}}"
+    mime: "{{outputs.collect_track.track.mime}}",
+    size: "{{outputs.collect_track.track.size}}",
+    sha256: "{{outputs.collect_track.track.sha256}}",
   }
+
   collect_track -> fail when not confirmed
+
   inspect_track -> done

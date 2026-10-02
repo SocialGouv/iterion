@@ -22,6 +22,8 @@ func resetClaudeCredEnv(t *testing.T) {
 		"ANTHROPIC_AUTH_TOKEN",
 		"ANTHROPIC_BASE_URL",
 		"ZAI_API_KEY",
+		"MOONSHOT_API_KEY",
+		"MOONSHOT_BASE_URL",
 		"CLAUDE_CONFIG_DIR",
 		"CLAUDE_CODE_OAUTH_TOKEN",
 	} {
@@ -54,8 +56,8 @@ func TestAnthropicCredEnv_AutoZAIFromCtxWinsOverAnthropic(t *testing.T) {
 	if got["ANTHROPIC_AUTH_TOKEN"] != "zai-test" {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN: got %q, want zai-test", got["ANTHROPIC_AUTH_TOKEN"])
 	}
-	if _, present := got["ANTHROPIC_API_KEY"]; present {
-		t.Errorf("ANTHROPIC_API_KEY must NOT be set when z.ai key wins precedence")
+	if v, present := got["ANTHROPIC_API_KEY"]; !present || v != "" {
+		t.Errorf("ANTHROPIC_API_KEY must be present-and-empty when the z.ai key wins precedence (an inherited value would ride along): present=%v val=%q", present, v)
 	}
 }
 
@@ -199,8 +201,8 @@ func TestAnthropicCredEnv_HintZAIForcesEvenWithAnthropicCtx(t *testing.T) {
 	if got["ANTHROPIC_AUTH_TOKEN"] != "zai-test" {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN: got %q, want zai-test (hint zai pins z.ai routing)", got["ANTHROPIC_AUTH_TOKEN"])
 	}
-	if _, present := got["ANTHROPIC_API_KEY"]; present {
-		t.Errorf("ANTHROPIC_API_KEY must NOT be set when hint forces z.ai")
+	if v, present := got["ANTHROPIC_API_KEY"]; !present || v != "" {
+		t.Errorf("ANTHROPIC_API_KEY must be present-and-empty when the hint forces z.ai (an inherited value would ride along): present=%v val=%q", present, v)
 	}
 }
 

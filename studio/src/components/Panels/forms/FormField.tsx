@@ -407,13 +407,25 @@ interface TagListFieldProps {
   values: string[];
   onChange: (v: string[]) => void;
   placeholder?: string;
+  help?: string;
+  /** The values are literals (a permission rule), not labels: dedupe
+   *  case-sensitively and do not split on a comma. */
+  literalValues?: boolean;
 }
 
-export function TagListField({ label, values, onChange, placeholder = "Add..." }: TagListFieldProps) {
+export function TagListField({ label, values, onChange, placeholder = "Add...", help, literalValues }: TagListFieldProps) {
   return (
-    <FieldRow label={label}>
-      {/* Generous cap: tool-policy patterns can be long; never truncate a rule. */}
-      <TagInput value={values} onChange={onChange} placeholder={placeholder} maxTagLength={512} />
+    <FieldRow label={label} help={help}>
+      {/* 512 chars: long enough for the tool-policy and permission patterns
+          this repo writes. It is a truncation, not an unbounded field —
+          anything longer is cut on commit. */}
+      <TagInput
+        value={values}
+        onChange={onChange}
+        placeholder={placeholder}
+        maxTagLength={512}
+        literalValues={literalValues}
+      />
     </FieldRow>
   );
 }

@@ -17,6 +17,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -63,6 +64,7 @@ func TestPiResolveModel(t *testing.T) {
 func TestPiMapEffort(t *testing.T) {
 	cases := map[string][]string{
 		"":          nil,
+		"none":      {"--thinking", "off"}, // pi spells no-thinking "off"
 		"low":       {"--thinking", "low"},
 		"medium":    {"--thinking", "medium"},
 		"high":      {"--thinking", "high"},
@@ -183,16 +185,22 @@ func TestPiExtraArgsFor(t *testing.T) {
 		}
 	})
 
-	// Context files stay on for parity with claude_code, but they are the
-	// dominant per-call cost on a repo with a large CLAUDE.md (measured:
-	// 26,933 input tokens vs 448 on iterion's own tree), so the off switch
-	// must exist and must be off by default.
-	t.Run("context files on by default, with an off switch", func(t *testing.T) {
-		if slices.Contains(piExtraArgsFor(Task{}, nil), "--no-context-files") {
-			t.Error("context files must stay on by default (claude_code parity)")
+	// pi's own loading walks to the filesystem root and adds the agent dir's
+	// file: only `all` maps onto it. Every other policy turns it off and has
+	// iterion supply the allowed files (ADR-119; ADR-085 measured 26,933 input
+	// tokens vs 448 on a 103 KB CLAUDE.md). ITERION_PI_NO_CONTEXT_FILES=1
+	// stays the raw off switch, `all` included.
+	t.Run("context files follow the ambient-context policy", func(t *testing.T) {
+		for _, p := range []ambient.Policy{ambient.Workspace, ambient.Operator, ambient.None} {
+			if !slices.Contains(piExtraArgsFor(Task{AmbientContext: p}, nil), "--no-context-files") {
+				t.Errorf("%v: pi's unbounded loading must be off", p)
+			}
+		}
+		if slices.Contains(piExtraArgsFor(Task{AmbientContext: ambient.All}, nil), "--no-context-files") {
+			t.Error("all: pi's native loading is exactly workspace and operator, it must stay on")
 		}
 		t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "1")
-		if !slices.Contains(piExtraArgsFor(Task{}, nil), "--no-context-files") {
+		if !slices.Contains(piExtraArgsFor(Task{AmbientContext: ambient.All}, nil), "--no-context-files") {
 			t.Error("ITERION_PI_NO_CONTEXT_FILES=1 must suppress AGENTS.md/CLAUDE.md injection")
 		}
 	})
@@ -815,7 +823,7 @@ func TestPiPrintModeAllowsAnUngatedNode(t *testing.T) {
 
 // A sandboxed pi run keeps its sessions inside the worktree (the container has
 // to see them), which makes them untracked files in the TARGET repo. Left
-// alone they flip workdirIsClean and ride finalizeWorktree's `git add -A` into
+// alone they make the worktree dirty and ride finalizeWorktree's `git add -A` into
 // a wip-bank commit, so a run that changed no code still lands a commit full
 // of pi transcripts — and scatters iterion's `.iterion/` into someone else's
 // tree. Same self-ignoring guard devbox uses for its generated profile.
@@ -1068,5 +1076,73 @@ func TestPiExecuteRefusesAPlantedStateRootBeforeSpawning(t *testing.T) {
 	}
 	if _, serr := os.Stat(attacker); serr == nil {
 		t.Error("created the attacker's directory")
+	}
+}
+
+// A key a shared tier sealed for a PINNED route reaches the pi node that
+// names its provider — and no other. With a Claude forfait holding the wire,
+// the platform's z.ai key is sealed pinned-only; reading the default channel
+// alone left `provider: zai` pi nodes with no key at all.
+func TestPiRouteEnvCarriesThePinnedKeyOfItsOwnRoute(t *testing.T) {
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys: map[secrets.Provider]string{
+			secrets.ProviderZAI:      "zai-pinned",
+			secrets.ProviderMoonshot: "moonshot-pinned",
+		},
+	})
+	if got := piRouteEnv(ctx, Task{Model: "glm-5.3", ProviderHint: "zai"})["ZAI_API_KEY"]; got != "zai-pinned" {
+		t.Errorf("ZAI_API_KEY = %q for a node naming zai, want the pinned key", got)
+	}
+	if env := piRouteEnv(ctx, Task{Model: "anthropic/claude-opus-5-5"}); env["ZAI_API_KEY"] != "" {
+		t.Errorf("ZAI_API_KEY = %q for a node that does not name zai — a pinned key crossed to another route", env["ZAI_API_KEY"])
+	}
+	// pi names Moonshot `moonshotai`; the key is iterion's `moonshot` one.
+	for _, model := range []string{"moonshot/kimi-k2", "kimi/kimi-k2"} {
+		if got := piRouteEnv(ctx, Task{Model: model})["MOONSHOT_API_KEY"]; got != "moonshot-pinned" {
+			t.Errorf("MOONSHOT_API_KEY = %q for %s, want the pinned key", got, model)
+		}
+	}
+}
+
+// captureTransport records the task a pi transport is handed.
+type captureTransport struct{ task Task }
+
+func (c *captureTransport) Execute(_ context.Context, task Task) (Result, error) {
+	c.task = task
+	return Result{BackendName: BackendPi}, nil
+}
+
+// The pinned key reaches pi on the transport it runs by default — RPC — and
+// on the sandboxed path: both read task.ExtraEnv, which pi.Execute fills
+// before choosing a transport. A hook only the print transport applied
+// left the default one without the key.
+func TestPiExecuteHandsTheRouteKeyToTheTransport(t *testing.T) {
+	// Hermetic: piSandboxEnv forwards the HOST's credential variables, and a
+	// developer machine carries real ones. Blank them so the assertion reads
+	// only what the route provides — and never prints a real key.
+	for _, name := range piCredentialEnvNames {
+		t.Setenv(name, "")
+	}
+	t.Setenv("ITERION_PI_MODE", "")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "zai-pinned"},
+	})
+	rpc := &captureTransport{}
+	b := &PiBackend{rpc: rpc}
+	if _, err := b.Execute(ctx, Task{NodeID: "glm", Model: "glm-5.3", ProviderHint: "zai", WorkDir: t.TempDir()}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	found := false
+	for _, kv := range rpc.task.ExtraEnv {
+		if kv == "ZAI_API_KEY=zai-pinned" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the RPC transport was handed no ZAI_API_KEY for a node naming zai (entries=%d)", len(rpc.task.ExtraEnv))
+	}
+	sandboxed := &CLIAgentBackend{Protocol: piProtocol}
+	if got := sandboxed.sandboxEnv(ctx, rpc.task)["ZAI_API_KEY"]; got != "zai-pinned" {
+		t.Errorf("the sandboxed environment lost the route's key (set=%v)", got != "")
 	}
 }

@@ -14,9 +14,9 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
-	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -43,6 +43,14 @@ type saveFileRequest struct {
 	// Revision is the unit revision the document was opened at (the open
 	// response's unit.revision); required for a bot in several files.
 	Revision string `json:"revision,omitempty"`
+	// UnitFiles is the file list the client last holds for the unit (its
+	// unit.files): each file's profile and import lines AS THE CLIENT
+	// KNOWS them, which a per-file edit of the Source view may have changed
+	// — the two header fields the merged document does not carry. A save
+	// with it rebuilds the unit the claim describes and writes each file's
+	// header from the claim; a save without it rebuilds every header from
+	// the stored files, and a header change is dropped.
+	UnitFiles []unitFileInfo `json:"unit_files,omitempty"`
 }
 
 type saveFileResponse struct {
@@ -293,6 +301,16 @@ func httpError(w http.ResponseWriter, code int, format string, args ...any) {
 func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, format string, args ...any) {
 	s.reflectAllowedOrigin(w, r)
 	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
+}
+
+// httpErrorCode is httpErrorFor with a stable machine-readable `error_code`
+// beside the message — the key the studio client and the other coded
+// refusals of these endpoints use — for a refusal a client acts on rather
+// than displays (an author document named where a workflow was expected:
+// `author_document`).
+func (s *Server) httpErrorCode(w http.ResponseWriter, r *http.Request, status int, code, format string, args ...any) {
+	s.reflectAllowedOrigin(w, r)
+	httpx.WriteJSON(w, status, map[string]string{"error": fmt.Sprintf(format, args...), "error_code": code})
 }
 
 // requireSafeOrigin gates state-changing endpoints. Any request whose Origin
@@ -620,6 +638,10 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// beside the main, merged into one document whose every declaration
 		// names its file, with the unit's revision for the save to present.
 		u := unit.LoadDirWithMain(absPath, absPath, data)
+		// The unit was read from disk and its diagnostics are answered to
+		// the client: they name the files by their unit-relative
+		// paths (#1934).
+		relUnitDiagnostics(u)
 		diags = diags[:0]
 		for _, d := range u.Diagnostics {
 			diags = append(diags, d.Error())
@@ -752,17 +774,38 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 	// the file would be rewritten in profile 1, its strings read otherwise
 	// at the next parse, with Verify none the wiser (it holds the text to
 	// the document, never to the file).
-	if current, _, err := locks[0].parent.read(filepath.Base(absPath), math.MaxInt64-1); err == nil {
+	// Only "it is not there" is an absence. Every other read failure — the
+	// file changed while opening, it is not regular, it exceeds the read
+	// limit — would otherwise read as "no before" and silently disarm BOTH
+	// guards below, which is how a save stops being checked without anyone
+	// seeing it.
+	current, _, currentErr := locks[0].parent.read(filepath.Base(absPath), math.MaxInt64-1)
+	if currentErr != nil {
+		if !errors.Is(currentErr, fs.ErrNotExist) {
+			s.authoringError(w, r, currentErr)
+			return
+		}
+		current = nil
+	}
+	if current != nil {
 		if on := parser.ReadPreamble(parser.NormalizeSource(string(current))).Profile; on > f.EffectiveProfile() {
 			httpError(w, http.StatusUnprocessableEntity, "%s is written in dsl profile %d and the document would save it in profile %d: reopen the file in the studio (the document carries no profile — an older client dropped it)", req.Path, on, f.EffectiveProfile())
 			return
 		}
 	}
-	source := unparse.Unparse(f)
 	// The file written must be the document saved: a value the serialiser
 	// could not carry (or a construct it does not know) would otherwise land
 	// on disk as a different program, and the next parse would run THAT.
-	if err := unparse.Verify(f, source); err != nil {
+	// canon.Text carries the other half: the same program with a value the
+	// author wrote over several lines folded onto one is not the same FILE,
+	// which `iterion fmt` has refused to write since #1612 — the studio's
+	// save is the path that never asked.
+	source, err := canon.Text(req.Path, f, current)
+	if err != nil {
+		if errors.Is(err, canon.ErrRefused) {
+			httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved from the studio: %s. Leave the file as it is, or edit it directly", req.Path, canonReason(err))
+			return
+		}
 		httpError(w, http.StatusUnprocessableEntity, "the document cannot be saved as .bot source without changing it: %v", err)
 		return
 	}

@@ -30,8 +30,13 @@ func TestSnapshotLaunchIsParsedAsItsOwnEntryFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("a source with a syntax error was accepted")
 	}
-	want := filepath.Join(dir, "probe.bot")
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("the parse is not attributed to the launch bot's own file %s: %v", want, err)
+	// Attributed to probe.bot — never to main.bot — and, since the refusal
+	// crosses to the client, by the unit-relative name: the snapshot's
+	// directory is the server's (#1970's root cut).
+	if !strings.Contains(err.Error(), "probe.bot:") || strings.Contains(err.Error(), "main.bot") {
+		t.Fatalf("the parse is not attributed to the launch bot's own file: %v", err)
+	}
+	if strings.Contains(err.Error(), dir) {
+		t.Fatalf("the refusal discloses the snapshot's absolute path: %v", err)
 	}
 }

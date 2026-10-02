@@ -23,6 +23,11 @@ export interface UserView {
   status: UserStatus;
   is_super_admin: boolean;
   created_at?: string;
+  updated_at?: string;
+  // Absent when the account has never completed a sign-in — which is a
+  // different state from "dormant", and the one that distinguishes an
+  // account that cannot get in from one that simply has not lately.
+  last_login_at?: string;
 }
 
 export type OrgRole = "owner" | "admin" | "member";

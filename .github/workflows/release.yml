@@ -40,9 +40,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The binaries ship, so they build with the newest patch of go.mod's
+      # minor — patch releases carry the security fixes — rather than the
+      # exact minimum go.mod names (`go-version-file` would install that).
+      # CI tests on go.mod's version; the gap is patch-level only.
+      - name: Go minor from go.mod
+        id: go-minor
+        shell: bash
+        run: echo "version=$(awk '$1 == "go" { split($2, v, "."); print v[1] "." v[2]; exit }' go.mod)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go-minor.outputs.version }}
+          check-latest: true
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:

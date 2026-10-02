@@ -51,6 +51,15 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	if d := e.resolveRoutingField(e.defaultBackend); d != "" {
 		return d
 	}
+	// A PROGRAM-ONLY executor stops here. Past this point the answer comes
+	// from the host — an env var, then a probe of the machine's credentials —
+	// and a static analysis that read either would give one file two verdicts
+	// on two machines. Its caller reads the empty answer as "the IR is all
+	// there is", which is what every other pre-run analysis does with an
+	// unnamed backend.
+	if e.staticProgramOnly {
+		return ""
+	}
 	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
 		return env
 	}
@@ -340,10 +349,12 @@ func sameRoute(a, b chainElement) bool {
 // sites and tests that only need the head of the chain.
 //
 // Known hint values (matched by anthropicCredEnvForCLI / the claw registry):
-//   - "anthropic" — force ANTHROPIC_API_KEY / CLAUDE_CONFIG_DIR, skip z.ai
-//     even when ZAI_API_KEY is set on the process.
+//   - "anthropic" — force ANTHROPIC_API_KEY / CLAUDE_CONFIG_DIR, skip the
+//     facades even when their keys are set on the process.
 //   - "zai" — force z.ai routing (ANTHROPIC_BASE_URL=z.ai facade +
 //     ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY).
+//   - "moonshot" — force Moonshot routing (the Kimi family, same facade
+//     shape with MOONSHOT_BASE_URL + ANTHROPIC_AUTH_TOKEN=$MOONSHOT_API_KEY).
 //   - "openai" — for claw/OpenAI-compat: force OPENAI_API_KEY direct.
 //   - "auto" / "" — current process-env-driven precedence.
 func (e *ClawExecutor) resolveProvider(node ir.Node) string {

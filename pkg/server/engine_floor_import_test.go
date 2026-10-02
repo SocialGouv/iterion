@@ -26,9 +26,9 @@ func pushMultiFileBundle(requires string) string {
 // than the release that reads `import` parses the fragments as text and
 // fails there, after admission. With the floor declared, the push lands.
 func TestAdminBotsPush_RefusesABundleThatImportsWithoutAFloor(t *testing.T) {
-	pinServerBuild(t, "v3.145.0+deadbeef")
+	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.145.0+abc123"}}
+	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
 
 	w := adminBotsPutQuery(s, admin, "multi", "", pushMultiFileBundle(""))
 	if w.Code != http.StatusConflict {

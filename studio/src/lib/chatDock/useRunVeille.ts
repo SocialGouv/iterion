@@ -113,7 +113,9 @@ export function useRunVeille(runId: string | null): UseRunVeille {
     ++scope.request;
     setState((prev) => ({ ...prev, busy: true, error: null }));
     try {
-      await Promise.all(veille.run_watches.map((w) => stopAssistantRunWatch(w.id)));
+      await Promise.all(
+        veille.run_watches.map((w) => stopAssistantRunWatch(w.id, w.target_run_id)),
+      );
       await Promise.all(veille.watched_issue_ids.map((id) => removeWatch(scope.runId, id)));
     } catch (e) {
       if (scope.alive) setState((prev) => ({ ...prev, error: e instanceof Error ? e.message : String(e) }));

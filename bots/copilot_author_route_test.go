@@ -3,6 +3,9 @@ package bots
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func TestCopilotPersistedAuthorsUseClawWithClaudeFallback(t *testing.T) {
@@ -11,33 +14,40 @@ func TestCopilotPersistedAuthorsUseClawWithClaudeFallback(t *testing.T) {
 		t.Fatalf("read copilot: %v", err)
 	}
 	src := string(raw)
+	pr := parser.Parse("copilot/main.bot", src)
+	if pr.File == nil {
+		t.Fatal("copilot/main.bot does not parse")
+	}
+	agentByName := map[string]*ast.AgentDecl{}
+	for _, a := range pr.File.Agents {
+		agentByName[a.Name] = a
+	}
 
 	for _, node := range []struct {
 		name  string
-		end   string
 		model string
 	}{
-		{name: "copi", end: "\ntool validate_draft:", model: "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-5.6-terra}"},
-		{name: "reflect", end: "\njudge judge:", model: "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-5.6-sol}"},
+		{name: "copi", model: "${ITERION_COPILOT_ENTRY_MODEL:-openai/gpt-6-sol}"},
+		{name: "reflect", model: "${ITERION_COPILOT_REFLECTION_MODEL:-openai/gpt-6-sol}"},
 	} {
-		start := strings.Index(src, "agent "+node.name+":")
-		if start < 0 {
+		a := agentByName[node.name]
+		if a == nil {
 			t.Fatalf("could not find Copi %s node", node.name)
 		}
-		relEnd := strings.Index(src[start:], node.end)
-		if relEnd < 0 {
-			t.Fatalf("could not isolate Copi %s node", node.name)
-		}
-		body := src[start : start+relEnd]
-		if !strings.Contains(body, "backend: \"claw\"") {
+		if a.Backend != "claw" {
 			t.Errorf("Copi %s must use Claw", node.name)
 		}
-		if !strings.Contains(body, "model: \""+node.model+"\"") {
+		if a.Model != node.model {
 			t.Errorf("Copi %s model does not match its dedicated default %q", node.name, node.model)
 		}
-		const fallback = "  fallbacks:\n    claude:\n      backend: \"claw\"\n      model: \"${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5}\"\n      on: [usage_window, unavailable, transient_exhausted]"
-		if !strings.Contains(body, fallback) || strings.Count(body, "fallbacks:") != 1 || strings.Count(body, "backend:") != 2 || strings.Count(body, "backend: \"claw\"") != 2 {
-			t.Errorf("Copi %s must retain exactly one same-Claw Claude fallback", node.name)
+		if len(a.Fallbacks) != 1 {
+			t.Fatalf("Copi %s must retain exactly one fallback, has %d", node.name, len(a.Fallbacks))
+		}
+		fb := a.Fallbacks[0]
+		if fb.Name != "claude" || fb.Backend != "claw" ||
+			fb.Model != "${ITERION_COPILOT_FALLBACK_MODEL:-anthropic/claude-opus-5-5}" ||
+			strings.Join(fb.On, ", ") != "usage_window, unavailable, transient_exhausted" {
+			t.Errorf("Copi %s must retain exactly one same-Claw Claude fallback, has %+v", node.name, fb)
 		}
 	}
 	if strings.Contains(src, "ITERION_COPILOT_OPENAI_MODEL") {

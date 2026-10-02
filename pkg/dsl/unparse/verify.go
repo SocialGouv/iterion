@@ -4,13 +4,30 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
+
+// directiveLine is the 1-based line of the first strict-escape directive
+// written as a comment of text, 0 when there is none.
+func directiveLine(text string) int {
+	line := 0
+	for l := range strings.Lines(text) {
+		line++
+		if c, ok := workflowfile.CommentText(l); ok && parser.IsStrictEscapeDirective(c) {
+			return line
+		}
+	}
+	return 0
+}
 
 // Verify reports whether text — the output of Unparse(f) — reads back as the
 // program f: it parses without an error and compiles to the same workflow
@@ -74,6 +91,38 @@ func Verify(f *ast.File, text string) error {
 		}
 	}
 	f = canonicalPrompts(f)
+	if err := reread(f, text); err != nil {
+		return explainWindow(f, text, err)
+	}
+	return nil
+}
+
+// explainWindow appends to a failure of the re-read the one cause the text
+// itself shows: the strict-escape directive written where profile 1 does not
+// read it — among the first lines of the file and before its first
+// non-comment line, a frozen rule (parser.Preamble.StrictEscape). The
+// frontmatter is comments and goes above the directive, where the catalog
+// reader wants it, so a long one pushes the directive out of that window:
+// it is in the text and not in effect, and every escape of the text reads
+// as its two characters. A text that reads the same all the same — no value
+// needed the strict form — is not refused for it: the note explains a
+// failure, it never makes one.
+func explainWindow(f *ast.File, text string, err error) error {
+	if f.EffectiveProfile() > ast.DefaultProfile {
+		return err
+	}
+	line := directiveLine(text)
+	if line == 0 || parser.ReadPreamble(text).StrictEscape {
+		return err
+	}
+	return fmt.Errorf("%w; the strict-escape directive is written at line %d, where profile 1 does not read it (the directive is read among the first lines of the file only, and %d lines of comments — the frontmatter — stand above it): shorten the frontmatter, or write the file in profile 2, which reads standard escapes without a directive", err, line, line-1)
+}
+
+// reread parses text again and reports the first way it fails to be the
+// program f: it does not parse, reads as another profile, compiles to
+// another workflow, carries other contracts or comments, or — when there is
+// no compiled program to compare — mirrors as another document.
+func reread(f *ast.File, text string) error {
 	// The round-trip is parsed under the document's own source file, so an
 	// {{include}} resolves — or is refused — on both sides alike. A document
 	// from the JSON transport has no source file: naming one here made the
@@ -109,23 +158,45 @@ func Verify(f *ast.File, text string) error {
 	if why := sameContracts(f, pr.File); why != "" {
 		return fmt.Errorf("the serialised source is not the same document: %s", why)
 	}
+	// A comment is not program, so nothing above can see one lost: that is
+	// exactly how a save dropped every comment written inside or between
+	// declarations for as long as it did (#1282). Said here by name: every
+	// comment of the document is in the text, on the same declaration, in
+	// the same order. The ADDRESS inside a declaration is not compared —
+	// the writer normalises the indentation of a comment written deeper
+	// than the line under it, which moves no comment and changes no
+	// text — so what is asserted is what the author would notice.
+	if why := sameComments(f, pr.File); why != "" {
+		return fmt.Errorf("the serialised source does not carry the same comments: %s", why)
+	}
 	if ca.Workflow == nil || cb.Workflow == nil {
 		// No compiled program to compare — the shape of every half-authored
 		// canvas document (no `workflow` yet). The AST mirror is span-free
 		// and carries every declaration, so it is the oracle here; without
 		// it the guard passed anything that did not compile. Comments are
-		// not program: the writer moves them to the top and may add the
-		// strict-escape directive, so they are left out.
-		a, err := ast.MarshalFile(withoutComments(f))
+		// not program and are left out of it: they travel around the
+		// declarations rather than in them, the writer may add the
+		// strict-escape directive, and sameComments above is what holds
+		// them — by the line each names, not by its rank in a list.
+		// The header is not program either: `dsl: 1` and no header read
+		// alike (EffectiveProfile, compared above) and the writer omits
+		// profile 1's header, so the mirror carries the profile as the text
+		// reads it, not as the header spelled it — or every profile-1 file
+		// written with its header was refused here the moment it did not
+		// compile.
+		fa, fb := *f, *pr.File
+		fa.Profile, fb.Profile = fa.EffectiveProfile(), fb.EffectiveProfile()
+		fa.Prompts, fb.Prompts = InlinePromptsLast(fa.Prompts), InlinePromptsLast(fb.Prompts)
+		a, err := ast.MarshalFileWithoutComments(&fa)
 		if err != nil {
 			return fmt.Errorf("cannot compare the document: %w", err)
 		}
-		b, err := ast.MarshalFile(withoutComments(pr.File))
+		b, err := ast.MarshalFileWithoutComments(&fb)
 		if err != nil {
 			return fmt.Errorf("cannot compare the serialised source: %w", err)
 		}
 		if !bytes.Equal(a, b) {
-			return fmt.Errorf("the serialised source is not the same document: %s", firstJSONDifference(a, b))
+			return fmt.Errorf("the serialised source is not the same document: %s", FirstJSONDifference(a, b))
 		}
 	}
 	return nil
@@ -279,16 +350,20 @@ func contractName(c *ast.ContractDecl) string {
 // document and those the text reads as, and between the contract each
 // workflow names; "" when they agree.
 func sameContracts(a, b *ast.File) string {
-	x, err := ast.MarshalFile(&ast.File{Contracts: a.Contracts})
+	// Without the comments: where one sits inside a contract is the
+	// business of sameComments, which compares by what they SAY. Compared
+	// here, a comment the writer re-anchored — legitimately, the property
+	// it named being gone — refused the whole save.
+	x, err := ast.MarshalFileWithoutComments(&ast.File{Contracts: a.Contracts})
 	if err != nil {
 		return "cannot compare the document's contracts: " + err.Error()
 	}
-	y, err := ast.MarshalFile(&ast.File{Contracts: b.Contracts})
+	y, err := ast.MarshalFileWithoutComments(&ast.File{Contracts: b.Contracts})
 	if err != nil {
 		return "cannot compare the serialised source's contracts: " + err.Error()
 	}
 	if !bytes.Equal(x, y) {
-		return firstJSONDifference(x, y)
+		return FirstJSONDifference(x, y)
 	}
 	for i, w := range a.Workflows {
 		if w == nil || i >= len(b.Workflows) || b.Workflows[i] == nil {
@@ -311,6 +386,27 @@ func checkFallbackNames(fbs []*ast.FallbackDecl) error {
 	return nil
 }
 
+// InlinePromptsLast is ps with the declared prompts first, in their order,
+// and the inline ones after them, sorted by name. An inline prompt is named
+// after its body and listed where its node is read — the writer puts
+// `system:` before `user:` and a group's nodes after the others, a document
+// may write them the other way — so its rank says nothing that a comparison
+// of two readings of one program should read; the node that uses it names
+// it. The slice is new, ps is left as it came.
+func InlinePromptsLast(ps []*ast.PromptDecl) []*ast.PromptDecl {
+	out := make([]*ast.PromptDecl, 0, len(ps))
+	var inline []*ast.PromptDecl
+	for _, p := range ps {
+		if p.Inline {
+			inline = append(inline, p)
+		} else {
+			out = append(out, p)
+		}
+	}
+	sort.SliceStable(inline, func(i, j int) bool { return inline[i].Name < inline[j].Name })
+	return append(out, inline...)
+}
+
 // canonicalPrompts is a shallow copy of f whose prompt bodies are in the
 // lexer's canonical form — the form the writer emits and the re-parse
 // yields. The document itself is left as it came.
@@ -331,16 +427,9 @@ func canonicalPrompts(f *ast.File) *ast.File {
 	return &cp
 }
 
-// withoutComments is a shallow copy of f with its comment list dropped.
-func withoutComments(f *ast.File) *ast.File {
-	cp := *f
-	cp.Comments = nil
-	return &cp
-}
-
-// firstJSONDifference names the first key path at which two JSON documents
+// FirstJSONDifference names the first key path at which two JSON documents
 // diverge, so a refused save says which declaration did not survive.
-func firstJSONDifference(a, b []byte) string {
+func FirstJSONDifference(a, b []byte) string {
 	var x, y any
 	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
 		return "the documents differ"
@@ -353,6 +442,9 @@ func firstJSONDifference(a, b []byte) string {
 	return "the documents differ in their encoding"
 }
 
+// diffAny names the first difference between two decoded JSON values: a
+// mapping's keys walked in sorted order, so the difference a refusal names
+// is the same on every run — never the one a map's iteration happened on.
 func diffAny(path string, x, y any) string {
 	switch xv := x.(type) {
 	case map[string]any:
@@ -360,16 +452,16 @@ func diffAny(path string, x, y any) string {
 		if !ok {
 			return path + " differs in kind"
 		}
-		for k, xe := range xv {
+		for _, k := range slices.Sorted(maps.Keys(xv)) {
 			ye, ok := yv[k]
 			if !ok {
 				return path + "." + k + " is missing after the round-trip"
 			}
-			if d := diffAny(path+"."+k, xe, ye); d != "" {
+			if d := diffAny(path+"."+k, xv[k], ye); d != "" {
 				return d
 			}
 		}
-		for k := range yv {
+		for _, k := range slices.Sorted(maps.Keys(yv)) {
 			if _, ok := xv[k]; !ok {
 				return path + "." + k + " appeared after the round-trip"
 			}
@@ -392,4 +484,97 @@ func diffAny(path string, x, y any) string {
 		}
 		return ""
 	}
+}
+
+// sameComments reports the first difference between the comments of two
+// documents — the file's own head and tail, then each declaration's and
+// each of its edges' — or "" when they carry the same ones in the same
+// order. The strict-escape directive is left out: the writer places it
+// itself, so a profile-1 file written strict gains one the document had
+// not (unparse.go).
+func sameComments(a, b *ast.File) string {
+	if why := sameCommentTexts("the file's tail", fileComments(a.Comments, ast.CommentAtEnd), fileComments(b.Comments, ast.CommentAtEnd)); why != "" {
+		return why
+	}
+	ca, cb := ast.CommentCarriers(a), ast.CommentCarriers(b)
+	if len(ca) != len(cb) {
+		return fmt.Sprintf("%d declarations carry comments in the document, %d in the text", len(ca), len(cb))
+	}
+	// The file's head and the comments of the FIRST declaration are one
+	// pool. They are written one after the other with nothing between
+	// them but a blank line, and when the head is empty not even that —
+	// so which of the two a text carries them on is not a fact, and the
+	// writer's own canonical order decides which declaration comes
+	// first. What is a fact, and what is compared, is that the comments
+	// above the first declaration are the same ones.
+	headA, headB := fileHeadComments(a.Comments), fileHeadComments(b.Comments)
+	if len(ca) > 0 {
+		headA = append(headA, *ca[0].Comments...)
+		headB = append(headB, *cb[0].Comments...)
+	}
+	if why := sameCommentTexts("the file's head", headA, headB); why != "" {
+		return why
+	}
+	for i := range ca {
+		if i == 0 {
+			continue // pooled with the head above
+		}
+		where := ca[i].Kind + " " + ca[i].Name
+		if ca[i].Kind != cb[i].Kind || ca[i].Name != cb[i].Name {
+			return fmt.Sprintf("%s reads back as %s %s", where, cb[i].Kind, cb[i].Name)
+		}
+		if why := sameCommentTexts(where, *ca[i].Comments, *cb[i].Comments); why != "" {
+			return why
+		}
+		if len(ca[i].Edges) != len(cb[i].Edges) {
+			return fmt.Sprintf("%s has %d edges in the document, %d in the text", where, len(ca[i].Edges), len(cb[i].Edges))
+		}
+		for j := range ca[i].Edges {
+			if ca[i].Edges[j] == nil || cb[i].Edges[j] == nil {
+				continue
+			}
+			if why := sameCommentTexts(fmt.Sprintf("%s, edge %d", where, j+1), ca[i].Edges[j].Comments, cb[i].Edges[j].Comments); why != "" {
+				return why
+			}
+		}
+	}
+	return ""
+}
+
+// sameCommentTexts compares the comments one carrier holds, as a SET of
+// texts. Neither their order in the list nor the line each names is
+// compared, and neither is a fact the comparison could rest on: the writer
+// renders a declaration's properties in its own order, so two comments
+// leading two properties swap whenever the source wrote them the other way
+// round, and a comment whose property the document no longer has is written
+// at the end of the block on purpose. What IS the fact, and what #1282 was
+// about, is the one asserted here — this declaration still carries these
+// comments, none lost, none gained, none landed on another declaration.
+func sameCommentTexts(where string, a, b []*ast.Comment) string {
+	ta, tb := commentTexts(a), commentTexts(b)
+	if len(ta) != len(tb) {
+		return fmt.Sprintf("%s carries %d comments, the text %d", where, len(ta), len(tb))
+	}
+	sort.Strings(ta)
+	sort.Strings(tb)
+	for i := range ta {
+		if ta[i] != tb[i] {
+			return fmt.Sprintf("%s: the comment %q is not in the text", where, ta[i])
+		}
+	}
+	return ""
+}
+
+// commentTexts is what a carrier's comments say. The strict-escape
+// directive is not one of them — the writer places it itself, so a
+// profile-1 file written strict gains one the document had not.
+func commentTexts(cs []*ast.Comment) []string {
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		if c == nil || parser.IsStrictEscapeDirective(c.Text) {
+			continue
+		}
+		out = append(out, c.Text)
+	}
+	return out
 }

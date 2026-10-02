@@ -41,7 +41,9 @@ the parse-stage `E0xx` codes are in
 - One unit loader serves the CLI, the server, the runner and the studio; the
   studio saves each declaration back into the file that owns it. A path
   outside `lib/`, a missing fragment or a cycle is refused by name
-  (E044–E047); a file that imports, compiled alone, is refused as such (C030).
+  (E044–E047); a unit rooted at the filesystem's own root is named by a
+  warning instead of trusted with a name cut that can match nothing (E048);
+  a file that imports, compiled alone, is refused as such (C030).
   See [import](import.md).
 
 ## One description of the grammar, rendered everywhere
@@ -88,8 +90,9 @@ the parse-stage `E0xx` codes are in
   ([ADR-100](adr/100-dry-run-at-the-executor-seam.md)).
 - The report says what the first paid run would have met: the passes and
   their paths, the findings by node, the nodes whose output was a shape, the
-  nodes and edges no pass reached, and a `clean` verdict. `--strict` turns it
-  into an exit code for a CI gate; `--fixtures f.json` replays recorded
+  nodes and edges no pass reached, and two verdicts — `clean` and `failing`.
+  `--strict` turns `failing` into an exit code for a CI gate (an expression
+  left `inconclusive` on a shaped `json` value is printed, not failed); `--fixtures f.json` replays recorded
   outputs; `--exec-timeout` bounds a pass; `--var k=v` and `--preset` give the
   run its launch values (v3.154.0). The MCP tool `local_validate` takes the
   same switches.

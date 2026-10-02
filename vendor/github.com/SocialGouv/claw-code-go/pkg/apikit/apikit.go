@@ -32,6 +32,12 @@ var ModelTokenLimitForModel = apikit.ModelTokenLimitForModel
 // documentation; see internal/apikit/effort.go for sources.
 var EffortCapabilities = apikit.EffortCapabilities
 
+// AnthropicWireProfile describes the Messages API requirements of a model.
+type AnthropicWireProfile = apikit.AnthropicWireProfile
+
+// AnthropicProfile resolves the profile of a model or alias.
+var AnthropicProfile = apikit.AnthropicProfile
+
 // ---------------------------------------------------------------------------
 // Telemetry surface
 // ---------------------------------------------------------------------------

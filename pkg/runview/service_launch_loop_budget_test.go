@@ -77,6 +77,7 @@ func launchLoopBudgetRun(t *testing.T, guard string) (store.RunStatus, bool) {
 
 	res, err := svc.Launch(context.Background(), LaunchSpec{
 		FilePath:        botPath,
+		WorkDir:         dir,
 		LoopBudgetGuard: guard,
 	})
 	if err != nil {

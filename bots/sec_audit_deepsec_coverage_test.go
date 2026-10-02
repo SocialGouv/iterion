@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -611,11 +612,11 @@ func TestDeepsecCoverageTravelsWithoutTheLogTail(t *testing.T) {
 	// errors[] carries up to 3 KB of log tail, and the scanner echoes
 	// target-controlled text into its logs — so the node that files findings
 	// receives the scalars, never the envelope.
-	if strings.Contains(bot, `deepsec_coverage:   "{{outputs.scan_join.deepsec_scan}}"`) {
+	if strings.Contains(bot, `deepsec_coverage: "{{outputs.scan_join.deepsec_scan}}"`) {
 		t.Error("report_card is fed the whole deepsec envelope: its errors[] carries a log tail " +
 			"the audited repository can write into, and report_card holds bash and board.create")
 	}
-	if !strings.Contains(bot, `deepsec_coverage:   "{{outputs.scan_join.deepsec_coverage}}"`) {
+	if !strings.Contains(bot, `deepsec_coverage: "{{outputs.scan_join.deepsec_coverage}}"`) {
 		t.Error("report_card is not fed the projected coverage scalars")
 	}
 
@@ -676,7 +677,7 @@ func TestDeepsecCoverageTravelsWithoutTheLogTail(t *testing.T) {
 func deepsecCoverageReader(t *testing.T) string {
 	t.Helper()
 	body := deepsecCommand(t)
-	const marker = `python3 -c "`
+	const marker = `python3 -I -c "`
 	i := strings.Index(body, `COVERAGE=$(`)
 	if i < 0 {
 		t.Fatal("no COVERAGE assignment in the deepsec command: the node no longer establishes how " +
@@ -684,7 +685,7 @@ func deepsecCoverageReader(t *testing.T) string {
 	}
 	j := strings.Index(body[i:], marker)
 	if j < 0 {
-		t.Fatal("the COVERAGE assignment embeds no python3 -c body")
+		t.Fatal("the COVERAGE assignment embeds no python3 -I -c body")
 	}
 	start := i + j + len(marker)
 	end := strings.Index(body[start:], "\n\" 2>>")
@@ -704,38 +705,46 @@ func readSecAuditBot(t *testing.T) string {
 	return string(body)
 }
 
-// A retry that RESUMES a run the scanner already closed returns without
-// investigating one batch and exits zero (processor/src/index.ts:255), so the
-// `|| ERRS=...` never fires and a first attempt that failed on errored batches
-// is laundered into a clean pass. Every conservative term then reads healthy
-// over whatever fraction the first attempt reached.
+// #1323 dropped the --run-id retry branch (dead capability: a resume of a
+// phase=done run short-circuits at processor/src/index.ts:291 with
+// errorBatchCount=0). The failure mode this test used to guard -- a resumed
+// retry laundering an errored first attempt into a clean pass -- cannot
+// arise any more: the retry is always fresh, and a fresh retry that hits
+// another failure re-triggers `ERRS="$ERRS process"` -> PROC_FAILED=1 ->
+// process_complete=false. TestDeepsecFreshRetryIsNotAFailedPass covers the
+// mirror case (a fresh retry that succeeds IS a clean pass).
 //
-// This exercises the REAL node body under sh against a stub reproducing both
-// exits, because the flag that catches it is a SHELL variable — the python
-// reader alone cannot see it.
-func TestDeepsecResumedRetryIsNotACleanPass(t *testing.T) {
-	// process: first call prints the run id then fails on errored batches;
-	// the --run-id retry short-circuits on the already-done run and exits 0.
+// This variant exercises the retry-under-persistent-failure case: the retry
+// runs, fails again, and the coverage refuses to call it clean.
+func TestDeepsecRetryFailingTwiceReadsAsFailed(t *testing.T) {
 	cov := runDeepsecNode(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
 case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":1000,"candidatesFound":2000}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
   process)
-    for a in "$@"; do case "$a" in --run-id) exit 0;; esac; done
-    echo "Processing complete. Run: RID123"
+    # Every attempt (first + retry) fails with errored batches. No --run-id
+    # is passed by the fixed node (#1323); if a regression re-introduced the
+    # branch, one of the invocations would carry --run-id and this test
+    # would still fail through the second half (retry MUST be fresh).
+    for a in "$@"; do case "$a" in --run-id) echo "REGRESSED: retry passed --run-id"; exit 1;; esac; done
+    echo "Processing complete. Run: RID_first_or_retry"
     echo "40 batch(es) errored — exiting 1 (agent failure, not a clean review)."
     exit 1 ;;
   export)
-    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
-    exit 0 ;;
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[]' > "$a";; esac; prev="$a"; done
+    exit 1 ;;
   *) exit 0 ;;
 esac`)
 
 	if cov["process_failed"] != true {
-		t.Errorf("a resumed retry laundered a failed process step: process_failed = %v",
-			cov["process_failed"])
+		t.Errorf("both attempts failed with errored batches, yet coverage does not report a failed process step: %v", cov)
 	}
 	if cov["process_complete"] != false {
-		t.Errorf("coverage reads COMPLETE after a process step that errored 40 batches and a "+
-			"retry that investigated nothing: %v", cov)
+		t.Errorf("coverage reads COMPLETE after two process attempts errored their batches: %v", cov)
 	}
 }
 
@@ -940,15 +949,26 @@ func runDeepsecNodeAgent(t *testing.T, dir, runID, agent, model, deepsecStub str
 	// as well, because the two cancel). So nothing established here may be read
 	// as a statement about values carrying shell syntax — for those, the
 	// escaping IS the mechanism, and this harness does not have it.
-	rendered := body
+	//
+	// One engine rule this harness DOES mirror: the engine expands every
+	// braced env reference in the command before the template resolves
+	// (expandEngineBracedEnv below). Without it, a braced ${RUN_ID:-} guard
+	// refused every production pass while this harness rendered it verbatim
+	// and stayed green.
+	rendered := expandEngineBracedEnv(body)
 	for ref, val := range map[string]string{
 		"{{vars.scan_dir}}":              scanDir,
 		"{{vars.workspace_dir}}":         ws,
+		"{{vars.bundle_skills_dir}}":     filepath.Join(ws, ".claude", "iterion-skills"),
 		"{{vars.deepsec_out}}":           out,
 		"{{vars.deepsec_concurrency}}":   "1",
 		"{{vars.deepsec_process_limit}}": "0",
 		"{{vars.deepsec_root}}":          filepath.Join(dir, "absent"),
-		"{{run.id}}":                     runID,
+		// 0 disables the per-run scratch prune (R6be92b). Retention has its
+		// own test; the coverage tests here must not have side effects on the
+		// tempdir they build.
+		"{{vars.scan_dir_ttl_days}}": "0",
+		"{{run.id}}":                 runID,
 		// These two ARE shell-quoted, unlike everything above, because the
 		// property under test is precisely what the node does with a value
 		// carrying shell syntax — and there the runtime's escaping IS the
@@ -1411,14 +1431,24 @@ func TestDeepsecRefusesAnAgentThatIsNotOneArgument(t *testing.T) {
 // running deepsec destroyed a CONCURRENT pass's already-exported findings, and
 // that neighbour then claimed a path to a vanished file while its own coverage
 // still read complete. A fix must not open a hole on the way to closing one,
-// and the position in the body is the whole of the fix.
+// and the position in the body is the whole of the fix -- for every entry
+// clear this node now carries (the per-pass stale export here, the pre-0.1.4
+// shared slot beside it). TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry
+// pins the base-slot placement.
 func TestDeepsecRefusalDoesNotDestroyANeighbourExport(t *testing.T) {
 	dir := t.TempDir()
 	scanDir := filepath.Join(dir, "scan")
 	if err := os.MkdirAll(scanDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(scanDir, "deepsec.json")
+	// The neighbour's export lives where a current build writes one: under
+	// its own deepsec-out-<run.id>/ subdirectory. (The flat scan_dir/deepsec.json
+	// is the pre-0.1.4 shared slot, an orphan this build removes on entry --
+	// see TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry.)
+	out := filepath.Join(scanDir, "deepsec-out-run-NEIGHBOUR", "deepsec.json")
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	neighbour := `[{"id":"N1"},{"id":"N2"}]`
 	if err := os.WriteFile(out, []byte(neighbour), 0o644); err != nil {
 		t.Fatal(err)
@@ -1440,28 +1470,51 @@ func TestDeepsecRefusalDoesNotDestroyANeighbourExport(t *testing.T) {
 }
 
 // The test above locks only the CEILING of that line: it reddens if the clear
-// moves back above the probes. Deleting the line outright left every test green,
+// moves back above the probes (the shared-slot entry clear has the same
+// placement pinned by TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry).
+// Deleting the line outright left every test green,
 // because every other exercise of this node starts from a fresh TempDir and so
 // never has a stale export to inherit — a refactor could restore the defect the
 // line exists to close and the build would not notice.
 //
 // This is that floor. A pass that DOES run, whose export writes nothing and
-// fails, must not let the file already sitting in the shared slot stand in for
-// its own output: FCNT would count a foreign export's findings, the
-// export-unusable guard would not fire, and the pass would ship findings it
-// never produced under a coverage that reads complete.
+// fails, must leave nothing behind at its own per-pass slot — otherwise FCNT
+// would count a stale export's findings on a resumed invocation of the same
+// run id, the export-unusable guard would not fire, and the pass would ship
+// findings it never produced under a coverage that reads complete.
+//
+// #1322 keyed the export on the run id — a per-pass subdirectory rather than
+// one shared name — so a neighbour's file at the workspace-scratch base is now
+// structurally unreachable to this pass. The second half of that invariant is
+// asserted here too: the neighbour file sits UNTOUCHED after the pass runs.
+// Together the two properties close the class: this pass cannot read, write,
+// or destroy any file that belongs to another pass.
 func TestDeepsecAFailedExportDoesNotInheritTheSlot(t *testing.T) {
 	dir := t.TempDir()
 	scanDir := filepath.Join(dir, "scan")
 	if err := os.MkdirAll(scanDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(scanDir, "deepsec.json")
-	if err := os.WriteFile(out, []byte(`[{"id":"OLD1"},{"id":"OLD2"},{"id":"OLD3"}]`), 0o644); err != nil {
+	// The scanner uses vars.deepsec_out as a BASE template and derives its
+	// per-pass path as <dirname>/deepsec-out-<run.id>/<basename>. The
+	// neighbour's export lives under ITS run's subdirectory -- the only place
+	// a current build writes one. (The flat file at the base is the pre-0.1.4
+	// shared slot, removed on entry: see
+	// TestDeepsecScannerRemovesTheLegacySharedSlotAtEntry.)
+	neighbourExport := filepath.Join(scanDir, "deepsec-out-run-NEIGHBOUR", "deepsec.json")
+	neighbourBody := []byte(`[{"id":"OLD1"},{"id":"OLD2"},{"id":"OLD3"}]`)
+	if err := os.MkdirAll(filepath.Dir(neighbourExport), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(neighbourExport, neighbourBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// This pass's own per-run slot, which is what the export-unusable guard
+	// must leave empty.
+	const runID = "run-under-test"
+	runSlot := filepath.Join(scanDir, "deepsec-out-"+runID, "deepsec.json")
 
-	cov, _, _ := runDeepsecNodeFull(t, dir, "run-under-test", `
+	cov, _, _ := runDeepsecNodeFull(t, dir, runID, `
 NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
 mkdir -p data/p/runs
 case "$1" in
@@ -1478,10 +1531,24 @@ case "$1" in
   *) exit 0 ;;
 esac`)
 
-	if _, err := os.Stat(out); !os.IsNotExist(err) {
-		body, _ := os.ReadFile(out)
-		t.Errorf("the export step wrote nothing and failed, yet a file still sits at the shared slot (%q). "+
-			"triage reads it, scan_health counts it present, and the findings of an EARLIER pass ship as this one's", body)
+	if _, err := os.Stat(runSlot); !os.IsNotExist(err) {
+		body, _ := os.ReadFile(runSlot)
+		t.Errorf("the export step wrote nothing and failed, yet a file still sits at this pass own slot %s (%q). "+
+			"triage reads it, scan_health counts it present, and any file from a resumed invocation of this "+
+			"run would ship as this pass output", runSlot, body)
+	}
+
+	// The neighbour's export must be UNTOUCHED: this pass entry clears (its
+	// stale per-run export, the legacy shared slot) and its own export
+	// address slots derived from its own run id alone, so a foreign pass's
+	// findings can be neither destroyed nor overwritten by a pass that had
+	// nothing to do with them.
+	got, err := os.ReadFile(neighbourExport)
+	if err != nil {
+		t.Fatalf("a pass that ran deepsec destroyed a foreign per-run export at %s: %v", neighbourExport, err)
+	}
+	if !bytes.Equal(got, neighbourBody) {
+		t.Errorf("a pass rewrote a foreign per-run export at %s: %q", neighbourExport, got)
 	}
 
 	steps, _ := cov["steps_failed"].([]any)
@@ -1493,18 +1560,21 @@ esac`)
 	}
 	if !sawUnusable {
 		t.Errorf("a failed export that produced nothing is not reported as unusable: steps_failed = %v — "+
-			"a stale file decided the count and the report carries no banner", cov["steps_failed"])
+			"the guard did not fire and the report carries no banner", cov["steps_failed"])
 	}
 }
 
-// Two readers of ONE location. The coverage reader resolves the data root as
-// $DEEPSEC_DATA_ROOT or "data", because deepsec honours that variable; the
-// shell guard that validates a run id reads the same directory. A guard that
-// hardcoded data/ would discard every id the log announced the moment the
-// variable is set — making the resume branch unreachable and logging "no run
-// meta carries it", which reads as a forgery attempt rather than a path
-// mismatch. The variable is unset in this repo today, which is exactly why the
-// divergence would have waited for the day it is not.
+// The coverage reader resolves the data root as $DEEPSEC_DATA_ROOT or "data",
+// because deepsec honours that variable itself: a runner that set it and
+// wrote metas under alt/ would be readable only if the reader resolves the
+// same path. A hardcoded data/ would degrade coverage to source=unavailable
+// on every run in that environment -- noisy and permanent, never a clean
+// bill, but silently invisible in this repo where the variable is unset.
+//
+// #1323 dropped the retry-side _dsmeta_exists guard along with the whole
+// resume branch. This test now exercises the coverage-reader lookup only:
+// the metas live under alt/, the environment says so, and the reader must
+// find them.
 func TestDeepsecMetaLookupHonoursTheSameDataRootAsTheReader(t *testing.T) {
 	cov := runDeepsecNodeEnv(t, `
 NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
@@ -1515,31 +1585,24 @@ case "$1" in
     echo "Run ID: sid1"
     exit 0 ;;
   process)
-    # The two retry paths must end DIFFERENTLY, or the assertion cannot tell
-    # them apart: a resume ends with the flag raised, a fresh pass ends clean.
-    for a in "$@"; do case "$a" in --run-id) exit 0;; esac; done
-    if [ -f alt/.attempted ]; then exit 0; fi
-    : > alt/.attempted
     printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":10}}' "$NOW" > alt/p/runs/rid1.json
     echo "Processing complete. Run: rid1"
-    echo "2 batch(es) errored — exiting 1 (agent failure, not a clean review)."
-    exit 1 ;;
+    exit 0 ;;
   export)
     prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
     exit 0 ;;
 esac
 exit 0`, "DEEPSEC_DATA_ROOT=alt")
 
-	// The reader found the metas under the non-default root...
+	// The reader found the metas under the non-default root.
 	if cov["source"] != "run_meta" || cov["candidate_files"] != float64(10) {
 		t.Fatalf("the coverage reader did not honour DEEPSEC_DATA_ROOT: %v", cov)
 	}
-	// ...and so did the guard: the id was accepted, so the retry RESUMED, which
-	// is the only path that raises process_failed here. A guard looking in
-	// data/ would have found nothing, cleared the id, and run a fresh pass.
-	if cov["process_failed"] != true {
-		t.Errorf("the run-id guard looked somewhere the reader does not: the id was discarded and "+
-			"the resume branch became unreachable — %v", cov)
+	if cov["files_processed"] != float64(10) || cov["process_complete"] != true {
+		t.Errorf("the process-meta under alt/ was not matched: %v", cov)
+	}
+	if cov["scan_phase"] != "done" || cov["process_phase"] != "done" {
+		t.Errorf("phases not read out of alt/: %v", cov)
 	}
 }
 
@@ -1570,5 +1633,187 @@ func TestDeepsecRefusesToRunWithoutAUsableRunID(t *testing.T) {
 				t.Errorf("refused for some other reason than the run id: %q", joined)
 			}
 		})
+	}
+}
+
+// expandEngineBracedEnv mirrors pkg/backend/model/expandBracedEnv: at
+// execution the engine replaces every braced env reference in a tool
+// command — `${NAME}` when NAME is set in the ENGINE process environment,
+// `${NAME:-default}` always — BEFORE the command template resolves, so a
+// value the command itself sets in its env prefix (RUN_ID, SCAN_DIR_TTL_DAYS)
+// never reaches its own braced reference. Bare $NAME references pass through
+// verbatim for sh to interpret.
+func expandEngineBracedEnv(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] != '$' || i+1 >= len(s) || s[i+1] != '{' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(s[i+2:], '}')
+		if end < 0 {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		body := s[i+2 : i+2+end]
+		name, def := body, ""
+		hasDef := false
+		if idx := strings.Index(body, ":-"); idx >= 0 {
+			name, def, hasDef = body[:idx], body[idx+2:], true
+		}
+		if !isEnvRefName(name) {
+			b.WriteString(s[i : i+2+end+1])
+			i += 2 + end + 1
+			continue
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			b.WriteString(v)
+		} else if hasDef {
+			b.WriteString(def)
+		} else {
+			// Unset with no default: the engine passes the reference through
+			// verbatim (bracedEnvWouldExpand is false there) so bash still
+			// sees it -- erasing it here once rendered the retention sweep's
+			// -mtime bound as "+" and killed the sweep in every
+			// mirror-rendered test.
+			b.WriteString(s[i : i+2+end+1])
+		}
+		i += 2 + end + 1
+	}
+	return b.String()
+}
+
+// isEnvRefName reports whether name lexically looks like a shell env var
+// reference (letter or underscore first, then letters, digits, underscores),
+// the same guard the engine applies before treating a braced body as an env
+// reference.
+func isEnvRefName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		ok := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (i > 0 && r >= '0' && r <= '9')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// TestExpandEngineBracedEnvMatchesTheEngine pins the harness mirror against
+// the engine rule (pkg/backend/model/executor_tool.go expandBracedEnv):
+// unset + default -> the default; unset + NO default -> the reference passes
+// through VERBATIM (erasing it once rendered the retention sweep's -mtime
+// bound as "+" and killed the sweep under this rendering); set -> the value;
+// anything that does not lexically look like an env reference passes
+// through; a bare $NAME always passes through.
+func TestExpandEngineBracedEnvMatchesTheEngine(t *testing.T) {
+	t.Setenv("ITERION_TEST_BRACED_SET", "hello")
+	for _, tc := range []struct{ in, want string }{
+		{"${ITERION_TEST_BRACED_UNSET:-d}", "d"},
+		{"${ITERION_TEST_BRACED_UNSET}", "${ITERION_TEST_BRACED_UNSET}"},
+		{"$ITERION_TEST_BRACED_UNSET", "$ITERION_TEST_BRACED_UNSET"},
+		{"${ITERION_TEST_BRACED_SET}", "hello"},
+		{"${ITERION_TEST_BRACED_SET:-d}", "hello"},
+		{"-mtime \"+${ITERION_TEST_BRACED_UNSET}\" \\", "-mtime \"+${ITERION_TEST_BRACED_UNSET}\" \\"},
+		{"${a.b}", "${a.b}"},
+		{"${1:-x}", "${1:-x}"},
+		{"${ITERION_TEST_BRACED_UNSET", "${ITERION_TEST_BRACED_UNSET"},
+	} {
+		if got := expandEngineBracedEnv(tc.in); got != tc.want {
+			t.Errorf("expandEngineBracedEnv(%q) = %q, want %q -- the harness diverges from the engine rule", tc.in, got, tc.want)
+		}
+	}
+}
+
+// deepsec calls completeRun BEFORE the errored-batches exit 1
+// (packages/processor/src/index.ts, then commands/process.ts), so an attempt
+// that errors some batches still writes a run meta for the files it DID
+// analyse. #1323 made the retry a FRESH invocation, which writes a second
+// meta for the slice it recovered. The pass therefore owns two process metas,
+// and the reader used to load only the last: a pass that analysed 485 files
+// and recovered 15 on retry reported 15 — a worse understatement than the 485
+// the pre-#1323 resume laundering produced.
+//
+// The fixture separates the sum from BOTH single metas (500 is neither 485 nor
+// 15), so the mutation that matters — reading one meta instead of every meta
+// this pass wrote — cannot stay green whichever one it picks.
+func TestDeepsecCoverageSumsEveryProcessMetaOfThePass(t *testing.T) {
+	cov := runDeepsecNode(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":1194,"candidatesFound":2000}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
+  process)
+    if [ -f data/.attempted ]; then
+      printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":15}}' "$NOW" > data/p/runs/ridB.json
+      echo "Processing complete. Run: ridB"
+      exit 0
+    fi
+    : > data/.attempted
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":485}}' "$NOW" > data/p/runs/ridA.json
+    echo "Processing complete. Run: ridA"
+    echo "40 batch(es) errored — exiting 1 (agent failure, not a clean review)."
+    exit 1 ;;
+  export)
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+    exit 0 ;;
+  *) exit 0 ;;
+esac`)
+
+	if cov["files_processed"] != float64(500) {
+		t.Errorf("files_processed = %v, want 500 (485 analysed before the errored-batches exit + 15 recovered by the fresh retry); "+
+			"reading one meta reports %v of the tree as the whole pass (coverage %v)",
+			cov["files_processed"], cov["files_processed"], cov)
+	}
+	// The phase stays the LAST run's: summing counts across attempts must not
+	// let an earlier attempt's phase speak for the pass.
+	if cov["process_phase"] != "done" {
+		t.Errorf("process_phase = %v, want the phase of the run that decided the outcome", cov["process_phase"])
+	}
+}
+
+// The sum is identity-based, not a window scan. #1475 leaves deepsec's data
+// root deliberately shared between passes (the file-record cache lives there),
+// so summing every process meta whose createdAt falls in this pass's window
+// would adopt a concurrent neighbour's files and report a coverage this pass
+// never reached — the same class the per-run LOG_DIR closed on the log side.
+// The ids come from THIS pass's own process.log, so a foreign meta sitting in
+// the window is invisible to the sum.
+//
+// The neighbour is written INSIDE the window and with a countable
+// filesProcessed, so a window-based sum is what this reddens; a fixture whose
+// neighbour fell outside the window would stay green under either reader.
+func TestDeepsecCoverageSumIgnoresANeighbourSharingTheDataRoot(t *testing.T) {
+	cov := runDeepsecNode(t, `
+NOW=$(date -u -d "+5 seconds" +%Y-%m-%dT%H:%M:%S.000Z)
+mkdir -p data/p/runs
+case "$1" in
+  scan)
+    printf '{"type":"scan","phase":"done","createdAt":"%s","stats":{"filesScanned":1194,"candidatesFound":2000}}' "$NOW" > data/p/runs/sid1.json
+    echo "Run ID: sid1"
+    exit 0 ;;
+  process)
+    # A concurrent pass's meta, in this pass's window, never announced in this
+    # pass's log.
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":9000}}' "$NOW" > data/p/runs/ridNEIGHBOUR.json
+    printf '{"type":"process","phase":"done","createdAt":"%s","stats":{"filesProcessed":42}}' "$NOW" > data/p/runs/ridMINE.json
+    echo "Processing complete. Run: ridMINE"
+    exit 0 ;;
+  export)
+    prev=""; for a in "$@"; do case "$prev" in --out) echo '[{"id":1}]' > "$a";; esac; prev="$a"; done
+    exit 0 ;;
+  *) exit 0 ;;
+esac`)
+
+	if cov["files_processed"] != float64(42) {
+		t.Errorf("files_processed = %v, want 42 (this pass's own meta only); a neighbour sharing the deepsec data root authored this pass's coverage (coverage %v)",
+			cov["files_processed"], cov)
 	}
 }

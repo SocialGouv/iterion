@@ -94,6 +94,14 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		if err := copyFile(srcPath, destPath); err != nil {
 			return skillOutcomeShadowed, err
 		}
+		// Mark ownership BEFORE writing the refresh marker. Failure
+		// ordering under SIGKILL then trends toward safety (a file with
+		// an .iterion-wrote sidecar but no .sha256 marker is skipped by
+		// the pruner — no data loss) rather than unsafety (marker written
+		// without the sidecar means a future UpToDate adoption cannot
+		// tell iterion's own file from an operator's identical copy —
+		// R2-F2 of the round-2 adversarial).
+		markIterionWrote(markerPath)
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
@@ -131,6 +139,12 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		if err := overwriteFile(srcPath, destPath); err != nil {
 			return skillOutcomeShadowed, err
 		}
+		// Same ordering rationale as the copyFile branch: mark ownership
+		// before the refresh marker so a SIGKILL between the two leaves a
+		// safe state (marker missing → pruner skips) instead of an unsafe
+		// one (marker present without provenance → next UpToDate cannot
+		// tell iterion's file from an identical operator copy).
+		markIterionWrote(markerPath)
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
@@ -151,7 +165,10 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 //
 // No-op when the bundle is nil, has no SkillsDir, or the skill name
 // doesn't resolve to a file/dir under SkillsDir. Returns an error
-// only when the copy/marker write itself fails — a missing skill
+// when <workDir>/.claude is a symlink (the same typed refusal as the
+// run-start mirror, #1569 — the attach path runs INSIDE a run, after
+// the run-start guard passed, and the checkout may have changed since)
+// or when the copy/marker write itself fails — a missing skill
 // silently no-ops (the agent simply sees the text message without
 // the skill loaded; the studio surfaces the discrepancy via the
 // catalog endpoint).
@@ -172,6 +189,14 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 			return nil
 		}
 		return fmt.Errorf("runtime/bundle: stat skill %s: %w", srcPath, err)
+	}
+	// Refuse BEFORE the first write, like the run-start mirror: a `.claude`
+	// that is a symlink routes the copy through to the link's target, a
+	// path no tree-noise entry names (#1569). Checked here, not at run
+	// start only, because the attach path runs mid-run and the workspace
+	// is a checkout of an untrusted repository.
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		return err
 	}
 	dest := filepath.Join(workDir, ".claude", "skills")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
@@ -210,16 +235,53 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 // dir form resolve to the same path.
 func skillDestDirForm(dest, markerDir, srcName string) (skillDir, destPath, markerPath string, err error) {
 	if !hasMarkdownSuffix(srcName) {
-		return "", "", "", fmt.Errorf("runtime/bundle: invalid skill file name %q: expected an .md extension (case-insensitive)", srcName)
+		return "", "", "", &invalidSkillNameError{name: srcName, reason: "expected an .md extension (case-insensitive)"}
 	}
 	stem := srcName[:len(srcName)-len(".md")]
 	if stem == "" || stem == "." || stem == ".." || strings.ContainsAny(stem, "/\\") {
-		return "", "", "", fmt.Errorf("runtime/bundle: invalid skill file name %q", srcName)
+		return "", "", "", &invalidSkillNameError{name: srcName, reason: "empty or path-escape stem"}
 	}
 	skillDir = filepath.Join(dest, stem)
 	destPath = filepath.Join(skillDir, "SKILL.md")
 	markerPath = filepath.Join(markerDir, stem+".SKILL.md.sha256")
 	return skillDir, destPath, markerPath, nil
+}
+
+// invalidSkillNameError is the sentinel skillDestDirForm returns when a
+// contribution name is structurally unfit for the two-form mirror — no `.md`
+// extension (case-insensitive), or a stem that would escape the skills dir
+// or collide the flat alias with the directory form. It is a VALIDATION
+// error, deliberately distinct from an I/O error (which the mirror pass
+// must NOT swallow — see isSkillValidationError):
+//
+//   - validation: soft. The one bad contribution is skipped with a WARN
+//     naming it; the pass continues so an unrelated plugin's skills still
+//     land. This is the round-2 medium (R6178bd/Rda9e59) `Deploy.MD` was
+//     opening — one malformed manifest entry used to abort every OTHER
+//     plugin's contribution.
+//
+//   - I/O (ENOSPC / EACCES / ENOTDIR when the target checkout planted a
+//     plain file where the skill dir goes / a copyFile that refused / a
+//     writeMarker that failed): FATAL. A run whose `.bot` explicitly
+//     declares a skill it cannot mirror must NOT report success without
+//     it. That is the house doctrine — no silent fallback — and is why
+//     the two classes need to stay separate.
+type invalidSkillNameError struct {
+	name   string
+	reason string
+}
+
+func (e *invalidSkillNameError) Error() string {
+	return fmt.Sprintf("runtime/bundle: invalid skill file name %q: %s", e.name, e.reason)
+}
+
+// isSkillValidationError reports whether err (or any wrapped err) is the
+// validation sentinel. Callers use this to split soft (skip) from fatal
+// (return): the sole shared predicate, so the five mirror sites cannot
+// drift on which error class they treat as which.
+func isSkillValidationError(err error) bool {
+	var v *invalidSkillNameError
+	return errors.As(err, &v)
 }
 
 // hasMarkdownSuffix reports whether srcName ends in ".md" case-insensitively.
@@ -269,6 +331,49 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, tier skillTier, logg
 	return outcome, nil
 }
 
+// claudeSymlinkError is the typed refusal the mirror returns when the
+// workspace's `.claude` is a symlink: writing through the link lands the
+// mirrored files under the link's TARGET — a path no tree-noise entry names
+// (the dir-only `**/.claude/` rule never matches a symlink, and IsNoise sees
+// `target-dir/skill.md`, not `.claude/skill.md`, #1569). The wip bank and the
+// operator's commit-and-finalize would then stage the mirrored skills as the
+// run's work, and the dirtiness probes would miss them for what they are.
+//
+// Refusing — not warning — because every alternative keeps the defect: warn
+// and continue writes through the link all the same, and laying the mirror
+// "beside" the link means removing a symlink the CHECKOUT owns. The run stops
+// at mirror time with the target named — the one piece of information only
+// the engine has, being the writer.
+type claudeSymlinkError struct {
+	link   string
+	target string
+}
+
+func (e *claudeSymlinkError) Error() string {
+	return fmt.Sprintf("runtime/bundle: %s is a symlink to %s — the run-start mirror would write through it and land outside every tree-noise rule (#1569); replace the link with a real directory", e.link, e.target)
+}
+
+// refuseAClaudeSymlink returns the typed refusal when <workDir>/.claude is a
+// symlink. A workspace REACHED through a symlink is fine — only the final
+// component is examined (Lstat), and both sides of a workDir link are the
+// same tree. Anything else (absent, a real directory, a plain file) is left
+// to the mirror's own handling — MkdirAll already refuses the plain file.
+func refuseAClaudeSymlink(workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+	claudeDir := filepath.Join(workDir, ".claude")
+	info, err := os.Lstat(claudeDir)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	target, readErr := os.Readlink(claudeDir)
+	if readErr != nil {
+		target = "<unreadable>"
+	}
+	return &claudeSymlinkError{link: claudeDir, target: target}
+}
+
 // mirrorBundleSkills copies every top-level entry from bundle.SkillsDir
 // into <workDir>/.claude/skills/. A flat "<name>.md" source is mirrored as the
 // directory form "<name>/SKILL.md" (see skillDestDirForm); a source that is
@@ -294,6 +399,20 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, tier skillTier, logg
 // two apart. The workspace is a checkout of an untrusted repository, so nothing
 // read back from it can establish that distinction; only the mirror knows.
 func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) ([]string, error) {
+	// A `.claude` that is a symlink routes every write below — the owned
+	// copy's reset included — through to the link's target, outside every
+	// tree-noise rule. Refuse before the first write (#1569).
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		return nil, err
+	}
+	// The engine-owned copy of the same skills, first and unconditionally: it
+	// is reset even for a run with no bundle, so a directory of that name
+	// committed by the checkout is never read as the engine's own. This is
+	// the single site — every mirror caller (Run, resumeRebuildState,
+	// resumeFromFailure) goes through here. See owned_skills.go.
+	if err := materializeOwnedSkills(workDir, b, logger); err != nil {
+		return nil, err
+	}
 	if b == nil || b.SkillsDir == "" || workDir == "" {
 		return nil, nil
 	}
@@ -364,14 +483,22 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		// MirrorSingleSkill via mirrorFileSkill.
 		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, name, skillTierBundle, logger)
 		if err != nil {
-			// One malformed entry (e.g. skillDestDirForm refused it)
-			// must not discard the rest of the bundle's skills. Name it
-			// in the log; keep mirroring.
-			if logger != nil {
-				logger.Warn("runtime/bundle: skipping skill %q: %v", name, err)
+			// Split soft vs fatal: a validation error (a name
+			// skillDestDirForm refuses) skips ONE entry so the rest of
+			// the bundle still lands; an I/O failure (ENOSPC / ENOTDIR
+			// when the checkout planted a plain file at the skill dir
+			// path / a copyFile that refused) is FATAL — a run whose
+			// bot declares a skill that could not be mirrored must not
+			// silently proceed without it. Same predicate everywhere:
+			// isSkillValidationError.
+			if isSkillValidationError(err) {
+				if logger != nil {
+					logger.Warn("runtime/bundle: skipping skill %q (validation): %v", name, err)
+				}
+				shadowed++
+				continue
 			}
-			shadowed++
-			continue
+			return nil, fmt.Errorf("runtime/bundle: skill %q: %w", name, err)
 		}
 		switch outcome {
 		case skillOutcomeMirrored:
@@ -476,11 +603,33 @@ func hashFile(path string) (string, error) {
 // permanent shadow after a rollback.
 //
 // Sidecars are wiped at the START of each run's mirror pass
-// (ClearSkillTierMarkers): the tier arbitrates collisions WITHIN one pass
+// (ClearMirroredTierMarkers): the tier arbitrates collisions WITHIN one pass
 // (bundle > plugin > library regardless of mirror order), never across
 // runs — a persisted tier would let a bundle that no longer ships a skill
 // lock a library skill of the same name out forever.
+//
+// The wipe also doubles as the pruner's freshness signal: every touched
+// mirror rewrites the sidecar via writeMarker, so a `.sha256` marker whose
+// tier sidecar is MISSING at pass end names a destination no source
+// produced this run — a candidate orphan (pruneWorkspaceMirror confirms it
+// is iterion's before removing it via the iterion-wrote sidecar and a
+// content hash match).
 const tierSidecarSuffix = ".tier"
+
+// iterionWroteSidecarSuffix records that iterion ACTIVELY WROTE the mirrored
+// file at some run — Mirrored via copyFile, or Refreshed via overwriteFile.
+// It is NOT created by the UpToDate branch that adopts an operator's byte-
+// identical file: hash(dest) == hash(src) on a first mirror is entirely
+// consistent with an operator copy-pasting an example verbatim, and the
+// tier marker alone (which UpToDate rewrites) does not distinguish "iterion
+// wrote it" from "iterion adopted an identical operator file".
+//
+// The pruner needs the stronger fact — "iterion put those bytes there" —
+// before it deletes anything, so a coincidence-adopted file whose source is
+// later removed does not silently disappear. Persistent across runs (unlike
+// the tier sidecar), because the "we wrote this once" fact must survive the
+// per-pass wipe.
+const iterionWroteSidecarSuffix = ".iterion-wrote"
 
 // readMarker returns the sha256 hex + owning tier for path, or ("", "") on
 // any error (missing file, unreadable, empty). Marker absence is a benign
@@ -520,21 +669,262 @@ func writeMarker(path, hash string, tier skillTier) error {
 	return nil
 }
 
-// ClearSkillTierMarkers removes every tier sidecar under the workspace's
-// skill marker dir — called once at the start of a run's mirror sequence so
-// tier precedence is scoped to THAT pass. Best-effort; a missing dir is
-// simply a workspace that was never mirrored.
-func ClearSkillTierMarkers(workDir string) {
-	markerDir := filepath.Join(workDir, ".claude", "skills", bundleMirrorMarkerDir)
-	entries, err := os.ReadDir(markerDir)
-	if err != nil {
-		return
+// markIterionWrote drops the sticky "iterion actively wrote this file"
+// sidecar next to the marker. Best-effort — losing the sidecar only
+// downgrades the pruner's certainty about this destination on some future
+// run (which is exactly what safety requires), never fails the mirror.
+// Called from reconcileSkillFile's Mirrored / Refreshed branches. NOT
+// called from UpToDate: an adopted-identical-operator-file must not be
+// pruneable, ever.
+func markIterionWrote(markerPath string) {
+	_ = os.WriteFile(markerPath+iterionWroteSidecarSuffix, nil, 0o644)
+}
+
+// iterionWroteFile reports whether the marker at path was actually written
+// by iterion (Mirrored/Refreshed) at some past run. Bare stat — the
+// sidecar's content is deliberately empty; presence is the whole signal.
+func iterionWroteFile(markerPath string) bool {
+	if _, err := os.Stat(markerPath + iterionWroteSidecarSuffix); err != nil {
+		return false
 	}
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), tierSidecarSuffix) {
-			_ = os.Remove(filepath.Join(markerDir, e.Name()))
+	return true
+}
+
+// mirrorKindDirs enumerates the three .claude/ leaf directories the runtime
+// mirrors write into. Kept alongside the marker code because both the
+// tier-sidecar wipe (ClearMirroredTierMarkers) and the orphan pruner
+// (pruneWorkspaceMirror) walk them in lockstep — one canonical list keeps a
+// new kind from being added to one function and forgotten in the other.
+var mirrorKindDirs = []string{"skills", "commands", "agents"}
+
+// ClearMirroredTierMarkers removes every tier sidecar under each of the
+// workspace's mirror marker dirs (skills / commands / agents) — called once
+// at the start of a run's mirror sequence so tier precedence is scoped to
+// THAT pass, and so the pruner can tell a fresh mirror (sidecar rewritten
+// by writeMarker) from an orphan (sidecar still absent at pass end).
+// Best-effort; a missing dir is simply a workspace that was never mirrored.
+func ClearMirroredTierMarkers(workDir string) {
+	for _, kind := range mirrorKindDirs {
+		markerDir := filepath.Join(workDir, ".claude", kind, bundleMirrorMarkerDir)
+		entries, err := os.ReadDir(markerDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), tierSidecarSuffix) {
+				_ = os.Remove(filepath.Join(markerDir, e.Name()))
+			}
 		}
 	}
+}
+
+// pruneWorkspaceMirror removes orphan mirror files — those iterion wrote
+// during a previous pass and whose source no longer produces them (renamed,
+// removed, or disabled upstream). The safe predicate is the existing marker
+// scheme:
+//
+//  1. Post-mirror, every touched marker has a fresh .tier sidecar (writeMarker
+//     writes both, and ClearMirroredTierMarkers cleared the sidecars at the
+//     start of the pass). A .sha256 marker whose sidecar is MISSING at prune
+//     time names a destination no source produced this run.
+//  2. A file whose content still hashes to its .sha256 marker was written by
+//     iterion and has not been edited by the operator — same test
+//     reconcileSkillFile uses to decide refresh-vs-shadow.
+//
+// Combining the two: an orphan is a marker with no fresh sidecar AND a
+// destination file whose hash matches the marker. Those are the only files
+// pruned; files with no marker, or diverged content, are the operator's and
+// stay.
+//
+// isWorktreeOwned gates the sweep: pruning runs by default only for a
+// run-owned worktree (`worktree: auto`), where a stale mirror file has no
+// operator interpretation. In-place runs against the operator's own checkout
+// keep every mirror file — an orphan there costs one unused file; a false
+// positive costs an operator's edit. The escape hatch is a load-bearing
+// limit, greppable and opt-in: ITERION_PRUNE_MIRROR_IN_CHECKOUT=1 (see
+// docs/philosophy.md, principle 1).
+//
+// Best-effort throughout: a prune failure is logged but never fails a run.
+// The sweep walks all three mirror kind dirs (skills / commands / agents).
+func pruneWorkspaceMirror(workDir string, isWorktreeOwned bool, logger *iterlog.Logger) {
+	if workDir == "" {
+		return
+	}
+	if !isWorktreeOwned && !envOptIn(os.Getenv("ITERION_PRUNE_MIRROR_IN_CHECKOUT")) {
+		return
+	}
+	pruned := 0
+	for _, kind := range mirrorKindDirs {
+		kindDir := filepath.Join(workDir, ".claude", kind)
+		markerDir := filepath.Join(kindDir, bundleMirrorMarkerDir)
+		entries, err := os.ReadDir(markerDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasSuffix(name, ".sha256") {
+				continue
+			}
+			markerPath := filepath.Join(markerDir, name)
+			// Freshness signal: touched this pass iff its .tier sidecar exists.
+			// ClearMirroredTierMarkers wiped every sidecar at pass start, and
+			// writeMarker rewrites it on every touch — mirrored, up-to-date,
+			// refreshed — but not on shadow, which is where a stale marker
+			// against an operator-edited file also lands.
+			if _, err := os.Stat(markerPath + tierSidecarSuffix); err == nil {
+				continue
+			}
+			destPath := destPathFromMarkerName(kindDir, name)
+			if destPath == "" {
+				continue
+			}
+			destInfo, statErr := os.Stat(destPath)
+			if os.IsNotExist(statErr) {
+				// Destination is gone already (operator deleted it, or a
+				// prior prune ran). The marker is bare bookkeeping — drop
+				// it and any companion sidecars so `.iterion-managed/`
+				// does not accumulate forever.
+				_ = os.Remove(markerPath)
+				_ = os.Remove(markerPath + iterionWroteSidecarSuffix)
+				continue
+			}
+			if statErr != nil {
+				continue
+			}
+			if destInfo.IsDir() {
+				// Only files carry the mirror contract; a directory here is
+				// not something the mirror shipped through reconcileSkillFile.
+				continue
+			}
+			// Refuse to prune anything iterion did not ACTIVELY WRITE. The
+			// tier sidecar's presence alone would count an UpToDate
+			// adoption as ours: reconcileSkillFile's UpToDate branch
+			// rewrites the marker to update the tier when hash(dest) ==
+			// hash(src), which is entirely consistent with an operator
+			// copy-pasting the source into their workspace before iterion
+			// ever ran there. The iterion-wrote sidecar is created only
+			// by copyFile / overwriteFile paths (Mirrored / Refreshed);
+			// its absence is a hard "not ours".
+			if !iterionWroteFile(markerPath) {
+				continue
+			}
+			markerHash, _ := readMarker(markerPath)
+			if markerHash == "" {
+				continue
+			}
+			destHash, err := hashFile(destPath)
+			if err != nil {
+				continue
+			}
+			if destHash != markerHash {
+				// Operator-edited: the shadow policy owns this file, leave
+				// it alone. The marker stays too — pruning it would flip
+				// next-run's semantics for the case where an operator
+				// restores iterion's original content (marker match →
+				// refresh → the restore is respected as still-ours, which
+				// is the intended behaviour).
+				continue
+			}
+			// Orphan confirmed: iterion actively wrote it (iterion-wrote
+			// sidecar present), this pass didn't refresh it (tier sidecar
+			// missing), the file still matches the marker (operator did
+			// not edit). Prune all three.
+			if err := os.Remove(destPath); err == nil {
+				_ = os.Remove(markerPath)
+				_ = os.Remove(markerPath + iterionWroteSidecarSuffix)
+				// The prior directory-form of a skill leaves an empty
+				// <stem>/ around after we drop SKILL.md. It was ours to
+				// begin with — drop it too, best-effort (RemoveEmpty style).
+				if strings.HasSuffix(destPath, string(filepath.Separator)+"SKILL.md") {
+					_ = os.Remove(filepath.Dir(destPath))
+				}
+				pruned++
+			}
+		}
+	}
+	if logger != nil && pruned > 0 {
+		logger.Info("workspace mirror: pruned %d orphan file(s) from %s", pruned, filepath.Join(workDir, ".claude"))
+	}
+}
+
+// destPathFromMarkerName inverts writeMarker's naming for the pruner. Two
+// shapes the pruner encounters:
+//
+//   - "<name>.md.sha256" → "<name>.md" — the FLAT alias every kind uses,
+//     and the ONE shape a command/agent takes.
+//   - "<stem>.SKILL.md.sha256" → "<stem>/SKILL.md" — the DIRECTORY form
+//     used by skill tiers (the shape claude_code's Skill tool discovers).
+//
+// The two grammars overlap on a source file literally named "foo.SKILL.md":
+// its FLAT-alias marker is "foo.SKILL.md.sha256", which the DIRECTORY-form
+// pattern also matches. We disambiguate by checking the workspace: if the
+// directory-form path exists on disk we return it; otherwise we fall back
+// to the flat interpretation (the source was called foo.SKILL.md, its
+// flat alias is at kindDir/foo.SKILL.md). A marker name that fits neither
+// grammar is skipped (unknown grammar — leave it).
+func destPathFromMarkerName(kindDir, markerName string) string {
+	if strings.HasSuffix(markerName, ".SKILL.md.sha256") {
+		stem := strings.TrimSuffix(markerName, ".SKILL.md.sha256")
+		if stem == "" || stem == "." || stem == ".." || strings.ContainsAny(stem, "/\\") {
+			// Fall through to the flat interpretation — a marker whose
+			// stem is invalid for the directory form may still be a legit
+			// flat marker for a name ending in `.SKILL.md`.
+		} else {
+			dirForm := filepath.Join(kindDir, stem, "SKILL.md")
+			if _, err := os.Stat(dirForm); err == nil {
+				return dirForm
+			}
+			// Directory form is not on disk — was the source a file
+			// literally named "<stem>.SKILL.md" whose flat alias lives at
+			// kindDir/<stem>.SKILL.md? If so, its marker is the same as
+			// the directory-form marker for kindDir/<name-without-.md>.
+			flat := filepath.Join(kindDir, strings.TrimSuffix(markerName, ".sha256"))
+			if _, err := os.Stat(flat); err == nil {
+				return flat
+			}
+			// Neither exists on disk. Prefer the directory-form path for
+			// stale-marker cleanup (kills the more common ancestor —
+			// `<stem>/SKILL.md` — first; a stray "<stem>.SKILL.md" flat
+			// alias with no dest already dropped by the missing-dest
+			// branch).
+			return dirForm
+		}
+	}
+	// The prunable grammar is LOWERCASE-ONLY on the `.md.sha256` tail —
+	// the decided shape after #1500 R9cbabe. A bundle may name a source
+	// `Deploy.MD` (hasMarkdownSuffix accepts it and the mirror writes a
+	// `Deploy.MD.sha256` marker), but that marker is OUTSIDE the prunable
+	// set. For a SKILL the directory form still prunes
+	// (`Deploy.SKILL.md.sha256` matches), so the claude_code-visible
+	// orphan is cleaned and only the flat uppercase alias remains. For a
+	// COMMAND or AGENT (flat-only kinds) the uppercase name is the whole
+	// file, so the entire command/agent lives forever — the accepted cost
+	// of keeping the grammar single-case rather than widening it to chase
+	// casing.
+	if strings.HasSuffix(markerName, ".md.sha256") {
+		name := strings.TrimSuffix(markerName, ".sha256")
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+			return ""
+		}
+		return filepath.Join(kindDir, name)
+	}
+	return ""
+}
+
+// envOptIn parses an operator-facing boolean env value. Accepts the common
+// forms so an operator setting ITERION_PRUNE_MIRROR_IN_CHECKOUT to "true"
+// or "yes" is not silently ignored. Anything else — empty, "0", "no",
+// arbitrary text — reads as opt-OUT.
+func envOptIn(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	}
+	return false
 }
 
 // overwriteFile replaces dst's content with src's content via a durable

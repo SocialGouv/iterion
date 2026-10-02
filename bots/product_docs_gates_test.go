@@ -2,6 +2,7 @@ package bots
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 )
@@ -114,12 +116,15 @@ func requireGitPython(t *testing.T) {
 	}
 }
 
-// newSourceRepo builds a throwaway git repository standing in for one of the
-// product's source repos, carrying a user-facing i18n catalog (functional
-// signal) and a credential file (which must never survive into the clone).
-func newSourceRepo(t *testing.T) string {
+// seedSourceRepo fills dir with a throwaway git repository standing in for one
+// of the product's source repos, carrying a user-facing i18n catalog
+// (functional signal) and a credential file (which must never survive into the
+// clone).
+func seedSourceRepo(t *testing.T, dir string) string {
 	t.Helper()
-	dir := t.TempDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitIn(t, dir, "init", "-q", "-b", "main")
 	writeFile(t, dir, "locales/fr.json", `{"submit":"Envoyer","status":"En instruction"}`+"\n")
 	writeFile(t, dir, ".env", "SECRET_KEY=never-read-me\n")
@@ -129,7 +134,28 @@ func newSourceRepo(t *testing.T) string {
 	return dir
 }
 
+// newSourceRepo stands a source repository OUTSIDE any workspace — the shape a
+// catalog may name but no longer reach.
+func newSourceRepo(t *testing.T) string {
+	t.Helper()
+	return seedSourceRepo(t, t.TempDir())
+}
+
+// localSourceRel is where the fixtures stand a source repository that the
+// catalog names by the FILESYSTEM. A value on disk is a local source whichever
+// key carries it — `url` or `path` — so it is confined to the docs workspace,
+// and a fixture standing one outside would exercise the refusal and nothing
+// else.
+const localSourceRel = "vendor/src"
+
+// newLocalSource seeds that repository inside ws and returns its absolute path.
+func newLocalSource(t *testing.T, ws string) string {
+	t.Helper()
+	return seedSourceRepo(t, filepath.Join(ws, localSourceRel))
+}
+
 type ingestOut struct {
+	OraclePath  string           `json:"oracle_path"`
 	ProductID   string           `json:"product_id"`
 	ProductDir  string           `json:"product_dir"`
 	Surfaces    []any            `json:"surfaces"`
@@ -179,6 +205,7 @@ func ingestCommand(t *testing.T, ws, catalog, product, scratch string) string {
 		"vars.scratch_dir":   scratch,
 		"vars.clone_depth":   "1",
 		"vars.secret_globs":  "*.env,.env,.env.*,*secret*,*secrets*,*credential*,*.pem,*.key",
+		"vars.oracle_dir":    ".golden-master",
 	})
 }
 
@@ -189,11 +216,13 @@ func ingestCommand(t *testing.T, ws, catalog, product, scratch string) string {
 func TestProductDocsCatalogIngest(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	scratch := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
-	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	source := newLocalSource(t, ws)
+	// A local source the workspace holds but that is NOT a repository: a
+	// visible `degraded` entry, never a silent absence.
+	missing := filepath.Join(ws, "vendor", "does-not-exist")
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\n"+
 			"docs:\n"+
@@ -234,7 +263,7 @@ func TestProductDocsCatalogIngest(t *testing.T) {
 	if okEntry == nil || badEntry == nil {
 		t.Fatalf("inventory does not carry one ok + one degraded entry: %+v", got.Inventory)
 	}
-	if note, _ := badEntry["note"].(string); !strings.Contains(note, "clone failed") {
+	if note, _ := badEntry["note"].(string); !strings.Contains(note, "is not a git repository") {
 		t.Fatalf("degraded entry does not say WHY it is degraded: %q", note)
 	}
 
@@ -279,13 +308,16 @@ func TestProductDocsCatalogIngest(t *testing.T) {
 func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
+	// The RELATIVE form of a local source: a url that resolves on disk is the
+	// same filesystem read as a path, and takes the same confinement.
+	source := localSourceRel
 
 	newWS := func(t *testing.T) (string, string) {
 		t.Helper()
 		ws := t.TempDir()
 		scratch := t.TempDir()
 		gitIn(t, ws, "init", "-q", "-b", "main")
+		newLocalSource(t, ws)
 		writeFile(t, ws, "documentation_produits/demo/README.md", "# Demo\n")
 		gitIn(t, ws, "add", "-A")
 		gitIn(t, ws, "commit", "-q", "-m", "seed")
@@ -507,10 +539,10 @@ func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
 func TestProductDocsSourceStampIsScopedToTheProduct(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	scratch := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
 	for _, id := range []string{"alpha", "beta"} {
 		catalogFixture(t, ws, "catalog/"+id,
 			"id: "+id+"\ndocs:\n  product_dir: documentation_produits/"+id+"\n"+
@@ -561,11 +593,10 @@ func TestProductDocsSourceStampIsScopedToTheProduct(t *testing.T) {
 func TestProductDocsCatalogIngestSourceDelta(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
-	firstSHA := strings.TrimSpace(gitIn(t, source, "rev-parse", "HEAD"))
-
 	ws := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
+	firstSHA := strings.TrimSpace(gitIn(t, source, "rev-parse", "HEAD"))
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\n"+
 			"docs:\n  product_dir: docs/demo\n"+
@@ -757,13 +788,34 @@ type lintOut struct {
 
 func lintCommand(t *testing.T, ws, productDir, rules, extra string) string {
 	t.Helper()
+	// A net is present by default: that is what arms the marker exemption.
+	return lintCommandWithNet(t, ws, productDir, rules, extra, filepath.Join(ws, ".golden-master"))
+}
+
+// lintCommandWithNet exposes the one input that decides whether the anchorless
+// marker is exempt at all. The exemption exists only to stop this gate
+// contradicting coverage_check, and coverage_check is armed by a NET — so an
+// empty oracle_path must give back the node as it was before either existed.
+func lintCommandWithNet(t *testing.T, ws, productDir, rules, extra, oraclePath string) string {
+	t.Helper()
 	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "page_lint"), map[string]string{
-		"vars.workspace_dir":            ws,
-		"input.product_dir":             productDir,
-		"vars.lint_rules":               rules,
-		"vars.extra_forbidden_headings": extra,
+		"vars.workspace_dir":             ws,
+		"input.product_dir":              productDir,
+		"input.oracle_path":              oraclePath,
+		"vars.lint_rules":                rules,
+		"vars.extra_forbidden_headings":  extra,
+		"vars.coverage_no_anchor_marker": defaultNoAnchorMarker,
 	})
 }
+
+// The declared identifiers the exhaustiveness gate matches on, in their
+// shipped defaults. They are vars because the gate is language-neutral while
+// the pages are not.
+const (
+	defaultNoAnchorMarker  = "<!--no-anchor-->"
+	defaultExclusionsToken = "exclusions"
+	defaultPlaceholders    = "TODO,FIXME,TBD,XXX,WIP,lorem ipsum"
+)
 
 const allLintRules = "html_comments,sources_box,clarify_section,technical_annex,secret_material"
 
@@ -947,10 +999,10 @@ func TestProductDocsPageLint(t *testing.T) {
 func TestProductDocsDeterministicPassConverges(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	scratch := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\n"+
 			"docs:\n"+
@@ -1523,10 +1575,10 @@ func TestProductDocsInventoryStripsInlineURLCredentials(t *testing.T) {
 func TestProductDocsCatalogIngestRefusesCollidingIDs(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
 	scratch := t.TempDir()
+	source := newLocalSource(t, ws)
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n"+
 			"  - id: a/b\n    url: "+source+"\n"+
@@ -1548,10 +1600,10 @@ func TestProductDocsCatalogIngestRefusesCollidingIDs(t *testing.T) {
 func TestProductDocsSourceStampRecordsFullSHA(t *testing.T) {
 	requireGitPython(t)
 
-	source := newSourceRepo(t)
 	ws := t.TempDir()
 	gitIn(t, ws, "init", "-q", "-b", "main")
 	scratch := t.TempDir()
+	source := newLocalSource(t, ws)
 	catalogFixture(t, ws, "catalog/demo",
 		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n  - id: demo-src\n    url: "+source+"\n",
 		`{"id":"demo","name":"Demo","product_dir":"docs/demo","repos":[{"id":"demo-src","url":"`+source+`"}]}`)
@@ -1812,5 +1864,3537 @@ print('ok')
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "ok") {
 		t.Fatalf("converter crashed on blank-line step: %v\n%s", err, out)
+	}
+}
+
+// ─── coverage_check — the EXHAUSTIVENESS gate ────────────────────────────
+//
+// Prody's convergence used to rest on the campaign's own `docs_aligned` for
+// the one claim an agent cannot honestly make about itself: is EVERYTHING
+// documented, and does everything documented EXIST? coverage_check answers it
+// from the product's golden-master net — `feature-coverage.json` (covered
+// features with the corpus entries that exercise them, exclusions with their
+// written reason) and `corpus.json` (the captured entries).
+//
+// A gate nobody has seen red proves nothing, so the falsification suite below
+// breaks the fixture once per refusal cause and requires the gate to redden
+// FOR THAT NAMED CAUSE — a red for another reason would prove nothing either.
+// The fixture is synthetic and the vocabulary is its own: nothing here assumes
+// three-digit entry ids, which is one campaign's convention.
+
+type coverageOut struct {
+	OK            bool             `json:"coverage_ok"`
+	NetPresent    bool             `json:"net_present"`
+	Causes        []map[string]any `json:"causes"`
+	CauseCount    int              `json:"cause_count"`
+	Total         int              `json:"features_total"`
+	Documented    int              `json:"features_documented"`
+	Exclusions    int              `json:"exclusions_total"`
+	Named         int              `json:"exclusions_named"`
+	Chapters      int              `json:"chapters"`
+	Anchorless    int              `json:"chapters_unanchored_declared"`
+	AnchorlessMax int              `json:"chapters_anchorless_max"`
+	NetUnproven   bool             `json:"net_unproven"`
+	CountsLine    string           `json:"counts_line"`
+	RoutesTotal   int              `json:"routes_declared"`
+	Degraded      bool             `json:"routes_degraded"`
+	OracleUsed    string           `json:"oracle_dir_used"`
+	Log           string           `json:"log"`
+}
+
+// shippedAnchorlessCeiling is the DEFAULT the bundle ships. The fixtures run
+// at it, deliberately: a bench that has to loosen the shipped ceiling to pass
+// is a bench measuring a product nobody runs.
+const shippedAnchorlessCeiling = "2"
+
+func coverageCommand(t *testing.T, ws, productDir, oraclePath string) string {
+	t.Helper()
+	return coverageCommandWith(t, ws, productDir, oraclePath, defaultExclusionsToken)
+}
+
+// coverageCommandWith exposes the declared exclusions-chapter token: the pages
+// are not written in the gate's language.
+func coverageCommandWith(t *testing.T, ws, productDir, oraclePath, exclToken string) string {
+	t.Helper()
+	return coverageCommandCapped(t, ws, productDir, oraclePath, exclToken, shippedAnchorlessCeiling)
+}
+
+func coverageCommandCapped(t *testing.T, ws, productDir, oraclePath, exclToken, maxAnchorless string) string {
+	t.Helper()
+	return coverageCommandFull(t, ws, productDir, oraclePath, exclToken, maxAnchorless, citeOpen, citeClose, "routes.txt")
+}
+
+func coverageCommandFull(t *testing.T, ws, productDir, oraclePath, exclToken, maxAnchorless, open, close, routes string) string {
+	t.Helper()
+	return coverageCommandTimed(t, ws, productDir, oraclePath, exclToken, maxAnchorless, open, close, routes, shippedProbeTimeout)
+}
+
+// shippedProbeTimeout is the bound the bundle ships for the replayed
+// routes_probe — the one golden-master's harness gives the same command.
+const shippedProbeTimeout = "120"
+
+func coverageCommandTimed(t *testing.T, ws, productDir, oraclePath, exclToken, maxAnchorless, open, close, routes, probeTimeout string) string {
+	t.Helper()
+	rt := routeTableFor(t, ws, oraclePath, routes, probeTimeout)
+	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "coverage_check"), map[string]string{
+		"vars.workspace_dir":               ws,
+		"input.product_dir":                productDir,
+		"input.oracle_path":                oraclePath,
+		"input.routes":                     routesJSON(t, rt.Routes),
+		"input.routes_source":              rt.Source,
+		"input.routes_note":                rt.Note,
+		"input.net_digest":                 digestJSON(t, rt.NetDigest),
+		"vars.coverage_exclusions_heading": exclToken,
+		"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
+		"vars.coverage_citation_open":      open,
+		"vars.coverage_citation_close":     close,
+		"vars.coverage_placeholders":       defaultPlaceholders,
+		"vars.coverage_min_prose":          "60",
+		"vars.coverage_max_anchorless":     maxAnchorless,
+	})
+}
+
+// routeTableOut is route_table's answer: the declared routes every route
+// check judges by, resolved once per run at a commit.
+type routeTableOut struct {
+	Routes    []string          `json:"routes"`
+	Source    string            `json:"source"`
+	Note      string            `json:"note"`
+	Degraded  bool              `json:"degraded"`
+	Dropped   int               `json:"dropped"`
+	Log       string            `json:"log"`
+	NetDigest map[string]string `json:"net_digest"`
+}
+
+// snapshotRunBase commits the fixture as it stands, the way a run starts from
+// a commit: route_table reads the net AT that commit, never the working tree.
+func snapshotRunBase(t *testing.T, ws string) string {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+		gittest.Run(t, ws, "init", "-q")
+	}
+	gittest.Run(t, ws, "add", "-A")
+	gittest.Run(t, ws, "commit", "-q", "--allow-empty", "-m", "run base")
+	return gittest.Run(t, ws, "rev-parse", "HEAD")
+}
+
+func routeTableCommand(t *testing.T, ws, oraclePath, baseSHA, routesFile, probeTimeout string) string {
+	t.Helper()
+	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "route_table"), map[string]string{
+		"vars.workspace_dir":                 ws,
+		"input.oracle_path":                  oraclePath,
+		"input.base_sha":                     baseSHA,
+		"vars.oracle_dir":                    ".golden-master",
+		"vars.coverage_routes_file":          routesFile,
+		"vars.coverage_routes_probe_timeout": probeTimeout,
+	})
+}
+
+// routeTableFor runs the REAL route_table over the fixture at a fresh run base,
+// so every gate test judges by the table the producer actually hands over.
+func routeTableFor(t *testing.T, ws, oraclePath, routesFile, probeTimeout string) routeTableOut {
+	t.Helper()
+	base := snapshotRunBase(t, ws)
+	var out routeTableOut
+	runJSON(t, routeTableCommand(t, ws, oraclePath, base, routesFile, probeTimeout), &out)
+	return out
+}
+
+// digestJSON renders route_table's fingerprint of the net the way the engine
+// relays a json output: the gates refuse a net file that no longer matches it.
+func digestJSON(t *testing.T, digest map[string]string) string {
+	t.Helper()
+	if digest == nil {
+		digest = map[string]string{}
+	}
+	raw, err := json.Marshal(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func routesJSON(t *testing.T, routes []string) string {
+	t.Helper()
+	if routes == nil {
+		routes = []string{}
+	}
+	raw, err := json.Marshal(routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// The shipped citation syntax. A reference is what the page SAYS is one; a
+// code span is prose, whatever it looks like.
+const (
+	citeOpen  = "[[ref:"
+	citeClose = "]]"
+)
+
+// ref writes a citation the way a page does.
+func ref(token string) string { return citeOpen + token + citeClose }
+
+const (
+	coverageCorpus = `{"entries": [
+  {"id": "001", "persona": "anon", "method": "GET", "path": "/", "surface": "http"},
+  {"id": "026", "persona": "manager", "method": "GET", "path": "/dashboard/items", "surface": "http"},
+  {"id": "027", "persona": "manager", "method": "GET", "path": "/dashboard/items?page=2", "surface": "http"},
+  {"id": "039", "persona": "manager", "method": "GET", "path": "/dashboard/items/42", "surface": "http"}
+]}`
+	coverageInventory = `{"features": [
+  {"feature": "home.landing", "entries": ["001"]},
+  {"feature": "items.list", "entries": ["026"]},
+  {"feature": "items.list.paging", "entries": ["027"]},
+  {"feature": "items.detail", "entries": ["039"]}
+ ],
+ "exclusions": [
+  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"}
+ ]}`
+	coverageRoutes = "GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\n# a comment line\nGET /{slug}\n"
+)
+
+// coverageHome and coverageExclusions are the INTACT documentation the gate
+// must bless: every covered feature anchored on one of its own entries, every
+// exclusion named under a chapter that says so, every chapter carrying a
+// reference or declaring it carries none.
+const (
+	coverageHome = "# The product\n" +
+		"\n" +
+		"## The landing page — [[ref:/]] [[ref:001]]\n" +
+		"\n" +
+		"[[ref:home.landing]] [[ref:001]] is the first screen a visitor sees: it\n" +
+		"carries the sign-in call to action and nothing else.\n" +
+		"\n" +
+		"## The item list — [[ref:/dashboard/items]] [[ref:026]]\n" +
+		"\n" +
+		"The manager lands here — [[ref:items.list]] [[ref:026]] — and reads twenty rows,\n" +
+		"newest first, each one showing its owner, its status and its last change.\n" +
+		"Paging is [[ref:items.list.paging]] [[ref:027]], twenty rows per page\n" +
+		"([[ref:/dashboard/items?page=2]]), with a pager at the foot of the list to move between them.\n" +
+		"\n" +
+		"## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]\n" +
+		"\n" +
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n" +
+		"manager filled in, the history of its changes and the actions still open\n" +
+		"to them.\n" +
+		"\n" +
+		"## How this page was built <!--no-anchor-->\n" +
+		"\n" +
+		"A method chapter observes nothing and says so.\n"
+	coverageExclusionsPage = "# What this documentation does not cover\n" +
+		"\n" +
+		"## Exclusions\n" +
+		"\n" +
+		"- [[ref:menu.logout]] — signing out tears the session down without showing a " +
+		"screen of its own, so the net never captures it and this documentation " +
+		"does not describe it.\n"
+)
+
+// newCoverageFixture writes a synthetic product: a golden-master net and the
+// documentation that satisfies it.
+func newCoverageFixture(t *testing.T) string {
+	t.Helper()
+	ws := t.TempDir()
+	writeFile(t, ws, ".golden-master/corpus.json", coverageCorpus)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", coverageInventory)
+	writeFile(t, ws, ".golden-master/routes.txt", coverageRoutes)
+	writeFile(t, ws, "docs/demo/README.md", coverageHome)
+	writeFile(t, ws, "docs/demo/exclusions.md", coverageExclusionsPage)
+	return ws
+}
+
+func runCoverage(t *testing.T, ws string) coverageOut {
+	t.Helper()
+	var got coverageOut
+	runJSON(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), &got)
+	// The log quotes the oracle dir, whose path carries the RANDOM temp-dir
+	// number — and assertions on the log grep it for SHORT NUMERIC spans
+	// ("999", "250", "404"): a temp dir like ...126250226 named the code
+	// span "250" and ...38999964916 "verified" "999" (measured in CI,
+	// 2026-09-28). Scrub the fixture's plumbing out of the verdict text so
+	// every assertion judges what the gate SAID, not where the fixture
+	// happened to live.
+	if got.OracleUsed != "" {
+		got.Log = strings.ReplaceAll(got.Log, got.OracleUsed, "<oracle>")
+	}
+	return got
+}
+
+// mutate rewrites a fixture file, refusing to proceed when the anchor it aims
+// at has drifted: a mutation that silently lands elsewhere would declare the
+// gate alive for nothing.
+func mutate(t *testing.T, ws, rel, from, to string) {
+	t.Helper()
+	p := filepath.Join(ws, rel)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if n := strings.Count(s, from); n != 1 {
+		t.Fatalf("mutation anchor %q occurs %d times in %s, want exactly 1", from, n, rel)
+	}
+	if err := os.WriteFile(p, []byte(strings.Replace(s, from, to, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestProductDocsCoverageGateBlessesAnExhaustiveDocumentation is the positive
+// control every falsification needs: without it a gate that refuses
+// everything would score a perfect falsification run.
+func TestProductDocsCoverageGateBlessesAnExhaustiveDocumentation(t *testing.T) {
+	requireGitPython(t)
+	got := runCoverage(t, newCoverageFixture(t))
+	if !got.OK {
+		t.Fatalf("the gate refused an exhaustive documentation:\n%s", got.Log)
+	}
+	if !got.NetPresent {
+		t.Fatalf("net_present = false with both artifacts committed")
+	}
+	if got.Documented != 4 || got.Total != 4 || got.Named != 1 || got.Exclusions != 1 {
+		t.Fatalf("counts = %d/%d features, %d/%d exclusions, want 4/4 and 1/1", got.Documented, got.Total, got.Named, got.Exclusions)
+	}
+	if got.Degraded || got.RoutesTotal != 4 {
+		t.Fatalf("routes: degraded=%v declared=%d, want false and 4 (the comment line is not a route)", got.Degraded, got.RoutesTotal)
+	}
+	if got.Anchorless != 1 {
+		t.Fatalf("declared-anchorless chapters = %d, want 1 — the exclusions chapter is anchored by its ROLE and needs no marker, the method chapter is the one that declares", got.Anchorless)
+	}
+	if !strings.Contains(got.Log, "chapter declared anchorless") {
+		t.Fatalf("the log does not name the chapters that declared themselves anchorless:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateFalsification breaks the fixture once per
+// refusal cause and requires the gate to redden FOR THAT CAUSE.
+func TestProductDocsCoverageGateFalsification(t *testing.T) {
+	requireGitPython(t)
+	cases := []struct {
+		name string
+		want string
+		// preflight: the repair lands OUTSIDE the writeable set
+		// (`<product_dir>/**/*.md`), so the node must stop the RUN by name
+		// rather than hand the campaign an order it is forbidden to obey.
+		preflight bool
+		// routeTable: the refusal comes from route_table, which resolves the
+		// table once per run before any gate runs — it stops the run there.
+		routeTable bool
+		sabotage   func(t *testing.T, ws string)
+	}{
+		{
+			// A feature the net inventories and the pages no longer carry.
+			name: "GAP: a covered feature drops out of the documentation",
+			want: "GAP -- items.list.paging",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/README.md",
+					"Paging is [[ref:items.list.paging]] [[ref:027]], twenty rows per page\n", "")
+			},
+		},
+		{
+			// Citing the id and citing an entry is not enough if they are not
+			// on the SAME line: the anchor is the pairing, not the presence.
+			name: "GAP: the feature and its entry drift onto separate lines",
+			want: "GAP -- items.detail",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/README.md",
+					"[[ref:items.detail]] [[ref:039]] shows one item in full:",
+					"[[ref:items.detail]] shows one item in full:\nIts reference is [[ref:039]],")
+			},
+		},
+		{
+			name: "CONCEALED_EXCLUSION: the exclusion is no longer named at all",
+			want: "CONCEALED_EXCLUSION -- menu.logout",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/exclusions.md", "- [[ref:menu.logout]] — signing out", "- signing out")
+			},
+		},
+		{
+			name: "CONCEALED_EXCLUSION: a bare identifier is silence under a label",
+			want: "CONCEALED_EXCLUSION -- menu.logout",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/exclusions.md",
+					"- [[ref:menu.logout]] — signing out tears the session down without showing a "+
+						"screen of its own, so the net never captures it and this documentation "+
+						"does not describe it.",
+					"- [[ref:menu.logout]] — see above.")
+			},
+		},
+		{
+			name: "CONCEALED_EXCLUSION: a substitute is not writing",
+			want: "CONCEALED_EXCLUSION -- menu.logout",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/exclusions.md",
+					"- [[ref:menu.logout]] — signing out tears the session down without showing a "+
+						"screen of its own, so the net never captures it and this documentation "+
+						"does not describe it.",
+					"- [[ref:menu.logout]] — TODO: write down why this one sits outside the perimeter, later on.")
+			},
+		},
+		{
+			// The exclusion is named, with prose, OUTSIDE the declared
+			// chapter: mentioning a hole is not declaring it.
+			name: "CONCEALED_EXCLUSION: named outside the declared exclusions chapter",
+			want: "CONCEALED_EXCLUSION -- menu.logout",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions",
+					"## Good to know <!--no-anchor-->")
+			},
+		},
+		{
+			name: "PHANTOM_DOC: an invented corpus entry",
+			want: "the reference 999 is CITED and",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/README.md", "twenty rows per page", "twenty rows per page ([[ref:999]])")
+			},
+		},
+		{
+			name: "PHANTOM_DOC: an inventory id nobody inventoried",
+			want: "the reference items.invented is CITED and",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/README.md", "the actions still open",
+					"the actions [[ref:items.invented]] still open")
+			},
+		},
+		{
+			// In a TITLE: the least-read line of the document.
+			name: "PHANTOM_DOC: a path the application does not serve, in a title",
+			want: "the path /dashboard/invented is NEITHER a declared route NOR a corpus entry path",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/README.md", "## The item list — [[ref:/dashboard/items]] [[ref:026]]",
+					"## The item list — [[ref:/dashboard/invented]] [[ref:026]]")
+			},
+		},
+		{
+			name: "PHANTOM_DOC: a filter the net never exercises",
+			want: "the parameter sort of /dashboard/items?sort=name is observed on NO corpus entry",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/README.md", "([[ref:/dashboard/items?page=2]])",
+					"([[ref:/dashboard/items?page=2]], [[ref:/dashboard/items?sort=name]])")
+			},
+		},
+		{
+			name: "UNANCHORED_CHAPTER: a title stripped of every reference",
+			want: "UNANCHORED_CHAPTER",
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]", "## One item")
+			},
+		},
+		{
+			// THE EMPTY IS A NAMED REFUSAL. An `if collection and …` guard is
+			// disabled on an empty collection; each emptiness below is decided
+			// out loud instead.
+			name: "NET_UNREADABLE: the documentation is emptied",
+			want: "NO markdown file",
+			sabotage: func(t *testing.T, ws string) {
+				// Moved aside, not deleted: the product tree the gate reads
+				// is left holding no page.
+				if err := os.Rename(filepath.Join(ws, "docs/demo"), filepath.Join(ws, "docs/moved-aside")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(ws, "docs/demo"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:      "NET_UNREADABLE: the inventory declares no feature",
+			want:      "features is absent, empty or not a list",
+			preflight: true,
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/feature-coverage.json", `{"features": [], "exclusions": []}`)
+			},
+		},
+		{
+			// An ABSENT key is an empty list (the producer reads it that way);
+			// a key that is THERE and mistyped is the refusal.
+			name:      "NET_UNREADABLE: the inventory declares its holes in an unreadable shape",
+			want:      "exclusions is present and is not a list",
+			preflight: true,
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/feature-coverage.json",
+					`{"features": [{"feature": "home.landing", "entries": ["001"]}], "exclusions": {"menu.logout": "gone"}}`)
+			},
+		},
+		{
+			name:      "NET_UNREADABLE: the corpus is emptied",
+			want:      "entries is absent, empty or not a list",
+			preflight: true,
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/corpus.json", `{"entries": []}`)
+			},
+		},
+		{
+			name:      "NET_UNREADABLE: an exclusion loses its reason",
+			want:      "EMPTY reason in the inventory",
+			preflight: true,
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, ".golden-master/feature-coverage.json",
+					`"reason": "session teardown, not a screen: measured by the ops runbook, not this net"`,
+					`"reason": "   "`)
+			},
+		},
+		{
+			name:       "NET_UNREADABLE: the route table declares nothing",
+			want:       "declares NO route",
+			routeTable: true,
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/routes.txt", "# every route was commented out\n")
+			},
+		},
+		{
+			name:      "NET_UNREADABLE: the inventory both covers and excludes a feature",
+			want:      "BOTH covered and excluded",
+			preflight: true,
+			sabotage: func(t *testing.T, ws string) {
+				mutate(t, ws, ".golden-master/feature-coverage.json", `"feature": "menu.logout"`,
+					`"feature": "items.detail"`)
+			},
+		},
+		{
+			// A route made of placeholders only matches every path and proves
+			// none: for a path only such a route covers, the corpus is the
+			// only evidence. The rule is CHECKED, not merely commented.
+			name: "PHANTOM_DOC: a framework catch-all route proves nothing",
+			want: "the path /dashboard/invented is NEITHER a declared route NOR a corpus entry path",
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/routes.txt",
+					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /{slug}\nGET /**\n")
+				mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+					"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
+			},
+		},
+		{
+			// ONE predicate governs both sides. A DECLARED tail wildcard
+			// carries a literal segment, so it clears the placeholders-only
+			// rule — and still matches every screen below it while describing
+			// none. What the gate refuses a page to cite, it refuses a route
+			// table to prove.
+			name: "PHANTOM_DOC: a declared tail wildcard proves nothing either",
+			want: "the path /dashboard/invented is NEITHER a declared route NOR a corpus entry path",
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/routes.txt",
+					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/**\n")
+				mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+					"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
+			},
+		},
+		{
+			// THE OTHER DIRECTION of the route check: the route table is not
+			// only the whitelist citations are judged against — every route it
+			// declares is a screen the application serves, and a served screen
+			// no page describes is a hole the gate stayed green over. The
+			// repair lands INSIDE the writeable set: document the screen.
+			name: "ROUTE_UNDOCUMENTED: a declared route no page cites",
+			want: "ROUTE_UNDOCUMENTED -- /dashboard/exports: the declared route /dashboard/exports is cited by NO page",
+			sabotage: func(t *testing.T, ws string) {
+				writeFile(t, ws, ".golden-master/routes.txt",
+					"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/exports\n# a comment line\nGET /{slug}\n")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			tc.sabotage(t, ws)
+			if tc.routeTable {
+				base := snapshotRunBase(t, ws)
+				runExpectingFailure(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, "routes.txt", shippedProbeTimeout), tc.want)
+				return
+			}
+			if tc.preflight {
+				runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), tc.want)
+				return
+			}
+			got := runCoverage(t, ws)
+			if got.OK {
+				t.Fatalf("the gate stayed GREEN under sabotage — it falsifies nothing:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, tc.want) {
+				t.Fatalf("the gate is red WITHOUT the expected cause %q — a refusal for another reason proves nothing:\n%s", tc.want, got.Log)
+			}
+		})
+	}
+}
+
+// TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead:
+// the route check runs ONCE, after every anchor line of every page has been
+// read. A route first cited on the LAST page must not be refused while the
+// gate is still reading the first — the check lives outside the per-line
+// loop, and the test that proves it cites the route from a page that sorts
+// after every other one. The route is cited as declared: a concrete value the
+// net never captured is a phantom (see
+// TestProductDocsCoverageGateGroundsAConcretePathOnlyWhereTheNetSawIt).
+func TestProductDocsCoverageGateDemandsEveryDeclaredRouteOnceAllPagesAreRead(t *testing.T) {
+	requireGitPython(t)
+	// One route the corpus never exercised, documented only from the route
+	// table — the corpus-free documentation the declared routes widen for.
+	writeRoutes := func(t *testing.T, ws string) {
+		t.Helper()
+		writeFile(t, ws, ".golden-master/routes.txt",
+			"GET /\nGET /dashboard/items\nGET /dashboard/items/{id}\nGET /dashboard/exports/{id}\n# a comment line\nGET /{slug}\n")
+	}
+	t.Run("a route cited on the last page is covered", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeRoutes(t, ws)
+		writeFile(t, ws, "docs/demo/z-exports.md", "# The exports\n"+
+			"\n"+
+			"## The export screen — [[ref:/dashboard/exports/{id}]]\n"+
+			"\n"+
+			"The manager exports the filtered list from [[ref:/dashboard/exports/{id}]] as\n"+
+			"a CSV file, one row per item, carrying the columns of the current view.\n")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a route cited on the LAST page was refused while the gate was reading the first — the check ran inside the per-line loop:\n%s", got.Log)
+		}
+		if got.RoutesTotal != 5 {
+			t.Fatalf("routes_declared = %d, want 5 (four real routes plus the catch-all)", got.RoutesTotal)
+		}
+	})
+	t.Run("a route cited only through a query-bearing citation is covered", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		// Drop the plain citation of /dashboard/items: the only path
+		// citation left that could cover the route carries a query —
+		// the shape the gate verifies parameters for. The heading keeps
+		// its corpus anchor, so no chapter goes unanchored.
+		mutate(t, ws, "docs/demo/README.md",
+			"## The item list — [[ref:/dashboard/items]] [[ref:026]]",
+			"## The item list — [[ref:026]]")
+		got := runCoverage(t, ws)
+		if !got.OK {
+			t.Fatalf("a route whose only citation carries a query was refused — the screen the documentation already describes:\n%s", got.Log)
+		}
+	})
+}
+
+// TestProductDocsCoverageGateRefusesAnIndexTable: CO-PRESENCE IS NOT
+// DOCUMENTATION. The gap rule asked for one line carrying a feature id AND one
+// of its entries — two code spans on one line. A table pairing every feature
+// with its entry satisfies that, restitutes nothing, and converges.
+func TestProductDocsCoverageGateRefusesAnIndexTable(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// Every feature, every entry, every path — and not one sentence.
+	writeFile(t, ws, "docs/demo/README.md", "# The product\n"+
+		"\n"+
+		"## Index — [[ref:/]] [[ref:001]]\n"+
+		"\n"+
+		"| feature | entry | path |\n"+
+		"|---|---|---|\n"+
+		"| [[ref:home.landing]] | [[ref:001]] | [[ref:/]] |\n"+
+		"| [[ref:items.list]] | [[ref:026]] | [[ref:/dashboard/items]] |\n"+
+		"| [[ref:items.list.paging]] | [[ref:027]] | [[ref:/dashboard/items?page=2]] |\n"+
+		"| [[ref:items.detail]] | [[ref:039]] | [[ref:/dashboard/items/{id}]] |\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a table of anchors was blessed as an exhaustive documentation:\n%s", got.Log)
+	}
+	for _, name := range []string{"home.landing", "items.list", "items.list.paging", "items.detail"} {
+		if !strings.Contains(got.Log, "GAP -- "+name+": the covered feature is CITED but not documented") {
+			t.Fatalf("the refusal does not name %s as cited-but-undocumented:\n%s", name, got.Log)
+		}
+	}
+	// ...and the intact fixture, whose chapters carry real sentences, is not
+	// caught by the same rule.
+	if got := runCoverage(t, newCoverageFixture(t)); !got.OK {
+		t.Fatalf("the prose requirement fired on a documentation that reads:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateCreditsABlockItsOwnProse: prose is credited over
+// the BLOCK that carries a citation, and a block is what markdown renders as
+// one. Consecutive non-blank lines used to make one paragraph, so a table's
+// header and every other row were credited to each feature listed in it: an
+// index table with one descriptive column scored every feature documented.
+// The same false green went through a bullet list, HTML rows, a heading glued
+// to a paragraph and — with no markup at all — a paragraph of soft-wrapped
+// index lines, whose words were credited whole to each feature it listed.
+//
+// Each case isolates ONE rule and reads BOTH directions on the same page:
+// the features that must be refused, and the neighbour that must stay
+// documented by its own block.
+func TestProductDocsCoverageGateCreditsABlockItsOwnProse(t *testing.T) {
+	requireGitPython(t)
+	// One block's worth of real description: enough, on its own, for four
+	// features at once — so a case only reddens if the rule under test keeps
+	// its neighbours from borrowing it.
+	const long = "shows one item in full: every field the manager filled in when creating it, " +
+		"the complete history of its changes with the author and the date of each one, the comments " +
+		"left by colleagues, the attachments uploaded along the way, and the actions still open to them today."
+	// Five recognisable words in 39 characters: short of min_prose on its own.
+	const short = "shows the item record for every manager"
+	bare := []string{"home.landing", "items.list", "items.list.paging"}
+	cases := []struct {
+		name       string
+		body       string
+		gap        []string // features the gate must refuse
+		documented []string // features on the same page it must credit
+		want       string   // what the log must also say
+	}{
+		{
+			name: "an index table with a descriptive column",
+			body: "| Fonctionnalite | Reference | Description |\n" +
+				"|---|---|---|\n" +
+				"| [[ref:home.landing]] | [[ref:001]] | page accueil |\n" +
+				"| [[ref:items.list]] | [[ref:026]] | liste paginee |\n" +
+				"| [[ref:items.list.paging]] | [[ref:027]] | pagination vingt |\n" +
+				"| [[ref:items.detail]] | [[ref:039]] | fiche article |\n",
+			gap:  []string{"home.landing", "items.list", "items.list.paging", "items.detail"},
+			want: "the table row citing it",
+		},
+		{
+			name: "a table row that describes its feature documents it, and only it",
+			body: "Feature | Reference | Description\n" +
+				"--- | --- | ---\n" +
+				"[[ref:home.landing]] | [[ref:001]] | page accueil\n" +
+				"[[ref:items.list]] | [[ref:026]] | liste paginee\n" +
+				"[[ref:items.list.paging]] | [[ref:027]] | pagination vingt\n" +
+				"[[ref:items.detail]] | [[ref:039]] | " + long + "\n",
+			gap:        bare,
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a list item is read on its own",
+			body: "- [[ref:home.landing]] [[ref:001]] page accueil\n" +
+				"- [[ref:items.list]] [[ref:026]] liste paginee\n" +
+				"- [[ref:items.list.paging]] [[ref:027]] pagination vingt\n" +
+				"- [[ref:items.detail]] [[ref:039]] " + long + "\n",
+			gap:        bare,
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a list item wrapped over three lines is one item",
+			body: "- [[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n" +
+				"  manager filled in, the history of its changes and the actions still open\n" +
+				"  to them.\n",
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a line of block-level HTML is read on its own",
+			body: "<table>\n" +
+				"<tr><th>Feature</th><th>Reference</th><th>Description</th></tr>\n" +
+				"<tr><td>[[ref:home.landing]]</td><td>[[ref:001]]</td><td>page accueil</td></tr>\n" +
+				"<tr><td>[[ref:items.list]]</td><td>[[ref:026]]</td><td>liste paginee</td></tr>\n" +
+				"<tr><td>[[ref:items.list.paging]]</td><td>[[ref:027]]</td><td>pagination vingt</td></tr>\n" +
+				"<tr><td>[[ref:items.detail]]</td><td>[[ref:039]]</td><td>" + long + "</td></tr>\n" +
+				"</table>\n",
+			gap:        bare,
+			documented: []string{"items.detail"},
+		},
+		{
+			name: "a paragraph shares its prose between the features it documents",
+			body: "[[ref:home.landing]] [[ref:001]] page accueil visiteur\n" +
+				"[[ref:items.list]] [[ref:026]] liste paginee complete\n" +
+				"[[ref:items.list.paging]] [[ref:027]] pagination vingt lignes\n" +
+				"[[ref:items.detail]] [[ref:039]] fiche article detaillee\n",
+			gap:  []string{"home.landing", "items.list", "items.list.paging", "items.detail"},
+			want: "documents 4 feature(s)",
+		},
+		{
+			name: "a paragraph with prose enough for each of its features documents all of them",
+			body: "The manager opens the list — [[ref:items.list]] [[ref:026]] — and reads twenty rows,\n" +
+				"newest first, each one showing its owner, its status and its last change. Paging\n" +
+				"is [[ref:items.list.paging]] [[ref:027]]: twenty rows per page, with a pager at the\n" +
+				"foot of the list to move from one page to the next.\n",
+			documented: []string{"items.list", "items.list.paging"},
+		},
+		{
+			name: "a heading documents nothing",
+			body: "## [[ref:items.detail]] [[ref:039]] The item record, with every field the manager " +
+				"filled in, its history and the actions still open\n",
+			gap:  []string{"items.detail"},
+			want: "ONLY IN A HEADING",
+		},
+		{
+			name: "a heading is not part of the paragraph below it",
+			body: "## The screen the manager opens every morning to follow each item — [[ref:/dashboard/items/{id}]]\n" +
+				"[[ref:items.detail]] [[ref:039]] fiche article\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "an underlined title is a chapter heading",
+			body: "The item record\n" +
+				"---------------\n" +
+				"\n" +
+				"[[ref:items.detail]] [[ref:039]] " + long + "\n",
+			documented: []string{"items.detail"},
+			want:       "the chapter The item record names NO reference",
+		},
+		{
+			name: "a quote is not part of the paragraph above it",
+			body: "[[ref:items.detail]] [[ref:039]] fiche article\n" +
+				"> " + long + "\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "a template tag line ends the block",
+			body: "{% hint style=\"warning\" %}\n" +
+				"[[ref:items.detail]] [[ref:039]] shows one item in full for the manager\n" +
+				"{% endhint %}\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "table pipes are markup, not prose",
+			body: "Reference | Entry | Description\n" +
+				"--- | --- | ---\n" +
+				"[[ref:items.detail]] | [[ref:039]] | " + short + strings.Repeat(" |", 20) + "\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "HTML tags are markup, not prose",
+			body: "<tr><td>[[ref:items.detail]]</td><td>[[ref:039]]</td><td>" + short + "</td></tr>\n",
+			gap:  []string{"items.detail"},
+		},
+		{
+			name: "a link destination is not prose",
+			body: "[[ref:items.detail]] [[ref:039]] [the item record](https://example.org/manager/reading/items/record/history/listing/)\n",
+			gap:  []string{"items.detail"},
+		},
+		{
+			// page_lint refuses HTML comments on a published page, but the two
+			// gates are separate terms and its rule list is a var: a comment
+			// counted as prose pads a bare citation over the bar.
+			name: "an HTML comment is not prose",
+			body: "[[ref:items.detail]] [[ref:039]] fiche <!-- every field the manager filled in, " +
+				"the complete history of its changes and the actions still open -->\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			name: "a link reference definition is not prose",
+			body: "[[ref:items.detail]] [[ref:039]] fiche article\n" +
+				"  [record]: https://example.org/manager/reading/items/record/history/listing\n",
+			gap: []string{"items.detail"},
+		},
+		{
+			// A url the page SHOWS is content, not markup: the line drawn is
+			// between what a reader sees and what it never does.
+			name: "a visible url is prose",
+			body: "[[ref:items.detail]] [[ref:039]] the item record, described at https://example.org/guide/items/record " +
+				"for every manager who needs the whole history of a file\n",
+			documented: []string{"items.detail"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			writeFile(t, ws, "docs/demo/README.md", "# The product\n\n## Index — [[ref:/]] [[ref:001]]\n\n"+tc.body)
+			got := runCoverage(t, ws)
+			for _, name := range tc.gap {
+				if !strings.Contains(got.Log, "GAP -- "+name+":") {
+					t.Fatalf("%s was credited with prose that is not its own:\n%s", name, got.Log)
+				}
+			}
+			for _, name := range tc.documented {
+				if strings.Contains(got.Log, "GAP -- "+name+":") {
+					t.Fatalf("%s is described by its own block and was refused:\n%s", name, got.Log)
+				}
+			}
+			if tc.want != "" && !strings.Contains(got.Log, tc.want) {
+				t.Fatalf("the log does not say %q:\n%s", tc.want, got.Log)
+			}
+		})
+	}
+}
+
+// TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem: prose is
+// measured on the VISIBLE text, and the citation scan must read the same text.
+// Harvested from the raw line, a citation inside an HTML comment or a link
+// reference definition — text that renders as nothing — anchored a chapter and
+// documented a feature, which is the one thing these two rules exist to
+// refuse. The link-definition form is the sharper one: `page_lint` has no rule
+// against it, so `lint_ok` stays green and the whole gate passes on text no
+// reader ever sees.
+//
+// Invisible text is not read in EITHER direction: it satisfies nothing, and it
+// is not verified either, because a reference nobody can read claims nothing.
+func TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem(t *testing.T) {
+	requireGitPython(t)
+	// The control is the INTACT fixture, which the gate blesses. Each case
+	// below moves exactly one claim into invisible text, so `coverage_ok` is
+	// the discriminator: green means the invisible text was read.
+	if got := runCoverage(t, newCoverageFixture(t)); !got.OK {
+		t.Fatalf("the control fixture, whose citations are all visible, was refused:\n%s", got.Log)
+	}
+	for _, tc := range []struct {
+		name  string
+		from  string
+		to    string
+		cause string
+	}{
+		{
+			// A chapter anchored ONLY by a citation inside an HTML comment.
+			name:  "an HTML comment does not anchor a chapter",
+			from:  "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+			to:    "## One item <!--[[ref:/dashboard/items/{id}]] [[ref:039]]-->",
+			cause: "UNANCHORED_CHAPTER",
+		},
+		{
+			// A feature paired with its entry ONLY inside an HTML comment.
+			name: "an HTML comment does not document a feature",
+			from: "[[ref:items.detail]] [[ref:039]] shows one item in full:",
+			to:   "<!--[[ref:items.detail]] [[ref:039]]--> The item record shows one item in full:",
+			// The chapter above it stays visibly anchored, so this is a GAP
+			// and nothing else.
+			cause: "GAP -- items.detail",
+		},
+		{
+			// The sharper form: `page_lint` has no rule against a link
+			// reference definition, so `lint_ok` stays green and the whole
+			// gate would pass on text no reader ever sees.
+			name:  "a link reference definition does not document a feature",
+			from:  "[[ref:items.detail]] [[ref:039]] shows one item in full:",
+			to:    "[fa]: /items/42 [[ref:items.detail]] [[ref:039]]\nThe item record shows one item in full:",
+			cause: "GAP -- items.detail",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			mutate(t, ws, "docs/demo/README.md", tc.from, tc.to)
+			got := runCoverage(t, ws)
+			if got.OK {
+				t.Fatalf("invisible text satisfied the rule that asks the page to say something:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, tc.cause) {
+				t.Fatalf("the gate is red WITHOUT %q — a refusal for another reason proves nothing:\n%s", tc.cause, got.Log)
+			}
+		})
+	}
+	// The other direction: invisible text is not read AT ALL. An invented
+	// reference nobody can see claims nothing, so it is not verified either —
+	// and it may not turn a green documentation red.
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "A method chapter observes nothing and says so.",
+		"A method chapter observes nothing and says so.\n<!-- [[ref:items.invented]] [[ref:999]] -->")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a citation no reader can see turned a green documentation red:\n%s", got.Log)
+	}
+	for _, tok := range []string{"items.invented", "999"} {
+		if strings.Contains(got.Log, tok) {
+			t.Fatalf("the gate verified %q, a citation inside an HTML comment:\n%s", tok, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateLogCarriesNoFixturePath: the log quotes the
+// oracle dir, whose temp path carries RANDOM digits that substring-match the
+// short numeric spans some assertions scan for. The fixture's plumbing is
+// scrubbed at the ONE door every assertion reads through; this test reddens
+// deterministically if the scrub is dropped, where the assertions it protects
+// only redden by chance.
+func TestProductDocsCoverageGateLogCarriesNoFixturePath(t *testing.T) {
+	requireGitPython(t)
+	got := runCoverage(t, newCoverageFixture(t))
+	if got.OracleUsed == "" {
+		t.Fatalf("oracle_dir_used is empty — the scrub has nothing to key on")
+	}
+	if strings.Contains(got.Log, got.OracleUsed) {
+		t.Fatalf("the log still carries the fixture's temp path %q — assertions on the log substring-match its random digits:\n%s", got.OracleUsed, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateCountsWordsInEveryScript: prose was counted with
+// an ASCII-only word pattern over accent-folded text, so a page written in a
+// script that does not decompose to ASCII yielded ZERO words: `min_words` was
+// unreachable, every feature a permanent GAP, and the repair lies in no `.md`
+// file — on a node whose vars declare it language-neutral.
+func TestProductDocsCoverageGateCountsWordsInEveryScript(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "# Продукт\n"+
+		"\n"+
+		"## Страница товара — [[ref:/dashboard/items/{id}]] [[ref:039]]\n"+
+		"\n"+
+		"[[ref:items.detail]] [[ref:039]] показывает одну запись полностью: каждое поле,\n"+
+		"которое заполнил менеджер, историю изменений и доступные ему действия.\n")
+	got := runCoverage(t, ws)
+	if strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("a Cyrillic paragraph that plainly describes the screen was refused:\n%s", got.Log)
+	}
+	// The word test still bites in that script: length without words is not
+	// writing, whatever the alphabet.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "# Продукт\n"+
+		"\n"+
+		"## Страница товара — [[ref:/dashboard/items/{id}]] [[ref:039]]\n"+
+		"\n"+
+		"[[ref:items.detail]] [[ref:039]] "+strings.Repeat("·-", 45)+"\n")
+	if got := runCoverage(t, ws); !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("a row of punctuation passed for a description:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNeverOrdersTheCampaignOutsideItsSet: the two
+// DEGRADED notes ride `log`, and `gate.fail_log` relays `log` to the next pass
+// whenever the gate is red. Written as imperatives ("Commit the routes_probe
+// output"), they ordered the campaign to write inside `<oracle_dir>` — which
+// `scope_check` forbids — so obeying the coverage gate reddened the scope gate:
+// the two-gates-contradicting loop the pre-flight rule exists to prevent.
+func TestProductDocsCoverageGateNeverOrdersTheCampaignOutsideItsSet(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	if err := os.Remove(filepath.Join(ws, ".golden-master/routes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// A red pass, so the log is what fail_log carries to the campaign.
+	mutate(t, ws, "docs/demo/README.md", "## How this page was built "+defaultNoAnchorMarker, "## How this page was built")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("the fixture was meant to be red:\n%s", got.Log)
+	}
+	for _, note := range []string{"no declared route table", "carries NO trace of its own gate"} {
+		if !strings.Contains(got.Log, note) {
+			t.Fatalf("the degradation %q is not reported at all:\n%s", note, got.Log)
+		}
+	}
+	if n := strings.Count(got.Log, "OPERATOR-SIDE ONLY, never a repair for this run"); n != 2 {
+		t.Fatalf("degradation notes marked operator-side = %d, want 2 — fail_log carries this text to a campaign that may write only the pages:\n%s", n, got.Log)
+	}
+	// No note may read as an order to commit anything: the campaign obeys
+	// fail_log literally, and every path named here is outside its set.
+	for _, order := range []string{"Commit the routes_probe", "Commit the rite emissions"} {
+		if strings.Contains(got.Log, order) {
+			t.Fatalf("the log still orders %q, which scope_check forbids:\n%s", order, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCampaignPromptCarriesTheTokensTheGateMatches: the gate matches
+// the exclusions chapter title and the anchorless marker EXACTLY, and both are
+// declared vars. Named only in prose ("the declared anchorless marker"), the
+// agent had to guess them on pass 1 — `<!--no-anchor-->` is unguessable — and a
+// wrong guess costs a whole pass out of `max_passes`+1, in CONCEALED_EXCLUSION
+// for every hole plus an UNANCHORED_CHAPTER.
+func TestProductDocsCampaignPromptCarriesTheTokensTheGateMatches(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("product-docs", "main.bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "prompt campaign_user:")
+	if start < 0 {
+		t.Fatal("prompt campaign_user not found")
+	}
+	end := strings.Index(body[start:], "\nprompt ")
+	if end < 0 {
+		t.Fatal("end of prompt campaign_user not found")
+	}
+	prompt := body[start : start+end]
+	for _, v := range []string{
+		"{{vars.coverage_exclusions_heading}}",
+		"{{vars.coverage_no_anchor_marker}}",
+		"{{vars.coverage_citation_open}}",
+		"{{vars.coverage_citation_close}}",
+	} {
+		if !strings.Contains(prompt, v) {
+			t.Fatalf("the campaign prompt describes a rule the gate matches on %s without passing its value: the writer would have to guess it", v)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateReadsFrontMatterAsMetadata: a page may open on
+// YAML front matter, which GitBook and MkDocs read as page metadata and never
+// show. Read as markdown, its closing --- underlines the keys into a level-2
+// chapter no citation can anchor — a refusal the campaign could only answer
+// by deleting metadata. A block between two --- lines that does NOT read as
+// YAML is shown to the reader, so a citation in it is still verified.
+func TestProductDocsCoverageGateReadsFrontMatterAsMetadata(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "---\n"+
+		"description: What a manager and a visitor see, screen by screen.\n"+
+		"icon: book\n"+
+		"---\n"+coverageHome)
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("front matter was read as a chapter of the page:\n%s", got.Log)
+	}
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/README.md", "---\n"+
+		"The archive screen "+ref("items.archiving")+" hides what nobody consults any more.\n"+
+		"---\n"+coverageHome)
+	got := runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "the reference items.archiving is CITED and") {
+		t.Fatalf("a block between two rules that is not YAML was skipped as metadata:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateReadsAnExclusionOverItsBlock: the exclusion rule
+// measured its prose on the citing LINE, so a normally wrapped paragraph —
+// the reason said once, across two lines — was refused, and the refusal asked
+// for prose the page already carried. It now reads the block the gap rule
+// reads; and one block still answers for ONE hole.
+func TestProductDocsCoverageGateReadsAnExclusionOverItsBlock(t *testing.T) {
+	requireGitPython(t)
+	// The citing line alone carries 38 characters of prose; the paragraph
+	// says the whole reason.
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"Signing out "+ref("menu.logout")+" tears the session down and\n"+
+		"shows no screen of its own: the net never captures it, so it stays out.\n")
+	if got := runCoverage(t, ws); !got.OK || got.Named != 1 {
+		t.Fatalf("an exclusion explained by a paragraph wrapped over two lines was refused (named %d/1):\n%s", got.Named, got.Log)
+	}
+	// One paragraph naming two holes answers for the first only.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", strings.Replace(coverageInventory,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"}`,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"},
+  {"feature": "menu.language",
+   "reason": "the language switch changes no served content, so the corpus captures nothing"}`, 1))
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"The session teardown "+ref("menu.logout")+" and the language switch "+ref("menu.language")+" sit\n"+
+		"outside: neither is a screen, and the corpus captures nothing of either.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("one paragraph answered for two different holes:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout: the exclusion is named with the SAME prose as menu.language") {
+		t.Fatalf("the refusal does not name the second hole as sharing the first one's paragraph:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateVerifiesAnInventedReferenceAnywhere: co-location
+// answers "is this token a citation to CREDIT?", not "must this token be
+// VERIFIED?". Conflating the two let three invented screens through, one per
+// sentence, because no line cited anything else.
+func TestProductDocsCoverageGateVerifiesAnInventedReferenceAnywhere(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/more.md", "# More screens "+defaultNoAnchorMarker+"\n"+
+		"\n"+
+		"The reporting screen [[ref:items.reporting]] shows the month as the manager left it.\n"+
+		"\n"+
+		"The export screen [[ref:items.exporting]] writes the year to a file for the auditor.\n"+
+		"\n"+
+		"The archive screen [[ref:items.archiving]] hides what nobody consults any more.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("three invented screens, one per sentence, were blessed:\n%s", got.Log)
+	}
+	for _, name := range []string{"items.reporting", "items.exporting", "items.archiving"} {
+		if !strings.Contains(got.Log, "the reference "+name+" is CITED and") {
+			t.Fatalf("the invented reference %s was not verified on its own line:\n%s", name, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateCapsAnchorlessChapters: the anchor refusal NAMES
+// the marker that satisfies it, so an agent reading `fail_log` answers every
+// complaint by marking the chapter. An exception with no ceiling is the rule.
+func TestProductDocsCoverageGateCapsAnchorlessChapters(t *testing.T) {
+	requireGitPython(t)
+	run := func(ws, cap string) coverageOut {
+		t.Helper()
+		var got coverageOut
+		runJSON(t, coverageCommandCapped(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+			defaultExclusionsToken, cap), &got)
+		return got
+	}
+	ws := newCoverageFixture(t)
+	// The shipped fixture declares ONE anchorless chapter (its method
+	// chapter). At the production default it is one too many.
+	got := run(ws, "0")
+	if got.OK {
+		t.Fatalf("the declared ceiling of 0 let a chapter through:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "DECLARE they restitute no reference and at most 0 may") {
+		t.Fatalf("the refusal does not name the ceiling:\n%s", got.Log)
+	}
+	if got := run(ws, "1"); !got.OK {
+		t.Fatalf("a ceiling raised deliberately to 1 still refused one declaration:\n%s", got.Log)
+	}
+	// The exclusions chapter is anchored by its ROLE and spends nothing.
+	if got.Anchorless != 1 || got.AnchorlessMax != 0 {
+		t.Fatalf("counts = %d declared / ceiling %d, want 1 and 0", got.Anchorless, got.AnchorlessMax)
+	}
+	// Marking one more chapter costs: at the same ceiling it is refused.
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item "+defaultNoAnchorMarker)
+	if got := run(ws, "1"); got.OK {
+		t.Fatalf("a second declaration was free at a ceiling of 1:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateRefusesACopiedExclusionProse: `min_prose` is a
+// length, and a length is an orthography anyone reaches — one generic sentence
+// copied under every id cleared it. The net already carries the reason, so the
+// page has to say what the net says, and say it once per hole.
+func TestProductDocsCoverageGateRefusesACopiedExclusionProse(t *testing.T) {
+	requireGitPython(t)
+	newTwoHoleFixture := func(t *testing.T) string {
+		t.Helper()
+		ws := newCoverageFixture(t)
+		writeFile(t, ws, ".golden-master/feature-coverage.json", strings.Replace(coverageInventory,
+			`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"}`,
+			`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"},
+  {"feature": "menu.language",
+   "reason": "the language switch changes no served content, so the corpus captures nothing"}`, 1))
+		return ws
+	}
+	// A sentence long enough, and entirely its own: accepted.
+	ws := newTwoHoleFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- [[ref:menu.logout]] — signing out tears the session down without showing a screen "+
+		"of its own, so the net never captures it.\n"+
+		"- [[ref:menu.language]] — the language switch changes no served content, so the corpus "+
+		"captures nothing of it either.\n")
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("two exclusions, each with its own prose, were refused:\n%s", got.Log)
+	}
+	// ONE sentence for both: it describes neither.
+	ws = newTwoHoleFixture(t)
+	// One sentence that genuinely overlaps BOTH recorded reasons: it clears
+	// the lexical check and is refused for what it is — a template.
+	shared := " — this screen sits outside the perimeter: the corpus captures nothing of " +
+		"it, and the session teardown it triggers changes nothing either.\n"
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- [[ref:menu.logout]]"+shared+
+		"- [[ref:menu.language]]"+shared)
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("one sentence answered for two different holes:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "named with the SAME prose as") {
+		t.Fatalf("the refusal does not name the cause:\n%s", got.Log)
+	}
+	// A row of dots reaches any length, and says nothing.
+	ws = newTwoHoleFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- [[ref:menu.logout]] — "+strings.Repeat(".", 70)+"\n"+
+		"- [[ref:menu.language]] — "+strings.Repeat("-_", 40)+"\n")
+	got = runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a row of punctuation passed for written prose:\n%s", got.Log)
+	}
+	// Prose of its own, but saying nothing the net says: still concealed.
+	ws = newTwoHoleFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"- [[ref:menu.logout]] — pour mémoire, rien de particulier à signaler ici pour ce point précis.\n"+
+		"- [[ref:menu.language]] — the language switch changes no served content, so the corpus "+
+		"captures nothing of it either.\n")
+	got = runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout") {
+		t.Fatalf("prose that shares not one word with the recorded reason was accepted:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateKeepsTheExclusionsChapterOpenUnderSubHeadings: a
+// sub-heading repeating the declared token used to RE-ANCHOR the chapter at
+// its own deeper level; the next sibling at that depth then satisfied
+// `level <= exc_level` and closed the whole chapter, so every exclusion named
+// after it read as concealed — a convergence term no rewrite of the prose can
+// satisfy, and the run burns its remaining passes.
+func TestProductDocsCoverageGateKeepsTheExclusionsChapterOpenUnderSubHeadings(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"### Exclusions\n"+
+		"\n"+
+		"A first group, split out for the reader.\n"+
+		"\n"+
+		"### Limites connues "+defaultNoAnchorMarker+"\n"+
+		"\n"+
+		"- "+ref("menu.logout")+" — signing out tears the session down without showing a "+
+		"screen of its own, so the net never captures it and this documentation does not describe it.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a sub-heading repeating the declared token closed the exclusions chapter early:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateStopsOfferingASpentMarker: the anchor refusal
+// NAMES the marker as its remedy, and the ceiling then refuses the marked
+// chapter — two UNANCHORED_CHAPTER causes ping-ponging until `max_passes`, and
+// the ceiling's own remedy (a launch var) is outside the writeable set. A
+// refusal must never offer what the next gate takes back.
+func TestProductDocsCoverageGateStopsOfferingASpentMarker(t *testing.T) {
+	requireGitPython(t)
+	run := func(ws, cap string) coverageOut {
+		t.Helper()
+		var got coverageOut
+		runJSON(t, coverageCommandCapped(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+			defaultExclusionsToken, cap), &got)
+		return got
+	}
+	// The fixture already spends one declaration on its method chapter.
+	// Strip a chapter's anchor: at a ceiling of 2 there is headroom, and the
+	// marker is a legitimate remedy.
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]", "## One item")
+	got := run(ws, "2")
+	if got.OK {
+		t.Fatalf("an unanchored chapter passed:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "declaration(s) left of 2") {
+		t.Fatalf("with headroom, the refusal does not offer the marker:\n%s", got.Log)
+	}
+	// At a ceiling of 1 the single declaration is already spent: the refusal
+	// must ask for an ANCHOR, name no marker, and never ask for a bigger
+	// ceiling — that is an operator decision, not a repair this run can make.
+	got = run(ws, "1")
+	if got.OK {
+		t.Fatalf("an unanchored chapter passed at a spent ceiling:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "ALL SPENT") {
+		t.Fatalf("with no headroom, the refusal does not say the hatch is full:\n%s", got.Log)
+	}
+	for _, forbidden := range []string{"declare it restitutes none", "raise the ceiling"} {
+		if strings.Contains(got.Log, forbidden) {
+			t.Fatalf("the refusal still offers %q, which the ceiling takes back:\n%s", forbidden, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateFindsAnExclusionItsOwnLine: the rule broke on the
+// FIRST qualifying line, then the one-prose-per-hole check refused it if an
+// earlier exclusion had claimed it. A legitimate summary line naming two holes
+// therefore made the second one UNFIXABLE — its own dedicated paragraph
+// further down was never looked at, and the refusal asked for prose the page
+// had already written.
+func TestProductDocsCoverageGateFindsAnExclusionItsOwnLine(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", strings.Replace(coverageInventory,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"}`,
+		`  {"feature": "menu.logout",
+   "reason": "session teardown, not a screen: measured by the ops runbook, not this net"},
+  {"feature": "menu.language",
+   "reason": "the language switch changes no served content, so the corpus captures nothing"}`, 1))
+	// A summary line names BOTH holes — legitimate writing — and each then
+	// gets its own paragraph. The summary is read first; it must not lock the
+	// second exclusion out of the paragraph written for it.
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"## Exclusions\n"+
+		"\n"+
+		"Two screens sit outside: "+ref("menu.logout")+" and "+ref("menu.language")+" — the session "+
+		"teardown and the language switch, neither of which the corpus captures.\n"+
+		"\n"+
+		"- "+ref("menu.logout")+" — signing out tears the session down without showing a screen "+
+		"of its own, so the net never captures it.\n"+
+		"\n"+
+		"- "+ref("menu.language")+" — the language switch changes no served content, so the corpus "+
+		"captures nothing of it either.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a summary line naming two holes locked the second one out of its own paragraph:\n%s", got.Log)
+	}
+	if got.Named != 2 {
+		t.Fatalf("exclusions named = %d, want 2", got.Named)
+	}
+}
+
+// TestProductDocsCoverageGateMatchesTheWholeExclusionsTitle: the declared token
+// was matched as a SUBSTRING. On an insurance product a chapter called "Les
+// exclusions de garantie" — reader-facing content — opened the chapter of
+// documented holes, and an id named under it counted as declared.
+func TestProductDocsCoverageGateMatchesTheWholeExclusionsTitle(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions", "## Les exclusions de garantie")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a chapter merely CONTAINING the declared token opened the exclusions chapter:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout") {
+		t.Fatalf("the gate is red without the expected cause:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateRefusesACitedTailWildcard: a cited path is read as
+// a PATTERN. `/dashboard/**` carries one literal segment, so it clears the
+// placeholders-only rule while claiming every screen below it.
+func TestProductDocsCoverageGateRefusesACitedTailWildcard(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item — [[ref:/dashboard/**]] [[ref:039]]")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a cited tail wildcard claimed every screen below it and passed:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "carries a TAIL WILDCARD") {
+		t.Fatalf("the refusal does not name the cause:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsRouteTableConfinesTheRoutesFile: `coverage_routes_file` names
+// a file INSIDE the net, like `oracle_dir` — and the repair is a launch var,
+// outside the writeable set, so route_table stops the run before it starts.
+func TestProductDocsRouteTableConfinesTheRoutesFile(t *testing.T) {
+	requireGitPython(t)
+	outside := filepath.Join(t.TempDir(), "routes.txt")
+	if err := os.WriteFile(outside, []byte(coverageRoutes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{outside, "../routes.txt"} {
+		ws := newCoverageFixture(t)
+		base := snapshotRunBase(t, ws)
+		runExpectingFailure(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, bad, shippedProbeTimeout), "INSIDE the net")
+	}
+}
+
+// TestProductDocsCoverageGateSaysTheNetIsUnproven: Prody reads the inventory as
+// given. Nothing here proves the net's OWN gate ever ran on it, and a
+// degradation nobody can see is a degradation nobody pays for.
+func TestProductDocsCoverageGateSaysTheNetIsUnproven(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	got := runCoverage(t, ws)
+	if !got.NetUnproven || !strings.Contains(got.Log, "carries NO trace of its own gate") {
+		t.Fatalf("a net with no rite emission beside it was read as proven: net_unproven=%v\n%s", got.NetUnproven, got.Log)
+	}
+	// The emissions a rite leaves behind are that trace — never a verdict, and
+	// the gate stays green either way: this is telemetry, not a refusal.
+	writeFile(t, ws, ".golden-master/verify-oracle.sh", "#!/bin/sh\nexit 0\n")
+	got = runCoverage(t, ws)
+	if got.NetUnproven {
+		t.Fatalf("the rite runner beside the net was not seen:\n%s", got.Log)
+	}
+	if !got.OK {
+		t.Fatalf("the proof telemetry turned into a refusal:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNamesANetThatIsNotAnObject: both artifacts are
+// read for their keys, so a top-level JSON array answered `.get` with an
+// AttributeError — a Python traceback where the doctrine promises a named
+// cause. The shape is decided at the ONE door both files come through.
+func TestProductDocsCoverageGateNamesANetThatIsNotAnObject(t *testing.T) {
+	requireGitPython(t)
+	for _, tc := range []struct{ name, file, body string }{
+		{"the inventory is an array", ".golden-master/feature-coverage.json",
+			`[{"feature": "home.landing", "entries": ["001"]}]`},
+		{"the corpus is an array", ".golden-master/corpus.json",
+			`[{"id": "001", "path": "/"}]`},
+		{"the inventory is a string", ".golden-master/feature-coverage.json", `"nothing here"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			writeFile(t, ws, tc.file, tc.body)
+			runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+				"and not an object -- this file is read for its keys")
+		})
+	}
+}
+
+// TestProductDocsCoverageGateNeedsAChapterTitleForItsHoles: the declared
+// exclusions title is the only way a page can name a hole, so an empty one
+// refuses every exclusion the net declares — and the repair is a launch var
+// `scope_check` forbids the campaign to write, so the run burns every pass
+// rewriting prose that was never the problem. With no hole declared the rule
+// has no subject, and the gate judges the rest of the documentation as usual.
+func TestProductDocsCoverageGateNeedsAChapterTitleForItsHoles(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	runExpectingFailure(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), ""),
+		"the chapter title that would name them is not declared")
+	// A net that declares no hole: the same empty token judges the rest.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", `{"features": [
+  {"feature": "home.landing", "entries": ["001"]},
+  {"feature": "items.list", "entries": ["026"]},
+  {"feature": "items.list.paging", "entries": ["027"]},
+  {"feature": "items.detail", "entries": ["039"]}
+ ]}`)
+	writeFile(t, ws, "docs/demo/exclusions.md", "# What this documentation does not cover\n"+
+		"\n"+
+		"Everything the application serves is described in the pages beside this one.\n")
+	var got coverageOut
+	runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), ""), &got)
+	if !got.OK {
+		t.Fatalf("a net with no hole to declare was refused over a token nothing needs:\n%s", got.Log)
+	}
+	if got.Documented != 4 {
+		t.Fatalf("features documented = %d, want 4 — the rest of the gate stopped judging", got.Documented)
+	}
+}
+
+// TestProductDocsCoverageGateReadsAnAbsentExclusionsKeyAsEmpty: a product that
+// excludes NOTHING writes no `exclusions` key, and the net producer reads an
+// absent key as an empty list (`coverage.get(key) or []`). Refusing it made
+// every such product NET_UNREADABLE for ever — and the repair `fail_log`
+// ordered lands in `<oracle_dir>`, which `scope_check` forbids this run to
+// write, so the campaign burned every pass obeying two contradictory gates.
+func TestProductDocsCoverageGateReadsAnAbsentExclusionsKeyAsEmpty(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, ".golden-master/corpus.json",
+		`{"entries": [{"id": "checkout-pay", "method": "GET", "path": "/checkout/pay"}]}`)
+	// No `exclusions` key at all: this product has no hole to declare.
+	writeFile(t, ws, ".golden-master/feature-coverage.json",
+		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}]}`)
+	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — "+ref("/checkout/pay")+" "+ref("checkout-pay")+"\n\n"+
+		ref("payment/card")+" "+ref("checkout-pay")+" is the only means of payment a customer may use, "+
+		"and the order is confirmed on the same screen.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a product with nothing to exclude was refused, for a repair it is forbidden to make:\n%s", got.Log)
+	}
+	if got.Exclusions != 0 {
+		t.Fatalf("exclusions_total = %d with no key, want 0", got.Exclusions)
+	}
+	// A key that is THERE and mistyped is still a refusal — and a pre-flight
+	// one, because its repair is in the net.
+	writeFile(t, ws, ".golden-master/feature-coverage.json",
+		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}], "exclusions": {"a": "b"}}`)
+	runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+		"exclusions is present and is not a list")
+}
+
+// TestProductDocsCoverageGateIgnoresFencedSamples: a fenced block is a page
+// teaching its reader to paste something, not a claim about the product. A
+// path or an entry-shaped token inside one is not a citation, and a shell
+// comment inside one is not a chapter — the same reason page_lint exempts
+// fenced blocks from its chrome rules. Without this the gate would go
+// permanently red on any page that shows a command.
+func TestProductDocsCoverageGateIgnoresFencedSamples(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/how-to.md",
+		"# Getting there <!--no-anchor-->\n"+
+			"\n"+
+			"Paste this into your terminal:\n"+
+			"\n"+
+			"```sh\n"+
+			"# Fetch the invented page\n"+
+			"curl [[ref:/dashboard/invented]] [[ref:999]]\n"+
+			"```\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a fenced sample was read as a citation — every page showing a command would be permanently red:\n%s", got.Log)
+	}
+	if got.Chapters != 5 {
+		t.Fatalf("chapters = %d, want 5 — a comment inside a fenced shell block is not a chapter", got.Chapters)
+	}
+	// The exemption is the FENCE, not the words: the same tokens in prose are
+	// still refused.
+	mutate(t, ws, "docs/demo/how-to.md", "```sh\n# Fetch the invented page\ncurl ", "Run: ")
+	got = runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "the path /dashboard/invented") {
+		t.Fatalf("the same citation in prose slipped through:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateScopesTheChapterToItsPage: chapter state is PER
+// PAGE, like fence state. A page ending inside the exclusions chapter must not
+// mark the NEXT page's lines as being under it — an exclusion id cited with
+// enough prose in an unrelated page would otherwise satisfy
+// CONCEALED_EXCLUSION, which is the exact false green this gate exists to
+// refuse. The page names below fix the read order (sorted): README, then the
+// exclusions page, then the annex.
+func TestProductDocsCoverageGateScopesTheChapterToItsPage(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	if err := os.Remove(filepath.Join(ws, "docs/demo/exclusions.md")); err != nil {
+		t.Fatal(err)
+	}
+	// A one-chapter-per-file exclusions page that names nothing.
+	writeFile(t, ws, "docs/demo/a-exclusions.md",
+		"# Exclusions "+defaultNoAnchorMarker+"\n\nThis page lists what the documentation leaves out.\n")
+	// An unrelated annex. Its first heading is DEEPER than the exclusions
+	// chapter, so a leaked chapter state would survive into it.
+	writeFile(t, ws, "docs/demo/b-annex.md",
+		"## Extra notes "+defaultNoAnchorMarker+"\n\n"+
+			"- [[ref:menu.logout]] — signing out tears the session down without showing a "+
+			"screen of its own, so the net never captures it and this page mentions it only in passing.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("an exclusion named OUTSIDE the exclusions chapter satisfied the gate — the chapter state leaked across the page boundary:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "CONCEALED_EXCLUSION -- menu.logout") {
+		t.Fatalf("the gate is red without the expected cause:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateFoldsTheDeclaredToken: the var's contract says
+// the exclusions token matches case- and accent-insensitively. Folding only
+// the heading would make every natural spelling — `Exclusions`, an accented
+// French token — a token that can NEVER match, so every exclusion would redden
+// and the run could never converge. Only the lowercase-ASCII default worked.
+func TestProductDocsCoverageGateFoldsTheDeclaredToken(t *testing.T) {
+	requireGitPython(t)
+	for _, token := range []string{"Exclusions", "EXCLUSIONS", "exclusions"} {
+		t.Run(token, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			var got coverageOut
+			runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), token), &got)
+			if !got.OK {
+				t.Fatalf("the declared token %q never matched the chapter it names:\n%s", token, got.Log)
+			}
+		})
+	}
+	// An accented token against an accented heading: both sides folded.
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions", "## Périmètre exclu")
+	var got coverageOut
+	runJSON(t, coverageCommandWith(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "PÉRIMÈTRE EXCLU"), &got)
+	if !got.OK {
+		t.Fatalf("an accented declared token never matched its accented heading:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateCitesOrDoesNot is the bench that decides, and it
+// asserts BOTH directions on the SAME fixture. Two earlier rounds oscillated
+// between a false green (an invented screen alone on its line was never
+// verified) and a false red (an ordinary code span refused as a corpus entry
+// that does not exist), because the gate GUESSED from a token's shape which of
+// the two it was. A bench that tests one direction only is what let that
+// oscillate: each round fixed the direction its bench measured and broke the
+// other.
+//
+// A reference is now what the page SAYS is one. So:
+//   - every citation is verified WHEREVER it sits, with nothing else on the
+//     line — no false green;
+//   - nothing that is not a citation is ever looked at — no false red.
+func TestProductDocsCoverageGateCitesOrDoesNot(t *testing.T) {
+	requireGitPython(t)
+
+	// ── direction 1: ordinary prose is NEVER a reference ────────────────
+	// Each of these was measured to redden the shape inference: `Mot de
+	// passe` and `package.json` share (12, {letters, punctuation}) with
+	// `checkout-pay`; `404` and `250` share (3, {digits}) with `001`.
+	prose := "# Questions " + defaultNoAnchorMarker + "\n\n" +
+		"## What if the item is gone " + defaultNoAnchorMarker + "\n\n" +
+		"The server answers `404` and the list shows `250` rows at most.\n" +
+		"The `Mot de passe` field is never pre-filled, `package.json` is not shipped,\n" +
+		"and a `user-profile` block is out of scope here.\n"
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/faq.md", prose)
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("ordinary prose was read as a citation — coverage_ok is a convergence term, so the campaign would be ordered to delete reader-facing text:\n%s", got.Log)
+	}
+	for _, span := range []string{"404", "250", "Mot de passe", "package.json", "user-profile"} {
+		if strings.Contains(got.Log, span) {
+			t.Fatalf("the gate even NAMED the ordinary code span %q:\n%s", span, got.Log)
+		}
+	}
+
+	// ── direction 2: a citation is verified wherever it sits ────────────
+	// Same fixture, same page, same tokens — marked as citations this time.
+	// Each sits alone on its line, citing nothing else: the case that used
+	// to pass, because verification rode on co-location.
+	for _, token := range []string{"404", "Mot de passe", "package.json", "user-profile", "items.reporting"} {
+		t.Run("cited: "+token, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			writeFile(t, ws, "docs/demo/faq.md", "# Questions "+defaultNoAnchorMarker+"\n\n"+
+				"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
+				"The screen "+ref(token)+" answers the question and nothing else does.\n")
+			got := runCoverage(t, ws)
+			if got.OK {
+				t.Fatalf("an invented reference alone on its line was never verified:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, "the reference "+token+" is CITED and") {
+				t.Fatalf("the refusal does not name the invented citation %q:\n%s", token, got.Log)
+			}
+		})
+	}
+
+	// ...and a citation of something the net DOES hold stays green in the
+	// same position, so the refusal above is about existence, not about
+	// being cited alone.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/faq.md", "# Questions "+defaultNoAnchorMarker+"\n\n"+
+		"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
+		"The screen "+ref("039")+" answers the question and nothing else does.\n")
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("a citation of an entry the corpus holds was refused:\n%s", got.Log)
+	}
+	// An empty citation names nothing and is refused rather than ignored.
+	ws = newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/faq.md", "# Questions "+defaultNoAnchorMarker+"\n\n"+
+		"## What if the item is gone "+defaultNoAnchorMarker+"\n\n"+
+		"The screen "+citeOpen+citeClose+" answers nothing at all here.\n")
+	got = runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "an EMPTY citation") {
+		t.Fatalf("an empty citation was read as no citation:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNeedsItsCitationSyntax: with no way to recognise a
+// reference the gate would read every page as citing nothing — a GAP per
+// feature at best, a silent pass at worst. Undeclared is a named refusal, and
+// its repair is a launch var, so it stops the run.
+func TestProductDocsCoverageGateNeedsItsCitationSyntax(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	for _, tc := range []struct{ name, open, close string }{
+		{"no opening token", "", citeClose},
+		{"no closing token", citeOpen, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runExpectingFailure(t, coverageCommandFull(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+				defaultExclusionsToken, shippedAnchorlessCeiling, tc.open, tc.close, "routes.txt"),
+				"the citation syntax is not declared")
+		})
+	}
+	// A docs repo already using [[...]] picks another spelling, and the same
+	// pages written with it are read the same way.
+	other := strings.NewReplacer(citeOpen, "<<ref:", citeClose, ">>")
+	for _, f := range []string{"docs/demo/README.md", "docs/demo/exclusions.md"} {
+		b, err := os.ReadFile(filepath.Join(ws, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ws, f), []byte(other.Replace(string(b))), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got coverageOut
+	runJSON(t, coverageCommandFull(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"),
+		defaultExclusionsToken, shippedAnchorlessCeiling, "<<ref:", ">>", "routes.txt"), &got)
+	if !got.OK {
+		t.Fatalf("a declared citation syntax other than the default was not honoured:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateRefusesAStaleInventoryReference: the inventory
+// and the corpus are regenerated separately, so a feature can keep citing an
+// entry the corpus no longer holds. Unchecked, that drift makes two of this
+// gate's own rules mutually unsatisfiable — documenting the feature with that
+// entry is a PHANTOM_DOC, omitting it is a GAP — and since fail_log orders the
+// campaign to fix exactly the named causes, the run burns every pass obeying
+// two contradictory instructions.
+func TestProductDocsCoverageGateRefusesAStaleInventoryReference(t *testing.T) {
+	requireGitPython(t)
+	t.Run("an entry the corpus no longer holds", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		mutate(t, ws, ".golden-master/feature-coverage.json",
+			`{"feature": "items.detail", "entries": ["039"]}`,
+			`{"feature": "items.detail", "entries": ["039", "404"]}`)
+		runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+			"corpus entries that DO NOT EXIST (404)")
+	})
+	// A truthy list that names nothing is not coverage. It used to join the
+	// covered features with an empty entry set: a permanent GAP whose detail
+	// listed no entry to document.
+	t.Run("entries that are a truthy list of nothing", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		mutate(t, ws, ".golden-master/feature-coverage.json",
+			`{"feature": "items.detail", "entries": ["039"]}`,
+			`{"feature": "items.detail", "entries": ["   "]}`)
+		runExpectingFailure(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")),
+			"COVERED with no usable corpus entry")
+	})
+}
+
+// TestProductDocsCoverageGateRefusesACitedCatchAll: the catch-all rule cuts
+// BOTH ways. A cited path is read as a pattern, so a lone placeholder path
+// matches every corpus entry — it would pass while restituting nothing, and
+// anchor its chapter into the bargain. The hole the declared-route side closes
+// must be closed on the side the graded agent writes.
+func TestProductDocsCoverageGateRefusesACitedCatchAll(t *testing.T) {
+	requireGitPython(t)
+	for _, catchAll := range []string{"/**", "/{slug}", "/:id"} {
+		t.Run(catchAll, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+				"## One item — "+ref(catchAll)+" [[ref:039]]")
+			got := runCoverage(t, ws)
+			if got.OK {
+				t.Fatalf("a placeholder-only citation passed — it matches every path and restitutes none:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, "is made of PLACEHOLDERS ONLY") {
+				t.Fatalf("the refusal does not name the cause:\n%s", got.Log)
+			}
+		})
+	}
+	// A path with one literal segment still proves something, and `/` is a
+	// literal route: neither may be caught by this rule.
+	ws := newCoverageFixture(t)
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("the rule fired on the intact fixture, whose pages cite `/` and `/dashboard/items/{id}`:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNamesTheRepairInItsHeadingLine: the rule reads
+// the HEADING's own line, so a reference in the chapter body does not anchor
+// it. An agent that repairs by adding body references reads the complaint as
+// already satisfied and the bounded loop exhausts max_passes without
+// converging — the refusal has to name the repair.
+func TestProductDocsCoverageGateNamesTheRepairInItsHeadingLine(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item\n\nThe chapter body cites [[ref:items.detail]] and [[ref:039]] all the same.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a chapter anchored only in its body satisfied the rule:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "IN THE HEADING LINE ITSELF") {
+		t.Fatalf("the refusal does not name the repair it wants:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCatalogIngestRefusesASymlinkedLocalPath: normpath does not
+// resolve symlinks, so a symlink COMMITTED in the docs repo and named by the
+// catalog walked straight past a textual containment check. The catalog is
+// repo content — hostile-grade by this node's own rule — so one docs-repo PR
+// would pull an out-of-workspace repository into the scratch dir and hand it
+// to the campaign agent as source material.
+func TestProductDocsCatalogIngestRefusesASymlinkedLocalPath(t *testing.T) {
+	requireGitPython(t)
+	outside := t.TempDir()
+	gitIn(t, outside, "init", "-q", "-b", "main")
+	writeFile(t, outside, "secret-notes.md", "# not for the campaign\n")
+	gitIn(t, outside, "add", "-A")
+	gitIn(t, outside, "commit", "-q", "-m", "seed")
+
+	scratch := t.TempDir()
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	if err := os.Symlink(outside, filepath.Join(ws, "mirror")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \"mirror\"\n",
+		`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"mirror"}]}`+"\n")
+	writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OKCount != 0 || got.Degraded != 1 {
+		t.Fatalf("a symlink to a repository outside the workspace was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+	}
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "escapes the docs workspace") {
+		t.Fatalf("the refusal does not name its cause: %q", note)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "sources", "demo", "secret-notes.md")); err == nil {
+		t.Fatalf("the out-of-workspace repository reached the scratch dir anyway")
+	}
+}
+
+// TestProductDocsCatalogIngestConfinesAURLThatNamesTheFilesystem: `url` and
+// `path` are two spellings of ONE thing once the value is on disk. `url` is
+// read FIRST, so a containment rule written on `path` alone is a rule an
+// attacker only has to not write: a catalog naming an out-of-workspace
+// repository by `url` read it with the forge credential in the environment and
+// handed its contents to the campaign as source material.
+func TestProductDocsCatalogIngestConfinesAURLThatNamesTheFilesystem(t *testing.T) {
+	requireGitPython(t)
+	outside := newSourceRepo(t)
+	for _, tc := range []struct{ name, url, want string }{
+		{"an absolute path", outside, "escapes the docs workspace"},
+		{"a file:// url", "file://" + outside, "escapes the docs workspace"},
+		{"a file:// url carrying a host", "file://forge.invalid/repo.git", "carrying a host"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := t.TempDir()
+			scratch := t.TempDir()
+			gitIn(t, ws, "init", "-q", "-b", "main")
+			catalogFixture(t, ws, "catalog/demo",
+				"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    url: \""+tc.url+"\"\n",
+				`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","url":"`+tc.url+`"}]}`+"\n")
+			writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+			gitIn(t, ws, "add", "-A")
+			gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+			var got ingestOut
+			runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+			if got.OKCount != 0 || got.Degraded != 1 {
+				t.Fatalf("a url naming a tree outside the workspace was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+			}
+			if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, tc.want) {
+				t.Fatalf("the refusal does not name its cause %q: %q", tc.want, note)
+			}
+			if _, err := os.Stat(filepath.Join(scratch, "sources", "demo", "locales", "fr.json")); err == nil {
+				t.Fatalf("the out-of-workspace repository reached the scratch dir anyway")
+			}
+		})
+	}
+
+	// ...and the SAME url, naming a repository the workspace holds, takes the
+	// local decision: no forge, no network, no credential.
+	t.Run("a url inside the workspace is read as a local source", func(t *testing.T) {
+		ws := t.TempDir()
+		scratch := t.TempDir()
+		gitIn(t, ws, "init", "-q", "-b", "main")
+		inside := newLocalSource(t, ws)
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    url: "+inside+"\n",
+			`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","url":"`+inside+`"}]}`+"\n")
+		writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+		var got ingestOut
+		runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+		if got.OKCount != 1 {
+			t.Fatalf("inventory = %d ok / %d degraded, want 1/0: %s", got.OKCount, got.Degraded, got.Log)
+		}
+		if local, _ := got.Inventory[0]["local"].(bool); !local {
+			t.Fatalf("a url naming a repository ON DISK took the FORGE decision — the credential environment and the hardlinked clone come with it: %+v", got.Inventory[0])
+		}
+	})
+}
+
+// TestProductDocsCatalogIngestRefusesADelegatedObjectStore: a repository
+// DELEGATES its object store through objects/info/alternates, and a clone
+// serves the UNION — so a repository sitting inside the workspace hands over
+// the contents of one that is not, and confining the path confines nothing.
+// `--no-local` does not close it either: upload-pack serves the alternates all
+// the same.
+func TestProductDocsCatalogIngestRefusesADelegatedObjectStore(t *testing.T) {
+	requireGitPython(t)
+	outside := t.TempDir()
+	gitIn(t, outside, "init", "-q", "-b", "main")
+	writeFile(t, outside, "secret-notes.md", "# not for the campaign\n")
+	gitIn(t, outside, "add", "-A")
+	gitIn(t, outside, "commit", "-q", "-m", "seed")
+	outsideHead := strings.TrimSpace(gitIn(t, outside, "rev-parse", "HEAD"))
+
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	mirror := filepath.Join(ws, "mirror.git")
+	gitIn(t, ws, "init", "-q", "--bare", "-b", "main", mirror)
+	writeFile(t, mirror, "objects/info/alternates", filepath.Join(outside, ".git", "objects")+"\n")
+	gitIn(t, mirror, "update-ref", "refs/heads/main", outsideHead)
+
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \"mirror.git\"\n",
+		`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"mirror.git"}]}`+"\n")
+	writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OKCount != 0 || got.Degraded != 1 {
+		t.Fatalf("a repository delegating its objects outside the workspace was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+	}
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "reads its git objects from OUTSIDE the docs workspace") {
+		t.Fatalf("the refusal does not name its cause: %q", note)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "sources", "demo", "secret-notes.md")); err == nil {
+		t.Fatalf("the delegated store put an out-of-workspace tree into the scratch dir anyway")
+	}
+}
+
+// TestProductDocsCoverageGateInertWithoutANet is the NON-REGRESSION contract.
+// A product with no golden-master net must get the bot it had before this gate
+// existed: nothing certified, nothing refused, an EMPTY log (a log is what
+// reaches the next pass as a complaint).
+func TestProductDocsCoverageGateInertWithoutANet(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	// A documentation that would fail every rule above — no anchor anywhere,
+	// no exclusions chapter, invented paths — and a net that is NOT there.
+	writeFile(t, ws, "docs/demo/p.md", "# Whatever\n\n## A chapter with no reference at all\n\nSee `/nowhere` and `042`.\n")
+	var got coverageOut
+	runJSON(t, coverageCommand(t, ws, "docs/demo", ""), &got)
+	if !got.OK {
+		t.Fatalf("the gate refused a product that carries no net: %s", got.Log)
+	}
+	if got.NetPresent || got.CauseCount != 0 || got.Log != "" {
+		t.Fatalf("without a net the gate must be silent, got net_present=%v causes=%d log=%q", got.NetPresent, got.CauseCount, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateDegradesVisiblyWithoutRoutes answers the one
+// artifact golden-master does NOT commit. Its route table lives behind
+// `config.json.routes_probe`, a command it replays at every gate, so the file
+// this var names is usually absent. The check then falls back to the corpus
+// alone — and says so: degraded is loud, and it still REFUSES.
+func TestProductDocsCoverageGateDegradesVisiblyWithoutRoutes(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	if err := os.Remove(filepath.Join(ws, ".golden-master/routes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("the degraded check refused a documentation whose every path the corpus observes:\n%s", got.Log)
+	}
+	if !got.Degraded || !strings.Contains(got.Log, "DEGRADED") {
+		t.Fatalf("the degradation is not visible: degraded=%v log=%q", got.Degraded, got.Log)
+	}
+	// Degraded is not disabled: an invented path is still refused, and the
+	// message says the check was narrower than it should have been.
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item — [[ref:/dashboard/invented]] [[ref:039]]")
+	got = runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("the degraded check went GREEN on an invented path — a degraded gate that refuses nothing is a disabled one:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "no declared route table was available") {
+		t.Fatalf("the refusal does not say the check was degraded:\n%s", got.Log)
+	}
+}
+
+// ── The replayed routes_probe ───────────────────────────────────────────────
+// golden-master states its routes through config.json `routes_probe` and
+// replays the command at every gate; a committed table goes stale the moment
+// a change adds a route. With no table committed, the docs gates replay the
+// SAME command — and only for a net INSIDE the docs workspace: a source
+// clone's command is untrusted data, never code.
+
+// probeReadingData is a routes_probe that prints the table the test wrote to
+// routes.data at the workspace root, the cwd the gates run it from.
+const probeReadingData = "import sys\nsys.stdout.write(open('routes.data').read())\n"
+
+// probeNet turns the fixture's net into one that STATES its routes: the
+// committed file goes, config.json declares a probe, the probe prints table.
+func probeNet(t *testing.T, ws, table string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(ws, ".golden-master/routes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "python3 probe.py"}`)
+	writeFile(t, ws, "probe.py", probeReadingData)
+	writeFile(t, ws, "routes.data", table)
+}
+
+// probeConfig writes a config.json whose routes_probe runs script by its
+// ABSOLUTE path, so the command works from any cwd — a guard that fails to
+// stop it cannot hide behind a relative path that happens not to resolve.
+func probeConfig(t *testing.T, net, script string) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]string{"routes_probe": "python3 " + script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, net, "config.json", string(raw))
+}
+
+// pyString renders s as a Python string literal (a JSON string is one for
+// the plain paths these tests use).
+func pyString(t *testing.T, s string) string {
+	t.Helper()
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// TestProductDocsCoverageGateReplaysTheNetsRoutesProbe: no committed table,
+// a net that declares its probe — the gate replays it, and the table it
+// prints is the one the route checks JUDGE by, not a count on the side.
+func TestProductDocsCoverageGateReplaysTheNetsRoutesProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	got := runCoverage(t, ws)
+	if !got.OK || got.Degraded || got.RoutesTotal != 4 {
+		t.Fatalf("the replayed probe was not read as the route table: ok=%v degraded=%v declared=%d, want true/false/4:\n%s", got.OK, got.Degraded, got.RoutesTotal, got.Log)
+	}
+	if !strings.Contains(got.Log, "replayed from the net routes_probe") {
+		t.Fatalf("the log does not say where the route table came from:\n%s", got.Log)
+	}
+	writeFile(t, ws, "routes.data", coverageRoutes+"GET /dashboard/exports\n")
+	got = runCoverage(t, ws)
+	if want := "ROUTE_UNDOCUMENTED -- /dashboard/exports"; got.OK || !strings.Contains(got.Log, want) {
+		t.Fatalf("a route only the replayed probe declares went unchecked (want %q):\n%s", want, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGatePrefersTheCommittedTable: an explicit artifact
+// wins over the command — a probe that disagrees is not consulted.
+func TestProductDocsCoverageGatePrefersTheCommittedTable(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "python3 probe.py"}`)
+	writeFile(t, ws, "probe.py", probeReadingData)
+	writeFile(t, ws, "routes.data", coverageRoutes+"GET /dashboard/exports\n")
+	got := runCoverage(t, ws)
+	if !got.OK || got.RoutesTotal != 4 || strings.Contains(got.Log, "replayed") {
+		t.Fatalf("the probe overrode the committed table: ok=%v declared=%d, want true/4 and no replay:\n%s", got.OK, got.RoutesTotal, got.Log)
+	}
+}
+
+// probeInAClone builds a net in a SEPARATE tree — a source clone — whose probe
+// would leave a marker if anything ran it.
+func probeInAClone(t *testing.T) (net, marker string) {
+	t.Helper()
+	clone := t.TempDir()
+	marker = filepath.Join(t.TempDir(), "EXECUTED")
+	net = filepath.Join(clone, ".golden-master")
+	writeFile(t, net, "corpus.json", coverageCorpus)
+	writeFile(t, net, "feature-coverage.json", coverageInventory)
+	script := filepath.Join(clone, "probe.py")
+	writeFile(t, clone, "probe.py", "open("+pyString(t, marker)+", 'w').write('ran')\nprint('GET /')\n")
+	probeConfig(t, net, script)
+	gittest.Run(t, clone, "init", "-q")
+	gittest.Run(t, clone, "add", "-A")
+	gittest.Run(t, clone, "commit", "-q", "-m", "clone")
+	return net, marker
+}
+
+// TestProductDocsCoverageGateNeverRunsAProbeOutsideTheWorkspace: the clones
+// are someone else's code. A net found there is read as data; its command is
+// never executed, and the degradation says why.
+func TestProductDocsCoverageGateNeverRunsAProbeOutsideTheWorkspace(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	net, marker := probeInAClone(t)
+	var got coverageOut
+	runJSON(t, coverageCommand(t, ws, "docs/demo", net), &got)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("the coverage gate EXECUTED the routes_probe of a net outside the docs workspace — a source clone's command is untrusted data")
+	}
+	if !got.Degraded || !strings.Contains(got.Log, "untrusted input, never executed") {
+		t.Fatalf("the refusal to run the clone's probe is not visible: degraded=%v\n%s", got.Degraded, got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintNeverRunsAProbeOutsideTheWorkspace: the same
+// boundary, held by the map lint's own copy of the replay.
+func TestProductDocsDiagramLintNeverRunsAProbeOutsideTheWorkspace(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	net, marker := probeInAClone(t)
+	var got diagramOut
+	runJSON(t, diagramCommand(t, ws, "docs/demo", net, "routes.txt"), &got)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("the map lint EXECUTED the routes_probe of a net outside the docs workspace — a source clone's command is untrusted data")
+	}
+	if !got.RoutesUnverified || !strings.Contains(got.Log, "untrusted input, never executed") {
+		t.Fatalf("the refusal to run the clone's probe is not visible: unverified=%v\n%s", got.RoutesUnverified, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateNamesAFailingProbe: a probe that cannot run here
+// (it needs the application up, say) degrades the check — with ITS cause.
+func TestProductDocsCoverageGateNamesAFailingProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	writeFile(t, ws, "probe.py", "import sys\nsys.stderr.write('no application answers here')\nsys.exit(3)\n")
+	got := runCoverage(t, ws)
+	if !got.Degraded {
+		t.Fatalf("a failing probe did not degrade the check:\n%s", got.Log)
+	}
+	for _, want := range []string{"routes_probe exited 3", "no application answers here"} {
+		if !strings.Contains(got.Log, want) {
+			t.Fatalf("the degradation hides the probe's cause (want %q):\n%s", want, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateBoundsTheProbe: a probe that hangs must not hang
+// the gate; past its bound the table is unavailable, and the log says so.
+func TestProductDocsCoverageGateBoundsTheProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	writeFile(t, ws, "probe.py", "import time\ntime.sleep(5)\nprint('GET /')\n")
+	var got coverageOut
+	runJSON(t, coverageCommandTimed(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), defaultExclusionsToken, shippedAnchorlessCeiling, citeOpen, citeClose, "routes.txt", "1"), &got)
+	if !got.Degraded || !strings.Contains(got.Log, "did not finish within 1 s") {
+		t.Fatalf("the probe ran past its bound unnoticed: degraded=%v\n%s", got.Degraded, got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateDegradesOnASilentProbe: a REPLAYED probe that runs
+// and declares nothing — a pipeline run where its source tree is not, say —
+// degrades the route checks with that cause. It never stops the run: the
+// repair (the net's config.json) is outside the run's writeable set.
+func TestProductDocsCoverageGateDegradesOnASilentProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, "# no route here\n")
+	got := runCoverage(t, ws)
+	if !got.Degraded || !strings.Contains(got.Log, "printed NO route") {
+		t.Fatalf("a silent replayed probe did not degrade visibly: degraded=%v\n%s", got.Degraded, got.Log)
+	}
+}
+
+// TestProductDocsRouteTableRefusesAnUnusableBound: the bound is required and
+// must fit the kernel's timers; an unusable value is refused by name, never
+// replaced by a default nor left to overflow inside the probe call.
+func TestProductDocsRouteTableRefusesAnUnusableBound(t *testing.T) {
+	requireGitPython(t)
+	for _, bound := range []string{"0", "-5", "many", "3000000"} {
+		ws := newCoverageFixture(t)
+		probeNet(t, ws, coverageRoutes)
+		base := snapshotRunBase(t, ws)
+		runExpectingFailure(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, "routes.txt", bound), "whole number of seconds")
+	}
+}
+
+// TestProductDocsDiagramLintGroundsOnTheReplayedProbe: the map lint reads the
+// same replayed table — a mapped path only the probe declares is grounded.
+func TestProductDocsDiagramLintGroundsOnTheReplayedProbe(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes+"GET /dashboard/exports\n")
+	page := strings.Replace(diagramMapPage(), "  %% voir", "  list -->|exporte| exports[\"/dashboard/exports — l'export\"]\n  %% voir", 1)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", page)
+	got := runDiagramLint(t, ws)
+	if !got.OK || got.RoutesUnverified {
+		t.Fatalf("the map lint did not ground on the replayed probe: ok=%v unverified=%v\n%s", got.OK, got.RoutesUnverified, got.Log)
+	}
+	if !strings.Contains(got.Log, "replayed from the net routes_probe") {
+		t.Fatalf("the map lint does not say where its route table came from:\n%s", got.Log)
+	}
+}
+
+// ── route_table: the table every route check judges by ────────────────────────
+// Resolved ONCE per run, at a commit, before any page is written, and handed to
+// the gates and agents as data. Each case below pins one way the replay broke
+// in review, and reddens when that exact defect is put back.
+
+// probeScriptNet turns the fixture's net into one whose routes_probe is script.
+func probeScriptNet(t *testing.T, ws, script string) {
+	t.Helper()
+	probeNet(t, ws, coverageRoutes)
+	writeFile(t, ws, "probe.py", script)
+}
+
+func runRouteTable(t *testing.T, ws, timeout string) routeTableOut {
+	t.Helper()
+	return routeTableFor(t, ws, filepath.Join(ws, ".golden-master"), "routes.txt", timeout)
+}
+
+// TestProductDocsRouteTableReadsOnlyWhatACommitCarries: a routes.txt the working
+// tree holds and no commit does — hidden from the scope gate by one ignore line
+// — would let the agent this gate judges write the table it is judged by. The
+// table is read at the run base; the stray file is named and never read.
+func TestProductDocsRouteTableReadsOnlyWhatACommitCarries(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes+"GET /dashboard/exports\n")
+	base := snapshotRunBase(t, ws)
+	writeFile(t, ws, ".golden-master/routes.txt", "GET /\n")
+	writeFile(t, ws, ".git/info/exclude", ".golden-master/routes.txt\n")
+	var got routeTableOut
+	runJSON(t, routeTableCommand(t, ws, filepath.Join(ws, ".golden-master"), base, "routes.txt", shippedProbeTimeout), &got)
+	if got.Source != "probe" || !slicesContain(got.Routes, "/dashboard/exports") {
+		t.Fatalf("an uncommitted routes.txt overrode the table the run base declares: source=%q routes=%v", got.Source, got.Routes)
+	}
+	if !strings.Contains(got.Note, "in no commit and is not read") {
+		t.Fatalf("the stray routes.txt is not named: %q", got.Note)
+	}
+	if cov := runCoverage(t, ws); !strings.Contains(cov.Log, "in no commit and is not read") {
+		t.Fatalf("the verdict does not say the stray routes.txt was set aside:\n%s", cov.Log)
+	}
+	if lint := runDiagramLint(t, ws); !strings.Contains(lint.Log, "in no commit and is not read") {
+		t.Fatalf("the map lint does not say the stray routes.txt was set aside:\n%s", lint.Log)
+	}
+}
+
+// TestProductDocsRouteTableNeverRunsANetThatIsNotTheWorkspacesOwn: a net that
+// lives UNDER the docs workspace but is not its own is someone else's code.
+// Being under the workspace proves nothing about whose net it is: only the net
+// at <workspace>/<oracle_dir>, in the workspace's own repository, is replayed.
+func TestProductDocsRouteTableNeverRunsANetThatIsNotTheWorkspacesOwn(t *testing.T) {
+	requireGitPython(t)
+	for _, tc := range []struct {
+		name    string
+		ownRepo bool
+	}{
+		{"committed in the workspace, away from oracle_dir", false},
+		{"a source clone with a repository of its own", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			clone := filepath.Join(ws, "vendor", "sources", "app")
+			marker := filepath.Join(t.TempDir(), "EXECUTED")
+			net := filepath.Join(clone, ".golden-master")
+			writeFile(t, net, "corpus.json", coverageCorpus)
+			writeFile(t, net, "feature-coverage.json", coverageInventory)
+			writeFile(t, clone, "probe.py", "open("+pyString(t, marker)+", 'w').write('ran')\nprint('GET /')\n")
+			probeConfig(t, net, filepath.Join(clone, "probe.py"))
+			if tc.ownRepo {
+				gittest.Run(t, clone, "init", "-q")
+				gittest.Run(t, clone, "add", "-A")
+				gittest.Run(t, clone, "commit", "-q", "-m", "clone")
+			}
+			base := snapshotRunBase(t, ws)
+			var got routeTableOut
+			runJSON(t, routeTableCommand(t, ws, net, base, "routes.txt", shippedProbeTimeout), &got)
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("route_table EXECUTED the routes_probe of a net under the workspace that is not the workspace's own")
+			}
+			if !got.Degraded || !strings.Contains(got.Note, "untrusted input, never executed") {
+				t.Fatalf("the refusal to run a foreign net's probe is not visible: %+v", got)
+			}
+		})
+	}
+}
+
+// TestProductDocsCatalogIngestRefusesAScratchInsideTheWorkspace: the clones are
+// someone else's code, and in tree they are a place the scope gate can be
+// blinded to. The out-of-tree promise is enforced, not only documented.
+func TestProductDocsCatalogIngestRefusesAScratchInsideTheWorkspace(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	for _, scratch := range []string{filepath.Join(ws, ".cache", "product-docs"), ".scratch", ws} {
+		runExpectingFailure(t, ingestCommand(t, ws, "catalog.yaml", "demo", scratch), "scratch_dir resolves INSIDE the docs workspace")
+	}
+}
+
+// TestProductDocsRouteTableReplaysInAThrowawayCheckout: whatever the probe writes
+// lands in a checkout of the run base that is removed afterwards — never in the
+// docs worktree, where the next pass's scope gate would refuse it forever.
+func TestProductDocsRouteTableReplaysInAThrowawayCheckout(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import os\nos.makedirs('__pycache__', exist_ok=True)\nopen('__pycache__/side.pyc', 'w').write('x')\nopen('SIDE_EFFECT', 'w').write('x')\nprint('GET /')\nprint('GET /dashboard/items')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" || len(got.Routes) != 2 {
+		t.Fatalf("the replay did not read the probe: %+v", got)
+	}
+	if status := gittest.Run(t, ws, "status", "--porcelain", "--untracked-files=all"); status != "" {
+		t.Fatalf("the probe changed the docs worktree — the next scope gate refuses it:\n%s", status)
+	}
+}
+
+// TestProductDocsRouteTableKillsWhatTheProbeStarted: the probe owns a process
+// group, killed when it returns or times out — nothing it started writes after
+// the verdict, whether it timed out or backgrounded a writer and exited.
+func TestProductDocsRouteTableKillsWhatTheProbeStarted(t *testing.T) {
+	requireGitPython(t)
+	t.Run("timed out", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		marker := filepath.Join(t.TempDir(), "LATE_WRITE")
+		probeScriptNet(t, ws, "import time\ntime.sleep(3)\nopen("+pyString(t, marker)+", 'w').write('late')\n")
+		writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "cd . && python3 probe.py; true"}`)
+		got := runRouteTable(t, ws, "1")
+		if !got.Degraded || !strings.Contains(got.Note, "did not finish within 1 s") {
+			t.Fatalf("the timeout is not named: %+v", got)
+		}
+		time.Sleep(4 * time.Second)
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("a probe process outlived its timeout and wrote after the verdict")
+		}
+	})
+	t.Run("backgrounded", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		marker := filepath.Join(t.TempDir(), "LATE_WRITE")
+		// The writer lets go of the probe's output, so the probe is over when
+		// its own process exits — what it left behind is killed then.
+		probeScriptNet(t, ws, "import subprocess\nsubprocess.Popen(['sh', '-c', 'sleep 2; touch '+"+pyString(t, marker)+"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\nprint('GET /')\n")
+		got := runRouteTable(t, ws, shippedProbeTimeout)
+		if got.Source != "probe" {
+			t.Fatalf("the probe was not read: %+v", got)
+		}
+		time.Sleep(3 * time.Second)
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("a process the probe left behind wrote after the verdict")
+		}
+	})
+}
+
+// TestProductDocsRouteTableRunsNoGitHook: the throwaway checkout is git's own
+// plumbing — a hook the environment's git configuration points at (the way a
+// package manager's install step sets core.hooksPath) never runs there. The
+// hook path is injected through git's environment configuration, which the
+// throwaway clone honours exactly as a global one.
+func TestProductDocsRouteTableRunsNoGitHook(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeNet(t, ws, coverageRoutes)
+	hooks := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "HOOK_RAN")
+	writeFile(t, hooks, "post-checkout", "#!/bin/sh\ntouch "+shQuote(marker)+"\n")
+	if err := os.Chmod(filepath.Join(hooks, "post-checkout"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+	t.Setenv("GIT_CONFIG_VALUE_0", hooks)
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" {
+		t.Fatalf("the replay did not read the probe: %+v", got)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the throwaway checkout ran a git hook")
+	}
+}
+
+// TestProductDocsRouteTableWaitsForTheProbesExit: the verdict is the probe's
+// own exit status. A probe that lets go of its output and finishes its work a
+// moment later, within the bound, is read — not killed and called a failure.
+func TestProductDocsRouteTableWaitsForTheProbesExit(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import os, sys, time\nprint('GET /')\nprint('GET /dashboard/items')\nsys.stdout.flush()\nos.close(1)\nos.close(2)\ntime.sleep(0.5)\n")
+	// exec: the probe is the only holder of its output, so the end of that
+	// output comes BEFORE its exit.
+	writeFile(t, ws, ".golden-master/config.json", `{"routes_probe": "exec python3 probe.py"}`)
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" || len(got.Routes) != 2 {
+		t.Fatalf("a probe that exits cleanly after closing its output was not read: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableSurvivesAnyByte: a byte that is not UTF-8 — a French
+// file name in a build warning — is a character, never a crash of the node.
+func TestProductDocsRouteTableSurvivesAnyByte(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import sys\nsys.stderr.buffer.write(b'note: Cr\\xe9ation.java\\n')\nsys.stdout.buffer.write(b'GET /\\nGET /dashboard/items\\n# caf\\xe9\\n')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Source != "probe" || !slicesContain(got.Routes, "/dashboard/items") {
+		t.Fatalf("a non-UTF-8 byte cost the route table: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableReadsWhatGoldenMasterReads: golden-master reads the
+// probe's stdout and stderr MERGED; a route it states on stderr is a route here.
+func TestProductDocsRouteTableReadsWhatGoldenMasterReads(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import sys\nprint('GET /')\nsys.stdout.flush()\nsys.stderr.write('GET /dashboard/exports\\n')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if !slicesContain(got.Routes, "/dashboard/exports") {
+		t.Fatalf("a route the probe stated on stderr was dropped — golden-master counts it: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableBoundsTheOutput: an output past the bound is not a
+// route table, and reading stops AT the bound — a probe that never stops
+// printing is cut there, not read until the deadline.
+func TestProductDocsRouteTableBoundsTheOutput(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import sys, time\nprint('GET /')\nwhile True:\n    sys.stdout.write('x' * 65536)\n    sys.stdout.flush()\n    time.sleep(0.01)\n")
+	got := runRouteTable(t, ws, "20")
+	if !got.Degraded || !strings.Contains(got.Note, "byte bound") {
+		t.Fatalf("an endless probe output was not cut at the bound: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableSetsAsideFilePaths: a build tool prints absolute file
+// paths; one inside the checkout is chatter, not a route the doc must cite.
+func TestProductDocsRouteTableSetsAsideFilePaths(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	probeScriptNet(t, ws, "import os\nprint(os.path.abspath('probe.py'))\nprint('GET /dashboard/items')\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if got.Dropped != 1 || len(got.Routes) != 1 || got.Routes[0] != "/dashboard/items" {
+		t.Fatalf("a file path in the checkout was read as a route: %+v", got)
+	}
+}
+
+// TestProductDocsRouteTableCollapsesMethods: GET, POST and DELETE on one path
+// are one screen to document, one route in the table.
+func TestProductDocsRouteTableCollapsesMethods(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt", "GET /\nGET /dashboard/items\nPOST /dashboard/items\nDELETE /dashboard/items\n")
+	got := runRouteTable(t, ws, shippedProbeTimeout)
+	if len(got.Routes) != 2 {
+		t.Fatalf("one path under three methods was counted %d times: %v", len(got.Routes), got.Routes)
+	}
+}
+
+// TestProductDocsCoverageGateCountsACitedEntryAsItsRoute: a page documents the
+// screen a route serves by citing the corpus ENTRY that captured it — the entry
+// carries the path. Demanding the path as well refused screens the pages
+// describe: on a real net, every route at once.
+func TestProductDocsCoverageGateCountsACitedEntryAsItsRoute(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md", "## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]", "## One item — [[ref:039]]")
+	got := runCoverage(t, ws)
+	if !got.OK || strings.Contains(got.Log, "ROUTE_UNDOCUMENTED") {
+		t.Fatalf("a route whose screen a page documents through its corpus entry was refused:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateReadsAnEntryPathWithoutItsQuery: an entry that
+// captured /reports?year=2024 exercises the route /reports — the query is how
+// the screen was asked for, not another screen.
+func TestProductDocsCoverageGateReadsAnEntryPathWithoutItsQuery(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, ".golden-master/corpus.json",
+		`{"id": "039", "persona": "manager", "method": "GET", "path": "/dashboard/items/42", "surface": "http"}`,
+		`{"id": "039", "persona": "manager", "method": "GET", "path": "/dashboard/items/42", "surface": "http"},
+  {"id": "050", "persona": "manager", "method": "GET", "path": "/reports?year=2024", "surface": "http"}`)
+	mutate(t, ws, ".golden-master/feature-coverage.json",
+		`{"feature": "items.detail", "entries": ["039"]}`,
+		`{"feature": "items.detail", "entries": ["039"]},
+  {"feature": "reports.yearly", "entries": ["050"]}`)
+	writeFile(t, ws, ".golden-master/routes.txt", coverageRoutes+"GET /reports\n")
+	writeFile(t, ws, "docs/demo/reports.md", "# Reports\n\n## The yearly report — "+ref("050")+"\n\n"+
+		ref("reports.yearly")+" "+ref("050")+" sums one year of items per owner and status: one row per\n"+
+		"owner, the totals at the foot of the table.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a route exercised by a cited entry that carries a query was refused:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintGroundsOnTheCorpus: a screen the net CAPTURED is
+// served even when the declared table misses it (a handler inherited from a
+// generic controller); the map lint does not order it off the map.
+func TestProductDocsDiagramLintGroundsOnTheCorpus(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt", "GET /\nGET /dashboard/items\n")
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	got := runDiagramLint(t, ws)
+	if !got.OK || strings.Contains(got.Log, "PHANTOM_MAP") {
+		t.Fatalf("a mapped screen the corpus captured was refused as phantom:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsCoverageGateOrdersNothingForARoute: the only repair a route
+// refusal may name is the one inside the writeable set — document the screen.
+// Taking a route out of the table is the net's business, not the campaign's.
+func TestProductDocsCoverageGateOrdersNothingForARoute(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt", coverageRoutes+"GET /dashboard/exports\n")
+	got := runCoverage(t, ws)
+	if !strings.Contains(got.Log, "ROUTE_UNDOCUMENTED -- /dashboard/exports") {
+		t.Fatalf("the fixture was meant to leave a route undocumented:\n%s", got.Log)
+	}
+	for _, order := range []string{"move it out", "route table with the reason"} {
+		if strings.Contains(got.Log, order) {
+			t.Fatalf("a route refusal orders %q — the table lives with the net, outside the writeable set:\n%s", order, got.Log)
+		}
+	}
+}
+
+// TestProductDocsCoverageGateKeepsGapsInSightOfTheLog: the relayed log is capped;
+// a long run of route refusals must not push a feature gap out of it.
+func TestProductDocsCoverageGateKeepsGapsInSightOfTheLog(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	var table strings.Builder
+	table.WriteString(coverageRoutes)
+	for i := 0; i < 70; i++ {
+		fmt.Fprintf(&table, "GET /reports/r%03d\n", i)
+	}
+	writeFile(t, ws, ".golden-master/routes.txt", table.String())
+	mutate(t, ws, "docs/demo/README.md", "[[ref:items.detail]] [[ref:039]] shows", "It shows")
+	got := runCoverage(t, ws)
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("a feature gap was pushed out of the relayed log by route refusals:\n%s", got.Log)
+	}
+}
+
+// slicesContain reports whether list holds want.
+func slicesContain(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestProductDocsCoverageGateReadsItsVocabularyFromTheNet: `001` is ONE
+// campaign's convention. A net naming its entries differently is read exactly
+// the same way — the gate never learns an id vocabulary, it reads citations.
+func TestProductDocsCoverageGateReadsItsVocabularyFromTheNet(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, ".golden-master/corpus.json",
+		`{"entries": [{"id": "checkout-pay", "method": "GET", "path": "/checkout/pay"}]}`)
+	writeFile(t, ws, ".golden-master/feature-coverage.json",
+		`{"features": [{"feature": "payment/card", "entries": ["checkout-pay"]}], "exclusions": []}`)
+	writeFile(t, ws, "docs/demo/p.md", "# Pay\n\n## Paying — "+ref("/checkout/pay")+" "+ref("checkout-pay")+"\n\n"+
+		ref("payment/card")+" "+ref("checkout-pay")+" is the only means of payment a customer\n"+
+		"may use, and the order is confirmed on that same screen without a further step.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("the gate did not read the net's own vocabulary:\n%s", got.Log)
+	}
+	// A CITATION the corpus does not carry is caught on a line citing nothing
+	// else — and the same token as an ordinary code span on the same page is
+	// not, because only a citation is a reference.
+	writeFile(t, ws, "docs/demo/q.md", "# Refunds\n\nThe refund screen is recorded as `checkout-ref` and nothing else.\n")
+	if got := runCoverage(t, ws); !got.OK {
+		t.Fatalf("a code span sharing the corpus vocabulary was refused:\n%s", got.Log)
+	}
+	writeFile(t, ws, "docs/demo/q.md", "# Refunds\n\nThe refund screen is recorded as "+ref("checkout-ref")+" and nothing else.\n")
+	got = runCoverage(t, ws)
+	if got.OK || !strings.Contains(got.Log, "the reference checkout-ref is CITED and") {
+		t.Fatalf("a citation the corpus does not carry slipped through:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsPageLintTolerATesTheDeclaredMarker: one declared token,
+// honoured by every site that reads a heading. If the editorial lint called
+// the anchorless marker a working note, the two gates would order the campaign
+// to add and to remove the same characters and the run could never converge.
+// The exemption is the EXACT token: any other comment is still a violation.
+func TestProductDocsPageLintToleratesTheDeclaredMarker(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, "docs/demo/p.md", "# Method\n\n## How this was built "+defaultNoAnchorMarker+"\n\nNothing observed here.\n")
+	var got lintOut
+	runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
+	if !got.LintOK {
+		t.Fatalf("the editorial lint refused the anchorless marker the coverage gate requires: %+v", got.Violations)
+	}
+	writeFile(t, ws, "docs/demo/p.md", "# Method\n\n## How this was built "+defaultNoAnchorMarker+
+		"\n\n<!-- ask the product team about this one -->\nNothing observed here.\n")
+	runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
+	if got.LintOK {
+		t.Fatalf("the exemption widened into a licence: a genuine working note survived the lint")
+	}
+	// The marker and a genuine note on the SAME line: the exemption is the
+	// comment that IS the token, not the line that carries one.
+	writeFile(t, ws, "docs/demo/p.md", "# Method\n\n## How this was built "+defaultNoAnchorMarker+
+		" <!-- ask the product team -->\n\nNothing observed here.\n")
+	runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
+	if got.LintOK {
+		t.Fatalf("a working note rode along on the marker's line: %+v", got.Violations)
+	}
+}
+
+// TestProductDocsPageLintMarkerIsNotASwitchOnEveryRule: the declared token used
+// to be stripped from every line BEFORE any rule read it, which made the token
+// a switch on all of them — a marker declared as an opening HTML comment put
+// out `html_comments`, one declared as `password` put out the secret scan. The
+// exemption belongs to the rule it exists for, and to nothing else.
+func TestProductDocsPageLintMarkerIsNotASwitchOnEveryRule(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, "docs/demo/p.md", "# Access\n\npassword: hunter2-9f3a81bc\n\n"+
+		"<!-- ask the product team about this one -->\n")
+	for _, marker := range []string{"<!--", "password", "hunter2-9f3a81bc"} {
+		t.Run(marker, func(t *testing.T) {
+			cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "page_lint"), map[string]string{
+				"vars.workspace_dir":             ws,
+				"input.product_dir":              "docs/demo",
+				"input.oracle_path":              filepath.Join(ws, ".golden-master"),
+				"vars.lint_rules":                allLintRules,
+				"vars.extra_forbidden_headings":  "",
+				"vars.coverage_no_anchor_marker": marker,
+			})
+			var got lintOut
+			runJSON(t, cmd, &got)
+			if got.LintOK {
+				t.Fatalf("a declared marker %q disabled a rule it has nothing to do with", marker)
+			}
+			rules := map[string]bool{}
+			for _, v := range got.Violations {
+				rules[fmt.Sprint(v["rule"])] = true
+			}
+			if !rules["secret_material"] || !rules["html_comments"] {
+				t.Fatalf("declaring %q silenced a rule: violations = %+v", marker, got.Violations)
+			}
+		})
+	}
+}
+
+// TestProductDocsPageLintMarkerExemptionIsArmedByTheNet: "without a net the
+// graph is unchanged" was true of the fail_log EXPRESSION and false of the
+// VALUE — `lint_ok` went from false to true on the same page, because the
+// exemption rode on a var rather than on the net that justifies it. The graph
+// test stubs `page_lint`, so only the real node can see this.
+func TestProductDocsPageLintMarkerExemptionIsArmedByTheNet(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	writeFile(t, ws, "docs/demo/p.md", "# Method\n\n## How this was built "+defaultNoAnchorMarker+
+		"\n\nNothing observed here.\n")
+	var got lintOut
+	runJSON(t, lintCommandWithNet(t, ws, "docs/demo", allLintRules, "", filepath.Join(ws, ".golden-master")), &got)
+	if !got.LintOK {
+		t.Fatalf("with a net, the marker coverage_check requires was called a working note: %+v", got.Violations)
+	}
+	runJSON(t, lintCommandWithNet(t, ws, "docs/demo", allLintRules, "", ""), &got)
+	if got.LintOK {
+		t.Fatalf("with NO net there is no gate to contradict, so the marker is a working note again — the node must be the one it was: %+v", got.Violations)
+	}
+}
+
+// ─── the self-documenting catalog entry, and the net it carries ──────────
+//
+// `repos: [{id: …, path: "."}]` is the shape a CAMPAIGN generates to document
+// its own repository: a source already on disk, named RELATIVE to the
+// workspace, cloned over the filesystem with no forge, no network and no
+// credential — and then redacted and read like any other source.
+//
+// The same front door resolves the golden-master net exactly once, in the
+// workspace first and then in each clone, so the exhaustiveness gate and the
+// campaign both learn about it from ONE place: a second derivation somewhere
+// else is how the two end up disagreeing.
+func TestProductDocsCatalogIngestLocalPathSource(t *testing.T) {
+	requireGitPython(t)
+	scratch := t.TempDir()
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \".\"\n",
+		`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"."}]}`+"\n")
+	writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+	writeFile(t, ws, "src/app.ts", "export const submit = 'Send';\n")
+	writeFile(t, ws, ".env", "SECRET_KEY=never-read-me\n")
+	writeFile(t, ws, ".golden-master/corpus.json", coverageCorpus)
+	writeFile(t, ws, ".golden-master/feature-coverage.json", coverageInventory)
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+
+	if got.OKCount != 1 || got.Degraded != 0 {
+		t.Fatalf("inventory = %d ok / %d degraded, want 1/0 — a local source needs no forge: %s", got.OKCount, got.Degraded, got.Log)
+	}
+	clone, _ := got.Inventory[0]["path"].(string)
+	if !strings.HasPrefix(clone, scratch) {
+		t.Fatalf("the local source landed at %q, not under the scratch dir — it must be cloned OUT of the docs worktree", clone)
+	}
+	if _, err := os.Stat(filepath.Join(clone, "src/app.ts")); err != nil {
+		t.Fatalf("the local clone is missing the source the campaign must read: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".env")); err == nil {
+		t.Fatalf(".env survived into the local clone — a local source is redacted like any other")
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".git")); err == nil {
+		t.Fatalf("the local clone kept its history — the redacted blobs stay one `git show` away")
+	}
+	// The source tree itself is never touched: the redaction runs on the copy.
+	if _, err := os.Stat(filepath.Join(ws, ".env")); err != nil {
+		t.Fatalf("redacting the clone deleted the file from the SOURCE tree: %v", err)
+	}
+	if got.OraclePath != filepath.Join(ws, ".golden-master") {
+		t.Fatalf("oracle_path = %q, want the net in the workspace", got.OraclePath)
+	}
+	if !strings.Contains(got.Log, "exhaustiveness gate is ARMED") {
+		t.Fatalf("the front door does not say it armed the gate: %s", got.Log)
+	}
+}
+
+// A path is confined to the workspace, and must be a repository: the catalog
+// is repo content, so every one of these is a NAMED degraded entry rather
+// than a tree nobody chose to expose.
+func TestProductDocsCatalogIngestRefusesAnUnsafeLocalPath(t *testing.T) {
+	requireGitPython(t)
+	outside := t.TempDir()
+	for _, tc := range []struct{ name, path, want string }{
+		{"absolute", outside, "never absolute"},
+		{"escapes the workspace", "../..", "escapes the docs workspace"},
+		{"not a repository", "src", "is not a git repository"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := t.TempDir()
+			ws := t.TempDir()
+			gitIn(t, ws, "init", "-q", "-b", "main")
+			catalogFixture(t, ws, "catalog/demo",
+				"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \""+tc.path+"\"\n",
+				`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"`+tc.path+`"}]}`+"\n")
+			writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+			writeFile(t, ws, "src/app.ts", "export const x = 1;\n")
+			gitIn(t, ws, "add", "-A")
+			gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+			var got ingestOut
+			runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+			if got.OKCount != 0 || got.Degraded != 1 {
+				t.Fatalf("inventory = %d ok / %d degraded, want 0/1: %s", got.OKCount, got.Degraded, got.Log)
+			}
+			note, _ := got.Inventory[0]["note"].(string)
+			if !strings.Contains(note, tc.want) {
+				t.Fatalf("the refusal does not name its cause %q: %q", tc.want, note)
+			}
+		})
+	}
+}
+
+// The net may live in the SOURCE repository rather than in the docs repo —
+// that is where golden-master commits it. One resolver covers both, and
+// reports nothing found rather than guessing.
+func TestProductDocsCatalogIngestFindsTheNetInASourceClone(t *testing.T) {
+	requireGitPython(t)
+	// The docs repo carries no net of its own; the SOURCE does. `wholeNet`
+	// false commits the corpus alone — half a net is no net.
+	newWS := func(t *testing.T, wholeNet bool) (string, string) {
+		t.Helper()
+		ws := t.TempDir()
+		gitIn(t, ws, "init", "-q", "-b", "main")
+		source := newLocalSource(t, ws)
+		writeFile(t, source, ".golden-master/corpus.json", coverageCorpus)
+		if wholeNet {
+			writeFile(t, source, ".golden-master/feature-coverage.json", coverageInventory)
+		}
+		gitIn(t, source, "add", "-A")
+		gitIn(t, source, "commit", "-q", "-m", "net")
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo-src\n    url: "+source+"\n",
+			`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+		writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m", "seed")
+		return ws, t.TempDir()
+	}
+
+	ws, scratch := newWS(t, true)
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OraclePath != filepath.Join(scratch, "sources", "demo-src", ".golden-master") {
+		t.Fatalf("oracle_path = %q, want the net inside the source clone", got.OraclePath)
+	}
+
+	// Half a net is no net: the gate arms on BOTH artifacts or on neither,
+	// because a corpus with no inventory certifies nothing.
+	ws, scratch = newWS(t, false)
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OraclePath != "" {
+		t.Fatalf("oracle_path = %q with only half a net, want empty", got.OraclePath)
+	}
+	if !strings.Contains(got.Log, "exhaustiveness gate stays inert") {
+		t.Fatalf("the front door does not say the gate stays inert: %s", got.Log)
+	}
+}
+
+// ─── coverage_check — the adversarial-review corrections ────────────────
+//
+// Seven shapes found by a static adversarial pass (2026-09-25), each pinned
+// by a test that pushes the mutated page THROUGH the gate: an evasion must
+// refuse FOR ITS NAMED CAUSE, an honest page must stay blessed, and
+// reverting the fix must turn the test red again.
+
+func TestProductDocsCoverageGateIgnoresCitationsInsideTagAttributes(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The citation moves into an HTML attribute nobody renders; the visible
+	// prose stays. A citation counts where a reader can see it.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the",
+		`<span data-ref="[[ref:items.detail]] [[ref:039]]"></span> shows one item in full: every field the`)
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a citation hidden in an HTML attribute satisfied GAP:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateClosesAFenceWithItsOwnCharacter(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// Backticks open the fence; the tildes line does NOT close it (wrong
+	// character), the real ~~~ does. Toggling on any run kept the fence open
+	// over the chapter below, and its invented reference was never read.
+	writeFile(t, ws, "docs/demo/samples.md",
+		"# Samples\n"+
+			"\n"+
+			"~~~text\n"+
+			"```\n"+
+			"~~~\n"+
+			"## A chapter behind mixed fences — "+ref("999")+"\n"+
+			"\n"+
+			"Prose the gate must read once the fence has closed, with enough\n"+
+			"words in it to stand as writing on its own for the reader.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a fence closed by the wrong character hid a chapter and an invented reference:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") || !strings.Contains(got.Log, "999") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming 999:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateKeepsBothIdentitiesOfACollidingId(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// "001" is a corpus entry AND, now, a feature id: one membership must
+	// not silence the other, or the feature can never pair with its entry
+	// and the gate refuses the page whatever it writes.
+	mutate(t, ws, ".golden-master/feature-coverage.json",
+		`{"feature": "home.landing", "entries": ["001"]},`,
+		`{"feature": "home.landing", "entries": ["001"]},
+  {"feature": "001", "entries": ["001"]},`)
+	// The entry id 001 is cited by the home.landing paragraph too, so that
+	// block now documents TWO features; the shared floor is per feature, and
+	// the paragraph carries prose enough for both.
+	mutate(t, ws, "docs/demo/README.md",
+		"carries the sign-in call to action and nothing else.\n",
+		"carries the sign-in call to action and nothing else on it,\n"+
+			"every navigation element living in the sidebar beside the main\n"+
+			"panel for the visitor to reach without scrolling.\n")
+	writeFile(t, ws, "docs/demo/collision.md",
+		"# Collision\n"+
+			"\n"+
+			"## The same id in both spaces — [[ref:/]] [[ref:001]]\n"+
+			"\n"+
+			"[[ref:001]] [[ref:001]] names the corpus entry and, with the same\n"+
+			"token, the feature that documents it: both memberships stand, and\n"+
+			"the screen is described for every reader who opens this page.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("an id held by both the corpus and the inventory made convergence impossible:\n%s", got.Log)
+	}
+	if got.Documented != 5 || got.Total != 5 {
+		t.Fatalf("documented = %d/%d, want 5/5 with the colliding feature counted", got.Documented, got.Total)
+	}
+}
+
+func TestProductDocsCoverageGateCountsUnspacedScripts(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A complete Chinese paragraph: to WORD_RE it is two runs, so the page
+	// failed the word floor and every feature on it went GAP -- unreachable
+	// from inside the writeable set.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"[[ref:items.detail]] [[ref:039]] 展示所选条目的完整资料并列出管理员填写的全部字段以及历次修改记录，用户可以查看每次变更的时间和负责人并根据当前权限继续编辑内容或者执行其他可用操作。")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a complete unspaced-script paragraph was refused as undocumented:\n%s", got.Log)
+	}
+	if got.Documented != 4 {
+		t.Fatalf("documented = %d, want 4 — the CJK paragraph documents its feature", got.Documented)
+	}
+}
+
+func TestProductDocsCoverageGateSeesAnIndentedHeading(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// CommonMark opens an ATX heading with up to three spaces; anchored at
+	// column zero, an indented anchorless chapter read as a paragraph and
+	// the structural rule never saw it.
+	writeFile(t, ws, "docs/demo/indented.md",
+		" # A chapter two spaces deep\n"+
+			"\n"+
+			" ## Written without an anchor on purpose\n"+
+			"\n"+
+			"Prose the renderer shows under the indented chapter heading.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("an indented anchorless chapter escaped the structural rule:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "UNANCHORED_CHAPTER") {
+		t.Fatalf("the gate is red without UNANCHORED_CHAPTER:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateDoesNotReadPlaceholdersInsideWords(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// "swipe" carries wip; Spanish "todos" carries TODO. A placeholder is a
+	// whole token, and honest prose is not a substitute.
+	mutate(t, ws, "docs/demo/README.md",
+		"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"manager filled in, the history of its changes and the actions still open\n"+
+			"to them. Users swipe horizontally to inspect the remaining fields of the record.")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("ordinary words matching placeholder substrings refused honest prose:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCatalogIngestRefusesAnAbsoluteOracleDir(t *testing.T) {
+	requireGitPython(t)
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	source := newLocalSource(t, ws)
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\n"+
+			"docs:\n"+
+			"  product_dir: documentation_produits/demo\n"+
+			"repos:\n"+
+			"  - id: demo-src\n"+
+			"    url: "+source+"\n",
+		`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+			`"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+	writeFile(t, ws, "documentation_produits/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+	// Stripped-then-tested, an absolute oracle_dir went looking under
+	// <ws>/workspace/... and the exhaustiveness gate went inert IN SILENCE.
+	// A configuration error is a refusal that names the fix, never a pass.
+	cmd := resolveCommand(t, toolCommand(t, "product-docs/main.bot", "catalog_ingest"), map[string]string{
+		"vars.workspace_dir":               ws,
+		"vars.catalog_path":                "catalog",
+		"vars.product_id":                  "demo",
+		"vars.scratch_dir":                 scratch,
+		"vars.clone_depth":                 "1",
+		"vars.secret_globs":                "*.env,.env,.env.*,*secret*,*secrets*,*credential*,*.pem,*.key",
+		"vars.coverage_exclusions_heading": defaultExclusionsToken,
+		"vars.coverage_no_anchor_marker":   defaultNoAnchorMarker,
+		"vars.coverage_routes_file":        "routes.txt",
+		"vars.coverage_citation_open":      citeOpen,
+		"vars.coverage_citation_close":     citeClose,
+		"vars.coverage_placeholders":       defaultPlaceholders,
+		"vars.coverage_min_prose":          "60",
+		"vars.coverage_max_anchorless":     shippedAnchorlessCeiling,
+		"vars.oracle_dir":                  "/workspace/.golden-master",
+	})
+	runExpectingFailure(t, cmd, "oracle_dir must be RELATIVE")
+}
+
+func TestProductDocsCoverageGateIgnoresCitationsInsideLinkDestinations(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The citation moves into a link DESTINATION: the label is what a reader
+	// reads, the URL in parens is not.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the",
+		"[Open](https://example.test/[[ref:items.detail]]/[[ref:039]]) shows one item in full: every field the")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a citation hidden in a link destination satisfied GAP:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateHidesEveryLineOfAMultilineComment(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The feature and its entry sit between separate comment markers: the
+	// opening line was hidden, the body read as visible text, and the pair
+	// documented a feature nothing showed.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<!-- hidden from the reader\n"+
+			"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes -->\n"+
+			"Ordinary prose follows the hidden block, enough of it to stand as\n"+
+			"writing for any reader of the page who scrolls this far down it.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a feature documented only inside a multi-line comment counted as documented:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateCloserCarriesNothingButWhitespace(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A closing fence admits only whitespace after the marker: a wordy
+	// "closer" is fence content, and reading it as a close let the real
+	// closer open a NEW fence over the chapter that followed.
+	writeFile(t, ws, "docs/demo/closer.md",
+		"# Closer\n"+
+			"\n"+
+			"```text\n"+
+			"```not-a-close\n"+
+			"```\n"+
+			"## A chapter behind a wordy closer — [[ref:999]]\n"+
+			"\n"+
+			"Prose the gate must read once the fence has closed, enough words\n"+
+			"in it to stand as writing on its own for the reader.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a wordy closer hid the chapter behind the real one:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") || !strings.Contains(got.Log, "999") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming 999:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateKeepsVisibleTextAroundCommentSpans(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The feature's ONLY documentation carries a trailing comment opener:
+	// the visible prefix (and its citations) must survive — skipping the
+	// whole line sent a documented feature to GAP. The fence marker inside
+	// the comment must not open a fence either.
+	mutate(t, ws, "docs/demo/README.md",
+		"Paging is [[ref:items.list.paging]] [[ref:027]], twenty rows per page\n"+
+			"([[ref:/dashboard/items?page=2]]), with a pager at the foot of the list to move between them.\n",
+		"")
+	writeFile(t, ws, "docs/demo/prefix.md",
+		"## Paging — [[ref:/dashboard/items?page=2]] [[ref:027]]\n"+
+			"\n"+
+			"Paging is [[ref:items.list.paging]] [[ref:027]] twenty rows per page <!-- note\n"+
+			"hidden words --> and the pager at the foot of the list moves the\n"+
+			"manager between the pages, newest first, until the first one.\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("visible prose around a comment span was dropped — a documented feature went GAP:\n%s", got.Log)
+	}
+	if got.Documented != 4 {
+		t.Fatalf("documented = %d, want 4", got.Documented)
+	}
+}
+
+func TestProductDocsCoverageGateKeepsCommentMarkersInFencesLiteral(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// An UNMATCHED marker inside a fenced sample is fence content: the span
+	// machinery once swallowed the closer and every chapter behind it.
+	writeFile(t, ws, "docs/demo/sample.md",
+		"# Sample\n"+
+			"\n"+
+			"```html\n"+
+			"<!-- an unterminated marker in the sample\n"+
+			"```\n"+
+			"## A chapter behind the sample — [[ref:999]]\n"+
+			"\n"+
+			"Prose the gate must read once the fence has closed, enough words\n"+
+			"in it to stand as writing on its own for the reader.\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a marker inside a fence hid the chapters behind it:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") || !strings.Contains(got.Log, "999") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming 999:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateScansEveryCommentSpanOnTheLine(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// Two spans on one line: only the first was processed, so the second —
+	// unterminated — left its hidden citation visible.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<!-- one --> <!-- two\n"+
+			"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes -->\n"+
+			"Ordinary prose follows the hidden block, enough of it to stand as\n"+
+			"writing for any reader of the page who scrolls this far down it.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("the second comment span on a line lost its hidden state:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+// THE DELEGATION IS TRANSITIVE: a mirror whose alternates name a store
+// INSIDE the workspace, whose own alternates name one OUTSIDE, serves the
+// union all the same — a one-level walk stopped exactly one link short of
+// the escape.
+func TestProductDocsCatalogIngestFollowsAlternatesTransitively(t *testing.T) {
+	requireGitPython(t)
+	outside := t.TempDir()
+	gitIn(t, outside, "init", "-q", "-b", "main")
+	writeFile(t, outside, "secret-notes.md", "# not for the campaign\n")
+	gitIn(t, outside, "add", "-A")
+	gitIn(t, outside, "commit", "-q", "-m", "seed")
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	// hop 1: the mirror inside the workspace delegates to hop 2
+	mirror := filepath.Join(ws, "mirror.git")
+	gitIn(t, ws, "init", "-q", "--bare", "-b", "main", mirror)
+	// hop 2: an intermediate bare repo, still inside the workspace, that
+	// delegates OUTSIDE. No commit is needed anywhere: the guard refuses
+	// the delegation GRAPH itself, before any object is asked for.
+	hop := filepath.Join(ws, "hop.git")
+	gitIn(t, ws, "init", "-q", "--bare", "-b", "main", hop)
+	writeFile(t, hop, "objects/info/alternates", filepath.Join(outside, ".git", "objects")+"\n")
+	writeFile(t, mirror, "objects/info/alternates", hop+"/objects"+"\n")
+
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\ndocs:\n  product_dir: docs/client\nrepos:\n  - id: demo\n    path: \"mirror.git\"\n",
+		`{"id":"demo","docs":{"product_dir":"docs/client"},"repos":[{"id":"demo","path":"mirror.git"}]}`+"\n")
+	writeFile(t, ws, "docs/client/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	if got.OKCount != 0 || got.Degraded != 1 {
+		t.Fatalf("a repository delegating through an in-workspace hop to an outside store was cloned: %d ok / %d degraded — %s", got.OKCount, got.Degraded, got.Log)
+	}
+	if note, _ := got.Inventory[0]["note"].(string); !strings.Contains(note, "reads its git objects from OUTSIDE the docs workspace") {
+		t.Fatalf("the refusal does not name its cause: %q", note)
+	}
+}
+
+func TestProductDocsCoverageGateHidesALinkDefinitionTitle(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A link reference definition renders as nothing — and its optional
+	// TITLE sits on the next line. Read alone, that title counted as visible
+	// prose and its words as citations: a documented feature behind a
+	// hidden definition's continuation.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"[link]: /target\n"+
+			"  \"shows [[ref:items.detail]] [[ref:039]] one item in full: every field the manager filled in, the history of its changes and the actions still open\"\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a hidden definition's title line counted as documentation:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateRefusesAMalformedPathCitation(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	mutate(t, ws, "docs/demo/README.md",
+		"## One item — [[ref:/dashboard/items/{id}]] [[ref:039]]",
+		"## One item — [[ref://[broken]] [[ref:039]]")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a malformed path citation was accepted:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "PHANTOM_DOC") {
+		t.Fatalf("the gate is red without PHANTOM_DOC naming the malformed citation:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateIgnoresCitationsInMultilineTagAttributes(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The tag OPENER carries no close on its line: its attribute continues
+	// on the following lines, and attributes are invisible.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<div\n"+
+			"  title=\"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the manager filled in, with its whole history and every action still open to its owner\">\n"+
+			"</div>\n"+
+			"Ordinary prose follows the tag, enough of it to stand as writing for\n"+
+			"any reader of the page who scrolls this far down it.")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("citations inside a multi-line tag's attribute satisfied GAP:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateHidesALabelOnlyLinkDefinition(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// The DESTINATION sits on the next line: the definition is two lines of
+	// nothing, and its second line's citations are invisible.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"[hidden]:\n"+
+			"  /url \"[[ref:items.detail]] [[ref:039]] shows one item in full: every field\n"+
+			"  the manager filled in, and the actions still open for the reader\"\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a next-line definition's title counted as documentation:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateReadsAFenceInsideABlockquote(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A fenced sample inside a blockquote is still a fenced sample: its
+	// invented reference proves nothing and refuses nothing.
+	mutate(t, ws, "docs/demo/README.md",
+		"## How this page was built <!--no-anchor-->",
+		"## How this page was built <!--no-anchor-->\n"+
+			"\n"+
+			"> ```text\n"+
+			"> [[ref:invented-screen]]\n"+
+			"> ```\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("a blockquoted fenced sample was judged a product claim:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateStripsClosingHashesFromTitles(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// CommonMark renders '## Exclusions ##' as the chapter Exclusions: the
+	// closing hashes are decoration, and a title stored with them matched
+	// no declared exclusions token.
+	mutate(t, ws, "docs/demo/exclusions.md", "## Exclusions\n", "## Exclusions ##\n")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("closing ATX hashes broke the exclusions chapter recognition:\n%s", got.Log)
+	}
+	if got.Named != 1 {
+		t.Fatalf("exclusions named = %d, want 1", got.Named)
+	}
+}
+
+func TestProductDocsCoverageGateReadsPastAnInlineCodeAngleLabel(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// An inline code span is LITERAL: `<Widget` inside backticks is a
+	// label, not a tag opener, and reading it as one discarded the rest of
+	// the page — every chapter behind it went UNANCHORED.
+	mutate(t, ws, "docs/demo/README.md",
+		"The manager lands here — [[ref:items.list]] [[ref:026]] — and reads twenty rows,",
+		"Use the `<Widget` label here — [[ref:items.list]] [[ref:026]] — and read twenty rows,")
+	got := runCoverage(t, ws)
+	if !got.OK {
+		t.Fatalf("an inline code label was read as a tag opener and hid the page:\n%s", got.Log)
+	}
+}
+
+func TestProductDocsCoverageGateHidesScriptBodies(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	// A script element's body is DATA for the page's behaviour, not prose
+	// for its reader: cited and written there, it documented nothing.
+	mutate(t, ws, "docs/demo/README.md",
+		"[[ref:items.detail]] [[ref:039]] shows one item in full: every field the\n"+
+			"manager filled in, the history of its changes and the actions still open\n"+
+			"to them.",
+		"<script>\n"+
+			"var pair = \"[[ref:items.detail]] [[ref:039]] shows one item in full: every field\n"+
+			"the manager filled in, the history of its changes and the actions still open\";\n"+
+			"</script>\n")
+	got := runCoverage(t, ws)
+	if got.OK {
+		t.Fatalf("a script element's body counted as documentation:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "GAP -- items.detail") {
+		t.Fatalf("the gate is red without the GAP cause for items.detail:\n%s", got.Log)
+	}
+}
+
+// ─── diagram_lint — the verdict on the map the diagram step drew ──────
+
+type diagramOut struct {
+	OK               bool             `json:"diagram_ok"`
+	Causes           []map[string]any `json:"causes"`
+	CauseCount       int              `json:"cause_count"`
+	DiagramPages     int              `json:"diagram_pages"`
+	MermaidBlocks    int              `json:"mermaid_blocks"`
+	RoutesOnMap      int              `json:"routes_on_map"`
+	RoutesUnverified bool             `json:"routes_unverified"`
+	Log              string           `json:"log"`
+}
+
+// diagramMapPage builds a map page the lint must bless: one mermaid
+// flowchart whose every path instantiates a declared route concretely,
+// plus a comment carrying an external URL — which is NOT a mapped path
+// and must never phantom.
+func diagramMapPage() string {
+	return "# The map of the product\n" +
+		"\n" +
+		"The screens below are the ones the product serves.\n" +
+		"\n" +
+		"```mermaid\n" +
+		"flowchart TD\n" +
+		"  home[\"/ — l'accueil\"] -->|consulte| list[\"/dashboard/items — la liste\"]\n" +
+		"  list -->|ouvre| detail[\"/dashboard/items/42 — un objet\"]\n" +
+		"  %% voir https://example.com/aide pour l'aide en ligne\n" +
+		"```\n"
+}
+
+func diagramCommand(t *testing.T, ws, productDir, oraclePath, routes string) string {
+	t.Helper()
+	rt := routeTableFor(t, ws, oraclePath, routes, shippedProbeTimeout)
+	return resolveCommand(t, toolCommand(t, "product-docs/main.bot", "diagram_lint"), map[string]string{
+		"vars.workspace_dir":  ws,
+		"input.product_dir":   productDir,
+		"input.oracle_path":   oraclePath,
+		"input.routes":        routesJSON(t, rt.Routes),
+		"input.routes_source": rt.Source,
+		"input.routes_note":   rt.Note,
+		"input.net_digest":    digestJSON(t, rt.NetDigest),
+	})
+}
+
+func runDiagramLint(t *testing.T, ws string) diagramOut {
+	t.Helper()
+	var got diagramOut
+	runJSON(t, diagramCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master"), "routes.txt"), &got)
+	return got
+}
+
+// TestProductDocsDiagramLintBlessesAGroundedMap is the positive control:
+// a map that exists, draws, and grounds every path on a declared route.
+func TestProductDocsDiagramLintBlessesAGroundedMap(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	got := runDiagramLint(t, ws)
+	if !got.OK {
+		t.Fatalf("the lint refused a grounded map:\n%s", got.Log)
+	}
+	if got.DiagramPages != 1 || got.MermaidBlocks != 1 {
+		t.Fatalf("pages=%d blocks=%d, want 1 and 1", got.DiagramPages, got.MermaidBlocks)
+	}
+	// The BARE root route "/" is not a token this lint can see: a lone
+	// slash is indistinguishable from prose. Whether "/" is mapped at all
+	// is the route-presence checks' business (coverage_check), not the
+	// map-grounding verdict's.
+	if got.RoutesOnMap < 2 {
+		t.Fatalf("routes_on_map=%d, want at least the two mapped screens with a path", got.RoutesOnMap)
+	}
+	if got.RoutesUnverified {
+		t.Fatalf("a net with a route table must verify the map: routes_unverified=true\n%s", got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintFalsification breaks the fixture once per
+// refusal cause and requires the lint to redden FOR THAT CAUSE.
+func TestProductDocsDiagramLintFalsification(t *testing.T) {
+	requireGitPython(t)
+	cases := []struct {
+		name string
+		want string
+		map_ string // written to docs/demo/diagrams/README.md ("" = absent)
+	}{
+		{
+			name: "MAP_ABSENT: the map directory holds nothing",
+			want: "the map directory holds NO page",
+		},
+		{
+			name: "MAP_NOT_A_DIAGRAM: a page that draws nothing",
+			want: "carries NO fenced mermaid block",
+			map_: "# The map\n\nJust prose, no diagram at all.\n",
+		},
+		{
+			name: "MAP_NOT_A_DIAGRAM: a fence the renderer cannot close",
+			want: "a mermaid block is never CLOSED",
+			map_: "# The map\n\n```mermaid\nflowchart TD\n  home[\"/ — l'accueil\"]\n",
+		},
+		{
+			name: "MAP_NOT_A_DIAGRAM: a block that diagrams nothing",
+			want: "a mermaid block is EMPTY",
+			map_: "# The map\n\n```mermaid\n```\n",
+		},
+		{
+			name: "PHANTOM_MAP: a box the application does not serve",
+			want: "PHANTOM_MAP -- /dashboard/invented: the mapped path /dashboard/invented matches NO declared route",
+			map_: "# The map\n\n```mermaid\nflowchart TD\n  ghost[\"/dashboard/invented — l'écran fantôme\"]\n```\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newCoverageFixture(t)
+			if tc.map_ != "" {
+				writeFile(t, ws, "docs/demo/diagrams/README.md", tc.map_)
+			}
+			got := runDiagramLint(t, ws)
+			if got.OK {
+				t.Fatalf("the lint stayed GREEN under sabotage — it falsifies nothing:\n%s", got.Log)
+			}
+			if !strings.Contains(got.Log, tc.want) {
+				t.Fatalf("the lint is red WITHOUT the expected cause %q:\n%s", tc.want, got.Log)
+			}
+		})
+	}
+}
+
+// TestProductDocsDiagramLintGroundsHyphenatedAndQueryTokens: a map draws
+// REAL screens, and real routes carry hyphens and query strings. A token
+// truncated at its hyphen or matched WITH its query can never match its
+// declared route — the faithful rendering of the screen reddens as a
+// phantom, and the campaign's only repair is deleting the truth.
+func TestProductDocsDiagramLintGroundsHyphenatedAndQueryTokens(t *testing.T) {
+	requireGitPython(t)
+	t.Run("a hyphenated route is grounded whole", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		// NO catch-all in the table: /{slug} would match the token the
+		// truncated regex extracts (/user), and the mutant would ride it
+		// to green.
+		writeFile(t, ws, ".golden-master/routes.txt",
+			"GET /\nGET /dashboard/items\nGET /user-settings\n")
+		writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+			"\n"+
+			"```mermaid\n"+
+			"flowchart TD\n"+
+			"  prefs[\"/user-settings — les préférences\"]\n"+
+			"```\n")
+		got := runDiagramLint(t, ws)
+		if !got.OK {
+			t.Fatalf("a hyphenated route was truncated and refused as a phantom:\n%s", got.Log)
+		}
+	})
+	t.Run("a query-bearing map token is grounded on its path", func(t *testing.T) {
+		ws := newCoverageFixture(t)
+		writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+			"\n"+
+			"```mermaid\n"+
+			"flowchart TD\n"+
+			"  page2[\"/dashboard/items?page=2 — la deuxième page\"]\n"+
+			"```\n")
+		got := runDiagramLint(t, ws)
+		if !got.OK {
+			t.Fatalf("a legitimate screen drawn with its query was refused as a phantom:\n%s", got.Log)
+		}
+	})
+}
+
+// TestProductDocsDiagramLintDegradesBehindCatchAlls: a token grounded
+// ONLY by a catch-all route (/{x}, /**) is not grounded — the catch-all
+// declares every path and proves none, the same doctrine as the sibling
+// gate. The gate must say so OUT LOUD (a visible note, the run still
+// blesses a well-formed map) and never silently green it.
+func TestProductDocsDiagramLintDegradesBehindCatchAlls(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, ".golden-master/routes.txt",
+		"GET /\nGET /**\n")
+	writeFile(t, ws, "docs/demo/diagrams/README.md", "# The map\n"+
+		"\n"+
+		"```mermaid\n"+
+		"flowchart TD\n"+
+		"  ghost[\"/dashboard/unheard-of — un écran que rien ne déclare\"]\n"+
+		"```\n")
+	got := runDiagramLint(t, ws)
+	if !got.OK {
+		t.Fatalf("a map grounded only behind catch-alls was REFUSED — the doctrine is a visible degradation, not a refusal:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "matches only catch-all route(s)") {
+		t.Fatalf("the gate blessed a token only catch-alls could ground without saying so:\n%s", got.Log)
+	}
+	if !strings.Contains(got.Log, "1 mapped path(s) unverified behind catch-all routes") {
+		t.Fatalf("the summary does not count the unverified tokens:\n%s", got.Log)
+	}
+}
+
+// TestProductDocsDiagramLintDegradesVisiblyWithoutRoutes: with no net the
+// mapped paths cannot be verified — the map is still judged for existence
+// and renderability, and the degradation is VISIBLE, never silently green.
+func TestProductDocsDiagramLintDegradesVisiblyWithoutRoutes(t *testing.T) {
+	requireGitPython(t)
+	ws := newCoverageFixture(t)
+	writeFile(t, ws, "docs/demo/diagrams/README.md", diagramMapPage())
+	var got diagramOut
+	runJSON(t, diagramCommand(t, ws, "docs/demo", "", "routes.txt"), &got)
+	if !got.OK {
+		t.Fatalf("a well-formed map was refused for a net it never needed:\n%s", got.Log)
+	}
+	if !got.RoutesUnverified {
+		t.Fatalf("routes_unverified=false with no route table — the degradation is hidden")
+	}
+	if !strings.Contains(got.Log, "ABSENT -- mapped paths unverified") {
+		t.Fatalf("the log does not name the degradation:\n%s", got.Log)
 	}
 }

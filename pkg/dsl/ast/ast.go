@@ -7,7 +7,7 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 // ---------------------------------------------------------------------------
 
 // DefaultProfile is the syntax profile a file declares by declaring none:
-// today's grammar, frozen (ADR-098).
+// the 1.0-cut grammar, frozen (ADR-098).
 const DefaultProfile = 1
 
 // File is the root AST node representing an entire .bot source file.
@@ -50,8 +50,11 @@ type File struct {
 	Uses         []*UseDecl          // group instantiations (`use <group> as <prefix>`)
 	Subbots      []*SubbotDecl       // sub-bot node declarations (run another .bot as a nested run)
 	Workflows    []*WorkflowDecl     // workflow declarations
-	Comments     []*Comment          // top-level comments (## ...)
-	Span         Span
+	// Comments are the file's own `##` lines: its head (CommentBefore,
+	// before the first line of code) and its tail (CommentAtEnd). What is
+	// written around a declaration is carried by that declaration.
+	Comments []*Comment
+	Span     Span
 }
 
 // EffectiveProfile is the syntax profile the file is read in: its header's,
@@ -78,6 +81,9 @@ type GroupDecl struct {
 	Tools    []*ToolNodeDecl
 	Computes []*ComputeDecl
 	Edges    []*Edge
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
 	Span     Span
 }
 
@@ -88,7 +94,10 @@ type UseDecl struct {
 	Group  string
 	Prefix string
 	With   []*WithEntry // parameter bindings (key = param name, value = template/literal)
-	Span   Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // SubbotDecl is a graph node that runs another `.bot` as a nested run:
@@ -114,6 +123,9 @@ type SubbotDecl struct {
 	// workspace-safety guard may fan it out in parallel. Mirror of an
 	// agent/judge node's `readonly:`. Default false = conservatively mutating.
 	Isolated bool
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
 	Span     Span
 }
 
@@ -129,7 +141,10 @@ type EmitDecl struct {
 	Description string       // optional human-readable node label (surfaced in the run console)
 	Event       string       // event name to publish (required)
 	With        []*WithEntry // immutable payload (key = payload field)
-	Span        Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // WaitDecl is a `wait` node: it blocks its branch until the named event is
@@ -146,7 +161,10 @@ type WaitDecl struct {
 	Event       string // event name to wait for (required)
 	Timeout     string // Go duration string (required)
 	Output      string // optional schema reference for the received payload
-	Span        Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // AwaitAnswersDecl is an `await_answers` node: the deterministic sync point for
@@ -164,16 +182,53 @@ type AwaitAnswersDecl struct {
 	Description string // optional human-readable node label (surfaced in the run console)
 	From        string // optional node ref: only await questions posted by this node ("" = whole run)
 	Timeout     string // Go duration string (required)
-	Span        Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
 // Comments
 // ---------------------------------------------------------------------------
 
+// CommentPlace says how a comment sits relative to the line its Anchor
+// names.
+type CommentPlace int
+
+const (
+	// CommentBefore is a comment written on its own line(s) above the line
+	// it names — the form nearly every comment of a `.bot` takes.
+	CommentBefore CommentPlace = iota
+	// CommentAtEnd is a comment written on its own line below the LAST
+	// line of the block its Anchor names, no line of that block following
+	// it.
+	CommentAtEnd
+	// CommentTrailing is a comment written at the end of the line its
+	// Anchor names, after the code.
+	CommentTrailing
+)
+
+// Comment is one `##` line with the address it was written at. A comment is
+// not part of the program — nothing downstream can tell the writer where it
+// belongs — so it carries its own place: the declaration that holds it
+// (File.Comments for the file's head and tail, <Decl>.Comments for what is
+// written around a declaration, Edge.Comments for an edge), the line it
+// names inside that declaration, and how it sits there.
 type Comment struct {
 	Text string
-	Span Span
+	// Anchor is the dotted key path, inside the carrier's body, of the
+	// line the comment names: "model", "sandbox.network.allow", "->2" for
+	// the second edge line of the declaration. "" names the carrier
+	// itself — its header line for CommentBefore and CommentTrailing, its
+	// whole body for CommentAtEnd.
+	Anchor string
+	Place  CommentPlace
+	// Blank marks a comment a BLANK LINE separates from the comment above
+	// it — the paragraph break an author writes inside a run of `##`
+	// lines. Without it the writer welds a run back into one block.
+	Blank bool
+	Span  Span
 }
 
 // ImportDecl is one `import "lib/x.bot"` at the head of a file: the path as
@@ -205,7 +260,10 @@ type MCPServerDecl struct {
 	Args      []string
 	URL       string
 	Auth      *MCPAuthDecl
-	Span      Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // MCPAuthDecl represents an `auth:` block under an `mcp_server`. Only
@@ -238,17 +296,24 @@ type MCPConfigDecl struct {
 // VarsBlock represents a top-level or workflow-level `vars:` block.
 type VarsBlock struct {
 	Fields []*VarField
-	Span   Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // VarField is a single variable declaration:
-// `name: type [enum: ...] [= default]`.
+// `name: type [enum: ...] [matching: "<re>"] [= default]`.
 type VarField struct {
 	Name       string
 	Type       TypeExpr
 	EnumValues []string // non-nil only if enum constraint present
-	Default    *Literal // nil if no default
-	Span       Span
+	// Matching is the RE2 source of a `[matching: "<re>"]` constraint, as
+	// the author wrote it. Empty means unconstrained: an empty pattern
+	// would match every value anyway, so the two are one state.
+	Matching string
+	Default  *Literal // nil if no default
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +325,10 @@ type VarField struct {
 // selected at run time via `--preset <name>`.
 type PresetsBlock struct {
 	Entries []*Preset
-	Span    Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // Preset is one named entry inside a `presets:` block.
@@ -307,7 +375,10 @@ func (a AttachmentTypeExpr) String() string {
 // uploaded from the Launch modal and persisted under the run.
 type AttachmentsBlock struct {
 	Fields []*AttachmentField
-	Span   Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // AttachmentField is a single attachment declaration. The short form is
@@ -338,7 +409,10 @@ type AttachmentField struct {
 // iterion materialises the real value at tool/shell execution.
 type SecretsBlock struct {
 	Fields []*SecretField
-	Span   Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // SecretField is a single secret declaration. The short form is
@@ -381,7 +455,10 @@ type PromptDecl struct {
 	// references to the same text share it. The writer puts it back on its
 	// property, and the save guard compares its body verbatim.
 	Inline bool
-	Span   Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +469,10 @@ type PromptDecl struct {
 type SchemaDecl struct {
 	Name   string
 	Fields []*SchemaField
-	Span   Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // SchemaField is a single field in a schema: `name: type [enum: ...]`.
@@ -431,7 +511,10 @@ type CursorDecl struct {
 	Description string
 	Values      []*CursorEnumValue // enum form (ordered for numeric→position fallback)
 	Bands       []*CursorBand      // numeric form
-	Span        Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // CursorEnumValue is one entry of a `values:` block on a cursor decl:
@@ -493,6 +576,9 @@ type SupervisorDecl struct {
 	// first event — the bot can register more at runtime, but anything it
 	// registers only exists after its first eval.
 	Monitors []string
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
 	Span     Span
 }
 
@@ -522,7 +608,7 @@ type LLMDecl struct {
 	Description       string // optional human-readable node label (surfaced in the run console)
 	Model             string // string literal, may contain ${...} env refs
 	Backend           string // execution backend name (e.g. "claude_code"); when set, bypasses direct LLM API
-	Provider          string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${...} env refs
+	Provider          string // credential routing hint(s): single ("anthropic"/"zai"/"moonshot"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${...} env refs
 	Command           string // per-node CLI binary override, honored by claude_code (default "claude"); may contain ${...} env refs
 	MCP               *MCPConfigDecl
 	Input             string           // schema reference name
@@ -539,7 +625,7 @@ type LLMDecl struct {
 	Skills            []string         // skill-library skills referenced by the node (nil = inherit workflow default)
 	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
-	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "xhigh", "max"
+	ReasoningEffort   string           // reasoning effort level: "none", "low", "medium", "high", "xhigh", "max"
 	Timeout           string           // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = none; may contain ${VAR} env refs
 	Readonly          bool             // when true, node is not considered mutating for workspace safety
 	FullAccess        bool             // when true, lift the codex backend sandbox to danger-full-access (network + out-of-workspace writes); off by default; other backends ignore it
@@ -554,7 +640,11 @@ type LLMDecl struct {
 	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory        string           // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
+	AmbientContext    string           // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Allow             []string         // node-level permission allow rules; a non-empty list REPLACES the workflow's allow: (empty = inherit)
+	Ask               []string         // node-level permission ask rules; a non-empty list REPLACES the workflow's ask: (empty = inherit)
+	Deny              []string         // node-level permission deny rules; a non-empty list REPLACES the workflow's deny: (empty = inherit)
 	Needs             []string         // resource names acquired before running (workflow.resources)
 	Fallbacks         []*FallbackDecl  // ordered `fallbacks:` routes tried when this node's primary fails (ADR-087); declaration order preserved for round-trip
 }
@@ -584,7 +674,10 @@ type FallbackDecl struct {
 type AgentDecl struct {
 	Name string
 	LLMDecl
-	Span Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -597,7 +690,10 @@ type AgentDecl struct {
 type JudgeDecl struct {
 	Name string
 	LLMDecl
-	Span Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -628,13 +724,16 @@ type RouterDecl struct {
 	System          string   // prompt ref, only for mode: llm
 	User            string   // prompt ref, only for mode: llm
 	Multi           bool     // multi-route selection, only for mode: llm
-	ReasoningEffort string   // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
+	ReasoningEffort string   // reasoning effort level: "none", "low", "medium", "high", "xhigh", "max" (only for mode: llm)
 	Over            string   // array source template, only for mode: fan_out_each (e.g. "{{outputs.decompose.tickets}}")
 	As              string   // per-item binding name, only for mode: fan_out_each (default: "item")
 	Key             string   // item field holding its unique id, only for mode: fan_out_each (enables DAG scheduling)
 	DependsOn       string   // item field holding the array of ids it depends on, only for mode: fan_out_each
 	Needs           []string // resource names acquired before running (workflow.resources)
-	Span            Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -697,7 +796,10 @@ type HumanDecl struct {
 	MergeInto     string // "current" (default) | "none" | <branch>
 	MaxTurns      int    // dialogue asymptote backstop
 
-	Span Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -759,7 +861,10 @@ type ToolNodeDecl struct {
 	// an agent-judge `readonly:`, for a tool that still writes but partitions
 	// its writes. Default false = conservatively mutating (serialized fan-out).
 	ParallelSafe bool
-	Span         Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ActionParam is one argument of a connector action.
@@ -800,7 +905,10 @@ type ComputeDecl struct {
 	ArtifactLabels []string       // artifact_labels: applied to the published artifact
 	Expr           []*ComputeExpr // ordered list of field-name → expression-source pairs
 	Await          AwaitMode      // convergence strategy (none/wait_all/best_effort)
-	Span           Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ComputeExpr is one entry inside a `compute` node's `expr:` block:
@@ -842,7 +950,10 @@ type FailDecl struct {
 	Code        string // optional UPPER_SNAKE failure code (C247 when malformed)
 	Message     string // optional operator-facing reason, templated with the usual {{...}} refs
 	Resumable   bool   // park the run failed_resumable (checkpoint kept) instead of terminal failed
-	Span        Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -868,6 +979,7 @@ type WorkflowDecl struct {
 	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
 	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
 	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	AmbientContext string            // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset → ITERION_AMBIENT_CONTEXT → workspace)
 	// LoopBudgetGuard switches the back-edge affordability guard: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string
@@ -886,7 +998,10 @@ type WorkflowDecl struct {
 	Deny                []string      // permission deny rules
 	Sandbox             *SandboxBlock // sandbox: short or block form (nil = inherit global default)
 	Edges               []*Edge       // directed edges between nodes
-	Span                Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // BudgetBlock represents execution limits for a workflow.
@@ -1022,7 +1137,10 @@ type Edge struct {
 	Loop    *LoopClause    // optional loop tracking
 	Foreach *ForeachClause // optional sequential foreach iteration (mutually exclusive with Loop)
 	With    []*WithEntry   // optional data mappings
-	Span    Span
+	// Comments are the `##` lines written around this declaration, each
+	// carrying the address it was written at (Comment.Anchor, Comment.Place).
+	Comments []*Comment
+	Span     Span
 }
 
 // ForeachClause represents `as foreach <name>(<item> in <collection>)` on a

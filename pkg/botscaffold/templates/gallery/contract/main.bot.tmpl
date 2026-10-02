@@ -1,0 +1,129 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: a bot with a public contract (ADR-099).
+##
+## The contract is the face the outside reads without opening the prompts:
+## what the bot takes, what it produces, the file it delivers, the checks a
+## reader can run on those, and the effects it has. It is declared ONCE, at
+## top level, named by the workflow's `contract:`, and the compiler holds it
+## to THIS program — a contract the program contradicts is a compile error,
+## never a display: an input is a declared var of the same type, required
+## exactly when the var has no default (C300); an output names the node and
+## field that produce it, of the field's type (C301); a criterion names a
+## port and a registered evaluator with its parameters (C302). `iterion
+## validate` renders the bound contract (and returns it as `public_contract`
+## with --json), and holds the bundle's other readers to it: the manifest's
+## launch face (C254) and a parent `subbot`'s `with:` (C255). A criterion is
+## declared and held for shape here — nothing evaluates it at run time yet —
+## so the goal check the contract declares is ENFORCED by the deterministic
+## entry gate below. `goal` carries the scaffold's empty default (every var
+## of the form has one), so to the contract it is optional: a parent
+## `subbot` is not held to pass it (C255 holds required inputs only) and the
+## gate is what refuses an empty goal. Fill in: the mission, `goal`.
+## docs/dsl.md (§ The public contract) · docs/adr/099-public-contracts.md
+
+dsl: 2
+
+<%template "vars_block" .%>
+schema check_out:
+  configured: bool
+
+schema report:
+  summary: string
+  done: bool
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt work_user:
+  Carry out the mission for the goal below. Report a one-paragraph summary
+  of what you did, and whether the goal is fully done.
+
+  Goal: {{vars.goal}}
+
+## The entry gate, deterministic and before any LLM call: no goal, no run.
+## `!!` is the expression language's truthiness — trimmed and lower-cased,
+## an empty or blank goal is refused with a typed code, and so are the
+## words false, no and 0 (stricter than the contract's min_length, which
+## counts characters untrimmed and admits a blank goal and those words
+## alike).
+compute check:
+  output: check_out
+  expr:
+    configured: "!!vars.goal"
+
+## The work: one agent with a typed output, PUBLISHED as a versioned
+## artifact of the run (`publish:`). The contract names a field of it
+## (`from: work.summary`) and, through a file port, the node alone
+## (`from: work`) — which is what makes the artifact the bot's delivered
+## file.
+agent work:<%template "llm_fields" .%>
+  system: mission
+  user: work_user
+  output: report
+  publish: report
+
+fail goal_unset:
+  description: "no goal was given"
+  code: GOAL_UNSET
+  message: "goal is empty: say what this run works on"
+
+## The public face. Every port mirrors the program: `goal` repeats
+## `vars.goal` (its type, its requiredness, its default — a port may repeat
+## what the var says, never contradict it); each output names its producer.
+## A file port carries a `file:` block (media type, size floor, schema) and
+## names a node that publishes. Effects document what the bot does to the
+## world; they grant nothing — the sandbox and the permission gate keep the
+## admission.
+contract public:
+<%- if .DisplayName%>
+  display_name: <%quote .DisplayName%>
+<%- end%>
+<%- if .Description%>
+  responsibility: <%quote .Description%>
+<%- end%>
+  version: 1
+  inputs:
+    goal: string
+      description: "What this run works on — refused empty at entry (GOAL_UNSET); optional to the contract only because the scaffold gives every var a default"
+  outputs:
+    summary: string
+      description: "One paragraph on what was done"
+      from: work.summary
+    done: bool
+      description: "Whether the goal is fully done"
+      from: work.done
+    report: json
+      description: "The work's published output, a versioned artifact of the run"
+      file:
+        media_type: "application/json"
+        schema: report
+      from: work
+  criteria:
+    goal_is_not_empty:
+      kind: min_length
+      port: input.goal
+      params: {min: 1}
+    summary_is_not_empty:
+      kind: min_length
+      port: output.summary
+      params: {min: 1}
+  effects:
+    reads_the_workspace:
+      description: "Reads the repository it runs in; its only product is the run's published report"
+    spends_llm_budget:
+      description: "One agent call per run"
+      paid: true
+
+workflow <%.WorkflowName%>:
+  contract: public
+  entry: check
+<%- if .Worktree%>
+  ## Isolate the run in a git worktree; the report is an artifact of the
+  ## run, so nothing of it depends on the checkout.
+  worktree: auto<%else%>
+  ## In place: the bot reads the workspace and writes nothing to it — its
+  ## product is the published report, an artifact of the run, not a
+  ## commit. `worktree:` unset means `auto`, so the opt-out is written.
+  worktree: none<%end%><%template "dials" .%><%template "budget_block" .%>
+  check -> goal_unset when not configured
+  check -> work when configured
+  work -> done

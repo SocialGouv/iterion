@@ -6,6 +6,8 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -113,7 +115,7 @@ func TestExecutorToolNodeDirectPolicyAllows(t *testing.T) {
 func TestToolNodeCommandStreamsOversizedShellThroughStdin(t *testing.T) {
 	e := &ClawExecutor{}
 	payload := strings.Repeat("x", 100_001)
-	resolved := "printf %s " + shellEscapeValue(payload)
+	resolved := "printf %s " + shellEscapeValue(payload, ShapeUndeclared)
 	cmd := e.toolNodeCommand(context.Background(), resolved, nil)
 	if got := cmd.Args; len(got) != 2 || got[0] != "bash" || got[1] != "-s" {
 		t.Fatalf("oversized command args = %v, want [bash -s]", got)
@@ -199,7 +201,7 @@ func ref(kind ir.RefKind, name, raw string, unquoted bool) *ir.Ref {
 func TestResolveCommandTemplate_BasicShellEscaping(t *testing.T) {
 	tmpl := "echo {{input.msg}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "msg", "{{input.msg}}", false)},
-		map[string]any{"msg": "hello world"}, nil, nil, "")
+		map[string]any{"msg": "hello world"}, nil, nil, "", nil)
 	if got != "echo 'hello world'" {
 		t.Errorf("got %q", got)
 	}
@@ -208,7 +210,7 @@ func TestResolveCommandTemplate_BasicShellEscaping(t *testing.T) {
 func TestResolveCommandTemplate_VarsLookup(t *testing.T) {
 	tmpl := "echo {{vars.name}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefVars, "name", "{{vars.name}}", false)},
-		nil, map[string]any{"name": "Iterion"}, nil, "")
+		nil, map[string]any{"name": "Iterion"}, nil, "", nil)
 	if got != "echo 'Iterion'" {
 		t.Errorf("got %q", got)
 	}
@@ -217,7 +219,7 @@ func TestResolveCommandTemplate_VarsLookup(t *testing.T) {
 func TestResolveCommandTemplate_RawBangBypassesShellEscape(t *testing.T) {
 	tmpl := "{{!input.snippet}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "snippet", "{{!input.snippet}}", true)},
-		map[string]any{"snippet": "echo $HOME; ls"}, nil, nil, "")
+		map[string]any{"snippet": "echo $HOME; ls"}, nil, nil, "", nil)
 	// Raw form pastes verbatim — no shell-escaping.
 	if got != "echo $HOME; ls" {
 		t.Errorf("got %q", got)
@@ -228,7 +230,7 @@ func TestResolveCommandTemplate_MissingValueLeftAsRaw(t *testing.T) {
 	// substituteNil=false in shell context → unresolved refs stay literal.
 	tmpl := "echo {{input.missing}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "missing", "{{input.missing}}", false)},
-		map[string]any{}, nil, nil, "")
+		map[string]any{}, nil, nil, "", nil)
 	if got != "echo {{input.missing}}" {
 		t.Errorf("missing input should leave placeholder, got %q", got)
 	}
@@ -254,7 +256,7 @@ func TestResolveCommandTemplate_OutputsRef(t *testing.T) {
 
 	t.Run("shell-escaped like an input", func(t *testing.T) {
 		got := resolveCommandTemplate("git checkout {{outputs.prev.branch}}",
-			[]*ir.Ref{outRef("{{outputs.prev.branch}}", "prev", "branch")}, nil, nil, td, "")
+			[]*ir.Ref{outRef("{{outputs.prev.branch}}", "prev", "branch")}, nil, nil, td, "", nil)
 		if want := "git checkout 'x;touch /tmp/iterion-outputs-sentinel'"; got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
@@ -262,7 +264,7 @@ func TestResolveCommandTemplate_OutputsRef(t *testing.T) {
 
 	t.Run("a deep path drills into a nested value", func(t *testing.T) {
 		got := resolveCommandTemplate("echo {{outputs.prev.obj.k}}",
-			[]*ir.Ref{outRef("{{outputs.prev.obj.k}}", "prev", "obj", "k")}, nil, nil, td, "")
+			[]*ir.Ref{outRef("{{outputs.prev.obj.k}}", "prev", "obj", "k")}, nil, nil, td, "", nil)
 		if got != "echo 'v'" {
 			t.Errorf("got %q", got)
 		}
@@ -270,7 +272,7 @@ func TestResolveCommandTemplate_OutputsRef(t *testing.T) {
 
 	t.Run("a number renders as its digits, a whole output as JSON", func(t *testing.T) {
 		got := resolveCommandTemplate("N={{outputs.prev.n}} ALL={{outputs.prev}}",
-			[]*ir.Ref{outRef("{{outputs.prev.n}}", "prev", "n"), outRef("{{outputs.prev}}", "prev")}, nil, nil, td, "")
+			[]*ir.Ref{outRef("{{outputs.prev.n}}", "prev", "n"), outRef("{{outputs.prev}}", "prev")}, nil, nil, td, "", nil)
 		if !strings.Contains(got, "N='3'") || !strings.Contains(got, `ALL='{"branch"`) {
 			t.Errorf("got %q", got)
 		}
@@ -282,7 +284,7 @@ func TestResolveCommandTemplate_OutputsRef(t *testing.T) {
 		// argument. With no snapshot at all the rule is the same.
 		refs := []*ir.Ref{outRef("{{outputs.absent.x}}", "absent", "x")}
 		for name, snapshot := range map[string]*TemplateData{"node has not produced": td, "no snapshot": nil} {
-			if got := resolveCommandTemplate("echo {{outputs.absent.x}}", refs, nil, nil, snapshot, ""); got != "echo {{outputs.absent.x}}" {
+			if got := resolveCommandTemplate("echo {{outputs.absent.x}}", refs, nil, nil, snapshot, "", nil); got != "echo {{outputs.absent.x}}" {
 				t.Errorf("%s: got %q, want the placeholder kept", name, got)
 			}
 		}
@@ -298,7 +300,7 @@ func TestResolveCommandTemplate_OutputsRef(t *testing.T) {
 
 	t.Run("the raw form bypasses escaping, by design", func(t *testing.T) {
 		got := resolveCommandTemplate("{{!outputs.prev.branch}}",
-			[]*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"prev", "branch"}, Raw: "{{!outputs.prev.branch}}", Unquoted: true}}, nil, nil, td, "")
+			[]*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"prev", "branch"}, Raw: "{{!outputs.prev.branch}}", Unquoted: true}}, nil, nil, td, "", nil)
 		if got != "x;touch /tmp/iterion-outputs-sentinel" {
 			t.Errorf("got %q", got)
 		}
@@ -308,7 +310,7 @@ func TestResolveCommandTemplate_OutputsRef(t *testing.T) {
 		got := resolveCommandTemplate("T={{!outputs.prev.text}} B={{outputs.prev.branch}}", []*ir.Ref{
 			{Kind: ir.RefOutputs, Path: []string{"prev", "text"}, Raw: "{{!outputs.prev.text}}", Unquoted: true},
 			outRef("{{outputs.prev.branch}}", "prev", "branch"),
-		}, nil, nil, td, "")
+		}, nil, nil, td, "", nil)
 		if !strings.Contains(got, "T={{outputs.prev.branch}} ") {
 			t.Errorf("cascade replay rewrote an output value: %q", got)
 		}
@@ -349,7 +351,7 @@ func TestResolveScriptTemplate_ObjectAndArray(t *testing.T) {
 }
 
 func TestResolveTemplateWith_NoRefsPassthrough(t *testing.T) {
-	got := resolveTemplateWith("plain text {no template}", nil, nil, nil, nil, "", nil, shellEscapeValue, false, nil)
+	got := resolveTemplateWith("plain text {no template}", nil, nil, nil, nil, "", nil, nil, shellEscapeValue, false, nil)
 	if got != "plain text {no template}" {
 		t.Errorf("got %q", got)
 	}
@@ -363,7 +365,7 @@ func TestResolveCommandTemplate_FileSecretPath(t *testing.T) {
 	}}, secretguard.DefaultConfig())
 	got := resolveCommandTemplate("kubectl --kubeconfig {{secrets.kubeconfig.path}} get pods", []*ir.Ref{
 		ref(ir.RefSecrets, "kubeconfig", "{{secrets.kubeconfig.path}}", false),
-	}, nil, nil, nil, "", guard)
+	}, nil, nil, nil, "", nil, guard)
 	if got != "kubectl --kubeconfig '/run/iterion/secrets/kubeconfig' get pods" {
 		t.Fatalf("got %q", got)
 	}
@@ -380,7 +382,7 @@ func TestResolveTemplateWith_NoCascadeReplay(t *testing.T) {
 	}, map[string]any{
 		"a": "{{input.b}}", // literal that looks like a template
 		"b": "shouldNotLeak",
-	}, nil, nil, "")
+	}, nil, nil, "", nil)
 	// Expected: X gets the raw literal text; Y gets escaped 'shouldNotLeak'.
 	if !strings.Contains(got, "X={{input.b}}") {
 		t.Errorf("cascade replay corrupted input.a value: %q", got)
@@ -407,7 +409,7 @@ func TestJSONLiteralValue(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := jsonLiteralValue(c.in); got != c.want {
+			if got := jsonLiteralValue(c.in, ShapeUndeclared); got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
 			}
 		})
@@ -415,15 +417,15 @@ func TestJSONLiteralValue(t *testing.T) {
 }
 
 func TestRawTemplateValue(t *testing.T) {
-	if got := rawTemplateValue(nil); got != "null" {
+	if got := rawTemplateValue(nil, ShapeUndeclared); got != "null" {
 		t.Errorf("nil → %q", got)
 	}
-	if got := rawTemplateValue("plain"); got != "plain" {
+	if got := rawTemplateValue("plain", ShapeUndeclared); got != "plain" {
 		t.Errorf("string → %q", got)
 	}
 	// Complex values delegate to formatValue (returns JSON-ish form);
 	// we only care that the string survives unaltered for string input.
-	if got := rawTemplateValue(map[string]any{"k": "v"}); !strings.Contains(got, "k") {
+	if got := rawTemplateValue(map[string]any{"k": "v"}, ShapeUndeclared); !strings.Contains(got, "k") {
 		t.Errorf("map didn't include key: %q", got)
 	}
 }
@@ -562,7 +564,7 @@ func TestShellEscapeValue_Scalars(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := shellEscapeValue(c.in); got != c.want {
+			if got := shellEscapeValue(c.in, ShapeUndeclared); got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
 			}
 		})
@@ -570,17 +572,17 @@ func TestShellEscapeValue_Scalars(t *testing.T) {
 }
 
 func TestShellEscapeValue_StringSlice(t *testing.T) {
-	got := shellEscapeValue([]string{"a", "b c", "d"})
+	got := shellEscapeValue([]string{"a", "b c", "d"}, ShapeUndeclared)
 	if got != "'a' 'b c' 'd'" {
 		t.Errorf("got %q", got)
 	}
-	if shellEscapeValue([]string{}) != "" {
+	if shellEscapeValue([]string{}, ShapeUndeclared) != "" {
 		t.Error("empty []string should produce empty")
 	}
 }
 
 func TestShellEscapeValue_HomogeneousInterfaceSlice(t *testing.T) {
-	got := shellEscapeValue([]any{"a", 1, true})
+	got := shellEscapeValue([]any{"a", 1, true}, ShapeUndeclared)
 	// Scalars → space-separated, each individually escaped.
 	if got != "'a' '1' 'true'" {
 		t.Errorf("got %q", got)
@@ -588,7 +590,7 @@ func TestShellEscapeValue_HomogeneousInterfaceSlice(t *testing.T) {
 }
 
 func TestShellEscapeValue_ComplexSliceJSONEncoded(t *testing.T) {
-	got := shellEscapeValue([]any{map[string]any{"k": "v"}, "x"})
+	got := shellEscapeValue([]any{map[string]any{"k": "v"}, "x"}, ShapeUndeclared)
 	// Single JSON-encoded shell-quoted token.
 	if !strings.HasPrefix(got, "'") || !strings.HasSuffix(got, "'") {
 		t.Errorf("expected single shell-quoted token, got %q", got)
@@ -599,7 +601,7 @@ func TestShellEscapeValue_ComplexSliceJSONEncoded(t *testing.T) {
 }
 
 func TestShellEscapeValue_Map(t *testing.T) {
-	got := shellEscapeValue(map[string]any{"k": "v"})
+	got := shellEscapeValue(map[string]any{"k": "v"}, ShapeUndeclared)
 	// Map → JSON-encoded, shell-escaped.
 	if !strings.Contains(got, `{"k":"v"}`) {
 		t.Errorf("expected JSON-encoded map, got %q", got)
@@ -622,29 +624,66 @@ func TestSliceHasComplexElement(t *testing.T) {
 
 func TestScriptInterpreter(t *testing.T) {
 	cases := []struct {
-		lang    string
-		wantCmd string
-		wantExt string
+		lang     string
+		wantArgv []string
+		wantExt  string
 	}{
-		{"", "sh", ".sh"},
-		{"sh", "sh", ".sh"},
-		{"bash", "bash", ".sh"},
-		{"js", "node", ".js"},
-		{"node", "node", ".js"},
-		{"py", "python3", ".py"},
-		{"python", "python3", ".py"},
-		{"python3", "python3", ".py"},
-		{"unknown", "", ""},
-		{"PowerShell", "", ""},
+		{"", []string{"sh"}, ".sh"},
+		{"sh", []string{"sh"}, ".sh"},
+		{"bash", []string{"bash"}, ".sh"},
+		{"js", []string{"node"}, ".js"},
+		{"node", []string{"node"}, ".js"},
+		{"py", []string{"python3", "-I"}, ".py"},
+		{"python", []string{"python3", "-I"}, ".py"},
+		{"python3", []string{"python3", "-I"}, ".py"},
+		{"unknown", nil, ""},
+		{"PowerShell", nil, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.lang, func(t *testing.T) {
-			cmd, ext := scriptInterpreter(c.lang)
-			if cmd != c.wantCmd || ext != c.wantExt {
+			argv, ext := scriptInterpreter(c.lang)
+			if !slices.Equal(argv, c.wantArgv) || ext != c.wantExt {
 				t.Errorf("scriptInterpreter(%q) = (%q, %q), want (%q, %q)",
-					c.lang, cmd, ext, c.wantCmd, c.wantExt)
+					c.lang, argv, ext, c.wantArgv, c.wantExt)
 			}
 		})
+	}
+}
+
+// A python script body runs isolated: the script file's directory is not put
+// first on sys.path, so a json.py beside it (the workspace, under a
+// copy-based sandbox) cannot replace the standard module inside the node.
+func TestScriptRecipe_PythonRunsIsolated(t *testing.T) {
+	if _, err := osexec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	scratch := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "PLANTED_MODULE_LOADED")
+	plant := "open(" + strconv.Quote(marker) + ", 'a').write('loaded')\nraise ImportError('a planted module shadowed the standard one')\n"
+	if err := os.WriteFile(filepath.Join(scratch, "json.py"), []byte(plant), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Unsandboxed, the script file lands in the temp dir: plant the module
+	// beside it there.
+	t.Setenv("TMPDIR", scratch)
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(t.TempDir()))
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "py_node"},
+		Language: "py",
+		Script:   "import json\nprint(json.dumps({'ok': True}))\n",
+	}
+	resolve, buildCmd := e.scriptRecipe(context.Background(), node, map[string]any{})
+	cmd, cleanup, err := buildCmd(resolve())
+	if err != nil {
+		t.Fatalf("buildCmd: %v", err)
+	}
+	defer cleanup()
+	out, err := cmd.CombinedOutput()
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Fatalf("a module beside the script loaded inside the node: %s", out)
+	}
+	if err != nil || strings.TrimSpace(string(out)) != `{"ok": true}` {
+		t.Fatalf("the script did not run: %v: %s", err, out)
 	}
 }
 

@@ -1,6 +1,9 @@
 package ir
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Provider-routing diagnostics.
 const (
@@ -19,18 +22,43 @@ const (
 var KnownProviders = map[string]bool{
 	"anthropic": true,
 	"zai":       true,
+	"moonshot":  true,
 	"openai":    true,
 	"auto":      true,
 }
 
+// KnownProviderList renders KnownProviders for the C087 message, sorted.
+// Derived rather than retyped: a diagnostic naming a smaller set than the
+// compiler enforces tells an author a valid hint is a typo.
+func KnownProviderList() string {
+	names := make([]string, 0, len(KnownProviders))
+	for name := range KnownProviders {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 // hintIgnoringBackends are the backends that do NOT consume the per-node
 // provider hint today: claw derives its provider from the model-spec
-// prefix and codex ignores the hint entirely. A multi-element provider
-// chain on these is a no-op fall-through (the executor collapses it to the
-// head), so C088 tells the author the chain won't do anything there.
+// prefix, codex ignores the hint entirely, and kimi, grok and opencode let
+// their CLI resolve its own credentials — the shared CLIAgentBackend never
+// reads Task.ProviderHint, so the hint has nowhere to land in their argv.
+//
+// pi is here for the other reason C088 exists: it DOES fold the head hint
+// into its argv, but the diagnostic is about the CHAIN, and the runtime
+// walks a multi-element chain for claude_code alone
+// (model.providerFallbackEligible) — so on pi too, everything after the
+// first element is a no-op the author should be told about. A multi-element provider chain on these
+// is a no-op fall-through (the executor collapses it to the head), so C088
+// tells the author the chain won't do anything there.
 var hintIgnoringBackends = map[string]bool{
-	"claw":  true,
-	"codex": true,
+	"claw":     true,
+	"codex":    true,
+	"kimi":     true,
+	"grok":     true,
+	"pi":       true,
+	"opencode": true,
 }
 
 // validateProviders walks every LLM-capable node (agent, judge, llm
@@ -42,9 +70,9 @@ var hintIgnoringBackends = map[string]bool{
 //     checked. Fields containing a ${VAR} env ref are skipped wholesale:
 //     their literal text isn't the resolved value, and a ${VAR:-a,b}
 //     default may itself carry commas.
-//   - C088 (warning) when a >1-element chain is declared on a backend that
-//     ignores the provider hint (claw / codex), so the author knows the
-//     fall-through is inert there today.
+//   - C088 (warning) when a >1-element chain is declared on a backend in
+//     hintIgnoringBackends above, so the author knows the fall-through is
+//     inert there today.
 //   - C172 (warning) for a malformed `provider:model` element — a colon
 //     with an empty provider part (":glm-5.2") or empty model part
 //     ("zai:"). The runtime trims to whatever is present, so this is a
@@ -74,18 +102,23 @@ func (c *compiler) validateProviders(w *Workflow) {
 					"%s %q: provider chain element %q is malformed — the `provider:model` form needs both a provider and a model",
 					kind, id, tok)
 			}
-			if hint == "auto" || hint == "" {
+			// Looked up FOLDED, echoed as typed. The runtime folds the hint
+			// before it routes (delegate.normalizeProviderHint), so matching
+			// the literal here would report a hint that works as a typo — and
+			// the fix an author then applies is to delete a working route.
+			folded := strings.ToLower(hint)
+			if folded == "auto" || folded == "" {
 				continue
 			}
-			if !KnownProviders[hint] {
+			if !KnownProviders[folded] {
 				c.warnfAt(DiagUnknownProvider, id, "",
-					"%s %q: provider %q is not a known routing hint (known: anthropic, zai, openai, auto) — it will be ignored and the node falls back to default credential precedence",
-					kind, id, hint)
+					"%s %q: provider %q is not a known routing hint (known: %s) — it will be ignored and the node falls back to default credential precedence",
+					kind, id, hint, KnownProviderList())
 			}
 		}
 		if len(tokens) > 1 && hintIgnoringBackends[backend] {
 			c.warnfAt(DiagProviderChainIgnored, id, "",
-				"%s %q: provider fallback chain %q has no effect on backend=%q (only claude_code consumes the provider hint today); the runtime uses only the first provider",
+				"%s %q: provider fallback chain %q has no effect on backend=%q (the runtime walks a multi-provider chain for claude_code only); the runtime uses only the first provider",
 				kind, id, provider, backend)
 		}
 	}
@@ -93,10 +126,10 @@ func (c *compiler) validateProviders(w *Workflow) {
 		switch nn := n.(type) {
 		case LLMNode:
 			f := nn.GetLLMFields()
-			check(nn.NodeKind().String(), nn.NodeID(), f.Backend, f.Provider)
+			check(nn.NodeKind().String(), nn.NodeID(), effectiveNodeBackend(f.Backend, w.DefaultBackend), f.Provider)
 		case *RouterNode:
 			if nn.RouterMode == RouterLLM {
-				check("router", nn.ID, nn.Backend, nn.Provider)
+				check("router", nn.ID, effectiveNodeBackend(nn.Backend, w.DefaultBackend), nn.Provider)
 			}
 		}
 	}

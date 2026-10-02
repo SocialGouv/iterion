@@ -86,7 +86,7 @@ conjunction only ever tightens: none of them can green what the exit code reds.
 | **The click** | the deterministic check that locks the turn | `verify_build` writes the repo's real build+test into `verify.sh`; `verify_run` re-runs it and gates on the process exit code |
 | **The keyed connector** | a defect class made structurally impossible to repeat — the notch that only lets the plug in one way | the DSL [diagnostics](references/diagnostics.md) (`C001`–`C199` and `C240`–`C242`, plus the bundle's `C200`–`C234`), [`bots/catalog_universality_test.go`](../bots/catalog_universality_test.go) (greps every catalog bot's var defaults for iterion paths, and its whole source for stack-specific logic), `bots/verify_probe_wiring_test.go` |
 | **The fuse** | a gate that cuts rather than let damage through | a RED verify gate routes the campaign back with the failure log; the [merge gate](merge-gate.md) posts a status that is a **count**, so a finding cannot be talked past |
-| **Placing protection** | commit each unit as it is verified, so a fall costs one metre and not the wall | the campaign contracts' repeated unit (locate → smallest change → build → test → `git add -A` → commit); git *is* the run's durable state, and an interrupted run keeps every committed unit in its preserved worktree |
+| **Placing protection** | commit each unit as it is verified, so a fall costs one metre and not the wall | the campaign contracts' repeated unit (locate → smallest change → build → test → `git add -A -- ':/' {{run.tree_noise}}` → commit); git *is* the run's durable state, and an interrupted run keeps every committed unit in its preserved worktree |
 | **The logbook** | what a run learned, surviving the run that learned it | the `docs/bot-runs/` bilans (e.g. [whole-improve-loop](bot-runs/whole-improve-loop.md)) — committed and PR-reviewable, unlike the gitignored run artifacts — plus skills maintained inline with the code they describe |
 
 Read the table as a checklist rather than a glossary. A new improvement bot that
@@ -98,17 +98,33 @@ protection and no click banks unverified work, which is worse.
 The mechanisms above are shipped, not perfect. Four gaps are worth carrying in
 your head, because each is a place the ratchet slips silently:
 
-- **A missing `verify.sh` is counted as a pass.** `verify_run` reports
-  `skipped: true, passed: true` when `verify_build` produced no script, and the
-  loop gate consumes only `passed` from it — `skipped` is never read.
-  branch-improve-loop's deterministic `publish_verdict` tool *does* count a
-  skipped build as blocking when it posts the merge-gate status on a PR, but
-  only on that lane; whole-improve-loop has no merge-gate verdict at all.
-- **The reuse pre-check validates shape, not content.** After the first pass,
-  `verify_probe` reuses the existing `verify.sh` on size plus `sh -n`. A script
-  containing `echo ok` passes both and becomes the run's deterministic truth —
-  caught only in a repo whose CI already has a drift gate for `verify_run` to
-  mirror.
+- **A missing `verify.sh` is now a REFUSAL** (#1598, gate half closed; claims-citation half open). `verify_run`
+  reports `skipped: true, passed: false` when the builder produced no script, at
+  all eleven carriers — a gate that did not run cannot certify, and #1585 rests
+  the unattended-merge decision on exactly these gates. `skipped` stays in the
+  payload to distinguish "no script was written" from "the build went red"; the
+  continuation decision needs only `passed`. A repo with genuinely nothing to
+  build writes a `verify.sh` that exits 0 — an explicit empty gate leaves a
+  reviewable artefact where a missing script leaves nothing. **That hatch is the
+  gap below, not a way around it.**
+- **The reuse pre-check validates shape, not content**, in four of the five
+  bundles that have one. Read off the compiled IR: a `verify_probe` node exists
+  in **five** of the eleven gate carriers (app-dev, branch-improve-loop,
+  feature-dev, instrument, whole-improve-loop) and in none of the other six. In
+  four of those five it reuses the existing `verify.sh` on size plus `sh -n`, so
+  a script containing `echo ok` passes both and becomes the run's deterministic
+  truth — caught only in a repo whose CI already has a drift gate for
+  `verify_run` to mirror. Measured on exactly those four: an empty hatch written
+  on pass 1 still reports `passed: true, skipped: false` on pass 2 against a tree
+  that does not compile, and `skipped: false` means no reader downstream can tell.
+  **app-dev is the exception**: its probe fingerprints the **26** root-level
+  entries it lists (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml` and
+  their locks, plus `Makefile`, `Taskfile.yml`, `justfile`, `devbox.json`,
+  `flake.nix`, `Dockerfile` …) and forces a re-author when one changes — so a
+  build system that ships any of them, a plain `Makefile` included, does dislodge
+  the hatch there. Only a build system outside that list (CMake, Gradle, Maven,
+  Bazel) does not. The refusal message warns the author, which is not the same as
+  preventing it (#1707).
 - **The merge gate blocks only when six things hold**: the run's
   forge-publish grant (without it the bot posts no status at all), the bot's
   `gate_enabled`, its pinned `gate_context`, the forge's statuses-write

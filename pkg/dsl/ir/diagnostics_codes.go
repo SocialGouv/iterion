@@ -81,15 +81,26 @@ const (
 	// Review-gate diagnostics (interaction: review).
 	DiagReviewNeedsWorktree DiagCode = "C100" // interaction: review without worktree: auto — nothing to merge (error)
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
+	// C156 is allocated from the free C156-C159 band: C100/C101 above and the
+	// enum-value errors around them leave no contiguous room. Same shape as
+	// C142 (worktree:): an unknown value used to read as the DEFAULT
+	// (human_required / squash), silently replacing the author's explicit
+	// choice — refused at compile, the IR keeps the fail-safe default.
+	DiagInvalidReviewGateValue DiagCode = "C156" // review posture not one of human_required|agent_verdict_ok, or merge_strategy not one of squash|merge (error)
 
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
-	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, the route being decided before the node runs (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
+	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, a dotted path drilling a json var's document included, the route being decided before the node runs — or resolves to a list-typed var's JSON spelling, a name no backend registered (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
 	DiagAutoMemoryNotSupported DiagCode = "C132" // auto_memory: on for a backend that does not consume it (warning)
+
+	// Ambient-context policy diagnostics (ADR-119). C184/C185 come from the
+	// free C184-C189 band, after the C180-C183 var and compute family.
+	DiagInvalidAmbientContext     DiagCode = "C184" // ambient_context: value not one of none|workspace|operator|all (error)
+	DiagAmbientContextNotEnforced DiagCode = "C185" // an explicit ambient_context on a backend that does not translate it — opencode, kimi, grok (warning)
 
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
@@ -145,15 +156,28 @@ const (
 	DiagInvalidPermission       DiagCode = "C110" // permission: value not one of off|ask|deny (error)
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
-	DiagGatedCLIBackendSandbox  DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
-	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
-	DiagInvalidNodeTimeout      DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
-	DiagFileFieldNotHuman       DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)
-	DiagReservedAnswerKey       DiagCode = "C130" // human output schema declares an engine-reserved answer key (error — the engine overwrites it on resume)
+	// C154 is allocated from the free C154-C169 band: C113-C119 belong to the
+	// fan_out_each/groups epic and C120-C122 are taken, so the permission
+	// family cannot grow contiguously from C112.
+	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
+	DiagIndexOnScalar          DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
+	DiagInvalidNodeTimeout     DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
+	DiagFileFieldNotHuman      DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)
+	DiagReservedAnswerKey      DiagCode = "C130" // human output schema declares an engine-reserved answer key (error — the engine overwrites it on resume)
 	// Var enum constraints (`name: string [enum: "a", "b"] = "a"`).
 	DiagVarEnumNonString    DiagCode = "C125" // enum constraint on a non-string var type (error)
 	DiagVarDefaultNotInEnum DiagCode = "C126" // var default value not in the enum list (error)
 	DiagVarEnumDuplicate    DiagCode = "C127" // duplicate enum values in a var constraint (warning; deduped)
+
+	// Var pattern constraint (`[matching: "<re>"]`), the siblings of
+	// C125/C126 for the pattern form.
+	DiagVarMatchingNonString       DiagCode = "C160" // matching constraint on a non-string var type (error)
+	DiagVarDefaultNotMatching      DiagCode = "C161" // var default does not match its own pattern (error)
+	DiagVarMatchingUncompilable    DiagCode = "C162" // the matching pattern is not valid RE2 (error)
+	DiagVarMatchingUnanchored      DiagCode = "C163" // the pattern is not anchored, so it matches anywhere in the value (warning)
+	DiagVarRedeclaredUnconstrained DiagCode = "C164" // a var is redeclared without the constraint its earlier declaration carries (error)
+	DiagPresetViolatesConstraint   DiagCode = "C165" // a preset value is outside the enum, or off the matching pattern, its var declares (warning: only a run selecting that preset is affected, and the launch gate refuses it)
+	DiagPresetKeyShadowed          DiagCode = "C166" // a preset sets the same key twice — the earlier value is read by no run (warning, like C127: the last value wins, the program is unambiguous)
 	// Expression builtins: a call the evaluator cannot satisfy. The NAME is
 	// already refused at parse (C040); the ARITY is not visible there, so a
 	// call with the wrong argument count used to compile and die mid-run.
@@ -168,7 +192,17 @@ const (
 	DiagLoopNoExit           DiagCode = "C145" // a bounded loop edge with no exit once the loop is spent: the run would die of LOOP_EXHAUSTED at the cap (warning)
 	DiagIntDivisionUnrounded DiagCode = "C146" // a compute field typed int fed by a division with a float operand, outside floor()/round(): fails at run time (warning)
 
-	DiagUnknownLoopRef DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (warning; the runtime renders no value for it)
+	DiagUnknownLoopRef   DiagCode = "C147" // {{loop.<name>.…}} names a loop no edge declares, or a field the namespace has not (warning; the runtime renders no value for it)
+	DiagUnknownRunMember DiagCode = "C153" // {{run.<member>.…}} names a member the namespace has not (warning; the runtime renders no value for it — and an exclusion list that renders empty turns a tree gate off in silence, #1464)
+	// The tree-noise channel in an EXECUTABLE body (#1555, the #1464/#1530
+	// class): the prompt rendering lands as ONE word no file matches
+	// (shell-escaped in a command, JSON-quoted in a shell script), and the
+	// quoted env var collapses the same way — or never expands at all under
+	// single quotes. Both shell bodies only: a js/py script consumes the ref
+	// as data. Both warnings — the catalogue carries zero instances (the
+	// tree_noise_channel tests prove it), so the change is additive.
+	DiagTreeNoiseRefInExecBody DiagCode = "C157" // {{run.tree_noise}} (not the bang form) in a shell-bound tool command/script/postcondition (warning; use {{!run.tree_noise}} or $ITERION_TREE_NOISE unquoted)
+	DiagTreeNoiseEnvQuoted     DiagCode = "C158" // a standalone quoted word holding exactly $ITERION_TREE_NOISE in a shell-bound tool body (warning; double quotes collapse the list to one pathspec, single quotes never expand — only that unambiguous shape is named: tests, assignments, concatenations, comments, heredocs and \$ escapes stay silent by design)
 	// Async human interaction (ADR-081): interaction: async + await_answers
 	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
 	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).
@@ -194,6 +228,12 @@ const (
 	// declaration, so a disagreement used to be resolved in silence.
 	DiagDuplicateForeach DiagCode = "C269" // two edges declare the same `as foreach` name with a different collection or element binding (error)
 
+	// `tools: []` — a DECLARED empty tool surface (#1615). It is a real
+	// bound on claw, claude_code and codex; pi, kimi and grok never receive
+	// the list, so there the author's "no tools" is silently the CLI's own
+	// full toolset.
+	DiagEmptyToolsNotEnforced DiagCode = "C270" // a declared-empty `tools: []` on a backend (or a fallback route) that does not enforce it (warning — the bound is dropped, the node runs with the CLI's native toolset)
+
 	// Connector actions (ADR-098) — the `tool … action:` recipe. The band is
 	// about ONE promise: an action node reaches a third-party API with no LLM
 	// deciding the operation, the arguments or the reading of the answer.
@@ -209,6 +249,24 @@ const (
 	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:`/`timeout:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
 
 	DiagAsyncBackendUnsupported DiagCode = "C267" // interaction: async on a backend without async question tools (error)
+	// The SYNC half of the same capability screen (#1644): no ask_user tool
+	// reaches the agent on these backends, so a node declaring interaction:
+	// human / llm / llm_or_human / human_or_host runs to completion without
+	// ever pausing. A warning, not C267's error: the async pair is
+	// type-asserted at dispatch and fails without it, while the sync form
+	// degrades to prompt text — the requirement is "not silence", not a
+	// break at upgrade.
+	DiagSyncInteractionInert DiagCode = "C271" // interaction: (sync) on a backend no ask_user tool reaches (warning — the node never pauses)
+
+	DiagSubbotAuthorSource DiagCode = "C305" // subbot `source:` names an author document (.bot.yaml): a child is a .bot (error)
+
+	// Collection literals in `expr:` (#1525). The literal itself parses or
+	// fails through C040 like any expression; these two warn where the
+	// literal parses fine but the runtime semantics surprise: collection
+	// equality is never a value comparison, and a compute field holds the
+	// literal to its declared type.
+	DiagCollectionCompare            DiagCode = "C306" // `==`/`!=` with a collection (a list/object literal, or two statically-known string[] values): equals() never walks into a slice or map, so the comparison is constant — == false, != true (warning)
+	DiagCollectionLiteralConformance DiagCode = "C307" // a compute field fed by a collection literal its declared type cannot hold (a non-string element under string[], a collection under a scalar): fails SCHEMA_VALIDATION at run time (warning)
 
 	// `with:` mapping references and literals. C149–C152 catch shapes the
 	// runtime cannot honour in a data mapping, so a typo or a namespace
@@ -219,4 +277,16 @@ const (
 	DiagWithSecretRef           DiagCode = "C150" // `{{secrets.x}}` in a data mapping or a compute `expr:` — the runtime materialises secrets only at execution sinks (tool command/script/postcondition, action params, prompt body); the mapping and the expr evaluator both resolve to nil
 	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a data mapping or a compute `expr:` — same rule as secrets
 	DiagWithLiteralTypeMismatch DiagCode = "C152" // a `with:` value arrives as a string unless it is exactly one reference: fires on every ref-less literal or interpolated template reaching a `bool`/`int`/`float`/`string[]` field (a string is never one), and on a `json` field for a literal that visibly attempts an encoding (warning at every consumer)
+
+	// C180+ — the var-typing wave (#1604, #1610). Kept in one contiguous
+	// hunk, away from the C15x family another in-flight branch extends.
+	DiagWithWholeRefListToString   DiagCode = "C180" // a `with:` mapping that is exactly one reference to a `string[]` var — or a `json` var whose default document is a list or an object, or absent — delivers the value WHOLE into a field declared `string`, and nothing checks a `with:` value's type at run time (warning, the mirror of C152 in the other direction)
+	DiagVarDefaultUnverifiable     DiagCode = "C181" // a constrained var's default carries a reference compile time cannot resolve — an environment variable, or an engine-supplied name (PROJECT_DIR and kin) the RUN answers itself — so the constraint is checked on NO path for it (warning: named, never silently excused)
+	DiagVarDefaultExpandedViolates DiagCode = "C182" // a constrained var's default whose references are all environment `${VAR:-default}` forms expands — with nothing set in the launch environment — to a value outside its enum / off its pattern (warning, not C126/C161's error: the launch environment decides the actual value)
+
+	// Compute-field enum membership (#1916): a statically-known literal the
+	// runtime enum arm (checkFieldType, pkg/backend/model/validate.go) will
+	// refuse at the node. C180–C182 are claimed by an in-flight branch, so
+	// the band starts at C183.
+	DiagComputeEnumLiteral DiagCode = "C183" // compute field with an enum constraint fed by a static string literal outside the enum (warning — the value fails SCHEMA_VALIDATION at run time)
 )

@@ -27,14 +27,21 @@ flowchart LR
 
 ## Backend status
 
-| Backend | Status | Selection |
-|---|---|---|
-| `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
-| `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
-| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
-| `kimi` | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
-| `grok` | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
-| `codex` | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
+**Proven** grades evidence, not ambition: 🟢 exercised in production ·
+🟠 supported, never run against the whole feature matrix · ⚪ not implemented.
+**Supported is not proven** — only `claude_code` and `claw` are
+battle-tested. The per-capability read, and what it would take to turn a 🟠
+into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-two-are-battle-tested).
+
+| Backend | Proven | Status | Selection |
+|---|---|---|---|
+| `claw` | 🟢 | Recommended in-process backend for direct provider calls and native Iterion tools. anthropic + openai validated; bedrock/vertex/foundry ship but are **untested**. | Automatic or explicit. |
+| `claude_code` | 🟢 | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
+| `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
+| `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
+| `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
+| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
+| `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
 
@@ -53,6 +60,317 @@ cannot speak to). The settled rules:
 - Run-level `fallback` and per-node overrides are the switching mechanism;
   every production switch doubles as a parity measurement, so switches
   stay observable (events carry the backend and the served model).
+
+#### PDFs on `read_file` (claw)
+
+`read_file` on claw extracts the text of a workspace PDF instead of
+returning mangled binary-as-text: a file carrying the `%PDF` magic is
+run through claw-code-go's BT/ET scraper and windowed with the same
+chunk semantics as any text file (continuation markers included). The
+extraction runs under a DOCUMENT-WIDE inflation budget equal to the
+read ceiling (64 MiB): zlib holds ~1000:1, so a compressed bomb — or
+many small streams summing to one — fails the read with an explicit
+`ErrBudgetExceeded` instead of allocating. claude_code reads PDFs
+natively; this is the same capability wired on claw (the parity
+doctrine above). Scratch/attachment paths stay outside `read_file`'s
+workspace containment — reach them through `bash`.
+
+### Per-backend capability matrix
+
+The status table says which backends are trusted; this matrix says what
+each one is **proven** to do. Only `claude_code` and `claw` are
+battle-tested, and a bot author must be able to tell a proven capability
+from a plausible one (#1417). The cells:
+
+- **proven** — a live e2e through the real backend asserts it, and the
+  test that would fail if it broke is named below. Not "the code exists".
+- **refused (C-code)** — the compiler refuses the capability on this
+  backend with a typed diagnostic; see
+  [the diagnostics reference](references/diagnostics.md).
+- **warned (C-code)** — the compiler names the capability as unwired on
+  this backend with a warning: the run goes through, degraded (e.g. a
+  sync `interaction:` whose pause can never fire), and the author sees
+  it before launch.
+- **unwired (gap)** — no code path **and** no diagnostic guards it: the
+  parity rule above ("wired — or typed-refused — for the other") is not
+  yet honoured. Each one is a gap a session can pick up.
+- **unwired (no image)** — a variant of the gap above: the code path is
+  there, but the stock sandbox image does not ship the CLI, so the
+  capability cannot be reached from a sandboxed run at all.
+- **unknown** — wired in code (path cited below), but no live e2e through
+  this backend exercises it yet. It may work; nothing has paid to find
+  out. Turning an unknown into proven costs one live e2e — extend
+  [the e2e coverage matrix](e2e-coverage-matrix.md), which stays the
+  single feature×coverage inventory.
+
+| Backend | Structured output (`schema:`/`output:`) | Permission gate `ask` | Session resume / fork | Tool events & cost | `{{outputs.*}}` / `{{run.*}}` | Sandbox | MCP servers | ask_user | Workspace `/commands` |
+|---|---|---|---|---|---|---|---|---|---|
+| `claude_code` | unknown | unknown | proven (resume) · unknown (fork) | unknown | proven | unknown | unknown | unknown | proven |
+| `claw` | proven | proven | proven (fork) · unknown (resume) | proven | unknown | unknown | proven | proven | proven |
+| `codex` | proven | refused (C176) | unknown | proven (events) · unknown (cost) | unknown | proven (readonly) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+| `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unwired (gap) |
+| `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+| `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+
+The citations, per cell that is not self-evident from the table:
+
+- **Workspace `/commands`.** <a id="workspace-slash-commands"></a>A user
+  prompt that OPENS with `/<name>` is replaced by the body of
+  `<workspace>/.claude/commands/<name>.md` — the files a plugin's
+  `contributes: commands` mirrors there (see
+  [plugins.md](plugins.md)). `claude_code` resolves them from the workspace
+  itself; `claw` resolves them in-process through claw-code-go's
+  `pkg/api/commands`, from `pkg/backend/model/slash_commands.go`. Both
+  cells are proven by `TestLive_Feat_WorkspaceCommands`
+  (`task test:live:feat:workspace-commands`): one workflow sends the same
+  invocation to a `claude_code` node and a `claw` node, both with
+  `tools: []`, so resolving the command is the only path to the token its
+  file carries. Four differences from `claude_code`, deliberate and
+  measured on CLI 2.1.220:
+  - a command **name** may carry dots (`db.migrate`), as on `claude_code`,
+    which applies no charset at all. What a name cannot spell is traversal:
+    a separator is refused, and so is a component that is nothing but dots.
+    `os.Root` is what makes containment a guarantee — the charset only keeps
+    the name from expressing what the root would refuse anyway.
+  - `claw` reads the **workspace only** — no walk up the ancestors, and no
+    user-level `~/.claude/commands/`: a workspace is a checkout of a
+    repository the run does not control, and host state does not belong in
+    a sandboxed or multi-tenant run. The read goes through `os.Root`, so a
+    repository that ships a command file — or the `.claude/commands`
+    directory, or `.claude` itself — as a **symlink out of the workspace**
+    gets a refusal rather than the target. A **relative** symlink that stays
+    inside the workspace is followed, so a `tools: []` node is not a read
+    barrier for files the checkout already contains; an **absolute** symlink
+    is refused wherever it points, because `os.Root` rejects absolute
+    targets outright. What the boundary buys is that the repository under
+    review cannot reach the host through it.
+  - A command's **frontmatter** other than `description:` (`model:`,
+    `allowed-tools:`, `argument-hint:`, `disable-model-invocation:`) is
+    honoured by `claude_code` and **ignored** by `claw`, which keeps only
+    the body. A command that narrows itself with `allowed-tools:` therefore
+    keeps the node's full tool set on `claw` — bound it with the node's own
+    `tools:` instead. This is the divergence with a security consequence, so
+    it is the one the runtime says out loud: a command
+    declaring any of those keys logs a warning naming them and #1717, where
+    the enforcement is tracked, and the keys ride the node's
+    `delegate_finished` event (`command_frontmatter_ignored`) so a
+    deterministic gate can read them out of `events.jsonl` — a log line
+    cannot be asserted on. It is keyed per NODE, not per command file: a
+    second node invoking the same command with a broader `tools:` set is a
+    different exposure. Documenting it was never enough.
+  - `$1`, `$2`, … (any index, not just the single digits) are **one-based**
+    on `claw` (`$1` is the first argument),
+    which is Claude Code's documented contract; the CLI itself resolves
+    them off by one (`/x alpha beta gamma` on `[$1][$2][$3]` expands to
+    `[beta][gamma][$3]`).
+  - `` !`cmd` ``, ` ```! ` shell substitution, `$0`, `$ARGUMENTS[n]`,
+    `\$` escapes and the `${CLAUDE_PROJECT_DIR}` / `${CLAUDE_SESSION_ID}` /
+    `${CLAUDE_EFFORT}` placeholders are not evaluated. A body using any of these — or the
+    positional forms above — is logged with a warning naming the form, so
+    one file never means two things silently. `@path` file references are
+    not evaluated either and are deliberately **not** warned about:
+    telling one from an npm scope (`@anthropic-ai/sdk`) or a decorator
+    (`@mcp.tool(`) by text alone measured 0% precision on real command
+    bodies, and a warning that is always wrong teaches an author to ignore
+    the ones that are not.
+
+  A prompt may both invoke a command and reference an image attachment
+  (`/analyze {{attachments.shot}}`): the command body replaces the
+  invocation TEXT and the image blocks travel untouched, so the model
+  receives the bytes on `claw` exactly as it does on `claude_code`. The
+  attachment's path also survives as an argument.
+
+  A command whose body — **or whose expanded text** — exceeds
+  `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` (256 KiB by default) is refused
+  rather than substituted: on a review run that file belongs to a checkout
+  the run does not control, and it turns straight into a billed request.
+  Both ends are checked because the body sets the multiplier: `$ARGUMENTS`
+  repeated N times turns a body under the ceiling into N times the
+  arguments.
+
+  Arguments a body does **not** consume are appended as
+  `ARGUMENTS: <args>`, which is what the CLI does; dropping them would
+  delete the operator's message rather than merely leave it unexpanded.
+  Whether a body consumed them is the expander's own answer, not a second
+  reading of the text — a placeholder a reader counts (`$0`, an
+  out-of-range `$N`) is one the expander leaves literal, and on that
+  disagreement the arguments were neither substituted nor appended.
+  Arguments are split on whitespace; the CLI splits them with a
+  quote-aware shell tokenizer, so `"two words"` is one argument there and
+  two here.
+
+  Nothing here fails a node. A name that resolves to nothing, a file that
+  cannot be read, and a body that is empty each leave the text unchanged and
+  log the reason. The CLI answers an unknown command locally
+  (`num_turns: 0`, `total_cost_usd: 0`, `is_error: false`) and its node
+  succeeds, so failing here would be a divergence — and it would break an
+  ordinary prompt that merely opens with a slash-shaped word ("/tmp is full,
+  clean it up"). `ITERION_CLAW_SLASH_COMMANDS=off` restores the
+  pre-capability behaviour. The other backends have no workspace-command
+  convention; a `/name` prompt reaches them as written.
+
+  On `claude_code` a workspace command resolves under the `project` scope
+  and stops resolving under a list that names only `user` — measured both
+  ways. So the flag does not *enable* project commands, it *scopes* them:
+  iterion always passes it, and the ambient-context policy (above) decides
+  which scopes accompany it. `workspace`, the default, keeps the project
+  scope that carries them; the operator's own `~/.claude/commands/` need
+  `all` — which also closes the old asymmetry where a `claude_code` node
+  saw them and a `claw` node never did (#1716).
+
+- **claw, five proven cells.** Structured output:
+  `TestLive_Feat_Cursors` asserts the reviewer's output against its
+  schema (`task test:live`). Permission `ask`:
+  `TestLive_Feat_Permission_Ask`, the run lands `paused_waiting_human`
+  (`task test:live:feat:permission-ask`). Fork:
+  `TestLive_Feat_Fork` (`task test:live:feat:fork`). Tool events:
+  `TestLive_ClawToolCoverage` (`task test:live:coverage`). Cost: the
+  metered figure crosses a $0.0001 cap and fires `budget_exceeded`
+  (`TestLive_Feat_Budget`, `task test:live:feat:budget`) — the budget
+  gate over the meter is what is proven; the figure itself is an
+  estimate from token counts through iterion's pricing registry, the
+  same estimator codex uses, and only `claude_code` and `pi` report
+  provider-computed amounts. MCP servers: `TestLive_Lite_ClawMCP`
+  round-trips a workflow-declared server (`task test:live:claw-mcp`).
+  ask_user: `TestLive_ClawToolCoverage` puts `ask_user` in its
+  must-dispatch list — a run where the tool never fires, or never
+  succeeds, fails — and asserts the human's answer round-trips through
+  the model into the node's output schema (`task test:live:coverage`).
+  Claw's session *resume*
+  (conversation rehydration) is wired but not live-asserted; only the
+  fork half of its cell is proven.
+- **claude_code.** Two cells are proven. Session resume:
+  `TestLive_Lite_SessionInheritValidation`
+  (`task test:live:session-inherit`) requires `fix._session_id ==
+  implement._session_id` — `--resume` really continued the CLI session. The outputs column,
+  by the same test (below). Fork is wired (`WithForkSession`) but unasserted. Structured output is
+  wired natively (`WithOutputFormat` plus a two-pass fallback,
+  `pkg/backend/delegate/claude_code.go`) and the ask gate, cost metering
+  (provider-computed `TotalCostUSD`), sandbox, MCP forwarding and
+  ask_user (native MCP server) are all wired — none has a live e2e.
+- **codex.** Structured output and sandbox are proven by
+  `TestLive_Feat_CodexWebSearch`: the researcher's output is schema-
+  asserted, and under `readonly: true` the test fails if the node
+  creates a file. Its tool events are proven by the same test's
+  WebSearch lifecycle; the cost *figure* is only a token estimate, and
+  that estimate's accuracy is unproven — hence unknown. `ask` is
+  refused (C176): codex runs `bypassPermissions` and is absent from the
+  gate-enforcing table (`pkg/dsl/ir/validate_fallbacks.go`). ask_user
+  has no wiring at all — the async pair is refused (C267), the sync
+  form warned (C271): only the interaction protocol's prompt text
+  reaches the model, so the node never pauses.
+- **pi.** Everything is wired through the embedded extension — gate,
+  ask_user, MCP servers, session fork, provider-computed cost — and all
+  of it on the **rpc transport only**; under `ITERION_PI_MODE=print` a
+  `permission:` node is refused at runtime *without a diagnostic code*
+  (`pkg/backend/delegate/pi.go`), which is its own parity gap. Nothing
+  pi does has a live e2e; every pi cell stays unknown.
+- **opencode.** The gate is refused in **both** modes (C176): opencode
+  exposes no `PreToolUse` hook at all, and its own declarative policy
+  (`OPENCODE_PERMISSION`) is deliberately not wired — gate membership is
+  earned by a live denial, and none has been bought. `ask_user` is
+  `refused (C267)` for the async pair and `warned (C271)` for the
+  synchronous one (the tool list never reaches the CLI, so the node
+  never pauses — the interaction protocol is prompt text only). Sandbox is `unwired (no image)`:
+  the stock image ships no opencode binary, so a sandboxed node dies at
+  `exec: not found` with nothing refusing it earlier — see
+  [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork:
+  the CLI has `-s/--session` and reports a session id, but
+  `SessionResumeCapability` does not list opencode, so `session: persist`
+  logs `cannot resume; running fresh`.
+- **kimi / grok.** The gate is **deny-only** — an external `PreToolUse`
+  hook can hard-block but cannot pause the run — so `ask` is refused at
+  compile time (C176). The deny half *is* proven live with a filesystem
+  sentinel (`TestLive_Feat_Permission_Deny_Kimi`,
+  `TestLive_Feat_Permission_Deny_Grok`); the ask column is about
+  pausing, which this design cannot do. Session resume/fork is
+  **unwired**: the session id is parsed and stamped but never consumed —
+  the next call is silently fresh (`pkg/backend/delegate/cliagent.go`),
+  and a run-level fork fails with "no turn checkpoint"
+  (`pkg/runview/fork.go`). A `session: inherit` node on kimi compiles
+  and quietly loses continuity; no diagnostic says so. MCP servers are
+  unwired: workflow-declared `mcp:` blocks reach `claude_code` and `pi`
+  (forwarded) and `claw` (in-process) — nobody else
+  (`pkg/backend/model/executor_build_task.go`,
+  `mcpForwardingBackends`). Structured output, cost (token estimate
+  that drops the field when the model is unpriced — the
+  `delegate_*`-at-$0 risk) and sandbox are wired at best and unproven:
+  unknown. ask_user is prompt-fallback only — no tool ever reaches the
+  CLI — so the async pair is refused (C267) and the sync form warned
+  (C271): the node runs to completion without ever pausing.
+- **`{{outputs.*}}` / `{{run.*}}`.** The resolver is engine-side — the
+  executor substitutes templates before any backend sees the prompt
+  (`pkg/backend/model/executor_template.go`), one resolver for seven
+  backends — but what a template reads is what the backend's delegate
+  captured into the node's output, and that capture is per backend. The
+  `claude_code` cell is proven by `TestLive_Lite_SessionInheritValidation`
+  (`task test:live:session-inherit`): the `fix` node's session id arrives
+  through its edge as `{{outputs.implement._session_id}}` and the test
+  requires the session the CLI resumed to be that exact id — a template
+  left unresolved could not have resumed it. No claw-pinned live fixture
+  maps an output across nodes (the exhaustive-DSL fixture's unpinned
+  nodes float to host detection), so every other cell stays unknown.
+  `interaction: async` (`ask_user_async`) is refused outright for
+  codex/kimi/grok/opencode (C267).
+
+The open parity gaps, in one list: codex/kimi/grok/opencode MCP
+servers; kimi/grok/opencode session resume/fork (silent, unguarded); pi's print-mode
+runtime refusals without diagnostic codes; and every `unknown` cell,
+which is one live e2e away from proven.
+
+## Ambient context (ADR-119) — what a node inherits besides its prompt
+
+`ambient_context: none | workspace | operator | all` — on an agent/judge node
+or the workflow, with a run override (`--ambient-context`, launch
+`ambient_context`) and `ITERION_AMBIENT_CONTEXT` above the DSL. Default
+`workspace`. Two origins:
+
+- **workspace** — the repository's instruction files, from the working
+  directory up to the repository root, never above it: `CLAUDE.md`,
+  `.claude/rules/`, `AGENTS.md` … as each backend names them. The
+  repository's settings, skills, commands and hooks are NOT governed here:
+  they carry the engine's own mirrored skills and plugin contributions.
+- **operator** — the operator's personal agent setup (`~/.claude` or
+  `$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, pi's agent directory) and the
+  instruction files above the repository root. For a worktree nested in its
+  own main checkout, the main checkout counts as the repository.
+
+| backend | `none` | `workspace` (default) | `operator` | `all` |
+|---|---|---|---|---|
+| `claude_code` | `project` + every memory file excluded | `project` + the memory files above the root excluded | `user,project` + the repository's memory excluded | `user,project` |
+| `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on | the walk above the root + the user scope | everything |
+| `pi` | `--no-context-files` | `--no-context-files` + iterion supplies the allowed files, rendered in pi's own shape | the same, operator files | pi's native loading |
+| `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without its `AGENTS.md` | the same home | `project_doc_max_bytes=0` | unchanged |
+| `opencode`, `kimi`, `grok` | not enforced (C185 on an explicit value) | | | |
+
+Measured on Claude Code CLI 2.1.282 and codex-cli 0.156.1, each cell checked
+against the real tool with planted markers and an invalid key (no cost):
+
+- **Project memory walks up to `/`, not to the repository root.** With the
+  workspace under `$HOME`, `--setting-sources project` alone still loads
+  `~/.claude/CLAUDE.md` and `~/.claude/rules` — `~/.claude/` is an
+  ancestor's `.claude/`. Dropping the `user` scope does not keep the
+  operator out; iterion therefore also excludes the memory files of every
+  directory above the root (`CLAUDE.md`, `CLAUDE.local.md`,
+  `.claude/CLAUDE.md`, `.claude/rules/**` — never `.claude/**` whole, since
+  session worktrees live under a main checkout's `.claude/worktrees/`).
+- `claudeMdExcludes` is CONCATENATED across settings layers: the engine's
+  exclusions never remove one a repository or an operator set themselves.
+- A run worktree nested in the repository also loads the primary checkout's
+  `CLAUDE.md` through that walk — the policy removes the double-load.
+- The `project` scope always loads on `claude_code`: the engine's mirrored
+  skills and plugin contributions are only discovered under it
+  (`pkg/runtime/plugin_skills.go`).
+- Workspace `@imports` are confined: Claude Code does not follow an import
+  outside the repository in headless mode, and claw-code-go's loader (used
+  by `claw`) enforces the same for the workspace scope, symlinks included —
+  a pull request's `CLAUDE.md` cannot read `@/proc/self/environ` or
+  `@~/.ssh/id_rsa` into the prompt.
+
+The structured-output pass of a `claude_code` node follows its policy too;
+before ADR-119 it passed no `--setting-sources` at all, and so loaded every
+scope, `local` included.
 
 ## TL;DR
 
@@ -82,6 +400,37 @@ a backend in this order (first non-empty wins):
 4. **Auto** — the first backend in `ITERION_BACKEND_PREFERENCE` whose
    credentials are detected on the host
 5. `claw` — last-resort fallback
+
+Steps 1 and 2 are read through the same `${VAR}` / `${VAR:-default}`
+expansion every routing field honours, and **the compiler reads them by
+their DEFAULT**: `backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"` is
+screened as `claude_code`, so the cross-backend checks a dialled node used
+to escape — the `tools:` inversion, the session-continuity refusal, the
+permission gate on the primary route, the effort drift, the memory and
+provider-hint warnings (C047/C088/C135/C136/C173/C174/C176/C177/C267) —
+apply to it exactly as to a literal (#1389).
+
+The compiler reads the DEFAULT and never the shell it happens to run in:
+`ir.Compile` runs in the server pod, in the runner pod and on a laptop, and
+a verdict that moved with the ambient environment would give one artifact
+three answers. What the dial is actually set to is screened where it is
+actually read — the launch-time `--fallback` admission, which runs in the
+process that dispatches the node.
+
+Two forms fall through to the next step of the chain: an empty field, and
+`auto` — on a NODE. A third kind is undecided: a field the source writes
+but does not answer — a `${X}` with no `:-` default, a bare `$X`, a
+`{{vars.x}}` a launch may override. Those do **not** fall through to
+`default_backend:`, because which branch the run takes is not knowable from
+the source (an undeclared `{{vars.zz}}` reaches the registry as that text, a
+set `${X}` names a backend), and a screen that guessed would certify a
+backend the run never uses.
+
+`auto` on a **route** is not a step of the chain: `resolveChain` normalises
+`auto` on a route's `provider:` and never on its `backend:`, so an explicit
+`fallbacks: { r: { backend: "auto" } }` reaches a registry that has no
+backend by that name and dies at the moment the chain is needed. It is
+screened as the name it is.
 
 The empty-template path lands on step 4. The pill in the studio
 toolbar surfaces what the auto-resolver picked (and turns red when
@@ -123,7 +472,7 @@ that drives it, and how hard it is asked to think.
 
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
   backend, effort}]`. An `effort` outside
-  `low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
+  `none|low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
   reaches the provider verbatim.
 
 The **effort** override outranks both the node's static `reasoning_effort:`
@@ -202,18 +551,33 @@ that stack. It is resolved per node like every routing field (`model:`,
 `backend:`, `provider:`, `interaction_model:`, a `fallbacks:` route's three
 fields, a verified action's `recovery.model`, the workflow's
 `default_backend:`): a `{{vars.<name>}}` reference
-first — the run's vars are the one namespace that exists before the node
+first — a dotted `{{vars.<doc>.<member>}}` included, drilled into a `json`
+var's document; the run's vars are the one namespace that exists before the node
 runs; any other template warns C148 at compile time and reaches the backend
-as text — then `${VAR}` / `${VAR:-default}` expansion.
+as text — then `${VAR}` / `${VAR:-default}` expansion. A dotted reference
+whose var holds a scalar at run time (a `--var cfg=claw` override replacing
+the declared document) resolves nothing on either side of the launch screen:
+the value holds no members to drill, the text reaches the backend as written
+and the node fails at its first delegation.
 
 Known hints:
 
 | Hint | Effect |
 |---|---|
-| `anthropic` | Force Anthropic-direct (`ANTHROPIC_API_KEY` / Claude Code OAuth); skip z.ai even when `ZAI_API_KEY` is set. |
+| `anthropic` | Force Anthropic-direct (`ANTHROPIC_API_KEY` / Claude Code OAuth); skip the facades even when their keys are set. |
 | `zai` | Force the z.ai Anthropic-compatible facade (`ANTHROPIC_BASE_URL`=z.ai + `ANTHROPIC_AUTH_TOKEN`=`$ZAI_API_KEY`). |
+| `moonshot` | Force the Moonshot Anthropic-compatible facade, the Kimi family (`MOONSHOT_BASE_URL`, default `https://api.moonshot.ai/anthropic`, + `ANTHROPIC_AUTH_TOKEN`=`$MOONSHOT_API_KEY`). |
 | `openai` | Force OpenAI-direct (`OPENAI_API_KEY`), skipping `OPENAI_BASE_URL` overrides. |
 | `auto` / *(unset)* | Default process-env precedence. |
+
+Hints are matched case-insensitively (`Moonshot` is `moonshot`). A facade
+route — pinned by `zai` / `moonshot`, or chosen by the default precedence from
+a facade key — also clears the Anthropic credentials the Claude Code CLI would
+otherwise inherit from the process or container env: `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN` and the `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` /
+`_FOUNDRY` switches. The switches rank above `ANTHROPIC_AUTH_TOKEN` in the
+CLI's own precedence, and the other two would travel to the facade's gateway
+alongside its token.
 
 ### Fallback chain
 
@@ -279,18 +643,18 @@ hint and the wire model:
 ```iter fragment
 agent reviewer:
   backend: "claude_code"
-  provider: "zai:glm-5.2,anthropic:claude-opus-4-8"   # glm-5.2 on z.ai, claude-opus-4-8 on Anthropic
+  provider: "zai:glm-5.3,anthropic:claude-opus-5-5"   # glm-5.3 on z.ai, claude-opus-5-5 on Anthropic
 ```
 
 This is the case where the chain's two providers serve **different model
-ids over the same Anthropic-wire API** — `glm-5.2` is a z.ai model that
+ids over the same Anthropic-wire API** — `glm-5.3` is a z.ai model that
 Anthropic would reject, so a hint-only swap would break on fall-through.
 The token is split on the **first** colon (a model id that itself
 contains a colon survives intact). An element **without** a model
-(`anthropic` in `zai:glm-5.2,anthropic`) inherits the node's `model:`
+(`anthropic` in `zai:glm-5.3,anthropic`) inherits the node's `model:`
 baseline; an inheriting element after a model-bearing one restores the
 baseline rather than carrying the previous override. A malformed element
-— a colon with an empty provider (`:glm-5.2`) or empty model (`zai:`) —
+— a colon with an empty provider (`:glm-5.3`) or empty model (`zai:`) —
 warns **C172** at compile time. Env expansion still runs on the whole
 field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 `provider:model` separator.
@@ -528,6 +892,46 @@ attempt to the route's last-good, provider-neutral message snapshot. This keeps
 a named durable chat slot intact without carrying partial output into the next
 route.
 
+### A schema-invalid answer gets one more turn (the schema re-ask)
+
+An LLM node's answer that fails its `output:` schema on a shape one more ask
+can fix — a required field missing, or text where JSON was expected — is not
+the node's verdict yet: the executor **re-asks the model once**, with the
+validation error as its next input, in the context the answer was produced
+in. A type or enum mismatch is the model's answer in a stable shape and fails
+the node without a re-ask; so does a second answer that is still invalid
+(`structured output invalid after retry`).
+
+How the re-ask continues the model's work depends on what the backend can
+continue. The mode rides the `delegate_retry` event (`reask`) and the
+re-ask's own `delegate_started` / `delegate_finished` / `delegate_error`,
+marked `attempt: 2`:
+
+| Backend | `reask` | What the model is sent |
+|---|---|---|
+| `claw`, in-process or sandboxed | `continue_conversation` | The conversation it just completed — its own answer as the last assistant turn — then the validation error as a user turn: one schema-forced call, tools off, run in-process (nothing in it touches the workspace) |
+| `claude_code`, `codex`, `pi` | `resume_session` | The session the answer ran in, resumed by id (never forked, never best-effort), with the validation error as the new prompt; the backend's own structured-output pass runs on top |
+| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get. One exception, reachable only when the capture itself failed (an in-container runner without the capture sink): a claw node resumed from a pause replays the pause behind the restart and the appended error is dropped with the prompt — the turn runs again without the feedback |
+
+**Budget: one re-ask.** A re-ask that comes back as unstructured text still
+gets the last-resort extraction (a direct claw call over that text, below); a
+re-ask that comes back invalid, or fails, fails the node — with the re-ask's
+own error wrapped beside the validation error, so a usage window hit during
+the re-ask is still the typed refusal the run-level retry keys on.
+
+**Cost: a real turn, billed as one.** The re-ask's tokens and cost fold onto
+the node's `_tokens` / `_cost_usd` under the rule an in-place retry follows
+(a session-total figure at its maximum, per-call figures summed), and its
+own `delegate_finished` carries what it ADDED — on a backend whose cost is a
+session total, the difference — so an accumulator summing one cost per
+delegation event stays exact.
+
+Why it is a continuation and not a repeat (#1385): on the copilot run that
+motivated it, the retry of a claw node resumed from a permission pause
+replayed the pause behind the captured history (91 + 11 messages), carried
+no feedback, re-ran forty tool steps for ten minutes and ended
+`failed_resumable` on the same missing boolean. The re-ask is one turn.
+
 ### Refusals
 
 Two crossings are compile-time **errors** (`C176`), because the degraded
@@ -547,7 +951,7 @@ run would be silently wrong rather than merely worse:
     restricted to `read_file` would gain Edit/Write the moment the chain
     falls through — on a node the engine may already have admitted as a
     read-only parallel branch.
-  - **CLI → claw is refused only when the list is empty**, which on claw
+  - **CLI → claw is refused only when the list is UNDECLARED**, which on claw
     means *zero* tools. Declaring the tools explicitly is the documented
     pattern: inert on the CLI primary, load-bearing on the claw route.
 
@@ -587,6 +991,16 @@ silently taken — and what makes it visible to the three pre-run
 analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
 crossings the compiler refuses in the `.bot`.
+
+The screen reads a node's backend the way the run itself will: a
+`${VAR:-default}` dial by the launching process's environment, and a
+`{{vars.<name>}}` reference by the launch's vars (the declared defaults
+under that launch's `--var` overrides) — the same template-then-env
+reading `resolveRoutingField` makes at dispatch, var values expanded
+through the bot-vars overlay then the process environment exactly as
+`resolveVars` expands them.
+A reference neither answers stays undecided and is screened as before:
+no opinion, no guess.
 
 The route does **not** propagate into a `subbot:` child. A subbot is a
 different bot with its own routes, its own judges and its own permission
@@ -630,8 +1044,43 @@ mode `deny`).
 > so the combination fails CLOSED, never open. What cannot cross is an
 > **Ask decision** — nothing inside the container can pause the parent
 > run — so an ask-capable policy is refused loudly at dispatch (and
-> C136 warns at compile time). Run such a node unsandboxed, or route it
-> to `claude_code`.
+> C136 warns at compile time). Run the workflow unsandboxed
+> (`sandbox: none` / `--sandbox none` — a node-level `sandbox:` is not
+> honoured at run time), or route the node to `claude_code`.
+
+> **A sandboxed `claw` node also refuses a tool the container cannot
+> execute.** Tools the runner does not run locally are proxied back and
+> executed on the HOST, so the split is decided by an explicit placement
+> rather than by which names the runner happens to register — and the
+> launcher refuses every forwarded call for a tool that is not
+> launcher-placed, or that the run's `permission:` policy denies. The
+> tools that start a process, touch the workspace or a model-supplied
+> path, or open a model-supplied URL, and `agent`, run in-container;
+> launcher-owned state (MCP, `ask_user`, the `task_*` / `team_*` /
+> `cron_*` registries, `todo_write`, `config`, `tool_search`, plan mode,
+> the privacy pair, `web_search`) keeps the IPC proxy; and `lsp`,
+> `screenshot`, `computer_use` and the `worker_*` family have no
+> in-container form, so a sandboxed node declaring one is refused when it
+> executes (its `fallbacks:` still get their turn) — drop it, or run the
+> workflow unsandboxed (`sandbox: none` / `--sandbox none`). A
+> `tool_policy` allowlist is applied to the in-container tools when the
+> node is built: a tool it denies is not advertised at all. The full table
+> and its reasons: [sandbox.md](sandbox.md#claw-backend-in-sandbox).
+>
+> The same boundary applies to MCP SERVERS, which are processes rather
+> than tools. `claude_code` and pi start their own, so a sandboxed node's
+> servers run in the container; claw connects them in the launcher, so
+> under an active sandbox it starts only the operator's — a BUILTIN, or a
+> plugin installed under the iterion home the operator's own environment
+> names, and in both cases enabled and configured by the operator too
+> (three legs; see sandbox.md's table). Builtins are the normal case: every
+> MCP-contributing plugin shipped today is one. A server the node
+> inherited is dropped with an
+> `mcp_server_degraded` event; a server it names refuses the node when it
+> executes, so a `claude_code` or pi fallback — which starts that server
+> in the container — gets its turn. Origins, and the two rules that
+> travel with them:
+> [sandbox.md](sandbox.md#mcp-servers-under-a-sandbox).
 
 ## Transient-error & network resilience
 
@@ -685,7 +1134,16 @@ only have `ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
 no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
 
-**MCP isolation.** iterion spawns the CLI with `--strict-mcp-config`, so the
+**MCP isolation.** User, project and plugin MCP server names must stay outside
+Iterion's reserved infrastructure namespace (`iterion`, `iterion_board`,
+`iterion_runs` and names whose normalized tool names share the `iterion*`
+prefix). Catalog preparation refuses such names with a rename diagnostic;
+empty names and separator-only aliases are also refused. CLI forwarding
+protects the same namespace when a task is constructed programmatically.
+Rename a custom server to use it; internal servers still require their usual
+interaction settings or capabilities.
+
+iterion spawns the CLI with `--strict-mcp-config`, so the
 only MCP servers a node gets are the ones iterion resolves and passes via
 `--mcp-config`: the `.bot`'s `mcp_server:`/`mcp:` blocks, the target repo's
 `.mcp.json` (workflow `autoload_project`, default on), and iterion's own
@@ -697,18 +1155,27 @@ subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
 restores host-config inheritance. Settings remain inherited independently
 (`--setting-sources`, above).
 
-**Ambient servers degrade per-server, on every backend.** A server a node
-never named — inherited from the target repo's `.mcp.json` or the plugin
-catalog — that fails to boot costs its OWN tools, never the run:
-claude_code's CLI skips a server it cannot start, pi bounds each connect
-with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process splice
-skips it with a Warn log plus a `mcp_server_degraded` run event (server,
-source, error), so the drop is in the run record, not just the process
-log. Typical case: a repo-scoped server needing a credential the
-execution host doesn't have (a token-less Sentry server on a cloud
-runner pod). A tool the node names EXPLICITLY on a dead server still
-fails loud at resolution — a declared dependency is never silently
-dropped.
+**Unnamed servers degrade per-server, on every backend.** A server whose
+tools the node does not name that fails to boot costs its OWN tools, never
+the run: claude_code's CLI skips a server it cannot start, pi bounds each
+connect with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process
+splice skips it with a Warn log plus a `mcp_server_degraded` run event, so
+the drop is in the run record, not just the process log. Typical case: a
+repo-scoped server needing a credential the execution host doesn't have (a
+token-less Sentry server on a cloud runner pod). A tool the node names
+EXPLICITLY on a dead server still fails loud at resolution — a declared
+dependency is never silently dropped, and no degrade event is emitted for
+it either, since the node is not about to run without those tools.
+
+The event's `source` says why the server was in that node's reach:
+`declared` when the node's own `mcp: servers:` named it, `ambient` when it
+was inherited from the repo's `.mcp.json`, the plugin catalog or the
+workflow. It is read from the node's declaration, because
+`ActiveMCPServers` — the resolved set the splice walks — holds both merged
+and cannot tell them apart. `origin` (project / workflow / plugin) is the
+other question: who controls the *definition*. A bot that declares a
+server whose tools it never names sees `source: declared` with the
+`origin` of wherever that server is defined.
 
 **Stdio MCP startup diagnostics.** The in-process MCP client drains stderr
 through the official SDK's command hook and retains only an 8 KiB tail during
@@ -744,14 +1211,148 @@ deployment that would rather not expose the surface at all,
 default keeps that single-subagent surface — see
 [environment-variables.md](environment-variables.md)).
 
-The multi-agent **`Workflow`** tool is a different matter: it is withheld
-from every node that is not `reasoning_effort: ultracode`, knob or not.
-Claude Code arms that tool on the word `ultracode` anywhere in its prompt,
-and a node's prompt carries the content it works on — a PR whose title or
-diff mentions the mode would otherwise switch a reviewer into a background
-multi-agent orchestration the operator never asked for (measured on
-2026-09-05: four `revi/review` runs died at 3–5× their cost cap that way).
-The mode grants the tool; the effort is the escape hatch.
+**Subagents run in the foreground.** A claude_code session is one-shot. It
+ends with the node's final output, and nothing reaches the model after
+that: no completion notification, no scheduled wake-up. Every spawn
+therefore sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`: the main session,
+every structured-output pass, a resumed session, sandboxed or not. With it,
+the CLI runs each `Agent` call in the foreground and returns the agent's
+report as the tool result. It also drops `run_in_background` from the `Agent`
+and `Bash` schemas, and its own Agent guidance says the same. Parallelism
+still works: several `Agent` calls in one message run concurrently, and all
+of them return before the next step. Every spawn that keeps the subagent
+tool, ultracode or not, carries a `## Subagents in this session` section
+that says so. A process the node needs running while it works, such as a
+dev server, is started from the shell itself (`nohup … &`).
+
+A Bash command that outlives its timeout is now killed rather than moved to
+the background. So every spawn also pins `BASH_DEFAULT_TIMEOUT_MS` and
+`BASH_MAX_TIMEOUT_MS`, derived from this backend's own watchdogs. While a
+foreground command runs, the session is silent to them, because the SDK
+drops the CLI's progress lines. A command that outlived the hot idle tier or
+the no-progress tier would abort the whole session.
+
+- The maximum sits under the tighter of the two enabled watchdogs, by a
+  margin: a tenth of it, at least 30 s, at most half of it.
+- The default is half the maximum.
+
+With the defaults (15 min and 25 min) that makes 13 min 30 s and 6 min 45 s.
+With both watchdogs disabled, nothing can abort the session over a silent
+command, so both timeouts become one hour. The CLI's own 2-minute default
+would kill a long command for nothing.
+
+A pinned key set through the run's provisioning environment is ignored, with
+a warning that names it.
+
+Every pinned variable rides two layers, so that nothing lower can move it.
+There are four: the switch, the node's auto-memory decision
+(`CLAUDE_CODE_DISABLE_AUTO_MEMORY`), and the two Bash timeouts.
+
+- The process environment, which the run's provisioning environment cannot
+  override.
+- The one `--settings` object, merged with the auto-memory directory that
+  rides it. At startup the CLI copies the `env` block of every settings
+  source it loads into its environment, in the order user, project, local,
+  flag, policy, and reads these variables live afterwards. Without this
+  layer, a target repository's committed `.claude/settings.json` or the
+  operator's user settings could switch background work back on. They could
+  also turn auto-memory back on, against the operator's personal
+  `~/.claude/projects/<cwd>/memory/`. The flag layer comes after them; only
+  managed policy settings come later. The CLI applies those `env` blocks
+  again whenever a settings file changes during the session.
+
+**Routing is pinned too.** The same `env` blocks can set the variables that
+decide where the CLI sends its requests, and over which channel. A target
+repository's committed `.claude/settings.json` setting `ANTHROPIC_BASE_URL`
+would otherwise send every request of the run, with its API key or
+subscription token, to an endpoint the repository chose. Every spawn (the
+session, the structured-output pass, on the host and in a sandbox) therefore
+pins each variable of `ClaudeCodeRoutingEnv` in the flag layer:
+
+- the API endpoints (`ANTHROPIC_BASE_URL`, the Bedrock, Bedrock Mantle, Vertex,
+  Foundry, AWS and Google Cloud base URLs, `ANTHROPIC_FOUNDRY_RESOURCE`,
+  `CLAUDE_CODE_API_BASE_URL`), the provider switches (`CLAUDE_CODE_USE_*`) and
+  the companions the CLI groups with them (`CLAUDE_CODE_SKIP_*_AUTH`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL`);
+- the proxies, `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` under
+  both spellings;
+- the TLS trust: `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`,
+  `CLAUDE_CODE_CERT_STORE`.
+
+Each is pinned at the value the spawn's own environment holds, or `""` when
+it holds none: the CLI reads an empty routing variable as unset, and the empty
+value still outranks one a settings file sets. A proxy pair the spawn spells
+one way only is pinned to that value under both spellings, since the CLI's
+readers disagree on which spelling wins. The pinned values also reach the
+agent's own commands, like the rest of the CLI's environment: there, a
+routing variable the spawn left unset is set and empty. Most tools (curl,
+git, Node, Python's `urllib`) read an empty proxy or CA variable as unset.
+The Python Anthropic SDK does not: it takes an empty `ANTHROPIC_BASE_URL` as
+its base URL.
+
+The flag settings object travels as a file, never on argv, because a routing
+value can carry a credential: a proxy URL's userinfo, the sandbox egress
+proxy's token, a gateway header. On the host it is a 0600 file in a private
+temporary directory, removed when the pass ends. In a sandbox, the spawn
+writes it inside the container from the environment the CLI runs with there:
+the egress proxy and its CA are set when the container starts, and the host
+never sees them. The CLI keeps the content it read at startup, so a later
+write to the file does not move the pin, and it refuses to start when the file
+is missing.
+
+What the pin does not cover:
+
+- Credentials. They stay in the process environment and are never written to
+  the settings object. A settings file can still replace the key the CLI
+  sends, but only towards the pinned endpoint.
+- Settings that run commands (`hooks`, `apiKeyHelper` and the other auth or
+  header helpers): the pin only concerns the `env` block.
+- The cloud SDK variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`, metadata
+  endpoints). They only take effect once a provider switch selects that
+  cloud. They stay unpinned because the pinned `env` also reaches the agent's
+  own commands, and those SDKs read a set-but-empty variable differently from
+  an unset one.
+- `ANTHROPIC_UNIX_SOCKET`: the CLI already drops it from every settings source.
+- Managed policy settings, which outrank the flag layer by design.
+
+`ITERION_CLAUDE_CODE_SETTING_SOURCES=none` does not turn this off, and does not
+turn settings off either: it omits `--setting-sources`, and the CLI then loads
+every source, `local` included.
+
+Why this switch, and not a softer lever. With background work enabled, the
+CLI (2.1.280) runs an agent in the background:
+
+- whenever the call does not say `run_in_background: false`;
+- whenever the agent's definition says `background: true` (the operator's
+  `.claude/agents`, or the target repository's);
+- under its fork and coordinator modes.
+
+In all these cases it tells the model that the report "arrives in a separate
+turn", and it no longer has a tool that waits on a task (`TaskOutput` is
+gone). A documentation-campaign node took the CLI at its word. It launched
+its auditors, ended its turn to wait, and emitted its structured output with
+six of them unread. That happened pass after pass, until the run's budget
+ran out. Only `isolation: "remote"` stays asynchronous: that is a cloud
+agent, gated behind a claude.ai account.
+
+**Tools that hand work to a later turn are withheld from every spawn**,
+ultracode included:
+
+- **`Workflow`**: it only ever runs in the background, and nothing in the
+  session can wait on it. Claude Code also arms it on the word `ultracode`
+  anywhere in its prompt, and a node's prompt carries the content it works
+  on. A PR whose title or diff mentions the mode would switch a reviewer
+  into a background multi-agent orchestration (measured on 2026-09-05: four
+  `revi/review` runs died at 3–5× their cost cap that way).
+- **`ScheduleWakeup`** and **`CronCreate`/`CronDelete`/`CronList`**: they
+  schedule a prompt for a later turn of this session, which never comes. A
+  durable cron is written into the workspace's
+  `.claude/scheduled_tasks.json` instead.
+- **`RemoteTrigger`**: it schedules remote agents under the account the CLI
+  runs on.
+
+A name the running CLI does not register costs nothing on
+`--disallowedTools`.
 
 ### `codex`
 
@@ -878,10 +1479,13 @@ When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider (the detector's
 `SuggestedModel` for the first available provider, in this priority
 order) — currently
-`anthropic/claude-opus-5` for Anthropic,
-`anthropic/glm-5.2` for z.ai,
-`openai/gpt-5.4-mini` for OpenAI, and
-`xai/grok-3` for xAI.
+`anthropic/claude-opus-5-5` for Anthropic,
+`anthropic/glm-5.3` for z.ai,
+`moonshot/kimi-k2` for Moonshot,
+`openai/gpt-6-sol` for OpenAI, and
+`xai/grok-3` for xAI (the `SuggestedModel` fields of
+[`pkg/backend/detect`](../pkg/backend/detect/detect.go), in the order the
+detector lists them).
 
 #### Stream-silence watchdog
 
@@ -1034,7 +1638,7 @@ gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
 
-## Third-party agent CLIs (`pi`, `kimi`, `grok`, and the CLI-agent seam)
+## Third-party agent CLIs (`pi`, `kimi`, `grok`, `opencode`, and the CLI-agent seam)
 
 Some agent CLIs have an argument protocol **disjoint from claude-code's**
 Session mode (`--print`, prompt on stdin, `--append-system-prompt`, …), so
@@ -1146,15 +1750,20 @@ workflow that depends on those tools.**
 
 #### Behaviour worth knowing
 
-- **`AGENTS.md` is read alongside `CLAUDE.md`, and it is the dominant
-  per-call cost.** pi walks up from the working directory and injects both.
+- **Context files are the dominant per-call cost.** Per directory pi loads
+  the FIRST existing file among `AGENTS.override.md`, `AGENTS.md`,
+  `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` — one file per directory, not both
+  (0.84.3, `resource-loader.js`) — walking up from the working directory to
+  `/`, plus the agent dir's own file. The ambient-context policy (above)
+  scopes this: every value but `all` turns pi's own loading off and has
+  iterion supply the allowed files, rendered exactly as pi renders its own.
   Two consequences:
   - If your repo carries an `AGENTS.md` meant for a different agent, it
     reaches pi nodes too.
-  - **Measure it before you budget.** On iterion's own tree (a 103 KB
-    `CLAUDE.md`) a one-word prompt costs **26,933 input tokens with context
-    files against 448 without** — sixty times the input, on every call,
-    before the node does any work. It stays on by default for parity with
+  - **Measure it before you budget.** When iterion's own `CLAUDE.md` was
+    103 KB, a one-word prompt cost **26,933 input tokens with context files
+    against 448 without** — sixty times the input, on every call, before the
+    node does any work ([ADR-085](adr/085-pi-as-execution-backend.md)). It stays on by default for parity with
     `claude_code`; set `ITERION_PI_NO_CONTEXT_FILES=1` to turn it off when a
     node does not need the repo's instructions.
 - **The target repo's `.pi/` directory is refused.** pi executes
@@ -1251,7 +1860,7 @@ only providers already authenticated on the host, so it will not list
 
 | Variable | Effect |
 |---|---|
-| `ITERION_PI_BIN` | Absolute path to the `pi` binary (e.g. a `bun --compile` single-file build on a host with no Node). |
+| `ITERION_PI_BIN` | The `pi` binary on the host (e.g. a `bun --compile` single-file build on a host with no Node): an absolute path, or a bare name on PATH. A relative path with a separator is refused — it would resolve against the workspace. |
 | `ITERION_PI_MODE` | `print` rolls back to the one-shot transport. The default is the long-lived `--mode rpc` session (tool events, native steering, authoritative accounting, pre-flight handshake). |
 | `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR`. Reproducible pi config, but hides the operator's own `auth.json` — so the OAuth breadth above goes with it. |
 | `ITERION_PI_OFFLINE` | `0` re-enables pi's catalogue refresh inside a sandbox (off by default there: an egress policy would stall startup). |
@@ -1308,6 +1917,145 @@ login / `~/.grok` config) — iterion does not inject `XAI_API_KEY` for this
 backend. That is **distinct** from calling the xAI HTTP API via
 `backend: claw` + `model: "xai/…"`.
 
+### `opencode`
+
+[opencode](https://opencode.ai) is a multi-provider agent CLI. Its headless
+mode is a **subcommand**, and iterion drives it as:
+
+```
+opencode --format json [-m <provider/model>] [--variant <effort>] run
+```
+
+with the composed prompt on **stdin**.
+
+```iter fragment
+prompt task:
+  Implement the feature described in the issue and run the tests.
+
+agent implement:
+  backend: "opencode"
+  model: "anthropic/claude-sonnet-4-6"   # opencode's own -m format IS provider/model
+  system: task                           # folded into the prompt: opencode has no system flag
+  reasoning_effort: high                 # optional; mapped to --variant
+```
+
+#### What it brings
+
+- **Any provider opencode is configured for**, selected with the model spec
+  it already understands: `-m provider/model` is iterion's spec shape, so the
+  value passes through unchanged (no prefix stripping, unlike `grok`).
+- **A provider-computed cost and a real token split**, read off the stream's
+  `step-finish` parts (emitted as `step_finish`) rather than estimated. opencode reports `output`
+  excluding reasoning and `input` excluding the cache halves; iterion adds
+  both back so the figures mean what the rest of the engine means by them.
+- **A reasoning-effort dial** (`--variant`). The accepted variant names are
+  **per-model** — opencode derives them from each model's own reasoning
+  options — so iterion passes its level through verbatim and lets opencode
+  refuse an unknown one explicitly. `xhigh` and `ultracode` collapse onto
+  `high` before argv.
+
+#### What it does NOT bring
+
+The observations below were measured against **opencode 1.1.19**; opencode
+moves fast, so re-measure before trusting a claim against another build.
+
+- **No permission gate, in any mode.** opencode exposes no `PreToolUse`
+  hook, so a node with an armed gate is refused at compile time (**C176**)
+  and again at dispatch — never run ungated. opencode *does* carry a
+  declarative in-process policy (`OPENCODE_PERMISSION`, a JSON map of
+  tool → `ask|allow|deny`, verified to reach its resolved configuration),
+  which is a plausible route to native `deny` enforcement. It is deliberately
+  **not** wired: membership in the compiler's gate table is earned by a live
+  denial, never declared, and no credential was available to witness one.
+  Note also that in a headless run an `ask` verdict is auto-*rejected* (and
+  later builds add a `--auto` flag that auto-*allows* it instead) — neither
+  is "pause and ask the operator".
+- **No async questions.** `interaction: async` is refused by **C267**;
+  `interaction:` in its synchronous form is inert, as on every CLI-agent
+  backend, and **C271** now says so at compile time.
+- **No session resume or fork.** The CLI has `-s/--session` and every event
+  carries a `sessionID`, so the pieces exist, but nothing is wired: a
+  `session: persist` node logs `backend "opencode" cannot resume; running
+  fresh` and runs fresh.
+- **No MCP forwarding, and `tools:` does not constrain it.** opencode runs
+  its own tool set: the list never reaches the CLI
+  (`toolcatalog.ReceivesToolList`), so a `tools:` line on such a node is
+  inert. **C270** says so for the one spelling whose inertness inverts its
+  meaning — `tools: []`, which declares NO tools and here yields opencode's
+  whole toolset. A non-empty list is dropped just as silently, with no
+  diagnostic; bound the node with `deny:` rules instead, or run it on a
+  backend that receives the list.
+- **No `command:` override.** Only `claude_code` consumes a node's
+  `command:`; **C174** says so rather than letting it look honoured.
+- **No `provider:` hint.** opencode resolves its own credentials from its own
+  auth store, so iterion's credential-routing hint has nowhere to land
+  (**C088**).
+
+#### ⚠️ The target repository runs as code
+
+opencode loads project resources from **every `.opencode/` directory between
+the working directory and the repository root, and from an `opencode.json`
+(or `.jsonc`) at any of those levels** — and it EXECUTES what it finds,
+inside the process holding the run's credentials: `plugin/*.ts` and
+`tool/*.ts` are imported as modules, and a `package.json` there is installed
+with its lifecycle scripts. No config entry and no flag are needed. Against
+a checked-out branch you do not control, that turns prompt injection into
+code execution.
+
+iterion therefore **refuses** a run whose checkout carries opencode
+resources at any of those levels. The question asked per level is "is there
+a `.opencode/` here at all, or an `opencode.json`" rather than a list of
+known code paths — a guard that enumerates spellings gains one more every
+release:
+
+```
+delegate: opencode: /src/myrepo carries .opencode/, which opencode loads and
+executes inside the agent process; refusing to run against an untrusted
+checkout (set ITERION_OPENCODE_TRUST_PROJECT=1 for a repository you own)
+```
+
+The walk stops at the **git worktree root**, which is opencode's own stop
+(measured: a plugin one level above a git root is not loaded); above that is
+the operator's own tree, not the untrusted checkout.
+
+This is a refusal rather than a flag because opencode offers no way to turn
+the discovery off: `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_PURE` and
+`OPENCODE_DISABLE_DEFAULT_PLUGINS` were each measured on 1.1.19 to leave the
+plugin running.
+
+Separately, opencode's Claude-Code compatibility layer reads the
+**operator's** `~/.claude/CLAUDE.md` into its system prompt and loads
+`.claude` skills — which would make a node's effective prompt depend on a
+directory iterion does not compose, and which aborts the whole CLI on a
+single malformed skill file. iterion defaults
+`OPENCODE_DISABLE_CLAUDE_CODE=1` on every opencode invocation (a run's own
+`env:` still wins on that key), the same
+posture `pi` takes with `--no-prompt-templates --no-themes`.
+
+#### Behaviour worth knowing
+
+- **Not in the stock sandbox image.** The published image bakes claude-code,
+  pi and codex only; a sandboxed `opencode` node dies at `exec: not found`.
+- **Its stderr is a JavaScript stack trace.** The shared CLI-agent retry
+  classifier substring-matches stderr for network signatures, and an
+  opencode trace can contain one (a `JSON Parse error: Unexpected EOF` from
+  a malformed JSON file it reads matches `unexpected eof`), so a *deterministic* failure
+  can still be retried up to three times before it surfaces.
+- **The prompt goes on stdin, never in argv.** opencode takes its message as
+  a variadic positional, which silently swallows a prompt beginning with `-`
+  (it prints its help text instead of running) — an iterion prompt routinely
+  opens on a markdown bullet. Stdin also sidesteps `MAX_ARG_STRLEN`. opencode
+  reads non-TTY stdin to EOF, and **blocks forever on a stdin left open** —
+  which is exactly why iterion hands it a reader over the composed prompt
+  that EOFs immediately after it, and never an open pipe.
+
+#### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the target repository's `.opencode/` resources. Read from the **process** environment, so on a shared server it lifts the refusal for every concurrent run, not just yours. See the warning above. |
+| `ITERION_OPENCODE_BIN` | The opencode CLI on the HOST, for a host whose PATH the iterion process does not share: an absolute path, or a bare name on PATH. A relative path with a separator is refused — it would resolve against the workspace and run a binary out of the checkout. Detection and execution apply the same rule. Ignored inside a sandbox, where a host path means nothing. |
+
 ### Behavioural notes (generic Kimi/Grok delegates)
 
 - **Explicit opt-in.** `kimi` / `grok` are never auto-detected; set
@@ -1333,9 +2081,10 @@ backend. That is **distinct** from calling the xAI HTTP API via
   short-circuits it. External hooks cannot pause the parent run, so `ask`
   (including explicit `ask:` rules under `deny`) is refused. Guarded sandbox
   runs are also refused because neither CLI currently carries its home and hook
-  binary into the container — so a gated node needs `sandbox: none` (the
-  shipped default is `auto`, and **C136** warns at compile time rather than
-  letting the run die at the agent node). Windows is refused: the hook command
+  binary into the container — so a gated node needs an unsandboxed run:
+  `sandbox: none` on the workflow, or `--sandbox none` (a node-level
+  `sandbox:` is not honoured; the shipped default is `auto`, and **C136**
+  warns at compile time rather than letting the run die at the agent node). Windows is refused: the hook command
   is POSIX-quoted and a spawn failure is an ALLOW.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).
@@ -1405,18 +2154,43 @@ ZAI_API_KEY=<bearer token from your z.ai dashboard>
 ```
 
 When iterion sees `ZAI_API_KEY` set AND no `ANTHROPIC_API_KEY` /
-`ANTHROPIC_AUTH_TOKEN` set, it automatically configures
+`ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY`
+set, it automatically configures
 `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` and
 `ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY` for both the spawned Claude Code
 subprocess (`backend: claude_code`) and the in-process claw provider
 factory (`backend: claw`). Restart iterion-desktop after editing the
 file so the launcher re-sources it.
 
-If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is also set, that
-takes precedence — the shortcut is intentionally "auto-route only
-when no Anthropic auth is configured". This lets a user keep a
+If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`, or a cloud-provider
+switch) is also set, that takes precedence — the shortcut is intentionally
+"auto-route only when no Anthropic auth is configured". This lets a user keep a
 fallback Anthropic key for some workflows without losing the z.ai
 default.
+
+### Moonshot: `provider: moonshot` (the Kimi family)
+
+Moonshot publishes the same kind of Anthropic-compatible endpoint,
+`https://api.moonshot.ai/anthropic` (the `api.moonshot.cn` gateway answers
+the same wire). It is a first-class provider: `provider: "moonshot"` on a
+`claude_code` or `pi` node, `moonshot/kimi-k2` as a `claw` model spec, and
+`iterion api-keys create --provider moonshot` for a team-scoped BYOK key.
+
+Two differences from the z.ai wiring above, both deliberate:
+
+- **The base-URL override is `MOONSHOT_BASE_URL`, not `ANTHROPIC_BASE_URL`.**
+  The latter is z.ai's own documented knob, so on a host configured for z.ai
+  it already holds z.ai's endpoint — honouring it for a Moonshot key would
+  send that credential to another vendor's gateway.
+- **There is no "`MOONSHOT_API_KEY` alone" shortcut.** That variable is
+  already how `backend: "kimi"` feeds Moonshot's own CLI, so an ambient value
+  means "the kimi CLI is configured", not "route every Anthropic-wire node to
+  Moonshot". Under an explicit `provider: moonshot` hint it IS honoured; a
+  BYOK key is the way to route unpinned nodes.
+
+With the hint set and no key reachable — neither BYOK nor `MOONSHOT_API_KEY`
+— the node is **refused by name**. It does not fall back to Anthropic: that
+would be another account and another bill, silently.
 
 ### Explicit form: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`
 

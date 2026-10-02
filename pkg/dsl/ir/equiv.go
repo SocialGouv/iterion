@@ -2,7 +2,9 @@ package ir
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -43,14 +45,16 @@ func diagnosticCodes(cr *CompileResult) []string {
 
 // firstWorkflowDifference names what differs between two compiled workflows
 // that are not DeepEqual, coarsely: enough for a test failure or a refused
-// save to point at the construct, without reproducing the whole IR.
+// save to point at the construct, without reproducing the whole IR. Nodes
+// are walked by sorted id, so the difference named is the same on every
+// run — never the one a map's iteration happened on.
 func firstWorkflowDifference(a, b *Workflow) string {
-	for id := range a.Nodes {
+	for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
 		if _, ok := b.Nodes[id]; !ok {
 			return fmt.Sprintf("node %q is missing", id)
 		}
 	}
-	for id := range b.Nodes {
+	for _, id := range slices.Sorted(maps.Keys(b.Nodes)) {
 		if _, ok := a.Nodes[id]; !ok {
 			return fmt.Sprintf("node %q appeared", id)
 		}

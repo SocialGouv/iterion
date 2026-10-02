@@ -25,6 +25,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // MainBotFile is the required workflow entry of every bundle — mirrors
@@ -102,6 +103,16 @@ type Store interface {
 	Create(ctx context.Context, s BotSource) (BotSource, error)
 	Get(ctx context.Context, id string) (BotSource, error)
 	GetBySlug(ctx context.Context, tenantID, slug string) (BotSource, error)
+	// GetByVersion reads a PAST version of one row by its IDENTITY — the
+	// (id, version) pair a two-pass consumer (the assistant mission's
+	// rewind preview and apply, #1381) pins when the preview certifies the
+	// content. Keying on the row id, not the slug, keeps a
+	// delete-and-recreate of the same slug from aliasing incarnations: a
+	// recreated row carries a new id and can never serve a pin taken on
+	// the old one. Version history is retained on Delete: a pinned version
+	// outliving its row is deliberate — the preview certified that
+	// content, and the apply is safe acting on exactly it.
+	GetByVersion(ctx context.Context, tenantID, id string, version int) (BotSource, error)
 	Update(ctx context.Context, s BotSource) (BotSource, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]BotSource, error)
@@ -141,6 +152,13 @@ func (s *BotSource) Validate() error {
 	for key, content := range s.Files {
 		if err := safeBundlePath(key); err != nil {
 			return err
+		}
+		// An author document is a draft of a .bot, never one: the store
+		// holds what launches, so a `.bot.yaml` pushed by name — whole
+		// bundle or one file — is refused HERE, the chokepoint every write
+		// path crosses, with the typed refusal every launcher shares.
+		if workflowfile.IsAuthorDocument(key) {
+			return bundle.AuthorDocumentError(key)
 		}
 		// The store carries JSON/BSON text: a non-UTF-8 file would be
 		// corrupted on the encoding round trip. Enforced HERE (the one

@@ -16,7 +16,17 @@ export default {
     releaseName: 'v${version}'
   },
   hooks: {
-    'after:bump': ['bash scripts/sync-chart-version.sh', 'bash scripts/build.sh']
+    'after:bump': ['bash scripts/sync-chart-version.sh', 'bash scripts/build.sh'],
+    // The floors aligner runs in the one slot where package.json is bumped
+    // AND CHANGELOG.md is written while nothing is staged yet: it rewrites
+    // the syntax-floor pins the cut claims — inside this same release
+    // commit, which the git plugin stages right after — and refuses,
+    // aborting the release before that commit, a pin shape it cannot
+    // realign or a floor whose word the notes just rendered do not carry
+    // (#1154). At after:bump the conventional-changelog plugin has not
+    // written the infile yet, so the aligner would judge notes that do not
+    // exist on disk.
+    'before:git:beforeRelease': ['go run ./cmd/release-floors --apply']
   },
   plugins: {
     '@release-it/conventional-changelog': {

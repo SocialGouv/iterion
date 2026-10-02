@@ -124,7 +124,9 @@ type RunStore interface {
 	// this write exists to prevent.
 	//
 	// Empty src with no files is a legal clear: the compile busted the
-	// 1 MiB cap, which costs the run auto-targetability and nothing else.
+	// 1 MiB cap, which costs the run auto-targetability and the ability to
+	// be forked WITH changed inputs (the fork gate reads its constraints
+	// from this record).
 	// Granular for the same reason as the budget setters: the resume has
 	// already CAS-transitioned the doc to `queued`, so a whole-doc SaveRun
 	// from the copy loaded before that would revert it.
@@ -370,6 +372,28 @@ func AsQueuedAttemptStore(s RunStore) QueuedAttemptStore {
 		return nil
 	}
 	q, _ := s.(QueuedAttemptStore)
+	return q
+}
+
+// QueuedResumeReleaser puts a resume nobody claimed back where it came from.
+type QueuedResumeReleaser interface {
+	// ReleaseQueuedRunIfAttempt moves a queued run to `to` — the status a
+	// resume moved it from — only when its current QueuedAt is not newer
+	// than the delivery's PublishedAt: the same attempt identity, in the
+	// same atomic operation, as FailQueuedRunIfAttempt. runErr and meta
+	// state why, under the transition discipline every status write
+	// follows (a failure code only on the statuses that carry one; the
+	// pause pointer kept on a paused status).
+	ReleaseQueuedRunIfAttempt(ctx context.Context, id string, to RunStatus, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (changed bool, err error)
+}
+
+// AsQueuedResumeReleaser returns the release capability, or nil for a store
+// that has none: the run then stays queued, as it did before the capability.
+func AsQueuedResumeReleaser(s RunStore) QueuedResumeReleaser {
+	if s == nil {
+		return nil
+	}
+	q, _ := s.(QueuedResumeReleaser)
 	return q
 }
 

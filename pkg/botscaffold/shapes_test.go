@@ -85,6 +85,16 @@ func exists(t *testing.T, dir, rel string) bool {
 	return err == nil
 }
 
+// port returns the contract port of that name, or nil.
+func port(ports []*ir.PublicPort, name string) *ir.PublicPort {
+	for _, p := range ports {
+		if p.Name == name {
+			return p
+		}
+	}
+	return nil
+}
+
 // edge returns the workflow's edge from → to, or nil.
 func edge(w *ir.Workflow, from, to string) *ir.Edge {
 	for _, e := range w.Edges {
@@ -492,6 +502,75 @@ func TestGalleryShapes(t *testing.T) {
 				t.Errorf("the main alone should be refused with C030, got %d", unresolved)
 			}
 		},
+		"contract": func(t *testing.T, dir string, w *ir.Workflow, _ int) {
+			c := w.Contract
+			if c == nil {
+				t.Fatal("the workflow keeps no contract; the shape exists to declare one (`contract: public`)")
+			}
+			if c.Name != "public" || len(w.Contracts) != 1 {
+				t.Errorf("contract = %q of %d declared, want the one `public`", c.Name, len(w.Contracts))
+			}
+			// An input mirrors a var: the var's type, required exactly when
+			// the var has no default (C300).
+			goal, v := port(c.Inputs, "goal"), w.Vars["goal"]
+			if goal == nil || v == nil {
+				t.Fatalf("want the input port goal mirroring vars.goal, got port %+v var %+v", goal, v)
+			}
+			if goal.Type != v.Type.String() || goal.Required != !v.HasDefault {
+				t.Errorf("input goal = %s required=%v; the var is %s with default=%v", goal.Type, goal.Required, v.Type, v.HasDefault)
+			}
+			// An output names its producer and takes the field's type (C301).
+			if p := port(c.Outputs, "summary"); p == nil || p.FromNode != "work" || p.FromField != "summary" || p.Type != "string" {
+				t.Errorf("want output summary: string from work.summary, got %+v", p)
+			}
+			// A file port names a node that publishes, alone (C301), and
+			// carries its verifiable shape (media type, schema).
+			if p := port(c.Outputs, "report"); p == nil || p.File == nil || p.FromNode != "work" || p.FromField != "" || ir.NodePublish(w.Nodes["work"]) == "" {
+				t.Errorf("want the file port report from the publishing node work, got %+v (work publishes %q)", p, ir.NodePublish(w.Nodes["work"]))
+			}
+			if p := port(c.Outputs, "report"); p == nil || p.File == nil || p.File.MediaType != "application/json" || p.File.Schema != "report" {
+				t.Errorf("want the file port report carrying application/json over the report schema, got %+v", p)
+			}
+			// A criterion names a port, a registered evaluator and its
+			// parameters (C302): min_length with min 1 on the goal — a bound
+			// of 0, or another kind, would declare a check that admits all.
+			var onGoal, onSummary *ir.PublicCriterion
+			for _, k := range c.Criteria {
+				switch k.Port {
+				case "input.goal":
+					onGoal = k
+				case "output.summary":
+					onSummary = k
+				}
+			}
+			if onGoal == nil || !onGoal.Registered || onGoal.Kind != "min_length" || string(onGoal.Params) != `{"min":1}` {
+				t.Errorf("want the registered criterion min_length {min: 1} on input.goal, got %+v", onGoal)
+			}
+			if onSummary == nil || !onSummary.Registered || onSummary.Kind != "min_length" {
+				t.Errorf("want the registered criterion min_length on output.summary, got %+v", onSummary)
+			}
+			if len(c.Effects) == 0 {
+				t.Error("want at least one declared effect")
+			}
+			// Nothing evaluates a criterion at run time yet: the check the
+			// contract declares on the goal is ALSO the deterministic entry
+			// gate, and an unset goal is a typed refusal before any LLM call.
+			if w.Entry != "check" {
+				t.Errorf("entry = %q, want the check gate", w.Entry)
+			}
+			if e := edge(w, "check", "goal_unset"); e == nil || e.Condition != "configured" || !e.Negated {
+				t.Errorf("want check -> goal_unset when not configured, got %+v", e)
+			}
+			if e := edge(w, "check", "work"); e == nil || e.Condition != "configured" || e.Negated {
+				t.Errorf("want check -> work when configured, got %+v", e)
+			}
+			if len(typedFails(w)) != 1 {
+				t.Errorf("want the typed unset-goal refusal, got %d typed fails", len(typedFails(w)))
+			}
+			if v.Default != "" {
+				t.Errorf("goal default = %v; a placeholder goal would make the gate pass", v.Default)
+			}
+		},
 	}
 	for _, tpl := range Templates() {
 		if tpl.Spec.Shape == "" {
@@ -679,6 +758,7 @@ func TestGalleryShapesResolveTheWorktreeDialOff(t *testing.T) {
 		"async-questions":     "none",
 		"multi-file":          "none",
 		"library":             "none",
+		"contract":            "none",
 	}
 	seen := map[string]bool{}
 	for _, tpl := range Templates() {

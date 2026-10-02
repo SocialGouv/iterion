@@ -9,8 +9,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -96,8 +98,11 @@ type modelRate struct {
 	known             bool
 }
 
-// routeKey names one (backend, model) pair a run spent on.
-type routeKey struct{ backend, model string }
+// routeKey names one (backend, model) pair a run spent on, and — for a
+// delegate that stamps it — the credential route its session ran on
+// (delegate_finished's `fingerprint`): two nodes of one backend and model
+// can spend two credentials when their provider hints differ.
+type routeKey struct{ backend, model, source string }
 
 // routeTotals is one route's slice of the run's consumption.
 type routeTotals struct {
@@ -108,6 +113,9 @@ type routeTotals struct {
 	inputTokens     int64
 	outputTokens    int64
 	aggregateTokens int64
+	// unreportedCalls counts the route's calls whose usage the provider
+	// did not report in full: their tokens above are a lower bound.
+	unreportedCalls int64
 }
 
 // tokens is everything the route consumed. The three counters are disjoint —
@@ -131,23 +139,63 @@ func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metrics
 }
 
 // routeModel names the model a node's route is keyed on, from the spec the
-// node declared and the id a backend reported. Backends report the id they
-// CALLED — claw strips the provider prefix before the request, so its
-// llm_request carries a bare id — and a bare id names no provider: keyed on
-// it, the route falls to the backend's default wire and an OpenAI model's
-// tokens are charged to the Anthropic credential. When the report is the
-// declared model without its prefix, the declared spec names the route; a
-// different id (a fallback element) is kept as reported.
+// node declared and the id a backend reported. A report that is itself a
+// routing spec — its prefix is a provider the registry routes on, or a
+// credential provider — names its own route (a fallback element's model).
+// Any other report is an id as the backend called it: CLI backends report
+// the bare model, and a model id may hold slashes of its own
+// ("meta-llama/Llama-3.3-70B", "scaleway/gpt-oss-120b") — keyed on it, the
+// route would fall to the backend's default wire and its tokens be charged
+// to the Anthropic credential. So when the report is the declared model —
+// exactly for a gateway id, up to its snapshot alias for a vendor id — the
+// declared spec names the route; a different id is kept as reported.
 func routeModel(declared, reported string) string {
 	switch {
 	case reported == "":
 		return declared
-	case declared == "" || strings.Contains(reported, "/"):
+	case declared != "" && reported == modelroute.Parse(declared).Wire:
+		// The declared model as its wire id — even when that id's own first
+		// segment names a provider ("anthropic/claude-sonnet-4.5" served by
+		// OpenRouter): a reporter that knows the route names it in full.
+		return declared
+	case declared == "" || isRoutingSpec(reported):
 		return reported
-	case delegate.SameModelID(declared, reported):
+	case sameDeclaredModel(declared, reported):
 		return declared
 	}
 	return reported
+}
+
+// servedRoute keys a delegation on the route its executor names — the chain
+// element that served — refined by the model the backend reports when that is
+// another model. The route's provider is a fact the executor knows; the id a
+// backend reports names no provider of its own (OpenRouter's
+// "anthropic/claude-sonnet-4.5"), only the model it ran.
+func servedRoute(route, effective string) string {
+	if effective == "" || effective == route || sameDeclaredModel(route, effective) {
+		return route
+	}
+	if p := modelroute.Parse(route).Provider; p != "" {
+		return p + "/" + effective
+	}
+	return effective
+}
+
+// isRoutingSpec reports whether a model string carries a provider prefix
+// iterion routes or funds on, rather than a slash of the model id itself.
+func isRoutingSpec(s string) bool {
+	p := strings.ToLower(modelroute.Parse(s).Provider)
+	return p != "" && (modelroute.IsRoutingProvider(p) || secrets.Provider(p).Valid())
+}
+
+// sameDeclaredModel reports whether a reported id is the declared model. A
+// gateway id is opaque — two gateway models may share a last segment — so
+// it matches its wire id exactly; a vendor id matches as a snapshot alias.
+func sameDeclaredModel(declared, reported string) bool {
+	if d := modelroute.Parse(declared); d.Gateway() {
+		return reported == d.Wire
+	}
+	return delegate.SameModelID(declared, reported)
 }
 
 // noteDeclinedRoute records that no credential could be named for a route
@@ -170,11 +218,11 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 // Called with m.mu held, alongside the run-total accumulation it mirrors —
 // the two must never diverge, so they are updated in the same critical
 // section.
-func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64, in, out, aggregate int64) {
+func (m *metricsEmitter) addRouteLocked(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	if m.byRoute == nil {
 		m.byRoute = make(map[routeKey]routeTotals)
 	}
-	k := routeKey{backend: backend, model: modelName}
+	k := routeKey{backend: backend, model: modelName, source: source}
 	t := m.byRoute[k]
 	t.costUSD += cost
 	t.inputTokens += in
@@ -183,7 +231,7 @@ func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64,
 	m.byRoute[k] = t
 }
 
-// RouteTotals snapshots what the run spent per (backend, model). The unit
+// RouteTotals snapshots what the run spent per (backend, model, source). The unit
 // per-credential metering charges, because one run can draw on two
 // credentials and the run total belongs to neither.
 func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
@@ -305,8 +353,16 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		m.mu.Unlock()
 	case store.EventLLMRequest:
 		if model, _ := evt.Data["model"].(string); model != "" && evt.NodeID != "" {
+			// A request that names its wire id beside its model says the model
+			// is the routing spec it was resolved from — the route itself, even
+			// when its wire id happens to equal the declared one.
+			wire, _ := evt.Data["wire_model"].(string)
 			m.mu.Lock()
-			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], model)
+			if wire != "" {
+				m.modelByNode[evt.NodeID] = model
+			} else {
+				m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], model)
+			}
 			m.mu.Unlock()
 		}
 	case store.EventLLMStepFinished:
@@ -340,7 +396,13 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
-		m.addRouteLocked(backend, modelName, costDelta, int64(inputT), int64(outputT), 0)
+		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
+		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
+			k := routeKey{backend: backend, model: modelName}
+			t := m.byRoute[k]
+			t.unreportedCalls++
+			m.byRoute[k] = t
+		}
 		m.mu.Unlock()
 
 		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])
@@ -389,12 +451,23 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		}
 		tokensF := toFloat(evt.Data["tokens"])
 		effective, _ := evt.Data["effective_model"].(string)
+		served, _ := evt.Data["route_model"].(string)
+		// Only claude_code's labels name a credential slot the ledger reads
+		// (routeSlot); keying another backend's route on its label would only
+		// split one route in two.
+		var source string
+		if backend == delegate.BackendClaudeCode {
+			source, _ = evt.Data["fingerprint"].(string)
+		}
 
 		// Single critical section: resolve the per-node model name and
 		// accumulate the aggregated token count. Prometheus write
 		// happens after the unlock via addTokens (counter Add is atomic).
 		m.mu.Lock()
-		if effective != "" && evt.NodeID != "" {
+		switch {
+		case served != "" && evt.NodeID != "":
+			m.modelByNode[evt.NodeID] = servedRoute(served, effective)
+		case effective != "" && evt.NodeID != "":
 			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
 		}
 		modelName := m.modelByNode[evt.NodeID]
@@ -436,7 +509,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			// either way, and only this way does a reader of the public
 			// per-credential endpoint see "not split" instead of a
 			// confident, wrong input figure (#992).
-			m.addRouteLocked(backend, modelName, costDelta, 0, 0, int64(tokensF))
+			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {

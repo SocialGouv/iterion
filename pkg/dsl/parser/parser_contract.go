@@ -34,7 +34,7 @@ func (p *parser) contractProperties(host string, span *ast.Span, property func(T
 	seen := map[string]bool{}
 	p.contractMembers(span, func(t Token) {
 		if seen[t.Value] {
-			p.addErrorHint(DiagDuplicateBlock, t, "duplicate '"+t.Value+"' in "+host, "Each property appears once per block: keep one and delete the other.")
+			p.addErrorHint(DiagDuplicateBlock, t, "duplicate "+strconv.Quote(t.Value)+" in "+host, "Each property appears once per block: keep one and delete the other.")
 		}
 		seen[t.Value] = true
 		if !property(t) {
@@ -61,7 +61,7 @@ func (p *parser) endOfValue(what string) bool {
 	if valueEnds(t) || t.Type == TokenIndent {
 		return true
 	}
-	p.addError(DiagExpectedToken, t, what+" takes one value on its line, got '"+t.Value+"'")
+	p.addError(DiagExpectedToken, t, what+" takes one value on its line, got "+strconv.Quote(t.Value))
 	p.skipToNewline()
 	return false
 }
@@ -85,7 +85,7 @@ func (p *parser) contractInt(name string) (int, bool) {
 	}
 	n, err := strconv.Atoi(t.Value)
 	if err != nil {
-		p.addError(DiagExpectedToken, t, name+" takes an integer, got '"+t.Value+"'")
+		p.addError(DiagExpectedToken, t, name+" takes an integer, got "+strconv.Quote(t.Value))
 		return 0, false
 	}
 	if !p.endOfValue(name) {
@@ -117,9 +117,20 @@ func (p *parser) contractIdent(name string, dotted bool) string {
 	return v
 }
 
-func (p *parser) contractJSONProp() json.RawMessage {
-	p.expect(TokenColon)
-	return p.contractJSON()
+func (p *parser) contractJSONProp(prop Token) json.RawMessage {
+	if _, ok := p.expect(TokenColon); !ok {
+		return nil
+	}
+	v := p.contractJSON()
+	// ANY failure that leaves the cursor on the line end — a container left
+	// open at it, a scalar refused, junk after the value — is the broken
+	// text an inline list broken across lines is, and gets the same
+	// recovery (#1630): without it the broken line's DEDENT closes the
+	// port's block and the property after this one is lost.
+	if v == nil && lineEnds(p.peek()) {
+		p.resyncBrokenBracketList(prop)
+	}
+	return v
 }
 
 // parseContractDecl reads `contract <name>:` and its body.
@@ -209,7 +220,7 @@ func (p *parser) parseContractPorts() []*ast.PortDecl {
 						port.Nullable = v
 					}
 				case "default":
-					port.Default = p.contractJSONProp()
+					port.Default = p.contractJSONProp(prop)
 				case "min_items":
 					if v, ok := p.contractInt(prop.Value); ok {
 						port.MinItems = &v
@@ -268,7 +279,7 @@ func (p *parser) parseContractCriterion(t Token) *ast.CriterionDecl {
 		case "port":
 			c.Port = p.contractIdent(prop.Value, true)
 		case "params":
-			c.Params = p.contractJSONProp()
+			c.Params = p.contractJSONProp(prop)
 		default:
 			return false
 		}
@@ -325,7 +336,7 @@ func (p *parser) contractJSON() json.RawMessage {
 		return nil
 	}
 	if t := p.peek(); !valueEnds(t) {
-		p.addError(DiagExpectedToken, t, jsonValueRule+" (got '"+t.Value+"' after the value)")
+		p.addError(DiagExpectedToken, t, jsonValueRule+" (got "+strconv.Quote(t.Value)+" after the value)")
 		p.skipToNewline()
 		return nil
 	}
@@ -384,7 +395,7 @@ func (p *parser) contractJSONValue() (any, bool) {
 			}
 			key := p.expectStringOrIdent()
 			if _, exists := values[key]; exists {
-				p.addErrorHint(DiagDuplicateBlock, keyTok, "duplicate JSON key '"+key+"'", "A JSON object names each key once: keep one and delete the other.")
+				p.addErrorHint(DiagDuplicateBlock, keyTok, "duplicate JSON key "+strconv.Quote(key)+"", "A JSON object names each key once: keep one and delete the other.")
 			}
 			if _, ok := p.expect(TokenColon); !ok {
 				return nil, false

@@ -41,9 +41,9 @@ edit — see the *Adding a language* section at the bottom of this README.
 #    `iterion sandbox doctor` flags missing tools.)
 
 # 1. Run on the current repo. Only detect_tech defaults to
-#    claw + openai/gpt-5.5 (cheap tech survey); triage, the three
+#    claw + openai/gpt-6-sol (cheap tech survey); triage, the three
 #    revalidation voters, and report_card default to
-#    claude_code + claude-opus-5.
+#    claude_code + claude-opus-5-5.
 devbox run -- iterion run bots/sec-audit-source/main.bot \
   --var workspace_dir=$(pwd) \
   --var severity_threshold=medium
@@ -116,7 +116,7 @@ under the `unanimous_dismiss` policy above; set
 
 ```
 inventory (tool)                    ← deterministic bounded file/manifest list
-  └─→ detect_tech (agent: claw + openai/gpt-5.5, readonly)
+  └─→ detect_tech (agent: claw + openai/gpt-6-sol, readonly)
         emits an OPEN `langs: []` list (no per-language booleans)
   └─→ … project-context + diff-scope + shard-planning gates …
   └─→ run_generic_scanners (tool: gitleaks + trivy fs + semgrep --config=p/default) — ALWAYS on
@@ -150,6 +150,27 @@ run_lang_scanners`), not a parallel router fan-out — this stays inside
 the runtime's one-mutating-branch rule; the lang scanner no-ops on
 absent languages.
 
+### The anti-façade gate and the deep scan
+
+`scan_health` hard-fails the run when fewer than `min_generic_scanners`
+(default 2) of the **always-on trio** — gitleaks, trivy, semgrep
+`p/default` — produced a parseable output file. The optional deep scan
+(`--var enable_deepsec=true`) is reported in the same `present` /
+`missing` lists but **never counts toward that floor**: a missing deep
+scan degrades the run with a banner, it does not stop it, and a
+`min_generic_scanners` above 3 is clamped to 3 with a NOTE in the report
+(`min_generic_requested` / `min_generic_clamped` in the envelope) rather
+than failing every run. The deep scan's export is per-run —
+`<scan_dir>/deepsec-out-<run.id>/deepsec.json`, published in the
+scanner's `json_paths` — and every reader (`bank_deepsec_findings`,
+`scan_health`, `cap_findings`, triage) takes it from there; the flat
+`<scan_dir>/deepsec.json` of releases before 0.1.4 is removed by the first
+deep-scan pass that gets past its preflight and read by nobody. Both the
+removal and the harvest exclusion key on the basename `deepsec_out` carries
+now (the removal keys on the whole path, the harvest exclusion on the
+basename) — change that dirname or basename across an upgrade and the old
+file stays, to remove by hand.
+
 ### Opt-in remediation phase (`--var remediate=true`)
 
 Off by default. When enabled, after `report_card` the workflow runs a
@@ -178,6 +199,12 @@ open `langs` list; the single `run_lang_scanners` tool reads that
 skill's `iterion:scanners` block and runs the commands, and
 `scan_health` reads the same block to verify per-language coverage.
 No per-language boolean, no new node. Pure composition.
+
+Both read it from `${BUNDLE_SKILLS_DIR}`, the engine's own copy of this
+bundle's `skills/` — never from `<workspace>/.claude/skills/`, which the
+audited checkout writes. A language `detect_tech` reports that this
+bundle ships no `lang-<id>.md` for is therefore not covered, and
+`scan_health` reports it as `langs_detected` minus `langs_covered`.
 
 ## See also
 

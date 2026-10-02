@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/internal/docfences"
 )
 
 // The extractor must see a fence wherever markdown allows one — indented
@@ -32,18 +34,21 @@ func TestDocSnippetExtractorSeesIndentedFencesAndBadTags(t *testing.T) {
 	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snips := extractDocSnippets(t, path)
+	snips, err := docfences.Extract(path, "iter")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(snips) != 3 {
 		t.Fatalf("expected 3 fences (two indented, one with a bad tag), got %d: %+v", len(snips), snips)
 	}
-	if snips[0].tag != "fragment:workflow" || snips[0].body != "entry: plan\nsandbox: auto\n" {
-		t.Errorf("indented fence 1 = tag %q body %q — indentation not stripped or tag lost", snips[0].tag, snips[0].body)
+	if snips[0].Info != "fragment:workflow" || snips[0].Body != "entry: plan\nsandbox: auto\n" {
+		t.Errorf("indented fence 1 = tag %q body %q — indentation not stripped or tag lost", snips[0].Info, snips[0].Body)
 	}
-	if snips[1].tag != "" || snips[1].body != "schema out:\n  ok: bool\n" {
-		t.Errorf("indented fence 2 = tag %q body %q — nested indentation must survive, list indent must not", snips[1].tag, snips[1].body)
+	if snips[1].Info != "" || snips[1].Body != "schema out:\n  ok: bool\n" {
+		t.Errorf("indented fence 2 = tag %q body %q — nested indentation must survive, list indent must not", snips[1].Info, snips[1].Body)
 	}
-	if snips[2].tag != "fragment edges" {
-		t.Fatalf("bad tag = %q, want it captured verbatim so compileSnippet can refuse it", snips[2].tag)
+	if snips[2].Info != "fragment edges" {
+		t.Fatalf("bad tag = %q, want it captured verbatim so compileSnippet can refuse it", snips[2].Info)
 	}
 	if _, _, err := compileSnippet(snips[2]); err == nil {
 		t.Error("a tag with a space must be refused, not treated as a policy")
@@ -75,17 +80,20 @@ func TestDocSnippetExtractorClosesOnlyAtTheFenceIndent(t *testing.T) {
 	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snips := extractDocSnippets(t, path)
+	snips, err := docfences.Extract(path, "iter")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(snips) != 2 {
 		t.Fatalf("expected 2 fences, got %d: %+v", len(snips), snips)
 	}
-	if !strings.Contains(snips[0].body, "  ```\n  text\n  ```\n") {
-		t.Errorf("the deeper ``` lines must stay in the body, got %q", snips[0].body)
+	if !strings.Contains(snips[0].Body, "  ```\n  text\n  ```\n") {
+		t.Errorf("the deeper ``` lines must stay in the body, got %q", snips[0].Body)
 	}
-	if snips[0].malformed != "" {
-		t.Errorf("first fence wrongly reported malformed: %s", snips[0].malformed)
+	if snips[0].Malformed != "" {
+		t.Errorf("first fence wrongly reported malformed: %s", snips[0].Malformed)
 	}
-	if snips[1].malformed == "" {
-		t.Errorf("a body line indented less than its fence must be reported, got body %q", snips[1].body)
+	if snips[1].Malformed == "" {
+		t.Errorf("a body line indented less than its fence must be reported, got body %q", snips[1].Body)
 	}
 }

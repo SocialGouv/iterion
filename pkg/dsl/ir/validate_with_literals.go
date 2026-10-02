@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 )
 
 // validateWithMappingLiterals warns (C152) when an edge `with:` value
-// reaches a typed input field of the destination as TEXT. A `with:`
+// reaches a typed input field of the destination as TEXT, and (C180) when
+// a whole-reference mapping delivers a LIST into a field declared
+// `string` — the two directions of the same divergence. A `with:`
 // value is a template: the runtime hands the destination a string for
 // every mapping except one that is exactly a single `{{…}}` block
 // covering the whole text — that one passes the referenced value
@@ -71,16 +75,28 @@ func (c *compiler) validateWithMappingLiterals(w *Workflow) {
 			continue // C002 handles the missing schema
 		}
 		for _, dm := range e.With {
-			if dm == nil || !mappingArrivesAsText(dm) {
+			if dm == nil {
 				continue
 			}
 			f := findField(schema, dm.Key)
 			if f == nil {
 				continue // C028/C034 flag the mismatch on the key
 			}
-			c.checkWithLiteral(e, dm, f, inSchema, dst)
+			if mappingArrivesAsText(dm) {
+				c.checkWithLiteral(e, dm, f, inSchema, dst)
+				continue
+			}
+			c.checkWithWholeRef(w, e, dm, f, inSchema, dst)
 		}
 	}
+}
+
+// MappingArrivesAsText is mappingArrivesAsText for a host outside this
+// package that reads what a node's input holds: whether a `with` mapping
+// reaches its destination as a string, or passes a value through with its
+// type.
+func MappingArrivesAsText(dm *DataMapping) bool {
+	return mappingArrivesAsText(dm)
 }
 
 // mappingArrivesAsText mirrors the runtime's resolveMapping decision:
@@ -146,9 +162,10 @@ func mappingTemplateSpans(s string) []mappingTemplateSpan {
 // checkWithLiteral emits C152 for a value arriving as text on a field a
 // string cannot satisfy — or, on `json`, one the text was visibly
 // meant to be decoded into. Every arm phrases its message through
-// withLiteralArrival and withLiteralRemedy; the literal is echoed into
-// the remedy at ONE place, withLiteralSuggestion, which sanitises it —
-// no arm interpolates the raw text into a suggestion.
+// withLiteralArrival and withLiteralRemedy; the literal reaches a
+// suggestion only through the spell helpers (withLiteralSuggestion and
+// the spellExpr* family), which sanitise it — no arm interpolates the
+// raw text into a suggestion.
 func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, inSchema string, dst Node) {
 	switch f.Type {
 	case FieldTypeBool, FieldTypeInt, FieldTypeFloat, FieldTypeStringArray:
@@ -164,6 +181,121 @@ func (c *compiler) checkWithLiteral(e *Edge, dm *DataMapping, f *SchemaField, in
 		"edge %s -> %s, with %q: value %q reaches the `%s` field %q of input schema %q on %s %s node as %s; %s",
 		e.From, e.To, dm.Key, dm.Raw, f.Type, dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(),
 		withLiteralArrival(f.Type, dm.Raw, len(dm.Refs) == 0), withLiteralRemedy(f.Type, dm.Key, dm.Raw))
+}
+
+// checkWithWholeRef is C152's mirror in the other direction (#1604): the
+// mapping is exactly one reference, so the runtime passes the value
+// through WITH its type — and a typed value can land on a field declared
+// `string`, the arm C152 deliberately stays silent on because there a
+// string is the legal value. A `string[]` var IS a list on every path
+// since #1285. A `json` var is whatever its document is, and the run
+// parses the default before it expands anything, so the static text
+// decides (jsonDefaultDocument, C148's reading of the same var): a list
+// or an object fires, a scalar or a null document stays silent — a
+// scalar arrives, as a scalar var's value would (a number or a bool on a
+// `string` field is another divergence, not this one), or nothing does —
+// and a var with no default fires on what the launch may supply. Nothing
+// checks a `with:` value's type at run time (InputSchema has no non-test
+// reader in pkg/runtime), and a
+// field declared `string` declares no shape, so a tool `command:` reading
+// it takes shellEscapeValue's ShapeUndeclared arm: a list of scalars is
+// spread into its argv, one word per element (the mechanism
+// DiagVarListDefaultRouting describes), and an object — or a list holding
+// a collection — arrives as ONE JSON token where a string was declared.
+// That mechanism is named only for a tool whose `command:` reads
+// `{{input.<key>}}` in the escaped form (commandReadsInputEscaped). Every
+// other reader takes the collection itself or its JSON text: a prompt
+// renders its JSON text (formatValue), a `script:` body a JSON literal
+// (jsonLiteralValue), the `{{!…}}` raw form the JSON text unquoted, an
+// `expr:` sees the list or the object — the message never names a
+// `command:` the destination does not have. A warning, like
+// C152: a tolerant consumer (an LLM prompt, a text template) reads the
+// rendered value without breaking, and a refusal would reject a shape a
+// run can survive.
+//
+// Only a `{{vars.<name>}}` reference carries a statically-known type
+// here. An `{{outputs.<node>…}}` whole reference earns no opinion: C031/
+// C032 check that the referenced field EXISTS, never its type — so a
+// list-typed output delivered whole into a `string` field is a known
+// gap, not a case covered elsewhere. Edge mappings only, like C152: a
+// subbot's target is a child bot loaded separately (its input schema is
+// unknown here), an emit has no typed destination, and a `fail message:`
+// is a string sink.
+func (c *compiler) checkWithWholeRef(w *Workflow, e *Edge, dm *DataMapping, f *SchemaField, inSchema string, dst Node) {
+	if f.Type != FieldTypeString || len(dm.Refs) != 1 {
+		return
+	}
+	ref := dm.Refs[0]
+	if ref.Kind != RefVars || len(ref.Path) != 1 {
+		return
+	}
+	v := w.Vars[ref.Path[0]]
+	if v == nil {
+		return // C033 owns the undeclared name
+	}
+	spread := fmt.Sprintf("its `command:` reading {{input.%[1]s}} gets the list spread into its argv, one word per element (in a `VAR={{input.%[1]s}}` assignment the first element is kept, the rest become a command of their own)", dm.Key)
+	token := fmt.Sprintf("its `command:` reading {{input.%s}} gets it as ONE JSON token, and every consumer reads a collection where the declaration promises a string", dm.Key)
+	either := "if it is a list, " + spread + "; an object arrives as ONE JSON token"
+	if !commandReadsInputEscaped(dst, dm.Key) {
+		// Only a tool's `command:` reading the field in the escaped form
+		// renders it through shellEscapeValue; every other reader takes
+		// the collection itself or its JSON text.
+		spread = "the node reads the collection where its schema promises a string — a prompt renders its JSON text, a `script:` body a JSON literal, an `expr:` sees the collection itself"
+		token, either = spread, spread
+	}
+	var arrives, breaks string
+	switch v.Type {
+	case VarStringArray:
+		arrives, breaks = "a list", spread
+	case VarJSON:
+		doc, known := jsonDefaultDocument(v)
+		if !known {
+			arrives = "the document the launch supplies (the var has no default)"
+			breaks = either
+			break
+		}
+		switch d := doc.(type) {
+		case []any:
+			// shellEscapeValue's own split (sliceHasComplexElement): one
+			// nested list or object makes the whole list one JSON token.
+			holdsCollection := slices.ContainsFunc(d, func(x any) bool {
+				switch x.(type) {
+				case []any, map[string]any:
+					return true
+				}
+				return false
+			})
+			if holdsCollection {
+				arrives, breaks = "its default document, a list holding a collection,", token
+			} else {
+				arrives, breaks = "its default document, a list,", spread
+			}
+		case map[string]any:
+			arrives, breaks = "its default document, an object,", token
+		default:
+			return // a scalar or a null document: a scalar arrives, or nothing does
+		}
+	default:
+		return
+	}
+	c.warnfAt(DiagWithWholeRefListToString, e.From, edgeID(e.From, e.To),
+		"edge %s -> %s, with %q: the mapping is exactly one reference to the `%s` var %q, so the value passes through with its type — %s arrives WHOLE on the `string` field %q of input schema %q on %s %s node, and nothing checks a `with:` value's type at run time: %s; declare the field `string[]` or `json`, or interpolate the reference into prose if one string is meant",
+		e.From, e.To, dm.Key, v.Type, ref.Path[0], arrives, dm.Key, inSchema, aAn(dst.NodeKind().String()), dst.NodeKind(), breaks)
+}
+
+// commandReadsInputEscaped reports whether dst is a tool whose `command:`
+// reads `{{input.<key>}}` whole in the escaped form — the one reading
+// renderCommand hands to shellEscapeValue. A `script:` or an `action:`
+// recipe has no command, the raw `{{!input.<key>}}` form splices the JSON
+// text unquoted, and a drilled `{{input.<key>.x}}` reads a leaf.
+func commandReadsInputEscaped(dst Node, key string) bool {
+	tool, ok := dst.(*ToolNode)
+	if !ok {
+		return false
+	}
+	return slices.ContainsFunc(tool.CommandRefs, func(r *Ref) bool {
+		return r != nil && r.Kind == RefInput && !r.Unquoted && len(r.Path) == 1 && r.Path[0] == key
+	})
 }
 
 // aAn is the indefinite article for s, by its initial letter — the
@@ -247,9 +379,10 @@ func conformExpectation(t FieldType) string {
 
 // withLiteralRemedy names, per field type, the form that delivers a
 // typed value — each proven on the engine: a compute `expr:` constant
-// for a scalar (`ok: "false"` arrives as a bool), a producer's typed
-// output for a list or an object (the expr language has no list or
-// object literal, and an interpolated mapping is always one string).
+// for a scalar (`ok: "false"` arrives as a bool), and since #1525 a
+// compute `expr:` collection literal for a list or an object the text
+// spells (`xs: "['a']"`, `doc: "{k: 'v'}"`), with the producer's typed
+// output as the fallback for the values a literal cannot spell.
 func withLiteralRemedy(t FieldType, key, raw string) string {
 	switch t {
 	case FieldTypeBool, FieldTypeInt, FieldTypeFloat:
@@ -260,11 +393,20 @@ func withLiteralRemedy(t FieldType, key, raw string) string {
 		return fmt.Sprintf("emit the constant from a compute's `expr:` — the text spells no value a `%s` can hold — bind a producer's typed output, or declare %s `%s` var and reference `{{vars.<name>}}`",
 			t, aAn(t.String()), t)
 	case FieldTypeStringArray:
-		return fmt.Sprintf("bind the list from a producer whose `output:` schema declares `%s: string[]` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}` (a compute `expr:` has no list literal, and an interpolated mapping is always one string); declare the field `string` if one string is what is meant",
-			key, key, withLiteralSuggestion(t, raw), key)
+		xs := stringArrayValue(raw)
+		if s, ok := spellExprListLiteral(xs); ok {
+			return fmt.Sprintf("emit the constant from a compute's `expr:` (`%s: %q`) and reference `{{outputs.<compute>.%s}}`, or bind the list from a producer whose `output:` schema declares `%s: string[]` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}` (an interpolated mapping is always one string); declare the field `string` if one string is what is meant",
+				key, s, key, key, key, jsonText(xs), key)
+		}
+		return fmt.Sprintf("bind the list from a producer whose `output:` schema declares `%s: string[]` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}` (a compute `expr:` list literal cannot spell this text — an element carries a quote, a backslash or a control character — and an interpolated mapping is always one string); declare the field `string` if one string is what is meant",
+			key, key, jsonText(xs), key)
 	case FieldTypeJSON:
 		if s := withLiteralSuggestion(t, raw); s != "" {
-			return fmt.Sprintf("bind the value from a producer whose `output:` schema declares `%s: json` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}` (a compute `expr:` has no list or object literal; a string value is one there: `%s: \"'text'\"`, the empty string `%s: \"''\"`); declare the field `string` if one string is what is meant",
+			if es, ok := spellExprJSONText(s); ok {
+				return fmt.Sprintf("emit the constant from a compute's `expr:` (`%s: %q`) and reference `{{outputs.<compute>.%s}}`, or bind the value from a producer whose `output:` schema declares `%s: json` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}`; declare the field `string` if one string is what is meant",
+					key, es, key, key, key, s, key)
+			}
+			return fmt.Sprintf("bind the value from a producer whose `output:` schema declares `%s: json` — a tool that prints `{%q: %s}` — and reference `{{outputs.<node>.%s}}` (a compute `expr:` literal cannot spell this value — JSON null has no expr spelling, and the suggestion spells an object key as a bare identifier only: a quoted key would parse, but the remedy offers the one canonical form and a non-identifier key falls back here; a string value is one there: `%s: \"'text'\"`, the empty string `%s: \"''\"`); declare the field `string` if one string is what is meant",
 				key, key, s, key, key, key)
 		}
 		return fmt.Sprintf("the text is not valid JSON, so no producer can type it as written: write the value you mean where a producer types it — a tool whose `output:` schema declares `%s: json`, or a compute `expr:` for a string (`%s: \"'text'\"`, the empty string `%s: \"''\"`) — and reference `{{outputs.<node>.%s}}`; declare the field `string` if one string is what is meant",
@@ -273,14 +415,139 @@ func withLiteralRemedy(t FieldType, key, raw string) string {
 	return ""
 }
 
+// stringArrayValue is the list a `string[]`-bound text MEANS: the decoded
+// list when the text spells one, otherwise the one-element list holding the
+// text itself (the remedy never turns the author's words into JSON null).
+func stringArrayValue(raw string) []string {
+	var xs []string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &xs); err == nil && xs != nil {
+		return xs
+	}
+	return []string{raw}
+}
+
+// spellExprStringLiteral renders s as a single-quoted expr string literal,
+// or reports it unspellable. The literal is suggested for embedding in a
+// double-quoted DSL string, which is one line and reads a backslash by the
+// file's profile (kept verbatim in profile 1, a standard escape in profile
+// 2 — `\\` would decode under one and not the other); a single quote would
+// close the expr string. A value carrying any of those has no one-line
+// spelling that reads the same in both profiles, so the remedy falls back
+// to the producer form rather than suggest a line that reads otherwise.
+func spellExprStringLiteral(s string) (string, bool) {
+	if strings.ContainsAny(s, "'\\\n\r\t") {
+		return "", false
+	}
+	return "'" + s + "'", true
+}
+
+// spellExprListLiteral spells xs as an expr list literal (`['a', 'b']`) when
+// every element spells; `[]` for the empty list.
+func spellExprListLiteral(xs []string) (string, bool) {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		p, ok := spellExprStringLiteral(x)
+		if !ok {
+			return "", false
+		}
+		parts[i] = p
+	}
+	return "[" + strings.Join(parts, ", ") + "]", true
+}
+
+// spellExprJSONText spells a valid, compacted JSON text as an expr literal,
+// or reports it unspellable: JSON null has no expr form (there is no null
+// literal), and an object key is spelled as a bare identifier or not at
+// all — a conservative choice: a quoted key (`{'a-b': 1}`) would parse,
+// but the remedy offers the one canonical form, and a key that is not an
+// identifier (or a keyword — `{true: 1}` is refused at parse) falls back
+// to the producer form. Numbers keep the scalar arms' rule: an integral
+// value spells as an integer, a fractional one as a float; a digit-only
+// re-format that would overflow the int64 literal (1e21) is unspellable,
+// never silently wrong.
+func spellExprJSONText(compacted string) (string, bool) {
+	var v any
+	if err := json.Unmarshal([]byte(compacted), &v); err != nil {
+		return "", false
+	}
+	return spellExprJSONValue(v)
+}
+
+func spellExprJSONValue(v any) (string, bool) {
+	switch t := v.(type) {
+	case bool:
+		return strconv.FormatBool(t), true
+	case string:
+		return spellExprStringLiteral(t)
+	case float64:
+		if t == math.Trunc(t) && t >= math.MinInt64 && t < 9223372036854775808.0 {
+			return strconv.FormatInt(int64(t), 10), true
+		}
+		out := strconv.FormatFloat(t, 'f', -1, 64)
+		if !strings.Contains(out, ".") {
+			return "", false
+		}
+		return out, true
+	case []any:
+		parts := make([]string, len(t))
+		for i, el := range t {
+			p, ok := spellExprJSONValue(el)
+			if !ok {
+				return "", false
+			}
+			parts[i] = p
+		}
+		return "[" + strings.Join(parts, ", ") + "]", true
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(t))
+		for _, k := range keys {
+			if !isExprIdent(k) {
+				return "", false
+			}
+			vs, ok := spellExprJSONValue(t[k])
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, k+": "+vs)
+		}
+		return "{" + strings.Join(parts, ", ") + "}", true
+	}
+	return "", false // null
+}
+
+// isExprIdent reports whether s parses as one expr identifier that an
+// object-literal key position accepts — the identifier shape, minus the
+// words the lexer reads as keywords (`true`, `false`, `and`, `or`, `not`:
+// a bare `{true: 1}` is refused at parse, so the remedy must not spell it).
+func isExprIdent(s string) bool {
+	switch s {
+	case "true", "false", "and", "or", "not":
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		alpha := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if !alpha && (i == 0 || c < '0' || c > '9') {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
 // withLiteralSuggestion spells the value as the typed constant or JSON
 // value the remedy names — an expr literal for a scalar, a JSON list or
 // value for a producer to print — always through the JSON encoder or a
 // numeric re-format, so a quote, a backtick or a newline in the text
 // can never leave the suggestion unpastable, and a float never
 // re-formats into a digit-only literal the expr lexer would read as an
-// overflowing int. It is the single place a literal is echoed into a
-// remedy. A scalar the text does not spell returns "" — the remedy then
+// overflowing int. With the spellExpr* family it is where a literal is
+// echoed into a remedy — each echoes a value it derived, never the raw
+// text. A scalar the text does not spell returns "" — the remedy then
 // says so instead of suggesting a value that would silently replace
 // the author's (a text other than true/false spells no bool; a bare
 // word spells no int; a fraction or an out-of-range magnitude spells
@@ -316,11 +583,7 @@ func withLiteralSuggestion(t FieldType, raw string) string {
 		}
 		return ""
 	case FieldTypeStringArray:
-		var xs []string
-		if err := json.Unmarshal([]byte(s), &xs); err == nil && xs != nil {
-			return jsonText(xs)
-		}
-		return jsonText([]string{raw})
+		return jsonText(stringArrayValue(raw))
 	case FieldTypeJSON:
 		if !json.Valid([]byte(s)) {
 			return ""

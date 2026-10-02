@@ -1,0 +1,21 @@
+# A prompt body the lexer settles otherwise than written — leading and
+# trailing blank lines, the first line's indentation — reads without an
+# error, and the reading is SAID: a warning (E053) names what is dropped.
+dsl: 2
+prompts:
+  spaced: |
+
+
+      Indented and surrounded by blank lines.
+      Second line.
+
+
+nodes:
+  - agent: a
+    model: m
+    system: spaced
+workflow:
+  name: w
+  entry: a
+  edges:
+    - a -> done

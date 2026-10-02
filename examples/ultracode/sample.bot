@@ -21,13 +21,15 @@ prompt build_user:
   Add a CHANGELOG entry for the most recent change in this repository.
 
 agent implementer:
-  backend: "claude_code"
   model: "anthropic/claude-opus-4-8"
-  reasoning_effort: ultracode
+  backend: "claude_code"
   system: build_system
   user: build_user
   tools: [bash, read_file, glob, grep, write_file, file_edit]
+  reasoning_effort: ultracode
 
 workflow main:
+
   entry: implementer
+
   implementer -> done

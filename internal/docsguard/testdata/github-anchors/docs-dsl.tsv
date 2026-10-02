@@ -1,0 +1,36 @@
+# 🧩 The `.bot` DSL	-the-bot-dsl
+## File shape	file-shape
+## Inputs and reusable values	inputs-and-reusable-values
+### Variables and presets	variables-and-presets
+### Attachments	attachments
+### Secrets	secrets
+## Prompts, schemas, and templates	prompts-schemas-and-templates
+### Prompts	prompts
+### Literal template delimiters	literal-template-delimiters
+### Schemas	schemas
+### Template namespaces	template-namespaces
+## LLM nodes: `agent` and `judge`	llm-nodes-agent-and-judge
+## Routers and convergence	routers-and-convergence
+## Human interaction	human-interaction
+## Deterministic nodes	deterministic-nodes
+### `tool`	tool
+### `compute`	compute
+### The `run` namespace	the-run-namespace
+### `emit` and `wait`	emit-and-wait
+### Typed terminal failure — `fail <name>:`	typed-terminal-failure--fail-name
+## Reuse and nested execution	reuse-and-nested-execution
+### `group` / `use`	group--use
+### `import` — a bot in several files	import--a-bot-in-several-files
+### `subbot`	subbot
+## The public contract — `contract`	the-public-contract--contract
+## Cursors and supervisors	cursors-and-supervisors
+## MCP servers	mcp-servers
+## Workflows and edges	workflows-and-edges
+#### Budget fields	budget-fields
+#### Budget and loop back-edges	budget-and-loop-back-edges
+#### `max_cost_usd` only counts spend it can price	max_cost_usd-only-counts-spend-it-can-price
+### The target repo's toolchain — `repo_devbox:`	the-target-repos-toolchain--repo_devbox
+### The mid-run safety net — `workspace_checkpoint:`	the-mid-run-safety-net--workspace_checkpoint
+### Edge forms	edge-forms
+## Worktrees, sandboxing, permissions, and budgets	worktrees-sandboxing-permissions-and-budgets
+## Validation and references	validation-and-references

@@ -95,6 +95,7 @@ var modelPriceTable = map[string]modelPricing{
 	// family, so newer releases inherit the same numbers until Anthropic
 	// publishes a new price.
 	"claude-opus-5":             opusRate,
+	"claude-opus-5-5":           {4.00, 20.00}, // Claude pricing, 2026-09-25.
 	"claude-opus-4-8":           opusRate,
 	"claude-opus-4-7":           opusRate,
 	"claude-opus-4-6":           opusRate,
@@ -118,6 +119,9 @@ var modelPriceTable = map[string]modelPricing{
 	"gpt-5.4-mini":  {0.75, 4.50},
 	"gpt-5.4-nano":  {0.20, 1.25},
 	"gpt-5.5":       {5.00, 30.00},
+	"gpt-6-astra":   {10.00, 50.00}, // OpenAI standard short-context pricing, 2026-09-25.
+	"gpt-6-sol":     {2.00, 10.00},
+	"gpt-6-luna":    {0.10, 0.50},
 	"gpt-5.5-pro":   {30.00, 180.00},
 	"gpt-5.6":       gpt56SolRate,
 	"gpt-5.6-sol":   gpt56SolRate,
@@ -256,6 +260,51 @@ func USDFromOutput(output map[string]any) float64 {
 	case int64:
 		if v > 0 {
 			return float64(v)
+		}
+	}
+	return 0
+}
+
+// UnreportedCallsKey is the output key counting the generation calls whose
+// usage the provider did not report in full — none at all, or a stream that
+// ended before its final account. The `_tokens` and `_cost_usd` beside it
+// are then at most a lower bound for those calls, never a measured zero.
+const UnreportedCallsKey = "_usage_unreported_calls"
+
+// SetUnreportedCalls makes n the output's unreported-call count. n <= 0
+// removes the key — an absent key means every call reported — so a count no
+// generation wrote (a model's own JSON carrying the key) does not survive
+// the write. A nil map is left alone.
+func SetUnreportedCalls(output map[string]any, n int) {
+	if output == nil {
+		return
+	}
+	if n <= 0 {
+		delete(output, UnreportedCallsKey)
+		return
+	}
+	output[UnreportedCallsKey] = n
+}
+
+// maxUnreportedCalls bounds what UnreportedCalls reads back, so a value no
+// run could reach (1e300 in a model's JSON) is clamped rather than wrapped
+// into a negative int.
+const maxUnreportedCalls = 1 << 30
+
+// UnreportedCalls reads back the count SetUnreportedCalls wrote, also after
+// a JSON round trip (a sandbox relay, a checkpoint). Absent means 0.
+func UnreportedCalls(output map[string]any) int {
+	if output == nil {
+		return 0
+	}
+	switch v := output[UnreportedCallsKey].(type) {
+	case int:
+		return min(max(v, 0), maxUnreportedCalls)
+	case int64:
+		return int(min(max(v, 0), maxUnreportedCalls))
+	case float64:
+		if v >= 1 { // false for NaN
+			return int(min(v, maxUnreportedCalls))
 		}
 	}
 	return 0

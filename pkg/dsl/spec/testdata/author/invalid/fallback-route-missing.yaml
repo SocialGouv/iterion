@@ -1,0 +1,9 @@
+# refused: a fallback route carries its name under route
+dsl: 2
+nodes:
+  - agent: a
+    fallbacks:
+      - backend: claw
+workflow:
+  name: w
+  entry: a

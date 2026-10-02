@@ -20,7 +20,7 @@ The split is deliberate:
   (see [Overriding](#overriding-a-finding)).
 
 This mirrors the repo's standing doctrine: **gates stay deterministic**
-(see [agents/bot-authoring.md](agents/bot-authoring.md) → "Improvement loops
+(see [agents/bots/bot-authoring.md](agents/bots/bot-authoring.md) → "Improvement loops
 must converge"). The reviews
 themselves stay non-blocking advice (`forge.NewReview` never
 approves/requests-changes); the entire gate lives in the separate commit
@@ -106,7 +106,14 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > by the org launch gate + webhook rate limit.
 >
 > **Where fork PRs actually stand, per provider.** The guard is
-> unconditional on every provider and needs no configuration. On
+> unconditional on every provider and needs no configuration. The opt-in
+> fork review lane does not change that: it is a separate SUBSCRIPTION, not a
+> setting on these ones, and its runs can never post here — a run whose
+> workspace holds code the tenant did not write is refused the publish grant
+> both when it would be minted and when it would be honoured, so it cannot
+> write a `revi/review` status at all. Its enforcement ships today; its
+> admission does not, so nothing reaches it yet. See
+> [webhooks.md](webhooks.md#fork-review-lane). On
 > **GitHub** and **Forgejo** an inbound PR event whose head is a fork is
 > filtered before the sync lane is even considered, so the fork re-review
 > exposure above cannot occur there. On **GitLab** the inbound MR
@@ -170,7 +177,8 @@ whole surrounding package). Skipping claude_code's own context-file
 injection is a further, larger lever this pass did NOT take — it would
 need a per-node `setting_sources:` DSL field (today `ITERION_CLAUDE_CODE_SETTING_SOURCES`
 is engine-wide only), a genuinely new capability, filed as a follow-up
-rather than bundled into this preset.
+rather than bundled into this preset. **Shipped since as `ambient_context:`
+(ADR-119)**: `ambient_context: none` on a review node is that lever.
 
 **The model-per-tier mechanism.** A node's `model:` (and `reasoning_effort:`)
 field resolves ONLY `${ENV_VAR:-default}` from the process environment,
@@ -440,7 +448,7 @@ was handed (HEAD unmoved, working tree clean) that refuses a decline from any
 pass which committed or edited anything — that run ships its work through the
 ordinary tail instead. See `bots/branch-improve-loop/main.bot`.
 
-## One gate, several bots
+## <a name="one-gate"></a>One gate, several bots
 
 A required check applies to **every** pull request. So on a repo where
 different bots review different PRs — a dependency guard (Vetty) on the
@@ -533,7 +541,7 @@ bot.
 > enabled here from 2026-08-28 and is turned off for cost — a fixer campaign
 > re-runs the full build+test per pass on a shared credential. Nothing below
 > changed as a *feature*; only this repo's choice did. Re-arming procedure:
-> [agents/review-and-merge.md](agents/review-and-merge.md#billy-is-paused).
+> [agents/workflow/billy.md#billy-is-paused](agents/workflow/billy.md#billy-is-paused).
 
 By default nothing happens when the gate goes red: the findings are on the pull
 request and the developer decides — fix them, argue one, or hand the work over
@@ -625,7 +633,7 @@ re-derives it from three scattered sections. This is that place
   review` and a fixer's `consumes: kind: review_ledger` are what let Billy
   start from Revi's findings and answer them back, with neither manifest
   naming the other bot — the generic mechanism documented in
-  [agents/bot-authoring.md](agents/bot-authoring.md)'s "The ENGINE stays
+  [agents/bots/bot-authoring.md](agents/bots/bot-authoring.md)'s "The ENGINE stays
   bot-agnostic" section and exercised end to end in
   [revi-billy-loop.md](revi-billy-loop.md#what-the-command-seeds).
   Adding a second reviewer or a second fixer is a bundle, never an engine
@@ -677,7 +685,7 @@ re-derives it from three scattered sections. This is that place
    repo's call**, not this page's. On iterion itself the answer is
    currently *exception* — findings are the developer's to fix through
    the local review loop
-   ([agents/review-and-merge.md](agents/review-and-merge.md)); the fixer's
+   ([agents/workflow/review-and-merge.md](agents/workflow/review-and-merge.md)); the fixer's
    mechanics and the conditions for re-arming it stay in
    [revi-billy-loop.md](revi-billy-loop.md).
 3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes the `/billy`
@@ -929,7 +937,7 @@ one API read.
 
 Every 30th pass reaches the full **horizon** instead — `gateSweepHorizon`,
 anchored on `retrypolicy.DefaultMaxWait` (8 days) — and so does the first pass
-after a start or a rollout. The outage this net exists for is a provider usage
+of every term of the elected sweeper (below), at boot as after a hand-over. The outage this net exists for is a provider usage
 window, and a weekly one shuts for days: measured 2026-09-15, seven runs died
 on one weekly cap and two gating runs kept a `pending` required check for 81
 hours, because every pass that could have answered them had stopped 80 hours
@@ -943,11 +951,11 @@ ones, which are precisely the batch-death runs the horizon exists for. A deep
 pass that runs out of budget therefore **returns its cursor**, and the next one
 resumes there; when it exhausts the window (or the cursor cannot advance) it
 starts fresh at the newest end. Successive deep passes descend toward the
-horizon instead of starving its far edge. The cursor is per-replica and in
-memory: the repair is idempotent, so a lost cursor costs a re-scan, and two
-replicas at different depths cover more of the window rather than less. The
-fast pass always starts at the newest end, so a deep pass parked in the past
-never delays a fresh death.
+horizon instead of starving its far edge. The cursor lives in memory on the
+elected replica, for its term: the repair is idempotent, so a term that ends
+costs its successor a re-scan from the newest end and nothing else. The fast
+pass always starts at the newest end, so a deep pass parked in the past never
+delays a fresh death.
 
 What keeps a long reach safe is not the bound but the repair's own live reads:
 it stands down on a closed or merged pull request, on a head that has moved
@@ -980,13 +988,114 @@ produced **116 status writes on one head in 15 minutes**
 speaks for, which separates "mine" from "another's" with no bookkeeping a
 second replica would not share.
 
-The sweep is **not elected** — the repair is idempotent by re-reading the live
-status, so a leader would buy nothing. One consequence needs care: the
-relaunch's once-per-head bound is a read-then-insert claim, so two replicas
-offering one dead run give a launch and a *duplicate*. A duplicate alone is
-therefore not evidence the replacement died; the board card that tells a human
-"automation is out of moves" is filed only once the named run has itself
-stopped.
+The sweep is **elected**: it runs on the one replica holding the
+`merge-gate-sweeper` lease ([`pkg/lease`](../pkg/lease),
+[ADR-117](adr/117-server-side-leader-lease-for-idempotent-nets.md)). The repair
+is idempotent — it re-reads the live status — so running it on every replica
+was never *wrong*, only N times as *expensive*: every offer spends forge reads
+from the App installation's hourly budget, and at ten replicas the sweep alone
+exhausted that budget every hour (#2002). The holder renews its lease every
+sweep interval and releases it on shutdown, so a rollout hands the sweep over
+within one interval; a holder that dies is outlived by the lease's TTL (three
+intervals) and replaced at most one interval later; every term opens with a
+deep pass.
+
+Two offers of one dead run can still meet — the event path runs on whichever
+replica its queue group picks, beside the sweep, and a lease handed over
+mid-stall overlaps two sweeps for the length of the stall. So the relaunch's
+once-per-head bound stays a read-then-insert claim, and two offers give a
+launch and a *duplicate*. A duplicate alone is therefore not evidence the
+replacement died; the board card that tells a human "automation is out of
+moves" is filed only once the named run has itself stopped.
+
+Reading it in production: the replica holding a term logs `merge-gate sweeper:
+<replica> re-offering dead gating runs …` when the term opens and `lease
+"merge-gate-sweeper": <replica> released` when it ends; the lease itself is
+the `merge-gate-sweeper` document of the Mongo `leases` collection (`owner`,
+`expires_at`). Every replica logs one line per hour in which it sent forge
+requests — `forge HTTP: N requests in the hour ending 2026-09-30T15:00Z —
+<host> <rest|graphql> <lane>=<n>, …` — when its next request arrives, and
+flushes the hour it was counting when it stops; a partial hour carries `(counted
+from …)` or `(until …, stopping)`. The `merge-gate-sweeper` lane is what the
+sweep spent that hour. The count is of attempts as the forge client sends them
+— each redirect hop, each answer whatever its status, a rate-limited 403
+included — so it is close to the budget spent, not identical: a token mint is
+counted and spends no REST budget.
+
+The sweep's cadence — interval, lookback, deep-pass frequency — is the
+operator's to set without a release (`ITERION_GATE_SWEEP_*`,
+[environment-variables.md](environment-variables.md#merge-gate-server)); the
+horizon is not, being the grant's. A value that would open a gap between two
+windows keeps its default and warns. However long the interval, the lease stays
+paced by the default minute at most — a dead holder is replaced within minutes
+— and a new term's first pass runs at once. A deep pass reads at most 2 000
+runs; a window holding more is walked over the following passes, each beside
+its fast pass, until it is exhausted — never left for the next deep pass to
+resume, which a spaced-out deep cadence would turn into runs no deep pass
+reaches. Only a page that fails twice in a row parks the walk until the next
+deep pass, so a broken page is not re-read at every tick.
+
+### A settled run is not offered again
+
+Election makes the sweep's cost one replica's; what that replica spends is
+the next question, and most of it went on runs with nothing left to repair.
+Over the eight-day window of one busy repo, 95 % of the gating runs sat on a
+pull request already merged or closed, and each was read again every minute
+for an hour and on every deep pass for the whole horizon — some 440–880 forge
+reads per run from the one sweeping replica, against a dozen for the run's own
+work.
+
+So when the reconciler finds a run **settled**, it writes the fact down, and
+the sweep reads those marks — one round-trip per page, before either lane is
+offered anything ([ADR-118](adr/118-merge-gate-settle-marks-and-verdict-attribution.md)):
+
+| The reconciler found | Mark | Holds |
+|---|---|---|
+| the pull request merged | `merged` | the rest of the horizon |
+| a real verdict on the head the run reviewed | `verdict_success` / `verdict_failure` | the rest of the horizon |
+| the run names no reviewed revision | `unpinned` | the rest of the horizon |
+| the pull request closed, unmerged — the run stopped on the close included | `closed` | 6 h, then re-read — it can reopen |
+| the head moved past the reviewed revision | `head_moved` | 6 h, then re-read — a force-push can bring it back |
+
+A mark is bound to the run's terminal **episode** (its `updated_at`): a resumed
+run that ends again is looked at again. A `verdict_failure` run is still
+offered to the [auto-fix lane](#autofix) — a red verdict is that
+lane's trigger — and to that lane only. The re-read of a reversible mark is
+what repairs a pull request reopened on the same head: the reopen launches no
+fresh review (its delivery shares the original launch's per-head key), so the
+dead run's own claim waits for it — up to 6 h, where the deep pass used to
+answer within 30 min. The marks live beside the publish grants (Valkey when
+the deployment has it, memory otherwise): their use ends with the grant's, and
+a mark that is lost, or a store that cannot answer, costs a re-read — the
+sweep then offers every run, and says so once.
+
+**The run's own verdict needs no forge read at all.** The publish endpoint
+that posts it records it on the run's grant (`verdict`: head, check, state), so
+the reconciler knows on the event path that the verdict this run owed is on
+the forge, and settles it there: a run settled green costs the sweep nothing
+past the minute it ended. A red one stays offered to the auto-fix lane, which
+reads its pull request until it launches a fix — on every pass, for the
+horizon, when the lane refuses it (a fork's pull request). The record names the grant, not the run, so it is
+trusted only on a grant no second run publishes with; on a **shared** one — a
+launch that pinned the token, a fork — the reconciler reads the forge as
+before.
+
+That record is also what the grant's **cut-back** needed. A gating run keeps
+its forge-write grant for the horizon, in case a repair must speak for it;
+once nothing will post with it, the grant drops to the ordinary post-run
+grace: after the run's own green verdict, after its own red verdict when the
+repo's auto-fix lane is off, and when the reconciler finds the pull request
+merged — which it reads only for a run not yet settled on a verdict. A red
+verdict with the lane on keeps the grant — the lane reads it to launch a
+fixer — and so does a run settled on a verdict found only on the forge; a
+later merge does not shorten either. The grant reaper's ordinary grace, at
+the end of a run that gates nothing, is the same cut-back. A shared grant, or
+one whose run is not over, is never cut back: a shared grant keeps its TTL, or
+the gate grace once a gating run that names its revision ends. The share and the cut-back are one decision on the grant: a pinned
+launch on a grant already cut back is refused (launch without the token to
+mint a fresh one), and a fork of one — or of a grant already gone — is warned
+about in the server log. The status's target URL stays the review, where
+reviewers land: ownership is read from the record, never from the check.
 
 Finally, when a repair genuinely declines to act, **it says so**. Every branch
 past "this run held a publish grant and died" now logs the reason it is posting
@@ -1003,6 +1112,63 @@ expired long before the resumed run reached its publish node, so the review
 completed and then had no way to post the verdict it had computed. The grant's
 TTL is therefore derived from the max retry wait, plus a margin for the resumed
 run itself.
+
+### A verdict the forge refuses for a while waits — it is not lost
+
+A verdict whose post the forge refuses for a rate limit (GitHub answers one
+`403`, or `429`), or for a failure on its side (a `5xx`, a call that timed out
+or was cut), is not a verdict lost: the forge says when its wait ends, or will
+answer a later try. Dropped, it made the run's silence read as a death once the
+limit lifted — the reconciler answered the head with a synthetic "review
+died", and the relaunch lane paid for a second review of a revision the first
+had already judged (#2002: 23 synthetic failures and 17 paid relaunches on
+2026-09-30).
+
+So the publish endpoint keeps such a **pinned** verdict on the run's grant
+(`deferred`: the gate, the review link, the pull request, when it was decided,
+when to retry, how many attempts it had) and answers `gate_error: "deferred
+until <instant>: …"`. The instant is the forge's reset, or a backoff from
+5 min doubling with each attempt — never more than an hour away, whatever the
+forge named. A refusal a retry would only repeat — forbidden, not found, a
+permission the installation withholds — is not deferred.
+
+- **Until then, the run's silence is answered with nothing** — no forge read,
+  no synthetic failure, no relaunch, by the reconciler or the auto-fix lane:
+  the budget a read would spend may be the one exhausted. The check keeps the
+  run's in-flight claim, a run whose verdict waits counts as alive to the
+  relaunch lane, and the grant is not cut back under it.
+- **Once due, the verdict is posted by the deferral's own terms** — its pull
+  request and its pin, whatever the run's inputs say: a bot may pin the commit
+  it pushed rather than the one it was launched on, or a short form of it. The
+  attempt is booked on the grant before the post, so a grant that cannot be
+  written is not posted from at all. A verdict that lands is recorded and, when
+  it answers the run's own check, settled like one the endpoint posted.
+- **A newer verdict is not overwritten.** Every verdict the endpoint posts,
+  fresh or replayed, first claims its check for the moment it was decided — a
+  mark per (forge, repo, head, check) naming the newest decision and the
+  status it posts — and a decision older than the mark is superseded: the
+  newer one answers the head, and a run whose own verdict it supersedes is
+  settled. Two posts in flight at once can still land out of order; the one
+  that landed then re-reads the mark and puts the newer status back on top —
+  up to three times, a decision claiming inside the last write is said in the
+  log, and the next verdict posted on this head puts it back. A decision that
+  will neither post nor wait — its post refused for good, its deferral
+  unwritable, no revision pinned — lets go of the check, so the deferred
+  verdicts older than it can still land; only a replica dying between its
+  claim and its post leaves the claim standing until the mark lapses, and
+  that run's own repair still answers the head. Decisions are ordered by the
+  clock of the replica that took each one (the replicas' clocks are assumed
+  synchronized far below the gap between two verdicts on one head), and a
+  status written outside iterion (an operator's manual override) is not
+  ordered: a replay due after it overwrites it.
+- A replay the forge still limits, or that fails on its side, waits again — 12
+  attempts in all, the refused original included. One refused for good (the
+  head moved, the pull request closed) or whose attempts are spent is cleared,
+  and the run handed back to the ordinary repair below; a run that owes no
+  repair then has its grant cut back, as its end would have.
+
+An unpinned verdict is not kept: posted hours later, it would land on whatever
+head the pull request has then.
 
 ### The grant's other two bounds: the run's own end, and a mint that fails
 
@@ -1073,13 +1239,24 @@ travel together in both directions: a deployment with **no board** (no
 `failure` status is then the only surface carrying the interruption — worth
 knowing before pointing a board-less deployment at a required check. Card and
 comment are bounded to once per (PR, head) by a **deterministic card id**
-(UUIDv5 of team/repo/PR/head): the
-sweep runs unelected on every replica, and two replicas racing past a
+(UUIDv5 of team/repo/PR/head): two
+offers of one dead run can still race (the event path beside the elected
+sweep, or two sweeps across a lease hand-over), and two racers past a
 List-based dedup would each file the card AND each post the comment — the
-store's unique-id insert is what serialises them. A required check dying
-repeatedly on one revision is a structural signal (a run budget too short for
-the workload, a recurring provider quota, a bot defect), which is a human's
-call.
+store's unique-id insert is what serialises them. Racing offers can also meet
+one relaunch still LAUNCHING: its claim row names no run until the launch
+returns, so a duplicate naming none is not a death for the 10 minutes after
+the claim (`claimed_at`, stamped by every attempt, a retry's included; a row
+written before the field existed dates its claim by its first receipt). A row
+still naming no run past that is a launch that died on the way — or, rarer,
+one whose run started but whose row was never told — and is escalated; a
+failed start read back by a racing loser is left to the retry budget, and a
+relaunch parked on an armed retry counts as alive. The launch tail books what
+it did — the row's run or its failure, the in-flight claims — even when its
+caller has gone, tries a refused row write again, and says so when it still
+cannot. A required check dying repeatedly on one revision is a structural
+signal (a run budget too short for the workload, a recurring provider quota,
+a bot defect), which is a human's call.
 
 A pull request that is **closed or merged** gets no synthetic failure at all:
 it owes nobody a verdict, and "push again to re-run the review" on work that

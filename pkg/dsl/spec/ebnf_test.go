@@ -65,14 +65,7 @@ func loadProductions(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lines []string
-	for _, l := range strings.Split(string(raw), "\n") {
-		if i := strings.Index(l, "(*"); i >= 0 && strings.Contains(l, "*)") {
-			l = l[:i] + l[strings.Index(l, "*)")+2:]
-		}
-		lines = append(lines, l)
-	}
-	text := strings.Join(lines, "\n")
+	text := stripEBNFComments(string(raw))
 	out := map[string]string{}
 	locs := productionRe.FindAllStringSubmatchIndex(text, -1)
 	for i, loc := range locs {
@@ -90,6 +83,37 @@ func loadProductions(t *testing.T) map[string]string {
 		t.Fatalf("only %d productions read from the EBNF", len(out))
 	}
 	return out
+}
+
+// stripEBNFComments removes (* … *) comments, which may span lines. The
+// previous line-at-a-time stripper only fired when both delimiters shared a
+// line, so a multi-line comment survived intact — and its quoted words were
+// then read as production values, letting a dropped enum word hide behind a
+// comment from TestEBNFValueProductionsMatchTheRegistry. The guarantee this
+// stripper owes the guard is one-directional: stripping can only REMOVE
+// text, so an unterminated comment (or any over-strip) makes the guard
+// false-red — a loud, safe failure direction — and can never make it
+// false-green by inventing a value that is not in the file.
+func stripEBNFComments(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	depth := 0
+	for i := 0; i < len(text); i++ {
+		if i+1 < len(text) && text[i] == '(' && text[i+1] == '*' {
+			depth++
+			i++
+			continue
+		}
+		if depth > 0 {
+			if i+1 < len(text) && text[i] == '*' && text[i+1] == ')' {
+				depth--
+				i++
+			}
+			continue
+		}
+		b.WriteByte(text[i])
+	}
+	return b.String()
 }
 
 // alternatives splits a production body on its top-level `|`.
@@ -169,5 +193,98 @@ func TestEBNFPropertyProductionsMatchTheRegistry(t *testing.T) {
 				t.Errorf("kind %q has a property table but no EBNF production mapped", k.Name)
 			}
 		}
+	}
+}
+
+// ebnfValueProductions maps an enum property (by kind and name) to the EBNF
+// production that lists its words. The words are the parser's, held to the
+// registry by TestEnumValuesAreTheParsersList; this holds the third copy —
+// the machine-readable grammar — to the same list, so a mode the parser
+// gained (async, human_or_host) cannot stay out of it for months again.
+var ebnfValueProductions = map[[2]string]string{
+	{"agent", "session"}:           "session_mode",
+	{"agent", "await"}:             "await_mode",
+	{"agent", "interaction"}:       "interaction_mode",
+	{"agent", "reasoning_effort"}:  "reasoning_effort",
+	{"router", "mode"}:             "router_mode",
+	{"mcp_server", "transport"}:    "mcp_transport",
+	{"workflow", "interaction"}:    "interaction_mode",
+	{"human", "interaction"}:       "interaction_mode",
+	{"judge", "session"}:           "session_mode",
+	{"router", "reasoning_effort"}: "reasoning_effort",
+	{"tool", "await"}:              "await_mode",
+	{"compute", "await"}:           "await_mode",
+	{"human", "await"}:             "await_mode",
+	{"judge", "await"}:             "await_mode",
+	{"judge", "interaction"}:       "interaction_mode",
+	{"judge", "reasoning_effort"}:  "reasoning_effort",
+}
+
+var quotedWordRe = regexp.MustCompile(`"([a-z_]+)"`)
+
+func TestEBNFValueProductionsMatchTheRegistry(t *testing.T) {
+	prods := loadProductions(t)
+	seen := map[string]bool{}
+	for key, prod := range ebnfValueProductions {
+		k, ok := spec.Lookup(key[0])
+		if !ok {
+			t.Fatalf("%s: not a registered kind", key[0])
+		}
+		p, ok := k.Property(key[1])
+		if !ok || (p.Form != spec.Enum && p.Form != spec.EnumOrEnv) {
+			t.Errorf("%s.%s: not an enum property of the registry (%q)", key[0], key[1], p.Form)
+			continue
+		}
+		seen[key[0]+"."+key[1]] = true
+		body, ok := prods[prod]
+		if !ok {
+			t.Errorf("%s.%s: production %q not found in the EBNF", key[0], key[1], prod)
+			continue
+		}
+		var got []string
+		for _, m := range quotedWordRe.FindAllStringSubmatch(body, -1) {
+			got = append(got, m[1])
+		}
+		want := append([]string(nil), p.Values...)
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s.%s: EBNF production %s lists %v, the registry %v", key[0], key[1], prod, got, want)
+		}
+	}
+	for _, k := range spec.Kinds {
+		for _, p := range k.Properties {
+			if (p.Form == spec.Enum || p.Form == spec.EnumOrEnv) && !seen[k.Name+"."+p.Name] {
+				t.Errorf("%s.%s: an enum property with no EBNF value production mapped", k.Name, p.Name)
+			}
+		}
+	}
+}
+
+// TestStripEBNFComments proves the comment stripper cannot be used to hide
+// a value from the value-production guard: a word inside a comment — even
+// one spanning several lines — must never reach the production body. The
+// previous line-at-a-time stripper let exactly this bypass through.
+func TestStripEBNFComments(t *testing.T) {
+	in := "reasoning_effort = \"low\" | \"medium\"\n" +
+		"  (* \"none\" was dropped here\n" +
+		"     and this line closes it *)\n" +
+		"  | \"high\" ;\n"
+	got := stripEBNFComments(in)
+	if strings.Contains(got, "none") {
+		t.Errorf("multi-line comment survived stripping: %q", got)
+	}
+	if quoted := quotedWordRe.FindAllString(got, -1); strings.Join(quoted, ",") != `"low","medium","high"` {
+		t.Errorf("quoted words after stripping = %v, want only the real values", quoted)
+	}
+
+	// Single-line comments keep working, and text around them survives.
+	if got := stripEBNFComments(`a = "x" (* note *) | "y" ;`); strings.TrimSpace(got) != `a = "x"  | "y" ;` {
+		t.Errorf("single-line comment stripping broke the line: %q", got)
+	}
+	// An unterminated comment swallows the rest of the file rather than
+	// leaking its words into the guard.
+	if got := stripEBNFComments("a = \"x\" ;\n(* never closed \"ghost\""); strings.Contains(got, "ghost") {
+		t.Errorf("unterminated comment leaked its body: %q", got)
 	}
 }

@@ -16,7 +16,7 @@ import (
 // lost the bot's catalogue identity. workflowfile.CommentText is the shared
 // definition; this test holds the lexer to it.
 func TestLexerCommentTextMatchesSharedDefinition(t *testing.T) {
-	for _, line := range []string{"# note", "## note", "#note", "##   indented", "   # leading spaces", "#", "##"} {
+	for _, line := range []string{"# note", "## note", "#note", "##   indented", "   # leading spaces", "#", "##", "##\t- tabbed body", "## trailing spaces   "} {
 		want, ok := workflowfile.CommentText(line)
 		if !ok {
 			t.Fatalf("%q must be a comment line for the shared definition", line)
@@ -33,7 +33,7 @@ func TestLexerCommentTextMatchesSharedDefinition(t *testing.T) {
 			t.Errorf("%q: the lexer emitted no comment token", line)
 			continue
 		}
-		if got != strings.TrimSpace(want) {
+		if got != want {
 			t.Errorf("%q: lexer text %q, shared definition %q", line, got, want)
 		}
 	}

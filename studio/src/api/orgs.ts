@@ -41,6 +41,20 @@ export interface OrgUsage {
   webhook_count?: number;
 }
 
+// getOrg reads ONE org by id, for anyone the server lets view it — the
+// twin of getTeam below. It is what lets a page resolve its subject by id
+// instead of by the caller's own membership tree, so a super-admin who is
+// not a member of an org can still open it.
+export async function getOrg(orgID: string): Promise<OrgView> {
+  return apiGet("/api/orgs/{id}", { params: { id: orgID } });
+}
+
+// getTeam is getOrg's team-level counterpart (GET /api/teams/{id},
+// canViewTeam — which super-admins and org admins pass).
+export async function getTeam(teamID: string): Promise<TeamSummary> {
+  return apiGet("/api/teams/{id}", { params: { id: teamID } });
+}
+
 export async function listOrgs(): Promise<OrgView[]> {
   // guard404 → FeatureUnavailableError when /api/admin/orgs isn't registered
   // (local/desktop mode — orgs are a cloud-only concept), so the page renders

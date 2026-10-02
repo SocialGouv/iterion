@@ -47,7 +47,7 @@ cost/tokens as the run goes.
 
 Iterion **auto-detects** whatever you already have signed in — Claude Code
 OAuth (the subscription "forfait"), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and
-more (see [backends](/backends)). With one available, point a catalogue bot at a
+more (see [backends](backends.md)). With one available, point a catalogue bot at a
 repo. For example, a read-only review of your current branch (one model family
 by default; add `--var review_mode=dual` for cross-family confirmation):
 
@@ -89,12 +89,12 @@ iterion bots list                 # discover the fleet
 iterion bots create my-bot        # scaffold a new bundle
 ```
 
-Fork any bot, edit its `main.bot` in the [studio builder](/visual-editor), and
-learn the language from the [DSL guide](/dsl). When you're ready to operate
+Fork any bot, edit its `main.bot` in the [studio builder](visual-editor.md), and
+learn the language from the [DSL guide](dsl.md). When you're ready to operate
 agents for a team — orgs, quotas, webhooks, audit — see
-[Iterion Cloud](/cloud-overview).
+[Iterion Cloud](cloud-overview.md).
 
 ---
 
-Stuck on credentials or backend selection? [Backends & auto-detection](/backends)
-covers every path. Want the vision first? [Why Iterion?](/why-iterion)
+Stuck on credentials or backend selection? [Backends & auto-detection](backends.md)
+covers every path. Want the vision first? [Why Iterion?](why-iterion.md)

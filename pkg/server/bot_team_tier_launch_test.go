@@ -175,7 +175,7 @@ func TestTeamForkServesTheInboundWebhook(t *testing.T) {
 	s, _ := newTeamForkServer(t, pub)
 
 	if _, err := s.launchWebhookBot(boundedCtx(t), webhooks.Config{ID: "wh-1", TenantID: "t1"},
-		"probe", map[string]string{}, "", "", "acme/repo", nil, nil); err != nil {
+		"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, ""); err != nil {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}
 	assertServedByTheFork(t, "inbound webhook", pub.only(t))

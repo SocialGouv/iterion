@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -16,6 +15,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -82,9 +83,21 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	// router's outgoing edges went nil from iteration 2 (R7dd005).
 	if nodeID == e.workflow.Entry {
 		for name, v := range e.workflow.Vars {
-			if v.HasDefault {
-				result[name] = v.Default
+			if !v.HasDefault {
+				continue
 			}
+			// The value resolveVars already read, never a second reading of
+			// the same text: a `string[]` default seeded raw here while
+			// {{vars.x}} saw a list made `{{input.x}}` and `{{vars.x}}` two
+			// different values of one declaration (#1285). sc.vars carries
+			// every defaulted var, so the lookup only misses when a caller
+			// built a scope without them — then the compiler's text is still
+			// better than nothing.
+			if resolved, ok := sc.vars[name]; ok {
+				result[name] = resolved
+				continue
+			}
+			result[name] = v.Default
 		}
 		for k, v := range sc.runInputs {
 			result[k] = v
@@ -516,7 +529,13 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 		return "{{"
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
-			return sc.vars[ref.Path[0]]
+			if len(ref.Path) == 1 {
+				return sc.vars[ref.Path[0]]
+			}
+			// A `json` var is a document, so `{{vars.cfg.on}}` is its
+			// member — the reading an expression and a tool body both give
+			// the same text.
+			return drillPath(sc.vars[ref.Path[0]], ref.Path[1:])
 		}
 	case ir.RefInput:
 		if len(ref.Path) > 0 {
@@ -641,6 +660,20 @@ func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []any
 	}
 	arr, err := coerceToArray(e.resolveRef(fe.CollectionRefs[0], sc), fe.Name, fe.CollectionRaw)
 	if err != nil {
+		// A simulation may know the failure rests on a value it made up: the
+		// simulated collection stands in, so the body is crossed and its
+		// bindings resolve instead of the foreach reading as silently empty.
+		if standIn, inconclusive := e.inconclusiveExpression(ExpressionFailure{
+			NodeID:     fe.Name,
+			Source:     fe.CollectionRaw,
+			Refs:       exprRefsOf(fe.CollectionRefs),
+			Collection: "foreach",
+			Err:        err,
+		}); inconclusive {
+			if list, ok := standIn.([]any); ok {
+				return list
+			}
+		}
 		return nil
 	}
 	return arr
@@ -806,6 +839,11 @@ func (e *Engine) buildTemplateDataScoped(rs *runState, sc resolveScope) *model.T
 // (`{{run.id}}` renders from TemplateData), and deliberately not the ctx
 // RUN IDENTITY that execContext adds: see there.
 func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveScope) context.Context {
+	var manifest *bundle.Manifest
+	if e.bundle != nil {
+		manifest = e.bundle.Manifest
+	}
+	ctx = tool.WithBuiltinAliases(ctx, bundle.AllowsToolAliases(manifest))
 	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }
 
@@ -925,35 +963,47 @@ func matchOutputNode(wf *ir.Workflow, outputs map[string]map[string]any, path []
 	return nil, nil
 }
 
-// resolveVars builds the vars map from workflow variable defaults,
-// coercing user-provided override strings to the declared type.
+// resolveVars builds the vars map: every declared default, then the
+// overrides a launch supplied over them.
 //
-// Coercion is necessary because the CLI's --var flag and the HTTP
-// /api/runs endpoint both deliver vars as raw strings. Without
-// coercion, an explicit "--var loop_count=3" stores the var as the
-// string "3", which then fails downstream comparisons against the
-// typed defaults (e.g. "input.count >= vars.loop_count" tries to
-// compare a number against a string and aborts the run with an
-// opaque "cannot compare X >= string" error). Defaults from the
-// .bot source are already typed by the IR compiler — we coerce
-// only on overrides.
+// A var's TEXT has ONE reading — ir.ResolveVarText — whether it came from
+// the `.bot` or from `--var` / the HTTP /api/runs payload (#1285). Both
+// hosts deliver text, and both owe the author the same two steps in the
+// same order: expand the `${VAR:-default}` forms the DSL honours
+// everywhere else, then narrow to the declared type. Reading them
+// differently is not a nuance: `tags: string[] = "a,b"` started the run as
+// the string "a,b" while `--var tags=a,b` started it as ["a","b"], so a
+// template or a fan-out saw a string in one launch and a list in the
+// other — and `${LIST:-a,b}` was split on its comma before any expansion
+// on the override path, giving ["${LIST:-a", "b}"].
+//
+// Coercion is what makes an override usable at all: without it "--var
+// loop_count=3" stores the string "3", and "input.count >= vars.loop_count"
+// aborts the run with an opaque "cannot compare X >= string".
 func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	vars := make(map[string]any)
 	expandFn := e.varExpandFn()
+	read := func(origin, name string, raw any, vt ir.VarType) any {
+		resolved, err := ir.ResolveVarText(raw, vt, expandFn)
+		if err == nil {
+			return resolved
+		}
+		// Fall back to whatever the caller passed, expanded — the engine's
+		// downstream type checks will surface a clear error if the value
+		// really is incompatible, and failing the run here would be more
+		// aggressive than the previous behaviour. The origin is named
+		// because defaults and overrides now share this reading, and an
+		// operator reading the log otherwise cannot tell which of the two
+		// the engine refused.
+		if s, isText := raw.(string); isText {
+			raw = ir.ExpandWithDefault(s, expandFn)
+		}
+		e.logger.Warn("runtime: var %q (%s): coerce to %s failed: %v (using raw value)", name, origin, vt, err)
+		return raw
+	}
 	for name, v := range e.workflow.Vars {
 		if v.HasDefault {
-			if s, ok := v.Default.(string); ok {
-				// ExpandWithDefault, not os.Expand: the stdlib treats the
-				// whole `VAR:-fallback` as a variable name, so a default
-				// written `${VAR:-x}` — the idiom the DSL uses everywhere
-				// else, and which command:/model:/timeout: all honour —
-				// resolved to the EMPTY STRING here. Silently: the var just
-				// became empty and the failure surfaced much later, wherever
-				// it was consumed.
-				vars[name] = ir.ExpandWithDefault(s, expandFn)
-			} else {
-				vars[name] = v.Default
-			}
+			vars[name] = read("workflow default", name, v.Default, v.Type)
 		}
 	}
 	for k, v := range inputs {
@@ -961,21 +1011,7 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 		if !isVar {
 			continue
 		}
-		coerced, err := coerceVarValue(v, decl.Type)
-		if err != nil {
-			// Fall back to whatever the caller passed; the engine's
-			// downstream type checks will surface a clear error if
-			// the value really is incompatible. The alternative —
-			// failing the run here — would be more aggressive than
-			// the previous behaviour.
-			e.logger.Warn("runtime: var %q: coerce to %s failed: %v (using raw value)", k, decl.Type, err)
-			vars[k] = v
-			continue
-		}
-		if s, ok := coerced.(string); ok {
-			coerced = os.Expand(s, expandFn)
-		}
-		vars[k] = coerced
+		vars[k] = read("launch value", k, v, decl.Type)
 	}
 
 	// Foot-gun guard: a var explicitly set to the repo root — e.g.
@@ -990,16 +1026,33 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	if e.repoRoot != "" {
 		if projectDir := expandFn("PROJECT_DIR"); projectDir != "" && !samePath(projectDir, e.repoRoot) {
 			for k, val := range vars {
-				if s, ok := val.(string); ok && samePath(s, e.repoRoot) {
-					vars[k] = projectDir
-					if e.logger != nil {
-						e.logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
-					}
+				remapped, changed := remapRepoRoot(val, e.repoRoot, projectDir)
+				if !changed {
+					continue
+				}
+				vars[k] = remapped
+				if e.logger != nil {
+					e.logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
 				}
 			}
 		}
 	}
 	return vars
+}
+
+// engineSuppliedVarFns resolves each engine-supplied var name from run
+// state. varExpandFn dispatches through it, so this table IS the list of
+// exceptions — ir.EngineSuppliedVarNames (the launch-time fallback
+// screen's copy of the list) is pinned against it by
+// TestVarExpandFnEngineSuppliedNamesMatchTheScreenList, in both
+// directions: a name added or dropped here without its ir twin reddens
+// the pin.
+var engineSuppliedVarFns = map[string]func(e *Engine) string{
+	"PROJECT_DIR":         (*Engine).projectDirVarValue,
+	"BUNDLE_DIR":          (*Engine).bundleDirVarValue,
+	"BUNDLE_SKILLS_DIR":   (*Engine).bundleSkillsDirVarValue,
+	"PROJECT_MEMORY_DIR":  (*Engine).projectMemoryDirVarValue,
+	"PROJECT_SCRATCH_DIR": (*Engine).projectScratchDirVarValue,
 }
 
 // varExpandFn returns the os.Expand callback var values are resolved
@@ -1012,127 +1065,260 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 // `git -C '${PROJECT_DIR}'`. Expanding overrides in the same pass
 // keeps `vars.workspace_dir` resolved to a real path regardless of
 // whether it came from the workflow default or the form input.
-// Shared by resolveVars and validateVarEnums so the launch gate checks
+// Shared by resolveVars and validateVarConstraints so the launch gate checks
 // exactly the value that flows into the run.
 func (e *Engine) varExpandFn() func(string) string {
 	return func(key string) string {
-		if key == "PROJECT_DIR" {
-			// In sandbox mode, ${PROJECT_DIR} must resolve to the
-			// in-container bind-mount target (e.g. /workspace), not
-			// the host worktree path. Tool nodes and prompts using
-			// this var are consumed by processes RUNNING inside the
-			// container — they cannot open /home/<host-user>/...
-			// paths because they're not mounted there. The container
-			// workspace IS the host worktree, just at a different
-			// pathname.
-			if e.containerWorkspace != "" {
-				return e.containerWorkspace
-			}
-			return e.workDir
+		if fn, ok := engineSuppliedVarFns[key]; ok {
+			return fn(e)
 		}
-		if key == "BUNDLE_DIR" {
-			// A bundle is mounted read-only at the runtime's canonical sandbox
-			// path. Outside a sandbox, expose its resolved host directory. Plain
-			// .bot runs deliberately expand to empty: they have no bundle root
-			// and must not accidentally treat the process cwd as one.
-			if e.bundle == nil || e.bundle.Dir == "" {
-				return ""
-			}
-			if e.containerWorkspace != "" {
-				return "/run/iterion/bundle"
-			}
-			return e.bundle.Dir
-		}
-		if key == "PROJECT_MEMORY_DIR" {
-			// Project-rooted memory directory, keyed off the run's
-			// repo_root (not the per-run workDir). Resolves to
-			// ~/.iterion/projects/<encoded-repo-root>/memory/ so
-			// dispatcher-spawned bots running in worktrees still share
-			// a memory tree with a whats-next session at the repo root.
-			// The same host path is bind-mounted inside the sandbox
-			// (~/.iterion is auto-mounted by docs/sandbox.md's host_state
-			// contract), so it works in both modes without remapping.
-			base := e.repoRoot
-			if base == "" {
-				base = e.workDir
-			}
-			return memory.WorkspaceMemoryDir(base)
-		}
-		if key == "PROJECT_SCRATCH_DIR" {
-			// Out-of-tree scratch dir for working files a bot must NOT leave
-			// in the target repo (e.g. a chunked review's per-chunk diffs)
-			// so they never pollute the worktree or the run diff.
-			//
-			// Sandboxed: resolve to a fixed container path rather than the
-			// host path, because an image pinning a non-host User cannot
-			// write a host-owned bind (observed EACCES:
-			// branch-improve-loop's plan_chunks, sec-audit-deps'
-			// update_cache).
-			//
-			// That path is BACKED by the per-project host dir, bound on by
-			// applyScratchMount. The backing is load-bearing for any fan-in
-			// through scratch: a sub-bot child runs in its OWN container, so
-			// a purely container-local scratch means the child writes a file
-			// the parent can never read — the child reports success, the
-			// parent reads an empty directory, and the run only fails much
-			// later as "not enough results" (observed on app-concept: four
-			// topic syntheses written to
-			// /tmp/iterion-scratch/<parent>/topics, none visible at fan-in).
-			// It also makes scratch survive the container, so a crashed run
-			// resumes from its own working state.
-			if e.containerWorkspace != "" {
-				return sandboxScratchContainerPath
-			}
-			// Non-sandboxed: host path keyed off repo_root, a sibling of
-			// PROJECT_MEMORY_DIR at ~/.iterion/projects/<key>/scratch/.
-			base := e.repoRoot
-			if base == "" {
-				base = e.workDir
-			}
-			return memory.WorkspaceScratchDir(base)
-		}
-		return os.Getenv(key)
+		// The overlay-then-process chain every other ${ITERION_*:-default}
+		// of the DSL reads (ADR-093): a `vars:` default is an expansion like
+		// the node fields beside it, and must see a stored bot var too.
+		return ir.LookupEnv(key)
 	}
 }
 
-// validateVarEnums enforces declared `[enum: ...]` constraints on
-// launch-provided var values — the runtime counterpart of the C126
-// compile check on defaults (defaults are compile-validated, so only
-// provided values are checked here). Values are checked after the same
-// ${VAR} expansion resolveVars applies, i.e. against the exact value
-// that flows into the run; upstream template rendering (dispatcher
-// bot_args, preset overlay) has already happened by the time inputs
-// reach the engine. Returns an error naming every violating var, its
-// value, and the allowed list.
-func (e *Engine) validateVarEnums(inputs map[string]any) error {
+func (e *Engine) projectDirVarValue() string {
+	// In sandbox mode, ${PROJECT_DIR} must resolve to the
+	// in-container bind-mount target (e.g. /workspace), not
+	// the host worktree path. Tool nodes and prompts using
+	// this var are consumed by processes RUNNING inside the
+	// container — they cannot open /home/<host-user>/...
+	// paths because they're not mounted there. The container
+	// workspace IS the host worktree, just at a different
+	// pathname.
+	if e.containerWorkspace != "" {
+		return e.containerWorkspace
+	}
+	return e.workDir
+}
+
+func (e *Engine) bundleDirVarValue() string {
+	// A bundle is mounted read-only at the runtime's canonical sandbox
+	// path. Outside a sandbox, expose its resolved host directory. Plain
+	// .bot runs deliberately expand to empty: they have no bundle root
+	// and must not accidentally treat the process cwd as one.
+	if e.bundle == nil || e.bundle.Dir == "" {
+		return ""
+	}
+	if e.containerWorkspace != "" {
+		return "/run/iterion/bundle"
+	}
+	return e.bundle.Dir
+}
+
+func (e *Engine) bundleSkillsDirVarValue() string {
+	// The engine-owned copy of the bundle's skills, reset and
+	// rewritten from the bundle on every mirror pass. A node that
+	// parses a machine-readable `iterion:` block out of a skill reads
+	// it HERE, never from <workspace>/.claude/skills/: that directory
+	// applies the workspace-wins collision policy, so a checkout can
+	// both replace a shipped skill and supply a name the bundle never
+	// shipped. Here a name the bundle does not ship simply does not
+	// exist, which is what makes the "not covered" path observable.
+	//
+	// Unlike ${BUNDLE_DIR} this is NOT the read-only bundle mount:
+	// the kubernetes driver has no host bind mounts, so nothing under
+	// /run/iterion/bundle exists in a pod. The workspace is the one
+	// tree that travels there.
+	if e.containerWorkspace != "" {
+		return ownedSkillsContainerDir(e.containerWorkspace)
+	}
+	return OwnedSkillsDir(e.workDir)
+}
+
+func (e *Engine) projectMemoryDirVarValue() string {
+	// Project-rooted memory directory, keyed off the run's
+	// repo_root (not the per-run workDir). Resolves to
+	// ~/.iterion/projects/<encoded-repo-root>/memory/ so
+	// dispatcher-spawned bots running in worktrees still share
+	// a memory tree with a whats-next session at the repo root.
+	// The same host path is bind-mounted inside the sandbox
+	// (~/.iterion is auto-mounted by docs/sandbox.md's host_state
+	// contract), so it works in both modes without remapping.
+	base := e.repoRoot
+	if base == "" {
+		base = e.workDir
+	}
+	return memory.WorkspaceMemoryDir(base)
+}
+
+func (e *Engine) projectScratchDirVarValue() string {
+	// Out-of-tree scratch dir for working files a bot must NOT leave
+	// in the target repo (e.g. a chunked review's per-chunk diffs)
+	// so they never pollute the worktree or the run diff.
+	//
+	// Sandboxed: resolve to a fixed container path rather than the
+	// host path, because an image pinning a non-host User cannot
+	// write a host-owned bind (observed EACCES:
+	// branch-improve-loop's plan_chunks, sec-audit-deps'
+	// update_cache).
+	//
+	// That path is BACKED by the per-project host dir, bound on by
+	// applyScratchMount. The backing is load-bearing for any fan-in
+	// through scratch: a sub-bot child runs in its OWN container, so
+	// a purely container-local scratch means the child writes a file
+	// the parent can never read — the child reports success, the
+	// parent reads an empty directory, and the run only fails much
+	// later as "not enough results" (observed on app-concept: four
+	// topic syntheses written to
+	// /tmp/iterion-scratch/<parent>/topics, none visible at fan-in).
+	// It also makes scratch survive the container, so a crashed run
+	// resumes from its own working state.
+	if e.containerWorkspace != "" {
+		return sandboxScratchContainerPath
+	}
+	// Non-sandboxed: host path keyed off repo_root, a sibling of
+	// PROJECT_MEMORY_DIR at ~/.iterion/projects/<key>/scratch/.
+	base := e.repoRoot
+	if base == "" {
+		base = e.workDir
+	}
+	return memory.WorkspaceScratchDir(base)
+}
+
+// validateVarConstraints enforces the constraints a var declares —
+// `[enum: ...]` and `[matching: "<re>"]` — on launch-provided var values.
+// It is the runtime counterpart of the C126/C161 compile checks on
+// defaults (defaults are compile-validated, so only provided values are
+// checked here).
+//
+// Values are checked through ir.ResolveVarText, the SAME reading
+// resolveVars gives them, so the gate judges the exact value that flows
+// into the run: a gate with an expander of its own refused `${MODE:-fast}`
+// (expanded to "") on a var the run would then have started with "fast".
+// Upstream template rendering (dispatcher bot_args, preset overlay) has
+// already happened by the time inputs reach the engine.
+//
+// Both constraints are evaluated independently: a value inside the enum
+// but off the pattern is refused, and both reasons are reported. Returns
+// an error naming every violating var, its value, and what it failed —
+// the operator typed the value and is still at the keyboard.
+func (e *Engine) validateVarConstraints(inputs map[string]any) error {
+	return ValidateVarConstraints(e.workflow.Vars, inputs, e.varExpandFn())
+}
+
+// ValidateVarConstraints is that gate as a function, so a surface that admits
+// operator-supplied var values WITHOUT entering Engine.Run — `fork`'s
+// `new_inputs`, the one such surface — refuses the same values for the same
+// reasons, in the same words, instead of growing a second opinion.
+//
+// `expand` is the reading the values get. The caller owns it because it is a
+// property of the process, not of the declaration: the engine resolves
+// ${PROJECT_DIR} and friends from the run it is about to start, and a caller
+// with no run in hand has no honest answer for them — which is why the fork
+// surface refuses an environment-dependent value outright rather than guessing
+// one (see runview's fork gate).
+func ValidateVarConstraints(vars map[string]*ir.Var, inputs map[string]any, expand func(string) string) error {
 	if len(inputs) == 0 {
 		return nil
 	}
-	expandFn := e.varExpandFn()
+	if expand == nil {
+		// A nil expander reads the JUDGING process's environment, which is the
+		// one thing this signature exists to prevent: the caller that has no
+		// honest answer for `${…}` must say so, not inherit os.Getenv.
+		return errors.New("runtime: ValidateVarConstraints: an expander is required — a nil one would judge against this process's environment")
+	}
+	expandFn := expand
 	var violations []string
 	for _, k := range slices.Sorted(maps.Keys(inputs)) {
-		decl, isVar := e.workflow.Vars[k]
-		if !isVar || len(decl.EnumValues) == 0 || decl.Type != ir.VarString {
+		decl, isVar := vars[k]
+		if !isVar || decl.Type != ir.VarString {
+			continue
+		}
+		if len(decl.EnumValues) == 0 && decl.Matching == "" {
 			continue
 		}
 		v := inputs[k]
 		s, isStr := v.(string)
 		if !isStr {
-			violations = append(violations, fmt.Sprintf(
-				"var %q: value %v (%T) is not one of the allowed values (%s)",
-				k, v, v, quoteList(decl.EnumValues)))
+			// A non-string value satisfies neither constraint, and each
+			// says so in its own terms: an operator who declared both
+			// learns which one they are reading about.
+			if len(decl.EnumValues) > 0 {
+				violations = append(violations, fmt.Sprintf(
+					"var %q: value %v (%T) is not one of the allowed values (%s)",
+					k, v, v, quoteList(decl.EnumValues)))
+			}
+			if decl.Matching != "" {
+				violations = append(violations, fmt.Sprintf(
+					"var %q: value %v (%T) is not a string, so it cannot match the declared pattern %q",
+					k, v, v, decl.Matching))
+			}
 			continue
 		}
-		if expanded := os.Expand(s, expandFn); !slices.Contains(decl.EnumValues, expanded) {
+		// decl.Type is VarString above, so the shared reading is the
+		// expansion and nothing else — it neither fails nor returns
+		// another type here.
+		read, _ := ir.ResolveVarText(s, decl.Type, expandFn)
+		expanded, _ := read.(string)
+		if len(decl.EnumValues) > 0 && !slices.Contains(decl.EnumValues, expanded) {
 			violations = append(violations, fmt.Sprintf(
 				"var %q: value %q is not one of the allowed values (%s)",
 				k, expanded, quoteList(decl.EnumValues)))
+		}
+		if decl.Matching == "" {
+			continue
+		}
+		matched, err := ir.ValueMatchesPattern(decl.Matching, expanded)
+		if err != nil {
+			// Unreachable through a compiled program (C162 refuses it),
+			// so it is reported rather than skipped: a pattern that does
+			// not compile must never read as "the value passed".
+			violations = append(violations, fmt.Sprintf(
+				"var %q: declared pattern %q does not compile: %v", k, decl.Matching, err))
+			continue
+		}
+		if !matched {
+			violations = append(violations, fmt.Sprintf(
+				"var %q: value %q does not match the declared pattern %q",
+				k, expanded, decl.Matching))
 		}
 	}
 	if len(violations) > 0 {
 		return errors.New(strings.Join(violations, "; "))
 	}
 	return nil
+}
+
+// remapRepoRoot rewrites every occurrence of the repo root inside a var's
+// value, wherever the declared type put it: a `string` var holds one path,
+// a `string[]` holds a list of them, a `json` one holds a document with
+// paths at any depth — the run reads a default and an override alike as a
+// value of its type (#1285), so a guard that read one string per var
+// stopped seeing the shapes most likely to carry a path. Returns the value
+// and whether anything moved; the input is never modified in place, since
+// the caller's map may be shared.
+func remapRepoRoot(val any, repoRoot, projectDir string) (any, bool) {
+	switch v := val.(type) {
+	case string:
+		if samePath(v, repoRoot) {
+			return projectDir, true
+		}
+	case []any:
+		changed := false
+		out := make([]any, len(v))
+		for i, e := range v {
+			out[i], _ = remapRepoRoot(e, repoRoot, projectDir)
+			changed = changed || out[i] != e
+		}
+		if changed {
+			return out, true
+		}
+	case map[string]any:
+		changed := false
+		out := make(map[string]any, len(v))
+		for k, e := range v {
+			var moved bool
+			out[k], moved = remapRepoRoot(e, repoRoot, projectDir)
+			changed = changed || moved
+		}
+		if changed {
+			return out, true
+		}
+	}
+	return val, false
 }
 
 // quoteList renders enum values as `"a", "b"` for error messages.
@@ -1149,14 +1335,6 @@ func quoteList(vals []string) string {
 // remapped to the worktree/sandbox workspace.
 func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
-}
-
-// coerceVarValue narrows a user-provided override (typically a
-// string from --var or POST /api/runs) to the type declared in the
-// IR for that var: the one reading of a var's text, ir.CoerceVarValue,
-// which the contract compiler mirrors for a var's default.
-func coerceVarValue(v any, vt ir.VarType) (any, error) {
-	return ir.CoerceVarValue(v, vt)
 }
 
 // emitTerminalNodeEvents emits the NodeStarted+NodeFinished pair for a

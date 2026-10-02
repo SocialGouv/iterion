@@ -2,14 +2,18 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -18,8 +22,13 @@ import (
 
 // maxPersistedWorkflowSource caps the .bot text stamped onto a run.
 // A `.bot` is a few KB in practice; the cap only exists so a pathological
-// generated workflow cannot bloat every run document. Exceeding it
-// disables `rewind --auto` for that run, nothing else.
+// generated workflow cannot bloat every run document.
+//
+// What a run pays for exceeding it: `rewind --auto` can no longer diff it, and
+// `fork --new-inputs` is refused — the fork gate checks operator-supplied
+// values against the var constraints, and the source it reads them from is
+// this record. Forking that run WITHOUT changing an input is unaffected, which
+// is the recovery path; the refusal names both ways on.
 const maxPersistedWorkflowSource = 1 << 20 // 1 MiB
 
 // recordedSources returns the .bot text to persist on the run and, for a
@@ -33,9 +42,12 @@ const maxPersistedWorkflowSource = 1 << 20 // 1 MiB
 // that loads. A single file records its main alone. One cap holds the
 // whole: past it, nothing is recorded.
 //
-// Best-effort by design — this only powers `rewind --auto`'s ability to
-// name the changed node. A source we cannot read or that busts the cap
-// leaves the run auto-targetable=false and `--node` unaffected.
+// Best-effort by design. Two readers depend on it: `rewind --auto`'s ability
+// to name the changed node, and the fork gate, which checks operator-supplied
+// var values against the constraints declared in the source the run executed.
+// A source we cannot read or that busts the cap leaves the run
+// auto-targetable=false with `--node` unaffected, and makes
+// `fork --new-inputs` refuse rather than admit an unchecked value.
 func (e *Engine) recordedSources() (string, []store.WorkflowSourceFile) {
 	if e.compiledFiles != nil {
 		return sourcesOf(e.compiledMain, e.compiledFiles)
@@ -90,7 +102,8 @@ func sameSourceFiles(a, b []store.WorkflowSourceFile) bool {
 //
 // Returns an empty source when the main is absent from files or the whole busts
 // maxPersistedWorkflowSource: past the cap nothing is recorded, which leaves
-// `rewind --auto` unavailable for that run and nothing else.
+// `rewind --auto` unavailable for that run and `fork --new-inputs` refused on
+// it (the fork gate reads the constraints from this record).
 func RecordedSourcesOf(main string, files map[string]string) (string, []store.WorkflowSourceFile) {
 	return sourcesOf(main, files)
 }
@@ -184,25 +197,27 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	}
 
 	// Default workDir to process cwd if not set explicitly.
-	if e.workDir == "" {
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			e.workDir = cwd
-		}
-	}
+	e.defaultWorkDir()
+	defer e.releaseTempWorkDir()
 
-	// Registered FIRST so it runs LAST, after finalize and after the
-	// sandbox is gone — and it reads e.repoRoot at that point, not now.
+	// Registered right after the throw-away workdir's release, so it runs
+	// just before it: after finalize and after the sandbox is gone — and it
+	// reads e.repoRoot at that point, not now.
 	// Nothing else reclaims ${PROJECT_SCRATCH_DIR}: `iterion runs prune`
 	// only touches runs/, and the worktree sweep only worktrees/, which is
 	// how one project reached 54 GB of it.
 	defer e.sweepScratchOnExit(runID)
 
-	// Enum gate: every launch surface (CLI --var, HTTP launch, dispatcher
-	// bot_args, preset overlay, cloud pickup) funnels its var values into
-	// run.Inputs, so this single check rejects any enum-constrained var
-	// value outside its declared set — before a worktree or sandbox is
-	// spun up for a doomed run.
-	if err := e.validateVarEnums(run.Inputs); err != nil {
+	// Constraint gate: every launch surface (CLI --var, HTTP launch,
+	// dispatcher bot_args, preset overlay, cloud pickup) funnels its var
+	// values into run.Inputs, so this single check rejects any value
+	// outside what its var declares — `[enum: ...]` or `[matching: ...]` —
+	// before a worktree or sandbox is spun up for a doomed run.
+	//
+	// It deliberately does NOT run on resume: the stored payload was
+	// already admitted at launch, and re-judging it would make a run
+	// unresumable because its declaration was tightened afterwards.
+	if err := e.validateVarConstraints(run.Inputs); err != nil {
 		e.markFailedBestEffort(ctx, runID, "var validation", err)
 		return e.setupErr(ctx, fmt.Errorf("runtime: var validation: %w", err))
 	}
@@ -418,9 +433,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
 		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil ||
-		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" {
+		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -433,6 +448,14 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		if e.parentRunID != "" {
 			run.ParentRunID = e.parentRunID
+		}
+		// Never CLEARED here: the stores hold the marker write-once, and an
+		// engine that says nothing must not be read as saying "trusted".
+		if e.trust != "" {
+			run.Trust = e.trust
+		}
+		if e.repoSHAExpected != "" {
+			run.RepoSHAExpected = e.repoSHAExpected
 		}
 		if e.parentNodeID != "" {
 			run.ParentNodeID = e.parentNodeID
@@ -562,6 +585,21 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 				run.ExecutionContext = ctxContract
 			}
 		}
+		// The public contract the program EXECUTES rides the run doc, in its
+		// wire form, and mirrors it on every pass: stamped at launch, and a
+		// resume whose program dropped the contract clears it — a parent that
+		// re-attaches to this run as a finished `subbot` child projects the
+		// output from the contract of the pass that actually ran, never from
+		// a source recompiled after the fact (#1280, ADR-099).
+		if e.workflow.Contract != nil {
+			raw, err := json.Marshal(e.workflow.Contract)
+			if err != nil {
+				return nil, fmt.Errorf("runtime: encode run public contract: %w", err)
+			}
+			run.PublicContract = raw
+		} else {
+			run.PublicContract = nil
+		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
@@ -657,7 +695,12 @@ func (e *Engine) runPromoteAttachments(ctx context.Context, runID string, run *s
 // skills into the workspace's .claude/skills/ directory.
 func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *store.Run, worktreeActive bool, wtCtx worktreeContext) error {
 	if e.workDir != "" {
-		run.WorkDir = e.workDir
+		// A throw-away test workdir — this engine's, or a parent's handed down
+		// through WithWorkDir — is removed when its owner returns: recorded on
+		// the run, a later resume would adopt the removed path.
+		if !isThrowAwayWorkDir(e.workDir) {
+			run.WorkDir = e.workDir
+		}
 		// run.Worktree reflects whether the runtime actually set up an
 		// isolated git worktree for this run — not just whether the
 		// workflow declared `worktree: auto`. With auto being the IR
@@ -747,18 +790,32 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// collision (see runtime/bundle.go for the rule). Tier sidecars from a
 	// PREVIOUS run are wiped first: precedence arbitrates within this
 	// pass, never across runs.
-	ClearSkillTierMarkers(e.workDir)
+	ClearMirroredTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
 		return fmt.Errorf("runtime: bundle skills: %w", err)
 	}
-	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
-	// after the bundle skills so a same-named bundle/workspace file
-	// wins on collision. Best-effort: a plugin must not fail the run.
-	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
-	if err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin contributions: %v", err)
+	// Mirror markdown contributions (skills / commands / agents) from enabled
+	// plugins after the bundle skills so a same-named bundle/workspace file
+	// wins on collision. Per-FILE errors (validation AND I/O) are soft inside
+	// mirrorPluginContributions — ambient plugins must not brick a run — but
+	// each skipped entry drops `complete`. The errors that DO reach this
+	// return are the workspace-level ones (mkdir / tmpfile): those are fatal,
+	// since a run whose plugin cannot write its mirror at all must not
+	// proceed half-mirrored.
+	//
+	// Complete=false reports a KIND-level miss (plugin.Load failed, a
+	// per-plugin MirrorFiles failed, a skipped entry, or an unresolved
+	// ambient declaration) — the pruner must be skipped, or it treats last
+	// pass's plugin files as orphans (#1500 R2-F1 HIGH, R6 medium).
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: plugin contributions: %v", err)
+		}
+		e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
+		return fmt.Errorf("runtime: plugin contributions: %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
@@ -769,8 +826,60 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The
 	// returned name→description map feeds every LLM node's "## Skills" hint.
 	// All three mirrors write into the same directory, so ownership is reported
-	// once, after the last of them has run.
-	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
+	// once, after the last of them has run. I/O errors here are FATAL for the
+	// same reason as the plugin mirror — the DSL `skills:` list is exactly
+	// "declared and load-bearing".
+	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
+	if libraryErr != nil {
+		e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
+		return fmt.Errorf("runtime: library skills: %w", libraryErr)
+	}
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	// Prune orphans left by earlier passes on this worktree — a skill
+	// renamed or removed upstream keeps its copy and marker on disk
+	// forever otherwise, and claw's resolver keeps offering the flat form
+	// under its old name (claude_code's Skill tool only discovers the
+	// directory form; a flat orphan is inert there — but the marker is
+	// still bookkeeping for that name). Only touches files iterion wrote
+	// AND the operator hasn't edited (iterion-wrote sidecar + marker
+	// match + no fresh tier sidecar); anything the operator owns stays.
+	// Three concurrent preconditions gate the pruner:
+	//
+	//   - I/O errors from any mirror phase are FATAL and already returned
+	//     above, so any code reaching this point saw no hard failure.
+	//   - The complete flag from plugin + library reports whether every
+	//     declared entry was actually mirrored — an incomplete pass has
+	//     entries whose tier sidecar was never refreshed for a reason
+	//     that has nothing to do with orphans, and the pruner MUST NOT
+	//     conflate the two (#1500 R2-F1 HIGH: plugin.Load / MirrorFiles /
+	//     unresolved library ref).
+	//   - A child subbot (parentRunID != "") runs in its PARENT's
+	//     workspace; letting the child prune would delete files the
+	//     parent's own mirror wrote (#1500 Q4). A child never prunes,
+	//     regardless of Worktree state.
+	//
+	// Use run.Worktree (post-promotion) rather than the local
+	// worktreeActive: `workDirDelegated` promotes a foreign linked
+	// worktree to Worktree=true after this function has already read
+	// worktreeActive, and the two resume paths do use run.Worktree via
+	// r.Worktree — the pruner must see the SAME state whichever entry
+	// point it runs from.
+	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+		pruneWorkspaceMirror(e.workDir, run.Worktree, e.logger)
+	} else if e.logger != nil {
+		reason := ""
+		switch {
+		case e.parentRunID != "":
+			reason = "child subbot: parent owns the workspace"
+		case !pluginsComplete && !libraryComplete:
+			reason = "plugin AND library mirror incomplete"
+		case !pluginsComplete:
+			reason = "plugin mirror incomplete"
+		default:
+			reason = "library mirror incomplete"
+		}
+		e.logger.Debug("runtime: skipping orphan prune (%s)", reason)
+	}
 	e.applyPresetFocus()
 	// Say, on the run's own record, that this run carried skills its .bot
 	// does not mention. Without it the addition is invisible state changing
@@ -825,22 +934,29 @@ func (e *Engine) reconcileExecutionWorkspace(runID string, run *store.Run) error
 // claude_code and claw read the directory natively, so the agent sees whatever
 // is there — but a shadowed entry is NOT owned: that content is the target
 // repository's, and a backend passing skills explicitly must not hand it over.
-func (e *Engine) applyLibrarySkills() []string {
-	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
+// applyLibrarySkills returns (owned, complete, err). A non-nil err is an
+// I/O failure on a declared library skill — FATAL, propagated by the caller.
+// `complete=false` reports that the pass could not resolve every declared
+// skill (a ValidName miss, a store.Resolve miss for a skill not already
+// mirrored by bundle/plugin); the pruner is skipped in that case, per the
+// #1500 R2-HIGH fix — a phase that could not mirror what it was ASKED to
+// mirror must not signal "everything not-touched is orphan".
+func (e *Engine) applyLibrarySkills() (owned []string, complete bool, err error) {
+	hints, owned, complete, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)
 		}
-		return nil
+		return nil, false, err
 	}
 	if len(hints) == 0 {
-		return owned
+		return owned, complete, nil
 	}
 	type skillHintSetter interface{ SetSkillHints(map[string]string) }
 	if s, ok := e.executor.(skillHintSetter); ok {
 		s.SetSkillHints(hints)
 	}
-	return owned
+	return owned, complete, nil
 }
 
 // applyMirroredSkills hands the executor the skill directories iterion OWNS in
@@ -961,8 +1077,12 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 			// The gate finalized COMMITS, but post-gate work may sit
 			// uncommitted in the worktree — removing it would destroy that
 			// work silently. Preserve instead; the operator recovers via the
-			// studio commit-and-finalize action.
-			if clean, cleanErr := workdirIsClean(wtCtx.wtPath); cleanErr == nil && !clean {
+			// studio commit-and-finalize action. The probe agrees with THAT
+			// gesture (mirror-only): a tracked-and-modified devbox.lock is
+			// dependency work the action would bank, so the worktree is
+			// preserved for it (verdict 9, R8e10f0).
+			porcelain, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain", "-z")
+			if porcelainErr == nil && len(commitWorkPaths(porcelain)) != 0 {
 				if e.logger != nil {
 					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
 				}
@@ -1061,4 +1181,157 @@ func (e *Engine) evictRunSessions(runID string, loopErr error) {
 	if ev, ok := e.executor.(interface{ EvictRun(string) }); ok {
 		ev.EvictRun(runID)
 	}
+}
+
+// throwAwayWorkDirPrefix names the directories defaultWorkDir creates under
+// the system temp dir for an engine test that runs from the package directory.
+const throwAwayWorkDirPrefix = "iterion-test-workdir"
+
+// defaultWorkDir fills an engine's missing workDir with the process cwd —
+// the `iterion run` contract, at every layer including a t.Chdir'd test
+// workspace. ONE cwd is refused: the package directory itself under `go
+// test`, where a skill or plugin mirror would write into the developer's
+// checkout (pkg/runtime/.claude, seen 2026-09-24) — that engine gets a
+// throw-away directory instead, recorded in workDirTemp until
+// releaseTempWorkDir removes it (#1803). A test that wants a known workDir
+// passes runtime.WithWorkDir itself.
+func (e *Engine) defaultWorkDir() {
+	if e.workDir != "" {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	e.workDir = cwd
+	if testing.Testing() && cwd == runtimePackageDir() {
+		dir, dirErr := os.MkdirTemp("", throwAwayWorkDirPrefix)
+		if dirErr != nil {
+			e.logger.Error("no workDir and the test workdir could not be created: %v — the engine keeps the package directory as its workDir, mirrors will write into the checkout", dirErr)
+			return
+		}
+		e.workDir = dir
+		e.workDirTemp = dir
+		liveThrowAwayWorkDirs.Store(dir, nil)
+		everThrowAwayWorkDirs.Store(dir, struct{}{})
+	}
+}
+
+// liveThrowAwayWorkDirs holds every throw-away directory defaultWorkDir
+// created and releaseTempWorkDir has not removed. It is process-wide because
+// an engine hands its workdir to child engines (WithWorkDir), which must
+// recognise it as well. The value is nil, or the error the release's removal
+// failed with.
+var liveThrowAwayWorkDirs sync.Map
+
+// everThrowAwayWorkDirs remembers every throw-away workdir the process
+// created, released or not.
+var everThrowAwayWorkDirs sync.Map
+
+// isThrowAwayWorkDir reports whether dir is a throw-away test workdir — live
+// or already released — which no run record may keep: a child engine handed
+// it may still persist after its parent released it.
+func isThrowAwayWorkDir(dir string) bool {
+	_, ok := everThrowAwayWorkDirs.Load(dir)
+	return ok
+}
+
+// releaseTempWorkDir removes the throw-away directory defaultWorkDir created
+// and forgets it. Only the public calls that own a whole run segment — Run and
+// ResumeWithHostInputs — release it, when they return: the helpers that prepare
+// a resume return before the resumed run is done, and a directory removed
+// under a live engine is re-created by the next skill mirror with no owner.
+// Forgetting it makes the next call on the same engine derive a fresh one. A
+// directory that cannot be removed stays registered with its error, so the
+// package's test main reports it.
+func (e *Engine) releaseTempWorkDir() {
+	dir := e.workDirTemp
+	if dir == "" {
+		return
+	}
+	e.workDirTemp = ""
+	if e.workDir == dir {
+		e.workDir = ""
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		e.logger.Error("runtime: remove the throw-away test workdir %s: %v", dir, err)
+		liveThrowAwayWorkDirs.Store(dir, err)
+		return
+	}
+	liveThrowAwayWorkDirs.Delete(dir)
+}
+
+// throwAwayLeaks sorts, by cause, the throw-away workdirs that outlived a
+// test suite.
+type throwAwayLeaks struct {
+	// NeverReleased were driven by a test through an engine helper with
+	// neither Run nor ResumeWithHostInputs to release them.
+	NeverReleased []string
+	// Unremovable resisted their release's removal; each entry carries the
+	// error.
+	Unremovable []string
+	// Recreated were released, then written again by something that outlived
+	// the call owning them.
+	Recreated []string
+}
+
+func (l throwAwayLeaks) empty() bool {
+	return len(l.NeverReleased) == 0 && len(l.Unremovable) == 0 && len(l.Recreated) == 0
+}
+
+// reclaimThrowAwayWorkDirs finds every throw-away workdir of this process
+// still on disk — live, or re-created after its release, wherever it lies —
+// removes it by recorded path and only under the throw-away prefix, and
+// reports it by cause, each list sorted. The package's test main passes the
+// process registries and fails the suite on any leak.
+func reclaimThrowAwayWorkDirs(live, ever *sync.Map) (throwAwayLeaks, error) {
+	var dirs []string
+	seen := map[string]bool{}
+	for _, m := range []*sync.Map{live, ever} {
+		m.Range(func(k, _ any) bool {
+			if d := k.(string); !seen[d] {
+				seen[d] = true
+				dirs = append(dirs, d)
+			}
+			return true
+		})
+	}
+	sort.Strings(dirs)
+	var leaks throwAwayLeaks
+	var errs []error
+	for _, dir := range dirs {
+		v, isLive := live.Load(dir)
+		_, statErr := os.Lstat(dir)
+		switch {
+		case isLive && v != nil:
+			leaks.Unremovable = append(leaks.Unremovable, fmt.Sprintf("%s (%v)", dir, v))
+		case isLive:
+			leaks.NeverReleased = append(leaks.NeverReleased, dir)
+		case statErr == nil:
+			leaks.Recreated = append(leaks.Recreated, dir)
+		default:
+			continue
+		}
+		if !strings.HasPrefix(filepath.Base(dir), throwAwayWorkDirPrefix) {
+			errs = append(errs, fmt.Errorf("refusing to remove %q: not a throw-away test workdir", dir))
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		live.Delete(dir)
+	}
+	return leaks, errors.Join(errs...)
+}
+
+// runtimePackageDir is the directory holding this package's source, from
+// the compile-time path of this file — how an engine test's cwd (the
+// package dir under `go test`) is recognised (#1803).
+func runtimePackageDir() string {
+	_, file, _, ok := goruntime.Caller(0)
+	if !ok {
+		return ""
+	}
+	return filepath.Dir(file)
 }

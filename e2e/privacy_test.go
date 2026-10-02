@@ -46,6 +46,14 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 		Store:    s,
 		RunID:    runID,
 		StoreDir: storeDir,
+		// This harness runs the node in THIS process, unsandboxed, so the
+		// launcher may start the workflow's own MCP servers. Said
+		// explicitly: the zero value means "nobody looked", which starts
+		// operator-installed servers only and would refuse this
+		// workflow's own.
+		SandboxTiersKnown: true,
+		// No bot: a fixture workflow, not an installed bundle.
+		BotID: "",
 	})
 	if err != nil {
 		t.Fatalf("BuildExecutor: %v", err)

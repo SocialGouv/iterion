@@ -23,11 +23,30 @@ anything both families flagged ("cross-confirmed"). It then writes one issue
 per finding to the iterion native kanban board (labelled `severity:*`,
 `type:*`, `source:revi`) plus a markdown report.
 
+**Every reviewer route is a `${ENV_VAR:-default}` dial**, so an instance
+points a slot at whatever its credentials serve without re-releasing the
+bot: the claude slot defaults to `claude-opus-5-5` on `claude_code` (both
+tiers — the catalog ships no other Anthropic default; glance's frugality is
+its reasoning effort and tier caps), the gpt slot to `openai/gpt-6-astra` (glance twin:
+`openai/gpt-6-luna`) on `claw`, and every claude node — both reviewers and
+the `converge` merge step — carries a GLM fallback route (`provider: "zai"`,
+dial `ITERION_VIBE_MODEL_CLAUDE_FALLBACK`, default `glm-5.3`) for the day the
+Anthropic credential cannot serve. The published run table labels each row
+with the family that actually served — read from the session's routing label
+first (a z.ai facade is GLM, whatever id it was sent), then from the model —
+never from the slot's name: Revue Claude / Revue GPT / Revue GLM, and
+Synthèse · <family> for the merge step. Only the family is published, never
+the routing label. The routing label exists on claude_code sessions; a claw
+node on a `session: fresh` carries none, so its row falls back to the model
+id. Known limit: the `pacer` supervisor resolves in-process on claw, where a
+skipped forfait leaves it no Anthropic credential of its own — at the cap its
+evaluations fail; it publishes nothing.
+
 ```
 diff_precheck (tool)   empty diff → done (nothing to review)
 diff_precheck -> topology (condition)
-  ├─ mono/claude -> reviewer_claude   claude_code, read-only
-  ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-5.5, read-only tools
+  ├─ mono/claude -> reviewer_claude   claude_code + opus 5.5, read-only
+  ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-6-astra, read-only tools
   └─ dual        -> fan (fan_out_all) -> both reviewers
 reviewer_* -> merge_reviews (best_effort) -> converge (merge + dedupe → board + report)
 converge -> pr_gate    deterministic: was a pr_url given?
@@ -124,6 +143,27 @@ iterion run bots/review-pr/main.bot \
   and publishes to `pr_url`; check out the PR branch and pass its base
   as `base_ref`. Auto-resolving base/head from the URL is a planned
   enhancement.
+- **Workspace anomaly (#1666).** The workspace must equal the tree under
+  review. `diff_precheck` reports any TRACKED uncommitted entry
+  (`git status --porcelain -z`, untracked scratch and engine/tooling tree
+  noise excluded — neither enters the review's diff scope) as
+  `workspace_anomaly`; the reviewers scope those files out WHOLE
+  (committed hunks included), and `publish_review` strips any finding
+  still anchored on a drifted file from the PR findings and reports it
+  under a "workspace anomaly" section naming the file and the difference
+  — an edit the PR does not contain is workspace state, never a finding
+  against the change under review. Reclassified findings stay visible:
+  the workspace-anomaly section and the gate note always carry their
+  count (a green gate never reads as approval by omission), and when the
+  strip empties the finding list the review headline itself names the
+  reclassification instead of claiming a clean review. A failed status
+  read publishes the "?" marker: nothing is stripped and the review says
+  the workspace state could not be verified.
+  Scope: the sanitisation covers the FORGE publication (summary, inline
+  comments, gate); the board/markdown report written upstream by
+  `emit`/`converge` may still carry a drift-drawn finding a reviewer
+  filed against rule 2d. Empty in `base_ref: HEAD` mode, where
+  uncommitted work IS the review's object.
 - **Anti-façade.** The endpoint re-fetches the posted review to count the
   comments the forge actually stored (falling back to a summary-only
   review when inline anchors are rejected — findings are folded into the
@@ -152,9 +192,11 @@ iterion run bots/review-pr/main.bot \
 
 ## Read-only by construction
 
-No node mutates source. `reviewer_gpt` is given only read tools (`bash`,
-`read_file`, `glob`, `grep` — no `write_file`/`file_edit`), which on `claw` is
-the whole surface it has. The claude reviewers declare `readonly: true`, which
+No node mutates source. `reviewer_gpt` runs on `claw` and is given only
+read tools (`bash`, `read_file`, `glob`, `grep` — no
+`write_file`/`file_edit`), so it can run git and read the workspace but has
+no structured path to edit it.
+The claude reviewers declare `readonly: true`, which
 is a **scheduling** declaration — "this node mutates no workspace file", the
 promise that lets dual fan both reviewers onto one worktree. Only `pi` and
 `codex` read it as a tool boundary; on `claude_code` nothing does, so what
@@ -164,52 +206,73 @@ on them would bound them for real and is not free: a non-empty list installs
 run. The single downstream `converge` step writes only the report file and
 creates board issues over MCP.
 
-## When the Anthropic credential cannot serve
+## The Anthropic pin, and the z.ai route below it
 
-The claude slot is not a dead end. Both its nodes declare a fallback route to
-**GLM** — the claude family's other server — as a `provider: "zai"` hint with
-no `backend:` of its own. The route therefore stays on `claude_code`, the one
-backend that honours a provider hint: the hint forces the z.ai facade
-(`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` from the run's `zai` credential,
-or `ZAI_API_KEY`) **even when Anthropic credentials are present**, which is
-exactly the tenant whose forfait window is spent. It is armed for three failure
-categories:
+Every claude_code node on a claude id — both claude reviewers **and**
+`converge` — pins its provider to `anthropic`, through a dial
+(`ITERION_VIBE_PROVIDER_CLAUDE` for the claude slot, `ITERION_VIBE_PROVIDER_EMIT`
+for the merge step). The pin is **load-bearing**: the wire's credential order
+(secrets.AnthropicWireSlotOrder) puts facade keys (zai, moonshot) FIRST, so a
+z.ai key the run holds as a DEFAULT credential serves every unpinned node of
+the wire, the forfait beside it or not. The team's own z.ai key is always one
+(a team's keys fill before its forfait). A shared tier's is one only where the
+forfait is off the wire — skipped because its window is closed (a provider
+refusal, or an operator usage cap, soft or hard: a launch is a new run), or
+never connected — and the tier's facade policy lets a facade key take a free
+family: under `facade_default: auto`, the default, only in a tier that holds
+no Claude credential of its own; under `always`, anywhere; under `never`,
+nowhere ([cloud-llm-credentials.md](../../docs/cloud-llm-credentials.md)). An
+unpinned node then sends its claude id to the z.ai facade, which **accepts it
+and serves GLM in silence**, under the claude label — PR #1924's gpt slot did
+exactly that. Pinned, the primary is forced Anthropic-direct, facade branches
+skipped: the run's default `anthropic` key if it holds one, else the
+`claude_code` forfait, else an `anthropic` key a shared tier sealed for the
+pin alone. A default key wins over the forfait — the team's own, or a shared
+tier's that took the family (the forfait closed at launch, or `keys_first` in
+a tier holding both); a key an org or platform tier funds only for the pin,
+beside the team's forfait, waits behind it, so the subscription's work stays
+on the subscription.
+When none is sealed it falls back to the runner's AMBIENT Anthropic auth
+(`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` in the pod env) — with none,
+as on iterion.cloud, it fails "Not logged in" (classified auth, no spend) and
+the route below takes it; with one, the pod's account serves the node.
 
-| category | the instance shape that produces it |
+The fallback route to **GLM** is the second server of the same review family.
+It is a `provider: "zai"` hint with no `backend:` of its own, so it stays on
+`claude_code`, the one backend that honours a provider hint: the hint forces
+the z.ai facade (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` from the run's
+`zai` credential, or `ZAI_API_KEY`) **even when Anthropic credentials are
+present**. On a `converge` moved to claw (`ITERION_VIBE_BACKEND_EMIT=claw`,
+with `ITERION_VIBE_PROVIDER_EMIT=auto`) the route cannot reach z.ai — claw
+reads no hint and a bare GLM id is not a claw spec — so it fails fast. It is
+armed for three failure categories — each a failure OF THE PINNED ANTHROPIC
+ROUTE, never of a facade:
+
+| category | the shape that produces it |
 |---|---|
-| `usage_window` | an Anthropic credential that **outranks** z.ai in the CLI's precedence, whose window is spent. This route answers the *provider's* refusal, mid-run — the operator's own cap, when it is already shut at launch, refuses the whole run before any node dispatches and the route is never consulted. A cap that shuts *during* the run does divert here, metered key and all |
-| `auth` | an Anthropic credential present but rejected or expired. It still takes precedence, so the CLI uses it and 401s. Not in the default trigger set; named here deliberately |
+| `usage_window` | the forfait's usage window is spent mid-run — the weekly cap diverts the node to GLM instead of parking it. A spent z.ai key plays no part in the primary's health; it only makes this ROUTE fail, and when both are spent the run parks on its durable usage-window retry — there is no third server to fall to |
+| `auth` | the Anthropic credential present but rejected or expired. Not in the default trigger set; named here deliberately. A run whose forfait the publisher skipped at the cap lands here too when the runner carries no ambient Anthropic auth: the forced-Anthropic primary has no channel, fails "Not logged in" (no spend), and this route takes it |
 | `unavailable` | the resolved credential cannot reach the model it was given |
 
 The rescue model is a dial like every other on those nodes:
-`${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.2}`, one for both tiers since the
-rescue is deliberately the same on each. An account entitled to a different GLM
-id — or one z.ai renames — repoints it without re-releasing the bundle, live
-through `bot-vars` like the other `ITERION_*` dials.
-
-**An instance with only a z.ai key is not in that table:** `claude_code`
-resolves z.ai by itself — the BYOK z.ai pair is the first case of its credential
-precedence — so the primary is already credentialed and the route is not what
-makes that host work. Give it the dial instead: set `ITERION_VIBE_MODEL_CLAUDE`
-(and `_GLANCE`) to the GLM id the account serves. Left at `claude-opus-5` the
-request still reaches z.ai's gateway, which aliases the model internally — the
-review runs, but the run table then names a model that did not serve it, and a
-gateway that refuses the id instead sends the node down the `unavailable`
-trigger once per run. The route is the net, not the configuration.
+`${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}`, one for both tiers since
+the rescue is deliberately the same on each. An account entitled to a
+different GLM id — or one z.ai renames — repoints it without re-releasing
+the bundle, live through `bot-vars` like the other `ITERION_*` dials.
 
 With no credential at all the route has none either, and the run fails loudly.
 
 The route is `metered: true`. That is a declaration of intent, not a governor:
 nothing in the executor reads it (ADR-087's `ITERION_FORBID_METERED_FALLBACK`
-is prose, not code). On a forfait instance it does spend a billed key where the
-primary spent a subscription; on a BYOK z.ai instance both are the same billed
-key.
+is prose, not code). The route spends a billed key where the primary normally
+spends a subscription.
 
-One residual, engine-side: with the `zai` hint and **no** z.ai key reachable,
-the CLI's ambient `ANTHROPIC_API_KEY` is not cleared, so the route asks
-Anthropic for a GLM id and gets a 404 instead of a clean "no credential". It
-fails rather than mis-spending, so it bounds what the route buys rather than
-undoing it.
+With a `zai` hint and **no** z.ai key reachable, the route is refused before
+the CLI spawns — `ErrNoFacadeCredential`, which names `zai` and `ZAI_API_KEY` —
+with no spend. The engine strips every ambient Anthropic channel for a
+`zai`-pinned node (env tokens, the forfait file channel, the alt-provider
+switches), so it can never silently route to another provider: the fix is the
+z.ai key.
 
 Nothing about the degradation is silent. `_backend` and `_model` name what
 actually served; the published review's run table carries them
@@ -222,8 +285,18 @@ would approve by omission, whereas a fallback-served review read the same diff
 and emitted the same schema. Blocking it would turn the rescue into a merge
 block on exactly the runs it exists to keep reviewing.
 
-The GPT nodes have no equivalent route; their model and backend stay steerable
-by their own `ITERION_VIBE_*_GPT` / `ITERION_VIBE_*_GPT_GLANCE` dials.
+The GPT nodes have no fallback route of their own: their backend, model and
+provider are dials (`ITERION_VIBE_BACKEND_GPT*`, `ITERION_VIBE_MODEL_GPT*`,
+`ITERION_VIBE_PROVIDER_GPT`), so an instance without a usable OpenAI route
+points them at a family it can serve — all three together, or the slot lands
+on a route nobody chose:
+
+- the claude forfait: `claude_code` + `claude-opus-5-5` + provider
+  `anthropic` (without the hint, a z.ai key holding the wire answers the
+  claude id with GLM — the PR #1924 label);
+- GLM: `claude_code` + `glm-5.3` + provider `zai`. Not claw +
+  `anthropic/glm-5.3`: claw reaches z.ai only through a z.ai key sealed as
+  the run's DEFAULT, which a sealed Claude forfait prevents.
 
 See [main.bot](main.bot) for the full DSL.
 

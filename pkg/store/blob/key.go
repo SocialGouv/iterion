@@ -51,6 +51,16 @@ func attachmentKey(runID, name, filename string) (string, error) {
 	return fmt.Sprintf("attachments/%s/%s/%s", runID, name, filename), nil
 }
 
+// artifactRunPrefix is the S3 key prefix containing every artifact of a
+// run. Trailing slash is included so a delete-by-prefix doesn't
+// accidentally match `artifacts/<runID>-other/`.
+func artifactRunPrefix(runID string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	return fmt.Sprintf("artifacts/%s/", runID), nil
+}
+
 // attachmentRunPrefix is the S3 key prefix containing every
 // attachment for a run. Trailing slash is included so a delete-by-
 // prefix doesn't accidentally match `attachments/<runID>-other/`.

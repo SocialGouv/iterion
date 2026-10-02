@@ -1,16 +1,32 @@
 package model
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // anthropicWireProviders are the credential-routing hints that spend an
 // Anthropic-wire credential: the direct API key / OAuth forfait, and the
-// z.ai facade that rides the same wire.
-var anthropicWireProviders = map[string]bool{"anthropic": true, "zai": true}
+// facades that ride the same wire. Derived from the slot order rather than
+// listed, so a provider joining the wire arms this guard the same day it
+// becomes spendable — a hint missing here makes the pre-flight answer "this
+// run cannot touch the capped subscription" for a run that can.
+var anthropicWireProviders = anthropicWireHints()
+
+func anthropicWireHints() map[string]bool {
+	hints := map[string]bool{}
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if secrets.OAuthKind(slot).Valid() {
+			continue // an OAuth kind is not a `provider:` hint
+		}
+		hints[slot] = true
+	}
+	return hints
+}
 
 // AnthropicWireReachable reports whether some route the run may take can
 // execute against the Anthropic wire — the wire the operator's usage cap
@@ -39,29 +55,90 @@ var anthropicWireProviders = map[string]bool{"anthropic": true, "zai": true}
 // exists to honour.
 //
 // Only a run whose every primary route is pinned off the wire —
-// codex/kimi/grok, or claw/pi with a resolved non-anthropic provider —
-// answers false.
+// codex/kimi/grok, or claw/pi/opencode with a resolved non-anthropic
+// provider — answers false. opencode sits with claw and pi rather than with
+// the vendor-bound CLIs: it picks its provider from what the process holds,
+// so an unresolved hint may still land on anthropic.
 func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides) bool {
+	return len(AnthropicWireRoutes(wf, overrides)) > 0
+}
+
+// WireRoute is one PRIMARY route of a run that can execute against the
+// Anthropic wire: the node's backend under the launch's overrides and the
+// FIRST element of its provider chain — what the executor spends before any
+// rescue step.
+type WireRoute struct {
+	// NodeID is the node the route belongs to; "" for the single route of a
+	// nil workflow.
+	NodeID string
+	// Backend is the resolved backend, lower-cased; "" when it resolves at
+	// dispatch (unset, auto, a `{{vars.…}}` reference).
+	Backend string
+	// Hint is the first chain element's provider hint; "" for none or auto.
+	Hint string
+	// Model is the first element's own model, else the node's effective one.
+	Model string
+	// Readable is false when the walk cannot say which credential the route
+	// spends: a backend or hint resolved at dispatch, a model it cannot read,
+	// a model-calling node that exposes no LLM fields. As far as a caller can
+	// tell, such a route draws on the run's DEFAULT credential.
+	Readable bool
+}
+
+// AnthropicWireRoutes lists the routes that make AnthropicWireReachable answer
+// true — one per node, in node-id order, with what the walk can read of each.
+// A nil workflow yields one unreadable route: the conservative reading.
+func AnthropicWireRoutes(wf *ir.Workflow, overrides ModelOverrides) []WireRoute {
 	if wf == nil {
-		return true
+		return []WireRoute{{}}
 	}
-	wfBackend := strings.TrimSpace(ir.ExpandEnvWithDefault(wf.DefaultBackend))
+	var out []WireRoute
 	for _, n := range wf.Nodes {
 		fields, ok := llmFieldsOf(n)
 		if !ok {
 			if ir.NodeUsesLLM(n) {
-				return true
+				out = append(out, WireRoute{NodeID: n.NodeID()})
 			}
 			continue
 		}
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
-		backend := firstNonEmpty(strings.TrimSpace(ov.Backend), strings.TrimSpace(ir.ExpandEnvWithDefault(fields.Backend)), wfBackend)
+		backend := routeBackend(ov.Backend, fields.Backend, wf.DefaultBackend)
 		mdl := firstNonEmpty(ov.Model, fields.Model)
 		if routeOnAnthropicWire(backend, ov.Provider, fields.Provider, mdl) {
-			return true
+			out = append(out, primaryWireRoute(n.NodeID(), backend, ov.Provider, fields.Provider, mdl))
 		}
 	}
-	return false
+	slices.SortFunc(out, func(a, b WireRoute) int { return strings.Compare(a.NodeID, b.NodeID) })
+	return out
+}
+
+// primaryWireRoute reads a route's first chain element the way the executor
+// builds it (ClawExecutor.resolveProviderChain): a launch-time provider
+// override is the whole chain; else the DSL chain, env-expanded and split on
+// commas, whose first `provider[:model]` token leads; "auto" is no hint.
+func primaryWireRoute(id, backend, overrideProvider, chain, mdl string) WireRoute {
+	r := WireRoute{NodeID: id, Backend: backend, Model: strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))}
+	if strings.TrimSpace(overrideProvider) != "" {
+		r.Hint = strings.TrimSpace(overrideProvider)
+	} else {
+		for _, part := range strings.Split(ir.ExpandEnvWithDefault(chain), ",") {
+			token := strings.TrimSpace(part)
+			if token == "" {
+				continue
+			}
+			hint, model, _ := ir.SplitProviderStep(token)
+			r.Hint = strings.TrimSpace(hint)
+			if m := strings.TrimSpace(model); m != "" {
+				r.Model = m
+			}
+			break
+		}
+	}
+	if strings.EqualFold(r.Hint, "auto") {
+		r.Hint = ""
+	}
+	r.Readable = backend != "" && !strings.Contains(r.Hint, "{{") && !strings.Contains(r.Model, "{{")
+	return r
 }
 
 // routeOnAnthropicWire decides for one route, in the executor's

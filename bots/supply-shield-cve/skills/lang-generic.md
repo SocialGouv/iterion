@@ -66,7 +66,7 @@ the artifact (binary content, name shape) not the manifest.
 
 ```bash
 mkdir -p {{vars.scan_dir}}/heuristics
-python3 <<'PY' > {{vars.scan_dir}}/heuristics/generic.json
+python3 -I <<'PY' > {{vars.scan_dir}}/heuristics/generic.json
 import os, json, re, hashlib, unicodedata
 # 1. For each pending package (passed via env or stdin), locate its
 #    installed-on-disk path.

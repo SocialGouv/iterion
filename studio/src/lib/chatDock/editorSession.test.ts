@@ -34,7 +34,7 @@ beforeEach(() => {
 
 describe("active editor session snapshots", () => {
   it("serialises the live AST and binds it to the active tab revision", async () => {
-    api.unparse.mockResolvedValue("workflow live:\n  entry: a\n");
+    api.unparse.mockResolvedValue({ source: "workflow live:\n  entry: a\n" });
     const tabId = useTabsStore
       .getState()
       .openTab("editor", { file: "bots/live/main.bot" }, "live");
@@ -59,7 +59,7 @@ describe("active editor session snapshots", () => {
   // it: the offer renders "no longer available", and Copi can neither
   // preview nor commit a fix on the one file that needs one.
   it("keeps the authoring perimeter on a file that does not parse", async () => {
-    api.unparse.mockResolvedValue("workflow broken:\n  entry: a\n");
+    api.unparse.mockResolvedValue({ source: "workflow broken:\n  entry: a\n" });
     const tabId = useTabsStore
       .getState()
       .openTab("editor", { file: "bots/broken/main.bot" }, "broken");
@@ -85,7 +85,7 @@ describe("active editor session snapshots", () => {
   });
 
   it("withholds an oversized workflow instead of sending a misleading prefix", async () => {
-    api.unparse.mockResolvedValue("x".repeat(MAX_ACTIVE_EDITOR_SOURCE + 1));
+    api.unparse.mockResolvedValue({ source: "x".repeat(MAX_ACTIVE_EDITOR_SOURCE + 1) });
     const tabId = useTabsStore.getState().openTab("editor", {}, "large");
     getOrCreateDocumentStore(tabId).getState().setDocument(createEmptyDocument());
 
@@ -97,7 +97,7 @@ describe("active editor session snapshots", () => {
   });
 
   it("keeps the server-owned file hashes bound to the sent editor revision", async () => {
-    api.unparse.mockResolvedValue("workflow live:\n  entry: a\n");
+    api.unparse.mockResolvedValue({ source: "workflow live:\n  entry: a\n" });
     authoring.snapshotAssistantAuthoring.mockResolvedValue({
       editor_path: "bots/live/main.bot",
       files: [
@@ -125,7 +125,7 @@ describe("active editor session snapshots", () => {
   });
 
   it("attaches verified shared bundle identity to a materialized workflow", async () => {
-    api.unparse.mockResolvedValue("workflow shared:\n  entry: start\n");
+    api.unparse.mockResolvedValue({ source: "workflow shared:\n  entry: start\n" });
     api.getFileDependencyMetadata.mockResolvedValue({
       read_only: true,
       shared_bundle: {
@@ -154,7 +154,7 @@ describe("active editor session snapshots", () => {
 
   it("inlines only an explicitly attached declared cloud bundle file", async () => {
     const path = "botsource://team/demo/main.bot";
-    api.unparse.mockResolvedValue("workflow live:\n  entry: a\n");
+    api.unparse.mockResolvedValue({ source: "workflow live:\n  entry: a\n" });
     api.parseBotSourceEditorPath.mockReturnValue({ teamID: "team", slug: "demo", rel: "main.bot" });
     authoring.snapshotAssistantAuthoring.mockResolvedValue({
       editor_path: path,

@@ -86,7 +86,7 @@ func TestADeclarationAGroupCannotHoldIsRefusedByName(t *testing.T) {
 		t.Fatalf("want one diagnostic, got %v", res.Diagnostics)
 	}
 	d := res.Diagnostics[0]
-	if d.Code != DiagUnexpectedToken || !strings.Contains(d.Message, "'emit' cannot be declared inside a group") {
+	if d.Code != DiagUnexpectedToken || !strings.Contains(d.Message, "\"emit\" cannot be declared inside a group") {
 		t.Fatalf("got %s %q", d.Code, d.Message)
 	}
 	if !strings.Contains(d.Hint, "Move the `emit` declaration to the top level") {

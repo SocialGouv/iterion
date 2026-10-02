@@ -36,6 +36,36 @@ type fakeS3 struct {
 	objects map[string][]byte
 	// putContentTypes records the Content-Type seen per key.
 	putContentTypes map[string]string
+	// ignorePrefix makes ListObjectsV2 return every key, as a gateway that
+	// ignores the prefix it was asked for would.
+	ignorePrefix bool
+	// refuseDeletes answers DeleteObjects with 200 and one AccessDenied
+	// error per key, deleting nothing (legal hold, a lagging replica…).
+	refuseDeletes bool
+	// pageSize bounds a ListObjectsV2 page (1000 when 0); the continuation
+	// token is the last key served.
+	pageSize int
+	// refuseLists answers every ListObjectsV2 with 403 AccessDenied.
+	refuseLists bool
+	// stuckToken ignores the continuation token: every page starts over
+	// and carries the same token.
+	stuckToken bool
+	// dropContinuationToken serves a truncated continuation page without
+	// its NextContinuationToken.
+	dropContinuationToken bool
+	// refuseContinuations answers 403 AccessDenied to a listing that
+	// carries a continuation token (the first page still lists).
+	refuseContinuations bool
+	// lists counts the ListObjectsV2 requests served.
+	lists int
+}
+
+// set flips one of the misbehaviour knobs under the lock the handlers read
+// them with.
+func (f *fakeS3) set(knob *bool, v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	*knob = v
 }
 
 func newFakeS3(t *testing.T, bucket string) (*fakeS3, *httptest.Server) {
@@ -109,22 +139,56 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeS3) handleList(w http.ResponseWriter, r *http.Request) {
 	prefix := r.URL.Query().Get("prefix")
+	after := r.URL.Query().Get("continuation-token")
 	type object struct {
 		Key  string `xml:"Key"`
 		Size int64  `xml:"Size"`
 	}
 	type result struct {
-		XMLName     xml.Name `xml:"ListBucketResult"`
-		Name        string   `xml:"Name"`
-		Prefix      string   `xml:"Prefix"`
-		KeyCount    int      `xml:"KeyCount"`
-		IsTruncated bool     `xml:"IsTruncated"`
-		Contents    []object `xml:"Contents"`
+		XMLName               xml.Name `xml:"ListBucketResult"`
+		Name                  string   `xml:"Name"`
+		Prefix                string   `xml:"Prefix"`
+		KeyCount              int      `xml:"KeyCount"`
+		IsTruncated           bool     `xml:"IsTruncated"`
+		NextContinuationToken string   `xml:"NextContinuationToken,omitempty"`
+		Contents              []object `xml:"Contents"`
 	}
 	res := result{Name: f.bucket, Prefix: prefix}
+	f.mu.Lock()
+	f.lists++
+	ignorePrefix, refuse, stuck, pageSize := f.ignorePrefix, f.refuseLists, f.stuckToken, f.pageSize
+	dropToken := f.dropContinuationToken && after != ""
+	if f.refuseContinuations && after != "" {
+		refuse = true
+	}
+	f.mu.Unlock()
+	if refuse {
+		writeS3Error(w, http.StatusForbidden, "AccessDenied")
+		return
+	}
+	if pageSize <= 0 {
+		pageSize = 1000
+	}
+	if stuck {
+		after = ""
+	}
 	for _, k := range f.keys() {
-		if !strings.HasPrefix(k, prefix) {
+		if !ignorePrefix && !strings.HasPrefix(k, prefix) {
 			continue
+		}
+		if after != "" && k <= after {
+			continue
+		}
+		if len(res.Contents) == pageSize {
+			res.IsTruncated = true
+			res.NextContinuationToken = res.Contents[len(res.Contents)-1].Key
+			if stuck {
+				res.NextContinuationToken = "stuck"
+			}
+			if dropToken {
+				res.NextContinuationToken = ""
+			}
+			break
 		}
 		f.mu.Lock()
 		size := int64(len(f.objects[k]))
@@ -149,12 +213,18 @@ func (f *fakeS3) handleBatchDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mu.Lock()
+	refuse := f.refuseDeletes
+	var refused strings.Builder
 	for _, o := range req.Objects {
+		if refuse {
+			fmt.Fprintf(&refused, "<Error><Key>%s</Key><Code>AccessDenied</Code><Message>refused</Message></Error>", o.Key)
+			continue
+		}
 		delete(f.objects, o.Key)
 	}
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/xml")
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>`))
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` + refused.String() + `</DeleteResult>`))
 }
 
 func writeS3Error(w http.ResponseWriter, status int, code string) {
@@ -287,7 +357,9 @@ func TestS3Client_DeleteRunSweepsOnlyThatRunsPrefix(t *testing.T) {
 		ver       int
 	}{
 		{"run-a", "plan", 0}, {"run-a", "plan", 1}, {"run-a", "implement", 0},
-		{"run-b", "plan", 0},
+		// run-a-b's keys start with "artifacts/run-a": only the trailing
+		// slash of the swept prefix keeps them out of run-a's sweep.
+		{"run-a-b", "plan", 0},
 	} {
 		if err := c.PutArtifact(ctx, a.run, a.node, a.ver, []byte(`{}`)); err != nil {
 			t.Fatalf("seed %s/%s/%d: %v", a.run, a.node, a.ver, err)
@@ -297,7 +369,7 @@ func TestS3Client_DeleteRunSweepsOnlyThatRunsPrefix(t *testing.T) {
 	if err := c.DeleteRun(ctx, "run-a"); err != nil {
 		t.Fatalf("DeleteRun: %v", err)
 	}
-	if got, want := fake.keys(), []string{"artifacts/run-b/plan/0.json"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := fake.keys(), []string{"artifacts/run-a-b/plan/0.json"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("after DeleteRun the bucket holds %v, want %v", got, want)
 	}
 	if _, err := c.GetArtifact(ctx, "run-a", "plan", 1); !errors.Is(err, ErrArtifactNotFound) {
