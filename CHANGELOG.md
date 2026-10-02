@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.225.1](https://github.com/SocialGouv/iterion/compare/v3.225.0...v3.225.1) (2026-10-02)
+
+### Bug Fixes
+
+* **backends:** claw honors provider: "anthropic" and fires settings hooks when sandboxed ([#1715](https://github.com/SocialGouv/iterion/issues/1715), [#1718](https://github.com/SocialGouv/iterion/issues/1718), [#1713](https://github.com/SocialGouv/iterion/issues/1713)) ([#2115](https://github.com/SocialGouv/iterion/issues/2115)) ([52ec25a](https://github.com/SocialGouv/iterion/commit/52ec25a9feaee5b30babfe54ae520b8b281aa09d))
+
+    <details><summary>why</summary>
+
+    #1718 (confirmed, fixed): ClawBackend.Execute resolved its model through the registry without ever stamping task.ProviderHint, so a node pinned to provider: "anthropic" spent on z.ai whenever ZAI_API_KEY was set and no direct Anthropic credential was around — invisibly, until an error happened to carry z.ai's error code. The hint is now stamped at Execute (re-stamped in-container from the IOTask copy) and ResolveWithContext routes anthropic+hint through resolveAnthropicDirect: skips the z.ai…
+
+    </details>
+
 ## [3.225.0](https://github.com/SocialGouv/iterion/compare/v3.224.1...v3.225.0) (2026-10-02)
 
 ### Features
