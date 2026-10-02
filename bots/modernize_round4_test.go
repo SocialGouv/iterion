@@ -183,6 +183,37 @@ func TestModernizeBankedTreeProbesItsExclusions(t *testing.T) {
 	}
 }
 
+// The exclusion probe asks the LITERAL path, as the engine's own staging
+// probe does: a Prefix entry's pathspec ends in a wildcard, and git keys the
+// add-refusal on the literal part. A file named exactly like the prefix,
+// untracked and ignored, must not stop every lot from converging.
+func TestModernizeBankedTreeProbesThePrefixNotTheWildcard(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "lot_verify")
+	ws, _, git := programmeOfLots(t)
+	writeContract(t, ws, ".gitignore", ".iterion-script-\n")
+	git("add", ".gitignore")
+	git("commit", "-qm", "the literal scratch name is ignored")
+	base := git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(ws, ".iterion-script-"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, contractGate,
+		append(os.Environ(), "ITERION_TREE_NOISE=':(exclude,top).iterion-script-*'"))
+	if exit != 0 || res.Unreadable {
+		t.Fatalf("a lot cannot converge when a literal .iterion-script- file exists: exit=%d unreadable=%v log=%s",
+			exit, res.Unreadable, res.LogTail)
+	}
+	t.Run("control: the wildcard exclusion on an absent path is harmless", func(t *testing.T) {
+		ws, base, _ := programmeOfLots(t)
+		res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, contractGate,
+			append(os.Environ(), "ITERION_TREE_NOISE=':(exclude,top).iterion-script-*'"))
+		if exit != 0 || res.Unreadable {
+			t.Fatalf("control failed: exit=%d unreadable=%v log=%s", exit, res.Unreadable, res.LogTail)
+		}
+	})
+}
+
 // mark_done's own writes — the ref update that lands the gate's word, and the
 // index entry that follows it — run no hook: a hook in the run's tree must
 // not refuse them, or ride them.

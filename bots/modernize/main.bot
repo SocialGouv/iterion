@@ -1611,12 +1611,17 @@ tool lot_verify:
                 if rel.startswith(pre):
                     rel = rel[len(pre):]
                     break
+            # The probe asks the LITERAL path, as the engine's own staging
+            # probe does: a Prefix entry's pathspec ends in a wildcard, and
+            # git keys the add-refusal on the literal part — a file named
+            # exactly like the prefix trips the wildcard, not the pattern.
+            probe_rel = rel[:-1] if rel.endswith("*") else rel
             try:
-                info = os.lstat(os.path.join(ws, rel))
+                info = os.lstat(os.path.join(ws, probe_rel))
                 probe = ["check-ignore", "-q"]
-                if os.path.isdir(os.path.join(ws, rel)):
+                if os.path.isdir(os.path.join(ws, probe_rel)):
                     probe.append("--no-index")
-                probe += ["--", ":(top)" + rel]
+                probe += ["--", ":(top)" + probe_rel]
                 if subprocess.run(["git", "-C", ws] + probe, capture_output=True,
                                   timeout=60).returncode == 0:
                     continue  # ignored: git would refuse the exclusion; it stages nothing anyway

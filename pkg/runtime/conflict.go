@@ -349,6 +349,27 @@ func checkStagedAgainstVerdict(repoRoot string, verdict *LandingVerdict) error {
 	if strings.TrimSpace(base) == "" {
 		base = verdict.JudgedHead
 	}
+	// The verdict must describe what the landing carries: the head it judged
+	// has to resolve, and to be carried by the landing commit. A stale pair —
+	// an earlier attempt's landing with a later attempt's verdict, its bank
+	// push failed — would otherwise be judged against bytes nobody's verdict
+	// named, in both directions.
+	live, liveCancel := gitCmd("-C", repoRoot, "cat-file", "-e", verdict.JudgedHead+"^{commit}")
+	if err := live.Run(); err != nil {
+		liveCancel()
+		return fmt.Errorf("the stored verdict names %s, which does not resolve in this repository — "+
+			"the verdict is stale for this landing: re-run the lot, or land by hand",
+			verdict.JudgedHead[:min(12, len(verdict.JudgedHead))])
+	}
+	liveCancel()
+	anc, ancCancel := gitCmd("-C", repoRoot, "merge-base", "--is-ancestor", verdict.JudgedHead, base)
+	if err := anc.Run(); err != nil {
+		ancCancel()
+		return fmt.Errorf("the stored verdict describes %s, which the landing commit %s does not carry — "+
+			"the verdict is stale for this landing: re-run the lot, or land by hand",
+			verdict.JudgedHead[:min(12, len(verdict.JudgedHead))], base[:min(12, len(base))])
+	}
+	ancCancel()
 	paths := make([]string, 0, len(parsed.Table))
 	for p := range parsed.Table {
 		paths = append(paths, p)

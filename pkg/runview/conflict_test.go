@@ -162,9 +162,9 @@ func TestPerformMerge_ConflictPath(t *testing.T) {
 		t.Errorf("after resolve Files=%d, want 0", len(det2.Files))
 	}
 
-	// The verdict the landing answers to: the judged HEAD carries the
-	// resolution's exact bytes, as the run's verifier recorded them.
-	judged := commitTreeOfStaged(t, repoDir)
+	// The verdict the landing answers to: judged at the run's own landing
+	// commit, whose file.txt carries the resolution's exact bytes.
+	judged := storageSHA
 	loaded2, err := st.LoadRun(ctx, runID)
 	if err != nil {
 		t.Fatalf("LoadRun for the verdict: %v", err)
@@ -320,35 +320,6 @@ func captureGitOutput(t *testing.T, dir string, args ...string) string {
 	return gittest.Run(t, dir, args...)
 }
 
-// commitTreeOfStaged commits the staged index to a plumbing commit (no
-// checkout, HEAD untouched) and returns its SHA: the judged HEAD a verdict
-// vouches for.
-func commitTreeOfStaged(t *testing.T, repoDir string) string {
-	t.Helper()
-	idx := filepath.Join(t.TempDir(), "index")
-	index := filepath.Join(repoDir, strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "--git-path", "index")))
-	b, err := os.ReadFile(index)
-	if err != nil {
-		t.Fatalf("read index: %v", err)
-	}
-	if err := os.WriteFile(idx, b, 0o644); err != nil {
-		t.Fatalf("copy index: %v", err)
-	}
-	writeEnv := func(args ...string) string {
-		t.Helper()
-		cmd := gittest.Cmd(repoDir, args...)
-		cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+idx)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	tree := writeEnv("write-tree")
-	return writeEnv("-c", "user.email=t@t.t", "-c", "user.name=t",
-		"commit-tree", tree, "-m", "the verdict's judged HEAD")
-}
-
 // The re-judge compares the staged resolution with the commit the gate's
 // word landed on — not with the pre-flip head the verifier judged: the run's
 // own `done` plan differs from it by exactly the verdict's one line, and a
@@ -461,6 +432,147 @@ func TestFinalizeMergeAfterConflict_LandsTheRunsOwnDonePlan(t *testing.T) {
 	}
 }
 
+// stalePairSetup is the fixture the stale-pair tests share: a repo whose
+// main moved both a product file and the plan, a storage branch carrying
+// attempt 1's landing (C1: the plan with the stale marker), attempt 2's
+// landing C2 on a since-deleted scratch ref (the plan re-recorded), and a
+// run doc whose FinalCommit is C1 — the pair the merge meets.
+func stalePairSetup(t *testing.T) (svc *Service, repoDir, runID, c1, c2 string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	repoDir = filepath.Join(dir, "repo")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".modernize"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logger := iterlog.Nop()
+	st, err := store.New(storeDir, store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		gittest.Run(t, repoDir, args...)
+	}
+	writeRepo := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repoDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	runGit("init", "-q", "-b", "main")
+	runGit("config", "user.email", "t@t.t")
+	runGit("config", "user.name", "t")
+	runGit("config", "commit.gpgsign", "false")
+	writeRepo("file.txt", "alpha\nbravo\ncharlie\n")
+	writeRepo(".modernize/plan.yaml", "lots:\n  - id: L1\n    status: todo\n")
+	runGit("add", "-A")
+	runGit("commit", "-qm", "base")
+	baseSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
+
+	runGit("checkout", "-qb", "iterion/run/stale-pair")
+	writeRepo("file.txt", "alpha\nBRAVO-INCOMING\ncharlie\n")
+	writeRepo(".modernize/plan.yaml", "lots:\n  - id: L1\n    status: done\n    note: stale-attempt-one\n")
+	runGit("commit", "-qam", "attempt one's done")
+	c1 = strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	runGit("checkout", "-qb", "cg-scratch-attempt-two")
+	writeRepo(".modernize/plan.yaml", "lots:\n  - id: L1\n    status: done\n    note: fresh-attempt-two\n")
+	runGit("commit", "-qam", "attempt two's done")
+	c2 = strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	runGit("checkout", "-q", "iterion/run/stale-pair")
+	runGit("branch", "-qD", "cg-scratch-attempt-two")
+	runGit("checkout", "-q", "main")
+	writeRepo("file.txt", "alpha\nbravo-main\ncharlie\n")
+	writeRepo(".modernize/plan.yaml", "lots:\n  - id: L1\n    status: todo\n    owner-edited: true\n")
+	runGit("commit", "-qam", "main-change")
+
+	ctx := context.Background()
+	runID = "run-stale-pair"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Worktree = true
+	r.RepoRoot = repoDir
+	r.WorkDir = repoDir
+	r.BaseCommit = baseSHA
+	r.FinalCommit = c1
+	r.FinalBranch = "iterion/run/stale-pair"
+	r.Status = store.RunStatusFinished
+	r.MergeStrategy = store.MergeStrategySquash
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun seed: %v", err)
+	}
+	svc, err = NewService(storeDir, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.PerformMergeCtx(ctx, runID, MergeRequest{}); err == nil {
+		t.Fatal("expected merge to fail with conflict")
+	}
+	loaded, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun for the verdict: %v", err)
+	}
+	loaded.Checkpoint = &store.Checkpoint{Outputs: map[string]map[string]any{
+		"lot_verify": {"contract_head": c2,
+			"contract_tree": `{"table":{".modernize/plan.yaml":{"w":"file:p"},"file.txt":{"w":"file:f"}},"rest":{"count":0,"digest":"x"}}`},
+	}}
+	if err := st.SaveRun(ctx, loaded); err != nil {
+		t.Fatalf("SaveRun with the verdict: %v", err)
+	}
+	return svc, repoDir, runID, c1, c2
+}
+
+// A stale pair — an earlier attempt's landing (FinalCommit=C1) with a later
+// attempt's verdict (judged at C2, its bank push failed) — is refused by
+// name in both directions: the landing's bytes were never judged, and the
+// verdict's own bytes are not on the landing either. The nominal flow (the
+// verdict judged the head the landing carries) passes the guard.
+func TestFinalizeMergeAfterConflict_RefusesAStalePair(t *testing.T) {
+	svc, _, runID, _, _ := stalePairSetup(t)
+	ctx := context.Background()
+
+	// The resolver takes attempt 1's bytes — what the landing carries.
+	if err := svc.ResolveMergeConflictFile(ctx, runID, "file.txt", "alpha\nBRAVO-INCOMING\ncharlie\n"); err != nil {
+		t.Fatalf("ResolveMergeConflictFile: %v", err)
+	}
+	resolved := "lots:\n  - id: L1\n    status: done\n    note: stale-attempt-one\n"
+	if err := svc.ResolveMergeConflictFile(ctx, runID, ".modernize/plan.yaml", resolved); err != nil {
+		t.Fatalf("ResolveMergeConflictFile: %v", err)
+	}
+	_, err := svc.FinalizeMergeAfterConflict(ctx, runID, "")
+	if err == nil || !strings.Contains(err.Error(), "the verdict is stale for this landing") {
+		t.Fatalf("a stale pair landed, or was refused for another cause: err=%v", err)
+	}
+}
+
+// The same stale pair, resolved with the VERDICT's own bytes (attempt two's
+// plan): still refused — the landing commit does not carry the head the
+// verdict judged, so the comparison has no honest base.
+func TestFinalizeMergeAfterConflict_RefusesTheVerdictsOwnBytesOnAStalePair(t *testing.T) {
+	svc, repoDir, runID, _, c2 := stalePairSetup(t)
+	ctx := context.Background()
+
+	resolved := strings.TrimSpace(captureGitOutput(t, repoDir, "show", c2+":.modernize/plan.yaml"))
+	if err := svc.ResolveMergeConflictFile(ctx, runID, "file.txt", "alpha\nBRAVO-INCOMING\ncharlie\n"); err != nil {
+		t.Fatalf("ResolveMergeConflictFile: %v", err)
+	}
+	if err := svc.ResolveMergeConflictFile(ctx, runID, ".modernize/plan.yaml", resolved); err != nil {
+		t.Fatalf("ResolveMergeConflictFile: %v", err)
+	}
+	_, err := svc.FinalizeMergeAfterConflict(ctx, runID, "")
+	if err == nil || !strings.Contains(err.Error(), "the verdict is stale for this landing") {
+		t.Fatalf("a stale pair landed, or was refused for another cause: err=%v", err)
+	}
+}
+
 // The landing is re-judged against the stored verdict: a resolution of a
 // contract file the verdict names must carry the bytes that verdict judged.
 // Whoever fills the resolver, a landing that rewrites the contract is refused
@@ -541,8 +653,6 @@ func TestFinalizeMergeAfterConflict_RefusesAResolutionThatRewritesTheContract(t 
 		t.Fatalf("ResolveMergeConflictFile: %v", err)
 	}
 	// The verdict's judged HEAD carries the run's version of file.txt.
-	judgedTree := commitTreeOfStaged(t, repoDir) // staged: the resolver's rewrite — not judged
-	_ = judgedTree
 	resolvedSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "iterion/run/test-rewrite"))
 	loaded, err := st.LoadRun(ctx, runID)
 	if err != nil {

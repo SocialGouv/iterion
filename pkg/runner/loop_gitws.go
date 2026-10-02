@@ -824,7 +824,11 @@ func (r *Runner) pushLFSObjects(ctx context.Context, msg *queue.RunMessage, work
 	}
 	// A bare sha: git-lfs cannot resolve a `<sha>:<refspec>` argument, and a
 	// push of that shape exits 0 having uploaded nothing.
-	if err := r.runGit(ctx, workDir, tok, "lfs", "push", "origin", head); err != nil {
+	// lfs.allowincompletepush is a config VALUE the run can write in its own
+	// clone: true makes this push exit 0 with objects missing (measured with
+	// git-lfs 3.4.1) — pinned off for the one upload the bank makes.
+	if err := r.runGit(ctx, workDir, tok, "-c", "lfs.allowincompletepush=false",
+		"lfs", "push", "origin", head); err != nil {
 		return fmt.Sprintf("bank refused: the run's tree carries Git LFS paths (first: %s) and uploading their objects failed: %v — "+
 			"the bank's push runs no hook, so git-lfs never uploads from it; install git-lfs on the runner or land by hand", lfsPath, err)
 	}
