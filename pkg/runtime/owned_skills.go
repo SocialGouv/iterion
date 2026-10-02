@@ -170,6 +170,12 @@ func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Lo
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("runtime/bundle: reset owned skills dir %s: %w", dir, err)
 	}
+	// The manifest follows the reset on every return path below: files the
+	// refill lays are recorded, and entries the reset removed are
+	// tombstoned, so a TRACKED file of this directory keeps reading as the
+	// engine's own write (or its own deletion) rather than the run's work
+	// (#1571).
+	defer syncMirrorManifestTree(mirrorManifestPath(workDir), dir, logger)
 	if b == nil || b.SkillsDir == "" {
 		return nil
 	}

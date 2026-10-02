@@ -279,6 +279,16 @@ for collision, devbox and pause/resume rules.
    collision policy applies to it. `${BUNDLE_SKILLS_DIR}` expands to
    it, resolving to the in-container pathname when sandboxed.
 
+   Everything the mirror writes is also recorded — destination path and
+   content hash — in `<workDir>/.claude/.iterion-managed/mirror-manifest.json`.
+   That manifest is how the engine's dirtiness probes (wip bank,
+   commit-and-finalize, pristine-worktree reclaim) tell the mirror's own
+   rewrite of a *tracked* `.claude/**` file from the run's edit of one:
+   bytes still matching the recorded hash (or a file the mirror's own
+   pruner removed) are the mirror's, never the run's work; anything else
+   under a tracked `.claude/**` is work. The `.iterion-managed/`
+   bookkeeping itself is never work, tracked or not.
+
    Which one to read: an AGENT discovers skills under
    `.claude/skills/`, where the workspace-wins rule is what lets an
    operator customise one. A **tool node that parses a

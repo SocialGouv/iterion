@@ -257,6 +257,15 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 	if workDir == "" || len(skills) == 0 {
 		return nil, nil, nil
 	}
+	// The same `.claude`-symlink defect as the injected plugin mirror
+	// (#2061), but the library's semantics are the run-critical ones: the
+	// payload carries skills the `.bot` declares, so the refusal is the
+	// typed error, not a soft skip — matching the fatal I/O doctrine of
+	// both library paths. mirrorLibrarySkills guards one level up; this
+	// keeps the function correct for a direct caller.
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		return nil, nil, err
+	}
 	tmpDir, err := os.MkdirTemp("", "iterion-injected-libskill-*")
 	if err != nil {
 		return nil, nil, err

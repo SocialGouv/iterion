@@ -790,7 +790,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// collision (see runtime/bundle.go for the rule). Tier sidecars from a
 	// PREVIOUS run are wiped first: precedence arbitrates within this
 	// pass, never across runs.
-	ClearMirroredTierMarkers(e.workDir)
+	ClearMirroredTierMarkers(e.workDir, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
@@ -818,8 +818,9 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		return fmt.Errorf("runtime: plugin contributions: %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin hooks: %v", err)
+	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	if hooksErr != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks: %v", hooksErr)
 	}
 	// Skill-library skills referenced by the workflow (DSL `skills:`), mirrored
 	// LAST so a same-named bundle/plugin/workspace file wins on collision
@@ -847,12 +848,14 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	//
 	//   - I/O errors from any mirror phase are FATAL and already returned
 	//     above, so any code reaching this point saw no hard failure.
-	//   - The complete flag from plugin + library reports whether every
-	//     declared entry was actually mirrored — an incomplete pass has
+	//   - The complete flag from plugin + hooks + library reports whether
+	//     every declared entry was actually mirrored — an incomplete pass has
 	//     entries whose tier sidecar was never refreshed for a reason
 	//     that has nothing to do with orphans, and the pruner MUST NOT
 	//     conflate the two (#1500 R2-F1 HIGH: plugin.Load / MirrorFiles /
-	//     unresolved library ref).
+	//     unresolved library ref). The hooks flag carries the `.claude`
+	//     symlink veto: the pruner walks `.claude/<kind>` itself and must
+	//     not follow the link into its target (#2061).
 	//   - A child subbot (parentRunID != "") runs in its PARENT's
 	//     workspace; letting the child prune would delete files the
 	//     parent's own mirror wrote (#1500 Q4). A child never prunes,
@@ -864,7 +867,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// worktreeActive, and the two resume paths do use run.Worktree via
 	// r.Worktree — the pruner must see the SAME state whichever entry
 	// point it runs from.
-	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
 		pruneWorkspaceMirror(e.workDir, run.Worktree, e.logger)
 	} else if e.logger != nil {
 		reason := ""
@@ -875,6 +878,8 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			reason = "plugin AND library mirror incomplete"
 		case !pluginsComplete:
 			reason = "plugin mirror incomplete"
+		case !hooksComplete:
+			reason = "hooks merge incomplete"
 		default:
 			reason = "library mirror incomplete"
 		}
@@ -1082,7 +1087,7 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 			// dependency work the action would bank, so the worktree is
 			// preserved for it (verdict 9, R8e10f0).
 			porcelain, porcelainErr := runGit(wtCtx.wtPath, "status", "--porcelain", "-z")
-			if porcelainErr == nil && len(commitWorkPaths(porcelain)) != 0 {
+			if porcelainErr == nil && len(commitWorkPaths(wtCtx.wtPath, porcelain)) != 0 {
 				if e.logger != nil {
 					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
 				}

@@ -1596,7 +1596,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
 	e.defaultWorkDir()
-	ClearMirroredTierMarkers(e.workDir)
+	ClearMirroredTierMarkers(e.workDir, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
@@ -1610,8 +1610,9 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		return nil, nil, fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
+	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	if hooksErr != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot. I/O
@@ -1624,9 +1625,10 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	}
 	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
 	// Three preconditions gate the pruner on resume too (launch site has
-	// the same rationale): I/O clean, plugin+library complete, this is
+	// the same rationale): I/O clean, plugin+hooks+library complete (the
+	// hooks flag carries the `.claude` symlink veto, #2061), this is
 	// NOT a child subbot (children run in their parent's workspace).
-	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
 		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
 	} else if e.logger != nil {
 		e.logger.Debug("runtime: skipping orphan prune (pause resume) — child or incomplete mirror")
@@ -1990,7 +1992,7 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
 	e.defaultWorkDir()
-	ClearMirroredTierMarkers(e.workDir)
+	ClearMirroredTierMarkers(e.workDir, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
@@ -2003,8 +2005,9 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 		return fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
+	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	if hooksErr != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
 	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
 	if libraryErr != nil {
@@ -2012,9 +2015,10 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	}
 	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
 	// Same three preconditions as the launch and pause-resume sites: I/O
-	// clean (already returned), plugin+library both complete, not a
+	// clean (already returned), plugin+hooks+library complete (the hooks
+	// flag carries the `.claude` symlink veto, #2061), not a
 	// child subbot.
-	if pluginsComplete && libraryComplete && e.parentRunID == "" {
+	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
 		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
 	} else if e.logger != nil {
 		e.logger.Debug("runtime: skipping orphan prune (failure resume) — child or incomplete mirror")

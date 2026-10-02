@@ -13,6 +13,12 @@
 // the list `commit_uncommitted.go` used to carry as a single
 // `scaffoldPrefix` constant.
 //
+// IsNoise is deliberately PATH-ONLY. A tracked file under `.claude/` needs
+// one fact a path cannot carry — did the mirror write those bytes, or did
+// the run? — and the probes get it from the mirror's own manifest
+// (pkg/runtime/mirror_manifest.go, #1571): among tracked mirror paths, only
+// what the mirror wrote and left unchanged is noise.
+//
 // Adding a member is one line in Entries; every shape follows. What
 // belongs here is narrow by design: paths the ENGINE or the run's declared
 // tooling writes unconditionally, in every workspace. Build droppings a

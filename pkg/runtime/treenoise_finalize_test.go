@@ -37,7 +37,7 @@ func TestRunOutputPathsLeaveTheTreeNoiseOut(t *testing.T) {
 		"R  z.md\x00x -> y.md",          // #1577: a source holding an arrow is not cut at it
 		"R  z2.md\x00x -> .claude/e.md", // #1577: …nor is its destination read as the mirror
 	}, "\x00") + "\x00"
-	got := runOutputPaths(porcelain)
+	got := runOutputPaths("", porcelain)
 	want := []string{"docs/adr/0009-record.md", "devbox.json", ".claudeish", "docs/new.md", "docs/café note.md", "docs/naïve.md", "z.md", "z2.md"}
 	if len(got) != len(want) {
 		t.Fatalf("runOutputPaths = %q, want %q", got, want)
@@ -56,7 +56,7 @@ func TestRunOutputPathsLeaveTheTreeNoiseOut(t *testing.T) {
 // written resolution into a wip commit nothing ever merges.
 func TestRunOutputPathsKeepTheDeliverableAndDropItsLock(t *testing.T) {
 	porcelain := " M devbox.json\x00 M devbox.lock\x00"
-	got := runOutputPaths(porcelain)
+	got := runOutputPaths("", porcelain)
 	if len(got) != 1 || got[0] != "devbox.json" {
 		t.Fatalf("runOutputPaths = %q, want [devbox.json] — the deliverable is banked, the lock travels with it unbanked", got)
 	}
@@ -488,7 +488,7 @@ func TestFinalizeWorktree_WipBankSetAsideIsExactlyWhatItDidNotCarry(t *testing.T
 			t.Fatalf("%q is named as set aside and rode the bank", p)
 		}
 	}
-	for _, p := range noisePaths(porcelain) {
+	for _, p := range noisePaths(wt, porcelain) {
 		if !carried[p] && !strings.Contains(listed, p) {
 			t.Fatalf("noise path %q left out of the bank is missing from the set-aside list %q", p, listed)
 		}

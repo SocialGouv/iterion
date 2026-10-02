@@ -720,17 +720,19 @@ var scaffoldFiles = []string{".claude/settings.json"}
 // isScaffold reports whether a porcelain entry is iterion's own mirror
 // rather than the run's work.
 //
-// The status code is part of the question. A TRACKED file under one of
-// these directories came from the repository, and a repository that
-// versions its `.claude/` owns what is in it — `.claude/settings.json`
-// and `.claude/agents/` are checked-in project configuration in plenty of
-// them, and an agent editing one is delivering work.
+// The status code is part of the question. The bookkeeping directories are
+// nobody's work at any status; for everything else only UNTRACKED content
+// is scaffold here. The engine's own probes are more precise: the mirror
+// records what it writes in `.claude/.iterion-managed/mirror-manifest.json`
+// (#1571), so a tracked `.claude/**` file whose bytes still match the
+// manifest reads as the mirror's rewrite there. The sweep deliberately
+// keeps the coarser reading — any tracked change under these directories is
+// the run's work, the mirror's own refresh included.
 //
-// The trade is deliberate and it costs yield, not safety: the mirror CAN
-// rewrite a tracked file it previously wrote (reconcileSkillFile refreshes
-// a destination whose marker still matches), so a repository that commits
-// the mirror's own output reads dirty after a bundle changes and needs
-// `--level moderate`. Reading it the other way costs work instead.
+// The trade is deliberate and it costs yield, not safety: a repository that
+// commits the mirror's output reads dirty after a bundle changes and needs
+// `--level moderate`. For a deletion sweep, a wrong "noise" verdict costs a
+// worktree and a wrong "work" verdict only keeps one longer.
 func isScaffold(status, p string) bool {
 	for _, dir := range managedDirs {
 		if strings.HasPrefix(p, dir) {

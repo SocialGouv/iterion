@@ -77,7 +77,7 @@ func (e *Engine) reclaimEarlyRefusalWorktree(ctx context.Context, runID string, 
 	// (which re-derives from devbox.json on the next devbox run) is not work
 	// this run is keeping.
 	out, err := runGit(wc.wtPath, "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all")
-	if err != nil || len(runOutputPaths(out)) != 0 {
+	if err != nil || len(runOutputPaths(wc.wtPath, out)) != 0 {
 		return false
 	}
 	if _, err := runGit(wc.wtPath, "update-ref", pristineWorktreeRef(runID), wc.originalTip); err != nil {

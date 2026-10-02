@@ -45,6 +45,30 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 	if workDir == "" || wf == nil {
 		return nil, nil, true, nil
 	}
+	// A `.claude` symlink swapped in mid-sequence (#2061 — mirrorBundleSkills'
+	// refusal covers run start; this is the window between it and here):
+	// nothing may write through the link, and the orphan pruner must not walk
+	// `.claude/<kind>` into the link's target either, so the pass is not
+	// complete either way. Declared skills make it the typed refusal — this
+	// mirror's I/O doctrine is fatal for a skill the `.bot` declares; with
+	// none declared there is nothing to mirror, so the skip is soft and only
+	// the pruner veto stands. Before this guard the library mirror wrote
+	// through the link AND reported libraryComplete=true.
+	if linkErr := refuseAClaudeSymlink(workDir); linkErr != nil {
+		// The injected payload is AUTHORITATIVE on the cloud path: a
+		// workflow the pod re-reads without the refs the launching instance
+		// shipped (launch/resume drift) must not degrade the refusal to a
+		// soft skip while declared skills sit in the payload.
+		declared := len(unionSkillRefs(collectSkillRefs(wf), extra)) > 0 ||
+			(inj != nil && len(inj.Library) > 0)
+		if declared {
+			return nil, nil, false, linkErr
+		}
+		if logger != nil {
+			logger.Warn("library: %v — skipping the library mirror this pass; the orphan pruner is skipped too", linkErr)
+		}
+		return nil, nil, false, nil
+	}
 	if inj != nil {
 		// The cloud path: the launching instance already resolved BOTH the
 		// workflow's refs and the operator's extras into the payload, so the

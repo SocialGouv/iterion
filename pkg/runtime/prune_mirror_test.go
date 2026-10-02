@@ -312,7 +312,7 @@ func TestClearMirroredTierMarkers_WipesEveryKind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ClearMirroredTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir, nil)
 	for _, kind := range []string{"skills", "commands", "agents"} {
 		markerDir := filepath.Join(workDir, ".claude", kind, bundleMirrorMarkerDir)
 		if _, err := os.Stat(filepath.Join(markerDir, "x.md.sha256.tier")); !os.IsNotExist(err) {
@@ -366,7 +366,7 @@ func TestPruneWorkspaceMirror_EndToEndRename(t *testing.T) {
 	}
 
 	// Mirror pass: what runPersistWorkspace does end-to-end.
-	ClearMirroredTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir, nil)
 	if _, err := mirrorBundleSkillsFromSrcDir(t, workDir, skillsSrc); err != nil {
 		t.Fatal(err)
 	}
@@ -697,7 +697,7 @@ func TestPruneWorkspaceMirror_UppercaseMdAliasIsOutsideTheGrammar(t *testing.T) 
 // and would mask a deleted guard at one prune site (the round-3 whole-diff
 // adversarial found exactly that off-by-one).
 func TestPruneWorkspaceMirror_ChildSubbotNeverPrunes(t *testing.T) {
-	const gate = `pluginsComplete && libraryComplete && e.parentRunID == ""`
+	const gate = `pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == ""`
 	engineRun, err := os.ReadFile("engine_run.go")
 	if err != nil {
 		t.Fatal(err)
@@ -789,7 +789,7 @@ func TestMirrorLibrarySkills_InjectedPayloadMissingDeclaredRefFlagsIncomplete(t 
 		"ALPHA BODY\n", "library")
 	// The real mirror sequence wipes every tier sidecar at pass start; the
 	// launch pass's sidecar must not count as fresh for THIS pass.
-	ClearMirroredTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir, nil)
 
 	wf := wfWithSkills([]string{"alpha", "beta"}, nil)
 	inj := &Contributions{Library: []LibrarySkillFile{{Name: "beta", Description: "b", Content: []byte("BETA BODY\n")}}}
@@ -874,7 +874,7 @@ func TestPruneWorkspaceMirror_HealthyCloudResumePrunesTrueOrphans(t *testing.T) 
 	wf := wfWithSkills([]string{"kept"}, nil)
 	inj := &Contributions{Library: []LibrarySkillFile{{Name: "kept", Description: "k", Content: []byte("KEPT BODY\n")}}}
 
-	ClearMirroredTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir, nil)
 	_, pluginsComplete, err := mirrorPluginContributions(workDir, inj, false, nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
@@ -916,7 +916,7 @@ func TestMirrorLibrarySkills_StaleLeftoverDoesNotSatisfyDeclaredRef(t *testing.T
 		filepath.Join(skillsDir, "alpha", "SKILL.md"),
 		filepath.Join(markerDir, "alpha.SKILL.md.sha256"),
 		"ALPHA BODY\n", "library")
-	ClearMirroredTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir, nil)
 
 	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"alpha"}, nil), nil, nil, nil)
 	if err != nil {

@@ -478,12 +478,12 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		if logger != nil {
 			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", porcelainErr)
 		}
-	} else if len(runOutputPaths(porcelain)) == 0 {
+	} else if work := runOutputPaths(wc.wtPath, porcelain); len(work) == 0 {
 		// Nothing of the run's to bank: clean, or tree noise only (the
 		// mirror, a drifted lock). The noise is NAMED, not silent — the
 		// operator reading the storage branch sees what was set aside
 		// (verdict 8).
-		if noise := noisePaths(porcelain); len(noise) != 0 && logger != nil {
+		if noise := noisePaths(wc.wtPath, porcelain); len(noise) != 0 && logger != nil {
 			logger.Info("runtime: finalize: tree noise set aside, nothing to bank: %s", strings.Join(noise, ", "))
 		}
 	} else {
@@ -491,7 +491,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		if opts.runName != "" {
 			msg += " (" + opts.runName + ")"
 		}
-		if err := runGitInDir(wc.wtPath, stageWorkArgs(wc.wtPath)...); err != nil {
+		if err := stageRunWork(wc.wtPath, work); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
 			}

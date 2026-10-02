@@ -28,16 +28,35 @@ const pluginHooksSidecar = "plugin-hooks.json"
 // an error WITHOUT rewriting the file (callers downgrade to warn + skip, so a
 // run never fails — but the user's file is never destroyed either).
 // No-op when workDir is empty or nothing is (or was) injected.
-func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
+//
+// A `.claude` symlink gets the ambient writer's soft-fail (#2061, mirroring
+// mirrorPluginContributions' #2044 split): warn naming the link, skip the
+// merge, and report complete=false so the caller vetoes the orphan pruner —
+// the pruner walks `.claude/<kind>` itself and must not follow the link
+// into its target. complete stays true on every other outcome: a skipped or
+// failed hooks merge says nothing about skill orphans.
+//
+// A settings.json the merge rewrites is recorded in the mirror manifest
+// with its new content hash, so a repository TRACKING that file does not
+// see the engine's own injection read as the run's work at finalize
+// (#1571); an agent's later edit hashes differently and stays work.
+func mergePluginHooks(workDir string, logger *iterlog.Logger) (complete bool, err error) {
+	complete = true
 	if workDir == "" {
-		return nil
+		return complete, nil
+	}
+	if err := refuseAClaudeSymlink(workDir); err != nil {
+		if logger != nil {
+			logger.Warn("runtime/plugin: %v — skipping the hooks merge this pass", err)
+		}
+		return false, nil
 	}
 	reg, err := plugin.Load()
 	if err != nil {
 		if logger != nil {
 			logger.Warn("runtime: load plugins for hooks merge: %v — skipping", err)
 		}
-		return nil
+		return complete, nil
 	}
 
 	// newBlob: event -> []group, concatenated across every enabled plugin.
@@ -68,12 +87,12 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 	}
 
 	if len(newBlob) == 0 && len(prevBlob) == 0 {
-		return nil // nothing to do, and nothing was ever injected
+		return complete, nil // nothing to do, and nothing was ever injected
 	}
 
 	settings, err := readJSONObject(settingsPath)
 	if err != nil {
-		return fmt.Errorf("runtime/plugin: %w — refusing to rewrite %s", err, settingsPath)
+		return complete, fmt.Errorf("runtime/plugin: %w — refusing to rewrite %s", err, settingsPath)
 	}
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
@@ -116,15 +135,18 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
-		return fmt.Errorf("runtime/plugin: mkdir managed dir: %w", err)
+		return complete, fmt.Errorf("runtime/plugin: mkdir managed dir: %w", err)
 	}
 	if err := writeJSONFile(settingsPath, settings); err != nil {
-		return fmt.Errorf("runtime/plugin: write settings.json: %w", err)
+		return complete, fmt.Errorf("runtime/plugin: write settings.json: %w", err)
 	}
 	if err := writeJSONFile(sidecarPath, newBlob); err != nil {
-		return fmt.Errorf("runtime/plugin: write hooks sidecar: %w", err)
+		return complete, fmt.Errorf("runtime/plugin: write hooks sidecar: %w", err)
 	}
-	return nil
+	if h, herr := hashFile(settingsPath); herr == nil {
+		recordMirrorWrite(mirrorManifestPath(workDir), settingsPath, h, logger)
+	}
+	return complete, nil
 }
 
 func containsGroup(groups []any, g any) bool {

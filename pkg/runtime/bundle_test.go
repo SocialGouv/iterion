@@ -473,7 +473,7 @@ func TestTierScopedToMirrorPass(t *testing.T) {
 	// Run 2 begins: sidecars wiped, no bundle this time — a library skill
 	// of the same name must REFRESH (the historical behaviour), not be
 	// locked out by last run's tier stamp.
-	ClearMirroredTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir, nil)
 	src2 := filepath.Join(t.TempDir(), "triage.md")
 	if err := os.WriteFile(src2, []byte("LIBRARY VERSION\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -492,7 +492,7 @@ func TestTierScopedToMirrorPass(t *testing.T) {
 
 	// Within one pass the precedence still holds: bundle first, then a
 	// same-name library — the bundle's copy is kept.
-	ClearMirroredTierMarkers(workDir)
+	ClearMirroredTierMarkers(workDir, nil)
 	if _, err := mirrorFileSkill(dest, markerDir, src1, "triage.md", skillTierBundle, nil); err != nil {
 		t.Fatal(err)
 	}

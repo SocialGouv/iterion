@@ -975,7 +975,7 @@ func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runOutputPaths(tc.porcelain)
+			got := runOutputPaths("", tc.porcelain)
 			if len(got) != len(tc.want) {
 				t.Fatalf("runOutputPaths() = %v, want %v", got, tc.want)
 			}
