@@ -1038,6 +1038,12 @@ func testFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {
 	if err == nil || errors.Is(err, ErrRunPaused) || !strings.Contains(err.Error(), pauseErr.Error()) {
 		t.Fatalf("run error = %v, want visible pause persistence failure (not ErrRunPaused)", err)
 	}
+	// The fact must travel with the result, not only its text: the run's
+	// error chain reaches the persistence failure whatever order the two
+	// branches' ends were collected in (#1669).
+	if !errors.Is(err, pauseErr) {
+		t.Fatalf("run error = %v, want the pause persistence failure reachable through errors.Is", err)
+	}
 	run, loadErr := base.LoadRun(context.Background(), "branch-pause-store-failure")
 	if loadErr != nil {
 		t.Fatal(loadErr)

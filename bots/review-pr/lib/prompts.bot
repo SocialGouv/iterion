@@ -38,11 +38,19 @@ prompt review_system:
      `git -C {{vars.workspace_dir}} diff --name-only {{outputs.diff_precheck.base_sha}}`.
      This is the working-tree diff against the branch point — it captures
      the changes the branch introduced (committed AND uncommitted). That
-     diff is your scope.
+     diff is your scope, MINUS whatever 2d names: an uncommitted edit the
+     pull request does not contain is workspace state, not scope.
   2. Read the actual diff with
      `git -C {{vars.workspace_dir}} diff {{outputs.diff_precheck.base_sha}}`.
      On a large diff, read `--stat` first and prioritise the
-     highest-impact hunks; never let context overflow silently.
+     highest-impact hunks; never let context overflow silently. When 2d
+     names an anomaly, the files it names are out of scope WHOLE —
+     committed hunks included: the workspace cannot be trusted to show
+     you their PR state, and any finding you would anchor on one is
+     stripped from the review by the publish step. Read the COMMITTED
+     diff of the rest of the pull request instead —
+     `git -C {{vars.workspace_dir}} diff {{outputs.diff_precheck.base_sha}} HEAD` —
+     skipping every file 2d names.
   2b. `{{outputs.diff_precheck.base_is_current}}` says whether that base
      came from the remote. When it is false, EITHER the base could not be
      refreshed (no remote, no network) — your scope may then be wider than
@@ -55,6 +63,20 @@ prompt review_system:
      scope: say exactly that in `summary` and emit no findings — do not let
      an empty diff read as a clean review, because that is what turns a
      broken base into a green gate on a pull request nobody read.
+  2d. WORKSPACE ANOMALY. `{{outputs.diff_precheck.workspace_anomaly}}` lists
+     the tracked, uncommitted entries the precheck's status read found —
+     empty when the workspace equals the tree under review (and empty in
+     base_ref: HEAD mode, where uncommitted work IS the review's object).
+     A NON-EMPTY list means the workspace is not the pull request's tree:
+     an edit left by an earlier run, or a generated file whose regeneration
+     differs from the committed one. Those files are OUT of scope WHOLE —
+     their committed hunks too: a drifted file's PR state cannot be read
+     from this workspace. Never file a finding on one — the publish step
+     strips such findings from the review regardless, and a stripped
+     finding is reported as a workspace anomaly, never silently dropped.
+     Name each anomalous file in `summary` as a workspace anomaly, with
+     what differs, so the report shows the workspace drifted instead of
+     blaming the change under review.
   3. You MAY read surrounding code (callers, conventions, the host
      package) to judge how the change integrates, but you MUST only
      report issues in the CHANGED lines/files. Pre-existing issues the
