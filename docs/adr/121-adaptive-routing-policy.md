@@ -54,7 +54,7 @@ The selection is deterministic: the first pair in the order whose credential the
 
 The retry **arming** does not change: `usageWindowRetryAt` remains authoritative from the FAILED credential's terminal proof, `skippedReopensAt` remains a speculative earlier wake refused at the last attempt if the authoritative wall is still reachable, and the last-attempt reservation stands. The switch changes what the retried attempt spends, not when it is armed.
 
-Session semantics at a switch are part of the contract, and the word that decides is BACKEND, not model family: a switch that keeps the session's backend (GLM via z.ai answering a claude id on a `claude_code` session — the vendor family changes, the wire and harness do not) keeps the session **only where the facade policy permits it** — under `facade_default: auto`, the veto wins and the run parks on its forfait (#2096's doctrine stands: no GLM in silence); `always`, `tier`, or a lock opens it. A cross-BACKEND switch evicts the session (ADR-087 §3) and emits the `session_degraded` equivalent (ADR-091). The design ticket owns the full harness × credential × family compatibility matrix — who can serve what, what answers, which session event fires.
+Session semantics at a switch are part of the contract, and the word that decides is BACKEND, not model family: a switch that keeps the session's backend (GLM via z.ai answering a claude id on a `claude_code` session — the vendor family changes, the wire and harness do not) keeps the session and answers GLM — **the deployment default is `facade_default: always`** (arbitrated 2026-10-02: the pair order acts through the facade policy by default; `auto`, `never` and `tier` remain settable and lockable per level, and under them the run parks on its forfait — #2096's mechanism stands, its default value changes). A cross-BACKEND switch evicts the session (ADR-087 §3) and emits the `session_degraded` equivalent (ADR-091). The design ticket owns the full harness × credential × family compatibility matrix — who can serve what, what answers, which session event fires.
 
 Resume classifies every policy field as **identity or volatile**: identity fields are frozen at launch and replayed by the resume (the `PinnedProviders` doctrine — the resume replays the launch's answer), volatile fields (windows, availability) re-resolve. A `pair_order` change between launch and resume moves the harness of a living session only through the session-event contract above, never in silence.
 
@@ -62,6 +62,7 @@ Resume classifies every policy field as **identity or volatile**: identity field
 
 - Tenant isolation: the policy reorders what the walk may consult; it never lets a tier read another tenant's credential. The parity property keeps its full cast — fill, platform stage, restore, preview, the launch gate (`usagecap` pre-flight judges the routes on what they then spend), `reviewtopology`'s families (injected from the SEALED credentials by design; the policy does not change the topology), and the three route derivations agreeing.
 - Author intent: hand-declared `fallbacks:` chains remain authoritative where declared; the policy synthesizes nothing there. `strict` is how a pin stops being a preference. Where a computed route and the operator's `--fallback` chain reach the same node, ADR-087 stage 4's multi-source rule applies (dedup; a route resolving to the call that just failed is dropped) — one composition rule, already written.
+- **The pool joins the fallback chain, per family** (arbitrated 2026-10-02): when a policy trigger fires on a wire and no owned credential of the run serves it, the pool is consulted for THAT family — restricted to donations whose donor marked them fallback-usable, leased and ceilinged by the pool's own rules. The whole-bundle gate ("only for a run that holds nothing") remains the rule of the NON-fallback path. This changes the pool's contract by adding a door, and is why the pool stage of the walk is policy-shaped like the others.
 - Budget and schema failures never fall back: they re-fail identically on every route.
 - The pool stays a whole-bundle last resort in this delivery ("only for a run that has no credential of its own at all"). A per-family pool fallback is a contract change — it would hand the pool to a run holding a credential of another wire — and is explicitly a future decision, not a subordinate clause here.
 
@@ -80,12 +81,12 @@ Resume classifies every policy field as **identity or volatile**: identity field
 - **Delivery 1 is platform + bot + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are.
 - **Testing obligation**: fold tables; pair-selection tests against seeded bundles; switch tests against window states; the parity property asserted for the policy-resolved answer; mutation-checked like #1998/#2038.
 
-## Open arbitrations (the operator's)
+## Arbitrated (the operator, 2026-10-02)
 
-0. **The pool narrowing**: the epic lists "pool: usable as a last-resort mid-run fallback" in the first delivery; this ADR keeps the pool's whole-bundle door unchanged and defers a per-family fallback as a contract change. Confirm the narrowing, or the delivery grows the per-wire pool door.
-1. **`refused_pinned_key`'s default**: #1999 decided `park`; the epic says `forfait` by default. One of the two words is wrong — the ADR ships `park` until arbitrated.
-2. **The facade veto vs the pair order**: this ADR fixes "the veto wins by default; `always`/`tier`/a lock opens" — confirm, or the flagship scenario of epic #2000 needs `always` as the deployment default, reversing #2096's refusal of "GLM in silence".
-3. **Run level SET or CHOOSE**: the recommendation is SET within bounds — own-tier extension is the launcher's right; what a lock binds is extension toward SHARED credentials (org, platform, pool): other people's money. Confirm the boundary as written.
+1. **`refused_pinned_key`: `forfait` is the default.** #1999's `park` remains a settable and lockable value; the epic's default stands. The contradiction between the two 2026-09-30 decisions is resolved for `forfait`.
+2. **The facade policy's deployment default is `always`.** The pair order acts through it by default; `auto`, `never` and `tier` remain settable and lockable per level. #2096's refusal of "GLM in silence" is thereby reversed AS A DEFAULT by explicit operator decision — a claude id may be answered GLM wherever the deployment holds a z.ai key and no owned Claude credential, and the audit line says so.
+3. **The run level SETS within bounds**: own credentials freely; shared credentials (org, platform, pool) governed by the locks above.
+4. **The per-family pool fallback is in the first delivery**, restricted to donor-marked fallback-usable donations; the whole-bundle gate remains on the non-fallback path.
 
 ## Open questions resolved by the review (recorded)
 
