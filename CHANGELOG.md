@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.224.1](https://github.com/SocialGouv/iterion/compare/v3.224.0...v3.224.1) (2026-10-02)
+
+### Bug Fixes
+
+* **runtime:** the mirror records what it writes, so a tracked .claude/ edit is banked instead of destroyed; every .claude writer refuses a symlink ([#1571](https://github.com/SocialGouv/iterion/issues/1571), [#2060](https://github.com/SocialGouv/iterion/issues/2060), [#2061](https://github.com/SocialGouv/iterion/issues/2061)) ([#2122](https://github.com/SocialGouv/iterion/issues/2122)) ([75097df](https://github.com/SocialGouv/iterion/commit/75097df2827a4cf58ebeca30b31bb835734798e2)), closes [#1364](https://github.com/SocialGouv/iterion/issues/1364), references [#1364](https://github.com/SocialGouv/iterion/issues/1364) [#1558](https://github.com/SocialGouv/iterion/issues/1558) [#2044](https://github.com/SocialGouv/iterion/issues/2044) [#1364](https://github.com/SocialGouv/iterion/issues/1364)
+
+    <details><summary>why</summary>
+
+    #1571: treenoise classified by path alone — a run whose only deliverable was a tracked file under .claude/ (a bot editing the repo's own tracked settings.json) saw runOutputPaths return nothing, the finalize log "nothing to bank", and the worktree removed --force: the deliverable destroyed silently. "tracked => work" was not the fix (the mirror rewrites .claude/skills/** at every run start — counting that would wip-bank every converged run, the #1364 failure). The mirror now records what it…
+
+    </details>
+
 ## [3.224.0](https://github.com/SocialGouv/iterion/compare/v3.223.0...v3.224.0) (2026-10-02)
 
 ### Features
