@@ -57,6 +57,24 @@ func itoa(n int) string {
 	return digits
 }
 
+// recordGitArgv plants a git shim that logs every invocation's argv and
+// execs the real git, and returns the log's path.
+func recordGitArgv(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "argv.log")
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
 // The bank's push runs no hook, and git-lfs uploads its objects from the
 // pre-push hook: hookless, a clone with git-lfs installed pushes the
 // pointers, exits 0, and the objects never reach the forge — a fresh clone of
@@ -84,25 +102,37 @@ func TestBankRefusesWhenTheLFSUploadFails(t *testing.T) {
 
 // The explicit upload is the whole point of the gesture: git-lfs cannot
 // resolve a `<sha>:<refspec>` argument — that push exits 0 having uploaded
-// nothing (measured with git-lfs 3.4.1). A recorded fake of the driver pins
-// the command the bank issues: the bare sha, nothing else, and the bank goes
-// on to push the branch.
+// nothing (measured with git-lfs 3.4.1). A recorded fake of the driver and a
+// recorded git pin the command the bank issues: the bare sha, with
+// lfs.allowincompletepush — a config VALUE the run can write in its own
+// clone — pinned off, and the bank goes on to push the branch.
 func TestBankUploadsLFSObjectsForTheBareShaAndThenPushes(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 	lfsFixture(t, work)
 	head := gitOut(t, work, "rev-parse", "HEAD")
-	log := fakeGitLFS(t, 0)
+	_ = fakeGitLFS(t, 0)
+	gitLog := recordGitArgv(t)
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
-	recorded, err := os.ReadFile(log)
+	gitRecorded, err := os.ReadFile(gitLog)
 	if err != nil {
-		t.Fatalf("git-lfs was never run: %v", err)
+		t.Fatalf("git was never run through the recorder: %v", err)
 	}
-	calls := strings.Split(strings.TrimSpace(string(recorded)), "\n")
-	upload := calls[len(calls)-1]
-	if upload != "push origin "+head {
-		t.Fatalf("git-lfs was asked %q, want %q — a refspec it cannot resolve uploads nothing", upload, "push origin "+head)
+	var upload string
+	for _, line := range strings.Split(strings.TrimSpace(string(gitRecorded)), "\n") {
+		if strings.Contains(line, " lfs push origin ") {
+			upload = line
+		}
+	}
+	if upload == "" {
+		t.Fatalf("the bank never issued the explicit LFS upload:\n%s", gitRecorded)
+	}
+	// HasSuffix, not Contains: a refspec (`<sha>:refs/heads/…`) carries the
+	// sha too, and git-lfs cannot resolve it — the push must be the bare
+	// sha and nothing after it.
+	if !strings.Contains(upload, "-c lfs.allowincompletepush=false") || !strings.HasSuffix(upload, "push origin "+head) {
+		t.Fatalf("the LFS upload argv %q is not %q", upload, "…push origin "+head)
 	}
 	run := loadRun(t, r, msg.RunID)
 	if run.FinalBranchError != "" {
@@ -142,6 +172,52 @@ func TestBankUploadReachesTheRemote(t *testing.T) {
 	})
 	if werr != nil || found == 0 {
 		t.Fatal("the bank pushed the pointer and never the object: a fresh clone of the branch cannot check out")
+	}
+}
+
+// A config VALUE the run can write in its own clone —
+// lfs.allowincompletepush=true — makes the upload exit 0 with objects
+// missing (measured with git-lfs 3.4.1: pointer for one path, object
+// deleted, remote holds 1 of 2). The bank pins it off for its one upload:
+// the pointer push stays impossible.
+func TestBankRefusesWhenAllowIncompletePushTriesToDefeatTheUpload(t *testing.T) {
+	if _, err := exec.LookPath("git-lfs"); err != nil {
+		t.Skip("git-lfs not on PATH")
+	}
+	r, msg, work, origin, base := bankFixture(t)
+	lfsFixture(t, work)
+	// A second LFS path whose object the clone will NOT hold.
+	if err := os.WriteFile(filepath.Join(work, "other.bin"), []byte("second artefact\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOut(t, work, "add", "-A")
+	gitOut(t, work, "commit", "-qm", "second pointer")
+	// The committed blob is the LFS POINTER; its oid names the object the
+	// clean filter stored under .git/lfs/objects.
+	pointer := gitOut(t, work, "cat-file", "blob", "HEAD:other.bin")
+	oid := ""
+	for _, line := range strings.Split(pointer, "\n") {
+		if o, ok := strings.CutPrefix(strings.TrimSpace(line), "oid sha256:"); ok {
+			oid = strings.TrimSpace(o)
+		}
+	}
+	if len(oid) != 64 {
+		t.Fatalf("unexpected pointer content: %q", pointer)
+	}
+	if err := os.Remove(filepath.Join(work, ".git", "lfs", "objects", oid[:2], oid[2:4], oid)); err != nil {
+		t.Fatalf("remove the object: %v", err)
+	}
+	gitOut(t, work, "config", "lfs.allowincompletepush", "true")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	if branch, err := gittest.Try(origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID); err == nil {
+		t.Fatalf("the bank pushed %s with an LFS object missing (allowincompletepush defeated the refusal), FinalBranchError=%q",
+			branch, loadRun(t, r, msg.RunID).FinalBranchError)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranchError == "" || !strings.Contains(run.FinalBranchError, "Git LFS") {
+		t.Fatalf("FinalBranchError = %q, want a refusal naming Git LFS", run.FinalBranchError)
 	}
 }
 
