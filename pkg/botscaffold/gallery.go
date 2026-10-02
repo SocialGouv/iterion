@@ -136,6 +136,7 @@ func Templates() []Template {
 			Spec: Spec{
 				Description:  "Posts a daily summary of repository activity.",
 				WhenToUse:    "Use for a recurring, read-only digest of recent repository activity.",
+				Category:     "operate",
 				Instructions: "Produce a concise digest of what changed in this repository over the\nlast {{vars.window}}: read `git log --since` (commits, authors, themes),\nnotable diffs, and any TODO/FIXME newly introduced. Group by theme,\nlead with the most impactful change, keep it under one screen. Write\nthe digest to {{vars.report_path}} and include it in your summary.",
 				Vars: []VarSpec{
 					{Name: "window", Type: "string", Default: "24 hours", Description: "Lookback window handed to git log --since."},
@@ -152,6 +153,7 @@ func Templates() []Template {
 			Spec: Spec{
 				Description:  "Reviews the working tree / branch diff and reports findings.",
 				WhenToUse:    "Use to review pending changes before a merge — read-only, no fixes.",
+				Category:     "verify",
 				Instructions: "Review this repository's pending changes for CORRECTNESS: read\n`git diff HEAD` (or `git diff {{vars.base}}` when a base is given) and\nthe files git does not track yet with `git ls-files --others\n--exclude-standard -z | xargs -0 -I{} git diff --no-index -- /dev/null {}`\n(exit 1 per file and 123 for the batch mean there is a diff, not a\nfailure), and hunt for real bugs — logic errors, missed edge cases,\nsecurity issues, races. Read enough surrounding code to judge each\nfinding; discard style nits. Report each confirmed finding with\nfile:line, the failure scenario, and a suggested fix. Do NOT edit any\nfile and write nothing to the index: you are read-only, in the\noperator's checkout.",
 				Vars: []VarSpec{
 					{Name: "base", Type: "string", Default: "", Description: "Optional base ref to diff against (empty = working tree vs HEAD)."},
@@ -166,6 +168,7 @@ func Templates() []Template {
 			Spec: Spec{
 				Description:  "Writes documentation grounded in the actual code.",
 				WhenToUse:    "Use to document a module or align an existing doc with the code.",
+				Category:     "document",
 				Instructions: "Document {{vars.target}} in this repository. Read the code first —\nevery claim must be grounded in what the code actually does today, not\nwhat it should do. Follow the repo's existing doc style and location\nconventions. Docs follow code: never edit source to match the doc; when\nyou find a genuine code bug, note it in your summary instead. Commit\nyour doc changes with a semantic `docs(scope):` message.",
 				Vars: []VarSpec{
 					{Name: "target", Type: "string", Default: "the public API", Description: "What to document (module, package, feature…)."},
@@ -181,6 +184,7 @@ func Templates() []Template {
 			Spec: Spec{
 				Description:  "Triages inbox cards on the native board.",
 				WhenToUse:    "Use to keep the board inbox triaged (labels, priority, routing).",
+				Category:     "operate",
 				Instructions: "Triage the untriaged cards on this workspace's native board: read each\ncard in {{vars.inbox_state}}, add the labels that fit the workspace's\nlabel vocabulary, set a sensible priority, and when a card is clearly\nactionable by a catalog bot, assign that bot. Leave a one-line comment\nexplaining each triage decision. Do not close or delete cards.",
 				Vars: []VarSpec{
 					{Name: "inbox_state", Type: "string", Default: "inbox", Description: "Board state holding untriaged cards."},
@@ -201,6 +205,7 @@ func Templates() []Template {
 				Shape:        "campaign-loop",
 				Description:  "Carries a mission to completion in verified, committed passes. The verifier needs jq: the bundle pins it in devbox.json (installed on any image that ships devbox), and every iterion sandbox image ships it.",
 				WhenToUse:    "Use for work that must converge on a deterministic check (build, tests) rather than an opinion.",
+				Category:     "build",
 				Instructions: "Describe the campaign: what to change, where, and what \"done\" means.\nThe agent works in passes and commits each unit; after every pass the\nverifier runs {{vars.verify_command}} and its exit code is the verdict.",
 				Vars: []VarSpec{
 					{Name: "verify_command", Type: "string", Default: "", Description: "REQUIRED: the repository's own build+test, run by bash -c after every pass; its exit code is the verdict. Left empty, the run refuses at entry (CAMPAIGN_MISCONFIGURED) before any pass — a verifier that checks nothing would make every verdict green."},
@@ -222,6 +227,7 @@ func Templates() []Template {
 				Shape:        "review-fanout",
 				Description:  "Reviews pending changes under several lenses at once and folds the verdicts without an LLM.",
 				WhenToUse:    "Use for a merge decision that needs independent lenses (correctness, security, …) on one diff.",
+				Category:     "verify",
 				Instructions: "You review this repository's pending changes for a merge decision. Judge\nthe code, not the style; every finding names a file:line and a failure\nscenario. You are read-only.",
 				Vars: []VarSpec{
 					{Name: "base", Type: "string", Default: "", Description: "Optional base ref to diff against (empty = working tree vs HEAD)."},
@@ -240,6 +246,7 @@ func Templates() []Template {
 				Shape:        "plan-gate-implement",
 				Description:  "Implements a change only after a human approved the plan.",
 				WhenToUse:    "Use when the operator wants to read the plan before any file is touched.",
+				Category:     "build",
 				Instructions: "Describe the change to plan and then implement: the goal, the\nconstraints, and how to verify the result.",
 				// The implementer commits: isolated by default, opt-out honoured.
 				Worktree: true,
@@ -254,6 +261,7 @@ func Templates() []Template {
 				Shape:        "scheduled-digest",
 				Description:  "Posts a periodic digest of repository activity. The collector needs jq: the bundle pins it in devbox.json (installed on any image that ships devbox), and every iterion sandbox image ships it.",
 				WhenToUse:    "Use for a recurring, read-only summary that a schedule launches.",
+				Category:     "operate",
 				Instructions: "Produce a concise digest of what changed in this repository: read the\ncollected commit log, group by theme, lead with the most impactful\nchange, keep it under one screen.",
 				Vars: []VarSpec{
 					{Name: "window", Type: "string", Default: "24.hours", Description: "Lookback handed to git log --since, in git's own syntax (24.hours, 1.week)."},
@@ -271,6 +279,7 @@ func Templates() []Template {
 				Shape:        "per-ticket-subbots",
 				Description:  "Handles a list of tickets in parallel child runs.",
 				WhenToUse:    "Use when each work item deserves its own run and they are independent.",
+				Category:     "build",
 				Instructions: "Describe what handling ONE ticket means; the child run receives the\nticket's id and title as vars.",
 			},
 		},
@@ -283,6 +292,7 @@ func Templates() []Template {
 				Shape:        "verified-action",
 				Description:  "Prepares a release and tags it through a verified action.",
 				WhenToUse:    "Use when one brittle shell action (a tag, a push, a publish) must end in a checked state.",
+				Category:     "operate",
 				Instructions: "Describe the release preparation: what the changelog entry covers and\nwhat to check before committing.",
 				Vars: []VarSpec{
 					{Name: "tag", Type: "string", Default: "", Description: "REQUIRED, per run: the annotated tag the verified action creates on HEAD. Git tags live in the repository's shared ref store and outlive the run's worktree, so a fixed name meets its own previous tag on the next run; left empty, the run refuses at entry (TAG_UNSET)."},
@@ -300,6 +310,7 @@ func Templates() []Template {
 				Shape:        "async-questions",
 				Description:  "Drafts while the operator answers, then finalizes.",
 				WhenToUse:    "Use when a few details only the operator knows must not block the rest of the work.",
+				Category:     "build",
 				Instructions: "Describe the deliverable and which details only the operator can decide;\nthe agent asks those first and works on the rest while the answers\narrive.",
 				// No backend pinned: ask_user_async / await_answers reach
 				// claude_code through iterion's ask-user MCP server, claw
@@ -316,6 +327,7 @@ func Templates() []Template {
 				Shape:        "multi-file",
 				Description:  "A bundle that keeps its prompts and its skills out of the workflow file.",
 				WhenToUse:    "Use when the prompts outgrow the workflow file, or when the bot ships its own skills.",
+				Category:     "build",
 				Instructions: "Describe the mission; it is written to prompts/mission.md, next to the\nhouse style in prompts/kickoff.md and skills/house-style.md.",
 			},
 		},
@@ -328,6 +340,7 @@ func Templates() []Template {
 				Shape:        "library",
 				Description:  "A bot whose schemas and nodes live in fragments under lib/, imported by the main.",
 				WhenToUse:    "Use when one file grows past what an author holds in mind: each fragment is edited alone, and the unit compiles as one program.",
+				Category:     "build",
 				Instructions: "Describe the mission; it is written to the `mission` prompt in lib/nodes.bot,\nnext to the kickoff and the agent that carries it.",
 				// One adaptive agent with the full toolset, like the blank
 				// bot: isolated by default, the opt-out written by the author.

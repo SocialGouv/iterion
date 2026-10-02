@@ -24,6 +24,8 @@ when_to_use: |
   you hand-label triage:auto. Use when you want fresh issues to arrive
   pre-routed so launching is a single drag to Ready.
 author: SocialGouv (devthejo) — issue-triage/main.bot
+category: operate
+tags: [board, triage]
 schema_version: 1
 
 invocations:

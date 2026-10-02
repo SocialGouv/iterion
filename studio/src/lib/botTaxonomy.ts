@@ -1,0 +1,71 @@
+/**
+ * The bot navigation vocabulary — studio-side mirror of the CATEGORIES in
+ * pkg/bundle/vocab.go (BotCategories). A Go test (bots/catalog_taxonomy_test.go)
+ * asserts slug parity AND order; edit both together. The category set is
+ * CLOSED: a seventh slug is a product decision, not an opportunistic edit.
+ * The tag seed is deliberately NOT mirrored — its only consumers are
+ * Go-side (the C271 lint hint, the fleet gate); when a second studio
+ * consumer needs it, serve the vocabulary from the API instead of
+ * re-creating a third copy.
+ */
+export interface BotCategory {
+  slug: string;
+  title: string;
+  tagline: string;
+}
+
+// Canonical display order reads as a lifecycle:
+// create → judge → strengthen → explain → run → decide.
+export const BOT_CATEGORIES: readonly BotCategory[] = [
+  { slug: "build", title: "Build", tagline: "ship new capability" },
+  { slug: "verify", title: "Verify", tagline: "judge the code, touch nothing" },
+  { slug: "harden", title: "Harden", tagline: "strengthen what exists" },
+  { slug: "document", title: "Document", tagline: "align words with code" },
+  { slug: "operate", title: "Operate", tagline: "run the delivery machinery" },
+  { slug: "steer", title: "Steer", tagline: "judge the direction, converse" },
+];
+
+// Bots with no declared (or an unknown) category land here, rendered LAST
+// and visibly — an unclassified bot is never hidden.
+export const UNCATEGORIZED = {
+  slug: "",
+  title: "Uncategorized",
+  tagline: "visible, never hidden",
+} satisfies BotCategory;
+
+/**
+ * The display name of a preset: its trimmed display_name, else its name —
+ * the one place this rule lives (the gallery card and the presets card
+ * both render it).
+ */
+export function presetDisplayName(p: { display_name?: string; name: string }): string {
+  return p.display_name?.trim() || p.name;
+}
+
+// groupBotsByCategory buckets bots into canonical category order with the
+// Uncategorized group last. All six categories are returned (stable
+// landmarks, even empty); Uncategorized only when non-empty.
+export function groupBotsByCategory<T extends { category?: string }>(
+  bots: readonly T[],
+): { category: BotCategory; bots: T[] }[] {
+  const bySlug = new Map<string, T[]>();
+  for (const b of bots) {
+    // The seam owns FORM (trim + lowercase), mirroring bundle.GroupByCategory:
+    // a value produced outside the manifest loader groups like one that
+    // went through it.
+    const declared = (b.category ?? "").trim().toLowerCase();
+    const slug = BOT_CATEGORIES.some((c) => c.slug === declared) ? declared : "";
+    const list = bySlug.get(slug) ?? [];
+    list.push(b);
+    bySlug.set(slug, list);
+  }
+  const groups = BOT_CATEGORIES.map((category) => ({
+    category,
+    bots: bySlug.get(category.slug) ?? [],
+  }));
+  const uncat = bySlug.get(UNCATEGORIZED.slug) ?? [];
+  if (uncat.length > 0) {
+    groups.push({ category: UNCATEGORIZED, bots: uncat });
+  }
+  return groups;
+}

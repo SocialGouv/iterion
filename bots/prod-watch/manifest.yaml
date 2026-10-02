@@ -16,6 +16,7 @@ version: 0.2.0
 ## state). The leak policy with its circuit-breaker, the analysis agent,
 ## Telegram, the forge issue reporter, the daily digest and the session
 ## mode are the next slices of the same epic.
+category: operate
 description: |
   Production watchdog for ONE deployed application (a scheduled tick,
   zero LLM in this slice — the compiled workflow contains no agent or

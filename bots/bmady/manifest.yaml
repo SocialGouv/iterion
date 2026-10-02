@@ -31,6 +31,8 @@ when_to_use: |
   you steer at each step. Pick this over feature_dev when you want to
   collaborate on the plan rather than hand off an autonomous run.
 author: SocialGouv (devthejo) — bmady/main.bot
+category: build
+tags: [planning, ships-code]
 schema_version: 1
 
 triggers:
