@@ -146,8 +146,9 @@ func TestPerformMerge_ConflictPath(t *testing.T) {
 		t.Error("expected out-of-set path to be rejected")
 	}
 
-	// Real path: accepted.
-	resolved := "alpha\nresolved\ncharlie\ndelta-resolved\n"
+	// Real path: accepted — the run's own version of the file, the only
+	// resolution a contract file the verdict names can carry.
+	resolved := "alpha\nBRAVO-INCOMING\ncharlie\ndelta-incoming\n"
 	if err := svc.ResolveMergeConflictFile(ctx, runID, "file.txt", resolved); err != nil {
 		t.Fatalf("ResolveMergeConflictFile: %v", err)
 	}
@@ -346,6 +347,118 @@ func commitTreeOfStaged(t *testing.T, repoDir string) string {
 	tree := writeEnv("write-tree")
 	return writeEnv("-c", "user.email=t@t.t", "-c", "user.name=t",
 		"commit-tree", tree, "-m", "the verdict's judged HEAD")
+}
+
+// The re-judge compares the staged resolution with the commit the gate's
+// word landed on — not with the pre-flip head the verifier judged: the run's
+// own `done` plan differs from it by exactly the verdict's one line, and a
+// conflicted landing of a converged run carries that flip.
+func TestFinalizeMergeAfterConflict_LandsTheRunsOwnDonePlan(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	repoDir := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	logger := iterlog.Nop()
+	st, err := store.New(storeDir, store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		gittest.Run(t, repoDir, args...)
+	}
+	writeRepo := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repoDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	runGit("init", "-q", "-b", "main")
+	runGit("config", "user.email", "t@t.t")
+	runGit("config", "user.name", "t")
+	runGit("config", "commit.gpgsign", "false")
+	writeRepo("file.txt", "alpha\nbravo\ncharlie\n")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".modernize"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRepo(".modernize/plan.yaml", "lots:\n  - id: L1\n    status: todo\n")
+	runGit("add", "-A")
+	runGit("commit", "-qm", "base")
+	baseSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
+
+	// The run's branch: the lot's work, and mark_done's flip committed.
+	runGit("checkout", "-qb", "iterion/run/test-done-plan")
+	writeRepo("file.txt", "alpha\nBRAVO-INCOMING\ncharlie\n")
+	writeRepo(".modernize/plan.yaml", "lots:\n  - id: L1\n    status: done\n")
+	runGit("commit", "-qam", "the lot and the gate's word")
+	storageSHA := strings.TrimSpace(captureGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	runGit("checkout", "-q", "main")
+	writeRepo("file.txt", "alpha\nbravo-main\ncharlie\n")
+	runGit("commit", "-qam", "main-change")
+
+	ctx := context.Background()
+	runID := "run-done-plan-test"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Worktree = true
+	r.RepoRoot = repoDir
+	r.WorkDir = repoDir
+	r.BaseCommit = baseSHA
+	r.FinalCommit = storageSHA
+	r.FinalBranch = "iterion/run/test-done-plan"
+	r.Status = store.RunStatusFinished
+	r.MergeStrategy = store.MergeStrategySquash
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun seed: %v", err)
+	}
+
+	svc, err := NewService(storeDir, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.PerformMergeCtx(ctx, runID, MergeRequest{}); err == nil {
+		t.Fatal("expected merge to fail with conflict")
+	}
+	// The resolver takes the run's version of the conflicted file; the plan
+	// rides staged as the run's own flip wrote it.
+	if err := svc.ResolveMergeConflictFile(ctx, runID, "file.txt", "alpha\nBRAVO-INCOMING\ncharlie\n"); err != nil {
+		t.Fatalf("ResolveMergeConflictFile: %v", err)
+	}
+
+	// The verdict: judged at the pre-flip base, landing on the run's commit.
+	loaded, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun for the verdict: %v", err)
+	}
+	loaded.Checkpoint = &store.Checkpoint{Outputs: map[string]map[string]any{
+		"lot_verify": {"contract_head": baseSHA,
+			"contract_tree": `{"table":{".modernize/plan.yaml":{"w":"file:p"},"file.txt":{"w":"file:f"}},"rest":{"count":0,"digest":"x"}}`},
+	}}
+	if err := st.SaveRun(ctx, loaded); err != nil {
+		t.Fatalf("SaveRun with the verdict: %v", err)
+	}
+
+	res, err := svc.FinalizeMergeAfterConflict(ctx, runID, "")
+	if err != nil {
+		t.Fatalf("the run's own done plan was refused on its landing: %v", err)
+	}
+	if res.MergeStatus != store.MergeStatusMerged {
+		t.Fatalf("MergeStatus=%q, want merged", res.MergeStatus)
+	}
+	landed := strings.TrimSpace(captureGitOutput(t, repoDir, "show", res.MergedCommit+":.modernize/plan.yaml"))
+	if !strings.Contains(landed, "status: done") {
+		t.Fatalf("the landing lost the gate's word:\n%s", landed)
+	}
 }
 
 // The landing is re-judged against the stored verdict: a resolution of a

@@ -53,6 +53,36 @@ func TestModernizeRecordBehindACommittedLinkLands(t *testing.T) {
 				got.converged, got.marked, got.verdict.LogTail)
 		}
 	})
+	t.Run("a record each tree carries at its own path", func(t *testing.T) {
+		// The lot reorganizes its own records and lands them through the
+		// bank: HEAD carries the sweep behind the committed link, the
+		// landing carries it at the literal path the working tree holds.
+		ws, _, git := programmeOfLots(t)
+		writeContract(t, ws, ".modernize/L1-captures/sweep.md", "# L1 sweep\n\nthe drift probes\n")
+		if err := os.Symlink("L1-captures", filepath.Join(ws, ".modernize", "L1-rec")); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "-A")
+		git("commit", "-qm", "the sweep behind the lot's own link")
+		base := git("rev-parse", "HEAD")
+		// The reorganization, uncommitted: the link replaced by a real
+		// directory, the file moved into it.
+		if err := os.Remove(filepath.Join(ws, ".modernize", "L1-rec")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(ws, ".modernize", "L1-rec"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(filepath.Join(ws, ".modernize", "L1-captures", "sweep.md"),
+			filepath.Join(ws, ".modernize", "L1-rec", "sweep.md")); err != nil {
+			t.Fatal(err)
+		}
+		got := landLot(t, ws, base, "test -s .modernize/L1-rec/sweep.md", nil)
+		if !got.converged || !got.marked {
+			t.Fatalf("a record present in both landing trees was refused: converged=%v marked=%v log=%s",
+				got.converged, got.marked, got.verdict.LogTail)
+		}
+	})
 	t.Run("a spelling through ., the record committed", func(t *testing.T) {
 		ws, _, git := programmeOfLots(t)
 		writeContract(t, ws, ".modernize/sweeps/L1.md", "# L1 sweep\n")
@@ -120,6 +150,37 @@ func TestModernizeRecordThatCannotLandFailsTheGate(t *testing.T) {
 			t.Fatalf("the refusal does not name the directory: %s", got.verdict.LogTail)
 		}
 	})
+}
+
+// The bank's staging mirrors the engine's — including its probe: git refuses
+// an exclusion whose path is ignored, the bank drops exactly that exclusion,
+// and the simulation must too. An exclusion spelled where git would refuse
+// makes the staging fail, and with it every lot. Judge lot_verify directly:
+// the shape is the env the engine provisions on every tool process.
+func TestModernizeBankedTreeProbesItsExclusions(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "lot_verify")
+	ws, _, git := programmeOfLots(t)
+	writeContract(t, ws, ".gitignore", ".claude/\n")
+	git("add", ".gitignore")
+	git("commit", "-qm", "the mirror stays out of the tree")
+	base := git("rev-parse", "HEAD")
+	if err := os.MkdirAll(filepath.Join(ws, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, contractGate,
+		append(os.Environ(), "ITERION_TREE_NOISE=':(exclude,top).claude'"))
+	if exit != 0 || res.Unreadable {
+		t.Fatalf("a lot in a repository that ignores the mirror could not converge: exit=%d unreadable=%v log=%s",
+			exit, res.Unreadable, res.LogTail)
+	}
+	if len(res.ContractRewrite) != 0 || res.GatePassed != true {
+		t.Fatalf("an untouched lot was judged over: rewritten=%q gate=%v log=%s",
+			res.ContractRewrite, res.GatePassed, res.LogTail)
+	}
 }
 
 // mark_done's own writes — the ref update that lands the gate's word, and the

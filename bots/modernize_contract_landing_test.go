@@ -76,10 +76,16 @@ type landed struct {
 // verdict the edge maps. `between` runs after the verdict and before
 // mark_done — what a process the lot left running could do in that gap.
 func landLot(t *testing.T, ws, base, gate string, between func()) landed {
+	return landLotEnv(t, ws, base, gate, nil, between)
+}
+
+// landLotEnv is landLot with extra environment for lot_verify's process —
+// the tree-noise exclusions the engine provisions on every tool process.
+func landLotEnv(t *testing.T, ws, base, gate string, env []string, between func()) landed {
 	t.Helper()
 	verify := toolScript(t, "modernize/main.bot", "lot_verify")
 	mark := toolScript(t, "modernize/main.bot", "mark_done")
-	res, raw, exit := modernizeLotVerifyRaw(t, verify, ws, "L1", base, gate, nil)
+	res, raw, exit := modernizeLotVerifyRaw(t, verify, ws, "L1", base, gate, env)
 	if exit != 0 {
 		t.Fatalf("lot_verify exited %d: %+v", exit, res)
 	}
