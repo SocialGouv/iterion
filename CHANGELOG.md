@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.225.0](https://github.com/SocialGouv/iterion/compare/v3.224.1...v3.225.0) (2026-10-02)
+
+### Features
+
+* **bots:** the six-verb navigation spine — manifest category + tags, grouped views everywhere ([#1520](https://github.com/SocialGouv/iterion/issues/1520)) ([fbfabb9](https://github.com/SocialGouv/iterion/commit/fbfabb97f54255964932a3fd5a7e2c6225df3ab6))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 (plan review) Adversarial-Model: claude-opus-5 (via cswap, read-only)
+
+    </details>
+
+### Bug Fixes
+
+* **ci:** authoring saves tolerate a .git Git itself refuses; raw fsnotify .Add/.AddWith pinned by a typed inventory ([#2048](https://github.com/SocialGouv/iterion/issues/2048), [#2082](https://github.com/SocialGouv/iterion/issues/2082)) ([#2118](https://github.com/SocialGouv/iterion/issues/2118)) ([1c2cf9f](https://github.com/SocialGouv/iterion/commit/1c2cf9f32f346e7f3e540506475eef49996266e1))
+
+    <details><summary>why</summary>
+
+    #2048: authoring/journal tests flaked under host load, never the same one — root cause characterized: validateAuthoringGitExclusion walks ancestors Lstat-ing .git, and on a loaded multi-session host the shared temp root can hold a .git Git refuses (empty scratch init, dangling gitfile from a racing worktree add/remove). git ls-files then exits 128 "not a git repository" and EVERY authoring save was refused — red bursts under load, green in isolation. When Git can see no repository, no file can…
+
+    </details>
+
 ## [3.224.1](https://github.com/SocialGouv/iterion/compare/v3.224.0...v3.224.1) (2026-10-02)
 
 ### Bug Fixes
