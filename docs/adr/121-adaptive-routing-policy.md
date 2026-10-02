@@ -1,11 +1,11 @@
 # ADR-121: adaptive routing — a multi-level policy that picks the (harness, credential) pair, at launch and mid-run
 
-- **Status**: Proposed (design review — another model family, then the operator)
+- **Status**: Arbitrated (2026-10-02 — the operator's four decisions recorded in § Arbitrated; the design ticket gates implementation)
 - **Date**: 2026-10-02
-- **Authors**: Claude (draft), Jo (arbitration pending)
+- **Authors**: Claude (draft), Jo (arbitration recorded 2026-10-02, § Arbitrated)
 - **Extends**: [ADR-087](087-cross-backend-model-fallback-chain.md) (cross-backend fallback routes), [ADR-091](091-fallback-skip-route-and-plan-peer-review.md) (`action: skip`, `when:` gates), [ADR-090](090-runtime-operational-settings-db-backed.md) (db-backed operational settings — the record the facade and keys-first knobs ride), #1956 (route-aware shared tiers)
 - **Serves**: epic [#2000](https://github.com/SocialGouv/iterion/issues/2000), slice [#1999](https://github.com/SocialGouv/iterion/issues/1999)
-- **First delivery only**: the policy foundation, launch-time harness selection, and same-harness mid-run fallback. Cross-harness relaunch with transcript handoff is the next delivery on this foundation (§ Out of scope).
+- **First delivery**: the policy foundation, launch-time harness selection, same-harness mid-run fallback, and the per-family pool fallback door (§ Arbitrated 4). Cross-harness relaunch with transcript handoff is the next delivery on this foundation (§ Out of scope).
 
 ### Context
 
@@ -70,7 +70,7 @@ Resume classifies every policy field as **identity or volatile**: identity field
 - Author intent: hand-declared `fallbacks:` chains remain authoritative where declared; the policy synthesizes nothing there. `strict` is how a pin stops being a preference. Where a computed route and the operator's `--fallback` chain reach the same node, ADR-087 stage 4's multi-source rule applies (dedup; a route resolving to the call that just failed is dropped) — one composition rule, already written.
 - **The pool joins the fallback chain, per family** (arbitrated 2026-10-02): when a policy trigger fires on a wire and no owned credential of the run serves it, the pool is consulted for THAT family — restricted to donations whose donor marked them fallback-usable, leased and ceilinged by the pool's own rules. The whole-bundle gate ("only for a run that holds nothing") remains the rule of the NON-fallback path. This changes the pool's contract by adding a door, and is why the pool stage of the walk is policy-shaped like the others.
 - Budget and schema failures never fall back: they re-fail identically on every route.
-- The pool stays a whole-bundle last resort in this delivery ("only for a run that has no credential of its own at all"). A per-family pool fallback is a contract change — it would hand the pool to a run holding a credential of another wire — and is explicitly a future decision, not a subordinate clause here.
+- On the NON-fallback path the pool stays a whole-bundle last resort ("only for a run that has no credential of its own at all"); the per-family fallback door above (§ Arbitrated 4) is in the first delivery and is the arbitrated exception — the contract change it carries was accepted there.
 
 ## Alternatives considered
 
@@ -104,4 +104,4 @@ Resume classifies every policy field as **identity or volatile**: identity field
 
 ## Out of scope (later deliveries)
 
-Cross-harness relaunch with transcript handoff (delivery 2 on this foundation: the pair order, the triggers and the levels are its vocabulary). Per-family pool fallback (a contract change, named above). Org and team levels (delivery 2, costed above).
+Cross-harness relaunch with transcript handoff (delivery 2 on this foundation: the pair order, the triggers and the levels are its vocabulary). Org and team levels (delivery 2, costed above).
