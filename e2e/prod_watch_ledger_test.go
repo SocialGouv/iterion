@@ -461,6 +461,78 @@ func TestProdWatch_LedgerPruneKeepsTheNewestWithinAGeneration(t *testing.T) {
 	}
 }
 
+// TestProdWatch_LedgerDeletionStagedAfterANonCommittingPrune: the prune runs
+// in every tick, including a state_commit=false one — a rotation TRACKED by
+// an earlier committing era is then gone from the tree with its deletion
+// unstaged, and the next committing era must hand that path to git (from the
+// index) or it rides in HEAD past `keep` while absent from the disk.
+func TestProdWatch_LedgerDeletionStagedAfterANonCommittingPrune(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t)
+	git := func(args ...string) string { return gittest.Run(t, h.ws, args...) }
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	gittest.Run(t, filepath.Dir(bare), "init", "--bare", "-q", bare)
+	git("init", "-q", "-b", "main")
+	_ = os.WriteFile(filepath.Join(h.ws, "README.md"), []byte("ops\n"), 0o644)
+	git("add", "README.md")
+	git("commit", "-q", "-m", "init")
+	git("remote", "add", "origin", bare)
+	git("push", "-q", "-u", "origin", "main")
+	sd := filepath.Join(h.ws, ".prod-watch")
+	if err := os.MkdirAll(sd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tick := func(gen int, commit bool, keep int) map[string]any {
+		t.Helper()
+		st := filepath.Join(h.scratch, "state_next.json")
+		_ = os.WriteFile(st, []byte(fmt.Sprintf(`{"version":1,"generation":%d,"cursors":{"loki":{}},"incidents":{},"health":{}}`, gen+1)), 0o644)
+		al := filepath.Join(h.scratch, "alertlog_delta.jsonl")
+		_ = os.WriteFile(al, []byte(`{"at":"x","fp":"probe:api"}`+"\n"), 0o644)
+		tk := filepath.Join(h.scratch, "tick.json")
+		_ = os.WriteFile(tk, []byte(fmt.Sprintf(`{"at":"x","generation":%d}`, gen+1)), 0o644)
+		_ = os.WriteFile(sdPath(h, "alertlog.jsonl"), []byte(bigLines(3)), 0o644)
+		out, stderr, err := runPyEnv(t, h.ws, pwSub(t, pwTool(t, wf, "commit_state").Script, map[string]any{
+			"state_next_file": st, "alertlog_file": al, "tick_file": tk, "generation": gen, "state_commit": commit,
+			"workspace": h.ws, "state_dir": ".prod-watch", "ledger": map[string]any{"max_bytes": 100, "keep": keep}},
+			nil, nil), gittest.Env())
+		if err != nil {
+			t.Fatalf("tick gen %d commit=%v: %v %s", gen, commit, err, stderr)
+		}
+		return out
+	}
+	// Era 1-2: two committing ticks, two rotations tracked (gen 5, gen 6).
+	tick(5, true, 2)
+	tick(6, true, 2)
+	if tracked := git("ls-files", ".prod-watch"); !strings.Contains(tracked, "alertlog-5.jsonl") || !strings.Contains(tracked, "alertlog-6.jsonl") {
+		t.Fatalf("setup: both rotations must be tracked: %q", tracked)
+	}
+	// Era 3: a NON-committing tick lowers keep to 1 — the older rotation is
+	// pruned from the disk, its deletion unstaged (the stranded state).
+	tick(7, false, 1)
+	if mustExist(t, sdPath(h, "alertlog-5.jsonl")) {
+		t.Fatalf("setup: the pruned rotation must be gone from the tree")
+	}
+	if tracked := git("ls-files", ".prod-watch"); !strings.Contains(tracked, "alertlog-5.jsonl") {
+		t.Fatalf("setup: the deletion must be unstaged while not committing: %q", tracked)
+	}
+	// Era 4: committing again — the stranded deletion is staged from the
+	// index and the rotation leaves HEAD; the tree and the index agree.
+	tick(8, true, 1)
+	if tracked := git("ls-files", ".prod-watch"); strings.Contains(tracked, "alertlog-5.jsonl") || strings.Contains(tracked, "alertlog-6.jsonl") {
+		t.Fatalf("the stranded rotations must leave the index on the next committing tick: %q", tracked)
+	}
+	if !mustExist(t, sdPath(h, "alertlog-8.jsonl")) {
+		t.Fatalf("era 4's own rotation stays")
+	}
+	if log := git("log", "--oneline", "origin/main"); strings.Count(log, "chore(prod-watch)") != 3 {
+		t.Fatalf("the era-4 commit must reach the remote: %s", log)
+	}
+}
+
 // TestProdWatch_LedgerPlanValidatesTheKnobs: the bound is validated where
 // every config knob is — plan refuses a malformed one by name, and a valid
 // one travels normalized into plan's output (the wiring feeds commit_state).

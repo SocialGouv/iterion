@@ -5052,8 +5052,18 @@ tool commit_state:
         ## resumed tick left) plus the pruned ones — `git add` records a
         ## tracked file's removal when handed its path.
         stage_extra = sorted(fn for fn in os.listdir(state_dir) if ROTATION_RE.match(fn))
-        for r in rotations:
-            stage_extra.extend(r['removed'])
+        ## Rotations GONE from the tree but still tracked — pruned during a
+        ## state_commit=false era (a mode the push-credentials refusal
+        ## itself suggests) — have their deletion handed to git here, read
+        ## from the INDEX: it covers the prunes of every earlier
+        ## non-committing tick, and a never-tracked rotation pruned now is
+        ## naturally absent (nothing for git to untrack; a pathspec for it
+        ## would abort the whole add). `git ls-files` reads the index, so
+        ## once the deletion is staged the name stops coming back.
+        for _ln in subprocess.run(['git', 'ls-files', '--', state_dir], capture_output=True, text=True).stdout.split(chr(10)):
+            _fn = os.path.basename(_ln.strip())
+            if _fn and ROTATION_RE.match(_fn) and not os.path.exists(os.path.join(state_dir, _fn)):
+                stage_extra.append(_fn)
         committed = _commit_push_state(state_dir, 'chore(prod-watch): watch tick, ' + str(appended) + ' alert(s)' +
                                        (', ' + said if said else ''), stage_extra)
     print(json.dumps({'committed': committed, 'rotations': rotations,
