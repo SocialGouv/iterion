@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.222.0](https://github.com/SocialGouv/iterion/compare/v3.221.1...v3.222.0) (2026-10-02)
+
+### Features
+
+* **golden-master:** JSON request bodies and header-borne anti-forgery tokens ([#2066](https://github.com/SocialGouv/iterion/issues/2066)) ([0c0f7ff](https://github.com/SocialGouv/iterion/commit/0c0f7ffc74e80cb8fc3afcee4e20247036dbe916))
+
+    <details><summary>why</summary>
+
+    The harness could only send forms, so no corpus entry could observe a route that reads a JSON body: the request left urlencoded or empty, and the reference recorded the refusal of a request nobody declared. The token was read from an `<input>` only, through a 300-character window that could return a neighbouring tag's value, sent as a form field only, and on the write lane only: an http-lane POST never received it.
+
+    </details>
+
 ## [3.221.1](https://github.com/SocialGouv/iterion/compare/v3.221.0...v3.221.1) (2026-10-01)
 
 ### Bug Fixes
