@@ -207,7 +207,6 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		// Nothing spends: nothing to narrow on, and nothing unresolved.
 		return ProviderResolution{NarrowSafe: true}
 	}
-	sawRoute := true
 	// The run-level chain (`--fallback` / spec.Fallback / prior.Fallback)
 	// lands on every agent node through ir.ApplyRunFallback — the same
 	// reasoning as an authored route.
@@ -224,7 +223,7 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		acc.backend = b
 		acc.resolveRoute(fb.Provider, fb.Model)
 	}
-	return acc.result(sawRoute)
+	return acc.result()
 }
 
 // llmFieldsOf returns the LLMFields a node resolves its route from: agent
@@ -254,20 +253,20 @@ type providerAccumulator struct {
 	backend      string
 	narrowSafe   bool
 	wireDefault  map[string]bool
-	// envDependent: some route's text defers to an environment or the run's
-	// variables (see envDeferred).
-	envDependent bool
+	// envSeen: some route's text defers to an environment or the run's
+	// variables (see envDeferred) — the run is never declared env-funded,
+	// whatever the expansions said.
+	envSeen bool
 }
 
-func (a *providerAccumulator) result(sawRoute bool) ProviderResolution {
+func (a *providerAccumulator) result() ProviderResolution {
 	res := ProviderResolution{NarrowSafe: a.narrowSafe}
 	// The widenings that matter here are narrowSafe's (an unresolvable or
 	// unknown route may spend anything), a recorded provider (some tier
 	// holds what it spends) and an env-dependent route (it may resolve to
 	// anything on the runner). An all-openai_compatible walk is none of
 	// those: narrow-safe, nameless, unknownless, resolved here.
-	res.envFundedOnly = sawRoute && a.narrowSafe && !a.envDependent && len(a.providers) == 0 && len(a.unknown) == 0
-
+	res.envFundedOnly = a.narrowSafe && !a.envSeen && len(a.providers) == 0 && len(a.unknown) == 0
 	for slot := range a.wireDefault {
 		res.AnthropicWireDefaultReads = append(res.AnthropicWireDefaultReads, slot)
 	}
@@ -323,13 +322,25 @@ func resolveRouteBackend(override, node, wfDefault string) (backend string, from
 	return "", fromEnv
 }
 
-// envDeferred marks the walk env-dependent when a route's own text defers to
-// an environment or the run's variables: the executor resolves it with the
-// runner's env and the run's vars, so what it names is unknown here.
+// envDeferred answers for a route whose own text defers to an environment or
+// the run's vars. A ${VAR} that expands to NOTHING here is the runner's to
+// resolve — unresolved, widen. A ${VAR:-default} (or a VAR the deployment
+// sets) resolves deterministically in both processes: narrow-safe. A
+// {{vars.…}} reference resolves at dispatch: unresolved, widen. Either way
+// the walk is never declared env-funded on an env-deferring route — what the
+// runner expands it to is not this process's word.
 func (a *providerAccumulator) envDeferred(parts ...string) {
 	for _, part := range parts {
-		if strings.Contains(part, "${") || strings.Contains(part, "{{") {
-			a.envDependent = true
+		if strings.Contains(part, "{{") {
+			a.envSeen = true
+			a.narrowSafe = false
+			return
+		}
+		if strings.Contains(part, "${") {
+			a.envSeen = true
+			if strings.TrimSpace(ir.ExpandEnvWithDefault(part)) == "" {
+				a.narrowSafe = false
+			}
 			return
 		}
 	}
@@ -357,8 +368,13 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 		if a.chainDecides(ov.Provider, mdl) {
 			return
 		}
-		// The launch override collapsed the chain; fall through to the
-		// prefix of the effective model.
+		// The override named no resolvable hint ("auto", or a ${VAR} this
+		// process cannot read): the runner resolves it with its own env —
+		// widen, as hint() on the override did before the gateway
+		// classification existed. Falling through would let the node's own
+		// chain narrow an answer the override deferred.
+		a.narrowSafe = false
+		return
 	}
 	a.noteWireDefault(fields.Provider, mdl)
 	if a.chainDecides(fields.Provider, mdl) {
@@ -463,7 +479,7 @@ func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 		a.narrowSafe = false
 	}
 	for _, h := range hints {
-		if h == modelroute.OpenAICompatible && gatewayRoute(mdl) {
+		if h == modelroute.OpenAICompatible && rawGatewayPrefix(mdl) {
 			continue
 		}
 		a.hint(h)
@@ -471,11 +487,14 @@ func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 	return true
 }
 
-// gatewayRoute reports whether the route's effective model is
-// gateway-prefixed — the only spelling that puts a route on the
-// openai_compatible gateway.
-func gatewayRoute(mdl string) bool {
-	return providerFromModelPrefix(strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))) == modelroute.OpenAICompatible
+// rawGatewayPrefix reports whether the model text, UNEXPANDED, literally
+// carries the openai_compatible/ routing prefix. The gateway classification
+// answers on this spelling alone: a ${…} model may expand to the gateway in
+// this process and to a vendor model on the runner, so an expansion-based
+// answer would spend the runner's credential on this process's word.
+func rawGatewayPrefix(mdl string) bool {
+	prov, _, cut := strings.Cut(strings.TrimSpace(mdl), "/")
+	return cut && strings.EqualFold(strings.TrimSpace(prov), modelroute.OpenAICompatible)
 }
 
 // prefixOrWiden routes on a model spec's `provider/` prefix, or widens
@@ -493,7 +512,13 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 		if p == modelroute.OpenAICompatible {
 			// The gateway route: its credential is the runner's environment,
 			// so it names no bundle slot — recorded nowhere, and never a
-			// reason to widen. It is what OnlyEnvFunded is true OF.
+			// reason to widen. The RAW prefix alone says so: an
+			// env-templated model may expand to the gateway here and to a
+			// vendor on the runner, so it widens (envDeferred covers the
+			// empty expansion; this branch covers the resolved one).
+			if !rawGatewayPrefix(mdl) {
+				a.narrowSafe = false
+			}
 			return
 		}
 		a.hint(p)
