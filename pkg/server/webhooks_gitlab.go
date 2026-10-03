@@ -1284,7 +1284,8 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		Source: retrypolicy.SourceSchedule,
 		Policy: sb.RetryPolicy(),
 	})
-	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry)
+	route := s.resolveRunLLMRoutePolicy(ctx)
+	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry, route)
 	overrides, err := s.scheduledForgeOverrides(ctx, sb)
 	if err != nil {
 		return err
@@ -1352,7 +1353,7 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 // the schedule's Vars + repo binding onto the LaunchSpec so the runner clones
 // the pinned repo (mandatory for stateful bots persisting state to git) and
 // stamps the BotID for the publisher's credential-resolution path.
-func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy) runview.LaunchSpec {
+func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy, route *store.RunLLMRoutePolicy) runview.LaunchSpec {
 	return runview.LaunchSpec{
 		// Tenant-configured vars ride blind (#1725's opt-out): the schedule
 		// editor owns them, the runview refusal is for operator-typed
@@ -1370,6 +1371,10 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 		// reaches for when one bot's cadence needs different retry limits
 		// from the same bot on another cadence.
 		RetryPolicy: retry,
+		// Resolved by the caller like every other launch surface: the
+		// scheduled path is the fleet's always-on workloads, and a run doc
+		// that cannot say why it routes is an unauditable one.
+		LLMRoutePolicy: route,
 		// Typed provenance: the schedgate overlap gate counts this
 		// schedule's live runs through source.schedule_id.
 		SourceRef: &store.RunSource{
@@ -1431,6 +1436,7 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 			Source: retrypolicy.SourceWebhook,
 			Policy: cfg.RetryPolicy(),
 		}),
+		LLMRoutePolicy: s.resolveRunLLMRoutePolicy(ctx),
 	}
 	lb.Stamp(&spec)
 	res, err := s.runs.Launch(ctx, spec)

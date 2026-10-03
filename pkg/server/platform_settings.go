@@ -1,13 +1,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Platform runtime-settings families beyond the usage caps: bot_roles and
@@ -95,8 +98,12 @@ func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *htt
 		return
 	}
 	origin := "default"
-	if rec != nil && (rec.Enforce != nil || len(rec.Teams) > 0 || len(rec.Orgs) > 0 || rec.KeysFirst != nil || rec.FacadeDefault != nil) {
+	if rec != nil && (rec.Enforce != nil || len(rec.Teams) > 0 || len(rec.Orgs) > 0 || rec.KeysFirst != nil || rec.FacadeDefault != nil || rec.Routing != nil) {
 		origin = "db"
+	}
+	var routing *llmroute.Policy
+	if rec != nil {
+		routing = rec.Routing
 	}
 	s.writeJSONFor(w, r, platformCredentialsSettingsView{
 		Stored:                 rec,
@@ -104,6 +111,8 @@ func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *htt
 		Origin:                 origin,
 		KeysFirstEffective:     rec.PrefersKeys(),
 		FacadeDefaultEffective: string(rec.Facade()),
+		Routing:                routing,
+		RoutingEffective:       s.resolveRunLLMRoutePolicy(r.Context()),
 	})
 }
 
@@ -126,13 +135,18 @@ func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *htt
 		KeysFirst json.RawMessage `json:"keys_first,omitempty"`
 		// "" clears the override back to the env default.
 		FacadeDefault *string `json:"facade_default,omitempty"`
+		// A routing object REPLACES the stored block wholesale (the fold's
+		// levels are whole records, not merges); null clears it back to the
+		// env dials. Absent leaves it alone. llmroute.Validate refuses a
+		// block the fold cannot read.
+		Routing json.RawMessage `json:"routing,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return
 	}
-	if patch.Enforce == nil && patch.Teams == nil && patch.Orgs == nil && patch.KeysFirst == nil && patch.FacadeDefault == nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name at least one field (enforce|teams|orgs|keys_first|facade_default)")
+	if patch.Enforce == nil && patch.Teams == nil && patch.Orgs == nil && patch.KeysFirst == nil && patch.FacadeDefault == nil && patch.Routing == nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name at least one field (enforce|teams|orgs|keys_first|facade_default|routing)")
 		return
 	}
 	rec, err := s.platformCredsStore.Get(r.Context())
@@ -171,6 +185,20 @@ func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *htt
 			rec.FacadeDefault = &v
 		}
 	}
+	if len(patch.Routing) > 0 {
+		if string(patch.Routing) == "null" {
+			rec.Routing = nil
+		} else {
+			var routing llmroute.Policy
+			dec := json.NewDecoder(bytes.NewReader(patch.Routing))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&routing); err != nil {
+				s.httpErrorFor(w, r, http.StatusBadRequest, "routing: %v", err)
+				return
+			}
+			rec.Routing = &routing
+		}
+	}
 	if err := rec.Validate(); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
@@ -185,6 +213,9 @@ func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *htt
 	}
 	s.auditPlatform(r, "", "platform.settings.platform_credentials.updated", "platform_settings", platformcfg.FamilyPlatformCredentials, map[string]any{
 		"enforce": rec.Enforced(), "teams": rec.Teams, "orgs": rec.Orgs, "keys_first": rec.PrefersKeys(), "facade_default": string(rec.Facade()),
+		"routing_set":                rec.Routing != nil,
+		"routing_refused_pinned_key": rec.RefusedPinned(),
+		"routing_strict":             rec.Routing != nil && rec.Routing.Strict != nil && *rec.Routing.Strict,
 	})
 	s.handleAdminGetPlatformCredentials(w, r)
 }
@@ -491,4 +522,10 @@ type platformCredentialsSettingsView struct {
 	// ITERION_PLATFORM_FACADE_DEFAULT), else the built-in one.
 	KeysFirstEffective     bool   `json:"keys_first_effective"`
 	FacadeDefaultEffective string `json:"facade_default_effective"`
+	// Routing is the stored platform level of the adaptive-routing policy
+	// (nil = the level says nothing). RoutingEffective is what the NEXT
+	// launch resolves from it — the record's values, else the env dials,
+	// else the built-in defaults, with each field's provenance.
+	Routing          *llmroute.Policy         `json:"routing,omitempty"`
+	RoutingEffective *store.RunLLMRoutePolicy `json:"routing_effective,omitempty"`
 }

@@ -2517,6 +2517,9 @@
             },
             "type": "array"
           },
+          "routing": {
+            "$ref": "#/components/schemas/Policy"
+          },
           "teams": {
             "items": {
               "type": "string"
@@ -2536,6 +2539,35 @@
           "orgs",
           "updated_at"
         ],
+        "type": "object"
+      },
+      "Policy": {
+        "properties": {
+          "locks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pair_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "refused_pinned_key": {
+            "type": "string"
+          },
+          "strict": {
+            "type": "boolean"
+          },
+          "triggers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
         "type": "object"
       },
       "ProjectSyncConflict": {
@@ -2965,6 +2997,38 @@
           "updated_at",
           "worktree_available",
           "active_duration_ms"
+        ],
+        "type": "object"
+      },
+      "RunLLMRoutePolicy": {
+        "properties": {
+          "pair_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "refused_pinned_key": {
+            "type": "string"
+          },
+          "sources": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "strict": {
+            "type": "boolean"
+          },
+          "triggers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "triggers"
         ],
         "type": "object"
       },
@@ -5005,6 +5069,12 @@
           },
           "origin": {
             "type": "string"
+          },
+          "routing": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "routing_effective": {
+            "$ref": "#/components/schemas/RunLLMRoutePolicy"
           },
           "stored": {
             "$ref": "#/components/schemas/PlatformCredentials"

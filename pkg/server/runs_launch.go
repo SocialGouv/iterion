@@ -649,6 +649,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// human pressed Launch — a declared directive silently violated on
 		// the one path where the author is watching.
 		RetryPolicy:        s.resolveRunRetryPolicy(r.Context(), retryTeamID, botID),
+		LLMRoutePolicy:     s.resolveRunLLMRoutePolicy(r.Context()),
 		ModelOverrides:     req.ModelOverrides,
 		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,

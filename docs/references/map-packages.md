@@ -153,6 +153,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/knowledge` | defines the backend-agnostic contract for iterion's shared memory / knowledge system: the MemoryStore interface, the SpaceRef identity model (the… | `MemoryStore` |
 | `pkg/lease` | elects one holder per named lease across the replicas of a deployment, so a periodic net runs on ONE replica instead of every one. | `Store` |
 | `pkg/liveledger` | keeps a committed, single-file record of the LAST run of every `task test:live:*` target. | `TB` |
+| `pkg/llmroute` | the adaptive-routing contract (ADR-121): the multi-level policy that picks which (harness, credential) pair a run may occupy. | — |
 | `pkg/log` | provides a leveled logger with emoji-rich console output for the iterion workflow engine. | — |
 | `pkg/mail` | iterion's minimal transactional mailer: stdlib SMTP (explicit STARTTLS) + embedded templates for the two flows that need email — invitations and… | `Mailer` |
 | `pkg/marketplace` | the hosted bot registry that sits on top of pkg/botinstall. | `Store` |

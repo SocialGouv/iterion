@@ -2,7 +2,10 @@ package cloudpublisher
 
 import (
 	"context"
+	"sort"
+	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -18,6 +21,14 @@ type sharedTierPolicy struct {
 	// facade says whether a facade key (z.ai, Moonshot) may be the anthropic
 	// wire's default — see platformcfg.PlatformCredentials.FacadeDefault.
 	facade platformcfg.FacadePolicy
+	// refusedPinned is the resolved refused_pinned_key (#1999, ADR-121):
+	// what happens to a shared-tier key refused or capped at launch whose
+	// wire family another credential holds. "forfait" (the default) keeps
+	// it out — the routes naming its provider spend the family's holder,
+	// which for claw is the forfait billed as extra usage; "park" restores
+	// it pinned-only and those routes park on the key's own refusal with a
+	// durable retry.
+	refusedPinned string
 	// runNative is the OR of every tier's native probe of ONE resolution —
 	// the question `auto` asks since #1998: a Claude-native credential any
 	// tier holds, open or closed, keeps every tier's facade key off the
@@ -40,7 +51,7 @@ func (p *Publisher) sharedTierPolicyFor(ctx context.Context) sharedTierPolicy {
 	if p.platformAudience != nil {
 		rec = p.platformAudience.Get(ctx)
 	}
-	return sharedTierPolicy{keysFirst: rec.PrefersKeys(), facade: rec.Facade()}
+	return sharedTierPolicy{keysFirst: rec.PrefersKeys(), facade: rec.Facade(), refusedPinned: rec.RefusedPinned()}
 }
 
 // inOrder runs one tier's forfait and key passes in the policy's order.
@@ -78,6 +89,21 @@ func (pol sharedTierPolicy) facadeMayDefault(native *tierNative) bool {
 func isFacadeProvider(prov secrets.Provider) bool {
 	return prov != secrets.ProviderAnthropic &&
 		secrets.WireFamily(string(prov)) == secrets.WireFamily(string(secrets.ProviderAnthropic))
+}
+
+// restoreRefusedKey is the ONE judge — fill, restore and preview ask it —
+// of whether the restore keeps a refused shared-tier key OUT of the bundle
+// under the policy: refused_pinned_key=forfait leaves a refused key out of
+// a family another credential holds, and the routes naming its provider
+// spend that holder (claw bills the forfait as extra usage) instead of
+// parking on the key's own refusal. The facade carve-out travels with the
+// knob (ADR-121 § Arbitrated 1): a facade key (z.ai, Moonshot) has no
+// forfait alternative, so it is out of the knob's scope ENTIRELY — it
+// always comes back, in either pinned-only shape.
+func (pol sharedTierPolicy) restoreRefusedKey(prov secrets.Provider, familyTaken bool) bool {
+	return pol.refusedPinned == llmroute.RefusedPinnedForfait &&
+		familyTaken &&
+		!isFacadeProvider(prov)
 }
 
 // sealOutcome is where a shared tier puts one API key.
@@ -201,9 +227,34 @@ func holdsLLMCredential(b secrets.RunBundle) bool {
 
 // holdsDefaultLLMCredential reports whether an UNPINNED route has something
 // to spend. The pool is consulted when it has not: a pinned-only key serves
-// the routes that name its provider and nobody else.
+// the routes that read the wire's default and nobody else.
 func holdsDefaultLLMCredential(b secrets.RunBundle) bool {
 	return len(b.APIKeys) > 0 || len(b.OAuthCredentials) > 0
+}
+
+// familyHolderName names, for the audit line, what holds a refused key's
+// wire family in the bundle — the credential the routes naming its provider
+// will spend instead. Sorted, because a map's "first hit" is whatever Go
+// feels like today: the fact travels with the log, not with iteration
+// order.
+func familyHolderName(bundle *secrets.RunBundle, prov secrets.Provider) string {
+	fam := secrets.WireFamily(string(prov))
+	var holders []string
+	for kind := range bundle.OAuthCredentials {
+		if secrets.WireFamily(kind) == fam {
+			holders = append(holders, "the "+kind+" forfait")
+		}
+	}
+	for p := range bundle.APIKeys {
+		if p != prov && secrets.WireFamily(string(p)) == fam {
+			holders = append(holders, "the "+string(p)+" key")
+		}
+	}
+	sort.Strings(holders)
+	if len(holders) == 0 {
+		return "the credential holding the " + fam + " wire"
+	}
+	return strings.Join(holders, " and ")
 }
 
 // routeOnlyWhy says, for the trace, why a shared key was sealed for its routes

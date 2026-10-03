@@ -782,6 +782,50 @@ clears it the same way.
   credential fails at its first LLM call with a provider error and nothing
   downstream would say the audience was why.
 
+## The routing block — adaptive routing's platform level
+
+The same record carries the platform level of the adaptive-routing policy
+(ADR-121, `pkg/llmroute`): which `(harness, credential)` pairs a run may
+occupy and in what order, which failure classes may fire a mid-run switch,
+what a launch does with a shared key whose cap refused it, and whether
+backend pins are requirements.
+
+```sh
+iterion remote admin platform-credentials                                   # show (stored + effective)
+iterion remote admin platform-credentials set --routing-pair-order claude_code+claude_forfait,claw+anthropic_key
+iterion remote admin platform-credentials set --routing-triggers usage_window,auth
+iterion remote admin platform-credentials set --routing-refused-pinned-key park    # the pre-policy restore
+iterion remote admin platform-credentials set --routing-strict true
+iterion remote admin platform-credentials set --routing-clear                      # back to the env dials
+```
+
+A `--routing-*` write REPLACES the stored block wholesale (levels are whole
+records, never merges); the server refuses a block the fold cannot read —
+pairs outside the `harness+credential` vocabulary, triggers outside the
+closed set (`usage_window`, `unavailable`, `transient_exhausted`, `auth`;
+`budget`/`schema` are not categories and `any`/`unclassified` are excluded
+by rule), or an explicitly empty list (omit the field to inherit; a level
+that must not switch locks the field instead).
+
+Defaults come from the env dials — `ITERION_PLATFORM_PAIR_ORDER`,
+`ITERION_PLATFORM_TRIGGERS`, `ITERION_PLATFORM_REFUSED_PINNED_KEY`,
+`ITERION_PLATFORM_ROUTING_STRICT` (refused at boot when unreadable) — and
+the built-in ones rank last. `refused_pinned_key` defaults to **`forfait`**
+(ADR-121 § Arbitrated 1): a shared-tier key refused or capped at launch,
+whose wire family another credential holds, stays out of the bundle — the
+routes naming its provider spend that holder (claw bills the forfait as
+extra usage) instead of parking on the key's own refusal. `park` is the
+pre-policy behavior, kept settable and lockable. Facade keys (z.ai,
+Moonshot) are out of the knob's scope entirely: no forfait alternative
+exists for them, so they always come back.
+
+Every launch snapshots the resolved policy on the run document
+(`llm_route_policy`, with each field's provenance) — "why did this run
+route this way" is answerable without replaying the launch. The bot
+(`routing:` manifest block), the bot binding and the run-level launch
+fields join this fold in the next slices, below the platform level, which
+can lock a field against all of them.
+
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 
 The credential every tenant-less run used to inherit from the runner pod's

@@ -6839,10 +6839,18 @@ export interface components {
             facade_default?: string;
             keys_first?: boolean;
             orgs: string[];
+            routing?: components["schemas"]["Policy"];
             teams: string[];
             /** Format: date-time */
             updated_at: string;
             updated_by?: string;
+        };
+        Policy: {
+            locks?: string[];
+            pair_order?: string[];
+            refused_pinned_key?: string;
+            strict?: boolean;
+            triggers?: string[];
         };
         ProjectSyncConflict: {
             /** Format: date-time */
@@ -6975,6 +6983,15 @@ export interface components {
             workspace_checkpoint?: components["schemas"]["WorkspaceCheckpoint"];
             worktree?: boolean;
             worktree_available: boolean;
+        };
+        RunLLMRoutePolicy: {
+            pair_order?: string[];
+            refused_pinned_key?: string;
+            sources?: {
+                [key: string]: string;
+            };
+            strict?: boolean;
+            triggers: string[];
         };
         RunLoopProgress: {
             current: number;
@@ -7576,6 +7593,8 @@ export interface components {
             facade_default_effective: string;
             keys_first_effective: boolean;
             origin: string;
+            routing?: components["schemas"]["Policy"];
+            routing_effective?: components["schemas"]["RunLLMRoutePolicy"];
             stored?: components["schemas"]["PlatformCredentials"];
         };
         previewBackendOption: {

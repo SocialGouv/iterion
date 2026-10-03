@@ -182,6 +182,14 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 					} else if outcome = x.seal(x.out.Candidates[i].Tier, provider, true); outcome == sealNone {
 						continue
 					}
+					// refused_pinned_key (#1999): the same judge the live
+					// restore asks — under `forfait` a refused key stays out
+					// of a family another credential holds; the preview says
+					// so on the candidate instead of predicting a restore.
+					if outcome == sealPinnedOnly && x.policy.restoreRefusedKey(provider, x.taken(string(provider))) {
+						x.out.Candidates[i].Reason += " Not restored: refused_pinned_key=forfait keeps a refused key out of the family another credential holds — the routes naming its provider spend that holder."
+						continue
+					}
 					if outcome == sealPinnedOnly {
 						x.pinnedAPI[provider] = i
 					} else {
