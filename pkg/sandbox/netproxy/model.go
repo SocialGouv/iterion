@@ -59,6 +59,13 @@ var bedrockPathSuffixes = []string{"/invoke", "/invoke-with-response-stream", "/
 // (Options.ModelHosts); nil when there are none.
 func modelRequest(host, path string, extra *Policy) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	// An operator's `!host` exclusion lifts the model detection for that
+	// host: a TOOL API whose path ends like a model API's is inspected and
+	// substituted like any other request instead of left in placeholder
+	// form. Built-in provider hosts cannot be excluded (refused at parse).
+	if extra != nil && extra.Unmodeled(host) {
+		return false
+	}
 	if modelHosts[host] || (extra != nil && extra.Allow(host)) {
 		return true
 	}
@@ -91,7 +98,7 @@ func modelRequest(host, path string, extra *Policy) bool {
 // userinfo may hold a credential).
 func modelHostPolicy(hosts []string) (*Policy, error) {
 	var rules []string
-	positive := false
+	unmodel := map[string]bool{}
 	for i, raw := range hosts {
 		h := strings.TrimSpace(raw)
 		if h == "" {
@@ -131,24 +138,52 @@ func modelHostPolicy(hosts []string) (*Policy, error) {
 				return nil, bad("not a host pattern or a URL")
 			}
 			pattern = wild + name
-			h = pattern
 			if neg {
-				h = "!" + pattern
+				// An exclusion is the operator un-modeling a host: the
+				// model-path detection is lifted for it. A host that IS a
+				// built-in model provider cannot be un-modeled — its
+				// request bodies must keep their placeholders.
+				if builtInProviderHost(pattern) {
+					return nil, bad("names a built-in model provider — a model provider host cannot be excluded from the model detection")
+				}
+				unmodel[canonicalHost(pattern)] = true
+				continue
 			}
+			h = pattern
 		}
 		if _, err := Compile(ModeAllowlist, []string{h}); err != nil {
 			return nil, bad("not a host pattern or a URL")
 		}
-		positive = positive || !strings.HasPrefix(h, "!")
 		rules = append(rules, h)
 	}
 	if len(rules) == 0 {
-		return nil, nil
+		if len(unmodel) == 0 {
+			return nil, nil
+		}
+		// Exclusions only: no extra model host — the lift is the whole
+		// point of the list.
+		return &Policy{mode: ModeAllowlist, unmodel: unmodel}, nil
 	}
-	if !positive {
-		return nil, fmt.Errorf("netproxy: model hosts: only exclusions, no host")
+	pol, err := Compile(ModeAllowlist, rules)
+	if err != nil {
+		return nil, err
 	}
-	return Compile(ModeAllowlist, rules)
+	pol.unmodel = unmodel
+	return pol, nil
+}
+
+// builtInProviderHost reports whether name is one of the built-in model
+// provider hosts (or matches one of their suffix families): those cannot be
+// un-modeled by an operator exclusion, because their request bodies must
+// keep their placeholders — the guarantee the model detection exists for.
+func builtInProviderHost(name string) bool {
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	if modelHosts[name] {
+		return true
+	}
+	return strings.HasSuffix(name, "-aiplatform.googleapis.com") ||
+		strings.HasSuffix(name, ".openai.azure.com") ||
+		(strings.HasPrefix(name, "bedrock-runtime.") && strings.HasSuffix(name, ".amazonaws.com"))
 }
 
 // numericPort reports whether p is a decimal port: a colon that is not a port

@@ -122,6 +122,29 @@ type Options struct {
 	InspectUpstreamTLS *tls.Config
 }
 
+// errLoopbackDestination is returned when a request's destination is the
+// proxy host's own loopback or a link-local address: the egress allowlist
+// governs destinations, and the proxy host's local services are not among
+// them (the one sanctioned alias, host.docker.internal, is rewritten to
+// the host gateway before this check would ever see a loopback address).
+var errLoopbackDestination = errors.New("netproxy: dial to a loopback or link-local destination is refused")
+
+// loopbackDestinationRefusal returns errLoopbackDestination when host names
+// the proxy host's own loopback or a link-local address.
+func loopbackDestinationRefusal(host string) error {
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			return errLoopbackDestination
+		}
+		return nil
+	}
+	h := strings.ToLower(host)
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return errLoopbackDestination
+	}
+	return nil
+}
+
 // New constructs a Proxy. The proxy is not yet listening — call
 // [Proxy.Start] when ready to accept clients.
 func New(opts Options) (*Proxy, error) {
@@ -144,8 +167,20 @@ func New(opts Options) (*Proxy, error) {
 	// (proxied). External egress is unaffected — it uses real hostnames.
 	baseDial := dial
 	dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if host, port, err := net.SplitHostPort(addr); err == nil && host == "host.docker.internal" {
-			addr = net.JoinHostPort("127.0.0.1", port)
+		host, port, err := net.SplitHostPort(addr)
+		if err == nil {
+			// A destination ON the proxy host's own loopback is never the
+			// sanctioned way out: the allowlist governs destinations, and
+			// the proxy host's local services are not among them. Only the
+			// explicit container alias reaches the host (rewritten below —
+			// the per-run MCP listeners); everything else loopback or
+			// link-local is refused before it dials.
+			if err := loopbackDestinationRefusal(host); err != nil {
+				return nil, err
+			}
+			if host == "host.docker.internal" {
+				addr = net.JoinHostPort("127.0.0.1", port)
+			}
 		}
 		return baseDial(ctx, network, addr)
 	}
