@@ -20,8 +20,8 @@ import (
 // path accepts an expired-but-refreshable codex record precisely on the
 // promise that "the refresh worker renews it on its next pass".
 //
-// The oracle is the provider being called at all within a second of start:
-// a ten-minute tick cannot pass this test, and a unit test of RunOnce
+// The oracle is the provider being called at all within a few seconds of
+// start: a ten-minute tick cannot pass this test, and a unit test of RunOnce
 // cannot see the hazard, which is how it went missing while the forge
 // worker twenty lines above has had its boot sweep all along.
 func TestStartOAuthForfaitRefresh_SweepsAtBootNotOnlyOnTheTicker(t *testing.T) {
@@ -66,12 +66,23 @@ func TestStartOAuthForfaitRefresh_SweepsAtBootNotOnlyOnTheTicker(t *testing.T) {
 			"and every run launched meanwhile is handed a token the server knows is dead")
 	}
 
-	rec, err := store.Get(context.Background(), "alice", secrets.OAuthKindClaudeCode)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if rec.AccessTokenExpiresAt == nil || !rec.AccessTokenExpiresAt.After(time.Now()) {
-		t.Fatalf("stored expiry = %v, want a future one: the boot sweep must persist what it refreshed", rec.AccessTokenExpiresAt)
+	// hits proves the provider was called, not that the rotated token is
+	// persisted: the boot sweep runs in its own goroutine, so the Upsert
+	// lands after the HTTP exchange — poll for it, or a starved runner
+	// reads the pre-refresh record back (#2125).
+	persistDeadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := store.Get(context.Background(), "alice", secrets.OAuthKindClaudeCode)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if rec.AccessTokenExpiresAt != nil && rec.AccessTokenExpiresAt.After(time.Now()) {
+			break
+		}
+		if time.Now().After(persistDeadline) {
+			t.Fatalf("stored expiry = %v, want a future one: the boot sweep must persist what it refreshed", rec.AccessTokenExpiresAt)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
