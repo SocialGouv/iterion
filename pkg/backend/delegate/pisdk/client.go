@@ -103,6 +103,14 @@ type Client struct {
 	// concurrently, and reap already owns that call.
 	exited  chan struct{}
 	waitErr error
+
+	// procStart is the leader's start-time (/proc/<pid>/stat field 22),
+	// captured at Start. Close reads the pid as a GROUP id for its orphan
+	// sweep, and a pid recycled into a new group leader would turn that
+	// sweep into a SIGKILL of an unrelated group — the token that tells the
+	// two apart.
+	procStart   uint64
+	procStartOK bool
 }
 
 type queued struct {
@@ -167,6 +175,9 @@ func (c *Client) Start(ctx context.Context) error {
 
 	if err := c.cmd.Start(); err != nil {
 		return fmt.Errorf("pisdk: start %s: %w", c.describe(), err)
+	}
+	if c.cmd.Process != nil {
+		c.procStart, c.procStartOK = processStartTime(c.cmd.Process.Pid)
 	}
 
 	c.readers.Add(2)
@@ -473,6 +484,18 @@ func (c *Client) Close() error {
 		}
 	}
 
+	// The leader's exit does not reap its group: a stdio MCP server or a tool
+	// pi forked runs on past Close, still writing into directories the caller
+	// may already be tearing down. Sweep and join the group either way, so no
+	// child of this session outlives Close. The sweep addresses the pid as a
+	// GROUP id, and a deferred Close can run long after the leader was
+	// reaped (awaitSettle does not watch exited) — skip it when the pid has
+	// been recycled, or the kill lands on an unrelated group.
+	if c.cmd.Process != nil && !c.leaderPidRecycled(c.cmd.Process.Pid) {
+		_ = killSubtree(c.cmd.Process.Pid)
+		awaitSubtreeGone(c.cmd.Process.Pid, 2*time.Second)
+	}
+
 	// Let the dispatcher finish delivering what was already read, so a caller
 	// that inspects state after Close sees the full stream.
 	select {
@@ -481,6 +504,18 @@ func (c *Client) Close() error {
 	}
 
 	return c.waitErr
+}
+
+// leaderPidRecycled reports whether the leader's pid now names a process
+// other than the one Start spawned. A pid gone entirely cannot head a new
+// group, so the sweep's kill can only reach this session's orphans — the
+// case it exists for; anything unverifiable answers recycled, and the sweep
+// degrades to the pre-sweep behaviour rather than risk a stranger's group.
+// A check-to-kill race is inherent to group kills — the pid can be recycled
+// between the probe and the SIGKILL — so the guard narrows the window to
+// that syscall gap rather than closing it; that is the achievable bound.
+func (c *Client) leaderPidRecycled(pid int) bool {
+	return pidRecycled(pid, c.procStart, c.procStartOK)
 }
 
 // Stderr returns the tail of pi's stderr, for error messages.

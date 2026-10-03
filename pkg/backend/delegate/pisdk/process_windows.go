@@ -5,6 +5,7 @@ package pisdk
 import (
 	"os"
 	"os/exec"
+	"time"
 )
 
 // hardenSubtreeTermination is a no-op on Windows: there is no process-group
@@ -25,3 +26,15 @@ func killSubtree(pid int) error {
 	}
 	return p.Kill()
 }
+
+// awaitSubtreeGone is a no-op on Windows: there is no process group to join,
+// and the leader itself is already reaped by reap before Close reaches it.
+func awaitSubtreeGone(_ int, _ time.Duration) {}
+
+// processStartTime has no procfs to read on Windows.
+func processStartTime(int) (uint64, bool) { return 0, false }
+
+// pidRecycled always answers recycled on Windows: killSubtree there
+// terminates only the leader — which reap has already waited — so the sweep
+// has nothing to do, and a recycled pid makes skipping it a win.
+func pidRecycled(int, uint64, bool) bool { return true }
