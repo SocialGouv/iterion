@@ -26,6 +26,10 @@
 ##                             regressed / escalating ones dated by their
 ##                             activity, the alerted ones by id — ISSUE TEXT
 ##                             GOES TO SCRATCH ONLY, stdout carries counts
+##     poll_galerts     (tool) the Alertmanager built into the configured
+##                             Grafana: the alerts firing right now, one
+##                             GET — ALERT TEXT GOES TO SCRATCH ONLY,
+##                             stdout carries counts
 ##     probe_http       (tool) the app's own health URLs
 ##     leak_scan        (tool) the ONLY reader of the raw lines: redacts
 ##                             every class of secret / personal data,
@@ -174,6 +178,10 @@ schema plan_output:
   ## the lane identity, the cursor (bootstrap, armed_at, since, new_since)
   ## and the incidents' index the walk needs (tracked ids, known dates).
   sentry: json
+  ## {enabled: false} when the lane is off; else the normalized knobs:
+  ## which label carries the severity, its mapping, the defaults, the
+  ## read cap.
+  grafana_alerts: json
   sinks: json
   ## Message labels: built-in English defaults merged with the config's
   ## `labels` map (any language without touching the bot).
@@ -278,11 +286,41 @@ schema sentry_output:
   ok: bool
   summary: string
 
+schema galerts_input:
+  grafana: json
+  grafana_alerts: json
+  timeout_secs: int
+  scratch_dir: string
+  allow_private: bool
+
+schema galerts_output:
+  ## Scratch file holding one record per alert firing right now (its
+  ## free text — labels, annotations — included). The ONLY consumer is
+  ## leak_scan; the path is the handoff, never the content.
+  raw_file: string
+  ## Records written — leak_scan and decide refuse a handoff that holds
+  ## another number.
+  alerts: int
+  ## True when the deadline passed or an alert was malformed: absence
+  ## proves nothing this tick (no resolution is concluded from it).
+  truncated: bool
+  ## {answered, active, held, held_fps (hex fingerprints of the alerts the
+  ##  response still holds — silenced, inhibited, unrouted; an incident of
+  ##  theirs is SEEN, never resolved), held_fps_cut (some held alerts
+  ##  could not be fingerprinted: no resolution at all this tick)}
+  walk: json
+  ## [{query, error}] — reported, not fatal: it degrades the lane.
+  errors: json
+  ok: bool
+  summary: string
+
 schema leak_input:
   raw_file: string
   per_query: json
   sentry_file: string
   sentry_issues: int
+  galerts_file: string
+  galerts_expected: int
   app: json
   scratch_dir: string
 
@@ -319,6 +357,12 @@ schema decide_input:
   sentry_errors: json
   sentry_walk: json
   sentry_issues: int
+  grafana_alerts: json
+  galerts_ok: bool
+  galerts_truncated: bool
+  galerts_errors: json
+  galerts_walk: json
+  galerts_expected: int
   release: string
   release_known: bool
   lanes: json
@@ -698,7 +742,8 @@ tool plan:
              ('probes', sum(2 * p['timeout_secs'] + 2 for p in http_probes) + sum(probe_hosts.values())),
              ('loki', grafana['deadline_secs'] if queries else 0),
              ('prometheus', grafana['deadline_secs'] if norm_probes else 0),
-             ('sentry', sentry['deadline_secs'] if sentry['enabled'] else 0)]
+             ('sentry', sentry['deadline_secs'] if sentry['enabled'] else 0),
+             ('grafana alerts', grafana['deadline_secs'] if isinstance(cfg.get('grafana_alerts'), dict) else 0)]
     worst = sum(w for _, w in waits)
     if RUN_BUDGET_SECS > 0 and worst > RUN_BUDGET_SECS - AFTER_FETCH_SECS:
         raise SystemExit('prod-watch: the fetches can wait ' + str(worst) + ' s at worst (' +
@@ -743,6 +788,10 @@ tool plan:
         'sentry_undated': 'undated — in the list since {date}',
         'sentry_leak': 'personal data or secret detected in Sentry issue text',
         'sentry_leak_detail': 'class {class} in {count} issue(s): {sources}',
+        'galert_firing': 'Grafana alert firing',
+        'galert_detail': '{alertname} · {labels} · active since {starts}',
+        'galert_resolved': 'resolved — no longer firing',
+        'galert_open': 'view in Grafana',
         'coverage_partial': 'coverage this tick was PARTIAL (reasons below): absence of a finding is not evidence',
         'overflow': '{n} more alert(s) exceeded the per-run cap; they stay open and will fire on the next tick',
         'folded_detail': '{n} more of this kind this tick, not posted one by one: {names}',
@@ -1069,18 +1118,72 @@ tool plan:
         sentry['tracked_resolved'] = len(tracked) - open_n
         sentry['known'] = known
 
-    lanes = {'loki': bool(queries), 'prometheus': bool(norm_probes), 'probes': bool(http_probes), 'sentry': sentry['enabled']}
+    ## ── grafana alerting ───────────────────────────────────────────
+    ## Absent or null: the lane is off. Present: the Alertmanager built
+    ## into the SAME Grafana (config.grafana.base_url) is polled — the
+    ## rules the product team authors there become incidents here, with
+    ## the lifecycle every lane has (new / reminder / escalation / a
+    ## resolved note when a whole read no longer sees the alert) and the
+    ## same redaction discipline (annotations are free text: scrubbed
+    ## before anything derived). Severity comes from the alert's labels:
+    ## the `severity_label` label's value is mapped through `severity`
+    ## (label value -> critical|high|medium|low); anything unmapped takes
+    ## default_severity, capped by max_severity.
+    ga_cfg = cfg.get('grafana_alerts')
+    ga = {'enabled': False}
+    if ga_cfg is not None:
+        if not isinstance(ga_cfg, dict):
+            raise SystemExit('prod-watch: config.grafana_alerts must be an object (or null to turn the lane off)')
+        if not grafana.get('base_url'):
+            raise SystemExit('prod-watch: config.grafana_alerts is configured but config.grafana.base_url is missing '
+                             '(the lane polls that Grafana)')
+        ga_sl = str(ga_cfg.get('severity_label') or 'severity')
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,99}', ga_sl):
+            raise SystemExit('prod-watch: config.grafana_alerts.severity_label must be a label name (letters, digits, - and _, '
+                             'not starting with a digit), got ' + repr(ga_sl)[:60])
+        ga_sev = {'critical': 'critical', 'warning': 'medium', 'warn': 'medium', 'info': 'low', 'notice': 'low', 'none': 'low'}
+        user_sev = ga_cfg.get('severity')
+        if user_sev is not None:
+            if not isinstance(user_sev, dict) or any(not isinstance(k, str) or not k or not isinstance(v, str)
+                                                     or v.lower() not in SEVERITIES for k, v in user_sev.items()):
+                raise SystemExit('prod-watch: config.grafana_alerts.severity must map label values to critical|high|medium|low')
+            ga_sev.update({str(k): v.lower() for k, v in user_sev.items()})
+        ga_def = str(ga_cfg.get('default_severity') or 'high').lower()
+        if ga_def not in SEVERITIES:
+            raise SystemExit('prod-watch: config.grafana_alerts.default_severity must be critical|high|medium|low, got ' +
+                             repr(ga_cfg.get('default_severity'))[:40])
+        ga_max = str(ga_cfg.get('max_severity') or 'critical').lower()
+        if ga_max not in SEVERITIES:
+            raise SystemExit('prod-watch: config.grafana_alerts.max_severity must be critical|high|medium|low, got ' +
+                             repr(ga_cfg.get('max_severity'))[:40])
+        def ga_int(name, default, lo, hi):
+            v = ga_cfg.get(name)
+            if v is None:
+                return default
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise SystemExit('prod-watch: config.grafana_alerts.' + name + ' must be an integer in [' + str(lo) + ', ' + str(hi) +
+                                 '], got ' + repr(v)[:40])
+            return v
+        ga_max_alerts = ga_int('max_alerts', 200, 1, 1000)
+        ga = {'enabled': True, 'severity_label': ga_sl, 'severity': ga_sev, 'default_severity': ga_def,
+              'max_severity': ga_max, 'max_alerts': ga_max_alerts}
+
+    lanes = {'loki': bool(queries), 'prometheus': bool(norm_probes), 'probes': bool(http_probes), 'sentry': sentry['enabled'],
+             'grafana_alerts': ga['enabled']}
     if not any(lanes.values()):
-        raise SystemExit('prod-watch: config declares no lane at all (loki.queries, prometheus.probes, probes and sentry all empty)')
+        raise SystemExit('prod-watch: config declares no lane at all (loki.queries, prometheus.probes, probes, sentry and '
+                         'grafana_alerts all empty)')
 
     summary = ('watch: app=' + app['name'] + ('/' + app['environment'] if app['environment'] else '') +
                ', loki ' + str(len(queries)) + ' query(ies), prometheus ' + str(len(norm_probes)) +
                ' probe(s), http ' + str(len(http_probes)) + ' probe(s), sentry ' +
                ((sentry['project'] + ('/' + sentry['environment'] if sentry['environment'] else '') +
                  (' (bootstrap)' if sentry['bootstrap'] else '')) if sentry['enabled'] else 'off') +
+               ', grafana alerts ' + ('on' if ga['enabled'] else 'off') +
                ', ' + str(len(sinks)) + ' sink(s)' + (', HALTED' if halted else ''))
     print(json.dumps({'app': app, 'release': release, 'grafana': grafana, 'loki': loki_plan,
-                      'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sentry': sentry, 'sinks': sinks,
+                      'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sentry': sentry,
+                      'grafana_alerts': ga, 'sinks': sinks,
                       'labels': labels, 'lanes': lanes, 'ledger': ledger, 'halted': halted, 'halt': halt or {},
                       'halt_reason': halt_reason, 'deliver_by': deliver_by, 'summary': summary}, ensure_ascii=False))
 
@@ -1322,8 +1425,8 @@ tool poll_loki:
             return not a.is_multicast and not a.is_unspecified
         return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
     def _validate_host(host):
-        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry and probe_http —
-        ## edit all five. No proxy exemption: the TARGET host is what is
+        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry,
+        ## poll_galerts, probe_http and notify — edit all seven. No proxy exemption: the TARGET host is what is
         ## validated here, whatever an egress proxy in the environment says.
         if not host:
             raise ValueError('URL has no host')
@@ -1742,8 +1845,8 @@ tool poll_prom:
             return not a.is_multicast and not a.is_unspecified
         return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
     def _validate_host(host):
-        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry and probe_http —
-        ## edit all five. No proxy exemption: the TARGET host is what is
+        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry,
+        ## poll_galerts, probe_http and notify — edit all seven. No proxy exemption: the TARGET host is what is
         ## validated here, whatever an egress proxy in the environment says.
         if not host:
             raise ValueError('URL has no host')
@@ -2008,8 +2111,8 @@ tool poll_sentry:
             return not a.is_multicast and not a.is_unspecified
         return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
     def _validate_host(host):
-        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry and probe_http —
-        ## edit all five. No proxy exemption: the TARGET host is what is
+        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry,
+        ## poll_galerts, probe_http and notify — edit all seven. No proxy exemption: the TARGET host is what is
         ## validated here, whatever an egress proxy in the environment says.
         if not host:
             raise ValueError('URL has no host')
@@ -2515,6 +2618,340 @@ tool poll_sentry:
   input: sentry_input
   output: sentry_output
 
+## The Alertmanager built into the configured Grafana: ONE GET of the
+## alerts firing right now, the whole set, no cursor — the rules are the
+## product team's, authored in Grafana's own UI; this lane aggregates.
+## Only state=active mints here; everything else (suppressed, unprocessed)
+## is counted, never read into the handoff. The fingerprint is computed
+## from the RAW labels — a scrubbed value must never change an incident's
+## identity between ticks. Free text goes to scratch only; a
+## generatorURL survives only on the Grafana's own origin and a closed
+## alphabet (notify renders it as a link, its text a label).
+tool poll_galerts:
+  script: |
+    import json, os, socket, ipaddress, time, re, http, datetime, signal, hashlib
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    grafana = {{input.grafana}} or {}
+    cfg = {{input.grafana_alerts}} or {}
+    timeout = int({{input.timeout_secs}})
+    deadline = time.monotonic() + int(grafana.get('deadline_secs') or 90)
+    scratch = {{input.scratch_dir}}
+    allow_private = {{input.allow_private}}
+    token_file = {{secrets.grafana_token.path}}
+    os.makedirs(scratch, exist_ok=True)
+    ## Always a fresh file, even with the lane off: leak_scan opens it.
+    raw_path = os.path.join(scratch, 'galerts_raw-' + str({{run.id}})[-12:] + '.jsonl')
+    open(raw_path, 'w', encoding='utf-8').close()
+    if not cfg.get('enabled'):
+        print(json.dumps({'raw_file': raw_path, 'alerts': 0, 'truncated': False, 'walk': {}, 'errors': [], 'ok': True,
+                          'summary': 'grafana alerts lane off'}))
+        raise SystemExit(0)
+    base = grafana['base_url']
+    origin = urlsplit(base)
+
+    ## Name resolution is bounded, and done once per host: getaddrinfo is a
+    ## C call no alarm interrupts (a resolver answering in 25 s held every
+    ## clock of the tick), so a worker thread runs it and the caller stops
+    ## waiting at the timeout. The answer is kept per host and re-used for
+    ## every port: the connection goes to the addresses the guard checked.
+    import threading
+    _gai, _gai_hosts, _gai_timeout = socket.getaddrinfo, {}, [timeout]
+    def _bounded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        ## One host whatever its case: the guard resolves the URL's lower-cased
+        ## host, the connection the host as written.
+        host = host.lower() if isinstance(host, str) else host
+        if host not in _gai_hosts:
+            box = {}
+            def work():
+                try:
+                    box['v'] = _gai(host, None, 0, socket.SOCK_STREAM)
+                except BaseException as e:
+                    box['e'] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            th.join(_gai_timeout[0])
+            if th.is_alive():
+                raise OSError('resolving ' + repr(host) + ' took longer than ' + str(_gai_timeout[0]) + ' s')
+            if 'e' in box:
+                raise box['e']
+            _gai_hosts[host] = box['v']
+        out = [(fam, type or typ, proto or pro, canon, (sa[0], port) + tuple(sa[2:]) if isinstance(port, int) else sa)
+               for fam, typ, pro, canon, sa in _gai_hosts[host] if not family or fam == family]
+        if not out:
+            raise socket.gaierror(socket.EAI_FAMILY, 'no address of the requested family for ' + repr(host))
+        return out
+    socket.getaddrinfo = _bounded_getaddrinfo
+
+    def _addr_ok(ip):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        if a.is_link_local:
+            return False
+        if allow_private:
+            return not a.is_multicast and not a.is_unspecified
+        return a.is_global and not (a.is_private or a.is_loopback or a.is_reserved or a.is_multicast or a.is_unspecified)
+    def _validate_host(host):
+        ## Same body in resolve_release, poll_loki, poll_prom, poll_sentry,
+        ## poll_galerts, probe_http and notify — edit all seven. No proxy exemption: the TARGET host is what is
+        ## validated here, whatever an egress proxy in the environment says.
+        if not host:
+            raise ValueError('URL has no host')
+        for info in socket.getaddrinfo(host, None):
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    class CredentialRefused(Exception):
+        pass
+
+    class LaneError(Exception):
+        pass
+
+    class DeadlineReached(Exception):
+        pass
+
+    def lane_error(e):
+        ## What an exception says about an upstream answer can quote it — an
+        ## alert label, an annotation anyone with Grafana access can write,
+        ## an HTTP reason phrase (the server's words): only the lane's own
+        ## messages and the transport's travel, an HTTP error as its code and
+        ## the standard phrase; anything else is named by its type.
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                phrase = http.HTTPStatus(e.code).phrase
+            except ValueError:
+                phrase = 'unknown status'
+            return 'HTTPError: HTTP Error ' + str(e.code) + ': ' + phrase
+        if isinstance(e, (CredentialRefused, LaneError, DeadlineReached, OSError)):
+            return type(e).__name__ + ': ' + str(e)[:200]
+        return type(e).__name__ + ': the answer did not parse (its text is withheld)'
+
+    ## The environment the lane needs — a usable token, a scheme the bearer
+    ## credential can ride, a Grafana host resolving to an allowed address —
+    ## is checked once; a failure fails the whole lane, named.
+    token, setup_exc = '', None
+    try:
+        if token_file and os.path.exists(token_file):
+            with open(token_file, encoding='utf-8-sig') as fh:
+                token = fh.read().strip()
+        if not token:
+            raise CredentialRefused('the grafana_token secret is not bound or empty -- bind a Grafana service-account token '
+                                    '(Viewer is enough) to the secret name grafana_token')
+        if not (token.isascii() and token.isprintable()) or ' ' in token:
+            ## Never quoted: the text is the secret, or holds it.
+            raise CredentialRefused('the grafana_token secret is not one token on one line (whitespace or a control character '
+                                    'inside) -- bind the token alone')
+        if origin.scheme != 'https' and not allow_private:
+            raise LaneError('grafana.base_url must be https:// (the token travels as a bearer credential), got ' + repr(base))
+        ## The name resolves within the lane's deadline, like the answer after it.
+        _gai_timeout[0] = max(1, min(timeout, int(deadline - time.monotonic())))
+        try:
+            _validate_host(origin.hostname or '')
+        except (OSError, ValueError) as e:
+            raise OSError('Grafana host ' + repr(origin.hostname) + ': ' + str(e)) from None
+    except Exception as e:
+        setup_exc = e
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    _opener = urllib.request.build_opener(_NoRedirect())
+    MAX_BODY = 8 * 1024 * 1024
+    ## The deadline is a wall clock. A server — or a proxy in front of it —
+    ## that trickles a byte at a time resets the socket timeout on every
+    ## byte, in the status line and headers, a chunk-size line or the
+    ## trailers as much as in the body: an alarm bounds each exchange whole.
+    calling = ['']
+    def _deadline_alarm(signum, frame):
+        raise DeadlineReached('the lane passed its deadline_secs during ' + calling[0])
+    signal.signal(signal.SIGALRM, _deadline_alarm)
+
+    def get(path, what):
+        ## `what` names the call in every error; a URL is never quoted (the
+        ## habit is what keeps the other callers clean).
+        if time.monotonic() >= deadline:
+            raise DeadlineReached('the lane passed its deadline_secs before ' + what)
+        req = urllib.request.Request(base + path, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
+                                                           'User-Agent': 'prod-watch/0.2 (iterion)'})
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise DeadlineReached('the lane passed its deadline_secs during ' + what)
+            try:
+                calling[0] = what
+                signal.setitimer(signal.ITIMER_REAL, left)
+                with _opener.open(req, timeout=max(1, min(timeout, left))) as r:
+                    ## One recv at a time (read1), the deadline checked between
+                    ## them too: read(n) would wait for all n bytes.
+                    chunks, size = [], 0
+                    while True:
+                        if time.monotonic() >= deadline:
+                            raise DeadlineReached('the lane passed its deadline_secs while reading ' + what)
+                        c = r.read1(65536)
+                        if not c:
+                            break
+                        chunks.append(c)
+                        size += len(c)
+                        if size > MAX_BODY:
+                            raise LaneError('the answer to ' + what + ' exceeds 8 MiB')
+                    return json.loads(b''.join(chunks).decode('utf-8')), r.headers
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    raise CredentialRefused('Grafana refused the token (HTTP ' + str(e.code) + ') on ' + what +
+                                            ' -- the grafana_token needs read on this org, or it expired')
+                last = e
+                if e.code < 500 and e.code != 429:
+                    raise LaneError('Grafana refused ' + what + ' (HTTP ' + str(e.code) + ')')
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                if time.monotonic() >= deadline:
+                    ## The call was cut by the deadline cap on its timeout.
+                    raise DeadlineReached('the lane passed its deadline_secs during ' + what) from None
+                last = e
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+        raise last
+
+    LABEL_KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_-]{0,99}')
+    URL_SAFE = re.compile(r'[A-Za-z0-9\-._~:/?#@!$&*+,;=%]{1,300}')
+    FP_SAFE = re.compile(r'[0-9a-f]{1,40}')
+    def text(v, cap):
+        ## A lone surrogate (valid JSON, invalid UTF-8) is replaced here, or
+        ## every later write would die on it. Free text is bounded here and
+        ## cut to its display size only AFTER the scrub.
+        return v[:cap].encode('utf-8', 'replace').decode('utf-8') if isinstance(v, str) else ''
+
+    records, stats = [], {'malformed': 0, 'active': 0, 'held': 0}
+    max_alerts = int(cfg.get('max_alerts') or 200)
+    base_origin = (origin.scheme.lower(), (origin.hostname or '').lower(), origin.port)
+    def fp_of(labels, claimed):
+        ## The identity comes from the RAW labels, before any scrub: a value
+        ## that scrubs (a label someone pasted a token into) must not turn a
+        ## firing incident into a new one. The Alertmanager's fingerprint
+        ## when it gives one, else this lane's hash — computed ALIKE for
+        ## held and active alerts, so decide can tell "present but held"
+        ## from "gone".
+        fp = claimed.lower() if isinstance(claimed, str) else ''
+        if not FP_SAFE.fullmatch(fp):
+            fp = hashlib.blake2b('\n'.join(k + '=' + labels[k] for k in sorted(labels)).encode('utf-8', 'replace'),
+                                 digest_size=16).hexdigest()
+        return fp
+    held_fps = []
+    def take(a):
+        if not isinstance(a, dict):
+            stats['malformed'] += 1
+            return
+        st = a.get('status')
+        state = st.get('state') if isinstance(st, dict) else None
+        state = str(state or '').lower()
+        if state != 'active':
+            ## Suppressed, unprocessed, or a state word this API version
+            ## invented: none of them pages anyone — and none of them is an
+            ## ABSENCE either. The fingerprint joins held_fps (hex only —
+            ## no raw text travels in the walk): an alert the response still
+            ## holds must never read as "resolved — no longer firing". The
+            ## next tick reads an unprocessed one once the Alertmanager
+            ## routed it, and a silenced one pages again when its silence
+            ## ends — the incident keeps its clocks meanwhile.
+            raw_labels = a.get('labels')
+            if isinstance(raw_labels, dict) and raw_labels and len(raw_labels) <= 32 and \
+                    all(isinstance(k, str) and LABEL_KEY.fullmatch(k) and isinstance(v, (str, int, float, bool))
+                        for k, v in raw_labels.items()) and len(held_fps) < 1000:
+                held_fps.append(fp_of({str(k): text(str(v), 2000) for k, v in sorted(raw_labels.items())},
+                                      a.get('fingerprint')))
+            stats['held'] += 1
+            return
+        raw_labels = a.get('labels')
+        if not isinstance(raw_labels, dict) or not raw_labels or \
+                any(not isinstance(k, str) or not LABEL_KEY.fullmatch(k) or not isinstance(v, (str, int, float, bool))
+                    for k, v in raw_labels.items()):
+            stats['malformed'] += 1
+            return
+        if len(raw_labels) > 32:
+            raise LaneError('an alert carries ' + str(len(raw_labels)) + ' labels (32 at most) -- a server that '
+                            'ignores the shape is not read')
+        labels = {str(k): text(str(v), 2000) for k, v in sorted(raw_labels.items())}
+        fp = fp_of(labels, a.get('fingerprint'))
+        ## Annotation keys are free text from whoever writes the rules, like
+        ## their values — a lone surrogate (valid JSON, invalid UTF-8) would
+        ## kill the handoff write after the walk.
+        ann = a.get('annotations') if isinstance(a.get('annotations'), dict) else {}
+        ann = {text(k, 64): text(v, 4000) for k, v in ann.items() if isinstance(k, str) and isinstance(v, (str, int, float, bool))}
+        gen = a.get('generatorURL')
+        gen = gen if isinstance(gen, str) else ''
+        try:
+            gparts = urlsplit(gen) if gen else None
+        except ValueError:
+            gparts = None
+        if not gparts or (gparts.scheme.lower(), (gparts.hostname or '').lower(), gparts.port) != base_origin or not URL_SAFE.fullmatch(gen):
+            gen = ''   ## A URL the configured Grafana does not own is never carried.
+        starts = a.get('startsAt'); ends = a.get('endsAt')
+        records.append({'fingerprint': fp, 'labels': labels,
+                        'annotations': {k: v for k, v in sorted(ann.items()) if v},
+                        'starts_at': text(starts, 40), 'ends_at': text(ends, 40),
+                        'state': 'active', 'generator_url': gen})
+        stats['active'] += 1
+        if stats['active'] > max_alerts:
+            raise LaneError('Grafana holds more than ' + str(max_alerts) + ' firing alerts (max_alerts) -- an active set that large '
+                            'is not walked one by one; silence some rules or raise config.grafana_alerts.max_alerts')
+
+    walk_info = {'answered': False}
+    truncated = False
+    errors = []
+    try:
+        if setup_exc is not None:
+            raise setup_exc
+        body, _ = get('/api/alertmanager/grafana/api/v2/alerts', 'the firing alerts')
+        if not isinstance(body, list):
+            raise LaneError('the answer to the firing alerts is not a list (its text is withheld)')
+        walk_info['answered'] = True
+        for a in body:
+            take(a)
+    except DeadlineReached:
+        truncated = True
+    except Exception as e:
+        errors.append({'query': 'grafana alerts', 'error': lane_error(e)})
+    if errors:
+        ## A refused read hands off nothing: the lane is one call, so no
+        ## record it "read" before the refusal is a fact — decide must not
+        ## score alerts of a walk that never happened.
+        records = []
+        stats['active'] = 0
+
+    ## The lane carries no clock of its own: there is no cursor to stamp
+    ## (the poll is stateless — the alerts' startsAt is what the incidents
+    ## date from), so the server's Date header would be a field no one
+    ## reads. walk = {answered, active, held, held_fps, held_fps_cut}.
+    walk_info['active'], walk_info['held'] = stats['active'], stats['held']
+    walk_info['held_fps'] = held_fps
+    ## Held alerts the walk could not fingerprint (malformed labels, or the
+    ## 1000 cap): decide's "seen but held" guard is incomplete — no
+    ## resolution is concluded that tick at all.
+    walk_info['held_fps_cut'] = stats['held'] > len(held_fps)
+    with open(raw_path, 'w', encoding='utf-8') as fh:
+        for rec in records:
+            fh.write(json.dumps(rec, ensure_ascii=False) + chr(10))
+    failed = {e['query'] for e in errors}
+    partial = [why for why, on in (
+        ('the deadline passed', truncated),
+        (str(stats['malformed']) + ' malformed alert(s) skipped', stats['malformed'] > 0)) if on and not ('grafana alerts' in failed)]
+    truncated = truncated or stats['malformed'] > 0
+    summary = ('grafana alerts: ' + str(stats['active']) + ' firing (' + str(stats['held']) + ' held by the Alertmanager)' +
+               (', TRUNCATED' if truncated else '') + ((' -- errors: ' + json.dumps(errors)[:300]) if errors else ''))
+    print(json.dumps({'raw_file': raw_path, 'alerts': len(records), 'truncated': truncated, 'walk': walk_info,
+                      'errors': errors, 'ok': not errors, 'summary': summary}, ensure_ascii=False))
+
+  language: py
+  input: galerts_input
+  output: galerts_output
+
 ## The application's own health URLs — the one signal that needs no
 ## observability stack at all. A probe is OK when the status matches;
 ## the body is never stored. Redirects are followed only hop by hop
@@ -2680,6 +3117,8 @@ tool leak_scan:
     per_query = {{input.per_query}} or {}
     sentry_path = {{input.sentry_file}} or ''
     sentry_expected = int({{input.sentry_issues}} or 0)
+    galerts_path = {{input.galerts_file}} or ''
+    galerts_expected = int({{input.galerts_expected}} or 0)
     app = {{input.app}} or {}
     scratch = {{input.scratch_dir}}
     os.makedirs(scratch, exist_ok=True)
@@ -3159,13 +3598,70 @@ tool leak_scan:
                          str(sentry_expected) + ' -- refusing to score a partial read as an observation')
     sentry_issues.sort(key=lambda i: str(i.get('id')))
 
+    ## ── Grafana alerts ─────────────────────────────────────────────
+    ## The same discipline as the Sentry records: every free-text field
+    ## (label values, annotation values) goes through the same scrub, into
+    ## a per-alert findings dict; each is cut to its display size AFTER the
+    ## scrub. The fingerprint travels as the lane computed it (RAW labels):
+    ## an identity never depends on what the scrub found.
+    galerts = []
+    ga_records = 0
+    if galerts_path and os.path.exists(galerts_path):
+        with open(galerts_path, encoding='utf-8') as fh:
+            for ln in fh:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    rec = json.loads(ln)
+                except ValueError:
+                    continue   # counted as missing: the record count below refuses the handoff
+                if not isinstance(rec, dict) or not isinstance(rec.get('labels'), dict):
+                    continue
+                ga_records += 1
+                per = {}
+                seen = str(rec.get('starts_at') or '')
+                def gclean(v, cap):
+                    if not isinstance(v, str) or not v:
+                        return ''
+                    return scrub(v, 'grafana_alerts', {}, seen, (), per)[:cap]
+                labels = {}
+                for k, v in rec['labels'].items():
+                    ## The KEY is free text from whoever writes the rules,
+                    ## exactly like the value: the same scrub, the same
+                    ## classes — a token in a key reaches the messages and
+                    ## the committed state masked, or not at all.
+                    lk = gclean(str(k), 64)
+                    lv = gclean(v, 200)
+                    if lk and lv:
+                        labels[lk] = lv
+                ann = {}
+                for k, v in (rec.get('annotations') or {}).items():
+                    ak = gclean(str(k), 64)
+                    av = gclean(v, 300)
+                    if ak and av:
+                        ann[ak] = av
+                galerts.append({'fingerprint': rec.get('fingerprint') or '', 'labels': labels, 'annotations': ann,
+                                'starts_at': rec.get('starts_at') or '', 'ends_at': rec.get('ends_at') or '',
+                                'state': rec.get('state') or '', 'generator_url': rec.get('generator_url') or '',
+                                'leaks': sorted(({'class': f['class'], 'count': f['count'], 'sample_masked': f['sample_masked']}
+                                                 for f in per.values()), key=lambda f: f['class'])})
+    elif galerts_expected > 0:
+        raise SystemExit('prod-watch: the Grafana-alerts handoff ' + repr(galerts_path) + ' is missing although the lane reported ' +
+                         str(galerts_expected) + ' alert(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
+    if ga_records != galerts_expected:
+        raise SystemExit('prod-watch: the Grafana-alerts handoff holds ' + str(ga_records) + ' record(s) but the lane reported ' +
+                         str(galerts_expected) + ' -- refusing to score a partial read as an observation')
+    galerts.sort(key=lambda a: str(a.get('fingerprint')))
+
     signals = {'app': app.get('name') or '', 'coverage': coverage, 'lines_scanned': scanned,
                'templates': tpl_list[:200], 'templates_cut': templates_cut, 'templates_total': len(tpl_list), 'cut_last_ts': cut_last_ts,
-               'leak': leak_list, 'per_query': per_query, 'sentry_issues': sentry_issues}
+               'leak': leak_list, 'per_query': per_query, 'sentry_issues': sentry_issues, 'galerts': galerts}
     with open(signals_path, 'w', encoding='utf-8') as fh:
         json.dump(signals, fh, ensure_ascii=False, indent=1)
     summary = ('scanned ' + str(scanned) + ' line(s), ' + str(len(tpl_list)) + ' error template(s), ' +
-               str(len(leak_list)) + ' leak class(es) hit, ' + str(len(sentry_issues)) + ' Sentry issue(s) scrubbed, coverage ' + coverage)
+               str(len(leak_list)) + ' leak class(es) hit, ' + str(len(sentry_issues)) + ' Sentry issue(s) scrubbed, ' +
+               str(len(galerts)) + ' Grafana alert(s) scrubbed, coverage ' + coverage)
     print(json.dumps({'signals_file': signals_path, 'templates': len(tpl_list), 'lines_scanned': scanned,
                       'leak_findings': leak_list, 'coverage': coverage, 'summary': summary}, ensure_ascii=False))
 
@@ -3202,6 +3698,12 @@ tool decide:
     sentry_errors = {{input.sentry_errors}} or []
     sentry_walk = {{input.sentry_walk}} or {}
     sentry_expected = int({{input.sentry_issues}} or 0)
+    ga_cfg = {{input.grafana_alerts}} or {}
+    galerts_ok = bool({{input.galerts_ok}})
+    galerts_truncated = bool({{input.galerts_truncated}})
+    galerts_errors = {{input.galerts_errors}} or []
+    galerts_walk = {{input.galerts_walk}} or {}
+    galerts_expected = int({{input.galerts_expected}} or 0)
     release = {{input.release}} or ''
     release_known = bool({{input.release_known}})
     lanes = {{input.lanes}} or {}
@@ -3285,10 +3787,16 @@ tool decide:
     if sentry_expected > 0 and not os.path.exists(signals_file):
         raise SystemExit('prod-watch: the signals file ' + repr(signals_file) + ' is missing although the Sentry lane reported ' +
                          str(sentry_expected) + ' issue(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
+    if galerts_expected > 0 and not os.path.exists(signals_file):
+        raise SystemExit('prod-watch: the signals file ' + repr(signals_file) + ' is missing although the Grafana-alerts lane reported ' +
+                         str(galerts_expected) + ' alert(s) -- a resumed run on another runner, or a cleaned scratch; relaunch the tick')
     signals = jload(signals_file, {})
     if len(signals.get('sentry_issues') or []) != sentry_expected:
         raise SystemExit('prod-watch: the signals hold ' + str(len(signals.get('sentry_issues') or [])) + ' Sentry issue(s) but the lane '
                          'reported ' + str(sentry_expected) + ' -- a scan from another tick; relaunch the tick')
+    if len(signals.get('galerts') or []) != galerts_expected:
+        raise SystemExit('prod-watch: the signals hold ' + str(len(signals.get('galerts') or [])) + ' Grafana alert(s) but the lane '
+                         'reported ' + str(galerts_expected) + ' -- a scan from another tick; relaunch the tick')
     spath = os.path.join(state_dir, 'state.json')
     bootstrap = not os.path.exists(spath)
     state = jload(spath, {'version': 1, 'generation': 0, 'cursors': {'loki': {}}, 'incidents': {}, 'health': {}, 'halt': None})
@@ -3356,7 +3864,44 @@ tool decide:
     ## the tick may be reported when one probe answered, like one Loki
     ## query covered.
     prom_answered = any(r.get('state') != 'error' for r in prom_results)
-    lane_ok = {'loki': loki_ok, 'prometheus': prom_answered, 'probes': True, 'sentry': bool(sentry_walk.get('answered'))}
+    ## ── Grafana alerts ─────────────────────────────────────────────
+    ## Only the ACTIVE alerts mint (the poll already held the rest back;
+    ## an off or errored lane hands off an empty set — the handoff counts
+    ## refuse a mismatch): the severity comes from the alert's labels
+    ## through the config's mapping — an unmapped or scrubbed-away value
+    ## takes default_severity, capped by max_severity —, the title from
+    ## the summary annotation, then the alertname label. The link is the
+    ## generator URL the poll kept (the Grafana's own origin, a closed
+    ## alphabet); notify renders it under the same discipline as Sentry's.
+    for r in (signals.get('galerts') or []):
+        if r.get('state') != 'active' or not isinstance(r.get('labels'), dict):
+            continue
+        lab = r['labels']
+        fp = str(r.get('fingerprint') or '')
+        if not re.fullmatch(r'[0-9a-f]{1,40}', fp):
+            continue
+        sev_word = str(lab.get(ga_cfg.get('severity_label') or 'severity') or '')
+        sev = (ga_cfg.get('severity') or {}).get(sev_word) or ga_cfg.get('default_severity') or 'high'
+        cap = ga_cfg.get('max_severity') or 'critical'
+        if RANK.get(sev, 1) > RANK.get(cap, 4):
+            sev = cap
+        name = lab.get('alertname') or (r.get('annotations') or {}).get('summary') or fp[:12]
+        cands.append({'fp': 'galert:' + fp, 'kind': 'galert', 'sources': ['grafana_alerts'], 'severity': sev,
+                      'title_key': 'galert_firing',
+                      'title_arg': str((r.get('annotations') or {}).get('summary') or name)[:120],
+                      'detail_key': 'galert_detail',
+                      'fields': {'alertname': str(name)[:120],
+                                 'labels': ', '.join(k + '=' + v for k, v in sorted(lab.items()))[:200],
+                                 'starts': str(r.get('starts_at') or '')[:16]},
+                      'evidence': {'status': '', 'link': str(r.get('generator_url') or '')}, 'lane': 'grafana_alerts',
+                      'tick_count': 1})
+
+    lane_ok = {'loki': loki_ok, 'prometheus': prom_answered, 'probes': True, 'sentry': bool(sentry_walk.get('answered')),
+               'grafana_alerts': bool(galerts_walk.get('answered'))}
+    ## What the response still HOLDS (silenced, inhibited, unrouted): their
+    ## fingerprints, hex only. An incident of theirs is seen, never resolved.
+    ga_held_fps_set = set(str(x) for x in (galerts_walk.get('held_fps') or []) if isinstance(x, str))
+    ga_held_cut = bool(galerts_walk.get('held_fps_cut'))
     seen_fps = set()
     alerts, observed_new = [], 0
 
@@ -3721,7 +4266,9 @@ tool decide:
             ## The first window is history, not news: observe, do not post.
             ## The template re-fires as NEW the first time it recurs.
             observed_new += 1
-        elif prev is None or not prev.get('alerted'):
+        elif prev is None or not prev.get('alerted') or (c['kind'] == 'galert' and prev.get('closed_said')):
+            ## A Grafana alert firing again after its resolved note is news
+            ## again: the channel was told it stopped, a reminder would bury it.
             state_word = 'new'
         elif RANK.get(c['severity'], 0) > RANK.get(prev.get('severity') or 'low', 0):
             state_word = 'escalated'
@@ -3761,14 +4308,16 @@ tool decide:
     tpl_complete = (bool(loki_ok) and not signals.get('templates_cut')
                     and any(q != 'leak_sweep' for q in loki_per_query)
                     and not any(partial(i) for q, i in loki_per_query.items() if q != 'leak_sweep'))
-    observe_ok = dict(lane_ok, loki=loki_complete, prometheus=prom_ok, sentry=sentry_ok and not sentry_truncated)
+    observe_ok = dict(lane_ok, loki=loki_complete, prometheus=prom_ok, sentry=sentry_ok and not sentry_truncated,
+                      grafana_alerts=galerts_ok and not galerts_truncated)
     sources = {'prometheus': {r.get('id') for r in prom_results}, 'probes': {r.get('id') for r in http_results}, 'loki': set(loki_per_query),
-               'sentry': {'sentry'} if lanes.get('sentry') else set()}
+               'sentry': {'sentry'} if lanes.get('sentry') else set(),
+               'grafana_alerts': {'grafana_alerts'} if lanes.get('grafana_alerts') else set()}
     def pending_lane_on(rec):
         ## A pending alert of a log template or a leak class is re-emitted
         ## while its lane is on (below), and kept until then — the same rule
         ## as a pending Sentry issue, whose re-emission needs the lane too.
-        lane_k = {'loki': 'loki', 'leak': 'loki', 'sentry_leak': 'sentry'}.get(rec.get('kind'))
+        lane_k = {'loki': 'loki', 'leak': 'loki', 'sentry_leak': 'sentry', 'galert': 'grafana_alerts'}.get(rec.get('kind'))
         return bool(lane_k) and rec.get('pending') == 'new' and (s_on if lane_k == 'sentry' else bool(lanes.get(lane_k)))
     def s_announceable(rec):
         ## The EVENT a first announcement is owed for: watched in the
@@ -3797,6 +4346,27 @@ tool decide:
             continue
         if rec.get('kind') == 'sentry':
             continue   # its notes are the Sentry block's (resolved, idle), above
+        if rec.get('kind') == 'galert':
+            ## An alert read whole and GONE from the response IS a fact about
+            ## that alert — the channel that heard it fire hears it stop,
+            ## once. An alert the response still HOLDS (silenced, inhibited,
+            ## unrouted: held_fps) is seen, not absent — nothing is
+            ## concluded; nor when the lane errored, read partially, is off,
+            ## or could not fingerprint everything it held. An incident the
+            ## channel never heard of goes quietly; one whose note was said
+            ## waits for retention.
+            ga_held_fps = ga_held_fps_set
+            if (rec.get('closed_said') or not observe_ok.get('grafana_alerts') or not lanes.get('grafana_alerts')
+                    or fp.split(':', 1)[-1] in ga_held_fps_set or ga_held_cut):
+                continue
+            if rec.get('alerted') and not rec.get('quiet_noted'):
+                alerts.append({'fingerprint': fp, 'kind': 'galert', 'severity': 'low', 'state': 'resolved',
+                               'title_key': rec.get('title_key'), 'title_arg': rec.get('title_arg'),
+                               'detail_key': rec.get('detail_key'),
+                               'fields': rec.get('fields') or {}, 'evidence': {'status': ''},
+                               'count': rec.get('count'), 'first_seen': rec.get('first_seen'),
+                               'prev_severity': rec.get('severity') or ''})
+            continue
         lane = {'probe': 'probes', 'prom': 'prometheus', 'prom_no_data': 'prometheus', 'loki': 'loki', 'leak': 'loki',
                 'sentry_leak': 'sentry'}.get(rec.get('kind'), 'loki')
         observed = tpl_complete if rec.get('kind') == 'loki' else observe_ok.get(lane, True)
@@ -3939,6 +4509,9 @@ tool decide:
     if lanes.get('sentry'):
         mark('sentry', sentry_ok and bool(sentry_walk.get('answered')) and s_armed_now,
              json.dumps(sentry_errors)[:300] if sentry_errors else '; '.join(str(x) for x in (sentry_walk.get('partial') or []))[:300])
+    if lanes.get('grafana_alerts'):
+        mark('grafana_alerts', galerts_ok and bool(galerts_walk.get('answered')),
+             json.dumps(galerts_errors)[:300] if galerts_errors else '')
     for source in [k for k in health if not lanes.get(k, False)]:
         del health[source]
     stale = []
@@ -3977,11 +4550,12 @@ tool decide:
     wf_total = s_forgotten + int(state.get('watched_forgotten') or 0)
     coverage = 'partial' if (signals.get('coverage') == 'partial' or loki_truncated or loki_errors or prom_errors or s_unsaid or s_dropped
                              or any(cut_totals.values()) or wf_total
-                             or (lanes.get('sentry') and (sentry_errors or sentry_truncated))) else 'full'
+                             or (lanes.get('sentry') and (sentry_errors or sentry_truncated))
+                             or (lanes.get('grafana_alerts') and (galerts_errors or galerts_truncated))) else 'full'
     gapped = sorted(q for q, i in loki_per_query.items() if i.get('gap'))
     truncated_qs = sorted(q for q, i in loki_per_query.items() if i.get('truncated'))
     lane_errors = '; '.join(sorted(str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160]
-                                   for e in (loki_errors + prom_errors + sentry_errors)))[:600]
+                                   for e in (loki_errors + prom_errors + sentry_errors + galerts_errors)))[:600]
     ## The note's pieces, each with the component it says — the loss first:
     ## a gap, then the errors, then what is only behind.
     pieces = [('gap: ' + q, q + ': gap — the cursor fell out of the max window, the lines in between were skipped') for q in gapped]
@@ -4003,7 +4577,8 @@ tool decide:
     pieces += [(c, text) for text, c in sorted(
         (str(e.get('query') or e.get('probe') or '?') + ': ' + str(e.get('error') or '')[:160],
          lane + ': ' + re.sub(r'\d+', '#', str(e.get('error') or ''))[:160])
-        for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors), ('sentry', sentry_errors)) for e in errs)]
+        for lane, errs in (('loki', loki_errors), ('prometheus', prom_errors), ('sentry', sentry_errors),
+                           ('grafana_alerts', galerts_errors)) for e in errs)]
     pieces += [('truncated', q + ': truncated at max_lines') for q in truncated_qs]
     if signals.get('templates_cut'):
         pieces.append(('cut', 'template list cut: ' + str(signals.get('templates_total') or '?') +
@@ -4029,6 +4604,9 @@ tool decide:
         why = [str(x) for x in (sentry_walk.get('partial') or []) if 'max_catchup_hours' not in str(x)]
         if why or not (sentry_walk.get('gap') or sentry_walk.get('tracked_cut')):
             pieces.append(('sentry truncated', 'sentry: partial walk (' + (', '.join(why[:6]) or 'incomplete') + ')'))
+    if lanes.get('grafana_alerts') and galerts_truncated:
+        pieces.append(('grafana alerts truncated', 'grafana_alerts: partial read (the deadline passed, or an alert was malformed) — '
+                       'no resolution is concluded from this tick'))
     ## Its own component, said whatever else the lane says: a cut that lasts
     ## must not hide a later loss, nor a lane error hide the cut.
     if lanes.get('sentry') and sentry_walk.get('tracked_cut'):
@@ -4231,6 +4809,12 @@ tool decide:
         else:
             rec['last_notified'] = now_iso
             rec['alerted'] = True
+            if a['kind'] == 'galert':
+                ## Posted again after a resolved note: the closure is consumed —
+                ## the channel was told again that this alert fires, and a cut
+                ## re-fires next tick (still firing), then behaves like any
+                ## incident (reminder through its renotify window).
+                rec['closed_said'] = False
             if a['kind'] in ('sentry', 'loki') and not a.get('member') and a['state'] in FACTS and s_int_field(rec.get('alone_until_gen')) is None:
                 ## Its first fact posted alone opens the window the store's cut
                 ## spares it for — once: no later post, real or minted, moves it.
@@ -4510,10 +5094,12 @@ tool notify:
     MARKERS = {'new': 'alert', 'escalated': 'escalated', 'reminder': 'reminder', 'quiet': 'quiet',
                'regressed': 'sentry_regressed', 'escalating': 'sentry_escalating', 'reopened': 'sentry_reopened'}
     CLOSED = {'resolved': 'sentry_resolved', 'ignored': 'sentry_archived'}
-    def marker_key(state, status):
-        return CLOSED.get(status, 'sentry_closed') if state == 'resolved' else MARKERS.get(state)
-    def header(sev, state, status, title_key):
-        key = marker_key(state, status)
+    def marker_key(state, status, kind='sentry'):
+        if state != 'resolved':
+            return MARKERS.get(state)
+        return 'galert_resolved' if kind == 'galert' else CLOSED.get(status, 'sentry_closed')
+    def header(sev, state, status, title_key, kind='sentry'):
+        key = marker_key(state, status, kind)
         marker = (labels.get(key) if key else None) or state
         head = labels.get(title_key or 'alert') or (title_key or 'alert')
         return ICON.get(sev, ':bell:') + ' **' + lab(str(marker).upper(), 40) + ' · ' + lab(scope, 100) + ' — ' + lab(head, 120) + '**'
@@ -4522,7 +5108,7 @@ tool notify:
         ## and link.
         sev = a.get('severity') or 'medium'
         state = a.get('state') or 'new'
-        lines = [header(sev, state, str((a.get('evidence') or {}).get('status') or ''), a.get('title_key'))]
+        lines = [header(sev, state, str((a.get('evidence') or {}).get('status') or ''), a.get('title_key'), a.get('kind'))]
         if a.get('title_arg'):
             lines.append(code(a['title_arg'], 200))
         if detail_key:
@@ -4555,6 +5141,13 @@ tool notify:
             short = ev.get('short_id') if isinstance(ev.get('short_id'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', ev['short_id']) \
                 else link[len(prefix):-1]
             lines.append(lab(labels.get('sentry_open', 'open in Sentry'), 40) + ': [' + short.replace('_', '\\_') + '](' + link + ')')
+        elif (a.get('kind') == 'galert' and isinstance(link, str)
+              and re.fullmatch(r'[A-Za-z0-9\-._~:/?#@!$&*+,;=%]{1,300}', link)):
+            ## The generator URL the poll kept (the Grafana's own origin): the
+            ## same discipline as the Sentry link — a closed alphabet, a text
+            ## that is ours (a label), the address the one the server wrote.
+            gtxt = (labels.get('galert_open') or 'view in Grafana').replace('[', '\\[')
+            lines.append(lab(labels.get('galert_open', 'view in Grafana'), 40) + ': [' + gtxt + '](' + link + ')')
         return lines
 
     ## A note stamps as said every member it names: none is ever cut. Its
@@ -5134,7 +5727,15 @@ workflow prod_watch:
     allow_private: "{{vars.allow_private_sources}}",
   }
 
-  poll_sentry -> probe_http with {
+  poll_sentry -> poll_galerts with {
+    grafana: "{{outputs.plan.grafana}}",
+    grafana_alerts: "{{outputs.plan.grafana_alerts}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    allow_private: "{{vars.allow_private_sources}}",
+  }
+
+  poll_galerts -> probe_http with {
     probes: "{{outputs.plan.probes}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     allow_private: "{{vars.allow_private_sources}}",
@@ -5145,6 +5746,8 @@ workflow prod_watch:
     per_query: "{{outputs.poll_loki.per_query}}",
     sentry_file: "{{outputs.poll_sentry.raw_file}}",
     sentry_issues: "{{outputs.poll_sentry.issues}}",
+    galerts_file: "{{outputs.poll_galerts.raw_file}}",
+    galerts_expected: "{{outputs.poll_galerts.alerts}}",
     app: "{{outputs.plan.app}}",
     scratch_dir: "{{vars.scratch_dir}}",
   }
@@ -5166,6 +5769,12 @@ workflow prod_watch:
     sentry_errors: "{{outputs.poll_sentry.errors}}",
     sentry_walk: "{{outputs.poll_sentry.walk}}",
     sentry_issues: "{{outputs.poll_sentry.issues}}",
+    grafana_alerts: "{{outputs.plan.grafana_alerts}}",
+    galerts_ok: "{{outputs.poll_galerts.ok}}",
+    galerts_truncated: "{{outputs.poll_galerts.truncated}}",
+    galerts_errors: "{{outputs.poll_galerts.errors}}",
+    galerts_walk: "{{outputs.poll_galerts.walk}}",
+    galerts_expected: "{{outputs.poll_galerts.alerts}}",
     release: "{{outputs.resolve_release.release}}",
     release_known: "{{outputs.resolve_release.release_known}}",
     lanes: "{{outputs.plan.lanes}}",

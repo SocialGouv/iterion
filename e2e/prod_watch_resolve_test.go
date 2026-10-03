@@ -86,8 +86,8 @@ func TestProdWatch_TheResolverIsTheSameInEveryNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocks := regexp.MustCompile(`(?s)    ## Name resolution is bounded.*?socket\.getaddrinfo = _bounded_getaddrinfo\n`).FindAll(src, -1)
-	if len(blocks) != 6 {
-		t.Fatalf("want the resolver in 6 nodes (release, loki, prometheus, sentry, probes, notify), found %d", len(blocks))
+	if len(blocks) != 7 {
+		t.Fatalf("want the resolver in 7 nodes (release, loki, prometheus, sentry, galerts, probes, notify), found %d", len(blocks))
 	}
 	norm := regexp.MustCompile(`_gai_timeout = socket\.getaddrinfo, \{\}, \[[^\]]*\]|_gai, _gai_hosts, _gai_timeout = socket\.getaddrinfo, \{\}, \[[^\]]*\]`)
 	first := norm.ReplaceAllString(string(blocks[0]), "")

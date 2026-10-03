@@ -1,7 +1,17 @@
 name: prod-watch
 display_name: Argus
 icon: 👁️
-version: 0.2.2
+version: 0.3.0
+## 0.3.0 — the grafana-alerts lane (#2138): the Alertmanager built into the
+## configured Grafana is polled (one GET of the alerts firing right now) —
+## the rules the product team authors in Grafana's own UI become incidents
+## here, with the lifecycle every lane has (new / reminder / escalation, a
+## resolved note when a whole read no longer CONTAINS the alert — gone,
+## not silenced or inhibited: a held alert is seen, never resolved, a
+## refire as news). Severity from the alert's labels through the config's
+## mapping; label and annotation keys and values are free text, scrubbed
+## like a log line; a generatorURL is carried only on the Grafana's own
+## origin and rendered as the bot's link, its text a label.
 ## 0.2.2 — the ledger bound (#2064): a ledger file past `ledger.max_bytes`
 ## (2 MB, 0 = off) rotates to a generation-named file and a fresh one
 ## starts; the newest `ledger.keep` (8, 0 = all) rotations stay in the
@@ -44,6 +54,14 @@ description: |
     not), the alerted ones read back by id (sightings, resolution). A
     silent bootstrap per lane identity; issue text is scrubbed like a log
     line and never persisted; no event body is fetched.
+  - The Alertmanager built into the configured Grafana: the alerts firing
+    right now, one GET — the rules stay authored in Grafana's own UI and
+    Argus aggregates. Severity from the alert's labels through the
+    config's mapping (default and cap included); label and annotation
+    keys and values are scrubbed like a log line; a whole read that no
+    longer CONTAINS an alerted incident says so (resolved — a silenced
+    or inhibited alert is seen, never resolved); a partial or refused
+    read never concludes.
   - A redaction scan that is the ONLY reader of the raw lines: secrets,
     JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
     (Luhn), emails and phone numbers are replaced before anything is

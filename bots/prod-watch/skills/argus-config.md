@@ -166,6 +166,33 @@ overrides).
   drops the old identity's incidents and cursor, and re-arms the lane (a
   silent bootstrap). `min_level` is not part of it: moving it drops
   nothing. See `skills/signals-and-queries.md` for what posts when.
+- `grafana_alerts` — absent or `null`: the lane is off. Present: the
+  Alertmanager built into the SAME Grafana (`grafana.base_url`) is polled
+  — one GET of the alerts firing right now; the rules stay authored in
+  Grafana's own UI, Argus aggregates. Requires `grafana.base_url` and the
+  `grafana_token` secret (Viewer is enough). `severity_label` (default
+  `severity`: which alert label carries the severity), `severity`
+  (label value → `critical|high|medium|low`; defaults critical→critical,
+  warning/warn→medium, info/notice/none→low), `default_severity` (what an
+  unmapped or unreadable value takes; `high`), `max_severity` (a cap;
+  `critical`), `max_alerts` (200: more firing alerts than that refuses
+  the read — nothing is handed off, the lane is named in the coverage
+  note; silence rules or raise the cap). Only `state: active` alerts
+  mint; an alert that is silenced, inhibited or unrouted is HELD —
+  counted, never read, and never read as an absence either (the lane saw
+  it: no resolution is concluded over it). Label and annotation KEYS and
+  values are free text from whoever can edit the rules: both go through
+  the same scrub before anything derives; the identity is the alert's
+  fingerprint — the Alertmanager's when it gives one, else a hash of the
+  raw labels, so a scrubbed value never moves an incident. A
+  `generatorURL` is carried only on the Grafana's own origin and a
+  closed alphabet, and renders as the message's one link with a label
+  for its text. A WHOLE read whose response no longer contains an
+  alerted incident (gone, not held) posts one `resolved` note (severity
+  low) and stamps the incident closed; it firing again is news again. A
+  partial read (the deadline, a malformed record) or a refused one (an
+  error, the cap) concludes nothing — a dead lane is never an absence of
+  observation. See `skills/signals-and-queries.md` for the lifecycle.
 - `sinks` — same contract as feed-watch/vuln-watch: `webhook` is a NAME
   looked up in the `webhooks` secret; `min_severity` filters what a sink
   receives (notes such as overflow, staleness and partial coverage are

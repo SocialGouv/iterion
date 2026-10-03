@@ -41,28 +41,40 @@ func pwTool(t *testing.T, wf *ir.Workflow, id string) *ir.ToolNode {
 	return tool
 }
 
+// pwGalertsOff: the Grafana-alerts lane's node inputs of a tick whose config
+// has no grafana_alerts section — the same contract as pwSentryOff.
+var pwGalertsOff = map[string]any{
+	"grafana_alerts": map[string]any{"enabled": false}, "galerts_file": "", "galerts_expected": 0,
+	"galerts_ok": true, "galerts_truncated": false, "galerts_errors": []any{}, "galerts_walk": map[string]any{},
+}
+
 // pwSub replaces {{input.K}} / {{vars.K}} refs with JSON literals (the
 // engine's injection contract for script nodes) and {{secrets.N.path}}
 // with the mounted path, failing on any leftover ref.
 func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map[string]string) string {
 	t.Helper()
-	// A test that sets NO Sentry input gets the lane-off ones; one that sets
-	// any must set them all (the unsubstituted-ref check below says which).
+	// Lane-off defaults, per lane: a test that sets NO input of a lane gets
+	// that lane's off ones; one that sets any must set them all (the
+	// unsubstituted-ref check below says which).
 	merged := map[string]any{}
-	partial := false
-	for k := range pwSentryOff {
-		// `loki` is a Loki key: passing it must not suppress the Sentry
-		// defaults (the Loki-only tests pass loki but not sentry).
-		if k == "loki" {
-			continue
+	for _, family := range []map[string]any{pwSentryOff, pwGalertsOff} {
+		partial := false
+		for k := range family {
+			// `loki` is a Loki key: passing it must not suppress the Sentry
+			// defaults (the Loki-only tests pass loki but not sentry).
+			if k == "loki" {
+				continue
+			}
+			if _, set := inputs[k]; set {
+				partial = true
+			}
 		}
-		if _, set := inputs[k]; set {
-			partial = true
-		}
-	}
-	for k, v := range pwSentryOff {
-		if !partial && strings.Contains(script, "{{input."+k+"}}") {
-			merged[k] = v
+		if !partial {
+			for k, v := range family {
+				if strings.Contains(script, "{{input."+k+"}}") {
+					merged[k] = v
+				}
+			}
 		}
 	}
 	for k, v := range inputs {
@@ -207,6 +219,9 @@ type pwHarness struct {
 	sinkHits                             atomic.Int64
 	sentry                               *pwSentry // the fake Sentry (prod_watch_sentry_test.go)
 	sentryTokenFile                      string
+	galerts                              atomic.Value // []map[string]any: the Alertmanager's answer (active + held alerts)
+	galertsRaw                           atomic.Value // string: the Alertmanager's answer served verbatim (a lone surrogate on the wire)
+	galertsStatus                        atomic.Int64 // non-zero: every call to the Alertmanager answers this status
 	alertCap                             atomic.Int64 // tick()'s max_alerts when set (0: the bot's default 20)
 	laneCap                              atomic.Int64 // tick()'s max_alerts_per_lane + 1 when set (0: the bot's default 5)
 	msgChars                             atomic.Int64 // tick()'s max_message_chars when set (0: 14000)
@@ -381,6 +396,7 @@ func newPWHarness(t *testing.T) *pwHarness {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	h.mountSentry(mux)
+	h.mountGalerts(mux)
 	h.srv = httptest.NewServer(mux)
 	t.Cleanup(h.srv.Close)
 
@@ -494,9 +510,12 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"scratch_dir": h.scratch, "allow_private": true})
 	prom := run("poll_prom", map[string]any{"grafana": plan["grafana"], "prometheus": plan["prometheus"], "timeout_secs": 5, "allow_private": true})
 	sentry := run("poll_sentry", map[string]any{"sentry": plan["sentry"], "timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true})
+	galerts := run("poll_galerts", map[string]any{"grafana": plan["grafana"], "grafana_alerts": plan["grafana_alerts"],
+		"timeout_secs": 5, "scratch_dir": h.scratch, "allow_private": true})
 	probe := run("probe_http", map[string]any{"probes": plan["probes"], "timeout_secs": 5, "allow_private": true})
 	leak := run("leak_scan", map[string]any{"raw_file": loki["raw_file"], "per_query": loki["per_query"],
-		"sentry_file": sentry["raw_file"], "sentry_issues": sentry["issues"], "app": plan["app"], "scratch_dir": h.scratch})
+		"sentry_file": sentry["raw_file"], "sentry_issues": sentry["issues"],
+		"galerts_file": galerts["raw_file"], "galerts_expected": galerts["alerts"], "app": plan["app"], "scratch_dir": h.scratch})
 	decide := run("decide", map[string]any{
 		"signals_file": leak["signals_file"], "prom_results": prom["results"], "http_results": probe["results"],
 		"loki":    plan["loki"],
@@ -504,6 +523,8 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		"prom_ok": prom["ok"], "prom_errors": prom["errors"], "release": rel["release"], "release_known": rel["release_known"],
 		"sentry": plan["sentry"], "sentry_ok": sentry["ok"], "sentry_truncated": sentry["truncated"], "sentry_errors": sentry["errors"],
 		"sentry_walk": sentry["walk"], "sentry_issues": sentry["issues"],
+		"grafana_alerts": plan["grafana_alerts"], "galerts_ok": galerts["ok"], "galerts_truncated": galerts["truncated"],
+		"galerts_errors": galerts["errors"], "galerts_walk": galerts["walk"], "galerts_expected": galerts["alerts"],
 		"lanes": plan["lanes"], "app": plan["app"], "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
 		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": h.maxAlerts(), "max_alerts_per_lane": h.maxPerLane(), "max_message_chars": h.maxMsgChars(),
 	})
@@ -3021,7 +3042,10 @@ func TestProdWatch_ResolveReleaseContract(t *testing.T) {
 // TestProdWatch_TheGraphWiringIsTheTick: tick() re-declares every node's
 // inputs by hand, so a dropped or renamed edge mapping compiles fine and
 // runs green — the golden table here is what notices. Any key added to or
-// removed from an edge mapping must edit this table on purpose.
+// removed from an edge mapping must edit this table on purpose. The second
+// table pins each mapping's SOURCE expression: a key re-soured to the wrong
+// output (galerts_file ← poll_loki.raw_file) would pass the key check and
+// every hand-fed tick() test — only this table notices.
 func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
@@ -3030,11 +3054,13 @@ func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 		"poll_loki":       {"grafana": true, "loki": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
 		"poll_prom":       {"grafana": true, "prometheus": true, "timeout_secs": true, "allow_private": true},
 		"poll_sentry":     {"sentry": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
+		"poll_galerts":    {"grafana": true, "grafana_alerts": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
 		"probe_http":      {"probes": true, "timeout_secs": true, "allow_private": true},
-		"leak_scan":       {"raw_file": true, "per_query": true, "sentry_file": true, "sentry_issues": true, "app": true, "scratch_dir": true},
+		"leak_scan":       {"raw_file": true, "per_query": true, "sentry_file": true, "sentry_issues": true, "galerts_file": true, "galerts_expected": true, "app": true, "scratch_dir": true},
 		"decide": {"signals_file": true, "prom_results": true, "http_results": true, "loki": true, "loki_ok": true, "loki_truncated": true,
 			"loki_errors": true, "loki_per_query": true, "prom_ok": true, "prom_errors": true, "release": true, "release_known": true,
 			"sentry": true, "sentry_ok": true, "sentry_truncated": true, "sentry_errors": true, "sentry_walk": true, "sentry_issues": true,
+			"grafana_alerts": true, "galerts_ok": true, "galerts_truncated": true, "galerts_errors": true, "galerts_walk": true, "galerts_expected": true,
 			"lanes": true, "app": true, "workspace": true, "state_dir": true, "scratch_dir": true, "renotify_hours": true,
 			"quiet_after_hours": true, "forget_after_days": true, "source_stale_hours": true, "max_alerts": true,
 			"max_alerts_per_lane": true, "max_message_chars": true},
@@ -3069,6 +3095,68 @@ func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 	for node := range got {
 		if want[node] == nil {
 			t.Fatalf("node %s receives edge mappings the golden table does not know — update the table on purpose", node)
+		}
+	}
+	wantSrc := map[string]map[string]string{
+		"resolve_release": {"release": "{{outputs.plan.release}}", "timeout_secs": "{{vars.fetch_timeout_secs}}", "allow_private": "{{vars.allow_private_sources}}"},
+		"poll_loki": {"grafana": "{{outputs.plan.grafana}}", "loki": "{{outputs.plan.loki}}", "timeout_secs": "{{vars.fetch_timeout_secs}}",
+			"scratch_dir": "{{vars.scratch_dir}}", "allow_private": "{{vars.allow_private_sources}}"},
+		"poll_prom": {"grafana": "{{outputs.plan.grafana}}", "prometheus": "{{outputs.plan.prometheus}}",
+			"timeout_secs": "{{vars.fetch_timeout_secs}}", "allow_private": "{{vars.allow_private_sources}}"},
+		"poll_sentry": {"sentry": "{{outputs.plan.sentry}}", "timeout_secs": "{{vars.fetch_timeout_secs}}",
+			"scratch_dir": "{{vars.scratch_dir}}", "allow_private": "{{vars.allow_private_sources}}"},
+		"poll_galerts": {"grafana": "{{outputs.plan.grafana}}", "grafana_alerts": "{{outputs.plan.grafana_alerts}}",
+			"timeout_secs": "{{vars.fetch_timeout_secs}}", "scratch_dir": "{{vars.scratch_dir}}", "allow_private": "{{vars.allow_private_sources}}"},
+		"probe_http": {"probes": "{{outputs.plan.probes}}", "timeout_secs": "{{vars.fetch_timeout_secs}}", "allow_private": "{{vars.allow_private_sources}}"},
+		"leak_scan": {"raw_file": "{{outputs.poll_loki.raw_file}}", "per_query": "{{outputs.poll_loki.per_query}}",
+			"sentry_file": "{{outputs.poll_sentry.raw_file}}", "sentry_issues": "{{outputs.poll_sentry.issues}}",
+			"galerts_file": "{{outputs.poll_galerts.raw_file}}", "galerts_expected": "{{outputs.poll_galerts.alerts}}",
+			"app": "{{outputs.plan.app}}", "scratch_dir": "{{vars.scratch_dir}}"},
+		"decide": {
+			"signals_file": "{{outputs.leak_scan.signals_file}}", "prom_results": "{{outputs.poll_prom.results}}",
+			"http_results": "{{outputs.probe_http.results}}", "loki": "{{outputs.plan.loki}}",
+			"loki_ok": "{{outputs.poll_loki.ok}}", "loki_truncated": "{{outputs.poll_loki.truncated}}",
+			"loki_errors": "{{outputs.poll_loki.errors}}", "loki_per_query": "{{outputs.poll_loki.per_query}}",
+			"prom_ok": "{{outputs.poll_prom.ok}}", "prom_errors": "{{outputs.poll_prom.errors}}",
+			"sentry": "{{outputs.plan.sentry}}", "sentry_ok": "{{outputs.poll_sentry.ok}}",
+			"sentry_truncated": "{{outputs.poll_sentry.truncated}}", "sentry_errors": "{{outputs.poll_sentry.errors}}",
+			"sentry_walk": "{{outputs.poll_sentry.walk}}", "sentry_issues": "{{outputs.poll_sentry.issues}}",
+			"grafana_alerts": "{{outputs.plan.grafana_alerts}}", "galerts_ok": "{{outputs.poll_galerts.ok}}",
+			"galerts_truncated": "{{outputs.poll_galerts.truncated}}", "galerts_errors": "{{outputs.poll_galerts.errors}}",
+			"galerts_walk": "{{outputs.poll_galerts.walk}}", "galerts_expected": "{{outputs.poll_galerts.alerts}}",
+			"release": "{{outputs.resolve_release.release}}", "release_known": "{{outputs.resolve_release.release_known}}",
+			"lanes": "{{outputs.plan.lanes}}", "app": "{{outputs.plan.app}}",
+			"workspace": "{{vars.workspace_dir}}", "state_dir": "{{vars.state_dir}}", "scratch_dir": "{{vars.scratch_dir}}",
+			"renotify_hours": "{{vars.renotify_hours}}", "quiet_after_hours": "{{vars.quiet_after_hours}}",
+			"forget_after_days": "{{vars.forget_after_days}}", "source_stale_hours": "{{vars.source_stale_hours}}",
+			"max_alerts": "{{vars.max_alerts_per_run}}", "max_alerts_per_lane": "{{vars.max_alerts_per_lane}}",
+			"max_message_chars": "{{vars.max_message_chars}}",
+		},
+		"notify": {"alerts": "{{outputs.decide.alerts}}", "overflow_count": "{{outputs.decide.overflow_count}}",
+			"stale_sources": "{{outputs.decide.stale_sources}}", "sinks": "{{outputs.plan.sinks}}",
+			"labels": "{{outputs.plan.labels}}", "app": "{{outputs.plan.app}}", "sentry": "{{outputs.plan.sentry}}",
+			"release": "{{outputs.resolve_release.release}}", "release_known": "{{outputs.resolve_release.release_known}}",
+			"dry_run": "{{vars.dry_run}}", "max_message_chars": "{{vars.max_message_chars}}", "deliver_by": "{{outputs.plan.deliver_by}}"},
+		"commit_state": {"state_next_file": "{{outputs.decide.state_next_file}}", "alertlog_file": "{{outputs.decide.alertlog_file}}",
+			"tick_file": "{{outputs.decide.tick_file}}", "generation": "{{outputs.decide.generation}}",
+			"state_commit": "{{vars.state_commit}}", "workspace": "{{vars.workspace_dir}}", "state_dir": "{{vars.state_dir}}",
+			"ledger": "{{outputs.plan.ledger}}"},
+	}
+	byNode := map[string]map[string]string{}
+	for _, e := range wf.Edges {
+		if len(e.With) == 0 {
+			continue
+		}
+		byNode[e.To] = map[string]string{}
+		for _, m := range e.With {
+			byNode[e.To][m.Key] = m.Raw
+		}
+	}
+	for node, src := range wantSrc {
+		for k, w := range src {
+			if got := byNode[node][k]; got != w {
+				t.Fatalf("node %s: input %q is sourced from %q, the tick reads %q — a re-edited source is a rewired tick", node, k, got, w)
+			}
 		}
 	}
 }
@@ -3112,6 +3200,8 @@ func pwDecide(t *testing.T, wf *ir.Workflow, h *pwHarness, signals map[string]an
 		"signals_file": sig, "prom_results": []any{}, "http_results": []any{}, "loki_ok": true, "loki_truncated": false,
 		"loki":        map[string]any{"max_records": 0},
 		"loki_errors": []any{}, "loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}}, "prom_ok": true, "prom_errors": []any{},
+		"grafana_alerts": map[string]any{"enabled": false}, "galerts_ok": true, "galerts_truncated": false, "galerts_errors": []any{},
+		"galerts_walk":   map[string]any{}, "galerts_expected": 0,
 		"release": "", "release_known": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": true},
 		"app": map[string]any{"name": "demo"}, "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
 		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5, "max_message_chars": 14000,
