@@ -16,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // A CASCADE (RenameLabel / MergeLabels / DeleteLabel / RenameState /
@@ -115,7 +116,7 @@ func sweepBudgetStore(t *testing.T, prefix string) (*Store, *deadlineProbe) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	t.Cleanup(cancel)
 	probe := &deadlineProbe{}
 	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetMonitor(probe.monitor()))
@@ -126,7 +127,7 @@ func sweepBudgetStore(t *testing.T, prefix string) (*Store, *deadlineProbe) {
 	_, _ = rand.Read(nonce)
 	db := client.Database(prefix + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 20*time.Second)
+		c, cc := mongotest.TeardownCtx()
 		defer cc()
 		_ = db.Drop(c)
 		_ = client.Disconnect(c)
@@ -286,7 +287,7 @@ func TestSweepErrorNamesItsProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 5*time.Second)
+		c, cc := mongotest.TeardownCtx()
 		defer cc()
 		_ = client.Disconnect(c)
 	})
