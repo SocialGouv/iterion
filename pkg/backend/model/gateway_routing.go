@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -51,9 +52,44 @@ func refuseGatewayCrossing(backend, hint, model string) error {
 // named, the value never printed — while the chain can still walk to a
 // fallback.
 func checkGatewayEnv(strict bool) error {
+	// The operator table is judged HERE (not only inside the catalog
+	// resolution): a malformed table must REFUSE the route — naming the
+	// variable — instead of silently degrading the gateway to unknown
+	// while the run continues unpriced.
+	if err := compatgw.CheckOperatorTable(os.Getenv); err != nil {
+		return err
+	}
 	cfg, err := compatgw.FromEnv(os.Getenv)
 	if err != nil {
 		return err
 	}
 	return cfg.Validate(strict)
+}
+
+// stampGatewaySpec records the invocation's catalog provenance on the
+// node output: which table answered and what it said (compact JSON — the
+// output travels through maps that must stay single-line-safe). An unknown
+// record is recorded AS unknown: the absence of a window or a price is a
+// fact about the catalog, not an omission. Nil-safe.
+func stampGatewaySpec(output map[string]any, resolved compatgw.Resolved) map[string]any {
+	if output == nil {
+		return output
+	}
+	record := struct {
+		Source           string  `json:"source"`
+		ContextWindow    int     `json:"context_window,omitempty"`
+		MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
+		InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
+		OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
+	}{
+		Source:           resolved.Source,
+		ContextWindow:    resolved.Spec.ContextWindow,
+		MaxOutputTokens:  resolved.Spec.MaxOutputTokens,
+		InputUSDPerMTok:  resolved.Spec.InputCostPerM,
+		OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
+	}
+	if raw, err := json.Marshal(record); err == nil {
+		output["_gateway_spec"] = json.RawMessage(raw)
+	}
+	return output
 }

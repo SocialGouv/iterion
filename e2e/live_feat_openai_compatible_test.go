@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -53,6 +54,15 @@ func requireGateway(t *testing.T) {
 	// that exists (the fixture's default is the gateway's general model).
 	if os.Getenv(gatewayModelEnv) == "" {
 		t.Setenv(gatewayModelEnv, "gpt-oss-120b")
+	}
+	// Price the id from the operator table so the run's cost is a measured
+	// figure the assertions can read — the models.dev entry (if the
+	// catalog provider is set) answers the same way. Values here are
+	// placeholders in operator units; the gateway meters its own.
+	id := os.Getenv(gatewayModelEnv)
+	if os.Getenv("OPENAI_COMPATIBLE_MODELS") == "" {
+		t.Setenv("OPENAI_COMPATIBLE_MODELS",
+			`{"`+id+`":{"context_window":131072,"max_output_tokens":8192,"input_usd_per_mtok":0.1,"output_usd_per_mtok":0.3}}`)
 	}
 }
 
@@ -122,6 +132,30 @@ func assertGatewayIdentity(t *testing.T, events []*store.Event) {
 	}
 }
 
+// assertGatewayCatalog pins the catalog half: the node output carries the
+// invocation's provenance (`_gateway_spec`) and a measured, non-zero cost —
+// the operator table this test installs prices the id.
+func assertGatewayCatalog(t *testing.T, events []*store.Event) {
+	t.Helper()
+	out, ok := lastNodeOutput(events, "gw")
+	if !ok {
+		t.Fatal("no node_finished output for gw")
+	}
+	raw, _ := out["_gateway_spec"].(string)
+	if raw == "" {
+		if m, isMap := out["_gateway_spec"].(map[string]any); isMap {
+			b, _ := json.Marshal(m)
+			raw = string(b)
+		}
+	}
+	if raw == "" || !strings.Contains(raw, `"source"`) {
+		t.Errorf("output %v carries no _gateway_spec provenance", out)
+	}
+	if cost, _ := out["_cost_usd"].(float64); cost <= 0 {
+		t.Errorf("output %v carries no measured cost — the operator table priced the id", out)
+	}
+}
+
 // isVendorRoute reports a model spec naming a vendor prefix. A gateway spec
 // ("openai_compatible/…") is the only route this test may see.
 func isVendorRoute(spec string) bool {
@@ -143,6 +177,7 @@ func TestLive_Feat_OpenAICompatible_InProcess(t *testing.T) {
 	res := runGatewayBot(t, "feat_gateway_inprocess.bot")
 	assertNodesFinished(t, res.events, "gw")
 	assertGatewayIdentity(t, res.events)
+	assertGatewayCatalog(t, res.events)
 }
 
 func TestLive_Feat_OpenAICompatible_Sandboxed(t *testing.T) {
@@ -156,6 +191,7 @@ func TestLive_Feat_OpenAICompatible_Sandboxed(t *testing.T) {
 	res := runGatewayBot(t, "feat_gateway_sandbox.bot")
 	assertNodesFinished(t, res.events, "gw")
 	assertGatewayIdentity(t, res.events)
+	assertGatewayCatalog(t, res.events)
 }
 
 // runGatewayBot runs one gateway fixture end to end. The liveledger hook

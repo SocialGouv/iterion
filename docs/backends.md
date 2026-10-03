@@ -1129,6 +1129,33 @@ when a call's usage never arrives — as for any unpriced route.
 > the host-side relay — the key never entering the container — is the known
 > follow-up.
 
+### What a gateway model costs and how big it is (ADR-122)
+
+The catalog resolves a gateway id with whole-entry precedence — fields are
+never merged across sources, and an answer carries its provenance:
+
+1. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
+   `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
+   "input_usd_per_mtok": F, "output_usd_per_mtok": F}}`. Strict decoding
+   (unknown fields refused); prices arrive as a pair or not at all; a
+   declared 0/0 means unpriced, not free.
+2. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
+   models.dev table (the live table when loaded, else the embedded
+   snapshot). The gateway serves BARE ids, and `<q>` is the upstream
+   provider key those ids live under in models.dev (`scaleway`, in the
+   measured deployment). Exact means exact after lower-casing — no
+   bare-id, suffix, vendor or cross-provider-consensus fallback exists.
+3. Otherwise unknown, said out loud: the node's `_gateway_spec` records
+   `"source":"unknown"`, the estimator prices nothing, and compaction keeps
+   the unknown-model floor.
+
+The snapshot is regenerated with `task models:snapshot` (the committed diff
+is the review; it carries the source digest and an as-of date, and an answer
+older than 180 days logs a warning). A sandboxed gateway node receives the
+host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`), which answers
+before the container's local sources — the image's snapshot can be older
+than the host's, and the two never disagree across the IPC.
+
 ## Transient-error & network resilience
 
 A brief internet/API outage should not abort a whole run. Every backend
