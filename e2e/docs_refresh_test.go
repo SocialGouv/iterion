@@ -275,6 +275,53 @@ func TestDocsRefresh_Structural(t *testing.T) {
 	} else if _, ok := node.(*ir.ComputeNode); !ok {
 		t.Errorf("node gate is %T, want *ir.ComputeNode", node)
 	}
+	// v3.7 coverage audit — the goal-as-data loop: the deterministic
+	// inventory feeds a READ-ONLY second-model auditor; gaps loop back
+	// through the campaign (bounded); the no-context path is unchanged.
+	inv, ok := wf.Nodes["coverage_inventory"]
+	if !ok {
+		t.Fatalf("workflow missing compute node coverage_inventory")
+	} else if _, ok := inv.(*ir.ToolNode); !ok {
+		t.Errorf("node coverage_inventory is %T, want *ir.ToolNode (deterministic goal extractor)", inv)
+	}
+	if audit, ok := wf.Nodes["coverage_audit"]; !ok {
+		t.Fatalf("workflow missing agent node coverage_audit")
+	} else if an, ok := audit.(*ir.AgentNode); !ok {
+		t.Errorf("node coverage_audit is %T, want *ir.AgentNode (the second-model validator)", audit)
+	} else {
+		for _, tool := range an.Tools {
+			switch strings.ToLower(tool) {
+			case "bash", "edit", "write", "multiedit", "notebookedit":
+				t.Errorf("the coverage auditor carries write-capable tool %q — the audit must never modify the docs it judges", tool)
+			}
+		}
+	}
+	for _, w := range []struct{ from, to, cond string }{
+		// the gate lifts the compound route decision into single bools
+		// (C011 simple form): coverage runs only with reference context.
+		{"gate", "coverage_inventory", "converged_with_context"},
+		{"gate", "mr_gate", "converged_without_context"},
+		{"coverage_inventory", "coverage_audit", "audit_enabled"},
+		{"coverage_audit", "coverage_route", ""},
+		{"coverage_route", "scan_hints", "needs_remediation"},
+		{"coverage_route", "mr_gate", ""},
+	} {
+		found := false
+		for _, e := range wf.Edges {
+			if e.From == w.from && e.To == w.to && !e.Negated &&
+				((w.cond == "" && e.Condition == "") || e.Condition == w.cond) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing edge %s -> %s (when %q): the goal loop is not wired", w.from, w.to, w.cond)
+		}
+	}
+	if l, ok := wf.Loops["coverage_loop"]; !ok {
+		t.Error("missing bounded loop coverage_loop — an unbounded remediation can spin the graph")
+	} else if l.MaxIterations != 2 {
+		t.Errorf("coverage_loop max = %d, want 2", l.MaxIterations)
+	}
 	for _, id := range []string{
 		// v1 review assembly line
 		"alt", "reviewer_claude", "reviewer_gpt", "streak_check",
