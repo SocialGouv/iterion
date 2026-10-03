@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -213,7 +214,15 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 // effect blind. Returns the corrected command + its run result.
 func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout, stderr, lastCmd string) (string, recipeResult, error) {
 	modelSpec := e.recoveryModel(node)
-	client, err := e.registry.Resolve(modelSpec)
+	if modelSpec == defaultVerifiedActionModel && anthropicFunding(ctx) == "" {
+		return "", recipeResult{}, fmt.Errorf("the recovery model is the default (%s) and no anthropic credential serves it — set recovery.model or ITERION_VERIFIED_ACTION_MODEL", defaultVerifiedActionModel)
+	}
+	// ResolveWithContext, never plain Resolve: the guard above reads the
+	// ctx's funding, so the resolution must spend from the same well — on a
+	// runner pod (ctx creds, empty env) plain Resolve builds a
+	// credential-less client and the 401 loop this guard exists to kill
+	// comes back through the side door.
+	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
 	if err != nil {
 		return "", recipeResult{}, fmt.Errorf("resolve recovery model %q: %w", modelSpec, err)
 	}
@@ -283,12 +292,22 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 // recovery-agent entry point on the generation/backend layer.
 func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, input map[string]any, lastRung string) error {
 	recovery := node.Recovery
+	modelSpec := e.recoveryModel(node)
 	syn := &ir.AgentNode{
 		BaseNode: ir.BaseNode{ID: node.ID + "__recover"},
 		LLMFields: ir.LLMFields{
-			Model: e.recoveryModel(node),
+			Model: modelSpec,
 		},
 		Tools: recovery.AgentTools,
+	}
+	// A DEFAULT the serving backend cannot fund is refused before dispatch —
+	// claw-scoped like the router guard: a claude_code-serving deployment
+	// funds the recovery agent on the CLI's own login (FORBID's documented
+	// escape is exactly that backend), and refusing it there would drop a
+	// funded rung from the ladder. executeBackend resolves the same name.
+	if modelSpec == defaultVerifiedActionModel &&
+		e.resolveBackendName(syn) == delegate.BackendClaw && anthropicFunding(ctx) == "" {
+		return fmt.Errorf("the recovery model is the default (%s) and no anthropic credential serves it — set recovery.model or ITERION_VERIFIED_ACTION_MODEL", defaultVerifiedActionModel)
 	}
 	// The goal + failure context flow as the agent's user message (no output
 	// schema → buildUserMessage serialises this input map).
