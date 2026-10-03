@@ -43,6 +43,15 @@ type Spec struct {
 	// "anthropic/claude-opus-4-8"). Empty => auto-detect a reachable
 	// provider (see resolveModel).
 	Model string
+	// GatewayWatched is true when any route this supervisor may observe —
+	// a watched node's model (or, with no Watches, any LLM node's), its
+	// fallbacks, a template not yet expanded — is an OpenAI-compatible
+	// gateway route. The evaluator then REFUSES to fall back to a
+	// vendor-family pick: evaluating a gateway node's content through a
+	// vendor default would spend a provider the deployment never funded.
+	// A pin (after expansion) or ITERION_DEFAULT_SUPERVISOR_MODEL is the
+	// operator's way out. SpecsFromWorkflow sets it.
+	GatewayWatched bool
 	// ProviderHint names the provider family the SUPERVISED nodes run
 	// on (derived from their provider:/model:/backend: by
 	// SpecsFromWorkflow). With no Model pin and no env override, the

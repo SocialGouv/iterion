@@ -105,6 +105,13 @@ type EvalUsage struct {
 // and no provider credential is auto-detectable.
 var ErrNoSupervisorModel = errors.New("supervise: no model configured and no provider credential detected (set Spec.Model or sign in via claude/codex)")
 
+// ErrGatewayWatchNeedsPin is refused when a supervisor may observe a
+// gateway-served route and has no model of its own: the family fallback
+// would evaluate that content through a vendor default. The remedy is the
+// supervisor's own model, or the deployment-wide
+// ITERION_DEFAULT_SUPERVISOR_MODEL.
+var ErrGatewayWatchNeedsPin = errors.New("supervise: a watched route is served by the OpenAI-compatible gateway — pin the supervisor's model or set ITERION_DEFAULT_SUPERVISOR_MODEL")
+
 // LLMEvaluator is the production Evaluator: a direct claw structured
 // call (no second engine run), mirroring runview's conflict resolver.
 type LLMEvaluator struct {
@@ -113,6 +120,11 @@ type LLMEvaluator struct {
 	// is constant for a coordinator's life).
 	client    api.APIClient
 	modelSpec string
+	// gatewayWatched is the Spec.GatewayWatched of the coordinator that
+	// built this evaluator: some route it may observe is a gateway route.
+	// With no pin and no env override, evaluation refuses rather than
+	// resolve a vendor default for a gateway node's content.
+	gatewayWatched bool
 }
 
 // NewLLMEvaluator constructs an evaluator. The model client is resolved
@@ -224,6 +236,16 @@ func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
 // Evaluate implements Evaluator.
 func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, EvalUsage, error) {
 	if e.client == nil {
+		// A gateway-watched supervisor with no pin and no env override
+		// refuses here, at the first evaluation: its family fallback would
+		// hand a gateway node's content to a vendor default the deployment
+		// never funded. The coordinator parks supervision on the error —
+		// an enhancement stopping, never the run.
+		if e.gatewayWatched &&
+			strings.TrimSpace(ir.ExpandEnvWithDefault(in.Spec.Model)) == "" &&
+			ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL") == "" {
+			return nil, EvalUsage{}, ErrGatewayWatchNeedsPin
+		}
 		spec, err := resolveModel(ctx, in.Spec.Model, in.Spec.ProviderHint)
 		if err != nil {
 			return nil, EvalUsage{}, err

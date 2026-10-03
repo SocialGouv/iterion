@@ -21,6 +21,8 @@ import (
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -324,6 +326,20 @@ func (r *Registry) registerDefaults() {
 			Model:   modelID,
 			BaseURL: moonshotBaseURL(),
 		}))
+	}
+
+	// The OpenAI-compatible gateway served from the deployment's
+	// environment (#2028): OPENAI_COMPATIBLE_BASE_URL / _API_KEY, no
+	// credential slot — a route on this prefix is env-funded and books on
+	// nobody (loop_cred_spend's gateway branch). Resolved per PROCESS, like
+	// every factory here: an env change needs a restart, and the resolved
+	// client is cached per spec.
+	r.providers[modelroute.OpenAICompatible] = func(modelID string) (api.APIClient, error) {
+		cfg, err := compatgw.FromEnv(os.Getenv)
+		if err != nil {
+			return nil, err
+		}
+		return compatgw.NewClient(cfg, modelID, !secrets.LLMEndpointAllowPrivate())
 	}
 }
 

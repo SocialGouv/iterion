@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -970,6 +971,14 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 		text = fallbackText(secondary.Output)
 	}
 	if strings.TrimSpace(text) == "" {
+		return delegate.Result{}, delegate.Result{}, false
+	}
+	// A gateway-served node's recovery would be a VENDOR call the
+	// deployment never asked for: the detector picks a vendor default,
+	// silently crossing the gateway node's spend to another provider — the
+	// leak #2028 exists to close. Skip, named.
+	if modelroute.Parse(task.Model).Gateway() {
+		e.logger.Warn("[%s] structured-output recovery skipped: the node is served by the OpenAI-compatible gateway, and the recovery would spend a vendor default", nodeID)
 		return delegate.Result{}, delegate.Result{}, false
 	}
 	modelSpec := e.detectorSuggestedModel()

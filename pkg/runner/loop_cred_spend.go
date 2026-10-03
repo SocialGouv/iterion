@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -68,6 +69,19 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 	defer cancel()
 	repoID := r.repoForSpend(bg, msg)
 	for route, totals := range routes {
+		// An env-funded route drops BEFORE the declined warnings: the
+		// deployment's gateway books on nobody by design — the route meter
+		// (loop_metrics/loop_spend) and the org bucket already carry its
+		// spend, and "no credential iterion can name" would be a lie about
+		// a route iterion names exactly. Once per route, same as the
+		// declines, so an operator sees the shape and only once.
+		if modelroute.Parse(route.model).Gateway() {
+			if r.cfg.Logger != nil && usage.noteDeclinedRoute(route) {
+				r.cfg.Logger.Info("runner: run %s spent %d tokens on %s/%s — env-funded (the deployment's gateway), not metered per credential",
+					msg.RunID, totals.tokens(), route.backend, route.model)
+			}
+			continue
+		}
 		slot := routeSlot(creds, route)
 		if slot == "" {
 			// Declined for good: the attempt is over and nothing will name
@@ -174,6 +188,10 @@ func credentialTier(creds secrets.Credentials, slot string) credusage.Tier {
 	}
 }
 
+// gatewayWire is the wire name a gateway-served route reports: not a
+// provider credential, an endpoint the deployment's environment serves.
+const gatewayWire = "openai_compatible"
+
 // credentialSlotForRoute names the credential slot a (backend, model) route
 // spent, or "" when the run holds none for it.
 //
@@ -200,6 +218,12 @@ func credentialTier(creds secrets.Credentials, slot string) credusage.Tier {
 // then a key pinned for the route. Reading it differently here would credit
 // a credential the backend did not use.
 func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string) string {
+	// A gateway-served route is env-funded: the deployment's
+	// OPENAI_COMPATIBLE_* pair, no credential slot — booking it on a held
+	// key would charge a credential that never served it.
+	if modelroute.Parse(modelName).Gateway() {
+		return ""
+	}
 	switch backend {
 	case delegate.BackendKimi, delegate.BackendGrok, delegate.BackendOpenCode:
 		return ""
@@ -334,6 +358,14 @@ const (
 // wireForRoute resolves a route to the credential wire it draws on, or ""
 // when iterion cannot say.
 func wireForRoute(backend, modelName string) string {
+	// A gateway-served route runs on its own wire — it is neither vendor
+	// vocabulary nor a credential slot (credentialSlotForRoute books it on
+	// nobody), and reading it as the backend's default (anthropic, for a
+	// bare-prefix claw route) would book the deployment's gateway spend on
+	// the run's first anthropic credential.
+	if modelroute.Parse(modelName).Gateway() {
+		return gatewayWire
+	}
 	if prov := providerFromModel(modelName); prov != "" {
 		return prov
 	}

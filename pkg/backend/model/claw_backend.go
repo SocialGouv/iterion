@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
@@ -261,6 +262,17 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if b.logger != nil && secrets.SubscriptionOAuthOnly(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) {
 			b.logger.Warn("[%s#%d/claw] %s", task.NodeID, task.Iteration,
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
+		}
+	}
+
+	// A gateway-served model resolves its endpoint before anything is
+	// dispatched — the same read the element builder makes for chain walks,
+	// repeated here for the paths that never build through one (a direct
+	// Execute, the sandbox runner below, a continued conversation). The
+	// refusal names the variable, never a value.
+	if modelroute.Parse(task.Model).Gateway() {
+		if err := checkGatewayEnv(!secrets.LLMEndpointAllowPrivate()); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: node %q: %w", task.NodeID, err)
 		}
 	}
 
@@ -1200,6 +1212,19 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		}
 	}
 
+	// The gateway capability marker, before the task (F19): a runner too
+	// old to know the type fatals on "unexpected envelope before task" —
+	// every gateway node on a stale image fails closed, opaquely no more.
+	// An old host cannot produce gateway tasks at all (no factory), so the
+	// reverse skew is vacuous.
+	if modelroute.Parse(task.Model).Gateway() {
+		if err := mux.Send(delegate.NewGatewayV1Envelope()); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send gateway_v1: %w", err)
+		}
+	}
+
 	// Send the task envelope. The runner blocks on its
 	// EnvelopeReader.Read() until this arrives. The workspace's
 	// .claude/settings.json hooks ride along: the launcher reads them on the
@@ -1411,6 +1436,31 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	for _, name := range providerCredentialEnvVars {
 		if v := os.Getenv(name); v != "" {
 			env[name] = v
+		}
+	}
+	// A gateway-served node carries the gateway env, and ONLY a gateway
+	// node does: the endpoint is operator infrastructure, the key to it is
+	// not a vendor credential, and no other node has business seeing
+	// either. The endpoint is validated (the host already refused an
+	// unusable one at Execute's head — this is the same read, on the map
+	// that crosses the IPC), and the in-container factory's guard is told
+	// the operator's choice explicitly rather than left to re-derive it
+	// from whatever the sandbox env happens to carry.
+	if modelroute.Parse(model).Gateway() {
+		cfg, err := compatgw.FromEnv(os.Getenv)
+		if err != nil {
+			return nil, err
+		}
+		allowPrivate := secrets.LLMEndpointAllowPrivate()
+		if err := cfg.Validate(!allowPrivate); err != nil {
+			return nil, err
+		}
+		env[compatgw.BaseURLEnv] = cfg.BaseURL
+		if cfg.APIKey != "" {
+			env[compatgw.APIKeyEnv] = cfg.APIKey
+		}
+		if allowPrivate {
+			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
 		}
 	}
 	// No ITERION_CODEX_VERSION override set: forward the HOST-resolved

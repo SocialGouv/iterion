@@ -902,6 +902,9 @@ func NewApiKeyID() string {
 func ParseProvider(s string) (Provider, error) {
 	p := Provider(strings.ToLower(strings.TrimSpace(s)))
 	if !p.Valid() {
+		if p == Provider("openai_compatible") {
+			return "", fmt.Errorf("unknown provider %q — an OpenAI-compatible gateway is not a BYOK provider: it is env-funded (set OPENAI_COMPATIBLE_BASE_URL / OPENAI_COMPATIBLE_API_KEY on the deployment)", s)
+		}
 		return "", fmt.Errorf("unknown provider %q", s)
 	}
 	return p, nil

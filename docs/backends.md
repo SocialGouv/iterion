@@ -1089,6 +1089,46 @@ mode `deny`).
 > travel with them:
 > [sandbox.md](sandbox.md#mcp-servers-under-a-sandbox).
 
+## The OpenAI-compatible gateway (`openai_compatible/…`)
+
+A model spec of the form `openai_compatible/<gateway model id>` is served by
+an OpenAI-compatible gateway the deployment's environment names — a regional
+LiteLLM gateway, a vLLM endpoint, a router in front of a provider no other
+prefix carries. The id after the prefix travels to the wire **verbatim**
+(slashes included): it is the gateway's own id, not one iterion resolves, so
+the capability tables, the effort matrices and the price catalog have no
+opinion on it. Two environment variables configure the route, read exactly
+like `OPENAI_BASE_URL`:
+
+- `OPENAI_COMPATIBLE_BASE_URL` — the gateway root (no trailing `/v1`
+  required);
+- `OPENAI_COMPATIBLE_API_KEY` — optional; a gateway may sit behind network
+  auth alone.
+
+The endpoint is the operator's choice, but the dial is guarded: a public
+address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` for a
+self-hosted gateway on private infrastructure. A gateway route runs on the
+**`claw` backend only**: an explicit `backend:` naming a CLI backend, or a
+vendor `provider:` hint beside a gateway model, is refused when the node is
+dispatched, and warning **C186** says the same at `iterion validate` time
+([diagnostics](references/diagnostics.md)).
+
+Until the catalog slice prices the gateway's ids, a gateway route is an
+unpriced route: spend is still metered in tokens and bounded by
+`max_tokens`, but `max_cost_usd` bounds priced routes only, and the budget
+raises its single `cost_usd_unpriced` advisory — plus `usage_unreported`
+when a call's usage never arrives — as for any unpriced route.
+
+> **What cannot see a gateway route today.** The machine usage-cap
+> pre-flight ([usage-caps.md](usage-caps.md)) meters the anthropic wire
+> only, so a gateway route's spend is invisible to it — bound gateway spend
+> with the gateway's own quotas for now. And on a gateway node the gateway
+> key rides the runner process env (claw's bash reads the whole forwarded
+> env), so on a multi-tenant runner, bind it with the egress allowlist
+> ([pkg/sandbox/netproxy](../pkg/sandbox/netproxy/proxy.go)) and rotate it;
+> the host-side relay — the key never entering the container — is the known
+> follow-up.
+
 ## Transient-error & network resilience
 
 A brief internet/API outage should not abort a whole run. Every backend
