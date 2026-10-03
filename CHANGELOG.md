@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.230.0](https://github.com/SocialGouv/iterion/compare/v3.229.0...v3.230.0) (2026-10-03)
+
+### Features
+
+* **bots:** prod-watch — the grafana-alerts lane ([#2138](https://github.com/SocialGouv/iterion/issues/2138)) ([#2152](https://github.com/SocialGouv/iterion/issues/2152)) ([2bd8c97](https://github.com/SocialGouv/iterion/commit/2bd8c9775a9150a62b0b97cd5147d2ee56d61ba4))
+
+    <details><summary>why</summary>
+
+    The Alertmanager built into the configured Grafana is polled — ONE GET of the alerts firing right now; the rules stay authored in Grafana's own UI and Argus aggregates (complement of the direct lanes, not a replacement).
+
+    </details>
+
 ## [3.229.0](https://github.com/SocialGouv/iterion/compare/v3.228.0...v3.229.0) (2026-10-03)
 
 ### Features
