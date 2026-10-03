@@ -2262,10 +2262,19 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
 - **Not in the stock sandbox image.** The published image bakes claude-code,
   pi and codex only; a sandboxed `opencode` node dies at `exec: not found`.
 - **Its stderr is a JavaScript stack trace.** The shared CLI-agent retry
-  classifier substring-matches stderr for network signatures, and an
-  opencode trace can contain one (a `JSON Parse error: Unexpected EOF` from
-  a malformed JSON file it reads matches `unexpected eof`), so a *deterministic* failure
-  can still be retried up to three times before it surfaces.
+  classifier reads only the CLI's OWN transport-level error lines out of
+  that dump — short, unindented error headers and Node's `[cause]:`
+  chains. Stack frames, application error prose and quoted source are not
+  evidence; quoted source shows up indented in Bun's codeframes but Node
+  echoes the throwing source line at column 0, so a line-length cap
+  excludes minified-bundle echoes. Not airtight: a SHORT column-0 source
+  echo, or an app's own error header naming an errno, still matches —
+  indistinguishable from the genuine article for any text classifier, and
+  the cost is a bounded, backed-off retry. A
+  `JSON Parse error: Unexpected EOF` from a malformed JSON file it reads
+  once matched the `unexpected eof` signature and burned all three retries
+  on a deterministic configuration failure; that class of false positive
+  is now excluded by construction (`matchesTransportStderr`).
 - **The prompt goes on stdin, never in argv.** opencode takes its message as
   a variadic positional, which silently swallows a prompt beginning with `-`
   (it prints its help text instead of running) — an iterion prompt routinely

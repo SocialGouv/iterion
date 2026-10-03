@@ -902,7 +902,9 @@ func (b *CLIAgentBackend) buildArgs(proto CLIAgentProtocol, task Task, promptArg
 // runWithRetry runs the CLI to completion, retrying up to maxCLIAgentRetries
 // when the process exits successfully but produces no stdout (a known
 // transient failure mode for streaming agent CLIs) or fails with a
-// network-signature error. Overflow/quota/fatal exits are surfaced fast.
+// transport-level error (see matchesTransportStderr for what counts on the
+// free-form stderr of a JS agent CLI). Overflow/quota/fatal exits are
+// surfaced fast.
 func (b *CLIAgentBackend) runWithRetry(ctx context.Context, task Task, binary string, args []string, stdinPrompt string, env []string, timeout time.Duration) (stdout, stderr string, exitCode int, err error) {
 	for attempt := 1; attempt <= maxCLIAgentRetries; attempt++ {
 		stdout, stderr, exitCode, err = b.runOnce(ctx, task, binary, args, stdinPrompt, env, timeout)
@@ -916,7 +918,13 @@ func (b *CLIAgentBackend) runWithRetry(ctx context.Context, task Task, binary st
 			return stdout, stderr, exitCode, fmt.Errorf("delegate: %s: context ended: %w", b.Protocol.Name, ctx.Err())
 		}
 
-		transient := err != nil && (MatchesNetworkSignature(err.Error()) || MatchesNetworkSignature(stderr))
+		// The CLI's own error text is matched against the full signature
+		// set, but stderr is a free-form crash dump (a JS stack trace
+		// quoting arbitrary source) — only its transport-level lines are
+		// evidence, or a deterministic failure (bad config, a JSON parse
+		// error) would burn the whole retry budget and surface wrapped in
+		// *ErrTransient.
+		transient := err != nil && (MatchesNetworkSignature(err.Error()) || matchesTransportStderr(stderr))
 		empty := err == nil && strings.TrimSpace(stdout) == ""
 		if !transient && !empty {
 			// A genuine non-transient failure (bad flag, auth error, …):
