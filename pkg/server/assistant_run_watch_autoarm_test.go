@@ -46,6 +46,24 @@ func newArmFixture(t *testing.T, hostEventCapable bool) *armFixture {
 	}
 	srv := &Server{runs: svc, assistantWatches: ws, logger: iterlog.New(iterlog.LevelError, os.Stderr)}
 	srv.cfg.Bots.Paths = []string{botsRoot}
+	// A project switch (swapWorkDir → restartAssistantMissions) spawns the
+	// mission sweep on a Background-derived ctx that only Shutdown or an
+	// explicit stop cancels, and these fixture tests never shut the server
+	// down. The sweep's FS store root is the process-wide hometest home —
+	// the swap targets are bare dirs, so ResolveStoreDir falls back to the
+	// global projects slot under ITERION_HOME — and a sweep left running
+	// past the test keeps MkdirAll-ing it, re-creating the home during
+	// hometest.Isolate's removeHome (the "test iterion home left behind"
+	// package failure). No-op for tests that never start the sweep.
+	t.Cleanup(func() {
+		if done := srv.stopAssistantMissions(context.Background()); done != nil {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Error("mission sweep did not stop")
+			}
+		}
+	})
 	return &armFixture{
 		srv:   srv,
 		coord: testAssistantWatchCoordinator(srv, ws, "test"),

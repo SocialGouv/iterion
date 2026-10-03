@@ -32,15 +32,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
-// sweepOverlapCards / sweepOverlapDelay size the two admin-sweep race rows:
-// enough cards that the sweep is still walking sweepOverlapDelay later, and
-// few enough that the sweep stays far inside the store's own 10s per-call
-// budget on a runner several times slower than a developer's machine.
-// Measured 2026-09-07: 3.6 ms/card locally, 27 ms/card on a loaded CI runner.
-const (
-	sweepOverlapCards = 60
-	sweepOverlapDelay = 40 * time.Millisecond
-)
+// sweepOverlapCards sizes the two admin-sweep race rows: enough cards that
+// the sweep is still walking when the concurrent filing lands right behind
+// its first write (awaitSweepWalking opens the window), and few enough that
+// the sweep stays far inside the store's own 10s per-call budget on a runner
+// several times slower than a developer's machine. Measured 2026-09-07:
+// 3.6 ms/card locally, 27 ms/card on a loaded CI runner.
+const sweepOverlapCards = 60
 
 // assertSweepOverlapped keeps the two race rows from passing vacuously: on a
 // machine fast enough to finish the sweep before the concurrent filing lands,
@@ -50,6 +48,37 @@ func assertSweepOverlapped(t *testing.T, filedAt, sweptAt time.Duration) {
 	t.Helper()
 	if sweptAt <= filedAt {
 		t.Fatalf("the sweep finished at +%s, before the concurrent filing at +%s — the race this row probes never happened; raise sweepOverlapCards", sweptAt, filedAt)
+	}
+}
+
+// awaitSweepWalking returns once the sweep's FIRST write has landed, which
+// proves its snapshot is taken: the filing that follows then lands inside
+// the walk, not before it. A fixed delay only hopes the runner was fast
+// enough — on a starved one it fires before the snapshot and the row passes
+// without the race it probes ever happening. done closed means the sweep
+// already returned: fall through and let assertSweepOverlapped judge the
+// timing rather than park here until the deadline.
+func awaitSweepWalking(t *testing.T, ctx context.Context, s *boardmongo.Store, done <-chan struct{}, from, to string) {
+	t.Helper()
+	for {
+		cards, err := s.List(native.ListFilter{})
+		if err != nil {
+			t.Fatalf("list while the sweep walks: %v", err)
+		}
+		for _, c := range cards {
+			for _, l := range c.Labels {
+				if l == to {
+					return
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no card renamed %q→%q before the test deadline — the sweep never walked: %v", from, to, ctx.Err())
+		case <-done:
+			return
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
@@ -267,6 +296,8 @@ func TestScopedReplace_BotAssignNeverDropsTheRunStamp(t *testing.T) {
 // silently rewound — no EvtIssueState, no ValidateStateExit.
 func TestScopedReplace_AdminLabelSweepNeverRewindsATerminalFiling(t *testing.T) {
 	s := scopedMongo(t)
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
 	// N sizes the WINDOW, not the property: the sweep only has to still be
 	// walking when the concurrent filing lands. Big enough and the row buys
 	// a wall-clock dependency instead of a guarantee — the sweep runs under
@@ -292,16 +323,18 @@ func TestScopedReplace_AdminLabelSweepNeverRewindsATerminalFiling(t *testing.T) 
 	start := time.Now()
 	var sweptAt time.Duration
 	var wg sync.WaitGroup
+	sweepDone := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(sweepDone)
 		n, err := s.RenameLabel("old", "new")
 		sweptAt = time.Since(start)
 		t.Logf("RenameLabel touched %d cards in %s (err=%v)", n, sweptAt, err)
 	}()
 	// The fenced owner files the victim into the terminal sink while the
 	// operator's label sweep is walking its stale snapshot.
-	time.Sleep(sweepOverlapDelay)
+	awaitSweepWalking(t, ctx, s, sweepDone, "old", "new")
 	if _, err := s.SetStateOwned(victim, native.StateDone, victimTok); err != nil {
 		t.Fatalf("owned terminal filing: %v", err)
 	}
@@ -319,6 +352,8 @@ func TestScopedReplace_AdminLabelSweepNeverRewindsATerminalFiling(t *testing.T) 
 // ELIGIBLE column with no claim — the dispatcher relaunches delivered work.
 func TestScopedReplace_AdminSweepNeverRelaunchesDeliveredWork(t *testing.T) {
 	s := scopedMongo(t)
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
 	const N = sweepOverlapCards
 	var victim string
 	for i := 0; i < N; i++ {
@@ -337,9 +372,15 @@ func TestScopedReplace_AdminSweepNeverRelaunchesDeliveredWork(t *testing.T) {
 	start := time.Now()
 	var sweptAt time.Duration
 	var wg sync.WaitGroup
+	sweepDone := make(chan struct{})
 	wg.Add(1)
-	go func() { defer wg.Done(); _, _ = s.RenameLabel("old", "new"); sweptAt = time.Since(start) }()
-	time.Sleep(sweepOverlapDelay)
+	go func() {
+		defer wg.Done()
+		defer close(sweepDone)
+		_, _ = s.RenameLabel("old", "new")
+		sweptAt = time.Since(start)
+	}()
+	awaitSweepWalking(t, ctx, s, sweepDone, "old", "new")
 	// the worker finishes exactly as a live one does: file, then release
 	if _, err := s.SetStateOwned(victim, native.StateDone, tok); err != nil {
 		t.Fatalf("file: %v", err)
@@ -576,7 +617,7 @@ func TestRenewClaimCtx_HonoursTheCallersContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := mongotest.Ctx(t)
 	cancel()
 	start := time.Now()
 	err = s.RenewClaimCtx(ctx, iss.ID, tok)

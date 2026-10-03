@@ -1,7 +1,6 @@
 package boardmongo_test
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -1686,7 +1685,8 @@ func TestMongoStore_Conformance(t *testing.T) {
 func runTrackerSuite(t *testing.T, store native.BoardStore) {
 	t.Helper()
 	trk := native.NewAdapter(store)
-	ctx := context.Background()
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
 
 	// An inbox issue is NOT a candidate (inbox is not eligible); a ready issue
 	// IS (ready is eligible on the default board).
