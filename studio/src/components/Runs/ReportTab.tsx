@@ -77,7 +77,7 @@ function SummaryStrip({
       <Stat
         label="total tokens"
         value={formatTokens(report.totalTokens)}
-        title={report.totalTokens.toLocaleString()}
+        title={report.totalTokens.toLocaleString("en-US")}
       />
       <Stat label="providers" value={String(report.byProvider.length)} />
       <Stat label="models" value={String(report.byModel.length)} />
@@ -255,7 +255,7 @@ function BucketRow({
         </span>
         <span
           className="text-fg-subtle text-right text-caption hidden sm:inline-block basis-20"
-          title={`${bucket.tokens.toLocaleString()} tokens · ${bucket.count} ${
+          title={`${bucket.tokens.toLocaleString("en-US")} tokens · ${bucket.count} ${
             bucket.count === 1 ? "exec" : "execs"
           }`}
         >

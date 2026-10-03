@@ -52,7 +52,7 @@ export function formatTokens(row: {
   aggregate_tokens: number;
 }): string {
   if (row.aggregate_tokens > 0 && row.input_tokens === 0 && row.output_tokens === 0) {
-    return `${row.aggregate_tokens.toLocaleString()} (aggregate)`;
+    return `${row.aggregate_tokens.toLocaleString("en-US")} (aggregate)`;
   }
-  return `${row.input_tokens.toLocaleString()} in / ${row.output_tokens.toLocaleString()} out`;
+  return `${row.input_tokens.toLocaleString("en-US")} in / ${row.output_tokens.toLocaleString("en-US")} out`;
 }

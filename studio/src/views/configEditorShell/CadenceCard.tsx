@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { getEditorSchedule, patchEditorSchedule, type EditorShare } from "@/api/configEditor";
 import { Button, Card, FieldLabel, Input } from "@/components/ui";
 
@@ -28,9 +29,7 @@ function splitCronTZ(cron: string): { tz: string; expr: string } {
 }
 
 function formatNextFire(iso?: string): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
+  return iso ? formatDateTime(iso) : null;
 }
 
 export function CadenceCard({

@@ -93,12 +93,12 @@ export default function UsageTab({ orgID }: Props) {
         <UsageCard
           title="Input tokens this month"
           used={usage.input_tokens_this_month}
-          fmt={(n) => n.toLocaleString()}
+          fmt={(n) => n.toLocaleString("en-US")}
         />
         <UsageCard
           title="Output tokens this month"
           used={usage.output_tokens_this_month}
-          fmt={(n) => n.toLocaleString()}
+          fmt={(n) => n.toLocaleString("en-US")}
         />
         <UsageCard
           title="Members"
