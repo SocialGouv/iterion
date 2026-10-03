@@ -185,6 +185,14 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	}
 	if expanded == "" {
 		expanded = defaultRouterModel
+		// A DEFAULT the wire cannot serve is refused up front: a router
+		// dispatching on an unfunded default is a 401 loop with the knob
+		// invisible. Named, terminal, now. Claw-scoped: a claude_code-serving
+		// router funds itself on the CLI's own login (FORBID's documented
+		// escape is exactly that backend).
+		if backendName == delegate.BackendClaw && anthropicFunding(ctx) == "" {
+			return nil, fmt.Errorf("model: llm router %q: no model is set and the default (%s) has no anthropic credential to serve it — set the router's model, or fund the anthropic wire", node.ID, defaultRouterModel)
+		}
 	}
 
 	// Assembled per backend rather than once: SystemPromptMode is a pure

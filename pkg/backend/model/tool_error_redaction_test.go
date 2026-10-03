@@ -258,6 +258,7 @@ func TestAScrubbedNodeErrorKeepsItsClassNotItsText(t *testing.T) {
 // output it quotes — stdout and stderr — goes back to placeholders, like the
 // command itself; the postcondition error the node ends on too.
 func TestTheSelfRepairPromptCarriesNoSecret(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-funding")
 	reg := NewRegistry()
 	mock := newMockClient(toolUseEvents("t1", "structured_output", `{"corrected_command":"true"}`, 50, 10))
 	reg.Register("anthropic", func(string) (api.APIClient, error) { return mock, nil })

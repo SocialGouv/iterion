@@ -150,6 +150,9 @@ func TestVerifiedAction_PostconditionJSONOutput(t *testing.T) {
 // corrected command, the runtime re-runs it deterministically, and the
 // postcondition then holds.
 func TestVerifiedAction_SelfRepair(t *testing.T) {
+	// The recovery rung refuses an unfunded default before dispatching;
+	// this test's registry is a mock, so fund the wire nominally.
+	t.Setenv("ANTHROPIC_API_KEY", "mock-funding")
 	dir := t.TempDir()
 	reg := NewRegistry()
 	// Scripted LLM returns a corrected command that creates the marker.
@@ -182,6 +185,9 @@ func TestVerifiedAction_SelfRepair(t *testing.T) {
 // third evaluation (rung1, rung2, post-agent), standing in for the agent
 // achieving the goal with real tools; the mock backend just returns text.
 func TestVerifiedAction_AgentRecovery(t *testing.T) {
+	// The recovery rung refuses an unfunded default before dispatching;
+	// this test's registry is a mock, so fund the wire nominally.
+	t.Setenv("ANTHROPIC_API_KEY", "mock-funding")
 	dir := t.TempDir()
 	reg := NewRegistry()
 	mock := newMockClient(textEvents("done", 10, 5))
