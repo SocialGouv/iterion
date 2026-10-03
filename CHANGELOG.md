@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.231.0](https://github.com/SocialGouv/iterion/compare/v3.230.0...v3.231.0) (2026-10-03)
+
+### Features
+
+* **llmroute:** the adaptive-routing policy record, its fold, and the platform level ([#2126](https://github.com/SocialGouv/iterion/issues/2126) slice 1, [#1999](https://github.com/SocialGouv/iterion/issues/1999)) ([#2159](https://github.com/SocialGouv/iterion/issues/2159)) ([f21e902](https://github.com/SocialGouv/iterion/commit/f21e902627e4d20c11cfc985ead1e9f81901a45b))
+
+    <details><summary>why</summary>
+
+    The adaptive-routing contract (ADR-121) lands as pkg/llmroute: a pure policy record resolving retrypolicy-style, field by field, first setter wins, with the provenance map answering "which level decided this". The lock vetoes the setters ABOVE its level and the field is decided at or below it — the author's lock stops the binding, the platform's lock binds every tenant-configurable level — pinning the default under a "<level>_lock" provenance. strict is monotone where nobody locked it (any…
+
+    </details>
+
+### Bug Fixes
+
+* **model:** a vendor default no credential can serve is refused up front ([#2113](https://github.com/SocialGouv/iterion/issues/2113)) ([50fe7b8](https://github.com/SocialGouv/iterion/commit/50fe7b89981fb3df3da355358e22647b8f37227f))
+
+    <details><summary>why</summary>
+
+    D6-R2: when an element's model falls through to a hard-coded vendor default, the dispatch is refused up front if no credential can serve that vendor's wire — a 401 loop with the knob invisible becomes a named, terminal refusal the chain can walk on from. The anthropicFunding probe reads exactly what the anthropic factory reads: the run's ctx keys and forfaits, the env pair (AUTH_TOKEN gated off on a z.ai/bigmodel base URL), and this host's Claude subscription under the factory's own gates.
+
+    </details>
+
 ## [3.230.0](https://github.com/SocialGouv/iterion/compare/v3.229.0...v3.230.0) (2026-10-03)
 
 ### Features
