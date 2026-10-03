@@ -95,7 +95,7 @@ mr_gate ──(not open_mr)─────────────────�
 
 | Var | Default | Description |
 |---|---|---|
-| `doc_globs` | READMEs + docs/ + CLAUDE.md | Doc footprint (universal default) |
+| `doc_globs` | READMEs + docs/ + AGENTS.md + CLAUDE.md | Doc footprint (universal default) |
 | `scope_notes` | `""` | Operator attention pin |
 | `mode` | `full` | `full` = whole-corpus semantic sweep (monthly reconciliation); `incremental` = semantic pass scoped to the code changed since the last alignment (auto-detected), for weekly/per-PR runs |
 | `diff_since` | `""` | Explicit incremental base (`git diff <ref>...HEAD`). Usually empty — `mode: incremental` auto-detects it from the `Bot: docs-refresh` commit trailer; pin it to force a base (e.g. a PR base) |

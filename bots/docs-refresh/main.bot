@@ -112,10 +112,10 @@ vars:
   ## `bundle_self_path` is set.
   ## UNIVERSAL DEFAULT: docs-refresh documents ANY repo, so the
   ## default footprint is the conventions common to most projects
-  ## (root + nested READMEs, a docs/ tree, CLAUDE.md). Repo-specific
-  ## doc locations are added per-run via --var, never baked into the
-  ## catalog default.
-  doc_globs: string = "README.md,docs/**/*.md,**/README.md,CLAUDE.md,**/CLAUDE.md"
+  ## (root + nested READMEs, a docs/ tree, AGENTS.md, CLAUDE.md).
+  ## Repo-specific doc locations are added per-run via --var, never
+  ## baked into the catalog default.
+  doc_globs: string = "README.md,docs/**/*.md,**/README.md,AGENTS.md,**/AGENTS.md,CLAUDE.md,**/CLAUDE.md"
   ## Optional free-text notes pinning the campaign's attention.
   scope_notes: string = ""
   ## Auto-exclusion. When non-empty, scan_hints excludes any file

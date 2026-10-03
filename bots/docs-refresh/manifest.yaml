@@ -289,7 +289,7 @@ description: |
   doc-scope-enumeration, anti-facade-fix-rules,
   doc-verification-checklist, forge-mr-create.
 when_to_use: |
-  Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
+  Use when README / AGENTS.md / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags
   code↔doc drift — or when parts of the repo (capabilities, whole
   subsystems) are simply UNDOCUMENTED and the docs should converge to
