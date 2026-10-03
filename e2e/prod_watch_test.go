@@ -3201,7 +3201,7 @@ func pwDecide(t *testing.T, wf *ir.Workflow, h *pwHarness, signals map[string]an
 		"loki":        map[string]any{"max_records": 0},
 		"loki_errors": []any{}, "loki_per_query": map[string]any{"errors": map[string]any{"lines": 0, "error": "", "truncated": false, "gap": false, "from_ns": "100", "to_ns": "900"}}, "prom_ok": true, "prom_errors": []any{},
 		"grafana_alerts": map[string]any{"enabled": false}, "galerts_ok": true, "galerts_truncated": false, "galerts_errors": []any{},
-		"galerts_walk":   map[string]any{}, "galerts_expected": 0,
+		"galerts_walk": map[string]any{}, "galerts_expected": 0,
 		"release": "", "release_known": false, "lanes": map[string]any{"loki": true, "prometheus": true, "probes": true},
 		"app": map[string]any{"name": "demo"}, "workspace": h.ws, "state_dir": ".prod-watch", "scratch_dir": h.scratch,
 		"renotify_hours": 24, "quiet_after_hours": 48, "forget_after_days": 14, "source_stale_hours": 6, "max_alerts": 20, "max_alerts_per_lane": 5, "max_message_chars": 14000,

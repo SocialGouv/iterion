@@ -104,7 +104,7 @@ func gaState(fp string) map[string]any {
 		"incidents": map[string]any{"galert:" + fp: map[string]any{
 			"fp": "galert:" + fp, "kind": "galert", "sources": []any{"grafana_alerts"}, "severity": "high",
 			"title_key": "galert_firing", "title_arg": "Latency is firing", "detail_key": "galert_detail",
-			"fields": map[string]any{"alertname": "Latency", "labels": "severity=high", "starts": "2026-10-03T08:00"},
+			"fields":     map[string]any{"alertname": "Latency", "labels": "severity=high", "starts": "2026-10-03T08:00"},
 			"first_seen": hoursAgo(1), "last_seen": hoursAgo(0.1), "count": 1, "alerted": true,
 			"last_notified": hoursAgo(0.1), "quiet_noted": false, "closed_said": false}},
 	}
@@ -540,7 +540,9 @@ func TestProdWatch_GAlerts_PlanValidatesTheKnobs(t *testing.T) {
 	}
 	// An unknown severity value, and a bad integer, are refused by name.
 	for _, bad := range []func(cfg map[string]any){
-		func(cfg map[string]any) { cfg["grafana_alerts"] = map[string]any{"severity": map[string]any{"x": "apocalyptic"}} },
+		func(cfg map[string]any) {
+			cfg["grafana_alerts"] = map[string]any{"severity": map[string]any{"x": "apocalyptic"}}
+		},
 		func(cfg map[string]any) { cfg["grafana_alerts"] = map[string]any{"max_alerts": true} },
 		func(cfg map[string]any) { cfg["grafana_alerts"] = map[string]any{"severity_label": "9bad"} },
 	} {
