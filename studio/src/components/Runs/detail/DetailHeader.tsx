@@ -127,12 +127,12 @@ export function DetailHeader({
                   : `duration: ${duration}`}
               </button>
             )}
-            {tokens > 0 && <span>tokens: {tokens.toLocaleString()}</span>}
+            {tokens > 0 && <span>tokens: {tokens.toLocaleString("en-US")}</span>}
             {(thinkingTokens > 0 || thinkingMs > 0) && (
               <span
                 title="Extended thinking. Token count is an approximation (the provider bills thinking inside output tokens; the text is re-encoded). Time is measured (exact for claw, best-effort for claude_code)."
               >
-                🧠 ~{thinkingTokens.toLocaleString()} tok · {formatMs(thinkingMs)}
+                🧠 ~{thinkingTokens.toLocaleString("en-US")} tok · {formatMs(thinkingMs)}
               </span>
             )}
             {costUsd > 0 && (

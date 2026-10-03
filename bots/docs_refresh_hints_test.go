@@ -61,7 +61,7 @@ func TestDocsRefreshHintsProducer(t *testing.T) {
 		t.Helper()
 		vars := map[string]string{
 			"workspace_dir":    ws,
-			"doc_globs":        "README.md,docs/**/*.md,**/README.md,CLAUDE.md,**/CLAUDE.md",
+			"doc_globs":        "README.md,docs/**/*.md,**/README.md,AGENTS.md,**/AGENTS.md,CLAUDE.md,**/CLAUDE.md",
 			"excluded_dirs":    ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out",
 			"bundle_self_path": "",
 			"diff_since":       "",

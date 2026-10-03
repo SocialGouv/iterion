@@ -283,7 +283,7 @@ function LargeChangesetHint({
     <div className="mb-1 flex flex-col gap-1 border-b border-border-default bg-surface-1 px-2 py-1.5 text-micro">
       <div className="text-fg-muted">
         <span className="font-medium text-warning-fg">
-          {count.toLocaleString()} changes
+          {count.toLocaleString("en-US")} changes
         </span>{" "}
         — folders collapsed to keep the view responsive; expand to drill in.
       </div>
