@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -620,15 +621,37 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
-	// Dispatch to the appropriate generation strategy.
+	// Dispatch to the appropriate generation strategy. A gateway route's
+	// catalog record is resolved ONCE, HERE, before anything runs, and
+	// carried immutable on everything the invocation produces (ADR-122
+	// §resolution): the provenance rides the output (`_gateway_spec`) and
+	// the window the gateway serves is the one the consumers see — never a
+	// vendor's window borrowed by name.
 	hasSchema := task.OutputSchema != nil
-	if hasSchema && !task.HasTools {
-		return b.generateStructuredWithRetry(ctx, client, task, opts)
+	gwRoute := modelroute.Parse(task.Model)
+	var gwResolved compatgw.Resolved
+	if gwRoute.Gateway() {
+		gwResolved = compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv)
 	}
-	if hasSchema && task.HasTools {
-		return b.generateTextWithToolsAndSchemaRetry(ctx, client, task, opts)
+	var (
+		res    delegate.Result
+		genErr error
+	)
+	switch {
+	case hasSchema && !task.HasTools:
+		res, genErr = b.generateStructuredWithRetry(ctx, client, task, opts)
+	case hasSchema && task.HasTools:
+		res, genErr = b.generateTextWithToolsAndSchemaRetry(ctx, client, task, opts)
+	default:
+		res, genErr = b.generateTextWithRetry(ctx, client, task, opts)
 	}
-	return b.generateTextWithRetry(ctx, client, task, opts)
+	if gwRoute.Gateway() {
+		res.Output = stampGatewaySpec(res.Output, gwResolved)
+		if gwResolved.Known() && gwResolved.Spec.ContextWindow > 0 && res.ContextWindow == 0 {
+			res.ContextWindow = gwResolved.Spec.ContextWindow
+		}
+	}
+	return res, genErr
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,6 +1484,30 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		}
 		if allowPrivate {
 			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
+		}
+		// The host's OWN catalog resolution rides along, so the in-container
+		// catalog answers with the same record the host answered with — the
+		// image's snapshot can be older than the host's, and a window or a
+		// price quietly differing across the IPC is a lie one side tells the
+		// other. Top precedence container-side (compatgw.ResolvedEnvRecord).
+		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), os.Getenv); resolved.Known() {
+			if raw, merr := json.Marshal(struct {
+				Model            string  `json:"model"`
+				Source           string  `json:"source"`
+				ContextWindow    int     `json:"context_window,omitempty"`
+				MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
+				InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
+				OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
+			}{
+				Model:            modelroute.Parse(model).Wire,
+				Source:           resolved.Source,
+				ContextWindow:    resolved.Spec.ContextWindow,
+				MaxOutputTokens:  resolved.Spec.MaxOutputTokens,
+				InputUSDPerMTok:  resolved.Spec.InputCostPerM,
+				OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
+			}); merr == nil {
+				env["ITERION_OPENAI_COMPATIBLE_RESOLVED"] = string(raw)
+			}
 		}
 	}
 	// No ITERION_CODEX_VERSION override set: forward the HOST-resolved

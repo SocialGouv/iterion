@@ -2,12 +2,16 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
+
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
@@ -421,5 +425,106 @@ func TestExtractStructuredViaClaw_AGatewayNodeSkipsTheVendorRecovery(t *testing.
 	if _, err := exec.validateAndRetry(context.Background(), backendFields{id: "answerer", outputSchema: "out_schema"},
 		"test_backend", backend, &delegate.Task{Model: "openai_compatible/team/m", OutputSchema: schemaJSON}, first, schema); err == nil {
 		t.Fatal("the vendor recovery rescued a gateway-served node — the skip is gone")
+	}
+}
+
+// A gateway route's compaction trigger sits at its CATALOG window × the
+// effective ratio (authored when > 0, else 0.85); an unknown window keeps
+// claw's default floor, and a vendor's window is never borrowed by name.
+// Red when compactionConfig reads the spec's own spelling (the vendor
+// tables' unknown threshold) or drops the ratio.
+func TestCompactionConfig_AGatewayRouteSizesFromItsCatalogWindow(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"m1":{"context_window":200000}}`)
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
+	t.Setenv("ITERION_OPENAI_COMPATIBLE_RESOLVED", "")
+	compatgw.ResetCatalogCaches()
+
+	if got := compactionConfig("openai_compatible/m1", 0, 0).MaxEstimatedTokens; got != int(200000*0.85) {
+		t.Errorf("default-ratio trigger = %d, want 200000×0.85", got)
+	}
+	if got := compactionConfig("openai_compatible/m1", 0.5, 0).MaxEstimatedTokens; got != 100000 {
+		t.Errorf("authored-ratio trigger = %d, want 100000", got)
+	}
+	compatgw.ResetCatalogCaches()
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
+	if got := compactionConfig("openai_compatible/no-such", 0, 0).MaxEstimatedTokens; got != clawrt.DefaultCompactionConfig().MaxEstimatedTokens {
+		t.Errorf("unknown-window trigger = %d, want claw's default floor", got)
+	}
+}
+
+// The invocation's catalog record rides the result: provenance on the
+// output (`_gateway_spec`, unknown recorded AS unknown) and the gateway's
+// window as the effective context window. Red when the stamp or the
+// window wiring is dropped.
+func TestClawBackend_TheCatalogRecordRidesTheResult(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"context_window":123456,"input_usd_per_mtok":1,"output_usd_per_mtok":2}}`)
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://198.51.100.7")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
+	compatgw.ResetCatalogCaches()
+
+	reg := NewRegistry()
+	stub := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents(`{"answer":"blue"}`, "end_turn")}}
+	reg.Register("openai_compatible", func(string) (api.APIClient, error) { return stub, nil })
+	backend := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1})
+	res, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID: "gw", Model: "openai_compatible/gw/m", UserPrompt: "q",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	raw, _ := res.Output["_gateway_spec"].(json.RawMessage)
+	if raw == nil {
+		t.Fatalf("output %v carries no _gateway_spec", res.Output)
+	}
+	if !strings.Contains(string(raw), `"source":"operator"`) || !strings.Contains(string(raw), `"context_window":123456`) {
+		t.Errorf("_gateway_spec = %s, want the operator provenance and window", raw)
+	}
+	if res.ContextWindow != 123456 {
+		t.Errorf("Result.ContextWindow = %d, want the gateway's", res.ContextWindow)
+	}
+}
+
+// The host's resolution crosses into the sandbox with the gateway env, so
+// the in-container catalog answers with the same record. Red when the
+// forward is dropped.
+func TestForwardableProviderEnv_CarriesTheHostResolution(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"context_window":123456}}`)
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://198.51.100.7")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
+	compatgw.ResetCatalogCaches()
+
+	env, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	raw, ok := env["ITERION_OPENAI_COMPATIBLE_RESOLVED"]
+	if !ok || !strings.Contains(raw, `"model":"gw/m"`) || !strings.Contains(raw, `"source":"operator"`) {
+		t.Errorf("env carries %v, want the forwarded record", raw)
+	}
+	// A vendor node never sees it.
+	env, err = forwardableProviderEnv(context.Background(), "anthropic/claude-opus-5")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if _, ok := env["ITERION_OPENAI_COMPATIBLE_RESOLVED"]; ok {
+		t.Error("a vendor node received the gateway resolution")
+	}
+}
+
+// A malformed OPENAI_COMPATIBLE_MODELS REFUSES the route at the seam —
+// naming the variable — instead of silently degrading the gateway to an
+// unknown, unpriced record while the run continues. Red when the seam
+// probe stops judging the operator table.
+func TestCheckGatewayEnv_AMalformedOperatorTableRefuses(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gw.example.com")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"input_usd_per_mtok":0.1}}`) // unpaired price
+	compatgw.ResetCatalogCaches()
+
+	err := checkGatewayEnv(false)
+	if err == nil || !strings.Contains(err.Error(), "OPENAI_COMPATIBLE_MODELS") {
+		t.Fatalf("checkGatewayEnv = %v, want the malformed-table refusal naming the variable", err)
 	}
 }

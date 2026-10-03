@@ -219,6 +219,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/workspacetrack` | versions a run's workspace: it captures what the files look like at a point in execution and can put them back. | `Tracker` |
 | `pkg/worktreepool` | the safety classifier for the per-run git worktrees iterion parks under `<store>/worktrees/`. | — |
 | `scripts/docslinks` | Command docslinks checks every relative link and `#anchor` in the repository's tracked markdown against the real tree, the way GitHub resolves them… | — |
+| `scripts/modelsnapshot` | Command modelsnapshot regenerates the embedded models.dev snapshot (pkg/backend/modelspecs/snapshot/models-dev.json): fetch, parse, render… | — |
 | `third_party/codex-agent-sdk-go` | provides a Go SDK for interacting with the Codex CLI agent. | `Client`, `Tool` |
 | `third_party/codex-agent-sdk-go/contrib/prometheus` | provides a convenience helper for wiring Prometheus metrics into the Codex Agent SDK without pulling OTel SDK dependencies into the root module for… | — |
 | `third_party/codex-agent-sdk-go/examples/cancellation` | — | — |

@@ -296,6 +296,30 @@ func SetDefault(r *Registry) (restore func()) {
 // index is essential for GLM: it arrives as provider="anthropic",
 // modelID="glm-5.2" (z.ai's Anthropic-compatible endpoint) but lives under a
 // different provider in the aggregator.
+// LookupExact answers an exact "<provider>/<model>" key ONLY — the
+// consensus-across-providers bare index is never consulted. The gateway
+// catalog's live branch uses this: a foreign provider's entry for the same
+// bare id must never answer under the operator-named provider's name
+// (ADR-122's rejected alternative, reachable through the plain Lookup).
+func (r *Registry) LookupExact(provider, modelID string) (Spec, bool) {
+	if r == nil || !r.enabled {
+		return Spec{}, false
+	}
+	r.ensureFresh()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pl := strings.ToLower(strings.TrimSpace(provider))
+	ml := strings.ToLower(strings.TrimSpace(modelID))
+	s, ok := r.byFull[pl+"/"+ml]
+	return s, ok
+}
+
+// Lookup resolves one spec: the exact "provider/modelid" key first, then
+// the bare "modelid" consensus index — the bare index is essential for GLM,
+// which arrives as provider="anthropic", modelID="glm-5.2" (z.ai's
+// Anthropic-compatible endpoint) but lives under a different provider in
+// the aggregator. The gateway catalog must NOT use this: its bare half is
+// exactly the cross-provider answer ADR-122 refuses (LookupExact).
 func (r *Registry) Lookup(provider, modelID string) (Spec, bool) {
 	if r == nil || !r.enabled {
 		return Spec{}, false
@@ -452,7 +476,7 @@ func (r *Registry) runRefresh(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	full, err := parseModelsDev(body)
+	full, err := ParseModelsDev(body)
 	if err != nil {
 		return err
 	}
@@ -574,10 +598,12 @@ func (r *Registry) writeCache(cf cacheFile) {
 	_ = store.WriteFileAtomic(r.cachePath, data, 0o644)
 }
 
-// parseModelsDev decodes the models.dev api.json into a flat
-// "provider/model" → spec map. The bare "model" index is derived from this map
-// by indexLocked, so the keying rule lives in one place.
-func parseModelsDev(body []byte) (map[string]Spec, error) {
+// ParseModelsDev parses one models.dev /api.json body into the flat
+// "<provider>/<model>" table (keys lower-cased, trimmed — the same
+// normalisation Lookup applies, so "exact" means exact AFTER it). Exported
+// for the snapshot generator (scripts/modelsnapshot), the only writer of
+// the embedded snapshot.
+func ParseModelsDev(body []byte) (map[string]Spec, error) {
 	var providers map[string]mdProvider
 	if err := json.Unmarshal(body, &providers); err != nil {
 		return nil, err

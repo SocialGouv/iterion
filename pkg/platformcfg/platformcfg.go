@@ -219,6 +219,8 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK": true,
 	// Private-network reach (SSRF) and host allowlists.
 	"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE": true,
+	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":       true,
+	"ITERION_OPENAI_COMPATIBLE_RESOLVED":       true,
 	"ITERION_CONNECTOR_ALLOW_PRIVATE":          true,
 	"ITERION_WEBHOOK_FORGE_HOSTS":              true,
 	// Code loaded from the repository under review or the host: MCP servers,
