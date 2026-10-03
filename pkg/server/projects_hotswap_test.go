@@ -65,6 +65,17 @@ func TestSwapWorkDir_LeavesOnePeriodicWorkerPerKind(t *testing.T) {
 	if srv.runs == nil {
 		t.Fatal("no run service was wired — the test would assert on nothing")
 	}
+	// Every swap starts a mission sweep (swapWorkDir → restartAssistantMissions)
+	// whose FS store root is the PROCESS-WIDE hometest home, not this test's
+	// TempDir: mkProjectDir makes a bare dir, so ResolveStoreDir falls back to
+	// the global projects slot under ITERION_HOME, and the store MkdirAll's
+	// that root on every call, reads included. Shutdown (shutdownOnCleanup)
+	// cancels the sweep and joins it inside this budget — past the default
+	// 500ms, a sweep parked mid-call on a starved runner outlives the join
+	// and re-creates the home during hometest.Isolate's removeHome (the
+	// "test iterion home left behind" package failure). A wider budget can
+	// only make this test WAIT longer.
+	srv.bgJoinBudget = 30 * time.Second
 	shutdownOnCleanup(t, srv)
 
 	for i := 1; i <= 4; i++ {
