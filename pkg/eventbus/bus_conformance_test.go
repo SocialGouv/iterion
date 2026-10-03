@@ -329,6 +329,48 @@ func TestNATSBus_SubscribeCancelConcurrentPublishNoWGRace(t *testing.T) {
 	_ = callbackCount.Load()
 }
 
+// schedOvershoot is this runner's scheduling delay, measured rather than
+// named: the raw worst lateness of a short timer across a few probes. It
+// is read where the caller sits — AFTER the burst it pads — so a load
+// spike during the burst that subsides before probing reads ~0 here. What
+// a collapsed reading means is the caller's choice: cancelCeilingSlack
+// floors its slack at 200ms, the SharedBudget lower bound uses the raw
+// figure unfloored on purpose (a padded floor would pass the very shape it
+// convicts) — and the mechanism bounds carry the assertion either way.
+func schedOvershoot(t *testing.T) time.Duration {
+	t.Helper()
+	const (
+		probe  = 10 * time.Millisecond
+		rounds = 3
+	)
+	var worst time.Duration
+	for i := 0; i < rounds; i++ {
+		start := time.Now()
+		time.Sleep(probe)
+		if over := time.Since(start) - probe; over > worst {
+			worst = over
+		}
+	}
+	return worst
+}
+
+// cancelCeilingSlack sizes the slack a wall-clock ceiling leaves the
+// scheduler: one measured overshoot per timer wait the burst sits on
+// (waits), floored at the 200ms an idle machine was already granted. The
+// mechanism bounds (joinBudget, overrunPostCheckWindow) are configured and
+// exact; the slack is not, and a bare constant names a machine the merge
+// queue does not have — under a loaded -race runner every timer the cancel
+// path waits on fires late by an amount no constant describes. The ceiling
+// can grow load-tolerant, never weaker than it was (#2149, #1538).
+func cancelCeilingSlack(t *testing.T, waits int) time.Duration {
+	t.Helper()
+	const floor = 200 * time.Millisecond
+	if slack := time.Duration(waits) * schedOvershoot(t); slack > floor {
+		return slack
+	}
+	return floor
+}
+
 // TestBusSubscribeCancelSharedBudget is the #1477 medium property: N slow
 // subscribers cancelled under ONE joinCtx cost ONE budget total, not N ×
 // budget. Under the pre-fix per-subscription budget, seven slow-Mongo
@@ -405,17 +447,28 @@ func TestBusSubscribeCancelSharedBudget(t *testing.T) {
 				cancel(joinCtx)
 			}
 			elapsed := time.Since(started)
+			// The burst sits on N+1 timer waits: the shared joinCtx
+			// deadline, then one overrunPostCheckWindow per cancel (cancels
+			// 2..N find the joinCtx already spent and wait only their
+			// post-check — inproc.go's cancel path).
+			const waits = N + 1
 			// Serial per-sub budgets would give N × perSubBudget = 400ms;
-			// the assertion below reddens the pre-#1477 shape by any margin.
-			if elapsed >= time.Duration(N-1)*perSubBudget {
+			// the floor below reddens the pre-#1477 shape. Its slack is the
+			// measured overshoot UNFLOORED: padding the floor with the
+			// 200ms constant (320+200 = 520ms) would put it past the very
+			// 400ms shape it must catch and lose the mutation guard, while
+			// the same measured slack pads the mutated shape too, so the
+			// budget margin between them decides at any load.
+			if elapsed >= time.Duration(N-1)*perSubBudget+time.Duration(waits)*schedOvershoot(t) {
 				t.Errorf("%s: N=%d cancels shared joinCtx took %v; per-subscription composition would give ~%v — the shared budget is not being honoured", c.name, N, elapsed, time.Duration(N)*perSubBudget)
 			}
 			// Ceiling includes the overrunPostCheckWindow grace per cancel:
 			// each subscriber, after the shared joinCtx expires, waits up
 			// to overrunPostCheckWindow more for its worker's done signal
 			// so a same-tick coin-flip does not misname a clean sub as an
-			// overrun (#1477 R6aac0e). Total = joinBudget + N*grace + slack.
-			ceiling := joinBudget + N*overrunPostCheckWindow + 200*time.Millisecond
+			// overrun (#1477 R6aac0e). Total = joinBudget + N*grace + slack,
+			// the slack measured from this runner's scheduling delay.
+			ceiling := joinBudget + N*overrunPostCheckWindow + cancelCeilingSlack(t, waits)
 			if elapsed > ceiling {
 				t.Errorf("%s: N=%d cancels took %v; expected ≤ %v (budget %v + %d×%v grace + slack)", c.name, N, elapsed, ceiling, joinBudget, N, overrunPostCheckWindow)
 			}
@@ -506,13 +559,15 @@ func TestBusSubscribeCancelClampsCallerDeadline(t *testing.T) {
 
 			// Caller passes a very generous deadline — 30 seconds, the
 			// shape of an HTTP-request ctx. Cancel must return within the
-			// budget regardless (plus the small grace window post-check).
+			// budget regardless (plus the small grace window post-check —
+			// two waits — and a slack measured from this runner's
+			// scheduling delay).
 			generousCtx, gc := context.WithTimeout(context.Background(), 30*time.Second)
 			defer gc()
 			started := time.Now()
 			cancel(generousCtx)
 			elapsed := time.Since(started)
-			ceiling := perSubBudget + overrunPostCheckWindow + 200*time.Millisecond
+			ceiling := perSubBudget + overrunPostCheckWindow + cancelCeilingSlack(t, 2)
 			if elapsed > ceiling {
 				t.Errorf("%s: cancel with 30s deadline took %v; expected clamped to ≤ %v (budget %v + grace + slack)", c.name, elapsed, ceiling, perSubBudget)
 			}

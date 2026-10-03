@@ -896,14 +896,40 @@ func TestProdWatch_LeakScanStaysLinearOnCraftedLines(t *testing.T) {
 				t.Fatal(err)
 			}
 			start := time.Now()
-			_, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
+			_, stderr, cmd, err := runPyWholeCmd(t, h.ws, pwSub(t, pwTool(t, wf, "leak_scan").Script, map[string]any{
 				"raw_file": raw, "per_query": map[string]any{"errors": map[string]any{"lines": c.lines, "history_to_ns": "0"}},
 				"app": map[string]any{"name": "demo"}, "scratch_dir": h.scratch}, nil, nil))
 			if err != nil {
 				t.Fatalf("leak_scan: %v %s", err, stderr)
 			}
-			if d := time.Since(start); d > c.limit {
-				t.Fatalf("%d crafted lines took %v (limit %v): a class backtracks on them", c.lines, d, c.limit)
+			elapsed := time.Since(start)
+			// The bound is on the child's CPU, not the wall: a backtracking
+			// class burns CPU quadratically, while runner load only
+			// stretches the wall — the OS schedules the python child, so
+			// -parallel Go tests do not multiply its work. c.limit stays
+			// the idle-machine baseline.
+			if cpu, ok := childCPU(t, cmd); ok {
+				if cpu > c.limit {
+					t.Fatalf("%d crafted lines burned %v of child CPU (limit %v): a class backtracks on them", c.lines, cpu, c.limit)
+				}
+				if cpu > c.limit/2 {
+					t.Logf("child CPU %s of a %s budget for %q — passing, but it used most of its margin",
+						cpu.Round(time.Millisecond), c.limit, c.name)
+				}
+			} else {
+				t.Logf("no child-CPU accounting on this platform; %q is guarded by the wall clock only", c.name)
+			}
+			// The wall clock is a hang guard only — a wedged child must not
+			// wait out the package timeout — so it is the idle budget
+			// scaled for load (waitBudget). Past the idle baseline but
+			// under the guard is load, not a regression: log it.
+			wallGuard := waitBudget(t, c.limit)
+			if elapsed > wallGuard {
+				t.Fatalf("%d crafted lines took %v of wall (hang guard %v, idle baseline %v)", c.lines, elapsed, wallGuard, c.limit)
+			}
+			if elapsed > c.limit {
+				t.Logf("wall clock %s past the %s idle baseline for %q — passing on the scaled hang guard (%s): load, not a regression",
+					elapsed.Round(time.Millisecond), c.limit, c.name, wallGuard)
 			}
 		})
 	}

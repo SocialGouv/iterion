@@ -434,8 +434,10 @@ func TestSchemaValidation_CorrectionHonorsRemainingDuration(t *testing.T) {
 	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"summary": "initial", "score": "bad"}, nil
 	})
+	var interruptErr error
 	exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
 		<-ctx.Done()
+		interruptErr = ctx.Err()
 		return nil, OutputCorrectionUsage{Tokens: 3}, ctx.Err()
 	}
 	wf := validationWorkflow()
@@ -445,7 +447,18 @@ func TestSchemaValidation_CorrectionHonorsRemainingDuration(t *testing.T) {
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
 	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+	// The mechanism is the assertion: the budget's own deadline — not a
+	// caller cancel, not a correction-side timeout — is what stopped the
+	// correction.
+	if !errors.Is(interruptErr, context.DeadlineExceeded) {
+		t.Fatalf("correction interrupted by %v, want the max_duration deadline", interruptErr)
+	}
+	// The wall clock only guards a hang: 30ms of budget, and everything past
+	// it is scheduler latency, which a starved -race runner stretches
+	// arbitrarily. The bound is ~160x the budget so load alone never trips
+	// it; a correction that ignores max_duration blocks forever and dies on
+	// the go test timeout instead.
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("correction ignored max_duration: elapsed %v", elapsed)
 	}
 }
