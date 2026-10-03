@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -28,6 +29,10 @@ type serviceLauncher struct {
 	// Injected rather than reached for, because the launcher deliberately
 	// holds no *Server.
 	resolveRetry func(ctx context.Context, teamID, botID string, higher ...retrypolicy.Layer) *store.RunRetryPolicy
+	// resolveRoute is the server's adaptive-routing resolution
+	// (pkg/llmroute, ADR-121), injected for the same no-*Server reason.
+	// Slice 1 resolves the platform level only.
+	resolveRoute func(ctx context.Context, higher ...llmroute.Layer) *store.RunLLMRoutePolicy
 	// resolveBot is the server's tiered bot resolution (the subscription's
 	// team → platform override → baked catalog), injected for the same
 	// no-*Server reason. REQUIRED: a second, override-blind resolution path
@@ -54,6 +59,7 @@ func (s *Server) triggerLauncher() *serviceLauncher {
 		runs:         s.runs,
 		logger:       s.logger,
 		resolveRetry: s.resolveRunRetryPolicy,
+		resolveRoute: s.resolveRunLLMRoutePolicy,
 		resolveBot:   s.resolveBotSource,
 		gate:         s.gateLaunch,
 	}
@@ -72,6 +78,7 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		SecretOverrides: plan.SecretOverrides,
 		SourceRef:       plan.SourceRef,
 		RetryPolicy:     l.retryPolicyFor(ctx, plan),
+		LLMRoutePolicy:  l.routePolicyFor(ctx),
 		// The spine's vars are subscription-computed and may blind-carry
 		// keys (an ArgsVar payload, forge plumbing) the launched bot does
 		// not declare — the #1725 opt-out is the wiring for that (#1872
@@ -130,6 +137,17 @@ func (l *serviceLauncher) retryPolicyFor(ctx context.Context, plan trigger.Launc
 		Source: retrypolicy.SourceTrigger,
 		Policy: plan.Retry,
 	})
+}
+
+// routePolicyFor resolves the run's adaptive-routing policy (ADR-121),
+// tolerating a launcher built without a resolver (tests) by leaving the
+// field nil — the consumer then applies the package defaults. Slice 1
+// resolves only the platform level; the plan's own layers join in slice 3.
+func (l *serviceLauncher) routePolicyFor(ctx context.Context) *store.RunLLMRoutePolicy {
+	if l.resolveRoute == nil {
+		return nil
+	}
+	return l.resolveRoute(ctx)
 }
 
 var _ trigger.Launcher = (*serviceLauncher)(nil)

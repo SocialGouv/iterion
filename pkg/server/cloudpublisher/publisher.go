@@ -917,13 +917,26 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
 									continue
 								}
+								familyTaken := taken[secrets.WireFamily(string(prov))]
 								// The shared tier's own rule, facade policy
 								// included: "nothing else serves the wire"
 								// must not hand back as the default a key the
 								// fill keeps off it.
-								outcome = sealDecision(prov, taken[secrets.WireFamily(string(prov))], pinnedSet[strings.ToLower(string(prov))],
+								outcome = sealDecision(prov, familyTaken, pinnedSet[strings.ToLower(string(prov))],
 									func() bool { return policy.facadeMayDefault(natives[tier]) })
 								if outcome == sealNone {
+									continue
+								}
+								// refused_pinned_key (#1999, ADR-121): under
+								// the default `forfait`, a refused key stays
+								// out of a family another credential holds —
+								// the routes naming its provider spend that
+								// holder instead of parking on the key's own
+								// refusal. Facades are out of the knob's scope
+								// (no forfait alternative) and always come
+								// back; `park` restores as before.
+								if outcome == sealPinnedOnly && policy.restoreRefusedKey(prov, familyTaken) {
+									p.logger.Info("cloudpublisher: refused api-key for run=%s provider=%s stays OUT (refused_pinned_key=forfait): %s serves the routes naming it — set refused_pinned_key=park to restore it", runID, prov, familyHolderName(&bundle, prov))
 									continue
 								}
 							}
@@ -2594,6 +2607,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if spec.RetryPolicy != nil {
 		rp := *spec.RetryPolicy // copy: never share the caller's pointer
 		r.RetryPolicy = &rp
+	}
+	// The adaptive-routing policy rides the same carrier for the same
+	// reason (the RunMessage has no routing field, the launch site is the
+	// only place that sees every level, and the resolved pair plus its
+	// provenance is the audit line the policy owes).
+	if spec.LLMRoutePolicy != nil {
+		lp := *spec.LLMRoutePolicy // copy: never share the caller's pointer
+		r.LLMRoutePolicy = &lp
 	}
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials

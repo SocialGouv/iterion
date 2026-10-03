@@ -130,6 +130,12 @@ type LaunchSpec struct {
 	// without knowing schedules or manifests exist. Nil = the consumer
 	// applies pkg/retrypolicy's defaults.
 	RetryPolicy *store.RunRetryPolicy
+	// LLMRoutePolicy is the adaptive-routing policy already RESOLVED by
+	// the launch site (pkg/llmroute, ADR-121): pair order, triggers,
+	// refused_pinned_key, strict — with provenance. Snapshotted verbatim
+	// onto the run doc beside RetryPolicy. Nil = the consumer applies the
+	// package defaults.
+	LLMRoutePolicy *store.RunLLMRoutePolicy
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each entry targets nodes by selector (node id,
 	// id glob, or kind keyword agent|judge) and wins over the node's DSL

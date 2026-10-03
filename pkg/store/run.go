@@ -526,6 +526,27 @@ type RunRetryPolicy struct {
 	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
 }
 
+// RunLLMRoutePolicy is the launch-time snapshot of the effective
+// adaptive-routing policy (pkg/llmroute), plus where each field came from —
+// the RunRetryPolicy shape, for the same reason: the provenance map is not
+// decoration, and "why did this run route to X" must be answerable without
+// replaying the launch. PairOrder carries the wire spelling
+// ("claude_code+claude_forfait").
+type RunLLMRoutePolicy struct {
+	PairOrder []string `json:"pair_order,omitempty" bson:"pair_order,omitempty"`
+	// Triggers is never omitempty: an empty list is an ANSWER (the
+	// platform ceiling pruned everything the winner named — "never
+	// switch"), not an absence, and omitempty would erase it into
+	// "inherit" on the way back.
+	Triggers         []string `json:"triggers" bson:"triggers"`
+	RefusedPinnedKey string   `json:"refused_pinned_key,omitempty" bson:"refused_pinned_key,omitempty"`
+	Strict           bool     `json:"strict,omitempty" bson:"strict,omitempty"`
+	// Sources maps each field name to the layer that won it ("platform",
+	// "env", "default", "platform_ceiling", or "<level>_lock" when a lock
+	// pinned the field to the default).
+	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
+}
+
 // RunRetryState is the live retry bookkeeping for a run whose failure is
 // waiting on a provider quota window to reopen.
 //
@@ -921,6 +942,15 @@ type Run struct {
 	// never has to query schedules. Nil for runs launched before this
 	// existed; treat nil as the package defaults.
 	RetryPolicy *RunRetryPolicy `json:"retry_policy,omitempty" bson:"retry_policy,omitempty"`
+	// LLMRoutePolicy is the adaptive-routing contract RESOLVED AT LAUNCH
+	// (ADR-121, pkg/llmroute) — the pair order, the switch triggers,
+	// refused_pinned_key (#1999) and strict, each with the level that won
+	// it. Snapshotted beside RetryPolicy for the same reasons: only the
+	// launch site sees every level, the run doc is the carrier every
+	// consumer already loads, and the resolved pair plus its provenance is
+	// the audit line the policy owes. Nil for runs launched before this
+	// existed; treat nil as the package defaults.
+	LLMRoutePolicy *RunLLMRoutePolicy `json:"llm_route_policy,omitempty" bson:"llm_route_policy,omitempty"`
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`

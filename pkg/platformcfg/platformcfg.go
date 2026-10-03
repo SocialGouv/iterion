@@ -34,6 +34,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -659,6 +660,12 @@ type PlatformCredentials struct {
 	// free, a closed forfait falling through to it). nil = the env default,
 	// else "auto".
 	FacadeDefault *string `bson:"facade_default,omitempty" json:"facade_default"`
+	// Routing is the platform level of the adaptive-routing policy
+	// (ADR-121, pkg/llmroute): the pair order, the switch triggers,
+	// refused_pinned_key (#1999 — default forfait) and strict, with
+	// per-field locks binding the levels below. nil = the platform level
+	// says nothing; the env dials and the built-in defaults answer.
+	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing"`
 
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
@@ -710,6 +717,25 @@ func (p *PlatformCredentials) Facade() FacadePolicy {
 	return FacadeAuto
 }
 
+// RefusedPinned is the effective refused_pinned_key (#1999, ADR-121 §
+// Arbitrated 1): the record's routing block's value, else the env dial,
+// else the arbitrated default. The default is `forfait` — a shared-tier
+// key refused or capped at launch, whose wire family another credential
+// holds, stays OUT of the bundle (the routes naming its provider spend
+// that holder; claw bills the forfait as extra usage) — reversing the
+// pre-policy park behavior, which remains a settable value.
+func (p *PlatformCredentials) RefusedPinned() string {
+	if p != nil && p.Routing != nil && p.Routing.RefusedPinnedKey != "" {
+		return p.Routing.RefusedPinnedKey
+	}
+	if v := strings.TrimSpace(os.Getenv(llmroute.EnvRefusedPinnedKey)); v != "" {
+		if v == llmroute.RefusedPinnedForfait || v == llmroute.RefusedPinnedPark {
+			return v
+		}
+	}
+	return llmroute.RefusedPinnedForfait
+}
+
 // ValidateEnv reports an env default neither knob can read — a deployment
 // that set one meant something, and reading it as the built-in default in
 // silence would decide the opposite of what the operator wrote.
@@ -722,7 +748,7 @@ func ValidateEnv() error {
 	if v := strings.TrimSpace(os.Getenv(EnvFacadeDefault)); v != "" && !FacadePolicy(strings.ToLower(v)).valid() {
 		return fmt.Errorf("platformcfg: %s=%q — want auto, tier, never or always", EnvFacadeDefault, v)
 	}
-	return nil
+	return llmroute.ValidateEnv()
 }
 
 // Enforced reports whether the audience gates anything at all.
@@ -756,6 +782,11 @@ func (p *PlatformCredentials) Allows(orgID, teamID string) bool {
 func (p PlatformCredentials) Validate() error {
 	if p.FacadeDefault != nil && !FacadePolicy(*p.FacadeDefault).valid() {
 		return fmt.Errorf("platformcfg: facade_default %q — want auto, tier, never or always", *p.FacadeDefault)
+	}
+	if p.Routing != nil {
+		if err := llmroute.Validate(*p.Routing); err != nil {
+			return err
+		}
 	}
 	if p.Enforce == nil || !*p.Enforce {
 		return nil
