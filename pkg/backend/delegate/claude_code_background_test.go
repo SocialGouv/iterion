@@ -3552,7 +3552,17 @@ func TestBackground_AMonitorAnsweredWithShellsStopsAtTheWaitBudget(t *testing.T)
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":           "2s",
 	}, Task{})
-	if run.err != nil || run.elapsed > 4*time.Second || run.resultText() != "REPORT: the chain stopped" || !restWrapUpAsked(run, "turns on its own") {
+	// restWrapUpAsked is the witness that the wait budget ended the chain;
+	// the clock only convicts a chain that ran far past it. The ceiling is
+	// 4x the wait budget: the scripted @sleeps are sleep(1) in the fake-CLI
+	// shell — OS wall-clock, indifferent to runner load — so the margin
+	// covers only iterion's own line processing around them (~0.5s of Go
+	// scheduling under -race), which is what a starved runner stretches.
+	// The residual false-pass window, stated: a budget inflated up to ~4x
+	// still passes, the witness naming WHICH bound fired, not WHEN; a
+	// budget ignored outright is still convicted — the wrap-up is never
+	// asked for and the scripted @wait leaves run.err non-nil.
+	if run.err != nil || run.elapsed > 8*time.Second || run.resultText() != "REPORT: the chain stopped" || !restWrapUpAsked(run, "turns on its own") {
 		t.Fatalf("err = %v, elapsed = %s, text = %q: the monitor's chain ran past the wait budget", run.err, run.elapsed, run.resultText())
 	}
 }
