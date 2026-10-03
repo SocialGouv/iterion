@@ -274,6 +274,7 @@ func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
 		RepoRef:         ev.Subject.Ref,
 		Event:           ev,
 		Retry:           sub.RetryPolicy(),
+		Routing:         sub.RoutingPolicy(),
 	}
 }
 

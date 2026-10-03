@@ -132,7 +132,7 @@ func TestResolve_StrictIsMonotoneWithoutLock(t *testing.T) {
 func TestResolve_StrictLockReopensForTheLauncher(t *testing.T) {
 	yes, no := true, false
 	got, src := Resolve(
-		Layer{Source: "run", Policy: Policy{Strict: &no, Locks: []string{FieldStrict}}},
+		Layer{Source: "run", Launcher: true, Policy: Policy{Strict: &no, Locks: []string{FieldStrict}}},
 		Layer{Source: "bot", Policy: Policy{Strict: &yes}},
 	)
 	if got.Strict == nil || *got.Strict {
@@ -350,5 +350,64 @@ func TestKeyProviderSlotsMirrorSecretsProviders(t *testing.T) {
 		if !validCredential(string(p) + "_key") {
 			t.Errorf("secrets.Provider %q has no matching %q slot in the policy vocabulary", p, string(p)+"_key")
 		}
+	}
+}
+
+// A lock that is not THE launcher's cannot launder an unset past the
+// author (ADR-121: "no level unsets it — only the launcher, through an
+// explicit lock"): the run's false loses to the bot's true, and the
+// binding's lock in the middle changes nothing. The seat is MARKED, not
+// positional — an unmarked run layer is just another level.
+func TestResolve_StrictNonHeadLockCannotUnset(t *testing.T) {
+	yes, no := true, false
+	got, src := Resolve(
+		Layer{Source: "run", Policy: Policy{Strict: &no}},
+		Layer{Source: "binding", Policy: Policy{Strict: &no, Locks: []string{FieldStrict}}},
+		Layer{Source: "bot", Policy: Policy{Strict: &yes}},
+	)
+	if got.Strict == nil || !*got.Strict {
+		t.Fatalf("strict = %v, want true — a mid-chain lock is not the launcher's explicit lock", got.Strict)
+	}
+	if src[FieldStrict] != "bot" {
+		t.Fatalf("strict source = %q, want bot", src[FieldStrict])
+	}
+}
+
+// The monotone lift scans only the range the locks allow: a true ABOVE the
+// lock was vetoed by it and must not come back through the lift — the
+// locked range (no true below) answers false.
+func TestResolve_StrictLiftDoesNotCrossALock(t *testing.T) {
+	yes, no := true, false
+	got, src := Resolve(
+		Layer{Source: "run", Policy: Policy{Strict: &yes}},
+		Layer{Source: "binding", Policy: Policy{Strict: &no, Locks: []string{FieldStrict}}},
+		Layer{Source: "bot", Policy: Policy{Strict: &no}},
+	)
+	if got.Strict == nil || *got.Strict {
+		t.Fatalf("strict = %v, want false — the binding's lock vetoes the run's true and owns the field", got.Strict)
+	}
+	if src[FieldStrict] != "binding" {
+		t.Fatalf("strict source = %q, want binding", src[FieldStrict])
+	}
+}
+
+// THE critical case the slice-2 review found: a BINDING lock + false must
+// not launder an unset past the author — no layer marked Launcher exists
+// yet, so the monotone lift restores the author's true against the whole
+// binding's machinery. The schedule write path additionally refuses locks
+// (the binding holds no lock primitive); this fold test is the backstop
+// for records that arrive by other means.
+func TestResolve_BindingLockCannotUnsetStrict(t *testing.T) {
+	yes, no := true, false
+	got, src := Resolve(
+		Layer{Source: SourceSchedule, Policy: Policy{Strict: &no, Locks: []string{FieldStrict}}},
+		Layer{Source: SourceBot, Policy: Policy{Strict: &yes}},
+		Layer{Source: SourcePlatform, Policy: Policy{}},
+	)
+	if got.Strict == nil || !*got.Strict {
+		t.Fatalf("strict = %v, want true — no launcher marked: the author's true survives the binding's lock+false", got.Strict)
+	}
+	if src[FieldStrict] != SourceBot {
+		t.Fatalf("strict source = %q, want bot", src[FieldStrict])
 	}
 }

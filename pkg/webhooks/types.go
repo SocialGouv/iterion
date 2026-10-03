@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -343,6 +344,10 @@ type Config struct {
 	RetryMaxAttempts int    `bson:"retry_max_attempts,omitempty" json:"retry_max_attempts,omitempty"`
 	RetryMaxWait     string `bson:"retry_max_wait,omitempty" json:"retry_max_wait,omitempty"`
 	RetryJitter      string `bson:"retry_jitter,omitempty" json:"retry_jitter,omitempty"`
+	// Routing is the webhook's routing block (ADR-121, pkg/llmroute) — the
+	// binding level for webhook-provisioned bots. nil = the level says
+	// nothing. BREADTH: one webhook serves every bot its rules fan out to.
+	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
 
 	// AuthorizedRepliers + MinReplierRole gate who may "talk back" to the bot
 	// via a note (a /revi command or a reply): a note author is authorized
@@ -726,6 +731,18 @@ func (c Config) NormalizedReviewRequestLogins() []string {
 		}
 	}
 	return out
+}
+
+// RoutingPolicy projects the webhook's routing block (ADR-121). Not
+// normalized — one layer of a precedence chain. BREADTH, said out loud: a
+// webhook serves every bot its rules fan out to, so one webhook's
+// pair_order REPLACES (never merges) the routing of each of them at once —
+// the authors' locks are what stop it.
+func (c Config) RoutingPolicy() llmroute.Policy {
+	if c.Routing == nil {
+		return llmroute.Policy{}
+	}
+	return *c.Routing
 }
 
 // RetryPolicy projects the webhook's retry fields. Not normalized — this

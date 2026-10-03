@@ -151,12 +151,13 @@ type Policy struct {
 	// below the lock, so a run-level lock + false wins over a bot's true).
 	// Nil = unset (inherit / false).
 	Strict *bool `yaml:"strict,omitempty" json:"strict,omitempty" bson:"strict,omitempty"`
-	// Locks names fields whose descent STOPS at this level: a lower
-	// level can no longer set them. It is the one primitive cost
-	// governance has. A lock holds even when this level does not SET the
-	// field — the author's lock pins the default against every level
-	// below. Locks never bind the level that declares them, nor any level
-	// above.
+	// Locks names fields this level owns: every setter ABOVE it is
+	// vetoed, and the field is decided by the highest setter at or below
+	// the lock (the author's lock stops the binding; the platform's lock
+	// binds every tenant-configurable level). A lock holds even when this
+	// level does not SET the field — it then pins the default against the
+	// levels above, under a "<level>_lock" provenance. Locks never bind
+	// the level that declares them.
 	Locks []string `yaml:"locks,omitempty" json:"locks,omitempty" bson:"locks,omitempty"`
 }
 
@@ -305,14 +306,28 @@ func validField(f string) bool {
 // Layer is one contributor to a resolved Policy, tagged with a label used
 // for provenance reporting.
 type Layer struct {
-	// Source names the layer for provenance ("platform", "env",
-	// "default").
+	// Source names the layer for provenance ("bot", "schedule",
+	// "trigger", "webhook", "platform", "env", "default").
 	Source string
 	Policy Policy
+	// Launcher marks THE launcher layer (the run level, delivery-1
+	// slice 3): the one seat whose explicit lock may reopen strict
+	// (ADR-121: "no level unsets it — only the launcher, for their own
+	// run, through an explicit lock"). No layer marks it before the run
+	// level exists, so strict is monotone across every layer slices 1–2
+	// ship — a binding lock cannot launder an unset past the author.
+	Launcher bool
 }
 
-// Provenance labels for the layers Resolve is normally called with.
+// Provenance labels for the layers Resolve is normally called with —
+// per-surface for the levels above the platform, matching the retrypolicy
+// chain's convention (a snapshot that says only "binding" stops where the
+// webhook case needs it most: one ingress serves many bots).
 const (
+	SourceBot      = "bot"
+	SourceSchedule = "schedule"
+	SourceTrigger  = "trigger"
+	SourceWebhook  = "webhook"
 	SourcePlatform = "platform"
 	SourceEnv      = "env"
 	SourceDefault  = "default"
@@ -380,19 +395,42 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 			src[FieldStrict] = l.Source
 		}
 	}
-	// Strict is monotone where nobody locked it (ADR-121: "no level unsets
-	// it"): a true anywhere wins over a false anywhere — a bot's
-	// `strict: true` survives a binding's or a run's `false`. Only the
-	// launcher's explicit lock reopens the question, and the locked range
-	// above already decided it. Provenance names the highest setter of the
-	// value that won.
-	if _, locked := lockedFrom[FieldStrict]; !locked && (out.Strict == nil || !*out.Strict) {
-		for _, l := range layers {
-			if l.Policy.Strict != nil && *l.Policy.Strict {
-				t := true
-				out.Strict = &t
-				src[FieldStrict] = l.Source
-				break
+	// Strict is monotone unless the LAUNCHER layer locked it (ADR-121:
+	// "no level unsets it — only the launcher, for their own run, through
+	// an explicit lock"): a true anywhere wins over a false anywhere — a
+	// bot's `strict: true` survives a binding's plain `false` AND a
+	// binding's lock. The seat is marked, not positional: before the run
+	// level exists no layer marks it, so the monotone lift runs
+	// everywhere. When the launcher's lock reopens the question, the
+	// locked range decides (first setter at or below the lock).
+	// Provenance names the highest setter of the value that won.
+	headLocksStrict := false
+	for _, l := range layers {
+		if !l.Launcher {
+			continue
+		}
+		for _, f := range l.Policy.Locks {
+			if f == FieldStrict {
+				headLocksStrict = true
+			}
+		}
+	}
+	if !headLocksStrict {
+		if out.Strict == nil || !*out.Strict {
+			// The lift scans only the range the locks allow — a true
+			// ABOVE a lock was vetoed and must not come back through the
+			// monotone pass.
+			start := 0
+			if from, locked := lockedFrom[FieldStrict]; locked {
+				start = from
+			}
+			for _, l := range layers[start:] {
+				if l.Policy.Strict != nil && *l.Policy.Strict {
+					t := true
+					out.Strict = &t
+					src[FieldStrict] = l.Source
+					break
+				}
 			}
 		}
 	}

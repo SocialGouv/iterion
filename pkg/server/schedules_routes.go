@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
@@ -53,6 +57,11 @@ type createScheduleReq struct {
 	RetryMaxAttempts int    `json:"retry_max_attempts,omitempty"`
 	RetryMaxWait     string `json:"retry_max_wait,omitempty"`
 	RetryJitter      string `json:"retry_jitter,omitempty"`
+	// Routing block (pkg/llmroute, ADR-121; validated on create) — the
+	// schedule's binding-level voice over the bot's manifest. Decoded
+	// STRICTLY through the RawMessage (a camelCase typo must 400, not
+	// silently store a no-op block audited as set).
+	Routing json.RawMessage `json:"routing,omitempty"`
 }
 
 type updateScheduleReq struct {
@@ -76,6 +85,43 @@ type updateScheduleReq struct {
 	RetryMaxAttempts *int    `json:"retry_max_attempts,omitempty"`
 	RetryMaxWait     *string `json:"retry_max_wait,omitempty"`
 	RetryJitter      *string `json:"retry_jitter,omitempty"`
+	// Routing block (pkg/llmroute, ADR-121): ABSENT leaves the stored block
+	// untouched (an edit dialog that mirrors the row back must not wipe
+	// what it does not know about), `null` clears it, an object replaces it
+	// wholesale. The same mechanic the platform record's PUT uses.
+	Routing json.RawMessage `json:"routing,omitempty"`
+}
+
+// decodeScheduleRouting is the ONE decoder of a schedule request's routing
+// block: absent (empty RawMessage) → nil, nil (leave untouched); "null" →
+// nil with the empty marker the caller reads for the clear; an object →
+// decoded with DisallowUnknownFields (a camelCase typo must refuse, not
+// silently store a no-op block), validated, and its LOCKS refused — the
+// binding level does not hold the lock primitive (ADR-121: the author's
+// manifest and the platform record do; a schedule lock would launder
+// unset past the author).
+func decodeScheduleRouting(raw json.RawMessage) (*llmroute.Policy, *routingRequestError) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var block llmroute.Policy
+	if err := dec.Decode(&block); err != nil {
+		return nil, &routingRequestError{http.StatusBadRequest, fmt.Errorf("routing: %w", err)}
+	}
+	if len(block.Locks) > 0 {
+		return nil, &routingRequestError{http.StatusUnprocessableEntity, fmt.Errorf("routing.locks: the binding level does not hold the lock primitive — the author's manifest and the platform record do (locks: %s)", strings.Join(block.Locks, ", "))}
+	}
+	if err := llmroute.Validate(block); err != nil {
+		return nil, &routingRequestError{http.StatusBadRequest, err}
+	}
+	return &block, nil
+}
+
+type routingRequestError struct {
+	status int
+	err    error
 }
 
 // scheduleNow returns the UTC instant used for CreatedAt / UpdatedAt and to
@@ -176,6 +222,11 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	routing, routeErr := decodeScheduleRouting(req.Routing)
+	if routeErr != nil {
+		httpError(w, routeErr.status, "%s", routeErr.err.Error())
+		return
+	}
 	now := s.scheduleNow()
 	sb := cloudsched.ScheduledBot{
 		ID:              uuid.NewString(),
@@ -201,6 +252,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		RetryMaxAttempts:  req.RetryMaxAttempts,
 		RetryMaxWait:      req.RetryMaxWait,
 		RetryJitter:       req.RetryJitter,
+		Routing:           routing,
 		CreatedBy:         id.UserID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -217,6 +269,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTenant(r, teamID, "schedule.created", "schedule", sb.ID, map[string]any{
 		"bot_id": botID, "cron": cronExpr, "repo_url": sb.RepoURL != "", "disabled": sb.Disabled,
+		"routing_set": sb.Routing != nil,
 	})
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, sb)
@@ -335,6 +388,15 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Routing: absent leaves the stored block (edit dialogs mirror the row
+	// back), null clears, an object replaces wholesale — decoded strictly
+	// and validated before it lands.
+	patchRouting, routeErr := decodeScheduleRouting(req.Routing)
+	if routeErr != nil {
+		httpError(w, routeErr.status, "%s", routeErr.err.Error())
+		return
+	}
+	clearRouting := patchRouting == nil && len(req.Routing) > 0
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.
 	mergedRetry := cur.RetryPolicy()
@@ -366,6 +428,8 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	patch.RetryMaxAttempts = req.RetryMaxAttempts
 	patch.RetryMaxWait = req.RetryMaxWait
 	patch.RetryJitter = req.RetryJitter
+	patch.Routing = patchRouting
+	patch.ClearRouting = clearRouting
 	// cron and interval_seconds are mutually exclusive cadences; whichever
 	// the request provides recomputes NextFireAt and clears the other. The
 	// exclusive switch (not two independent ifs) makes each patch field set
@@ -427,6 +491,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTenant(r, teamID, "schedule.updated", "schedule", updated.ID, map[string]any{
 		"bot_id": updated.BotID, "cron_changed": req.Cron != nil, "disabled_changed": req.Disabled != nil,
+		"routing_set": updated.Routing != nil, "routing_changed": len(req.Routing) > 0,
 	})
 	writeJSON(w, updated)
 }

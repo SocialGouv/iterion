@@ -1150,6 +1150,10 @@ func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 	cfg.RetryMaxAttempts = prev.RetryMaxAttempts
 	cfg.RetryMaxWait = prev.RetryMaxWait
 	cfg.RetryJitter = prev.RetryJitter
+	// Routing rides the same carry as retry: the provision literal replaces
+	// the whole document, and a re-provision must not silently drop the
+	// stored routing block (ADR-121) any more than the retry fields.
+	cfg.Routing = prev.Routing
 	// The liveness stamp is written by MarkUsed with a $set; the rebuild
 	// REPLACES the whole document, so without this every re-provision erases
 	// "when did this webhook last receive anything" — the one field an

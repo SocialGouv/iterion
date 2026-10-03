@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegitlab "github.com/SocialGouv/iterion/pkg/forge/gitlab"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -1284,7 +1285,13 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		Source: retrypolicy.SourceSchedule,
 		Policy: sb.RetryPolicy(),
 	})
-	route := s.resolveRunLLMRoutePolicy(ctx)
+	route, routeErr := s.resolveRunLLMRoutePolicy(ctx, sb.TenantID, sb.BotID, llmroute.Layer{
+		Source: llmroute.SourceSchedule,
+		Policy: sb.RoutingPolicy(),
+	})
+	if routeErr != nil {
+		return routeErr
+	}
 	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry, route)
 	overrides, err := s.scheduledForgeOverrides(ctx, sb)
 	if err != nil {
@@ -1410,6 +1417,13 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 		return "", err
 	}
 	defer lb.Cleanup()
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, cfg.TenantID, botID, llmroute.Layer{
+		Source: llmroute.SourceWebhook,
+		Policy: cfg.RoutingPolicy(),
+	})
+	if routeErr != nil {
+		return "", routeErr
+	}
 	spec := runview.LaunchSpec{
 		Vars:        vars,
 		RepoURL:     repoURL,
@@ -1436,7 +1450,7 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 			Source: retrypolicy.SourceWebhook,
 			Policy: cfg.RetryPolicy(),
 		}),
-		LLMRoutePolicy: s.resolveRunLLMRoutePolicy(ctx),
+		LLMRoutePolicy: routePolicy,
 	}
 	lb.Stamp(&spec)
 	res, err := s.runs.Launch(ctx, spec)
