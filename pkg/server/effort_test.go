@@ -8,6 +8,8 @@ import (
 	"time"
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // TestEffortCapabilities_ClawOpus48 proves the endpoint returns the full
@@ -183,6 +185,34 @@ func TestEffortCapabilities_Pi(t *testing.T) {
 	other := getEffortCaps(t, hs.URL, "pi", "some/other-model")
 	if !sameStringSet(got.Supported, other.Supported) || got.Default != other.Default || got.Source != other.Source {
 		t.Errorf("pi response is not model-independent:\nfirst =%+v\nsecond=%+v", got, other)
+	}
+}
+
+// TestEffortCapabilities_CompilerParity proves the picker serves every
+// backend the compiler credits with a reasoning-effort dial
+// (ir.EffortDialBackends, the set C177 screens against): a 400 on one of
+// them would contradict the compiler for a legal workflow — the bug grok
+// shipped with. kimi is the control: it has no dial on either side, so it
+// must keep 400ing (both sides agree).
+func TestEffortCapabilities_CompilerParity(t *testing.T) {
+	_, hs := newTestServer(t)
+	// codex is in the dial set and its arm queries the CLI when the cache
+	// is cold; seed an empty live list so the test never spawns a process.
+	seedCodexModelCache(t, nil)
+
+	for _, backend := range ir.EffortDialBackends() {
+		got := getEffortCaps(t, hs.URL, backend, "claude-opus-4-8")
+		if len(got.Supported) == 0 {
+			t.Errorf("backend %q: Supported is empty — the picker must offer at least one level for a dialled backend", backend)
+		}
+	}
+
+	resp, err := http.Get(hs.URL + "/api/effort-capabilities?backend=kimi&model=kimi-for-coding")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("kimi: status=%d, want 400 — kimi has no dial on either side; body=%s", resp.StatusCode, mustReadBody(t, resp))
 	}
 }
 
