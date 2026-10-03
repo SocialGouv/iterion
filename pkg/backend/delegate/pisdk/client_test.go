@@ -366,3 +366,50 @@ func TestClientDrainsStreamTailBeforeWait(t *testing.T) {
 		t.Errorf("received %d/%d events — the stream tail was truncated by cmd.Wait", got, lines)
 	}
 }
+
+// TestClientCloseSweepsOrphanedGroup pins the contract the TempDir-cleanup
+// flake (#1646) exposed: the leader exiting on stdin-close does not reap its
+// process group, so a grandchild — the stdio MCP server pi forked — kept
+// writing into the caller's workdir past Close. The assertion pins the KILL
+// (no orphan may write after Close returns); the join that follows it is
+// exercised but not separately asserted.
+func TestClientCloseSweepsOrphanedGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group semantics are POSIX-only")
+	}
+	logPath := filepath.Join(t.TempDir(), "orphan.log")
+	c := NewClient(ClientOptions{
+		Spawn: func(ctx context.Context, _ []string) *exec.Cmd {
+			// The background subshell stands in for pi's MCP child, its own
+			// fds redirected so the leader's pipes close when it exits — the
+			// graceful Close path. The foreground `cat` ties the leader's
+			// lifetime to stdin.
+			return exec.CommandContext(ctx, "sh", "-c",
+				`(while :; do echo tick >> "$1"; sleep 0.02; done) >/dev/null 2>&1 & cat >/dev/null`,
+				"sh", logPath)
+		},
+	})
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Let the orphan start writing, then take the graceful path: closing
+	// stdin ends the leader's `cat`, and only the orphan remains in the group.
+	time.Sleep(150 * time.Millisecond)
+	_ = c.Close()
+
+	size := fileSize(t, logPath)
+	time.Sleep(300 * time.Millisecond)
+	if got := fileSize(t, logPath); got != size {
+		t.Errorf("orphaned grandchild kept writing past Close: log grew %d -> %d bytes", size, got)
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}

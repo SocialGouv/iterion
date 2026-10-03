@@ -3,10 +3,14 @@
 package pisdk
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
 // hardenSubtreeTermination makes the spawned pi process the leader of its own
@@ -46,4 +50,76 @@ func killSubtree(pid int) error {
 		return err
 	}
 	return nil
+}
+
+// awaitSubtreeGone joins the group killSubtree signalled: SIGKILL is
+// delivered, not waited, and a still-dying member keeps its open files for a
+// moment. Poll the group away so Close does not return while a grandchild of
+// the session is still running. The leader itself is already reaped by reap;
+// only its orphans can remain.
+func awaitSubtreeGone(pid int, budget time.Duration) {
+	if pid <= 0 {
+		return
+	}
+	deadline := time.Now().Add(budget)
+	for {
+		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// processStartTime reads a process's start-time (field 22 of
+// /proc/<pid>/stat), the identity token that distinguishes a recycled pid
+// from the process Start spawned. ok=false when procfs cannot answer:
+// non-Linux unix, a gone pid, an unreadable stat.
+func processStartTime(pid int) (start uint64, ok bool) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	// comm (field 2) is parenthesised and may itself contain spaces or
+	// parens, so fields resume after the LAST ')': fields[0] below is
+	// field 3 (state), and start-time (field 22) sits at index 19.
+	i := bytes.LastIndexByte(raw, ')')
+	if i < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(string(raw[i+1:]))
+	if len(fields) <= 19 {
+		return 0, false
+	}
+	start, err = strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return start, true
+}
+
+// pidRecycled reports whether pid now names a process other than the one
+// whose start-time was captured. A pid that names nothing cannot head a new
+// process group — only this session's orphans can still carry the id — so it
+// answers NOT recycled. An existing pid whose start-time cannot be verified
+// (procfs missing, nothing captured at Start) answers recycled: the group
+// kill is skipped rather than risked on a stranger.
+//
+// Darwin is covered by the caller's invariants even though processStartTime
+// always answers ok=false there: the common path reaps the leader before
+// Close reaches the sweep, so kill(pid, 0) returns ESRCH and the sweep
+// fires; and when the leader outlives the 5s grace, the pre-existing
+// UNGUARDED killSubtree fires while the unreaped leader — alive or zombie —
+// still pins its pid, so recycling is impossible on that path.
+func pidRecycled(pid int, start uint64, captured bool) bool {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return false
+	}
+	now, ok := processStartTime(pid)
+	if !ok || !captured {
+		return true
+	}
+	return now != start
 }
