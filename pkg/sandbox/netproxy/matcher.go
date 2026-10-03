@@ -53,8 +53,19 @@ const (
 // Construct via [Compile]. Reuse the same Policy across many host
 // checks — the rule list is read-only and cheap to evaluate.
 type Policy struct {
-	mode  Mode
-	rules []rule
+	mode    Mode
+	rules   []rule
+	unmodel map[string]bool // hosts the operator un-modeled: never model requests
+}
+
+// Unmodeled reports whether the operator excluded host from the model
+// detection (`!host` in the model hosts): such a host is audited and
+// substituted like any other request, whatever its path looks like.
+func (p *Policy) Unmodeled(host string) bool {
+	if p == nil || len(p.unmodel) == 0 {
+		return false
+	}
+	return p.unmodel[canonicalHost(host)]
 }
 
 type rule struct {
