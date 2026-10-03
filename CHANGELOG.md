@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.228.0](https://github.com/SocialGouv/iterion/compare/v3.227.1...v3.228.0) (2026-10-03)
+
+### Features
+
+* **backends:** an OpenAI-compatible gateway served from the environment ([#2028](https://github.com/SocialGouv/iterion/issues/2028)) ([#2102](https://github.com/SocialGouv/iterion/issues/2102)) ([7219fa6](https://github.com/SocialGouv/iterion/commit/7219fa6d777470322a516a4c2a9e1470efc560b5))
+
+    <details><summary>why</summary>
+
+    `openai_compatible/<gateway model id>` names a model an OpenAI-compatible gateway serves — a LiteLLM router, a vLLM farm — with the endpoint taken from the deployment's own environment: OPENAI_COMPATIBLE_BASE_URL names it, OPENAI_COMPATIBLE_API_KEY authenticates it. The gateway id reaches the wire verbatim; routing identity, metering and refusals hold end to end.
+
+    </details>
+
 ## [3.227.1](https://github.com/SocialGouv/iterion/compare/v3.227.0...v3.227.1) (2026-10-03)
 
 ### Bug Fixes
