@@ -3,6 +3,39 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.227.1](https://github.com/SocialGouv/iterion/compare/v3.227.0...v3.227.1) (2026-10-03)
+
+### Bug Fixes
+
+* **backends:** grok's effort dial served by the studio picker; retry classifier stops trusting free-form stderr ([#1642](https://github.com/SocialGouv/iterion/issues/1642), [#1645](https://github.com/SocialGouv/iterion/issues/1645)) ([#2145](https://github.com/SocialGouv/iterion/issues/2145)) ([7696c88](https://github.com/SocialGouv/iterion/commit/7696c88b6cb027f06862a4975d370815033a1e41))
+
+    <details><summary>why</summary>
+
+    The studio picker 400ed on grok while C177 stays silent on a grok route carrying reasoning_effort. New static arm mirrors what grokMapEffort passes verbatim; ir.EffortDialBackends lets a parity test assert every compiler-credited backend is served (kimi stays the 400 control).
+
+    </details>
+* **model:** env text widens when it resolves to nothing here; the gateway skip answers on the raw prefix ([#2121](https://github.com/SocialGouv/iterion/issues/2121)) ([#2132](https://github.com/SocialGouv/iterion/issues/2132)) ([07de867](https://github.com/SocialGouv/iterion/commit/07de8678d75b67d143e1fd3481d7350f7b099edb)), references [#2109](https://github.com/SocialGouv/iterion/issues/2109)
+
+    <details><summary>why</summary>
+
+    Two narrowing defects of the #2109 gateway classification, found by the revi gate:
+
+    </details>
+* **studio,bots:** pin en-US on locale-free toLocaleString; docs-refresh defaults gain AGENTS.md ([#1562](https://github.com/SocialGouv/iterion/issues/1562), [#2079](https://github.com/SocialGouv/iterion/issues/2079)) ([#2146](https://github.com/SocialGouv/iterion/issues/2146)) ([6149512](https://github.com/SocialGouv/iterion/commit/61495122fe50c78f2a4adb204a64943474c1e3fc)), references [#2071](https://github.com/SocialGouv/iterion/issues/2071)
+
+    <details><summary>why</summary>
+
+    Studio already pins en-US in lib/format.ts for deterministic output; the 17 bare calls were the outliers and made task studio:check red on any non-en host. CadenceCard's next-fire render routes through formatDateTime like the Schedules view.
+
+    </details>
+* **test:** deflake four load-sensitive CI tests — pisdk group sweep, join budgets, store sync ([#1646](https://github.com/SocialGouv/iterion/issues/1646), [#1981](https://github.com/SocialGouv/iterion/issues/1981), [#1982](https://github.com/SocialGouv/iterion/issues/1982), [#2125](https://github.com/SocialGouv/iterion/issues/2125)) ([#2144](https://github.com/SocialGouv/iterion/issues/2144)) ([1b4119e](https://github.com/SocialGouv/iterion/commit/1b4119e124e705bfa0f22597cde45db4f67d44f1))
+
+    <details><summary>why</summary>
+
+    A grandchild of pi (a stdio MCP server in its process group) kept writing into t.TempDir() after a graceful Close, racing the test cleanup. Close now kills and joins the group on every path, not just the kill-timeout one, with a /proc start-time guard so a recycled pid's group is never touched.
+
+    </details>
+
 ## [3.227.0](https://github.com/SocialGouv/iterion/compare/v3.226.0...v3.227.0) (2026-10-02)
 
 ### Features
