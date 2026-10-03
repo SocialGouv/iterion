@@ -113,6 +113,14 @@ func pwLedgerOff() map[string]any { return map[string]any{"max_bytes": 0, "keep"
 // here, exactly as it is in a run.
 func runPyWhole(t *testing.T, dir, script string) (map[string]any, string, error) {
 	t.Helper()
+	out, stderr, _, err := runPyWholeCmd(t, dir, script)
+	return out, stderr, err
+}
+
+// runPyWholeCmd is runPyWhole and also hands back the reaped exec.Cmd, for
+// the caller that reads the child's process accounting (its CPU time).
+func runPyWholeCmd(t *testing.T, dir, script string) (map[string]any, string, *exec.Cmd, error) {
+	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -139,7 +147,7 @@ func runPyWhole(t *testing.T, dir, script string) (map[string]any, string, error
 			t.Fatalf("stdout is not ONE json object (the engine would wrap it as {result: …}):\n%s", s)
 		}
 	}
-	return out, stderr.String(), runErr
+	return out, stderr.String(), c, runErr
 }
 
 // runPyEnv is runPyWhole with extra environment entries (KEY=value).
