@@ -1180,6 +1180,14 @@ target workspace (an ops repository, never the application's own):
   not), the alerted ones read back by id (sightings, resolution). A
   silent bootstrap per lane identity; issue text is scrubbed like a log
   line and never persisted; no event body is fetched.
+- The Alertmanager built into the configured Grafana: the alerts firing
+  right now, one GET — the rules stay authored in Grafana's own UI and
+  Argus aggregates. Severity from the alert's labels through the
+  config's mapping (default and cap included); label and annotation
+  keys and values are scrubbed like a log line; a whole read that no
+  longer CONTAINS an alerted incident says so (resolved — a silenced
+  or inhibited alert is seen, never resolved); a partial or refused
+  read never concludes.
 - A redaction scan that is the ONLY reader of the raw lines: secrets,
   JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
   (Luhn), emails and phone numbers are replaced before anything is
