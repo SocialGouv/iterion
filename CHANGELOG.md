@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.229.0](https://github.com/SocialGouv/iterion/compare/v3.228.0...v3.229.0) (2026-10-03)
+
+### Features
+
+* **models:** the gateway catalog — operator table, exact models.dev lookup, offline snapshot ([#2028](https://github.com/SocialGouv/iterion/issues/2028)) ([#2111](https://github.com/SocialGouv/iterion/issues/2111)) ([4e24ee1](https://github.com/SocialGouv/iterion/commit/4e24ee1f1d28a865372e23598948d2688e92b529))
+
+    <details><summary>why</summary>
+
+    (Rebuilt by content onto the current main; the original commit's message and trailers govern — see 273fedc on feat/gateway-catalog.)
+
+    </details>
+
 ## [3.228.0](https://github.com/SocialGouv/iterion/compare/v3.227.1...v3.228.0) (2026-10-03)
 
 ### Features
