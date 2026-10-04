@@ -245,10 +245,11 @@ type Server struct {
 	runnerBuilds runnerBuildObserver
 	// botRoles / sandboxCfg are TTL resolvers over the platform settings
 	// families; the *Store fields are the write surfaces of the admin routes.
-	botRoles        *platformcfg.Resolver[platformcfg.BotRoles]
-	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
-	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
-	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
+	botRoles         *platformcfg.Resolver[platformcfg.BotRoles]
+	botRolesStore    platformcfg.Store[platformcfg.BotRoles]
+	runnerPoolsStore platformcfg.Store[platformcfg.RunnerPools]
+	sandboxCfg       *platformcfg.Resolver[platformcfg.Sandbox]
+	sandboxCfgStore  platformcfg.Store[platformcfg.Sandbox]
 	// platformCreds gates who may draw on the deployment's own LLM
 	// credentials; nil (or an unenforced record) admits every tenant.
 	platformCreds      *platformcfg.Resolver[platformcfg.PlatformCredentials]
@@ -742,6 +743,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		pluginSourceFetcher: cfg.PluginSourceFetcher,
 		botSources:          cfg.BotSources,
 		botRolesStore:       cfg.BotRolesSettings,
+		runnerPoolsStore:    cfg.RunnerPoolsSettings,
 		sandboxCfgStore:     cfg.SandboxSettings,
 		platformCredsStore:  cfg.PlatformCredentialsSettings,
 		botVarsStore:        cfg.BotVarsSettings,

@@ -8,12 +8,13 @@ import (
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/queue"
 )
 
-// registerAdminTeamRoutes wires the super-admin team console.
 func (s *Server) registerAdminTeamRoutes() {
 	s.mux.Handle("PUT /api/admin/teams/{id}/runner-pool", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminSetTeamRunnerPool)))
+	s.registerRunnerPoolRoutes()
 }
 
 // handleAdminSetTeamRunnerPool maps (or unmaps) a team onto a sovereign
@@ -38,6 +39,20 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusUnprocessableEntity, "runner_pool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", pool)
 		return
 	}
+	// The registry must KNOW the pool (any state — provisioning is fine to
+	// map, the launch refuses until active). A registry not wired skips the
+	// check here; the launch still refuses, so the boundary holds.
+	if s.runnerPoolsStore != nil && pool != "" {
+		reg, err := s.runnerPoolsStore.Get(r.Context())
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if reg == nil || !reg.Exists(pool) {
+			httpError(w, http.StatusUnprocessableEntity, "runner pool %q is not in the platform registry — create it first (PUT /api/admin/runner-pools)", pool)
+			return
+		}
+	}
 	cur, err := s.authStore().GetTeam(r.Context(), teamID)
 	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
@@ -61,4 +76,52 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 		})
 	}
 	writeJSON(w, toTeamSummaryView(updated))
+}
+
+// registerRunnerPoolRoutes wires the super-admin registry console. No
+// registry store wired = no pools exist (the routes 503 rather than pretend).
+func (s *Server) registerRunnerPoolRoutes() {
+	if s.runnerPoolsStore == nil {
+		return
+	}
+	s.mux.Handle("GET /api/admin/runner-pools", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetRunnerPools)))
+	s.mux.Handle("PUT /api/admin/runner-pools", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutRunnerPools)))
+}
+
+// handleAdminGetRunnerPools answers the stored registry (null = none yet).
+func (s *Server) handleAdminGetRunnerPools(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.runnerPoolsStore.Get(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, rec)
+}
+
+// handleAdminPutRunnerPools replaces the registry WHOLESALE — entries are
+// small and the lifecycle is explicit per entry (state), so merge semantics
+// would only blur who set which state when. Validated (grammar, duplicates,
+// states), audited, and the mapping route refuses pools the registry does
+// not know.
+func (s *Server) handleAdminPutRunnerPools(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Pools []platformcfg.RunnerPool `json:"pools"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	rec := platformcfg.RunnerPools{Pools: req.Pools}
+	if err := rec.Validate(); err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
+		return
+	}
+	rec.UpdatedBy = s.requestUserID(r)
+	if err := s.runnerPoolsStore.Put(r.Context(), rec); err != nil {
+		httpError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	s.auditPlatform(r, "", "platform.settings.runner_pools.updated", "platform_settings", platformcfg.FamilyRunnerPools, map[string]any{
+		"pools": len(rec.Pools),
+	})
+	writeJSON(w, rec)
 }

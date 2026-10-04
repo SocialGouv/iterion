@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -32,11 +33,25 @@ func (f fakePoolTeamResolver) GetOrg(context.Context, string) (identity.Org, err
 	return identity.Org{}, errors.New("not used by these tests")
 }
 
+type fakePoolRegistry struct {
+	rec *platformcfg.RunnerPools
+	err error
+}
+
+func (f fakePoolRegistry) Get(context.Context) (*platformcfg.RunnerPools, error) {
+	return f.rec, f.err
+}
+
 func poolTestPublisher(st store.RunStore, res TeamResolver, published *[]*queue.RunMessage) *Publisher {
+	return poolTestPublisherWithRegistry(st, res, nil, published)
+}
+
+func poolTestPublisherWithRegistry(st store.RunStore, res TeamResolver, reg RunnerPoolResolver, published *[]*queue.RunMessage) *Publisher {
 	return &Publisher{
 		store:    st,
 		logger:   iterlog.New(iterlog.LevelError, io.Discard),
 		identity: res,
+		pools:    reg,
 		publishRun: func(_ context.Context, msg *queue.RunMessage) error {
 			*published = append(*published, msg)
 			return nil
@@ -44,15 +59,21 @@ func poolTestPublisher(st store.RunStore, res TeamResolver, published *[]*queue.
 	}
 }
 
+func activeRegistry(pool string) fakePoolRegistry {
+	return fakePoolRegistry{rec: &platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{
+		{Name: pool, State: platformcfg.RunnerPoolActive},
+	}}}
+}
+
 func poolLaunch() (context.Context, *ir.Workflow, *runview.CompiledSource) {
 	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
 	return ctx, &ir.Workflow{Name: "wf"}, &runview.CompiledSource{Hash: "hash"}
 }
 
-// A team mapped to a sovereign pool must NOT launch while pool dispatch is
-// unwired: the run is refused synchronously rather than served outside the
-// team's pool — the leak #2029 exists to make impossible. Red when the
-// poolDispatchEnabled refusal is dropped.
+// A team mapped to a sovereign pool routes ONLY through an ACTIVE registry
+// entry: no registry wired, the mapping is refused — routing without an
+// explicit registry is the leak #2029 exists to make impossible. Red when
+// the registry gate is dropped.
 func TestSubmitLaunch_ATeamMappedToAPoolIsRefusedUntilDispatchShips(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -61,8 +82,8 @@ func TestSubmitLaunch_ATeamMappedToAPoolIsRefusedUntilDispatchShips(t *testing.T
 	p := poolTestPublisher(st, fakePoolTeamResolver{team: identity.Team{ID: "team-a", RunnerPool: "honorabilite"}}, &[]*queue.RunMessage{})
 	ctx, wf, cs := poolLaunch()
 	if _, err := p.SubmitLaunch(ctx, "run-pool-refused", runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}, wf, cs); err == nil ||
-		!strings.Contains(err.Error(), "honorabilite") || !strings.Contains(err.Error(), "not enabled") {
-		t.Fatalf("a pool-mapped launch must be refused naming the pool, got: %v", err)
+		!strings.Contains(err.Error(), "honorabilite") || !strings.Contains(err.Error(), "registry") {
+		t.Fatalf("a pool-mapped launch without a registry must be refused, got: %v", err)
 	}
 	// Synchronous refusal like the input check: nothing is persisted and
 	// nothing is published — there is no queued row to grow stale.
@@ -168,11 +189,10 @@ func TestSubmitResume_APoolMoveRefusesTheResume(t *testing.T) {
 	}
 }
 
-// The dispatch gate is symmetric: a POOL-stamped resume publishes onto the
-// pool's stream — unwired, it is refused exactly like a pool-mapped launch,
-// even when the frozen stamp still matches the mapping. Red when the resume
-// gate is dropped (F8). When P1b flips poolDispatchEnabled, this test flips
-// with it into the frozen-stamp-on-the-wire witness.
+// The dispatch gate is symmetric: a POOL-stamped resume routes only when
+// its pool is registry-ACTIVE. Non-active refuses (naming the state); the
+// happy path stamps the wire with the FROZEN value — the wire witness this
+// file once lost (rva-2 F4) lives here again, asserted on the capture.
 func TestSubmitResume_TheFrozenPoolGate(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -184,19 +204,25 @@ func TestSubmitResume_TheFrozenPoolGate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
-	var published []*queue.RunMessage
-	p := poolTestPublisher(st, fakePoolTeamResolver{team: identity.Team{ID: "team-a", RunnerPool: "old-pool"}}, &published)
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.ResumeSpec{RunID: "run-frozen", FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
-	if poolDispatchEnabled {
-		t.Skip("pool dispatch is enabled — this becomes the frozen-stamp-on-the-wire witness")
-	}
+
+	// Provisioning refuses, naming the state.
+	p := poolTestPublisherWithRegistry(st, fakePoolTeamResolver{team: identity.Team{ID: "team-a", RunnerPool: "old-pool"}},
+		fakePoolRegistry{rec: &platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{{Name: "old-pool", State: platformcfg.RunnerPoolProvisioning}}}}, &[]*queue.RunMessage{})
 	if err := p.SubmitResume(context.Background(), spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil ||
-		!strings.Contains(err.Error(), "old-pool") || !strings.Contains(err.Error(), "not enabled") {
-		t.Fatalf("a pool-stamped resume must be gated while dispatch is off, got: %v", err)
+		!strings.Contains(err.Error(), "provisioning") {
+		t.Fatalf("a provisioning pool must refuse the resume naming the state, got: %v", err)
 	}
-	if len(published) != 0 {
-		t.Fatalf("the gated resume published %d message(s)", len(published))
+
+	// Active routes, and the wire carries the FROZEN stamp.
+	var published []*queue.RunMessage
+	p = poolTestPublisherWithRegistry(st, fakePoolTeamResolver{team: identity.Team{ID: "team-a", RunnerPool: "old-pool"}}, activeRegistry("old-pool"), &published)
+	if err := p.SubmitResume(context.Background(), spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
+		t.Fatalf("an active pool must route the resume: %v", err)
+	}
+	if len(published) != 1 || published[0].RunnerPool != "old-pool" {
+		t.Fatalf("the resume wire must carry the frozen stamp: %+v", published)
 	}
 }
 

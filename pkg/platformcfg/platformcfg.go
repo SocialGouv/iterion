@@ -35,6 +35,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -180,6 +181,10 @@ var botVarsInfraPrefixes = []string{
 	// Written by the engine for a child: a run's identity and stores, the
 	// ticket it serves — and the bounds on a run's interactive shell.
 	"ITERION_RUN_", "ITERION_ISSUE_",
+	// The sovereign-pool run-stream prefix (#2029) is JetStream topology,
+	// not an environment knob: a stored bot var that could move a run's
+	// stream would route it outside its pool.
+	"ITERION_RUNS_POOL_",
 }
 
 // botVarsInfraExact are single infra names outside those namespaces —
@@ -798,3 +803,97 @@ func (p PlatformCredentials) Validate() error {
 	}
 	return fmt.Errorf("platformcfg: enforcing the platform credential audience with no team and no org would refuse every run that has no credential of its own — name at least one, or leave enforce off")
 }
+
+// RunnerPoolState is a pool entry's lifecycle (#2029, plan v2.1 D4'):
+// provisioning = the topology is being brought up, routing refused;
+// active = the pool's runners are deployed and consuming, routing flows;
+// draining = no new routing, the topology lives until in-flight runs end;
+// disabled = removed from routing and reconciliation.
+type RunnerPoolState string
+
+const (
+	RunnerPoolProvisioning RunnerPoolState = "provisioning"
+	RunnerPoolActive       RunnerPoolState = "active"
+	RunnerPoolDraining     RunnerPoolState = "draining"
+	RunnerPoolDisabled     RunnerPoolState = "disabled"
+)
+
+// RunnerPool is one sovereign runner pool in the platform registry. The
+// registry is the single source of truth for WHICH pools exist and whether
+// they route: a team mapped to a name absent from this registry (or mapped
+// to one not active) has its launches refused — the boundary is the
+// operator's explicit registry, never a guessed default.
+type RunnerPool struct {
+	// Name is the pool identity — also the stream/subject/consumer suffix
+	// (grammar-checked: 1–31 chars [a-z0-9-], starting alphanumeric).
+	Name string `bson:"name" json:"name"`
+	// ProvidersServed names the LLM providers this pool's own env serves
+	// (today: ["openai_compatible"]). The publisher treats a provider the
+	// pool serves as funded for the pool's teams.
+	ProvidersServed []string `bson:"providers_served,omitempty" json:"providers_served,omitempty"`
+	// Note is free text for the operator (which team, which gateway).
+	Note string `bson:"note,omitempty" json:"note,omitempty"`
+	// State is the lifecycle. Entries are created provisioning and route
+	// nothing; active is the operator's explicit "runners are consuming".
+	State RunnerPoolState `bson:"state,omitempty" json:"state,omitempty"`
+
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
+}
+
+// RunnerPools is the registry record — one document, replaced wholesale by
+// the super-admin route (entries are small; a CAS guard covers races).
+type RunnerPools struct {
+	Pools []RunnerPool `bson:"pools" json:"pools"`
+
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
+}
+
+// Active reports whether pool routes: it must exist and be active. A
+// disabled/draining/provisioning entry routes nothing.
+func (r *RunnerPools) Active(pool string) bool {
+	for _, p := range r.Pools {
+		if p.Name == pool {
+			return p.State == RunnerPoolActive
+		}
+	}
+	return false
+}
+
+// Exists reports whether the registry knows pool at all (any state) — the
+// team-mapping route requires it before it will map.
+func (r *RunnerPools) Exists(pool string) bool {
+	for _, p := range r.Pools {
+		if p.Name == pool {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate rejects unknown states, duplicate names, and names outside the
+// pool grammar (the grammar lives in pkg/queue — one source of truth for
+// the subject/stream suffix shape).
+func (r *RunnerPools) Validate() error {
+	seen := map[string]bool{}
+	for i := range r.Pools {
+		p := &r.Pools[i]
+		if !queue.ValidPoolName(p.Name) {
+			return fmt.Errorf("runner pool %d: name %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", i, p.Name)
+		}
+		if seen[p.Name] {
+			return fmt.Errorf("runner pool %q appears twice", p.Name)
+		}
+		seen[p.Name] = true
+		switch p.State {
+		case "", RunnerPoolProvisioning, RunnerPoolActive, RunnerPoolDraining, RunnerPoolDisabled:
+		default:
+			return fmt.Errorf("runner pool %q: state %q invalid (want provisioning|active|draining|disabled)", p.Name, p.State)
+		}
+	}
+	return nil
+}
+
+// TestRow names the grammar edge cases Validate must enforce (documented
+// next to the table that drives them in the platformcfg test file).

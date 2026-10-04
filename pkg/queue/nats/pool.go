@@ -135,3 +135,21 @@ func (c *Conn) publishSubject(msg *queue.RunMessage) string {
 	}
 	return SubjectRuns
 }
+
+// PoolTopology exposes the connection as the server reconciler's topology
+// seam (the consumer's concrete type is narrowed — the reconciler discards
+// it; the runner loop holds the real consumer).
+type PoolTopology struct{ conn *Conn }
+
+// NewPoolTopology binds a connection as a reconciler topology.
+func NewPoolTopology(conn *Conn) *PoolTopology { return &PoolTopology{conn} }
+
+// EnsurePoolSchema mirrors the connection's method.
+func (t *PoolTopology) EnsurePoolSchema(ctx context.Context, pool string) error {
+	return t.conn.EnsurePoolSchema(ctx, pool)
+}
+
+// PreparePoolConsumer mirrors the connection's method, narrowed.
+func (t *PoolTopology) PreparePoolConsumer(ctx context.Context, pool string) (any, error) {
+	return t.conn.PreparePoolConsumer(ctx, pool)
+}

@@ -21,8 +21,10 @@ const colPlatformSettings = "platform_settings"
 // Family doc ids.
 const (
 	FamilyBotRoles = "bot_roles"
-	FamilySandbox  = "sandbox"
-	FamilyBotVars  = "bot_vars"
+	// FamilyRunnerPools is the sovereign runner-pool registry (#2029).
+	FamilyRunnerPools = "runner_pools"
+	FamilySandbox     = "sandbox"
+	FamilyBotVars     = "bot_vars"
 	// FamilyPlatformCredentials gates who may draw on the deployment's own
 	// LLM credentials.
 	FamilyPlatformCredentials = "platform_credentials"
@@ -357,4 +359,9 @@ func (r *Resolver[T]) Invalidate() {
 	// bump makes it discard its result instead of re-pinning it for a TTL.
 	r.gen++
 	r.mu.Unlock()
+}
+
+// NewMongoRunnerPools is the sovereign-pool registry store (#2029).
+func NewMongoRunnerPools(db *mongo.Database) *MongoStore[RunnerPools] {
+	return &MongoStore[RunnerPools]{col: db.Collection(colPlatformSettings), docID: FamilyRunnerPools}
 }

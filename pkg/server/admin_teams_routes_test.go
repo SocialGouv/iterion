@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 )
 
 // The F2 core at the route layer: the delegated caps route is a PATCH —
@@ -110,5 +111,36 @@ func TestAdminSetTeamRunnerPool(t *testing.T) {
 	s.handleAdminSetTeamRunnerPool(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("an unknown team must 404: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The mapping route consults the REGISTRY: a pool it does not know is
+// refused (422) even though the grammar is fine — mapping to a pool that
+// does not exist would refuse every launch forever. Wiring a registry on
+// the test server proves both arms. Red when the existence check is
+// dropped.
+func TestAdminSetTeamRunnerPool_RequiresARegisteredPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	s.runnerPoolsStore = platformcfg.NewMemoryStore[platformcfg.RunnerPools]()
+	if err := s.runnerPoolsStore.Put(context.Background(), platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{
+		{Name: "honorabilite", State: platformcfg.RunnerPoolProvisioning},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(pool string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/t1/runner-pool", `{"runner_pool":"`+pool+`"}`, "t1")
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamRunnerPool(w, req)
+		return w
+	}
+	if w := call("ghost-pool"); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unregistered pool must 422: code=%d body=%s", w.Code, w.Body.String())
+	}
+	// A PROVISIONING pool maps fine — the launch refuses until active, the
+	// mapping itself is the operator's intent and may precede the topology.
+	if w := call("honorabilite"); w.Code != http.StatusOK {
+		t.Fatalf("a registered pool must map: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
