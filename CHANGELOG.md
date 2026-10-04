@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.235.0](https://github.com/SocialGouv/iterion/compare/v3.234.1...v3.235.0) (2026-10-04)
+
+### Features
+
+* **cloud:** the sovereign-pool registry, reconciler and per-pool queue topology (P1b-i) ([#2192](https://github.com/SocialGouv/iterion/issues/2192)) ([2c2f8d5](https://github.com/SocialGouv/iterion/commit/2c2f8d57e02d28e208481ba4c678f3167900c6e5)), references [#2029](https://github.com/SocialGouv/iterion/issues/2029)
+
+    <details><summary>why</summary>
+
+    P1b-i foundation (#2029, plan v2.1 D2'/D4'): one run stream + one DLQ stream + one durable consumer per sovereign pool, next to the shared default pair. Exact per-pool subjects mean a pool run cannot land on the shared stream and a stale default consumer cannot claim it; a pre-pool binary never rewrites a stream it does not know, so the mixed-fleet topology hazard shrinks to the shared pair.
+
+    </details>
+
 ## [3.234.1](https://github.com/SocialGouv/iterion/compare/v3.234.0...v3.234.1) (2026-10-04)
 
 ### Bug Fixes
