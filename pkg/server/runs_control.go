@@ -247,7 +247,7 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 		// What the operator typed in `new_inputs` is a bad request, not a
 		// server fault: a mistyped var value would otherwise show the studio a
 		// 500 banner and count against the API's own error budget.
-		if errors.Is(err, runview.ErrForkInputsRefused) || errors.Is(err, runview.ErrForkInputsUnverifiable) {
+		if errors.Is(err, runview.ErrForkInputsRefused) {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "fork: %v", err)
 			return
 		}

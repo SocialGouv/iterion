@@ -60,6 +60,11 @@ type ForkResult struct {
 	NewRunID    string            `json:"new_run_id"`
 	ParentRunID string            `json:"parent_run_id"`
 	ForkAnchor  *store.ForkAnchor `json:"fork_anchor,omitempty"`
+	// Notes carries typed admissions the fork granted without a verdict —
+	// today only the unverifiable-source case: values admitted without a
+	// pre-check, which the child's first resume judges against the var
+	// constraints. Empty for a fork where every supplied value was checked.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Fork mints a new run id, copies the parent's persisted state up to
@@ -109,11 +114,19 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// The var-constraint gate, on the ONE surface that writes operator var
 	// values into a run without entering Engine.Run. Before CreateRun, so a
 	// refusal leaves nothing behind and the atomic contract is untouched: the
-	// caller receives no child id, exactly as for every other early error.
-	// The child inherits the parent's publish grant from the record; a value
-	// sent under that name — the mask the fork dialog was shown — is not it.
+	// caller receives no child id, still nothing behind. The child inherits
+	// the parent's publish grant from the record; a value sent under that
+	// name — the mask the fork dialog was shown — is not it.
+	//
+	// The delta the operator supplied is RECORDED on the child
+	// (store.Run.ForkSuppliedInputs): the child's first resume judges exactly
+	// those keys against the workflow it compiles — the gate this surface
+	// skips. A fork of a fork carries the parent's own unjudged keys forward,
+	// so no value an operator supplied rides an unjudged chain into a run
+	// that never judges it.
 	spec.NewInputs = store.DropServerMintedVars(spec.NewInputs)
-	if err := s.gateForkInputs(parent, spec.NewInputs); err != nil {
+	changed, note, err := s.gateForkInputs(parent, spec.NewInputs)
+	if err != nil {
 		return nil, err
 	}
 	childInputs := map[string]any{}
@@ -178,6 +191,11 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	}
 	child.ForkedFrom = parent.ID
 	child.ParentRunID = parent.ID
+	// The unjudged var keys ride the fork chain until a resume judges them:
+	// the operator's delta, plus any keys this parent inherited unjudged from
+	// its own fork (they are absent from `changed` exactly when the child
+	// re-sends the same value — which is not a verdict on it).
+	child.ForkSuppliedInputs = unjudgedForkKeys(parent, changed)
 	// A fork REPLACES the parent's future — it is the recovery path for a
 	// run that can no longer continue — so it inherits the ISSUE
 	// provenance (typically the board issue the parent was dispatched
@@ -343,11 +361,19 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		return nil, fmt.Errorf("save child checkpoint: %w", err)
 	}
 	forkComplete = true
-	return &ForkResult{
+	result := &ForkResult{
 		NewRunID:    child.ID,
 		ParentRunID: parent.ID,
 		ForkAnchor:  child.ForkAnchor,
-	}, nil
+	}
+	if note != "" {
+		result.Notes = []string{note}
+		if s.logger != nil {
+			s.logger.Warn("runview: fork %s of %s admitted unverifiable new_inputs: %s", child.ID, parent.ID, note)
+			s.logger.Warn("runview: fork %s records ForkSuppliedInputs=%v — the child's first resume judges them against the var constraints", child.ID, child.ForkSuppliedInputs)
+		}
+	}
+	return result, nil
 }
 
 func invalidateForkAnchorArtifacts(cp *store.Checkpoint, nodeID string) {

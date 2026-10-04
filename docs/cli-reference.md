@@ -258,16 +258,25 @@ the parent ran. A value that reads from the environment (`${VAR}`) is refused on
 a constrained var rather than guessed, because the process that runs the child
 is not the one that reads it here.
 
-The check needs the source the parent **executed**, which runs record on their
-own document since **2026-08-04**. A fork of a run older than that — or of one
-whose source was dropped (over the 1 MiB record cap, or cleared by a forced
-cloud resume) or no longer compiles — is refused whenever `--new-inputs` changes
-anything, and says why. Two ways on: fork **without** `--new-inputs` (a plain
-recovery fork is never refused), or launch the workflow afresh with the values
-you want. Admitting the change unchecked is not one of them: the child is
-executed by `resume`, which deliberately never re-judges stored values.
-(`POST /api/runs/{id}/fork` answers `400` for the same refusals; the CLI prints
-them and exits non-zero.)
+Whatever this pre-check admits, the child re-judges once: the values you
+supplied are recorded on the child (`fork_supplied_inputs`), and its **first
+resume** judges exactly those keys against the var constraints of the workflow
+it compiles — refusing the child, typed, if one violates. A declaration
+tightened after that first resume never strands it, and a child with nothing
+recorded is never re-judged at all — the same invariant that keeps `resume`
+off stored values, one gate later.
+
+The pre-check needs the source the parent **executed**, which runs record on
+their own document since **2026-08-04**. A fork of a run older than that — or
+of one whose source was dropped (over the 1 MiB record cap, or cleared by a
+forced cloud resume) or no longer compiles — cannot be pre-checked: the fork
+still goes through, prints a note saying the values were admitted without one,
+and the child's first resume does the judging (a plain recovery fork without
+`--new-inputs` never meets any of this). A value the pre-check can already
+refuse — the enum, pattern and environment cases above — is still refused at
+the keyboard rather than at the child's launch.
+(`POST /api/runs/{id}/fork` answers `400` for those refusals and carries the
+note in its response; the CLI prints both.)
 
 ### `iterion rewind`
 

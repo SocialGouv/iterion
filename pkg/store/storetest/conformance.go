@@ -58,6 +58,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("RunTrustRoundTrip", func(t *testing.T) { testRunTrustRoundTrip(t, factory(t)) })
 	t.Run("RunTrustImmutable", func(t *testing.T) { testRunTrustImmutable(t, factory(t)) })
+	t.Run("ForkSuppliedInputsRoundTrip", func(t *testing.T) { testForkSuppliedInputsRoundTrip(t, factory(t)) })
 	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
@@ -1002,6 +1003,51 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	}
 	if after.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
 		t.Errorf("RepoSHAExpected = %q after a rival save; want the original pin", after.RepoSHAExpected)
+	}
+}
+
+// testForkSuppliedInputsRoundTrip pins the persisted record of the var keys
+// an operator supplied to a fork, on both store twins. The engine's
+// first-resume var gate reads it back long after the fork surface is out of
+// scope — a backend that drops it turns the gate off silently, which is the
+// exact hole the field exists to close (#1743). Unlike Trust it is NOT
+// write-once: a judged-and-passed record is CLEARED by the engine, so the
+// second half pins that an empty-list save really clears it.
+func testForkSuppliedInputsRoundTrip(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const id = "run_fork_supplied_inputs"
+	if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(r.ForkSuppliedInputs) != 0 {
+		t.Fatalf("a freshly created run reads ForkSuppliedInputs = %v; want empty", r.ForkSuppliedInputs)
+	}
+	r.ForkSuppliedInputs = []string{"mode", "target"}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	got, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after save: %v", err)
+	}
+	if strings.Join(got.ForkSuppliedInputs, ",") != "mode,target" {
+		t.Errorf("persisted ForkSuppliedInputs = %v; want [mode target] — a backend that drops it turns the first-resume var gate off silently", got.ForkSuppliedInputs)
+	}
+	got.ForkSuppliedInputs = nil
+	if err := s.SaveRun(ctx, got); err != nil {
+		t.Fatalf("SaveRun (clear): %v", err)
+	}
+	cleared, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if len(cleared.ForkSuppliedInputs) != 0 {
+		t.Errorf("ForkSuppliedInputs = %v after the clearing save; want empty — a record the engine judged and cleared must not come back", cleared.ForkSuppliedInputs)
 	}
 }
 
