@@ -1,0 +1,85 @@
+package server
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/identity"
+)
+
+// The F2 core at the route layer: the delegated caps route is a PATCH —
+// mapping the team to a sovereign pool and then PATCHing its caps must
+// leave the mapping standing. Red when the route goes back to the
+// whole-document UpdateTeam replace.
+func TestOrgTeamCaps_PatchPreservesTheRunnerPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+
+	pool := "honorabilite"
+	if _, err := s.authStore().PatchTeam(context.Background(), "t1", identity.TeamPatch{RunnerPool: &pool}); err != nil {
+		t.Fatalf("map pool: %v", err)
+	}
+
+	req := orgReq(orgAdminCtx(), "PATCH", "/api/orgs/o1/teams/t1/caps", `{"max_concurrent_runs":2}`, "o1")
+	req.SetPathValue("team_id", "t1")
+	w := httptest.NewRecorder()
+	s.handleUpdateOrgTeamCaps(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("caps patch should pass: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	tm, err := s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tm.RunnerPool != "honorabilite" {
+		t.Fatalf("the caps patch erased the pool mapping: %+v", tm)
+	}
+	if tm.MaxConcurrentRuns != 2 {
+		t.Fatalf("the caps patch did not apply: %+v", tm)
+	}
+}
+
+// The only writer of the mapping: the super-admin route. Set, clear, and
+// grammar-refuse — audited, and refused for a team that does not exist.
+func TestAdminSetTeamRunnerPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+
+	call := func(body string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/t1/runner-pool", body, "t1")
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamRunnerPool(w, req)
+		return w
+	}
+
+	if w := call(`{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("map: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.RunnerPool != "honorabilite" {
+		t.Fatalf("map did not stick: %+v %v", tm, err)
+	}
+
+	if w := call(`{"runner_pool":""}`); w.Code != http.StatusOK {
+		t.Fatalf("unmap: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.RunnerPool != "" {
+		t.Fatalf("unmap did not stick: %+v %v", tm, err)
+	}
+
+	if w := call(`{"runner_pool":"Bad_Name"}`); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a malformed name must 422: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call(`{}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("a missing runner_pool must 400: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/ghost/runner-pool", `{"runner_pool":"p"}`, "ghost")
+	w := httptest.NewRecorder()
+	s.handleAdminSetTeamRunnerPool(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("an unknown team must 404: code=%d body=%s", w.Code, w.Body.String())
+	}
+}

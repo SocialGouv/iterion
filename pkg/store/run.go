@@ -1251,6 +1251,13 @@ type Run struct {
 	// Empty for local mode (TTY user) and for legacy runs predating
 	// multitenancy.
 	OwnerID string `json:"owner_id,omitempty" bson:"owner_id,omitempty"`
+	// RunnerPool stamps the sovereign runner pool (#2029) this run is
+	// bound to at launch — the team's mapping at that moment, frozen so a
+	// later re-mapping cannot silently move (or, on resume, silently
+	// follow) an in-flight run. Empty = the shared default pool. Resume
+	// compares it against the team's CURRENT mapping and refuses the
+	// difference; a deliberate move is a new launch, never a re-stamp.
+	RunnerPool string `json:"runner_pool,omitempty" bson:"runner_pool,omitempty"`
 
 	// Attachments holds the metadata for binary inputs declared in
 	// the workflow's `attachments:` block and uploaded at launch.

@@ -262,8 +262,10 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// the chain DEFAULT trigger set — dropping auth and
 	// transient_exhausted, the exact failures the launch-time selection
 	// exists to fall through.
-	if SchemaVersion != 22 {
-		t.Errorf("SchemaVersion = %d, want 22 (bump intentionally)", SchemaVersion)
+	// v=23 carries RunnerPool (#2029): dropped, a stale runner executes the
+	// run outside the team's sovereign pool.
+	if SchemaVersion != 23 {
+		t.Errorf("SchemaVersion = %d, want 23 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -484,5 +486,63 @@ func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
 		if out.Permission != want {
 			t.Errorf("Permission = %q after round trip, want %q", out.Permission, want)
 		}
+	}
+}
+
+// The pool name rides the wire and the stable envelope; its grammar is the
+// subject/stream suffix grammar, and the version bump is load-bearing (a
+// stale runner that dropped the field would execute the run outside the
+// team's pool). Red when the Validate check, the Envelope mirror or the
+// bump is reverted.
+func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
+	if SchemaVersion != 22 {
+		t.Fatalf("SchemaVersion = %d, want 22 (the RunnerPool bump)", SchemaVersion)
+	}
+	base := RunMessage{
+		V:            SchemaVersion,
+		RunID:        "run_pool",
+		WorkflowName: "demo",
+		IRCompiled:   json.RawMessage(`{"nodes":[]}`),
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("an unset pool is the shared default and must validate: %v", err)
+	}
+	if !ValidPoolName("honorabilite") || !ValidPoolName("pool-2") {
+		t.Fatal("well-formed pool names refused")
+	}
+	for _, bad := range []string{"-lead", "trail-", "Upper", "a_b", string(make([]byte, 32))} {
+		if ValidPoolName(bad) {
+			t.Fatalf("ValidPoolName(%q) = true, want false", bad)
+		}
+		base.RunnerPool = bad
+		if err := base.Validate(); err == nil || strings.Contains(err.Error(), ErrSchemaVersion.Error()) {
+			t.Fatalf("Validate accepted pool %q: %v", bad, err)
+		}
+	}
+	// A v21 message (pre-pool) with no pool still validates: the field is
+	// additive-with-intent only when set.
+	base.RunnerPool = ""
+	old := base
+	old.V = 21
+	if err := old.Validate(); err != nil {
+		t.Fatalf("a pre-pool message must still validate: %v", err)
+	}
+	// The envelope mirrors the pool so a version-rejecting consumer can park
+	// the message against the right pool without decoding the payload.
+	b, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.RunnerPool = "honorabilite"
+	b, err = json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := PeekEnvelope(b)
+	if err != nil {
+		t.Fatalf("PeekEnvelope: %v", err)
+	}
+	if env.RunnerPool != "honorabilite" {
+		t.Fatalf("the envelope lost the pool: %+v", env)
 	}
 }

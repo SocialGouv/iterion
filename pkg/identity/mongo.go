@@ -259,6 +259,18 @@ func (s *MongoStore) PatchTeam(ctx context.Context, id string, p TeamPatch) (Tea
 			set["suspend_reason"] = ""
 		}
 	}
+	if p.RunnerPool != nil {
+		set["runner_pool"] = *p.RunnerPool
+	}
+	if p.OrgID != nil {
+		set["org_id"] = *p.OrgID
+	}
+	if p.MaxConcurrentRuns != nil {
+		set["max_concurrent_runs"] = *p.MaxConcurrentRuns
+	}
+	if p.LaunchRatePerMin != nil {
+		set["launch_rate_per_min"] = *p.LaunchRatePerMin
+	}
 	var out Team
 	err := s.teams.FindOneAndUpdate(ctx, bson.M{"_id": id}, bson.M{"$set": set},
 		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)

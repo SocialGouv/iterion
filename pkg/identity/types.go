@@ -222,6 +222,16 @@ type Team struct {
 	// LaunchRatePerMin caps run-launch requests per minute (token
 	// bucket, burst = the same value).
 	LaunchRatePerMin int `bson:"launch_rate_per_min,omitempty" json:"launch_rate_per_min,omitempty"`
+
+	// RunnerPool names the sovereign runner pool (#2029) every run of this
+	// team MUST execute on. Empty = the shared default pool. Written ONLY
+	// through the super-admin runner-pool route (PatchTeam $set): the other
+	// team writers are whole-document replaces whose stale copy would
+	// silently unmap the team — the field survives them only once they are
+	// patches too. The publisher reads it FRESH and refuses the launch on a
+	// store error: an unmapped read must never fail open onto the shared
+	// pool.
+	RunnerPool string `bson:"runner_pool,omitempty" json:"runner_pool,omitempty"`
 }
 
 // EffectiveStatus treats an empty status (legacy rows) as active.
@@ -534,15 +544,30 @@ func SlugifyTeamName(name string) string {
 type TeamPatch struct {
 	Name *string
 	Slug *string
+	// OrgID, when non-nil, relinks the team to an org (or, pointing at "",
+	// unlinks it — the reverse-migration path).
+	OrgID *string
 	// Status, when non-nil, sets the lifecycle status AND derives the
 	// suspension trio from it: stamped when suspending, cleared otherwise.
 	Status        *TeamStatus
 	SuspendedBy   string
 	SuspendReason string
+	// RunnerPool, when non-nil, sets (or, pointing at "", clears) the
+	// team's sovereign runner pool. A pointer, not a value: "" is a
+	// meaningful write (unmap) and must be distinguishable from "leave
+	// untouched".
+	RunnerPool *string
+	// MaxConcurrentRuns / LaunchRatePerMin, when non-nil, set the team's
+	// executor caps (nil = untouched; the caps route is the writer).
+	MaxConcurrentRuns *int
+	LaunchRatePerMin  *int
 }
 
 // Empty reports whether the patch would write nothing.
-func (p TeamPatch) Empty() bool { return p.Name == nil && p.Slug == nil && p.Status == nil }
+func (p TeamPatch) Empty() bool {
+	return p.Name == nil && p.Slug == nil && p.OrgID == nil && p.Status == nil &&
+		p.RunnerPool == nil && p.MaxConcurrentRuns == nil && p.LaunchRatePerMin == nil
+}
 
 // OrgPatch is TeamPatch's org-level twin, for the same reason: the org
 // settings, the credential audience and the super-admin plan fields are

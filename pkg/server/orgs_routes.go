@@ -151,11 +151,26 @@ func (s *Server) handleUpdateOrgTeamCaps(w http.ResponseWriter, r *http.Request)
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !applyNonNegative(w, req.MaxConcurrentRuns, &t.MaxConcurrentRuns, "max_concurrent_runs") {
-		return
+	// A PATCH, not a read-modify-write replace: the team row now carries
+	// fields this route must never touch (the sovereign runner pool among
+	// them), and writing back the read copy would resurrect whatever an
+	// interleaved writer changed — or erase a field this build predates.
+	var patch identity.TeamPatch
+	if req.MaxConcurrentRuns != nil {
+		var v int
+		if !applyNonNegative(w, req.MaxConcurrentRuns, &v, "max_concurrent_runs") {
+			return
+		}
+		vCopy := v
+		patch.MaxConcurrentRuns = &vCopy
 	}
-	if !applyNonNegative(w, req.LaunchRatePerMin, &t.LaunchRatePerMin, "launch_rate_per_min") {
-		return
+	if req.LaunchRatePerMin != nil {
+		var v int
+		if !applyNonNegative(w, req.LaunchRatePerMin, &v, "launch_rate_per_min") {
+			return
+		}
+		vCopy := v
+		patch.LaunchRatePerMin = &vCopy
 	}
 	// The platform default is a CEILING for the delegated route: any non-zero
 	// team value overrides it in the launch gate (orValue), so without this
@@ -165,25 +180,25 @@ func (s *Server) handleUpdateOrgTeamCaps(w http.ResponseWriter, r *http.Request)
 	// fields THIS request submitted are validated — a stored super-admin
 	// value above the ceiling must not lock the row against edits of the
 	// other field.
-	if d := s.orgDefaults.MaxConcurrentRuns; req.MaxConcurrentRuns != nil && d > 0 && t.MaxConcurrentRuns > d {
+	if d := s.orgDefaults.MaxConcurrentRuns; patch.MaxConcurrentRuns != nil && d > 0 && *patch.MaxConcurrentRuns > d {
 		httpError(w, http.StatusUnprocessableEntity,
-			"max_concurrent_runs %d exceeds the platform ceiling %d — a platform admin must raise it", t.MaxConcurrentRuns, d)
+			"max_concurrent_runs %d exceeds the platform ceiling %d — a platform admin must raise it", *patch.MaxConcurrentRuns, d)
 		return
 	}
-	if d := s.orgDefaults.LaunchRatePerMin; req.LaunchRatePerMin != nil && d > 0 && t.LaunchRatePerMin > d {
+	if d := s.orgDefaults.LaunchRatePerMin; patch.LaunchRatePerMin != nil && d > 0 && *patch.LaunchRatePerMin > d {
 		httpError(w, http.StatusUnprocessableEntity,
-			"launch_rate_per_min %d exceeds the platform ceiling %d — a platform admin must raise it", t.LaunchRatePerMin, d)
+			"launch_rate_per_min %d exceeds the platform ceiling %d — a platform admin must raise it", *patch.LaunchRatePerMin, d)
 		return
 	}
-	t.UpdatedAt = time.Now().UTC()
-	if err := s.authStore().UpdateTeam(r.Context(), t); err != nil {
+	updated, err := s.authStore().PatchTeam(r.Context(), teamID, patch)
+	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
 	s.auditOrg(r, orgID, "team.caps_updated", "team", teamID, map[string]any{
-		"max_concurrent_runs": t.MaxConcurrentRuns, "launch_rate_per_min": t.LaunchRatePerMin,
+		"max_concurrent_runs": updated.MaxConcurrentRuns, "launch_rate_per_min": updated.LaunchRatePerMin,
 	})
-	writeJSON(w, toTeamSummaryView(t))
+	writeJSON(w, toTeamSummaryView(updated))
 }
 
 type orgMemberView struct {

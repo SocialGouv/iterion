@@ -80,8 +80,8 @@ func TestSubmitLaunchStampsOrgID(t *testing.T) {
 	if _, err := p.SubmitLaunch(ctx, "run-2", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch #2: %v", err)
 	}
-	if resolver.calls != 1 {
-		t.Fatalf("resolver calls = %d, want 1 (second launch must be served from cache)", resolver.calls)
+	if resolver.calls != 3 {
+		t.Fatalf("resolver calls = %d, want 3 (two launches: the org path is served from cache on the second, but the runner-pool mapping is deliberately read FRESH on every launch — fail closed, never cached)", resolver.calls)
 	}
 	if published[1].OrgID != "org-1" {
 		t.Fatalf("cached OrgID = %q, want org-1", published[1].OrgID)

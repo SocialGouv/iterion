@@ -333,6 +333,18 @@ func (m *MemoryStore) PatchTeam(_ context.Context, id string, p TeamPatch) (Team
 			cur.SuspendReason = ""
 		}
 	}
+	if p.RunnerPool != nil {
+		cur.RunnerPool = *p.RunnerPool
+	}
+	if p.OrgID != nil {
+		cur.OrgID = *p.OrgID
+	}
+	if p.MaxConcurrentRuns != nil {
+		cur.MaxConcurrentRuns = *p.MaxConcurrentRuns
+	}
+	if p.LaunchRatePerMin != nil {
+		cur.LaunchRatePerMin = *p.LaunchRatePerMin
+	}
 	cur.UpdatedAt = time.Now().UTC()
 	m.teams[id] = cur
 	return cur, nil
