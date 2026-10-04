@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.234.1](https://github.com/SocialGouv/iterion/compare/v3.234.0...v3.234.1) (2026-10-04)
+
+### Bug Fixes
+
+* **llmroute:** two revi mediums — the escape reads the effective model, and the preview folds the run level ([#2180](https://github.com/SocialGouv/iterion/issues/2180)) ([3e6bcd4](https://github.com/SocialGouv/iterion/commit/3e6bcd4a9d1a29634c7f55f1f053346db6ef799b))
+
+    <details><summary>why</summary>
+
+    ladderEscapes mapped the node's DECLARED model while the materializing screen maps the EFFECTIVE one (the launch's model override wins): a node whose override mapped nothing kept a deleted park its run then needed — the escape now reads the override first, exactly as the materializer's nodeModel callback does (R27b623).
+
+    </details>
+
 ## [3.234.0](https://github.com/SocialGouv/iterion/compare/v3.233.1...v3.234.0) (2026-10-04)
 
 ### Features
