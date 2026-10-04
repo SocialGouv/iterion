@@ -49,6 +49,21 @@ deployment measured on 2026-08-05 does NOT: it carries
 get the k8s sandbox. Anything needing a bind-mounted workspace there
 must declare `sandbox: none`.)
 
+**The override does not qualify a deployment to run untrusted
+workspaces.** A run whose `trust` is not the trusted default — today the
+fork review lane's `trust=fork` — is refused at the engine's admission,
+typed, unless its sandbox resolves ACTIVE through the very same
+resolution the run's own start would walk (override, workflow block,
+global default, then driver selection — a degraded `mode=auto` host with
+no container runtime refuses too). Without a per-run sandbox the fork's
+agent executes inside the runner's trust domain, where every pod secret
+(`ITERION_SECRETS_KEY`, `MONGODB_URI`, the LLM keys) is one
+`/proc/self/environ` read away from it. The override keeps meaning what
+it means for trusted runs; a deployment that wants to run the fork lane
+serves it from a runner class whose sandbox resolves active. The durable
+refusal rides the run's `admission` record with code
+`untrusted_without_sandbox`.
+
 ## Quick start
 
 The shortest path to a sandboxed run:
