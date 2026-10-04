@@ -531,7 +531,7 @@ func doctorProbeTimeout() time.Duration {
 
 // doctorRepoRoot resolves the repo root the spec resolver should treat as
 // the source of truth (for mode=auto devcontainer lookup + ${localEnv}
-// expansion). Mirrors the engine's engineRepoRoot precedence: the main
+// expansion). Mirrors the engine's runtime.EngineRepoRoot precedence: the main
 // repo via the git pointer, else the absolute dir.
 func doctorRepoRoot(file string) string {
 	dir := "."

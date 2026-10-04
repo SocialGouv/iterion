@@ -327,7 +327,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// container that hosts every delegate invocation for this run.
 	repoRoot := wtCtx.repoRoot
 	if repoRoot == "" {
-		repoRoot = engineRepoRoot(e.workDir)
+		repoRoot = EngineRepoRoot(e.workDir)
 	}
 	// Persist on the engine so resolveVars's `${PROJECT_MEMORY_DIR}`
 	// expansion (and any other repo-rooted lookup) doesn't have to

@@ -1797,7 +1797,7 @@ func (e *Engine) seedRepoRootForResume(r *store.Run) {
 	if workDir == "" {
 		workDir = e.workDir
 	}
-	e.repoRoot = engineRepoRoot(workDir)
+	e.repoRoot = EngineRepoRoot(workDir)
 }
 
 // resumeRebuildState restores the per-run environment, re-mirrors bundle
@@ -1888,7 +1888,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// to host execution).
 	repoRoot := r.RepoRoot
 	if repoRoot == "" {
-		repoRoot = engineRepoRoot(e.workDir)
+		repoRoot = EngineRepoRoot(e.workDir)
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
@@ -2147,11 +2147,11 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	// sandbox toolchain (modern dash for `set -o pipefail`, /workspace
 	// bind mount, the slim image's git/jq/curl/node pinned versions,
 	// ...) silently fail in confusing ways post-resume. r.RepoRoot is
-	// the source of truth for the original repo root; engineRepoRoot
+	// the source of truth for the original repo root; EngineRepoRoot
 	// is the worktree-less fallback for older runs.
 	repoRoot := r.RepoRoot
 	if repoRoot == "" {
-		repoRoot = engineRepoRoot(e.workDir)
+		repoRoot = EngineRepoRoot(e.workDir)
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {

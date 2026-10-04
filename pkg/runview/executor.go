@@ -30,6 +30,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -133,9 +134,11 @@ type ExecutorSpec struct {
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
 	// ITERION_SANDBOX_DEFAULT snapshot). BuildExecutor feeds them to
-	// runtime.WorkflowSandboxActive so the fallback screen refuses codex
+	// runtime.RunWillBeSandboxed so the fallback screen refuses codex
 	// stages on exactly the runs the engine will sandbox — the same
-	// precedence, never a parallel resolution.
+	// precedence AND the same driver probe, never a parallel resolution
+	// (a mode-only reading refused codex on `sandbox: auto` runs the
+	// host had degraded to unsandboxed — #1564).
 	//
 	// They also arm the MCP manager's launcher-start policy. A spec that
 	// leaves them empty when the run may in fact be sandboxed is not a
@@ -152,6 +155,14 @@ type ExecutorSpec struct {
 	// question fails CLOSED: a surface that did not look must not be
 	// read as one that looked and found no sandbox.
 	SandboxTiersKnown bool
+	// SandboxDrivers is the driver set the fallback screen's sandbox
+	// probe (runtime.RunWillBeSandboxed) selects from. Nil — every
+	// production caller — means the shipped registry, the same default
+	// the engine selects its driver from (runtime.WithSandboxDrivers is
+	// the engine-side twin of this seam). Set it in tests to pin the
+	// host's driver answer, which is otherwise whatever this machine
+	// happens to have installed.
+	SandboxDrivers map[string]sandbox.DriverConstructor
 
 	// RunFallback is the operator's ordered run-level fallback chain
 	// (studio Launch row / CLI --fallback). Empty = none.
@@ -361,7 +372,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// existed to survive. The refusal now also lands on the run's timeline
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
-	sandboxedHere := runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault)
+	sandboxedHere := runtime.RunWillBeSandboxed(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault,
+		runtime.EngineRepoRoot(spec.WorkDir), spec.SandboxDrivers)
 	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars)
 	for _, refusal := range fallbackRefusals {
 		spec.Logger.Warn("run-level fallback not applied — %s", refusal)

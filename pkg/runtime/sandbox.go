@@ -1032,7 +1032,7 @@ func resolveSandboxSpecWithFallback(
 			// driver: run, and say so — the reason travels as skipReason
 			// and the caller turns it into the sandbox_skipped event.
 			// An embedder's path in practice: `iterion run`, studio and
-			// the runner all resolve a repo root first (engineRepoRoot
+			// the runner all resolve a repo root first (EngineRepoRoot
 			// falls back to the working directory), so a run reaches
 			// this only through a library caller that passes none.
 			return nil, source, "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)", nil
@@ -1248,9 +1248,53 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 // never wf.Sandbox directly: under ITERION_SANDBOX_OVERRIDE=none a
 // workflow's static sandbox block is present but neutralized, and the
 // run executes directly in the pod.
+//
+// This is the MODE-only half of the answer. A caller that acts on "will
+// this run execute inside a container" — delivering file secrets to the
+// pod, refusing a codex fallback — needs [RunWillBeSandboxed] instead:
+// an active mode on a host with no container runtime degrades to an
+// unsandboxed run at engine start, and this predicate still answers
+// true for it (#1564).
 func WorkflowSandboxActive(wf *ir.Workflow, cliOverride, globalDefault string) bool {
 	mode, _ := pickMode(wf, cliOverride, globalDefault)
 	return sandbox.Mode(mode).IsActive()
+}
+
+// RunWillBeSandboxed reports whether a run of wf under the given tiers
+// will EXECUTE inside a real sandbox container — not merely whether its
+// mode resolves active. It asks [WorkflowSandboxActive]'s question and
+// then the one the mode alone cannot answer: can this host select a
+// driver for the resolved spec? The chain is the one
+// resolveAndStartSandbox will walk at run start (spec resolution, then
+// driver selection — see sandboxDriverForRun), so a `sandbox: auto` run
+// on a host with no container runtime answers false here exactly where
+// the engine degrades to an unsandboxed run with a sandbox_skipped
+// event.
+//
+// false means "no container will host this run's nodes" — covering three
+// outcomes a consumer must not tell apart: no active sandbox requested,
+// the degraded-auto case above, and a resolution/selection error the
+// engine itself would hard-fail on (an explicit inline sandbox with no
+// driver refuses to start; it never executes unsandboxed either). The
+// noop driver also reads as false — "opted into a sandbox that isn't
+// one": no container starts, and the twin guard in the codex delegate
+// keys on Driver() != "noop" the same way.
+//
+// repoRoot is the run's repository root as the engine resolves it —
+// callers pass EngineRepoRoot(workDir) so the mode=auto devcontainer
+// lookup reads the same directory the engine's will. drivers is the
+// WithSandboxDrivers seam: nil selects from the shipped registry, which
+// is what every production engine does. The default-image FLAG value is
+// deliberately not an input: any non-empty default image yields an
+// active spec for mode=auto and the built-in is always non-empty, so
+// the flag can change WHICH image a sandbox would run, never WHETHER
+// the spec is active.
+func RunWillBeSandboxed(wf *ir.Workflow, cliOverride, globalDefault, repoRoot string, drivers map[string]sandbox.DriverConstructor) bool {
+	driver, err := sandboxDriverForRun(wf, repoRoot, cliOverride, globalDefault, resolveDefaultSandboxImage(""), drivers)
+	if err != nil || driver == nil {
+		return false
+	}
+	return driver.Name() != "noop"
 }
 
 // workflowHostState returns the workflow-scope host_state declaration
@@ -1658,7 +1702,7 @@ func locateHostIterionBinaryCandidate() string {
 	return ""
 }
 
-// engineRepoRoot returns the path the engine should treat as the
+// EngineRepoRoot returns the path the engine should treat as the
 // source-of-truth repository root for this run — the operator's main
 // checkout, NOT the per-run worktree.
 //
@@ -1677,7 +1721,12 @@ func locateHostIterionBinaryCandidate() string {
 //  2. The absolute path of workDir (legacy behaviour for non-git
 //     workspaces).
 //  3. `os.Getwd()` when workDir itself is empty.
-func engineRepoRoot(workDir string) string {
+//
+// Exported so the launch surfaces that must PREDICT the engine's
+// sandbox decision (the cloud runner's file-secret gate, runview's
+// fallback screen) resolve the repo root through the same chain the
+// engine will, instead of growing a second reading of it.
+func EngineRepoRoot(workDir string) string {
 	if workDir == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			return cwd
@@ -1745,7 +1794,7 @@ type askUserMCPSetter interface {
 //
 // repoRoot is the absolute path of the git repo backing the run's
 // workspace (used by sandbox driver to mount .git on worktree-active
-// runs). Pass engineRepoRoot(e.workDir) on resume when no
+// runs). Pass EngineRepoRoot(e.workDir) on resume when no
 // worktreeContext is available.
 //
 // worktreeGitDir, when non-empty, is the absolute host path of the
