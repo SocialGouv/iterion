@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -194,6 +195,108 @@ func (r bgRun) resultText() string {
 	return *r.rm.Result
 }
 
+// bgSessionSafetyNet sizes the wedge net of a scripted session from the
+// session's OWN timing shape, never from a bare constant. The wall clock a
+// passing run can honestly consume is the script's "@sleep" directives (real
+// `sleep` in the fake CLI) plus the env-configured waits the scenario is
+// calibrated around — and on a loaded merge-queue runner each of those fires
+// LATE by a factor no constant names: #2177 saw the fixed 30s net expire at
+// 30.17s on a session whose honest runtime is 2.7s (an ~11x stretch of the
+// script's sleeps), failing a green test as context.DeadlineExceeded. The
+// budget is
+//
+//	wedgeAllowance + headroom × (Σ @sleep + Σ driver waits)
+//
+// so it stretches with the scenario it guards: a bigger script or bigger
+// configured waits buy a bigger net, and load stretches the same terms the
+// budget sums. A wedge — a session that NEVER returns (a "@wait" on a
+// message iterion never sends, a tracker that stops deciding) — has no
+// honest shape and trips the net at exactly this budget; that is the teeth
+// the fixed 30s had, kept.
+//
+// Driver waits are the knobs the merged env (the harness's short defaults
+// plus the test's own map) SETS to a value: the scenario is calibrated
+// around them and a passing run can honestly burn each of them once (a
+// result wait that lapses, a grace that has to expire). The answer wait is
+// priced even when UNSET: production then derives it as 5× the auto-turn
+// grace (backgroundAnswerWaitFactor), and a scenario whose CLI never
+// answers a nudge honestly lets it lapse to completion — measured at 5.76s
+// of honest runtime in TestBackground_FinishedWorkNeverDeliveredIsAnError,
+// so treating it as a backstop priced the wait at 0 while the run burned
+// it (round-1 finding on this helper). The remaining unset knobs
+// (WAIT=30m, hot idle=15m, FINALIZE=10m, orch stall=4m, cold=90s) ARE
+// backstops: a passing run never lets one fire to completion (that would
+// be a minutes-long honest run, or a behavioural failure the test's own
+// assertions name first), so they are not priced per-knob; the flat
+// wedgeAllowance covers any ONE of them firing once, late. A knob set to 0
+// means what production reads into it (unbounded for WAIT, no grace timer
+// for AUTOTURN_GRACE, an immediately-lapsing deadline for ANSWER_WAIT) —
+// either way it honestly burns nothing and prices as nothing.
+//
+// The honesty of the arithmetic is bought with worst-case CI burn: a test
+// configuring a 20s grace prices a 100s answer wait, ×headroom — a genuine
+// wedge there trips the net after ~13 minutes of merge-queue wall clock
+// (~14 with the ceiling knobs set) where the fixed 30s tripped in one.
+// Bounded, and accepted: the daily cost this helper exists to kill is the
+// flake, not the slow wedge report.
+func bgSessionSafetyNet(t *testing.T, script []string, mergedEnv map[string]string) time.Duration {
+	t.Helper()
+	const (
+		headroom       = 6
+		wedgeAllowance = 30 * time.Second
+	)
+	var sleeps time.Duration
+	for _, step := range script {
+		if s, ok := strings.CutPrefix(step, "@sleep "); ok {
+			if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+				sleeps += time.Duration(f * float64(time.Second))
+			}
+		}
+	}
+	var drivers time.Duration
+	for _, knob := range []string{
+		"ITERION_CLAUDE_CODE_CLOSE_GRACE",
+		"ITERION_CLAUDE_CODE_CLOSE_TERM",
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE",
+		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE",
+		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT",
+		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT",
+		"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT",
+		"ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT",
+		"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT",
+		"ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT",
+		"ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT",
+		"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT",
+	} {
+		v := mergedEnv[knob]
+		d, err := time.ParseDuration(v)
+		if v != "" && err != nil {
+			// Production's envDurationOr silently falls back on garbage;
+			// pricing it 0 here would blind the net with no signal — a
+			// typo'd knob in a test is a programming error, named loudly.
+			t.Fatalf("bgSessionSafetyNet: %s=%q does not parse as a duration (production would silently use its documented default)", knob, v)
+		}
+		if err == nil && d > 0 {
+			drivers += d
+		}
+	}
+	// The answer wait, set or derived — production's own fallback
+	// (claude_code_background.go: answerWait = autoTurnGrace ×
+	// backgroundAnswerWaitFactor when ANSWER_WAIT is unset). An explicit
+	// set value was summed by the loop above (ParseDuration("") errors, so
+	// the unset case reaches only the derivation below); an explicit 0
+	// lapses the wait immediately in production (the answer deadline is
+	// now.Add(0)), so it honestly burns nothing and prices nothing.
+	if mergedEnv["ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT"] == "" {
+		const answerWaitFactor = 5
+		if g, err := time.ParseDuration(mergedEnv["ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE"]); err == nil && g > 0 {
+			drivers += answerWaitFactor * g
+		}
+	}
+	return wedgeAllowance + headroom*(sleeps+drivers)
+}
+
 // runBgSession plays script through runSession. env sets iterion's knobs (the
 // test's own values win over the short defaults applied here).
 func runBgSession(t *testing.T, script []string, env map[string]string, task Task) bgRun {
@@ -221,6 +324,14 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 		"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT": "",
 		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":      "",
 		"ITERION_CLAUDE_CODE_BACKGROUND_TASKS":            "",
+		// Same pin for the stream/orch/no-progress knobs: left unpinned, a
+		// host or CI runner exporting one would feed production a wait the
+		// merged map prices at 0 in bgSessionSafetyNet.
+		"ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT":   "",
+		"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT":   "",
+		"ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT":    "",
+		"ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT": "",
+		"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT":   "",
 	}
 	for k, v := range env {
 		defaults[k] = v
@@ -249,7 +360,10 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 		claudesdk.WithEnv("FAKE_CLAUDE_STDIN_LOG", stdinLog),
 		claudesdk.WithEnv("FAKE_CLAUDE_SPAWN_LOG", spawnLog),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The wedge net is derived from this session's own timing shape (script
+	// sleeps + the waits the merged env configures), not a fixed constant —
+	// see bgSessionSafetyNet (#2177).
+	ctx, cancel := context.WithTimeout(context.Background(), bgSessionSafetyNet(t, script, defaults))
 	defer cancel()
 	start := time.Now()
 	rm, meta, err := b.runSession(ctx, "do the work", task, opts)
