@@ -3246,6 +3246,7 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 // capability that silently dies on every cloud run (the supervisor-steer
 // and operator-chat inbox was exactly that).
 func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
+	operatorFallbacks, policyLadder := splitMsgFallback(msg.Fallback)
 	var zero runview.ExecutorSpec
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
@@ -3305,8 +3306,12 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// The operator's run-level fallback chain, carried on the wire for
 		// the same reason as the pins above — and applied through the SAME
 		// ir.ApplyRunFallback screen a local launch passes, so a pod can
-		// never take a crossing the compiler would refuse.
-		RunFallback: runFallbackFromMsg(msg.Fallback),
+		// never take a crossing the compiler would refuse. The ADAPTIVE-
+		// ROUTING ladder's stages (ADR-121, Policy-flagged) split off: their
+		// model maps PER NODE at materialization, so they ride
+		// PolicyLadder (ir.ApplyPolicyLadder) instead.
+		RunFallback:  operatorFallbacks,
+		PolicyLadder: policyLadder,
 		// The same deployment default the engine resolves sandbox modes
 		// against — the fallback screen refuses codex stages on nodes
 		// that will run sandboxed, and sandboxed-or-not is this value's
@@ -3390,20 +3395,27 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 // runFallbackFromMsg folds the wire chain into the IR form the executor
 // applies. Names are stamped here (not on the wire) so every consumer
 // reports the stages under the recognisable launch-route label.
-func runFallbackFromMsg(entries queue.RunFallback) []ir.Fallback {
-	if len(entries) == 0 {
-		return nil
-	}
-	out := make([]ir.Fallback, 0, len(entries))
+// splitMsgFallback partitions the wire chain ONCE — operator stages onto
+// the executor's fallback list, the adaptive-routing ladder's POLICY
+// stages (ADR-121 §1) onto its ladder field. It reads WITHOUT mutating:
+// the entries slice is the caller's (the composite literal below evaluates
+// two fields from the same msg.Fallback — a DeleteFunc here would zero the
+// tail the second reader sees).
+func splitMsgFallback(entries queue.RunFallback) (operator []ir.Fallback, ladder []ir.PolicyLadderStage) {
 	for _, f := range entries {
-		out = append(out, ir.Fallback{
+		if f.Policy {
+			ladder = append(ladder, ir.PolicyLadderStage{Harness: f.Backend, Credential: f.Provider, On: f.On})
+			continue
+		}
+		operator = append(operator, ir.Fallback{
 			Name:     ir.RunFallbackName,
 			Backend:  f.Backend,
 			Model:    f.Model,
 			Provider: f.Provider,
+			On:       f.On,
 		})
 	}
-	return out
+	return operator, ladder
 }
 
 // modelOverridesFromMsg adapts the wire pins onto model.OverridesFrom —

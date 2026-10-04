@@ -139,3 +139,44 @@ func TestServiceLauncher_routePolicyForToleratesNoResolver(t *testing.T) {
 		t.Fatalf("routePolicyFor = %+v, %v — want the resolver's snapshot", got, err)
 	}
 }
+
+// The RUN level (ADR-121 §0): the launcher's own policy, folded as the
+// HEAD layer — it outranks the platform record, and its explicit lock is
+// the one seat that reopens strict (the marker slice 2 reserved).
+func TestResolveRunLLMRoutePolicy_RunLevelOutranksAndReopens(t *testing.T) {
+	yes := true
+	rec := &platformcfg.PlatformCredentials{Routing: &llmroute.Policy{Strict: &yes}}
+	s := routeResolveServer(t, rec)
+	no := false
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "", llmroute.Layer{
+		Source:   llmroute.SourceRun,
+		Launcher: true,
+		Policy:   llmroute.Policy{Strict: &no, Locks: []string{llmroute.FieldStrict}},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Strict {
+		t.Fatalf("strict = true, want false — the launcher's explicit lock is the one unset path, for their own run")
+	}
+	if got.Sources["strict"] != llmroute.SourceRun {
+		t.Fatalf("strict provenance = %q, want run", got.Sources["strict"])
+	}
+
+	// WITHOUT the lock the author's true wins over the launcher's false:
+	// the launcher steers, the author's requirement stands.
+	got, err = s.resolveRunLLMRoutePolicy(context.Background(), "", "", llmroute.Layer{
+		Source:   llmroute.SourceRun,
+		Launcher: true,
+		Policy:   llmroute.Policy{Strict: &no},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !got.Strict {
+		t.Fatalf("strict = false, want true — no lock, no unset: the platform's true beats the run's false")
+	}
+	if got.Sources["strict"] != llmroute.SourcePlatform {
+		t.Fatalf("strict provenance = %q, want platform", got.Sources["strict"])
+	}
+}

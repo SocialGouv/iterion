@@ -11,8 +11,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
@@ -444,6 +446,17 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// one every execution takes (supervisorRouteID).
 	routes := model.AnthropicWireRoutes(wf, modelOverridesFromMsg(msg.ModelOverrides))
 	sups := preflightSupervisors(ctx, wf, msg)
+	// The adaptive-routing ladder's escapes (ADR-121 §1): a node whose
+	// PRIMARY rides the capped wire but whose computed ladder carries an
+	// open stage OFF it is not park-forcing — the capped call fails
+	// (usage_window, the stage's On set includes it), the chain falls to
+	// the open stage, and the run serves. Parking it would defeat the
+	// selection's own scenario (hard cap + closed forfait + healthy other
+	// forfait). The reverse judgment (a capped CLAUDE_CODE ladder stage on
+	// a primary that rides nothing meterable) is delivery-1 deferred: the
+	// mid-run guard still covers claude_code stages in flight, and claw
+	// stages were never meterable.
+	escapable := ladderEscapes(wf, msg, runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault))
 	if len(routes) == 0 && len(sups) == 0 {
 		if logger != nil {
 			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)
@@ -455,6 +468,9 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// its GLM routes can serve those routes, and a run whose default has room
 	// may still route every node onto a walled key.
 	capped := r.cappedRoutes(ctx, msg, routes, sups, pol, logger)
+	for id := range escapable {
+		delete(capped, id)
+	}
 	if len(capped) == 0 {
 		return nil
 	}
@@ -553,6 +569,76 @@ func (r *Runner) cappedRoutes(ctx context.Context, msg *queue.RunMessage, routes
 		judge(sup.id, key, false)
 	}
 	return capped
+}
+
+// ladderEscapes names the nodes the adaptive-routing ladder lets off the
+// anthropic wire: an eligible agent node (no routes of its own — the same
+// eligibility the ladder's screen enforces) carrying a policy stage whose
+// crossing lands on another wire. The node's capped primary then fails
+// (usage_window — the stage's On carries it) and the chain serves the
+// open stage: the run is not stranded on the capped wire, so it must not
+// be parked for it.
+func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[string]bool {
+	if wf == nil {
+		return nil
+	}
+	var stages []queue.RunFallbackEntry
+	for _, f := range msg.Fallback {
+		if f.Policy {
+			stages = append(stages, f)
+		}
+	}
+	if len(stages) == 0 {
+		return nil
+	}
+	escapes := map[string]bool{}
+	// The ladder is RUN-LEVEL: every eligible node carries every stage, so
+	// one SERVABLE off-wire stage escapes every eligible node. Servable is
+	// hardened to what the materializing screen will not refuse outright:
+	//   - the stage's On must carry usage_window — the capped primary's
+	//     failure category; a stage that refuses it never catches the
+	//     fall-through, and the park it deleted would have armed the
+	//     durable retry;
+	//   - a codex stage on a SANDBOXED run is refused by the screen
+	//     (fallback_apply.go) — the runner's own sandbox tiers are known
+	//     here, so the refusal is decided, not guessed;
+	//   - an unmappable model (StageModel's no-mapping pairs) is dropped
+	//     per node — checked against the node's own model.
+	// RESIDUAL, said: the per-node predicates (ungated ask-rules, tools
+	// inversion, session continuity) are not re-judged here — a stage
+	// refused by one of them after its park was deleted converts the
+	// durable retry into a bare failure. Delivery-1 boundary.
+	for _, st := range stages {
+		if st.Backend == delegate.BackendClaudeCode {
+			continue // the anthropic wire itself: no escape
+		}
+		if st.Backend == delegate.BackendClaw && (st.Provider == "anthropic_key" || st.Provider == "zai_key" || st.Provider == "moonshot_key") {
+			continue // claw on an anthropic-wire key: still the capped wire
+		}
+		if !slices.Contains(st.On, "usage_window") {
+			continue // the capped failure would not step to this stage
+		}
+		if st.Backend == "codex" && sandboxed {
+			continue // the screen refuses it (fallback_apply.go:128)
+		}
+		for _, n := range wf.Nodes {
+			nn, ok := n.(ir.LLMNode)
+			if !ok || nn.NodeKind() != ir.NodeAgent || len(nn.GetFallbacks()) > 0 {
+				continue
+			}
+			// A node with no model of its own has NO ladder: the
+			// materializer drops its stages (StageModel maps nothing
+			// modelless), so it cannot escape off the capped wire — the
+			// park stands. A DECLARED model that maps nothing likewise
+			// drops the stage (named there) and is no escape.
+			nodeModel := nn.GetLLMFields().Model
+			if _, mappable := llmroute.StageModel(st.Backend, st.Provider, nodeModel); !mappable {
+				continue
+			}
+			escapes[nn.NodeID()] = true
+		}
+	}
+	return escapes
 }
 
 // supervisorRoute is one supervisor the run will spawn, and the model spec its

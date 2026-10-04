@@ -360,7 +360,7 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(context.Background(), "team1")
 			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "",
-				wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+				wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if tc.wantRefused {
 				if !errors.Is(err, runview.ErrNoLLMCredential) {
 					t.Fatalf("err = %v, want ErrNoLLMCredential — an unfunded pin must still be refused", err)
@@ -396,7 +396,7 @@ func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
 	pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 	ctx := store.WithTenant(context.Background(), "team1")
 	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "",
-		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestPinnedProvider_AnOrgKeyFundedFirstKeepsItsSlotFromThePlatformTier(t *te
 
 	ctx := store.WithTenant(context.Background(), "team-in")
 	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "",
-		nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"moonshot"})
+		nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"moonshot"}, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

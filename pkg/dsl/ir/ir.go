@@ -1729,6 +1729,13 @@ type Fallback struct {
 	// routes; the compiler never sets either field.
 	RunStage    int
 	RunStageSet bool
+	// Policy marks a route the ADAPTIVE-ROUTING policy computed
+	// (ADR-121, a run-ladder stage): the usagecap preflight judges its
+	// spend surfaces (an operator rescue stage stays excluded — the
+	// policy's routes are the run's actual spend plan, not a rescue) and
+	// the timeline can say "policy-selected". Runtime-only, like
+	// RunStageSet: never authored in a .bot, never validated.
+	Policy bool
 }
 
 // FallbackActionSkip is the `action: skip` terminal route: instead of

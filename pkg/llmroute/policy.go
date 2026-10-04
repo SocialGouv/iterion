@@ -104,14 +104,35 @@ func ParsePair(p string) (harness, credential string, err error) {
 // DefaultPairOrder is the arbitrated default priority (ADR-121 tour 2):
 // forfaits first, then keys — a run spends the subscription before the
 // per-token bill, and a facade key (z.ai) serves a claude_code session
-// before anything more exotic. Operators extend the list; iterion does not
-// invent slots the engine cannot serve yet.
+// before anything more exotic. The ADR's default ends "…then the rest":
+// the enumeration below IS that rest, keyed by the compatibility matrix —
+// every slot a sealed channel can serve, per the harness that reads it.
+// The host-env harnesses (pi, grok, kimi, opencode) appear nowhere: their
+// credentials resolve outside every store, so no pair of theirs is ever
+// sealable and listing one would be a dial that cannot act.
+// Completeness is load-bearing: the whitelist filters slots against THIS
+// list, so an unenumerated slot would silently vanish from every launch
+// the moment the default answered (the F2 regression the slice-3 review
+// caught).
 var DefaultPairOrder = []string{
+	// The five the ADR names, in arbitrated order.
 	Pair(HarnessClaudeCode, CredClaudeForfait),
 	Pair(HarnessCodex, CredChatGPTForfait),
 	Pair(HarnessClaw, "anthropic_key"),
 	Pair(HarnessClaw, "openai_key"),
 	Pair(HarnessClaudeCode, "zai_key"),
+	// Then the rest: the same slots under the other harness that reads
+	// them, then the remaining key providers by wire family.
+	Pair(HarnessClaudeCode, "anthropic_key"),
+	Pair(HarnessClaudeCode, "moonshot_key"),
+	Pair(HarnessCodex, "openai_key"),
+	Pair(HarnessClaw, "zai_key"),
+	Pair(HarnessClaw, "moonshot_key"),
+	Pair(HarnessClaw, "bedrock_key"),
+	Pair(HarnessClaw, "vertex_key"),
+	Pair(HarnessClaw, "azure_key"),
+	Pair(HarnessClaw, "openrouter_key"),
+	Pair(HarnessClaw, "xai_key"),
 }
 
 // Policy is the routing contract shared by every level that can own one.
@@ -324,6 +345,9 @@ type Layer struct {
 // chain's convention (a snapshot that says only "binding" stops where the
 // webhook case needs it most: one ingress serves many bots).
 const (
+	// SourceRun names the launcher's own layer — the HEAD of the chain,
+	// the seat whose explicit lock may reopen strict.
+	SourceRun      = "run"
 	SourceBot      = "bot"
 	SourceSchedule = "schedule"
 	SourceTrigger  = "trigger"

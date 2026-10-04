@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -151,6 +152,12 @@ type launchRunRequest struct {
 	// See runview.ModelOverrideEntry. The current queue contract carries them
 	// to cloud runners as well, where the executor applies them (issue #513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
+	// LLMRouting is the RUN level of the adaptive-routing policy
+	// (ADR-121, pkg/llmroute): the launcher's own opinion, folded as the
+	// HEAD layer — the seat whose explicit lock may reopen strict (the
+	// ADR's "only the launcher, for their own run, through an explicit
+	// lock"). Optional; validated with the rest of the chain.
+	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
 	// RoutingPolicy is the launch-frozen outcome contract: what
 	// "success" and "blocked" mean for this run (bot-DSL expressions
 	// over the terminal outputs), where a success lands, and which
@@ -620,7 +627,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	retryID, _ := auth.FromContext(r.Context())
 	retryTeamID := retryID.TeamID
 
-	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(r.Context(), retryTeamID, botID)
+	var runLayers []llmroute.Layer
+	if req.LLMRouting != nil {
+		runLayers = append(runLayers, llmroute.Layer{Source: llmroute.SourceRun, Launcher: true, Policy: *req.LLMRouting})
+	}
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(r.Context(), retryTeamID, botID, runLayers...)
 	if routeErr != nil {
 		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", routeErr)
 		return

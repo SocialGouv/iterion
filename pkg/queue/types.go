@@ -139,7 +139,14 @@ import (
 // policies. A stale runner ignores both and applies its own default — for
 // claude_code the operator's whole personal setup — so a run launched or
 // declared with `none` would receive everything: it must reject.
-const SchemaVersion = 21
+// v=22 (2026-10-04): RunFallbackEntry grows On and Policy for the
+// adaptive-routing ladder (ADR-121). Breaking by the additive-field rule:
+// a stale runner ignoring On would run a policy-computed stage on the
+// chain DEFAULT trigger set ([usage_window, unavailable]) — dropping
+// auth and transient_exhausted, the exact failures the launch-time
+// selection exists to fall through — silently reverting operator intent.
+// Server-first rollout; MinSchemaVersion unchanged.
+const SchemaVersion = 22
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -390,11 +397,21 @@ type ModelOverride struct {
 }
 
 // RunFallbackEntry is one stage of the operator's run-level fallback
-// chain on the wire — the queue twin of runview.FallbackEntry.
+// chain on the wire — the queue twin of runview.FallbackEntry. The On and
+// Policy fields (v=22) carry the ADAPTIVE-ROUTING ladder's stages
+// (ADR-121): On is the resolved policy's trigger set the stage accepts
+// (nil = the chain default — what operator stages carry), Policy marks
+// the stage as policy-computed (the usagecap preflight judges its spend;
+// operator rescue stages stay excluded).
 type RunFallbackEntry struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	// On is never omitempty: a CLAMPED-EMPTY set is the "never switch"
+	// answer, and omitempty would erase it into the chain default on the
+	// way back (the M4 round-trip).
+	On     []string `json:"on"`
+	Policy bool     `json:"policy,omitempty"`
 }
 
 // RunFallback is the ordered wire chain. Producers marshal it as an array;

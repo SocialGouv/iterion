@@ -116,6 +116,16 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	if lb.Origin == "catalog" {
 		spec.Launch.Source = ""
 	}
+	// The preview's whitelist must answer what the LAUNCH will seal: the
+	// policy resolved exactly as the launch site resolves it — the bot's
+	// manifest layer and the team included (a ("","") resolution would
+	// drop them and preview a policy the launch never folds).
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, spec.Context.TeamID, spec.Context.BotID)
+	if routeErr != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", routeErr)
+		return
+	}
+	spec.LLMRoutePolicy = routePolicy
 	out, err := s.runs.PreviewCredentials(ctx, spec)
 	if errors.Is(err, runview.ErrCredentialPreviewUnavailable) {
 		httpError(w, http.StatusServiceUnavailable, "credential preview is unavailable")

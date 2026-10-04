@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // CredentialPreviewSource names a real launch surface. Identity and overrides
@@ -96,6 +97,12 @@ type CredentialPreviewSpec struct {
 	Context CredentialPreviewContext
 	OwnerID string
 	Launch  LaunchSpec
+	// LLMRoutePolicy is the launch's RESOLVED adaptive-routing policy
+	// (ADR-121 §1) — resolved by the server exactly as the launch site
+	// would, so the preview's whitelist answers what the launch will seal
+	// (the parity doctrine: fill, restore and preview apply the same
+	// answer). Nil = the launch is unwired; everything is sealable.
+	LLMRoutePolicy *store.RunLLMRoutePolicy
 }
 
 type CredentialPreviewer interface {

@@ -126,6 +126,11 @@ func (p *Publisher) fillFromOrg(
 			if !fillable(string(rec.Kind)) {
 				continue
 			}
+			// The adaptive-routing whitelist: an unlisted slot is invisible
+			// to this tier.
+			if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+				continue
+			}
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 			if err != nil {
 				p.logger.Warn("cloudpublisher: unseal org oauth %s/%s: %v", rec.UserID, rec.Kind, err)
@@ -191,6 +196,10 @@ func (p *Publisher) fillFromOrg(
 					for _, prov := range missing {
 						r, ok := resolved[prov]
 						if !ok || len(r.Plaintext) == 0 {
+							continue
+						}
+						// The adaptive-routing whitelist.
+						if !policy.sealableSlot(slotOfProvider(prov)) {
 							continue
 						}
 						// Decided again: a key filled earlier in this loop

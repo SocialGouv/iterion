@@ -122,6 +122,13 @@ type ExecutorSpec struct {
 	// explicitly and win over the node's DSL backend:/model:, so a run can
 	// re-target the bot per node-group without editing the .bot. Empty = no-op.
 	ModelOverrides model.ModelOverrides
+	// PolicyLadder is the adaptive-routing policy's computed ladder
+	// (ADR-121 §1): the held (harness, credential) pairs in policy order,
+	// applied through ir.ApplyPolicyLadder's screen right after
+	// RunFallback's. The stages carry no model — the crossing maps EACH
+	// node's own model at materialization. Cloud only: a local launch
+	// seals no channels, so no ladder exists to apply.
+	PolicyLadder []ir.PolicyLadderStage
 	// SandboxOverride and SandboxDefault are the deployment tiers the
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
@@ -354,12 +361,28 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// existed to survive. The refusal now also lands on the run's timeline
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
-	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback,
-		runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault),
-		spec.Vars)
+	sandboxedHere := runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault)
+	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars)
 	for _, refusal := range fallbackRefusals {
 		spec.Logger.Warn("run-level fallback not applied — %s", refusal)
 	}
+	// The adaptive-routing policy's computed ladder (ADR-121 §1), through
+	// the SAME screen: the model of each crossing is mapped from the
+	// node's own model, and the stage's On carries the resolved policy's
+	// trigger set — the chain's default set would stop the auth-typed
+	// failure the launch-time selection exists to fall through.
+	overrides := spec.ModelOverrides
+	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
+		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+		if ov.Model != "" {
+			return ir.ExpandEnvWithDefault(ov.Model)
+		}
+		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
+	})
+	for _, refusal := range policyRefusals {
+		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
+	}
+	fallbackRefusals = append(fallbackRefusals, policyRefusals...)
 
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(spec.Logger)
