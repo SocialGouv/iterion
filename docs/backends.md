@@ -1172,10 +1172,14 @@ retryable:
   a cancelled or timed-out run never thrashes the retry budget.
 - **`claude_code` silent exits**: a connectivity drop surfaces as an opaque
   `session ended without result message (cli_exit_code=N)`, with the real
-  cause only on the CLI's stderr. The delegate re-types it as
-  `ErrTransient` when stderr shows a network marker (one explicit
-  `network connectivity issue detected` warn), so the loop retries instead
-  of failing the node.
+  cause on the CLI's stderr or its `API Error: …` result render. The
+  delegate re-types it as `ErrTransient` when the error text matches the
+  full network-signature list, or stderr carries a **transport-level**
+  marker (`matchesTransportStderr` — same tier as the shared CLI-agent
+  loop: a crash dump quoting arbitrary source must not read as network
+  evidence; the prose markers stay on the CLI's own error text and result
+  render). One explicit `network connectivity issue detected` warn, so the
+  loop retries instead of failing the node.
 - **Adaptive budget**: network/transient errors get a larger attempt
   budget (`MaxAttemptsTransient`, default **6**) than ordinary retryable
   errors (`MaxAttempts`, default **3**), so the backoff spans roughly a

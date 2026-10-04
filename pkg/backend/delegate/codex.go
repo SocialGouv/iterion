@@ -661,7 +661,17 @@ func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
 			return fmt.Errorf("delegate: codex terminal error: %s", truncate(resultText, 500))
 		}
 	}
-	if resultText == "" && MatchesNetworkSignature(stderr) {
+	// Structured output is empty and the result text carries no error
+	// envelope, so stderr is the remaining evidence — but it is free-form
+	// text, not the CLI's own error channel: a Rust panic, a parse error or
+	// a logged provider body quotes arbitrary content that can carry any
+	// signature verbatim, and reading prose off it would retry a
+	// deterministic failure (#2142). Only its transport-level lines count
+	// (matchesTransportStderr, the tier the shared CLI-agent retry loop
+	// reads); the prose signatures ("unexpected eof", "network error") stay
+	// where the channel is structured — the envelope-prefixed result text
+	// classified just above.
+	if resultText == "" && matchesTransportStderr(stderr) {
 		return &ErrTransient{
 			Provider: BackendCodex,
 			Reason:   "network",
