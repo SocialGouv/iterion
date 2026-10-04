@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -235,6 +236,17 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// makes). Only a resume proven not to have started hands it back.
 		if !runview.RunMayHaveStarted(err) {
 			adm.rollback(s.logger)
+		}
+		// A pool re-mapping (ErrPoolRemapped) is permanent — no retry cures
+		// it, and re-arming would flip the doc queued→failed every cycle
+		// until the budget burned. Abandon with the named reason instead.
+		if errors.Is(err, cloudpublisher.ErrPoolRemapped) {
+			// No second rollback: ErrPoolRemapped leaves BEFORE any publish,
+			// so RunMayHaveStarted is false and the refund above already
+			// fired — and ReleaseRun is a non-idempotent $inc (rva-2 F1).
+			s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+				"auto-retry abandoned: the team's runner-pool mapping moved past the run's frozen pool — relaunch the run on the new pool")
+			return
 		}
 		s.reArmRetry(runCtx, retryStore, ref, err)
 		return

@@ -146,7 +146,11 @@ import (
 // auth and transient_exhausted, the exact failures the launch-time
 // selection exists to fall through — silently reverting operator intent.
 // Server-first rollout; MinSchemaVersion unchanged.
-const SchemaVersion = 22
+// v=23: RunnerPool (#2029). A launch mapped to a sovereign runner pool
+// rides the new field on the message and the envelope. A stale runner
+// ignores it and serves the run outside the team's pool — the leak the
+// pool exists to make impossible — so it must reject.
+const SchemaVersion = 23
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -290,6 +294,16 @@ type RunMessage struct {
 	// OwnerID is the user_id of the principal who initiated the run.
 	// Used for audit logging; runners do NOT gate execution on it.
 	OwnerID string `json:"owner_id,omitempty"`
+	// RunnerPool names the sovereign runner pool the run MUST execute on
+	// (#2029). Empty means the shared default pool. The publisher stamps it
+	// from the team's CURRENT mapping (fresh read, refusal on a store
+	// error); a runner serves a message only when this matches its own
+	// pool and the persisted document — a disagreement is a corrupted or
+	// replayed publish, parked with the run failed, never executed. The
+	// field requires v22 on the wire: a stale runner that dropped it would
+	// execute the run outside the team's pool, which is the leak the pool
+	// exists to make impossible.
+	RunnerPool string `json:"runner_pool,omitempty"`
 	// ParentRunID is set on child runs spawned by a parent workflow
 	// (e.g. by `iterion __scan-shards`). Empty for root runs. When
 	// non-empty, the runner copies it into the persisted Run document
@@ -550,6 +564,13 @@ func (m *RunMessage) Validate() error {
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
 	}
+	// The pool name is grammar-checked, not tenant-checked, and only when
+	// set: an empty pool is the shared default (pre-v22 messages included),
+	// and WHO may map a team to a pool is the publisher resolver's
+	// fail-closed read, not a wire-format question.
+	if m.RunnerPool != "" && !ValidPoolName(m.RunnerPool) {
+		return fmt.Errorf("queue: RunnerPool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", m.RunnerPool)
+	}
 	if m.WorkflowName == "" {
 		return fmt.Errorf("queue: WorkflowName required")
 	}
@@ -594,12 +615,39 @@ func (m *RunMessage) Validate() error {
 // park the payload on the DLQ and flip only that attempt to an actionable
 // status instead of leaving it `queued` in silence (issue #481).
 type Envelope struct {
-	V              int    `json:"v"`
-	RunnerEpoch    uint64 `json:"runner_epoch,omitempty"`
-	RunID          string `json:"run_id"`
-	TenantID       string `json:"tenant_id"`
-	OwnerID        string `json:"owner_id,omitempty"`
+	V           int    `json:"v"`
+	RunnerEpoch uint64 `json:"runner_epoch,omitempty"`
+	RunID       string `json:"run_id"`
+	TenantID    string `json:"tenant_id"`
+	OwnerID     string `json:"owner_id,omitempty"`
+	// RunnerPool mirrors RunMessage.RunnerPool in the stable identity core:
+	// a consumer that rejects the wire version can still see which pool the
+	// run claims, park it on the right DLQ, and flip the right attempt.
+	RunnerPool     string `json:"runner_pool,omitempty"`
 	PublishedAtRFC string `json:"published_at"`
+}
+
+// ValidPoolName reports whether s is a well-formed runner-pool name:
+// 1–31 chars, lowercase alphanumerics and inner dashes, starting with an
+// alphanumeric. It doubles as the subject/stream suffix grammar, so a name
+// that fails this can never address a pool topic.
+func ValidPoolName(s string) bool {
+	if len(s) == 0 || len(s) > 31 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-':
+			if i == 0 || i == len(s)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // PeekEnvelope extracts the identity envelope from a raw wire payload WITHOUT

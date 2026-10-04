@@ -5307,6 +5307,9 @@
           "personal": {
             "type": "boolean"
           },
+          "runner_pool": {
+            "type": "string"
+          },
           "slug": {
             "type": "string"
           },
@@ -6449,6 +6452,30 @@
           }
         },
         "summary": "PUT /api/admin/settings/usage-caps",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/teams/{id}/runner-pool": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putAdminTeamsByIdRunnerPool",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/teams/{id}/runner-pool",
         "tags": [
           "admin"
         ]

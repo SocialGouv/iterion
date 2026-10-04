@@ -100,4 +100,5 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.Handle("PATCH /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateUser)))
 	s.mux.Handle("POST /api/admin/users/{id}/reset-password", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminResetUserPassword)))
 	s.registerAdminOrgRoutes()
+	s.registerAdminTeamRoutes()
 }

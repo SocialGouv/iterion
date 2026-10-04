@@ -85,7 +85,11 @@ type teamSummaryView struct {
 	Personal          bool   `json:"personal,omitempty"`
 	MaxConcurrentRuns int    `json:"max_concurrent_runs,omitempty"`
 	LaunchRatePerMin  int    `json:"launch_rate_per_min,omitempty"`
-	CreatedAt         string `json:"created_at,omitempty"`
+	// RunnerPool is the team's sovereign-pool mapping (#2029) — a boundary
+	// an operator sets through the admin route; reading it back is how the
+	// write is confirmed and audited.
+	RunnerPool string `json:"runner_pool,omitempty"`
+	CreatedAt  string `json:"created_at,omitempty"`
 }
 
 func toTeamSummaryView(t identity.Team) teamSummaryView {
@@ -98,6 +102,7 @@ func toTeamSummaryView(t identity.Team) teamSummaryView {
 		Personal:          t.Personal,
 		MaxConcurrentRuns: t.MaxConcurrentRuns,
 		LaunchRatePerMin:  t.LaunchRatePerMin,
+		RunnerPool:        t.RunnerPool,
 		CreatedAt:         t.CreatedAt.Format(time.RFC3339),
 	}
 }

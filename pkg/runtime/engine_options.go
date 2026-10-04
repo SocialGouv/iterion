@@ -326,6 +326,20 @@ func WithTrust(trust store.RunTrust, repoSHAExpected string) EngineOption {
 	}
 }
 
+// WithRunnerPool stamps the sovereign runner pool (#2029) the run is frozen
+// to onto the persisted run document. The wire message carries the field
+// (child := *msg), but the DOCUMENT is built from a named field list — the
+// same trap WithTrust's subbot wiring closes for Trust. Empty means the
+// shared default pool and stamps nothing (never cleared: the stores hold
+// the stamp write-once).
+func WithRunnerPool(pool string) EngineOption {
+	return func(e *Engine) {
+		if pool != "" {
+			e.runnerPool = pool
+		}
+	}
+}
+
 // WithParentNodeID records the IR node id of the subbot node in the parent
 // workflow that spawned this child run. Empty values are ignored, mirroring
 // WithParentRunID.

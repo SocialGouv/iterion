@@ -290,6 +290,52 @@ func (p *Publisher) orgIDForTeam(ctx context.Context, teamID string) string {
 	return t.OrgID
 }
 
+// ErrPoolRemapped marks a resume refused because the team's runner-pool
+// mapping has moved past the run's frozen stamp. It is PERMANENT: the retry
+// sweeper abandons (never re-arms) a resume failing with it — re-arming
+// would flip the doc queued→failed every cycle until the attempt budget
+// burned, on a refusal no retry can cure.
+var ErrPoolRemapped = errors.New("cloudpublisher: the run's runner pool no longer matches its team's mapping")
+
+// poolDispatchEnabled gates the transition from "a mapped team's launches
+// are refused" to "a mapped team's runs are routed to its pool's stream".
+// It is OFF until the queue side ships (per-pool streams, server-managed
+// consumers, runner admission guard — plan v2.1 D2'/D4'): flipping it with
+// any of those missing would dispatch pool-mapped runs onto the shared
+// default pool, which is the leak #2029 exists to make impossible.
+const poolDispatchEnabled = false
+
+// runnerPoolForTeam names the runner pool the team is CURRENTLY mapped to,
+// reading the team FRESH — never the 5-min org cache: a mapping is a
+// security boundary, and a stale "unmapped" answer would route the run
+// onto the shared pool. A store error REFUSES the launch (fail closed);
+// only a definitive answer (mapped or not) lets it proceed.
+func (p *Publisher) runnerPoolForTeam(ctx context.Context, teamID string) (string, error) {
+	if teamID == "" {
+		return "", nil
+	}
+	// p.identity == nil reads as "this deployment has no identity seam at
+	// all" — and therefore NO mapping table: no team can be mapped, so the
+	// only possible answer is the shared default. (The fail-closed case that
+	// matters is a STORE ERROR with the seam wired, refused above; prod
+	// wires the store at cmd/iterion/server.go.)
+	if p.identity == nil {
+		return "", nil
+	}
+	t, err := p.identity.GetTeam(ctx, teamID)
+	if errors.Is(err, identity.ErrNotFound) {
+		// A definitive answer: the team row does not exist, so it cannot be
+		// mapped — the shared default applies. (The CI smoke launches under
+		// exactly this shape.) A store that cannot ANSWER is the different
+		// case below, and it refuses.
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cloudpublisher: resolve runner pool for team %s: %w (refusing the launch — the pool mapping must be known, never guessed)", teamID, err)
+	}
+	return t.RunnerPool, nil
+}
+
 // New builds a Publisher.
 func New(cfg Config) (*Publisher, error) {
 	if cfg.NATS == nil {
@@ -2647,6 +2693,23 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		return 0, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
 			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 	}
+	// The team's pool mapping, resolved BEFORE anything persists: the run
+	// document freezes it (a later re-mapping must not move this run), and
+	// a mapped team whose pool dispatch is not wired yet is refused here —
+	// synchronously, so the operator's 202 is never a lie about a run that
+	// would only fail at runner pickup. An identity-store error refuses the
+	// launch too: an unknown mapping must fail closed, not land on the
+	// shared pool.
+	runnerPool, err := p.runnerPoolForTeam(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	if runnerPool != "" && !poolDispatchEnabled {
+		return 0, fmt.Errorf("team %s is mapped to runner pool %q, but pool dispatch is not enabled in this build — the run is refused rather than served outside the team's pool", tenantID, runnerPool)
+	}
+	if runnerPool != "" && !queue.ValidPoolName(runnerPool) {
+		return 0, fmt.Errorf("team %s is mapped to runner pool %q: invalid pool name (want 1–31 chars [a-z0-9-], starting alphanumeric)", tenantID, runnerPool)
+	}
 	r := &store.Run{
 		FormatVersion: store.RunFormatVersion,
 		ID:            runID,
@@ -2672,6 +2735,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		QueuedAt:        &now,
 		TenantID:        tenantID,
 		OwnerID:         ownerID,
+		RunnerPool:      runnerPool,
 		RepoURL:         spec.RepoURL,
 		RepoSHA:         spec.RepoRef,
 		Trust:           spec.Trust,
@@ -2896,6 +2960,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		TenantID:        tenantID,
 		OrgID:           orgID,
 		OwnerID:         ownerID,
+		RunnerPool:      runnerPool,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
 		// can group siblings and so a future event-based aggregator
@@ -3230,6 +3295,25 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
+	// A resume follows the run's FROZEN pool stamp, never the team's current
+	// mapping: the run's checkpoint, bundle and sealed credentials were bound
+	// to the pool it launched on, and silently following a re-mapping would
+	// move them across the boundary the stamp exists to hold. The current
+	// mapping is still read (fail closed) to NAME the disagreement; a
+	// deliberate move is a new launch.
+	currentPool, err := p.runnerPoolForTeam(ctx, prior.TenantID)
+	if err != nil {
+		return err
+	}
+	if currentPool != prior.RunnerPool {
+		return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, spec.RunID, prior.RunnerPool, currentPool)
+	}
+	// Same dispatch gate the launch carries: until pool dispatch is wired, a
+	// pool-stamped resume must not publish onto the shared stream where no
+	// runner-side admission guard exists yet.
+	if prior.RunnerPool != "" && !poolDispatchEnabled {
+		return fmt.Errorf("cloudpublisher: run %s is bound to runner pool %q, but pool dispatch is not enabled in this build — the resume is refused rather than served outside the team's pool", spec.RunID, prior.RunnerPool)
+	}
 	// prior.PinnedProviders, never a fresh derivation: a resume re-resolves
 	// its source, so re-deriving would let a program the launch never
 	// approved decide which credentials this run is granted. Empty on runs
@@ -3345,6 +3429,8 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		TenantID: prior.TenantID,
 		OrgID:    priorOrgID,
 		OwnerID:  prior.OwnerID,
+		// The FROZEN pool stamp, verified equal to the current mapping above.
+		RunnerPool: prior.RunnerPool,
 		// Preserve webhook/cloud source metadata so a resumed runner can
 		// reconstruct the same workspace as the original launch. ProjectPath
 		// is carried by the persisted run doc, not the wire.

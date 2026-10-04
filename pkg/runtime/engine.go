@@ -190,6 +190,7 @@ type Engine struct {
 	parentRunID            string                   // immediate parent run, set via WithParentRunID for nested executions
 	trust                  store.RunTrust           // who wrote the code in this run's workspace, set via WithTrust
 	repoSHAExpected        string                   // the commit the admission pinned, set via WithTrust
+	runnerPool             string                   // the sovereign pool the run is frozen to, set via WithRunnerPool
 	parentNodeID           string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                 string                   // in-source preset name selected at launch, set via WithPreset
 	runName                string                   // deterministic human-friendly run label, set via WithRunName

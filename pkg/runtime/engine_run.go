@@ -433,7 +433,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.runnerPool != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
 		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil ||
 		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 {
 		if e.workflowHash != "" {
@@ -456,6 +456,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		if e.repoSHAExpected != "" {
 			run.RepoSHAExpected = e.repoSHAExpected
+		}
+		if e.runnerPool != "" {
+			run.RunnerPool = e.runnerPool
 		}
 		if e.parentNodeID != "" {
 			run.ParentNodeID = e.parentNodeID
