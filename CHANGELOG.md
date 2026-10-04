@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.233.1](https://github.com/SocialGouv/iterion/compare/v3.233.0...v3.233.1) (2026-10-04)
+
+### Bug Fixes
+
+* **gate:** one verdict-order authority per forge check; provision never silently reverts operator settings ([#1588](https://github.com/SocialGouv/iterion/issues/1588), [#1590](https://github.com/SocialGouv/iterion/issues/1590), [#1632](https://github.com/SocialGouv/iterion/issues/1632)) ([#2176](https://github.com/SocialGouv/iterion/issues/2176)) ([2ac864d](https://github.com/SocialGouv/iterion/commit/2ac864d987019fe226622563983781dcb7b6df89))
+
+    <details><summary>why</summary>
+
+    Every gate status — publish, GH/GL approve, the reconciler's synthetic — crosses a single per-(forge,repo,sha,context) verdict-order authority, anchored at the run's terminal instant, so a verdict decided after the run died always wins (#1590). A refused verdict is recorded on its grant and the reconciler answers the current head with the refusal diagnosis instead of deadlocking on relaunch (#1632). Provision reads BOTH operator-settings stores: launch_vars must agree or the adopt refuses with…
+
+    </details>
+* **sandbox:** answer "is this run sandboxed?" from the driver, not the mode ([#1564](https://github.com/SocialGouv/iterion/issues/1564)) ([#2167](https://github.com/SocialGouv/iterion/issues/2167)) ([9ae7c4d](https://github.com/SocialGouv/iterion/commit/9ae7c4daef935aca34826da353c13f8fdd5a55be)), closes [#2166](https://github.com/SocialGouv/iterion/issues/2166)
+
+    <details><summary>why</summary>
+
+    WorkflowSandboxActive answered from the resolved MODE alone, so a sandbox: auto run degraded to the host (no driver) was read as sandboxed: its as: file secrets were never materialized and a codex --fallback stage was refused on a run executing on the host.
+
+    </details>
+
 ## [3.233.0](https://github.com/SocialGouv/iterion/compare/v3.232.1...v3.233.0) (2026-10-04)
 
 ### Features
