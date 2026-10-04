@@ -495,8 +495,8 @@ func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
 // team's pool). Red when the Validate check, the Envelope mirror or the
 // bump is reverted.
 func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
-	if SchemaVersion != 22 {
-		t.Fatalf("SchemaVersion = %d, want 22 (the RunnerPool bump)", SchemaVersion)
+	if SchemaVersion != 23 {
+		t.Fatalf("SchemaVersion = %d, want 23 (the RunnerPool bump)", SchemaVersion)
 	}
 	base := RunMessage{
 		V:            SchemaVersion,
