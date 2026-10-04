@@ -209,20 +209,26 @@ export default function SourceView() {
     setEditingState(true);
   }, [editing, currentFilePath, selected, unit, bufferKey, documentStore]);
 
-  // A held buffer typed for a file this tab no longer has — its file left the
-  // unit, or the unit came or went under it — can never be adopted, and
-  // holding it keeps the watcher from ever auto-reloading this tab and lights
-  // `beforeunload` for text no surface can show. Say so and let go, rather
-  // than keep work nobody can reach. Save As asks the same question, so the
-  // two cannot disagree about which text is kept.
+  // A held buffer typed for ANOTHER file than the one this tab shows — a
+  // binding that moved under it — can never be adopted here and has no
+  // surface anywhere else either: it is dropped with the named warning, as
+  // it always was. A buffer for THIS tab whose file left the unit, or whose
+  // whole-file text has no single file now that the bot is in several files,
+  // is NOT dropped: it stays held, the banner below is its surface, and the
+  // author answers it — Restore or Discard — instead of a toast deciding
+  // (#1735).
   useEffect(() => {
     if (editing) return;
     const held = documentStore.getState().sourceBuffer;
     if (!held || held.text === held.base) return;
-    const unreachable = unreachableSourceBuffer(held, currentFilePath, unit);
-    if (!unreachable) return;
+    if (held.path === currentFilePath) return;
     setSourceBuffer(null);
-    addToast(unreachable, "warning", { persistent: true });
+    addToast(
+      unreachableSourceBuffer(held, currentFilePath, unit) ??
+        `The text you had not applied for ${held.path} was discarded — this tab is on another file now.`,
+      "warning",
+      { persistent: true },
+    );
   }, [editing, unit, currentFilePath, documentStore, setSourceBuffer, addToast]);
 
   // Sync document → source (when not in editing mode)
@@ -558,10 +564,50 @@ export default function SourceView() {
 
   // The store holds the edit; this view mirrors it. An Apply answered by an
   // instance of this view that has since unmounted settles the STORE —
-  // closing the buffer, or moving its base and provenance to what it
-  // applied — and a view shown again in between must follow, or every Apply
-  // after it is refused as stale.
+  // closing the banner's question along with the store's buffer, or moving
+  // its base and provenance to what it applied — and a view shown again in
+  // between must follow, or every Apply after it is refused as stale.
   const heldBuffer = useDocumentStore((s) => s.sourceBuffer);
+
+  // The held, un-applied text for a file this view can no longer offer — the
+  // file left the unit under it, or the unit came or went under a whole-file
+  // text (#1735). It is NOT dropped: it stays held, and this banner is the
+  // surface the ticket asks for. Restore is offered only where a coherent
+  // edit state exists to restore INTO — a unit view that can select the
+  // held file again, even though the unit no longer lists it. A fragment
+  // with no unit left, or a whole-file text under a unit, has no such
+  // state; there the author answers Discard or keeps the text held.
+  const orphan =
+    !editing &&
+    !!heldBuffer &&
+    heldBuffer.text !== heldBuffer.base &&
+    heldBuffer.path === currentFilePath &&
+    !!unreachableSourceBuffer(heldBuffer, currentFilePath, unit);
+  const orphanRel = orphan ? heldBuffer.rel : null;
+  const restorable = !!orphan && !!unit && !!orphanRel && !salvaged;
+
+  const discardOrphan = useCallback(() => {
+    setSourceBuffer(null);
+  }, [setSourceBuffer]);
+
+  const restoreOrphan = useCallback(() => {
+    if (!heldBuffer || !restorable) return;
+    const rel = heldBuffer.rel;
+    if (!rel) return;
+    // The adoption the remount effect performs, done with the view moved to
+    // the held file: text, base and provenance come back exactly as the
+    // remount adoption restores them, so an Apply is refused when the
+    // document moved under the text.
+    setSelected(rel);
+    setRefused(null);
+    setParseError(null);
+    baseRef.current = heldBuffer.base;
+    setSource(heldBuffer.text);
+    setRendered({ key: `${currentFilePath ?? ""}\u0000${rel}`, doc: heldBuffer.doc });
+    adopted.current = true;
+    setEditingState(true);
+  }, [heldBuffer, restorable, currentFilePath]);
+
   useEffect(() => {
     if (!editing) return;
     if (!heldBuffer) {
@@ -611,6 +657,13 @@ export default function SourceView() {
                   {f.rel === unit.main ? " (main)" : ""}
                 </option>
               ))}
+              {/* A restored orphan's rel is deliberately selectable even though
+                  the unit no longer lists it — Restore selects it, and without
+                  the option the picker would render it nameless. Marked, so
+                  nobody mistakes it for a file the bot still has. */}
+              {selected && selected !== MERGED && !unit.files.some((f) => f.rel === selected) && (
+                <option value={selected}>{selected} (held text)</option>
+              )}
               <option value={MERGED}>Merged program of {unit.files.length} files (read-only)</option>
             </Select>
           </label>
@@ -648,6 +701,11 @@ export default function SourceView() {
               variant="ghost"
               size="sm"
               className="text-accent-text hover:underline"
+              // One buffer per tab: entering the mode publishes a fresh buffer
+              // and would take the held text with it. The banner above is the
+              // way to answer that text first (#1735).
+              disabled={!!orphan}
+              title={orphan ? "Answer the held text above first — Restore or Discard" : undefined}
               onClick={() => setEditing(true)}
             >
               Edit
@@ -670,6 +728,31 @@ export default function SourceView() {
             ? `This is the merged program of ${unit?.files.length ?? 0} files, and it is not what one of them holds: `
             : "This is the file as it is stored, and it cannot be edited here: "}
           {refused}
+        </InlineBanner>
+      )}
+      {orphan && (
+        <InlineBanner
+          tone="warning"
+          layout="sticky"
+          title={`Un-applied text is still held for ${heldBuffer?.rel ?? "this file"}`}
+          action={
+            <>
+              {restorable && (
+                <Button variant="secondary" size="sm" onClick={restoreOrphan}>
+                  Restore
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={discardOrphan}>
+                Discard
+              </Button>
+            </>
+          }
+        >
+          {restorable
+            ? "The file it was typed for is no longer offered by this tab's picker. Restore puts the text back into the editor; Discard drops it for good."
+            : unit
+              ? "The bot is in several files now, edited one file at a time, and this whole-file text has no single file to be applied to. Discard drops it for good."
+              : "This tab shows a single file now, so this fragment cannot be offered a file to apply to. Discard drops it for good."}
         </InlineBanner>
       )}
       {parseError && (
