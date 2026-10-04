@@ -31,7 +31,23 @@ type Simulation struct {
 	// goes on; the second is the program's death, as ever. Nil: every
 	// failure is the program's.
 	Invented InventedValues
+	// LoopCrossings bounds how often the simulation crosses a BOUNDED loop:
+	// past this many crossings of one loop the back-edge is declined — the
+	// simulation's own doing (SimulationLoopCrossingsDecline, a ceiling),
+	// never the program's, and C145's static word on the exit is unchanged.
+	// The program's own cap is honoured first: a cap tighter than this bound
+	// stays the program's word. Zero: no bound — every loop runs to its cap,
+	// as a production engine does. A dry run sets it because a loop's shapes
+	// do not change from one crossing to the next, so crossing it a thousand
+	// times teaches the pass nothing the first few did not (#1307).
+	LoopCrossings int
 }
+
+// SimulationLoopCrossingsDecline is the decline reason of a bounded loop's
+// back-edge a simulation declines past its own crossing bound
+// (Simulation.LoopCrossings): a CeilingReason, so a death that follows it
+// reads as the bound's doing, not the program's.
+const SimulationLoopCrossingsDecline = "dryrun_loop_crossings"
 
 // ExpressionFailure is one expression the engine could not evaluate,
 // handed to Simulation.Invented: the node it belongs to (a compute node,
@@ -80,7 +96,7 @@ func WithSimulation(s Simulation) EngineOption {
 // every production engine.
 func (e *Engine) Simulating() bool {
 	s := e.simulation
-	return s.AnswerHumans || s.EventsArrive || s.AnswersArrive || s.BranchesRunToTheirEnd || s.Invented != nil
+	return s.AnswerHumans || s.EventsArrive || s.AnswersArrive || s.BranchesRunToTheirEnd || s.Invented != nil || s.LoopCrossings > 0
 }
 
 // exprRefsOf converts template references to the expression references the

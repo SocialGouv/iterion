@@ -759,6 +759,94 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 		return
 	}
 	c.validateNodeInputRef(w, rc, node, fieldName)
+	c.validateNodeBodyInputMapped(w, rc, node, fieldName)
+}
+
+// validateNodeBodyInputMapped is C308 (#1455): an `{{input.X}}` a node body
+// reads (a prompt, a tool command/script/param, a compute `expr:`, a fail
+// `message:`) that NO incoming edge of the node maps. A node's input is
+// built only from the `with` mappings of its incoming edges
+// (buildNodeInputRS, applyEdge returns on len(edge.With)==0) plus the
+// run-level payload on the entry node — so a field no edge maps is empty on
+// every path, the certain defect the dry run could only name after a full
+// pass. A warning, not an error: the fix is one `with` mapping (or
+// `{{outputs.<producer>.X}}`), and the diagnostic names every incoming edge
+// so the mapping has a place to land.
+//
+// The path-only case — mapped by another incoming edge (a loop's back-edge,
+// a sibling `when` path), legitimately empty on some paths — is NOT a
+// compile finding: it is a fact about a path, which the dry run tells apart
+// (its `unmapped_on_path` kind, a warning).
+func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node Node, fieldName string) {
+	if fieldName == "" || isRuntimeInjectedField(fieldName) {
+		return
+	}
+	switch node.(type) {
+	case *SubbotNode, *EmitNode:
+		// No `input:` surface: their `with:` reads resolve against the
+		// parent's run inputs at run time — C149's business, not an
+		// incoming-edge mapping's.
+		return
+	}
+	if rc.NodeID == w.Entry {
+		// The entry floor carries the run-level payload: keys the compiler
+		// cannot know, the same silence C034 keeps.
+		return
+	}
+	// The union of the with-keys across ALL incoming edges — a field the
+	// back-edge or a sibling path maps is mapped, whatever the order the
+	// edges are written in.
+	var incoming []string
+	mapped := false
+	for _, e := range w.Edges {
+		if e == nil || e.To != rc.NodeID {
+			continue
+		}
+		incoming = append(incoming, incomingEdgeName(e))
+		for _, dm := range e.With {
+			if dm.Key == fieldName {
+				mapped = true
+			}
+		}
+	}
+	if len(incoming) == 0 {
+		// No incoming edge: the entry shape aside, this is C016's (unreachable
+		// node's) business — nothing is sure about any path, so nothing is
+		// said here.
+		return
+	}
+	if mapped {
+		return
+	}
+	quoted := make([]string, len(incoming))
+	for i, name := range incoming {
+		quoted[i] = "`" + name + "`"
+	}
+	hint := fmt.Sprintf("map the field on an incoming edge (%s with { %s: \"{{outputs.<producer>.%s}}\" }) or read the producer's output directly ({{outputs.<producer>.%s}}); the incoming edges of %q: %s",
+		quoted[0], fieldName, fieldName, fieldName, rc.NodeID, strings.Join(quoted, ", "))
+	c.emit(SeverityWarning, DiagInputFieldNeverMapped, rc.NodeID, rc.EdgeID, rc.Span, hint,
+		"%s: reference %s reads a field %q that none of the node's incoming edges maps — empty on every path (incoming: %s)",
+		rc.Location, rc.Ref.Raw, fieldName, strings.Join(quoted, ", "))
+}
+
+// incomingEdgeName is how a diagnostic names an edge: from -> to, with the
+// condition that guards it — two parallel edges between one pair of nodes
+// (a `when` path and its sibling) must not read as one.
+func incomingEdgeName(e *Edge) string {
+	name := e.From + " -> " + e.To
+	switch {
+	case e.Condition != "":
+		cond := e.Condition
+		if e.Negated {
+			cond = "not " + cond
+		}
+		name += " (when " + cond + ")"
+	case e.ExpressionSrc != "":
+		name += " (when " + e.ExpressionSrc + ")"
+	case e.IsElse:
+		name += " (else)"
+	}
+	return name
 }
 
 // validateNodeInputRef is C034 for prompts, tool commands, and compute

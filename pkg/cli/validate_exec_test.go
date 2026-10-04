@@ -449,3 +449,51 @@ func TestRunValidate_BundlePresetsResolve(t *testing.T) {
 		t.Fatalf("a preset file the bundle cannot read is not the dry run's error: err=%v exec_error=%q", err, bad.ExecError)
 	}
 }
+
+// --exec-loop-crossings bounds how often a pass crosses one bounded loop
+// before the dry run declines its back-edge (default 3): the cut is the dry
+// run's doing (`loops_cut_short` on the pass), so a bot whose loop never
+// converges under the shapes gates green at the default --exec-timeout —
+// and lifting the dial (negative) hands the death back to the program.
+func TestRunValidate_ExecLoopCrossingsIsTheOperators(t *testing.T) {
+	inTempWorkspace(t)
+	bot := "schema v:\n  ok: bool\n\nagent w:\n  model: \"m\"\n  output: v\n\nworkflow sp:\n  worktree: none\n  sandbox: none\n  entry: w\n  budget:\n    max_iterations: 100\n  w -> w when not ok as spin(20)\n  w -> done when ok\n"
+	if err := os.WriteFile("spin.bot", []byte(bot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jp, out := jsonPrinter()
+	if err := RunValidateWith("spin.bot", jp, ValidateOptions{Exec: true}); err != nil {
+		t.Fatalf("validate --exec: %v\n%s", err, out.String())
+	}
+	var res ValidateResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("the JSON result does not decode: %v\n%s", err, out.String())
+	}
+	if res.Exec == nil {
+		t.Fatalf("no dry run:\n%s", out.String())
+	}
+	var cut bool
+	for _, p := range res.Exec.Passes {
+		for _, l := range p.LoopsCutShort {
+			if l == "spin" {
+				cut = true
+			}
+		}
+	}
+	if !cut {
+		t.Fatalf("the loop was not said cut short: %+v", res.Exec.Passes)
+	}
+	if !res.Exec.Clean() || res.Exec.Failing() {
+		t.Fatalf("the dry run's own cut must not fail the report: %s", res.Exec.Render())
+	}
+	if err := RunValidateWith("spin.bot", jsonPrinterOnly(), ValidateOptions{Strict: true}); err != nil {
+		t.Fatalf("--strict failed on the dry run's own cut: %v", err)
+	}
+	// The dial lifted: the loop runs to its own cap, the death there is the
+	// program's, and --strict fails.
+	jp, out = jsonPrinter()
+	err := RunValidateWith("spin.bot", jp, ValidateOptions{Strict: true, ExecLoopCrossings: -1})
+	if !errors.Is(err, ErrReported) {
+		t.Fatalf("--strict with the bound lifted did not fail on the program's death: %v\n%s", err, out.String())
+	}
+}

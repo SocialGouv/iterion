@@ -268,6 +268,15 @@ const (
 	DiagCollectionCompare            DiagCode = "C306" // `==`/`!=` with a collection (a list/object literal, or two statically-known string[] values): equals() never walks into a slice or map, so the comparison is constant — == false, != true (warning)
 	DiagCollectionLiteralConformance DiagCode = "C307" // a compute field fed by a collection literal its declared type cannot hold (a non-string element under string[], a collection under a scalar): fails SCHEMA_VALIDATION at run time (warning)
 
+	// #1455: the compiler can speak about an `{{input.X}}` a node body reads
+	// that no incoming edge of the node maps. A node's input is built only
+	// from the `with` mappings of its incoming edges (plus the run-level
+	// payload on the entry node), so the field is empty on every path — the
+	// certain defect the dry run met twice in the catalogue (adr-cartograph's
+	// surveyor read an empty ADR inventory in production). Fully static, no
+	// --exec.
+	DiagInputFieldNeverMapped DiagCode = "C308" // an `{{input.X}}` a node body reads (prompt, command, script, action param, expr, fail message) that no incoming edge maps, entry node aside (warning)
+
 	// `with:` mapping references and literals. C149–C152 catch shapes the
 	// runtime cannot honour in a data mapping, so a typo or a namespace
 	// mismatch fires at compile time instead of resolving to nil (or a

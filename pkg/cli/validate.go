@@ -79,6 +79,14 @@ type ValidateOptions struct {
 	// included; zero is a minute. A pass that runs out of time is said so in
 	// the report (`timed_out`), apart from a death of the program.
 	ExecTimeout time.Duration
+	// ExecLoopCrossings bounds how often a pass crosses one bounded loop
+	// before the dry run declines its back-edge (`--exec-loop-crossings`);
+	// zero is the dry run's default (dryrun.DefaultLoopCrossings), a
+	// negative value removes the bound — loops run to their cap, as the
+	// engine does. A loop cut short is said so in the report
+	// (`loops_cut_short`), and a death that follows is the bound's doing,
+	// never the program's — `clean` stays the program's word (#1307).
+	ExecLoopCrossings int
 	// Strict fails the command when the dry run's report is failing — a
 	// pass died, or a reference, shell or fixture finding stands — the
 	// switch a CI gate flips; an expression the dry run could not decide
@@ -581,11 +589,12 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				collection = bundleHandle.Dir
 			}
 			report, err := dryrun.Run(ctx, cr.Workflow, dryrun.Options{
-				Fixtures: fixtures,
-				Inputs:   inputs,
-				Path:     parsePath,
-				Children: dryRunChildren(collection),
-				Timeout:  opts.ExecTimeout,
+				Fixtures:      fixtures,
+				Inputs:        inputs,
+				Path:          parsePath,
+				Children:      dryRunChildren(collection),
+				Timeout:       opts.ExecTimeout,
+				LoopCrossings: opts.ExecLoopCrossings,
 			})
 			if err != nil {
 				result.ExecError = "dry run: " + err.Error()

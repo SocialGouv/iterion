@@ -272,13 +272,14 @@ func (d *LoopDeclined) Error() string {
 
 // CeilingReason says a loop decline's reason is the run's circumstances' —
 // the liveness monitor on unchanging outputs, the budget guard, an
-// unbounded loop out of fuel — rather than the program's: a bounded loop
-// declined at its cap (`loop_cap`) is the shape C145 names, a death when
-// nothing else matches. The one place the split is made; a reader of the
-// run's end (the dry run's ceiling) asks it here.
+// unbounded loop out of fuel, a simulation's own crossing bound
+// (SimulationLoopCrossingsDecline) — rather than the program's: a bounded
+// loop declined at its cap (`loop_cap`) is the shape C145 names, a death
+// when nothing else matches. The one place the split is made; a reader of
+// the run's end (the dry run's ceiling) asks it here.
 func CeilingReason(reason string) bool {
 	switch reason {
-	case "liveness_stall", "loop_budget_guard", "loop_out_of_fuel":
+	case "liveness_stall", "loop_budget_guard", "loop_out_of_fuel", SimulationLoopCrossingsDecline:
 		return true
 	}
 	return false

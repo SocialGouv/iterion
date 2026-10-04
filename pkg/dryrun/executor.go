@@ -41,6 +41,12 @@ const (
 	// it; the field it computed reads as a shape in turn, and the pass goes
 	// on. Not a defect: Report.Failing reads past it, Report.Clean does not.
 	KindInconclusive Kind = "inconclusive"
+	// KindUnmappedOnPath: an `{{input.X}}` the renderer kept as written
+	// whose field ANOTHER incoming edge maps — a loop's back-edge, a
+	// sibling `when` path — so it is legitimately empty on the flagged path
+	// only. A warning: Failing reads past it (the never-mapped case stays
+	// KindUnresolvedRef, and stays a --strict failure).
+	KindUnmappedOnPath Kind = "unmapped_on_path"
 )
 
 // Finding is one thing the dry run met, at a node.
@@ -124,6 +130,11 @@ type Executor struct {
 	// could not be decided in this pass: their value is a shape, invented
 	// in turn (Inconclusive).
 	undecided map[string]map[string]bool
+	// cutShort holds the bounded loops whose back-edge the SIMULATION
+	// declined past its crossing bound — the dry run's doing, never the
+	// program's (Pass.LoopsCutShort carries the names; a death that follows
+	// is a ceiling, runtime.CeilingReason).
+	cutShort map[string]bool
 }
 
 // markProduced records a node the pass saw finish.
@@ -184,6 +195,34 @@ func (x *Executor) recordTrunkEdge(from, to string) {
 			x.loopLastSrc[name] = ""
 		}
 	}
+}
+
+// recordLoopCutShort names a bounded loop the SIMULATION declined past its
+// crossing bound — the dry run's doing, never the program's. The pass
+// carries the names (Pass.LoopsCutShort); a death that follows is a
+// ceiling (runtime.CeilingReason), not the program's LOOP_EXHAUSTED.
+func (x *Executor) recordLoopCutShort(loop string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.cutShort == nil {
+		x.cutShort = map[string]bool{}
+	}
+	x.cutShort[loop] = true
+}
+
+// loopsCutShort are the loops the pass cut short, sorted for the report.
+func (x *Executor) loopsCutShort() []string {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if len(x.cutShort) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(x.cutShort))
+	for name := range x.cutShort {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // previousOutputSource names the node whose output the loop's
@@ -381,14 +420,14 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 		case n.Action != "":
 			x.add(Finding{Node: id, Kind: KindUnchecked, Where: "action", Detail: fmt.Sprintf("connector action %s is not executed by a dry run: its output is a shape", n.Action)})
 		case n.Script != "":
-			rendered := model.RenderScript(n.Script, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script"))
+			rendered := model.RenderScript(n.Script, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script", input))
 			x.shellCheck(id, "script", n.Language, rendered)
 		default:
-			rendered := model.RenderCommand(n.Command, n.CommandRefs, input, vars, td, runID, shapes, x.reporter(id, "command"))
+			rendered := model.RenderCommand(n.Command, n.CommandRefs, input, vars, td, runID, shapes, x.reporter(id, "command", input))
 			x.shellCheck(id, "command", "bash", rendered)
 		}
 		if n.Postcondition != "" {
-			rendered := model.RenderCommand(n.Postcondition, n.PostcondRefs, input, vars, td, runID, shapes, x.reporter(id, "postcondition"))
+			rendered := model.RenderCommand(n.Postcondition, n.PostcondRefs, input, vars, td, runID, shapes, x.reporter(id, "postcondition", input))
 			x.shellCheck(id, "postcondition", "bash", rendered)
 		}
 	default:
@@ -409,7 +448,7 @@ func (x *Executor) prompt(id, where, name string, input, vars map[string]any, td
 		return
 	}
 	r := &model.TemplateResolver{Vars: vars, Secrets: declaredSecrets{x.wf}, Unresolved: func(ref string) {
-		x.unresolved(id, where, ref)
+		x.unresolved(id, where, ref, input)
 	}}
 	r.Resolve(p.Body, input, td)
 }
@@ -421,12 +460,21 @@ func (x *Executor) prompt(id, where, name string, input, vars map[string]any, td
 // an item a fan-out drew from a shaped collection — is inconclusive, not a
 // defect: the render names the value and what would decide it, and the
 // verdict reads it the way it reads every undecided expression.
-func (x *Executor) unresolved(id, where, ref string) {
+// An `{{input.…}}` kept as written is classified first (inputRefFinding):
+// mapped by no incoming edge stays the unresolved_ref it always was — a
+// --strict failure; mapped by another incoming edge is the path-only kind,
+// a warning (#1455).
+func (x *Executor) unresolved(id, where, ref string, input map[string]any) {
 	if why, ok := x.inventedRenderRef(ref); ok {
 		x.add(Finding{Node: id, Kind: KindInconclusive, Where: where, Detail: fmt.Sprintf("{{%s}} renders a shape: %s", ref, why)})
 		return
 	}
-	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, x.whyUnresolved(ref))})
+	ns, rest, _ := strings.Cut(ref, ".")
+	if ns == "input" {
+		x.add(x.inputRefFinding(id, where, ref, rest, input))
+		return
+	}
+	x.add(Finding{Node: id, Kind: KindUnresolvedRef, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, x.whyUnresolved(ref)), Where: where})
 }
 
 // inventedRenderRef answers whether a rendered reference rests on a value
@@ -445,8 +493,130 @@ func (x *Executor) inventedRenderRef(ref string) (string, bool) {
 // reference the renderer resolved to nothing is a finding there. The
 // rendered text is never re-read for braces — a value may carry `{{…}}` of
 // its own, and that is the value, not a reference.
-func (x *Executor) reporter(id, where string) func(ref string) {
-	return func(ref string) { x.unresolved(id, where, ref) }
+func (x *Executor) reporter(id, where string, input map[string]any) func(ref string) {
+	return func(ref string) { x.unresolved(id, where, ref, input) }
+}
+
+// inputRefFinding classifies an `{{input.X}}` the renderer kept as written
+// (#1455), from the input the pass actually handed the node and from the
+// node's incoming edges:
+//
+//   - the top-level field is absent from the input and NO incoming edge
+//     maps it — never mapped, empty on every path: the unresolved_ref it
+//     always was, a --strict failure;
+//   - absent from the input and ANOTHER incoming edge maps it — empty on
+//     the flagged path only (a loop's back-edge, a sibling `when` path):
+//     the path-only kind, a warning;
+//   - present in the input but the reference drills deeper than the value
+//     carries — the mapping delivered, the shape under it decides: still an
+//     unresolved_ref, worded with that fact (the old wording, "the edge
+//     that reached it maps none", was false in this case).
+//
+// A node with no incoming edges at all — the entry's shape alone, or a
+// node a pass never reached — keeps the generic wording: nothing static to
+// say, the run-level inputs may carry the field.
+func (x *Executor) inputRefFinding(id, where, ref, rest string, input map[string]any) Finding {
+	path := strings.Split(rest, ".")
+	if len(path) == 0 || path[0] == "" {
+		return x.genericUnresolved(id, where, ref)
+	}
+	top := path[0]
+	if _, ok := input[top]; ok {
+		// The field arrived; the reference died deeper than the mapping
+		// delivered. inputRefFinding is also asked about {{input}} with no
+		// field at all — same arm.
+		if len(path) == 1 {
+			return x.genericUnresolved(id, where, ref)
+		}
+		return Finding{
+			Node: id, Kind: KindUnresolvedRef, Where: where,
+			Detail: fmt.Sprintf("{{%s}} resolves to nothing here: the input carries %q on this path, but no %q beneath it", ref, top, strings.Join(path[1:], ".")),
+		}
+	}
+	var mappedBy, silent []string
+	for _, e := range x.wf.Edges {
+		if e == nil || e.To != id {
+			continue
+		}
+		maps := false
+		for _, dm := range e.With {
+			if dm.Key == top {
+				maps = true
+				break
+			}
+		}
+		name := edgeName(e)
+		if maps {
+			mappedBy = append(mappedBy, name)
+		} else {
+			silent = append(silent, name)
+		}
+	}
+	switch {
+	case len(mappedBy)+len(silent) == 0:
+		// No incoming edge at all: the entry's shape or a node a pass never
+		// reached — the run-level inputs may carry the field, nothing static
+		// to say.
+		return x.genericUnresolved(id, where, ref)
+	case len(mappedBy) == 0:
+		// Never mapped by any incoming edge: empty on every path, a certain
+		// defect — the unresolved_ref it always was.
+		quoted(&silent)
+		return Finding{
+			Node: id, Kind: KindUnresolvedRef, Where: where,
+			Detail: fmt.Sprintf("{{%s}} resolves to nothing here: no incoming edge of this node maps %q — empty on every path (incoming: %s)", ref, top, strings.Join(silent, ", ")),
+		}
+	default:
+		quoted(&mappedBy)
+		if len(silent) == 0 {
+			// EVERY incoming edge maps the field: nothing structural left to
+			// name, the emptiness is temporal — the mapping edge has not
+			// delivered on this crossing (a loop's first pass, its head
+			// entered before the back-edge ever fired).
+			return Finding{
+				Node: id, Kind: KindUnmappedOnPath, Where: where,
+				Detail: fmt.Sprintf("{{%s}} is empty on this path: mapped by %s — empty before their delivery on this crossing (a loop's first pass)", ref, strings.Join(mappedBy, ", ")),
+			}
+		}
+		quoted(&silent)
+		return Finding{
+			Node: id, Kind: KindUnmappedOnPath, Where: where,
+			Detail: fmt.Sprintf("{{%s}} is empty on this path: mapped by %s; %s maps none", ref, strings.Join(mappedBy, ", "), strings.Join(silent, ", ")),
+		}
+	}
+}
+
+// quoted wraps each name in backquotes, for an edge named in a finding.
+func quoted(names *[]string) {
+	for i, n := range *names {
+		(*names)[i] = "`" + n + "`"
+	}
+}
+
+// edgeName is how a finding names an edge: from -> to, with the condition
+// that guards it — two parallel edges between one pair of nodes (a `when`
+// path and its sibling) must not read as one.
+func edgeName(e *ir.Edge) string {
+	name := e.From + " -> " + e.To
+	switch {
+	case e.Condition != "":
+		cond := e.Condition
+		if e.Negated {
+			cond = "not " + cond
+		}
+		name += " (when " + cond + ")"
+	case e.ExpressionSrc != "":
+		name += " (when " + e.ExpressionSrc + ")"
+	case e.IsElse:
+		name += " (else)"
+	}
+	return name
+}
+
+// genericUnresolved is the wording that says only what this path saw: the
+// field is absent and nothing static contradicts it.
+func (x *Executor) genericUnresolved(id, where, ref string) Finding {
+	return Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, whyUnresolvedNamespace("input"))}
 }
 
 // shellCheck holds rendered shell text to its interpreter's parser.
