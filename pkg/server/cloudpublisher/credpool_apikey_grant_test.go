@@ -72,7 +72,7 @@ func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": &ir.AgentNode{
 		BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "xai", Model: "xai/grok-4"},
 	}}}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-xai", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-xai", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestPoolTier_zaiHintUnderAnAnthropicPrefixTakesTheZaiDonor(t *testing.T) {
 		t.Run(sh.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			p, fp := zaiDonorPublisher(t, &buf)
-			creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), poolTeam), "run-zai", poolOrg, poolTeam, "requester", "bot", sh.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
+			creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), poolTeam), "run-zai", poolOrg, poolTeam, "requester", "bot", sh.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -220,7 +220,7 @@ func TestPoolTier_isNotAskedForAProviderARouteKeyFunds(t *testing.T) {
 	}}}
 	pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := p.resolveAndSealCredentials(ctx, "run-glm", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-glm", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

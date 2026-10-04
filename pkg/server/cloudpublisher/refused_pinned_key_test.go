@@ -122,7 +122,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderRefusedPinnedKey(t *testing.T)
 			}
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(t.Context(), poolTeam)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

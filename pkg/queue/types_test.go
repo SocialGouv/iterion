@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -78,8 +79,12 @@ func TestRunMessage_FallbackAcceptsObjectAndArray(t *testing.T) {
 				t.Fatalf("fallback = %+v, want %+v", msg.Fallback, tc.want)
 			}
 			for i := range tc.want {
-				if msg.Fallback[i] != tc.want[i] {
-					t.Fatalf("fallback[%d] = %+v, want %+v", i, msg.Fallback[i], tc.want[i])
+				// Field-wise: RunFallbackEntry grew a slice (On) and is no
+				// longer comparable.
+				got, want := msg.Fallback[i], tc.want[i]
+				if got.Backend != want.Backend || got.Model != want.Model || got.Provider != want.Provider ||
+					!slices.Equal(got.On, want.On) || got.Policy != want.Policy {
+					t.Fatalf("fallback[%d] = %+v, want %+v", i, got, want)
 				}
 			}
 			blob, err := json.Marshal(msg)
@@ -252,8 +257,13 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=21 carries the ambient-context policy (ADR-119): dropped, a stale
 	// runner hands a run declared or launched with `none` the operator's whole
 	// setup.
-	if SchemaVersion != 21 {
-		t.Errorf("SchemaVersion = %d, want 21 (bump intentionally)", SchemaVersion)
+	// v=22 carries the adaptive-routing ladder's On+Policy stage fields
+	// (ADR-121): dropped, a stale runner runs a policy-computed stage on
+	// the chain DEFAULT trigger set — dropping auth and
+	// transient_exhausted, the exact failures the launch-time selection
+	// exists to fall through.
+	if SchemaVersion != 22 {
+		t.Errorf("SchemaVersion = %d, want 22 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)

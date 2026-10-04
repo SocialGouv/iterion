@@ -21,6 +21,16 @@ type sharedTierPolicy struct {
 	// facade says whether a facade key (z.ai, Moonshot) may be the anthropic
 	// wire's default — see platformcfg.PlatformCredentials.FacadeDefault.
 	facade platformcfg.FacadePolicy
+	// slotSealable is the adaptive-routing whitelist (ADR-121 §1, slice 3):
+	// whether a credential SLOT may seal into the bundle — a slot is
+	// sealable when the resolved pair_order names it for some harness ("a
+	// run may occupy" the credential through any harness that can serve
+	// it; the instance follows the tier walk). The fill and restore paths
+	// ask it before sealing, so an unlisted slot is invisible to every
+	// tier — consulted by no store read that a seal would depend on. nil
+	// (no resolved policy — tests, unwired launches) admits everything:
+	// today's behavior.
+	slotSealable func(slot string) bool
 	// refusedPinned is the resolved refused_pinned_key (#1999, ADR-121):
 	// what happens to a shared-tier key refused or capped at launch whose
 	// wire family another credential holds. "forfait" (the default) keeps
@@ -52,6 +62,39 @@ func (p *Publisher) sharedTierPolicyFor(ctx context.Context) sharedTierPolicy {
 		rec = p.platformAudience.Get(ctx)
 	}
 	return sharedTierPolicy{keysFirst: rec.PrefersKeys(), facade: rec.Facade(), refusedPinned: rec.RefusedPinned()}
+}
+
+// slotOfProvider is the wire spelling of an API key provider's policy
+// slot: provider "anthropic" ↔ slot "anthropic_key".
+func slotOfProvider(prov secrets.Provider) string { return string(prov) + "_key" }
+
+// slotOfKind is the policy slot of an OAuth forfait kind: claude_code →
+// claude_forfait, codex → chatgpt_forfait.
+func slotOfKind(kind string) string {
+	switch secrets.OAuthKind(kind) {
+	case secrets.OAuthKindClaudeCode:
+		return llmroute.CredClaudeForfait
+	case secrets.OAuthKindCodex:
+		return llmroute.CredChatGPTForfait
+	}
+	return kind
+}
+
+// withSlotWhitelist returns the policy with the whitelist set. The one
+// construction site for the gate: a nil admits everything (today's
+// behavior for an unwired launch).
+func (pol sharedTierPolicy) withSlotWhitelist(pairOrder []string) sharedTierPolicy {
+	pol.slotSealable = func(slot string) bool { return llmroute.SlotSealable(pairOrder, slot) }
+	return pol
+}
+
+// sealableSlot answers the whitelist for one credential slot. A policy
+// built without the gate admits everything.
+func (pol sharedTierPolicy) sealableSlot(slot string) bool {
+	if pol.slotSealable == nil {
+		return true
+	}
+	return pol.slotSealable(slot)
 }
 
 // inOrder runs one tier's forfait and key passes in the policy's order.

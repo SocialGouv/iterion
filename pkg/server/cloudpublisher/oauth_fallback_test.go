@@ -59,7 +59,7 @@ func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecr
 func resolveBundlePinned(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string, pinned []string) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

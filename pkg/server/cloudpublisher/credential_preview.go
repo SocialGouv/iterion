@@ -45,8 +45,14 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// LLM credential, so the preview shows no candidate and reads no tier.
 	envFunded := wf != nil && model.EffectiveProviders(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback), knownPoolProviders).OnlyEnvFunded()
 	// The live resolution's own policy snapshot and tier probes (read-only
-	// store reads, like every other stage here).
+	// store reads, like every other stage here) — and the launch's
+	// RESOLVED routing policy whitelists the slots exactly as the launch
+	// will (the parity doctrine: fill, restore and preview apply the same
+	// answer).
 	x.policy = p.sharedTierPolicyFor(ctx)
+	if spec.LLMRoutePolicy != nil {
+		x.policy = x.policy.withSlotWhitelist(spec.LLMRoutePolicy.PairOrder)
+	}
 	if envFunded {
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
 	} else {

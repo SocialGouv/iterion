@@ -73,7 +73,7 @@ func TestResolveAndSealCredentials_UntrustedWorkspaceGetsNoWorkflowSecret(t *tes
 	t.Run("a trusted run resolves it", func(t *testing.T) {
 		p, runSecrets, sealer := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
-		creds, err := p.resolveAndSealCredentials(ctx, "run-trusted", "", "team", "alice", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
+		creds, err := p.resolveAndSealCredentials(ctx, "run-trusted", "", "team", "alice", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 		if err != nil {
 			t.Fatalf("resolveAndSealCredentials = %v, want nil", err)
 		}
@@ -86,7 +86,7 @@ func TestResolveAndSealCredentials_UntrustedWorkspaceGetsNoWorkflowSecret(t *tes
 	t.Run("a fork-trust run does not", func(t *testing.T) {
 		p, runSecrets, sealer := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
-		creds, err := p.resolveAndSealCredentials(ctx, "run-fork", "", "team", "alice", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrustFork, nil)
+		creds, err := p.resolveAndSealCredentials(ctx, "run-fork", "", "team", "alice", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrustFork, nil, nil)
 		if err != nil {
 			t.Fatalf("resolveAndSealCredentials = %v, want nil (an OPTIONAL secret is withheld, not an error)", err)
 		}
@@ -103,7 +103,7 @@ func TestResolveAndSealCredentials_UntrustedWorkspaceGetsNoWorkflowSecret(t *tes
 	t.Run("an unrecognised trust value does not either", func(t *testing.T) {
 		p, runSecrets, sealer := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
-		creds, err := p.resolveAndSealCredentials(ctx, "run-unknown", "", "team", "alice", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrust("vendored"), nil)
+		creds, err := p.resolveAndSealCredentials(ctx, "run-unknown", "", "team", "alice", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrust("vendored"), nil, nil)
 		if err != nil {
 			t.Fatalf("resolveAndSealCredentials = %v, want nil", err)
 		}
@@ -120,7 +120,7 @@ func TestResolveAndSealCredentials_UntrustedWorkspaceGetsNoWorkflowSecret(t *tes
 	t.Run("a REQUIRED secret makes the launch fail loudly", func(t *testing.T) {
 		p, _, _ := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
-		_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team", "alice", "", wf(false), nil, nil, model.ModelOverrides{}, nil, store.RunTrustFork, nil)
+		_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team", "alice", "", wf(false), nil, nil, model.ModelOverrides{}, nil, store.RunTrustFork, nil, nil)
 		if !errors.Is(err, errUntrustedRequiresSecrets) {
 			t.Fatalf("resolveAndSealCredentials = %v, want errUntrustedRequiresSecrets — a required secret that cannot be supplied must stop the launch, not start a bot with it unset", err)
 		}
