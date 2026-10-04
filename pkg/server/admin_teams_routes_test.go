@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
 
@@ -58,11 +60,35 @@ func TestAdminSetTeamRunnerPool(t *testing.T) {
 		return w
 	}
 
+	s.auditStore = audit.NewMemoryStore()
 	if w := call(`{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
 		t.Fatalf("map: code=%d body=%s", w.Code, w.Body.String())
 	}
 	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.RunnerPool != "honorabilite" {
 		t.Fatalf("map did not stick: %+v %v", tm, err)
+	}
+	// The trail lands in BOTH scopes (rva-2 F3: both calls could be deleted
+	// and the suite stayed green): the tenant row keyed by the team, the org
+	// mirror keyed by the org — each carrying the previous value.
+	// The insert rides goSafe (async) — poll for the rows instead of
+	// asserting on the tick.
+	var rows, orgRows []audit.Event
+	for i := 0; i < 100; i++ {
+		rows, _ = s.auditStore.ListByTenant(context.Background(), "t1", audit.Page{Action: "team.runner_pool_set"})
+		orgRows, _ = s.auditStore.ListByTenant(context.Background(), "o1", audit.Page{Action: "team.runner_pool_set"})
+		if len(rows) == 1 && len(orgRows) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("tenant trail: want 1 row, got %d", len(rows))
+	}
+	if len(orgRows) != 1 {
+		t.Fatalf("org mirror: want 1 row, got %d", len(orgRows))
+	}
+	if got := orgRows[0].Meta["previous"]; got != "" {
+		t.Fatalf("the trail must answer what the team WAS, got previous=%v", got)
 	}
 
 	if w := call(`{"runner_pool":""}`); w.Code != http.StatusOK {

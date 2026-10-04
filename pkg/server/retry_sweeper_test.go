@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -581,12 +582,30 @@ func newRetrySweeperServer(t *testing.T, st store.RunStore, resumer runResumer) 
 // (named reason) instead of re-arming it into a queued→failed flap until the
 // attempt budget burns (rva-2 F3). Red when the ErrPoolRemapped branch is
 // dropped again.
+type countingUsage struct{ releases int }
+
+func (c *countingUsage) AllowRun(context.Context, orgusage.Subject, time.Time, int, int64) (orgusage.DenyReason, error) {
+	return orgusage.DenyNone, nil
+}
+func (c *countingUsage) AddSpend(context.Context, orgusage.Subject, time.Time, float64, int64, int64, int64) error {
+	return nil
+}
+func (c *countingUsage) ReleaseRun(context.Context, orgusage.Subject, time.Time) error {
+	c.releases++
+	return nil
+}
+func (c *countingUsage) Usage(context.Context, orgusage.Subject, time.Time) (orgusage.MonthlyUsage, error) {
+	return orgusage.MonthlyUsage{}, nil
+}
+
 func TestSweepDueRetries_APoolRemapAbandonsInsteadOfReArming(t *testing.T) {
 	st := newFakeRetryStore()
 	st.claimWins["run-a"] = true
 	resumer := &fakeResumer{failing: fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused",
 		cloudpublisher.ErrPoolRemapped, "run-a", "old-pool", "new-pool")}
+	usage := &countingUsage{}
 	s := newRetrySweeperServer(t, st, resumer)
+	s.orgUsage = usage
 
 	at := time.Now().UTC().Add(-time.Minute)
 	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-a", at)}}, resumer, time.Now().UTC())
@@ -596,5 +615,12 @@ func TestSweepDueRetries_APoolRemapAbandonsInsteadOfReArming(t *testing.T) {
 	}
 	if len(st.rearmed) != 0 {
 		t.Fatalf("a pool remap must never be re-armed: %v", st.rearmed)
+	}
+	// Exactly ONE slot refund: the refusal leaves before any publish, so
+	// RunMayHaveStarted is false and the RunMayHaveStarted refund fires —
+	// a second rollback in the pool branch would $inc the org counter down
+	// twice (non-idempotent). Red when the double rollback returns.
+	if usage.releases != 1 {
+		t.Fatalf("ReleaseRun called %d times, want exactly 1", usage.releases)
 	}
 }

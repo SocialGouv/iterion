@@ -32,7 +32,7 @@ func TestUpdateTeamHasNoProductionCallers(t *testing.T) {
 			return nil
 		}
 		isTest := strings.HasSuffix(path, "_test.go")
-		slashed := strings.TrimPrefix(filepath.ToSlash(path), "../")
+		slashed := strings.TrimPrefix(filepath.ToSlash(path), "../../")
 		inIdentity := slashed == "pkg/identity" || strings.HasPrefix(slashed, "pkg/identity/")
 		if isTest || inIdentity {
 			return nil
