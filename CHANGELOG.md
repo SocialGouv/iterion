@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.232.0](https://github.com/SocialGouv/iterion/compare/v3.231.0...v3.232.0) (2026-10-04)
+
+### Features
+
+* **llmroute:** the shipped-bot and binding levels of the adaptive-routing policy ([#2126](https://github.com/SocialGouv/iterion/issues/2126) slice 2) ([#2164](https://github.com/SocialGouv/iterion/issues/2164)) ([5c8c345](https://github.com/SocialGouv/iterion/commit/5c8c345d2504d59f43303adcdbd46511a2d4f626))
+
+    <details><summary>why</summary>
+
+    The bot manifest gains the author's `routing:` block — declared as a manifest-local RoutingSpec following the RetrySpec convention, so the manifest's YAML surface stays independent of the shared struct's evolution — validated beside retry at decode: a typo fails the load, not a run days later. The binding level rides the launch-surface provisioning records, mirroring each surface's REAL retry coverage: the schedule row (full write path: create validates, update uses the platform's RawMessage…
+
+    </details>
+
 ## [3.231.0](https://github.com/SocialGouv/iterion/compare/v3.230.0...v3.231.0) (2026-10-03)
 
 ### Features
