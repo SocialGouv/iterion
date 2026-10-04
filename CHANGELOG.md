@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.232.1](https://github.com/SocialGouv/iterion/compare/v3.232.0...v3.232.1) (2026-10-04)
+
+### Bug Fixes
+
+* **bundle:** promote root-level sibling entries, bound the upward bundle search at the repository ([#1367](https://github.com/SocialGouv/iterion/issues/1367)) ([#2169](https://github.com/SocialGouv/iterion/issues/2169)) ([7eb84fd](https://github.com/SocialGouv/iterion/commit/7eb84fd1f5240c877c49531831074b10a2d9b38d))
+
+    <details><summary>why</summary>
+
+    A root-level sibling .bot opened as a file (iterion validate bots/golden-master/extend.bot — the bundle README's documented invocation) compiled bare: no manifest, no skills, no C250/C252 — the floor in the manifest simply did not apply. And a loose .bot could be attributed to any marked ancestor above its repository (a ~/.claude carrying a skills/ directory took the floor of a file under an unbundled repo).
+
+    </details>
+
 ## [3.232.0](https://github.com/SocialGouv/iterion/compare/v3.231.0...v3.232.0) (2026-10-04)
 
 ### Features
