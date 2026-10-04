@@ -1639,12 +1639,18 @@ func adoptedChild(t *testing.T, ctx context.Context, st store.RunStore, id, hash
 }
 
 // shareRecordRefused refuses a child's sandbox_shared appends: the first
-// times of them, every one when times is negative.
+// times of them, every one when times is negative. cancel, when set, fires
+// once the cancelAfter-th refusal is recorded: a test ends the write budget
+// on the REFUSAL COUNT — an ordering witness — rather than on a wall-clock
+// deadline an oversubscribed merge-queue runner can consume in a single
+// attempt (#2181).
 type shareRecordRefused struct {
 	store.RunStore
-	mu      sync.Mutex
-	times   int
-	refused int
+	mu          sync.Mutex
+	times       int
+	refused     int
+	cancelAfter int
+	cancel      context.CancelFunc
 }
 
 func (s *shareRecordRefused) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
@@ -1652,6 +1658,9 @@ func (s *shareRecordRefused) AppendEvent(ctx context.Context, runID string, evt 
 	refuse := evt.Type == store.EventSandboxShared && (s.times < 0 || s.refused < s.times)
 	if refuse {
 		s.refused++
+		if s.cancel != nil && s.refused >= s.cancelAfter {
+			s.cancel()
+		}
 	}
 	s.mu.Unlock()
 	if refuse {
@@ -1684,9 +1693,17 @@ func TestAdoption_writesItsLineageRecordOrDoesNotAdopt(t *testing.T) {
 		}
 	})
 	t.Run("a store that refuses it throughout", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		// The budget ends on the SECOND refusal, not on a wall-clock window:
+		// the store itself cancels the run's ctx as it records that refusal,
+		// so the adoption fails by name with refused >= 2 on a machine of
+		// any speed. The 200 ms deadline this replaces let the first attempt
+		// consume the whole window when the merge queue starved the runner,
+		// and refused stayed 1 (#2181). What reddens the test: emitRecord
+		// giving up after ONE try (refused == 1), or the adoption proceeding
+		// without the record (the ReadDir check below).
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		st := &shareRecordRefused{RunStore: tmpStore(t), times: -1}
+		st := &shareRecordRefused{RunStore: tmpStore(t), times: -1, cancelAfter: 2, cancel: cancel}
 		parent := &podRun{scratch: t.TempDir()}
 		_, err := adoptedChild(t, ctx, st, id, "", parent)
 		if err == nil || !strings.Contains(err.Error(), "could not be written") || st.refused < 2 {

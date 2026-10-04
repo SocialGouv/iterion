@@ -169,11 +169,28 @@ func TestRunWithPhaseTimeout_OuterCancelIsNotMisreportedAsPhaseTimeout(t *testin
 // context.DeadlineExceeded via errors.Is even when the callee's own error
 // is neither — a `%w` on the inner cause alone hides the deadline shape
 // from the setup classifier.
+//
+// The callee stands in for one whose helpers do not respect ctx: it answers
+// the phase's cancellation with its OWN error. The property under test is
+// an ORDERING — the phase deadline has OBSERVABLY struck (pctx's Done is
+// closed) before fn returns — not a wall-clock ratio ("fn slept 80 ms
+// against a 30 ms deadline, so the timer surely fired"). The sleep shape
+// ejected PRs from the merge queue: under -race on an oversubscribed
+// runner the runtime's timer goroutine can be scheduled AFTER fn's return,
+// the wrapper then reads phaseCtx.Err() == nil and skips the wrap (#2178).
+// The 30 ms only ARMS the scenario; nothing asserts on elapsed time. What
+// reddens the test: dropping ErrPhaseTimeout (or context.DeadlineExceeded)
+// from the wrap.
 func TestRunWithPhaseTimeout_WrapsPhaseTimeoutSentinelViaErrorsIs(t *testing.T) {
 	sentinel := errors.New("kubectl-exec pipe stalled")
-	err := RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", testPhaseEnv, 30*time.Millisecond, func(context.Context) error {
-		// Ignores pctx: a callee whose helpers do not respect ctx.
-		time.Sleep(80 * time.Millisecond)
+	err := RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", testPhaseEnv, 30*time.Millisecond, func(pctx context.Context) error {
+		select {
+		case <-pctx.Done():
+			// The deadline struck while the callee ran; it returns its own
+			// error anyway — the wrapper must still classify the shape.
+		case <-time.After(30 * time.Second):
+			t.Error("the phase context never fired its deadline — the bound itself is broken")
+		}
 		return sentinel
 	})
 	if err == nil {
