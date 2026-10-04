@@ -101,6 +101,26 @@ func TestSubmitLaunch_AnUnreadablePoolMappingRefusesTheLaunch(t *testing.T) {
 	}
 }
 
+// A team row that does not exist is a DEFINITIVE answer (the mapping lives
+// on the row — absent row, vacuously unmapped): the launch proceeds on the
+// shared default. This is the CI smoke's shape. Red when the resolver
+// refuses on ErrNotFound like any other store error.
+func TestSubmitLaunch_AnUnknownTeamLaunchesUnmapped(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	var published []*queue.RunMessage
+	p := poolTestPublisher(st, fakePoolTeamResolver{err: identity.ErrNotFound}, &published)
+	ctx, wf, cs := poolLaunch()
+	if _, err := p.SubmitLaunch(ctx, "run-unknown-team", runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}, wf, cs); err != nil {
+		t.Fatalf("an unknown team is definitively unmapped, the launch must proceed: %v", err)
+	}
+	if len(published) != 1 || published[0].RunnerPool != "" {
+		t.Fatalf("the unknown-team launch must stamp the shared default: %+v", published)
+	}
+}
+
 // An unmapped team is untouched: the launch proceeds and both carriers
 // stamp the empty (shared default) pool.
 func TestSubmitLaunch_AnUnmappedTeamStillLaunches(t *testing.T) {

@@ -323,6 +323,13 @@ func (p *Publisher) runnerPoolForTeam(ctx context.Context, teamID string) (strin
 		return "", nil
 	}
 	t, err := p.identity.GetTeam(ctx, teamID)
+	if errors.Is(err, identity.ErrNotFound) {
+		// A definitive answer: the team row does not exist, so it cannot be
+		// mapped — the shared default applies. (The CI smoke launches under
+		// exactly this shape.) A store that cannot ANSWER is the different
+		// case below, and it refuses.
+		return "", nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("cloudpublisher: resolve runner pool for team %s: %w (refusing the launch — the pool mapping must be known, never guessed)", teamID, err)
 	}
