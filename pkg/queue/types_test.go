@@ -530,7 +530,7 @@ func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
 	// The envelope mirrors the pool so a version-rejecting consumer can park
 	// the message against the right pool without decoding the payload.
 	base.RunnerPool = "honorabilite"
-	b, err = json.Marshal(base)
+	b, err := json.Marshal(base)
 	if err != nil {
 		t.Fatal(err)
 	}
