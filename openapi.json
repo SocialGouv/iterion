@@ -1076,6 +1076,9 @@
           "bot_id": {
             "type": "string"
           },
+          "llm_routing": {
+            "$ref": "#/components/schemas/Policy"
+          },
           "source": {
             "$ref": "#/components/schemas/CredentialPreviewSource"
           }

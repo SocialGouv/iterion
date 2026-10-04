@@ -608,6 +608,7 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 	// inversion, session continuity) are not re-judged here — a stage
 	// refused by one of them after its park was deleted converts the
 	// durable retry into a bare failure. Delivery-1 boundary.
+	ovs := modelOverridesFromMsg(msg.ModelOverrides)
 	for _, st := range stages {
 		if st.Backend == delegate.BackendClaudeCode {
 			continue // the anthropic wire itself: no escape
@@ -626,12 +627,20 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 			if !ok || nn.NodeKind() != ir.NodeAgent || len(nn.GetFallbacks()) > 0 {
 				continue
 			}
-			// A node with no model of its own has NO ladder: the
-			// materializer drops its stages (StageModel maps nothing
-			// modelless), so it cannot escape off the capped wire — the
-			// park stands. A DECLARED model that maps nothing likewise
-			// drops the stage (named there) and is no escape.
+			// The EFFECTIVE model — the override the launch stamped wins
+			// over the declared field, exactly as the materializing
+			// screen's own nodeModel callback reads it. A node with no
+			// model of its own has NO ladder: the materializer drops its
+			// stages (StageModel maps nothing modelless), so it cannot
+			// escape off the capped wire — the park stands. A model that
+			// maps nothing likewise drops the stage (named there) and is
+			// no escape. (R27b623: the declared field alone disagreed
+			// with the materializer whenever an override decided.)
+			ov := ovs.ForNode(nn.NodeID(), nn.NodeKind())
 			nodeModel := nn.GetLLMFields().Model
+			if ov.Model != "" {
+				nodeModel = ov.Model
+			}
 			if _, mappable := llmroute.StageModel(st.Backend, st.Provider, nodeModel); !mappable {
 				continue
 			}

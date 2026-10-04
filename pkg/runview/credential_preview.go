@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -19,6 +20,11 @@ type CredentialPreviewSource struct {
 type CredentialPreviewRequest struct {
 	Source CredentialPreviewSource `json:"source"`
 	BotID  string                  `json:"bot_id,omitempty"`
+	// LLMRouting is the RUN level of the adaptive-routing policy the
+	// caller is about to launch with (ADR-121) — folded as the HEAD
+	// Launcher layer so the preview's whitelist answers the launch the
+	// operator shapes, not the launch the defaults would make. Optional.
+	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
 }
 
 type CredentialPreviewContext struct {
