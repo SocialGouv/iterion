@@ -192,7 +192,7 @@ func TestResolveAndStartSandbox_EveryAutoDegradeSaysFileSecretsAreDropped(t *tes
 		{"no container-runtime driver", "use-temp-dir"},
 		// The resolver's own obstacle. Reachable from an embedder that
 		// passes no repo root; `iterion run` / studio / the runner
-		// always resolve one (engineRepoRoot).
+		// always resolve one (EngineRepoRoot).
 		{"no repo root", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -1423,6 +1423,15 @@ type Config struct {
 	// spawn a sibling sandbox pod there. SandboxDefault cannot express this
 	// (a workflow block outranks the default tier).
 	SandboxOverride string
+
+	// SandboxDrivers is the driver set the no-sandbox file-secret gate's
+	// sandbox probe (runtime.RunWillBeSandboxed) selects from. Nil — every
+	// production deployment — means the shipped registry, the same default
+	// the engine selects its driver from (runtime.WithSandboxDrivers is the
+	// engine-side twin of this seam). Set it in tests to pin the host's
+	// driver answer, which is otherwise whatever this machine happens to
+	// have installed.
+	SandboxDrivers map[string]sandbox.DriverConstructor
 }
 
 // Runner is the long-running consumer loop.
@@ -2520,11 +2529,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
 	}
 
-	// No-sandbox file secrets: a workflow with `as: file` secrets but no
-	// sandbox (the noop driver can't mount) needs them materialized as 0600
-	// files at their mount paths in the runner pod so the in-pod agent can
-	// read them — e.g. review-pr's forge_token for glab. Removed on return.
-	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf)
+	// No-sandbox file secrets: a workflow with `as: file` secrets whose run
+	// will NOT execute in a container — no sandbox declared, an explicit
+	// override none, or a `sandbox: auto` this host degrades to unsandboxed
+	// — needs them materialized as 0600 files at their mount paths in the
+	// runner pod so the in-pod agent can read them — e.g. review-pr's
+	// forge_token for glab. Removed on return.
+	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf, runtime.EngineRepoRoot(workDir))
 	if rm != nil {
 		// Always schedule cleanup, even on error: materialize returns a
 		// non-nil remover covering the files it wrote BEFORE failing, so
@@ -2689,6 +2700,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// runner that is itself the isolation boundary beats a bot's inline
 		// sandbox block, so the run executes directly in the runner pod.
 		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
+		// Engine-side twin of Config.SandboxDrivers: the gate's probe and
+		// the engine select from the same set. Nil is a no-op (shipped
+		// registry) on both sides.
+		runtime.WithSandboxDrivers(r.cfg.SandboxDrivers),
 		// The launch-time decision, carried on the wire (schema v7). Without
 		// it the pod resolves the guard from the workflow and its own (empty)
 		// environment, so an operator's `--loop-budget-guard off` on a bot

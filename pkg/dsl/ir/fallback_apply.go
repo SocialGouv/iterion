@@ -43,14 +43,19 @@ const RunFallbackName = "run-fallback"
 //     declared tools would fail exactly when it is needed. A refused
 //     stage is skipped and the caller warns; later stages remain eligible.
 //
-// sandboxed reports whether this run resolves to an ACTIVE sandbox.
-// The caller computes it with runtime.WorkflowSandboxActive — the same
-// pickMode precedence (CLI-strength override → workflow block → global
-// default) the engine itself applies — because the IR cannot know the
-// deployment's tiers, and a hand-rolled resolution here already lied
-// once: it honoured a node-level `sandbox:` tier the engine does not
-// have (one sandbox per run), advertising an escape hatch that
-// re-created the exact dispatch failure it claimed to prevent.
+// sandboxed reports whether this run will EXECUTE inside a sandbox
+// container. The caller computes it with runtime.RunWillBeSandboxed —
+// the same pickMode precedence (CLI-strength override → workflow block →
+// global default) AND the same driver probe the engine itself applies —
+// because the IR cannot know the deployment's tiers, and a hand-rolled
+// resolution here already lied once: it honoured a node-level `sandbox:`
+// tier the engine does not have (one sandbox per run), advertising an
+// escape hatch that re-created the exact dispatch failure it claimed to
+// prevent. The driver probe is the second half of the same honesty: a
+// mode-only reading refuses codex on a `sandbox: auto` run the host
+// degraded to unsandboxed — a run where codex can in fact run (#1564),
+// and where the delegate's own guard (task.Sandbox.Driver()) would
+// allow it.
 //
 // vars carries the launch's `--var` overrides, so a node whose
 // `backend:` is a `{{vars.<name>}}` reference is screened by what THIS

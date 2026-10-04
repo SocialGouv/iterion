@@ -247,9 +247,11 @@ func TestParseRunFallbackFlag(t *testing.T) {
 // A codex stage is only takeable where the node will run unsandboxed:
 // the codex CLI hard-errors on any non-noop sandbox driver at dispatch,
 // so taking the stage there would fail exactly when the chain is needed.
-// The caller resolves sandboxed-ness through runtime.WorkflowSandboxActive
-// (the engine's own precedence); here the IR contract is pinned on the
-// bool: sandboxed refuses, unsandboxed keeps, claw is untouched.
+// The caller resolves sandboxed-ness through runtime.RunWillBeSandboxed
+// (the engine's own precedence AND driver probe — a mode-only reading
+// refused codex on runs the host had degraded to unsandboxed, #1564);
+// here the IR contract is pinned on the bool: sandboxed refuses,
+// unsandboxed keeps, claw is untouched.
 func TestApplyRunFallback_codexRefusedWhenSandboxed(t *testing.T) {
 	route := []Fallback{{Backend: "codex", Model: "gpt-5.4"}}
 

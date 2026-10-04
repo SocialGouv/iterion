@@ -29,7 +29,7 @@ func TestMaterializeFileSecretsNoSandboxRejectsOutOfTreeMountPath(t *testing.T) 
 		// Sandbox nil → the no-sandbox materialize path runs.
 	}
 
-	written, cleanup, err := r.materializeFileSecretsNoSandbox(ctx, wf)
+	written, cleanup, err := r.materializeFileSecretsNoSandbox(ctx, wf, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,11 +46,19 @@ func TestMaterializeFileSecretsNoSandboxRejectsOutOfTreeMountPath(t *testing.T) 
 
 // TestMaterializeFileSecretsNoSandbox_GateShapes pins the no-op gates in
 // front of the host-side materialisation: no workflow, no file secrets, an
-// active resolved sandbox (which mounts secrets into the container
-// instead), and a file secret with no resolved credential value all yield
-// (nil, nil, nil) — nothing touches the pod filesystem.
+// active resolved sandbox with a driver to run it (which mounts secrets
+// into the container instead), and a file secret with no resolved
+// credential value all yield (nil, nil, nil) — nothing touches the pod
+// filesystem. The runner pins a working driver set so the sandbox gate's
+// answer does not depend on what this machine has installed; the
+// driverless-host half lives in
+// TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites.
 func TestMaterializeFileSecretsNoSandbox_GateShapes(t *testing.T) {
-	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelError, os.Stderr)}}
+	t.Setenv("ITERION_MODE", "local") // pin the factory's preference order to docker,podman,noop — CI runs on kubernetes pods (HostCloud prefers kubernetes,noop)
+	r := &Runner{cfg: Config{
+		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
+		SandboxDrivers: workingSandboxRegistry(),
+	}}
 	credCtx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		Generic: map[string]string{"forge_token": "tok"},
 	})
@@ -65,9 +73,10 @@ func TestMaterializeFileSecretsNoSandbox_GateShapes(t *testing.T) {
 		{"env-only secret", credCtx, &ir.Workflow{Secrets: map[string]*ir.Secret{
 			"forge_token": {Name: "forge_token", As: "env"},
 		}}},
-		// The RESOLVED sandbox decision gates — a workflow-declared active
-		// sandbox mounts file secrets into the container, so the host-side
-		// materialisation must not run even though the value resolves.
+		// The RESOLVED, driver-aware sandbox decision gates — a
+		// workflow-declared active sandbox on a host with a driver mounts
+		// file secrets into the container, so the host-side materialisation
+		// must not run even though the value resolves.
 		{"active sandbox", credCtx, &ir.Workflow{
 			Sandbox: &ir.SandboxSpec{Mode: "auto"},
 			Secrets: map[string]*ir.Secret{"forge_token": {Name: "forge_token", As: "file"}},
@@ -76,9 +85,12 @@ func TestMaterializeFileSecretsNoSandbox_GateShapes(t *testing.T) {
 			"forge_token": {Name: "forge_token", As: "file"},
 		}}},
 	}
+	// Not a git repo: mode=auto resolves its spec through the default
+	// image, the same path the engine takes for such a workspace.
+	repoRoot := t.TempDir()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			written, cleanup, err := r.materializeFileSecretsNoSandbox(c.ctx, c.wf)
+			written, cleanup, err := r.materializeFileSecretsNoSandbox(c.ctx, c.wf, repoRoot)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

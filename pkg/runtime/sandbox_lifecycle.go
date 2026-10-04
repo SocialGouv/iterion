@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
@@ -15,6 +16,40 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// sandboxDriverForRun resolves the run's sandbox spec and selects its
+// driver exactly as [resolveAndStartSandbox] will at run start, without
+// preparing or starting anything. It is the ONE implementation of "will
+// this run be sandboxed": predictAttachmentsDir forecasts through it,
+// and [RunWillBeSandboxed] answers the launch-time consumers (in-pod
+// file-secret delivery, the codex fallback screen) from it — before it
+// existed each side of that question had its own reading and they
+// disagreed precisely on the degraded case (#1564).
+//
+// A (nil, nil) answer means the run settles WITHOUT a sandbox: nothing
+// active was requested, or — the case that motivated the helper —
+// resolveSandboxSpec degraded mode=auto (not a git repo, unreadable
+// devcontainer with no default image), mirroring the (nil, nil)
+// resolveAndStartSandbox returns on the same inputs. A (nil, err)
+// answer covers the selection failure resolveAndStartSandbox turns
+// into the mode split: auto degrades to the host, inline refuses.
+// What either answer MEANS is the caller's policy, as it is the
+// engine's.
+func sandboxDriverForRun(
+	wf *ir.Workflow,
+	repoRoot, cliOverride, globalDefault, defaultImage string,
+	drivers map[string]sandbox.DriverConstructor,
+) (sandbox.Driver, error) {
+	spec, _, _, err := resolveSandboxSpec(wf, repoRoot, cliOverride, globalDefault, defaultImage)
+	if err != nil || spec == nil || !spec.Mode.IsActive() {
+		return nil, err
+	}
+	driver, err := selectSandboxDriver(spec, nil, drivers)
+	if err != nil {
+		return nil, err
+	}
+	return driver, nil
+}
 
 // selectSandboxDriver picks the driver from the given driver set — nil
 // means the shipped registry, which is what every production caller
