@@ -401,11 +401,12 @@ func (s *Server) mergeBotSourcePrompts(r *http.Request, f *ast.File, editorPath 
 	if len(parts) < 3 || parts[0] == "" || parts[1] == "" {
 		return
 	}
-	// Only the bundle's entrypoint gets its prompts, as on disk
-	// (bundle.DirForMainBot fires on main.bot alone): a child .bot the
-	// bundle ships beside it compiles as a bare file at launch, so
-	// validating it with the parent's prompts in scope would be a green
-	// the run does not deliver.
+	// Only the bundle's entrypoint gets its prompts: a DB-stored bot's
+	// launch rides the stored bundle (launchLB), where validating a child
+	// .bot with the parent's prompts in scope would be a green the run
+	// does not deliver. On DISK a sibling .bot now promotes to its bundle
+	// (bundle.DirForEntry, #1367) — whether stored-bot siblings should get
+	// the same parity is an open question, tracked separately.
 	if parts[2] != "main.bot" {
 		return
 	}

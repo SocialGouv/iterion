@@ -966,9 +966,10 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		}
 		return raw, h, iterPath, display, opened, cleanup, nil
 	}
-	// A bare main.bot whose parent is a bundle was promoted to that bundle
-	// by openBundleOrFile (the skills/ mirrored into .claude/skills/, the
-	// prompts/*.md merged) — the same promotion every other surface gets.
+	// A root-level entry of a bundle (main.bot or a sibling of it) was
+	// promoted to that bundle by openBundleOrFile (the skills/ mirrored
+	// into .claude/skills/, the prompts/*.md merged) — the same promotion
+	// every other surface gets; what reaches this line is a loose file.
 	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved)
 	if compileErr != nil {
 		return nil, "", "", "", nil, cleanup, compileErr

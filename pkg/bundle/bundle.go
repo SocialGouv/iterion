@@ -27,6 +27,9 @@ import (
 	"syscall"
 
 	"go.yaml.in/yaml/v2"
+
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // Layout directory names. A bundle resolves each by convention at its
@@ -293,6 +296,17 @@ func DirForMainBot(path string) string {
 // whose main.bot lives elsewhere) is not a bundle, and a loose file under
 // it is nobody's. Every walk-up shares this one answer — OpenForWorkflow
 // here, `iterion dsl migrate` when it raises a bundle's floor.
+//
+// The repository root bounds the search: the bundle a file belongs to
+// lives in the same repository, so the walk checks the root and stops.
+// Past it the answer was whatever a directory of the operator's happened
+// to mark — a skills/-carrying agent home took the floor of a loose file
+// under an unbundled repository (#1367). A nested repository (a
+// submodule, a linked worktree) is its own boundary: the file belongs to
+// the inner one. A tree with no .git at all walks on, to the filesystem
+// root. The boundary shares ambient.RepoRoot's .git rule: an EMPTY or
+// non-pointer .git file (a corrupt checkout) is no boundary, and the walk
+// crosses it — the pre-#1367 misattribution survives that one shape.
 func OwningDir(path string) string {
 	if path == "" {
 		return ""
@@ -306,11 +320,110 @@ func OwningDir(path string) string {
 		if info, statErr := os.Stat(main); statErr == nil && info.Mode().IsRegular() && DirForMainBot(main) != "" {
 			return dir
 		}
+		if ambient.IsRepoRoot(dir) {
+			return ""
+		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return ""
 		}
 	}
+}
+
+// DirForEntry returns the bundle directory a root-level workflow file is an
+// entry of — the file's own directory when it holds an EXISTING main.bot
+// the markers (DirForMainBot) make a bundle — or "" when it is no entry: a
+// loose file, a non-.bot file, or a file under the bundle's subdirectories
+// (lib/, prompts/, …), which is a fragment of its unit, not an entry.
+//
+// Where DirForMainBot answers for main.bot alone, written or not (a
+// draft), DirForEntry answers for the file on disk under any name, so a
+// bundle's sibling entries — the extend.bot or sync-harness.bot a README
+// names next to main.bot (#1367) — open with the bundle the way main.bot
+// does, and the file and directory forms of one bundle give one verdict.
+func DirForEntry(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	if !workflowfile.IsWorkflowFile(abs) {
+		return ""
+	}
+	// An existing candidate must be the file itself: a DIRECTORY named
+	// *.bot is no entry. A candidate not on disk answers as given — the
+	// twin of a draft, as DirForMainBot answers for a draft main.bot.
+	if info, statErr := os.Stat(abs); statErr == nil && !info.Mode().IsRegular() {
+		return ""
+	}
+	parent := filepath.Dir(abs)
+	main := filepath.Join(parent, MainBotFile)
+	info, err := os.Stat(main)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	if DirForMainBot(main) == "" {
+		return ""
+	}
+	return parent
+}
+
+// EntryForCopy returns the bundle-root entry a store-materialised COPY of
+// one of dir's workflows stands for, or "". The server's inline-source
+// cache names a copy `<12 hex>-<entry basename>` (materializeInlineSource;
+// a studio launch records that copy as the run's FilePath — the bytes it
+// launched — and the bundle as BundlePath): the copy lies OUTSIDE dir, and
+// its basename with the hash prefix stripped names the entry at the root.
+// main.bot's own copy resolves to main.bot like any entry's; a path inside
+// dir (the file itself, not a copy), a basename the pattern does not
+// shape, and a rest that is no existing regular .bot of the bundle return
+// "". One helper for every surface that maps a recorded copy back to its
+// entry — resume compiles it, the studio's run view reads it.
+func EntryForCopy(path, dir string) string {
+	if path == "" || dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	if within(abs, root) {
+		return "" // inside the bundle it is the file, not a copy of one
+	}
+	base := filepath.Base(abs)
+	if len(base) <= 13 || base[12] != '-' || !isHex12(base[:12]) {
+		return ""
+	}
+	rest := base[13:]
+	if !workflowfile.IsWorkflowFile(rest) {
+		return ""
+	}
+	candidate := filepath.Join(root, rest)
+	if info, statErr := os.Stat(candidate); statErr != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return candidate
+}
+
+// isHex12 reports whether s is exactly twelve lowercase hex digits — the
+// prefix materializeInlineSource stamps on a copy's basename.
+func isHex12(s string) bool {
+	if len(s) != 12 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if ('0' > c || c > '9') && ('a' > c || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // OpenForWorkflow opens the bundle an arbitrary workflow file belongs to

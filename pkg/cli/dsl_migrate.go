@@ -79,10 +79,12 @@ var ErrWouldChange = errors.New("dsl migrate: a file would change")
 // MigrateDSL migrates every `.bot` under opts.Paths to the target profile
 // (pkg/dsl/migrate) and raises the engine floor of every bundle that OWNS a
 // migrated file — the bundle a child under `kids/` belongs to, not the
-// directory beside it. Every file is planned and proven before any is
-// written: one refusal anywhere, and nothing is written anywhere, so a run
-// never leaves a tree half-migrated. Nothing is written under DryRun or
-// Check either.
+// directory beside it, and never a directory above the file's repository
+// (bundle.OwningDir stops at the repository root: a marked directory of
+// the operator's outside it is no file's bundle). Every file is planned
+// and proven before any is written: one refusal anywhere, and nothing is
+// written anywhere, so a run never leaves a tree half-migrated. Nothing
+// is written under DryRun or Check either.
 func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 	var res MigrateDSLResult
 	floor, err := resolveFloor(opts.Floor, opts.To)

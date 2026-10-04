@@ -29,6 +29,14 @@ func ResumeBundleWorkflow(r *store.Run, b *bundle.Bundle, persistedPath string) 
 			if info, statErr := osStatRegular(candidate); statErr == nil && info {
 				path = candidate
 			}
+		} else if entry := bundle.EntryForCopy(persistedPath, b.Dir); entry != "" {
+			// A studio launch records the store's materialised copy as the
+			// FilePath — outside the bundle, so the rel above escapes. The
+			// copy stands for the entry it was made of: resume THAT (the
+			// sibling for a sibling launch), or the hash would refuse a
+			// source that never changed and --force would run main.bot
+			// against the sibling's checkpoint.
+			path = entry
 		}
 		return path, nil, nil
 	}
