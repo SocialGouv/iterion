@@ -212,19 +212,16 @@ tool preflight:
         sys.stderr.write("campaign: %s\n" % notice)
         raise SystemExit(1)
 
-    # Same lookup as the worker: yq is declared in this bundle's devbox.json,
-    # which says which version should serve, not that the environment was
-    # realised for this node. The target repo's own profile is consulted
-    # second, before refusing.
+    # Same lookup as the worker: PATH ONLY. yq is declared in this bundle's
+    # devbox.json — being declared says which version should serve, not that
+    # the environment was realised for this node. There is no fallback into
+    # the workspace: <ws>/.devbox is the target repository's own devbox
+    # profile, so a binary found there is an executable the target repo
+    # supplied, run with this run's environment (#1799) — the same defect
+    # this bundle refuses for its skills.
     def find_yq():
         import shutil
-        found = shutil.which("yq")
-        if found:
-            return found
-        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-        return ""
+        return shutil.which("yq") or ""
 
     if not os.path.isfile(plan_path):
         refuse("no programme contract at %s. A campaign supervises a written "
@@ -233,8 +230,10 @@ tool preflight:
 
     yq = find_yq()
     if not yq:
-        refuse("yq is not on PATH and not in the workspace devbox profile, so "
-               "the contract at %s cannot be read." % plan_path)
+        refuse("yq is not on PATH, so the contract at %s cannot be read. It "
+               "is declared in this bundle's devbox.json — being declared "
+               "says which version should serve, not that the environment "
+               "was realised for this node." % plan_path)
     raw = subprocess.run([yq, "-o=json", plan_path], capture_output=True,
                          text=True, timeout=60)
     if raw.returncode != 0:
@@ -323,15 +322,11 @@ tool observe:
         sys.stderr.write("campaign: %s\n" % notice)
         raise SystemExit(1)
 
+    # PATH ONLY (preflight's find_yq carries the reason): a fallback under
+    # <ws>/.devbox would run a binary the target repository supplied (#1799).
     def find_yq():
         import shutil
-        found = shutil.which("yq")
-        if found:
-            return found
-        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-        return ""
+        return shutil.which("yq") or ""
 
     def git(*args, timeout=60):
         return subprocess.run(["git", "-C", ws] + list(args),
@@ -597,8 +592,12 @@ tool steward:
         plan_lots = {}
         try:
             import shutil
-            yq = shutil.which("yq") or os.path.join(
-                ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+            # PATH ONLY: a fallback under <ws>/.devbox would run a binary the
+            # target repository supplied (#1799). Absent, the OSError raised
+            # here is what the except below records as plan_unreadable.
+            yq = shutil.which("yq")
+            if not yq:
+                raise OSError("yq is not on PATH; the workspace is never a source for it")
             raw = subprocess.run([yq, "-o=json", os.path.join(ws, plan_rel)],
                                  capture_output=True, text=True, timeout=60)
             if raw.returncode == 0:
@@ -785,15 +784,11 @@ tool finalize:
                            text=True, timeout=timeout)
         return p.returncode, (p.stdout + p.stderr)[-4000:]
 
+    # PATH ONLY (preflight's find_yq carries the reason): a fallback under
+    # <ws>/.devbox would run a binary the target repository supplied (#1799).
     def find_yq():
         import shutil
-        found = shutil.which("yq")
-        if found:
-            return found
-        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-        return ""
+        return shutil.which("yq") or ""
 
     def is_scaffold(line):
         # iterion lays the bundle's skills (and plugin commands, agents,
@@ -820,7 +815,13 @@ tool finalize:
 
     plan = {}
     yq = find_yq()
-    if yq:
+    if not yq:
+        # The plan is then unread, and the notice says so rather than the
+        # counts reading as zeros.
+        out["notice"] = ("yq is not on PATH, so the plan at %s was not read: "
+                         "lots_done, lots_blocked and requalification are "
+                         "unset, not zero." % plan_rel)
+    else:
         raw = subprocess.run([yq, "-o=json", os.path.join(ws, plan_rel)],
                              capture_output=True, text=True, timeout=60)
         if raw.returncode == 0:

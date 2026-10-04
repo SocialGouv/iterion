@@ -95,6 +95,15 @@ func TestAddClawBinaryMount_MountsUnderTheLaunchBackendOverride(t *testing.T) {
 	if !hasIterionBinaryMount(spec.Mounts) {
 		t.Fatalf("mounts = %v, want a bind at /usr/local/bin/iterion — the claw runner has no binary to exec inside the container", spec.Mounts)
 	}
+	// The mount target and the tool-node env value (ITERION_ENGINE_BIN) are
+	// ONE constant: a container path that drifts between the mount and the
+	// value handed to bot scripts sends a reader to a file nothing placed.
+	for _, m := range spec.Mounts {
+		if strings.Contains(m, "target="+sandbox.EngineBinaryContainerPath+",") {
+			return
+		}
+	}
+	t.Fatalf("no mount targets sandbox.EngineBinaryContainerPath (%s): the tool-node env value and the bind target have drifted", sandbox.EngineBinaryContainerPath)
 }
 
 // fakeIterionBinary writes an executable file locateHostIterionBinary can
