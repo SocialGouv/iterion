@@ -12,6 +12,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
@@ -58,6 +59,11 @@ type ScheduledBot struct {
 	RetryMaxAttempts int    `bson:"retry_max_attempts,omitempty" json:"retry_max_attempts,omitempty"`
 	RetryMaxWait     string `bson:"retry_max_wait,omitempty" json:"retry_max_wait,omitempty"`
 	RetryJitter      string `bson:"retry_jitter,omitempty" json:"retry_jitter,omitempty"`
+	// Routing is the schedule's routing block (ADR-121, pkg/llmroute) —
+	// the binding level for a cron-provisioned bot: it overrides every
+	// UNLOCKED field of the shipped bot's `routing:` manifest block, and
+	// the author's lock is what stops it. nil = the level says nothing.
+	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
 
 	// NextFireAt is the next UTC instant this schedule is due. The ticker
 	// CAS-advances it the moment it claims a tick, so a second replica racing
@@ -167,6 +173,11 @@ type SchedulePatch struct {
 	GuardTimeout    *string
 	GuardVar        *string
 	StaleAfter      *string
+	// Routing block (ADR-121): nil = leave untouched; ClearRouting removes
+	// the stored block (back to the bot's manifest). Set together they are
+	// contradictory — the route handler refuses that shape.
+	Routing      *llmroute.Policy
+	ClearRouting bool
 	// Retry policy fields; nil = leave untouched. An explicit empty string
 	// (or 0) clears the field so the schedule stops overriding the bot.
 	RetryUsageWindow *string
@@ -250,6 +261,12 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	if patch.StaleAfter != nil {
 		sb.StaleAfter = *patch.StaleAfter
 	}
+	if patch.ClearRouting {
+		sb.Routing = nil
+	}
+	if patch.Routing != nil {
+		sb.Routing = patch.Routing
+	}
 	if patch.RetryUsageWindow != nil {
 		sb.RetryUsageWindow = *patch.RetryUsageWindow
 	}
@@ -278,6 +295,17 @@ func (sb ScheduledBot) Policy() schedgate.Policy {
 		GuardVar:      sb.GuardVar,
 		StaleAfter:    sb.StaleAfter,
 	})
+}
+
+// RoutingPolicy projects the schedule's routing block (ADR-121). Not
+// normalized — one layer of a precedence chain; defaults filled here would
+// masquerade as a schedule-level choice and mask the bot's manifest and the
+// platform level.
+func (sb ScheduledBot) RoutingPolicy() llmroute.Policy {
+	if sb.Routing == nil {
+		return llmroute.Policy{}
+	}
+	return *sb.Routing
 }
 
 // RetryPolicy projects the schedule's retry fields. Deliberately NOT

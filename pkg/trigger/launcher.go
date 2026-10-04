@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -40,6 +41,10 @@ type LaunchPlan struct {
 	// decide. Carried on the plan rather than re-read by the launcher
 	// because the evaluator is what holds the subscription.
 	Retry retrypolicy.Policy
+	// Routing is the subscription's routing block (ADR-121) — the
+	// binding layer the launch folds with the bot manifest, the platform
+	// level and the env dials.
+	Routing llmroute.Policy
 }
 
 // Launcher launches a run directly (ExecutionDirect). The production impl

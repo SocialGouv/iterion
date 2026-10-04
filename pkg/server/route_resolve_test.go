@@ -9,6 +9,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 func routeResolveServer(t *testing.T, rec *platformcfg.PlatformCredentials) *Server {
@@ -36,7 +37,10 @@ func TestResolveRunLLMRoutePolicy_PlatformRecordWinsAndNamesItself(t *testing.T)
 		PairOrder:        []string{llmroute.Pair(llmroute.HarnessClaw, "anthropic_key")},
 		RefusedPinnedKey: park,
 	}})
-	got := s.resolveRunLLMRoutePolicy(context.Background())
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
 	if got == nil {
 		t.Fatal("snapshot = nil")
 	}
@@ -63,7 +67,10 @@ func TestResolveRunLLMRoutePolicy_PlatformRecordWinsAndNamesItself(t *testing.T)
 func TestResolveRunLLMRoutePolicy_EnvDialAnswersWithItsOwnProvenance(t *testing.T) {
 	t.Setenv(llmroute.EnvRefusedPinnedKey, llmroute.RefusedPinnedPark)
 	s := routeResolveServer(t, nil)
-	got := s.resolveRunLLMRoutePolicy(context.Background())
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
 	if got.RefusedPinnedKey != llmroute.RefusedPinnedPark {
 		t.Fatalf("refused_pinned_key = %q, want the env dial's park", got.RefusedPinnedKey)
 	}
@@ -80,14 +87,17 @@ func TestResolveRunLLMRoutePolicy_HigherLayerOutranksThePlatform(t *testing.T) {
 	s := routeResolveServer(t, &platformcfg.PlatformCredentials{Routing: &llmroute.Policy{
 		RefusedPinnedKey: park,
 	}})
-	got := s.resolveRunLLMRoutePolicy(context.Background(), llmroute.Layer{
-		Source: "bot",
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "", llmroute.Layer{
+		Source: llmroute.SourceBot,
 		Policy: llmroute.Policy{PairOrder: []string{llmroute.Pair(llmroute.HarnessCodex, llmroute.CredChatGPTForfait)}},
 	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
 	if len(got.PairOrder) != 1 || got.PairOrder[0] != "codex+chatgpt_forfait" {
 		t.Fatalf("pair_order = %v, want the bot layer's", got.PairOrder)
 	}
-	if got.Sources["pair_order"] != "bot" {
+	if got.Sources["pair_order"] != llmroute.SourceBot {
 		t.Fatalf("pair_order provenance = %q, want bot", got.Sources["pair_order"])
 	}
 	if got.RefusedPinnedKey != park {
@@ -118,12 +128,14 @@ func TestRunLLMRoutePolicy_EmptyTriggersSurviveJSON(t *testing.T) {
 // defaults — the same tolerance retryPolicyFor states.
 func TestServiceLauncher_routePolicyForToleratesNoResolver(t *testing.T) {
 	l := &serviceLauncher{}
-	if got := l.routePolicyFor(context.Background()); got != nil {
-		t.Fatalf("routePolicyFor = %+v, want nil without a resolver", got)
+	if got, err := l.routePolicyFor(context.Background(), trigger.LaunchPlan{}); got != nil || err != nil {
+		t.Fatalf("routePolicyFor = %+v, %v — want nil, nil without a resolver", got, err)
 	}
 	want := &store.RunLLMRoutePolicy{RefusedPinnedKey: llmroute.RefusedPinnedPark}
-	l2 := &serviceLauncher{resolveRoute: func(context.Context, ...llmroute.Layer) *store.RunLLMRoutePolicy { return want }}
-	if got := l2.routePolicyFor(context.Background()); got != want {
-		t.Fatalf("routePolicyFor = %+v, want the resolver's snapshot", got)
+	l2 := &serviceLauncher{resolveRoute: func(context.Context, string, string, ...llmroute.Layer) (*store.RunLLMRoutePolicy, error) {
+		return want, nil
+	}}
+	if got, err := l2.routePolicyFor(context.Background(), trigger.LaunchPlan{TenantID: "t1", BotID: "b1"}); err != nil || got != want {
+		t.Fatalf("routePolicyFor = %+v, %v — want the resolver's snapshot", got, err)
 	}
 }

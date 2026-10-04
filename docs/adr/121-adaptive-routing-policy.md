@@ -25,7 +25,7 @@ The operator's decision (2026-09-30, on epic #2000): routing becomes a **policy,
 
 - **platform** — the settings record the facade and keys-first knobs already ride;
 - **the shipped `.bot`** — a `routing:` block in the manifest (orchestration, not workflow semantics — the same rule ADR-087's alternative 6 set for `retry:`). Written by the AUTHOR, who may have tuned and tailored the bot to a model: this level is settable **and lockable by the author**;
-- **the bot binding** — the provisioned instance of that bot on a team/repo. Written by whoever provisions it, it overrides every UNLOCKED field of the shipped bot: deployment context outranks shipped content, and the author's lock is what stops it (the same gesture as `strict`). It rides the EXISTING bot-bindings store — no new collection;
+- **the bot binding** — the provisioned instance of that bot on a team/repo. Written by whoever provisions it, it overrides every UNLOCKED field of the shipped bot: deployment context outranks shipped content, and the author's lock is what stops it (the same gesture as `strict`). it rides the EXISTING provisioning records — no new collection. *(Carrier amended 2026-10-04, slice 2: the "bot-bindings store" named here is in the code the bot-SECRET-binding credentials record, which holds no policy; the binding level rides the launch-surface records the retry chain already called binding-level — the schedule row, the trigger subscription, the webhook config — so one bot on one team may hold one binding policy per provisioning surface, and each launch reads the record that launched it.)*
 - **run** — launch fields;
 - org and team are **delivery 2**: they are greenfield — `identity` records are directory entries, admission lists are not settings, and each level means a new collection, API routes, an RBAC answer to "who is an org admin", tenancy threading, CAS and preview support. Named, costed, sequenced — not smuggled into "four of them new".
 
@@ -84,7 +84,7 @@ Resume classifies every policy field as **identity or volatile**: identity field
 - **Cost is automatic by default** — every allowed fallback is attempted, a subscription may spend as extra usage (claw on a Claude forfait), and the governing tool is the lock, not an opt-in. The operator's explicit stance, recorded.
 - **Every switch is said**: audit lines at launch selection and at each in-run de-order, the resolved pair and its provenance in the run document, the spend on the serving credential.
 - **The fold is pure; the walk is not**: the policy fold is table-testable; the resolution is tested by properties over injected probes — fill/restore/preview/launch-gate agreement, and `spendableProviders`/`wantsFor`/`derivePinnedProviders` reading the same rewritten program.
-- **Delivery 1 is platform + the shipped bot + the bot binding + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are. The binding level rides the existing bot-bindings store.
+- **Delivery 1 is platform + the shipped bot + the bot binding + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are. The binding level rides the existing provisioning records (see the § Decision levels carrier amendment).
 - **Testing obligation**: fold tables; pair-selection tests against seeded bundles; switch tests against window states; the parity property asserted for the policy-resolved answer; mutation-checked like #1998/#2038.
 
 ## Arbitrated (the operator, 2026-10-02)

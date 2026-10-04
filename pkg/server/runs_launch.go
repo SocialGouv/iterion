@@ -620,6 +620,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	retryID, _ := auth.FromContext(r.Context())
 	retryTeamID := retryID.TeamID
 
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(r.Context(), retryTeamID, botID)
+	if routeErr != nil {
+		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", routeErr)
+		return
+	}
+
 	spec := runview.LaunchSpec{
 		FilePath:           absPath,
 		Source:             req.Source,
@@ -649,7 +655,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// human pressed Launch — a declared directive silently violated on
 		// the one path where the author is watching.
 		RetryPolicy:        s.resolveRunRetryPolicy(r.Context(), retryTeamID, botID),
-		LLMRoutePolicy:     s.resolveRunLLMRoutePolicy(r.Context()),
+		LLMRoutePolicy:     routePolicy,
 		ModelOverrides:     req.ModelOverrides,
 		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,

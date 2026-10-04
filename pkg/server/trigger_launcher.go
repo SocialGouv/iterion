@@ -32,7 +32,7 @@ type serviceLauncher struct {
 	// resolveRoute is the server's adaptive-routing resolution
 	// (pkg/llmroute, ADR-121), injected for the same no-*Server reason.
 	// Slice 1 resolves the platform level only.
-	resolveRoute func(ctx context.Context, higher ...llmroute.Layer) *store.RunLLMRoutePolicy
+	resolveRoute func(ctx context.Context, teamID, botID string, higher ...llmroute.Layer) (*store.RunLLMRoutePolicy, error)
 	// resolveBot is the server's tiered bot resolution (the subscription's
 	// team → platform override → baked catalog), injected for the same
 	// no-*Server reason. REQUIRED: a second, override-blind resolution path
@@ -69,6 +69,10 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	if l.runs == nil {
 		return "", errors.New("trigger: no run service wired for direct launch")
 	}
+	routePolicy, routeErr := l.routePolicyFor(ctx, plan)
+	if routeErr != nil {
+		return "", routeErr
+	}
 	spec := runview.LaunchSpec{
 		Vars:            plan.Vars,
 		RepoURL:         plan.RepoURL,
@@ -78,7 +82,7 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		SecretOverrides: plan.SecretOverrides,
 		SourceRef:       plan.SourceRef,
 		RetryPolicy:     l.retryPolicyFor(ctx, plan),
-		LLMRoutePolicy:  l.routePolicyFor(ctx),
+		LLMRoutePolicy:  routePolicy,
 		// The spine's vars are subscription-computed and may blind-carry
 		// keys (an ArgsVar payload, forge plumbing) the launched bot does
 		// not declare — the #1725 opt-out is the wiring for that (#1872
@@ -139,15 +143,20 @@ func (l *serviceLauncher) retryPolicyFor(ctx context.Context, plan trigger.Launc
 	})
 }
 
-// routePolicyFor resolves the run's adaptive-routing policy (ADR-121),
-// tolerating a launcher built without a resolver (tests) by leaving the
-// field nil — the consumer then applies the package defaults. Slice 1
-// resolves only the platform level; the plan's own layers join in slice 3.
-func (l *serviceLauncher) routePolicyFor(ctx context.Context) *store.RunLLMRoutePolicy {
+// routePolicyFor resolves the run's adaptive-routing policy (ADR-121) —
+// the plan's binding layer (the subscription's routing block) folded with
+// the bot manifest, the platform level and the env dials. An error means a
+// layer is unreadable and the launch must be refused. A launcher built
+// without a resolver (tests) yields nil, nil — the consumer applies the
+// package defaults.
+func (l *serviceLauncher) routePolicyFor(ctx context.Context, plan trigger.LaunchPlan) (*store.RunLLMRoutePolicy, error) {
 	if l.resolveRoute == nil {
-		return nil
+		return nil, nil
 	}
-	return l.resolveRoute(ctx)
+	return l.resolveRoute(ctx, plan.TenantID, plan.BotID, llmroute.Layer{
+		Source: llmroute.SourceTrigger,
+		Policy: plan.Routing,
+	})
 }
 
 var _ trigger.Launcher = (*serviceLauncher)(nil)

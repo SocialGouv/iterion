@@ -105,6 +105,15 @@ func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *htt
 	if rec != nil {
 		routing = rec.Routing
 	}
+	// The effective answer refuses on an unreadable layer (a hand-edited
+	// record): a GET that silently rendered "defaults" while every launch
+	// refuses would hide the very misconfiguration the operator came to
+	// look at.
+	routingEffective, routeErr := s.resolveRunLLMRoutePolicy(r.Context(), "", "")
+	if routeErr != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", routeErr)
+		return
+	}
 	s.writeJSONFor(w, r, platformCredentialsSettingsView{
 		Stored:                 rec,
 		Enforced:               rec.Enforced(),
@@ -112,7 +121,7 @@ func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *htt
 		KeysFirstEffective:     rec.PrefersKeys(),
 		FacadeDefaultEffective: string(rec.Facade()),
 		Routing:                routing,
-		RoutingEffective:       s.resolveRunLLMRoutePolicy(r.Context()),
+		RoutingEffective:       routingEffective,
 	})
 }
 
