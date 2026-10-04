@@ -49,10 +49,16 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 		return
 	}
 	// A boundary field's trail must answer what the team WAS, not only what
-	// it became; the event is team-scoped, so the team id rides as the
-	// tenant, matching the sibling admin events.
-	s.auditPlatform(r, teamID, "team.runner_pool_set", "team", teamID, map[string]any{
+	// it became. Scoped like every sibling team event: tenant trail for the
+	// org's own audit view, org mirror so the org admin sees the change that
+	// will refuse their resumes and launches.
+	s.auditTenant(r, teamID, "team.runner_pool_set", "team", teamID, map[string]any{
 		"runner_pool": pool, "previous": cur.RunnerPool,
 	})
+	if cur.OrgID != "" {
+		s.auditOrg(r, cur.OrgID, "team.runner_pool_set", "team", teamID, map[string]any{
+			"runner_pool": pool, "previous": cur.RunnerPool,
+		})
+	}
 	writeJSON(w, toTeamSummaryView(updated))
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -176,5 +177,30 @@ func TestSubmitResume_TheFrozenPoolGate(t *testing.T) {
 	}
 	if len(published) != 0 {
 		t.Fatalf("the gated resume published %d message(s)", len(published))
+	}
+}
+
+// The resume wire carries the FROZEN stamp — witnessed at the source level
+// while the dispatch gate refuses everything pool-stamped (rva-2 F4: the
+// behavioural capture is impossible before P1b flips the gate, and dropping
+// `RunnerPool: prior.RunnerPool` from the resume literal shipped green).
+// The scan is anchored to the SubmitResume function so an unrelated field
+// elsewhere cannot satisfy it. Red when the literal is dropped again.
+func TestSubmitResumeWireCarriesTheFrozenStamp(t *testing.T) {
+	src, err := os.ReadFile("publisher.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(src), "func (p *Publisher) SubmitResume(")
+	if start < 0 {
+		t.Fatal("SubmitResume not found — the publisher moved; re-anchor this witness")
+	}
+	end := strings.Index(string(src)[start:], "\nfunc ")
+	if end < 0 {
+		t.Fatal("SubmitResume's end not found")
+	}
+	body := string(src[start : start+end])
+	if !strings.Contains(body, "RunnerPool: prior.RunnerPool") {
+		t.Fatal("SubmitResume no longer stamps the resume message with the run's frozen pool — pool-stamped resumes would publish onto the shared stream unstamped")
 	}
 }

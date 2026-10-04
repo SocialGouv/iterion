@@ -318,8 +318,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// from a named field list and would otherwise read as trusted.
 			runtime.WithTrust(child.Trust, child.RepoSHAExpected),
 			// Same trap for the frozen pool stamp: the child's document must
-			// name the pool its message claims, or the admission guard (doc ≡
-			// message) would fail every subbot node of a pool-team run.
+			// name the pool its message claims. Nothing compares the pair
+			// YET — D4's admission guard will, and a doc left unmapped would
+			// fail every subbot node of a pool-team run the day it ships.
+			// (The runner MAIN loop will need the same option then.)
 			runtime.WithRunnerPool(child.RunnerPool),
 			runtime.WithParentNodeID(req.NodeID),
 			// Recursive wiring: a child that declares subbot nodes resolves

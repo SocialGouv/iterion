@@ -241,7 +241,9 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// it, and re-arming would flip the doc queued→failed every cycle
 		// until the budget burned. Abandon with the named reason instead.
 		if errors.Is(err, cloudpublisher.ErrPoolRemapped) {
-			adm.rollback(s.logger)
+			// No second rollback: ErrPoolRemapped leaves BEFORE any publish,
+			// so RunMayHaveStarted is false and the refund above already
+			// fired — and ReleaseRun is a non-idempotent $inc (rva-2 F1).
 			s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID,
 				"auto-retry abandoned: the team's runner-pool mapping moved past the run's frozen pool — relaunch the run on the new pool")
 			return

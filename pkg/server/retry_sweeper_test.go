@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -573,4 +575,26 @@ func newRetrySweeperServer(t *testing.T, st store.RunStore, resumer runResumer) 
 		t.Fatalf("write fixture: %v", err)
 	}
 	return &Server{cfg: Config{Store: st, WorkDir: dir}}
+}
+
+// A pool re-mapping is a PERMANENT refusal: the sweeper abandons the retry
+// (named reason) instead of re-arming it into a queued→failed flap until the
+// attempt budget burns (rva-2 F3). Red when the ErrPoolRemapped branch is
+// dropped again.
+func TestSweepDueRetries_APoolRemapAbandonsInsteadOfReArming(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-a"] = true
+	resumer := &fakeResumer{failing: fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused",
+		cloudpublisher.ErrPoolRemapped, "run-a", "old-pool", "new-pool")}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-a", at)}}, resumer, time.Now().UTC())
+
+	if _, ok := st.abandoned["run-a"]; !ok {
+		t.Fatalf("a pool remap must ABANDON the retry, got abandoned=%v re-armed=%v", st.abandoned, st.rearmed)
+	}
+	if len(st.rearmed) != 0 {
+		t.Fatalf("a pool remap must never be re-armed: %v", st.rearmed)
+	}
 }
