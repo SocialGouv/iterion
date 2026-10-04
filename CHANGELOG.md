@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.233.0](https://github.com/SocialGouv/iterion/compare/v3.232.1...v3.233.0) (2026-10-04)
+
+### Features
+
+* **llmroute:** the run level, the launch-time pair selection, and the screened program rewrite ([#2126](https://github.com/SocialGouv/iterion/issues/2126) slice 3) ([#2172](https://github.com/SocialGouv/iterion/issues/2172)) ([a316112](https://github.com/SocialGouv/iterion/commit/a316112ee3948c18aac47bb5615a1e99c46b3bf3))
+
+    <details><summary>why</summary>
+
+    The launch-time selection materializes as a computed run-fallback LADDER traveling the operator's --fallback path end to end — the publish serializes source, the runner re-compiles and re-applies the screen, so a publisher-side IR rewrite would be invisible to everything downstream.
+
+    </details>
+
 ## [3.232.1](https://github.com/SocialGouv/iterion/compare/v3.232.0...v3.232.1) (2026-10-04)
 
 ### Bug Fixes
