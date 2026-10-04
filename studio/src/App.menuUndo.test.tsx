@@ -102,11 +102,12 @@ describe("Edit → Undo from the menu", () => {
   });
 });
 
-describe("Edit → Undo from the menu, on the editor's welcome pane", () => {
-  // The link names a file another project's tab is on: that tab becomes the
-  // active one, but it is not the current project's, so the editor shows its
-  // welcome pane — and the menu has no tab on screen to act on.
-  it("does nothing to another project's tab", async () => {
+describe("Edit → Undo from the menu, on a link into another project's file", () => {
+  // The link names a file another project's tab is on. Tabs are scoped to
+  // the active project (#1830), so the link does NOT surface that hidden
+  // tab — it opens the file in a tab of the project on screen, and the menu
+  // acts on the tab the editor shows, never on the hidden project's store.
+  it("acts on the tab on screen, not on another project's tab", async () => {
     useTabsStore.getState().setCurrentProjectKey("/p1");
     const store = editedTab();
     useTabsStore.getState().setCurrentProjectKey("/p2");
@@ -116,8 +117,11 @@ describe("Edit → Undo from the menu, on the editor's welcome pane", () => {
         <App />
       </QueryClientProvider>,
     );
-    await screen.findByText("The same workflows, visually.", undefined, { timeout: 5000 });
-    expect(screen.queryAllByTestId("editor-tab")).toHaveLength(0);
+    // A tab of THIS project is what the editor shows for the link.
+    await screen.findByTestId("editor-tab", undefined, { timeout: 5000 });
+    const onScreenId = useTabsStore.getState().activeEditorTabId;
+    expect(onScreenId).not.toBeNull();
+    expect(useTabsStore.getState().tabs.find((t) => t.id === onScreenId)?.projectKey).toBe("/p2");
     await shellMenu("undo");
     expect(marks(store)).toBe("A,e1,e2");
   });
