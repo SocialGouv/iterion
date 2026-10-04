@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.234.0](https://github.com/SocialGouv/iterion/compare/v3.233.1...v3.234.0) (2026-10-04)
+
+### Features
+
+* **cloud:** the sovereign runner-pool identity, end to end on the carriers ([#2182](https://github.com/SocialGouv/iterion/issues/2182)) ([041864a](https://github.com/SocialGouv/iterion/commit/041864af35a3f64426f5cb2127d28a10e7dc8cf2)), references [#2029](https://github.com/SocialGouv/iterion/issues/2029)
+
+    <details><summary>why</summary>
+
+    P1a of #2029 (plan v2.1 D1'/D3', F2/F10): a team mapped to a runner pool gets that fact onto every carrier, and nothing routes around it.
+
+    </details>
+
 ## [3.233.1](https://github.com/SocialGouv/iterion/compare/v3.233.0...v3.233.1) (2026-10-04)
 
 ### Bug Fixes
