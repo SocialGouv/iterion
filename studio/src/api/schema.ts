@@ -6425,6 +6425,7 @@ export interface components {
         };
         CredentialPreviewRequest: {
             bot_id?: string;
+            llm_routing?: components["schemas"]["Policy"];
             source: components["schemas"]["CredentialPreviewSource"];
         };
         CredentialPreviewSource: {
