@@ -1186,7 +1186,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			// runner-side: the named asymmetry, said by the runner's
 			// run_fallback_refused event (the authoritative screen).
 			sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
-			if opRefusals := ir.ApplyRunFallback(wf, operatorIR, sandboxed, nil); len(opRefusals) > 0 && p.logger != nil {
+			if opRefusals := ir.ApplyRunFallback(wf, operatorIR, sandboxed, nil, func(n ir.LLMNode) string {
+				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+				return ov.Backend
+			}); len(opRefusals) > 0 && p.logger != nil {
 				for _, r := range opRefusals {
 					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)
 				}
@@ -1197,6 +1200,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					return ir.ExpandEnvWithDefault(ov.Model)
 				}
 				return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
+			}, func(n ir.LLMNode) string {
+				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+				return ov.Backend
 			}); len(refusals) > 0 && p.logger != nil {
 				for _, r := range refusals {
 					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)

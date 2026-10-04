@@ -286,7 +286,15 @@ func TestClawPersistRejectsInvalidPendingResume(t *testing.T) {
 	}
 }
 
-func TestChainNonpersistentClawStillDropsResume(t *testing.T) {
+// The adaptive-routing arbitration (ADR-121 §2, F1, 2026-10-04): a
+// same-backend fall-through KEEPS the session — the store is keyed by
+// slot/node, not by the credential serving it, and the stage answers with
+// its own vendor. A nonpersistent claw (no SessionSlot) carrying a resume
+// from the paused element carries it whole: the conversation belongs to
+// the NODE, the harness did not change. (The pre-ADR-121 contract — this
+// fall-through dropped everything — is reversed; a CROSS-backend fall
+// still drops, and the screen refuses it on session-bearing nodes.)
+func TestChainSameBackendClawCarriesTheResume(t *testing.T) {
 	e := &ClawExecutor{}
 	build := e.newElementBuilder("author", "claw", &backendScriptedBackend{name: "claw"}, func(context.Context, string) (*delegate.Task, error) {
 		return &delegate.Task{NodeID: "author", Model: "openai/gpt-5.6-terra", SessionID: "session", SessionFingerprint: "claw:openai",
@@ -296,7 +304,7 @@ func TestChainNonpersistentClawStillDropsResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if task.SessionID != "" || task.SessionFingerprint != "" || len(task.ResumeConversation) != 0 || task.ResumePendingToolUseID != "" || task.ResumeAnswer != "" {
-		t.Fatal("nonpersistent fallback retained resume state")
+	if task.SessionID != "session" || task.SessionFingerprint != "claw:openai" || len(task.ResumeConversation) == 0 || task.ResumePendingToolUseID != "pending" || task.ResumeAnswer != "yes" {
+		t.Fatal("same-backend fallback dropped resume state — the harness did not change, the session rides")
 	}
 }

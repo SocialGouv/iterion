@@ -28,7 +28,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	w := mk("claude-opus-5-5", "")
 	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string {
 		return n.GetLLMFields().Model
-	})
+	}, nil)
 	node := w.Nodes["implement"].(*AgentNode)
 	if len(node.Fallbacks) != 1 {
 		t.Fatalf("stages = %d (%+v), refusals = %v — want 1 (the claw crossing is refused: the node has no permission gate or claw-eligible toolset), refusals naming it", len(node.Fallbacks), node.Fallbacks, refusals)
@@ -55,7 +55,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	wn := wOp.Nodes["implement"].(*AgentNode)
 	wn.Fallbacks = append(wn.Fallbacks, Fallback{Name: RunFallbackName, Backend: "claude_code", Model: "claude-opus-5-5", RunStage: 0, RunStageSet: true})
 	opStages := stages[:1] // the claude_code crossing only: the claw stage needs a permission gate this node does not carry
-	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil); len(refusals) != 0 {
 		t.Fatalf("operator-armed node refused the ladder: %v", refusals)
 	}
 	if got := len(wn.Fallbacks); got != 2 {
@@ -72,7 +72,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 		LLMFields: LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
 		Fallbacks: []Fallback{{Name: "authored", Backend: "claude_code", Model: "claude-opus-5-5"}},
 	}
-	if refusals := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil); len(refusals) != 0 {
 		t.Fatalf("an authored node screened = %v, want silence (the author vetted where it may go)", refusals)
 	}
 	if got := len(w2.Nodes["implement"].(*AgentNode).Fallbacks); got != 1 {
@@ -81,11 +81,65 @@ func TestApplyPolicyLadder(t *testing.T) {
 
 	// A node whose model maps nothing for the pair skips the stage, named.
 	w3 := mk("", "")
-	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return "" })
+	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return "" }, nil)
 	if got := len(w3.Nodes["implement"].(*AgentNode).Fallbacks); got != 0 {
 		t.Fatalf("modelless stages emitted: %d", got)
 	}
 	if len(refusals) != len(stages) {
 		t.Fatalf("refusals = %v, want every modelless stage named", refusals)
+	}
+}
+
+// The session contract pinned at the screen (ADR-121 §2, the slice-4
+// review's F1/F2): a CROSS-backend stage on a session-bearing node is
+// refused by name — a silent eviction never happens because the stage
+// never lands; a same-backend stage composes, and the launch's backend
+// override is what the screen reads (the dispatch reads it first).
+func TestApplyPolicyLadder_SessionContract(t *testing.T) {
+	// tools: [] makes the claw crossing TOOL-legal so the SESSION refusal
+	// is what each case exercises (the tools inversion would otherwise
+	// refuse first — also correctly).
+	mkSession := func(backend, model string, session SessionMode) *Workflow {
+		return &Workflow{Nodes: map[string]Node{"implement": &AgentNode{
+			BaseNode:   BaseNode{ID: "implement"},
+			LLMFields:  LLMFields{Backend: backend, Model: model},
+			Tools:      []string{},
+			Session:    session,
+			Permission: "ask",
+		}}}
+	}
+	stages := []PolicyLadderStage{{Harness: "claw", Credential: "anthropic_key", On: []string{"usage_window", "auth"}}}
+
+	// Cross-backend on a session node: refused, named.
+	w := mkSession("claude_code", "claude-opus-5-5", SessionInherit)
+	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil)
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
+		t.Fatalf("refusals = %v, want the session-continuity refusal naming the crossing", refusals)
+	}
+	if got := len(w.Nodes["implement"].(*AgentNode).Fallbacks); got != 0 {
+		t.Fatalf("stages landed = %d, want none — no silent eviction", got)
+	}
+
+	// Same-backend on a session node: composes — the session is carried
+	// (the dispatch keeps it; ADR-087 §3's rebuild-and-evict applies only
+	// to cross-backend falls, which the screen refuses here).
+	w2 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
+	refusals = ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil)
+	if len(refusals) != 0 {
+		t.Fatalf("same-backend refused: %v", refusals)
+	}
+	if got := len(w2.Nodes["implement"].(*AgentNode).Fallbacks); got != 1 {
+		t.Fatalf("same-backend stages = %d, want the ladder landed", got)
+	}
+
+	// The launch's backend override is what the screen reads (F2): a claw
+	// node overridden to claude_code refuses the claw stage on its
+	// session — the DSL field alone would have passed it unscreened.
+	w3 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
+	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, func(n LLMNode) string {
+		return "claude_code"
+	})
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
+		t.Fatalf("override-blind refusals = %v, want the session refusal through the override", refusals)
 	}
 }

@@ -873,7 +873,22 @@ func (e *ClawExecutor) newElementBuilder(
 		keepClawSession := baseBackendName == delegate.BackendClaw && bn == delegate.BackendClaw &&
 			task.SessionSlot != "" && knownClawSessionFingerprint(task.SessionFingerprint) &&
 			knownClawSessionFingerprint(clawSessionFingerprint(task.Model))
-		if index > 0 && !keepClawSession {
+		// The adaptive-routing ladder's same-backend rung (ADR-121 §2):
+		// the FIRST fall-through that keeps the harness CARRIES the
+		// session — the store is keyed by slot/node, not by the credential
+		// serving it — and answers with the stage's vendor (GLM via zai on
+		// a claude session). The carry is ONCE (index 1 only): the carried
+		// session gets its one chance on the first same-backend rung — a
+		// poisoned or dead session is condemned by that rung's failure and
+		// further rungs run fresh, honoring the one-chance containment the
+		// walk applies to carried sessions. A CROSS-backend fall-through
+		// still starts fresh: the conversation belongs to the element that
+		// paused, and replaying it into another harness re-sends one
+		// provider's turn to a provider that never issued it (the screen
+		// already refuses this on session-bearing nodes — this is the belt
+		// for the nodes the screen cannot see).
+		keepSameBackendSession := index == 1 && bn == baseBackendName && task.SessionID != ""
+		if index > 0 && !keepClawSession && !keepSameBackendSession {
 			// A fall-through starts a fresh conversation. The resume
 			// continuity applied at build time (the operator's answer,
 			// the pending tool_use, the prior messages) belongs to the
@@ -1268,7 +1283,16 @@ func (e *ClawExecutor) dispatchChain(
 		// `on:` accepts the category — still teaches the ledger, so the
 		// next node whose chain DOES have somewhere to go skips the spawn
 		// this one had to pay for.
-		e.routeCooldowns.record(key, cooldownForFailure(err, cat), e.cooldownNow())
+		cd := cooldownForFailure(err, cat)
+		if cd.Category == "" {
+			// The policy's extension (ADR-121 §2): an AUTH failure on a run
+			// whose resolved triggers arm it records run-long — the later
+			// nodes skip the doomed spawn instead of paying it again.
+			if ac, armed := authCooldown(cat, e.llmRouteTriggers, err, e.cooldownNow()); armed {
+				cd = ac
+			}
+		}
+		e.routeCooldowns.record(key, cd, e.cooldownNow())
 		if !fallbackRemains {
 			break
 		}

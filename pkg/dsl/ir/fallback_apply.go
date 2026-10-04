@@ -64,7 +64,11 @@ const RunFallbackName = "run-fallback"
 // field nothing decided. The declared defaults under the overrides come
 // from the workflow itself; a reference neither answers stays undecided,
 // as the compiler reads it.
-func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[string]string) []string {
+// nodeBackendCallback, when given, is the launch override's backend
+// reading — dispatch reads the override first, so the screen MUST too, or
+// a cross-backend stage crosses a session-bearing node unscreened (the
+// same hazard ApplyPolicyLadder's callback closes for the policy ladder).
+func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[string]string, nodeBackend func(LLMNode) string) []string {
 	if w == nil || len(routes) == 0 {
 		return nil
 	}
@@ -88,7 +92,12 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 		// environment IS the route, where the compiler may only read what
 		// the source declares — and the launch's vars decide a `{{vars.x}}`
 		// the source deliberately left open.
-		nodeBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		screenBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if nodeBackend != nil {
+			if ob := nodeBackend(nn); ob != "" {
+				screenBackend = ob
+			}
+		}
 		perm := EffectivePermission(nn.GetPermission(), w.Permission)
 		for stage, route := range routes {
 			if route.Backend == "" && route.Model == "" && route.Provider == "" {
@@ -109,11 +118,11 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 				refuse(reason)
 				continue
 			}
-			if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
+			if reason := toolsInversionReason(screenBackend, routeBackend, nn.GetTools()); reason != "" {
 				refuse(reason)
 				continue
 			}
-			if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
+			if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
 				refuse(reason)
 				continue
 			}
@@ -381,7 +390,11 @@ type PolicyLadderStage struct {
 // publish serializes source, not IR): the two screens are the documented
 // twin — the publisher's answer feeds its derivations (advisory), the
 // runner's is authoritative.
-func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string) []string {
+// The backend callback: the launch's model overrides win over the DSL
+// field at DISPATCH — the screen MUST read the same backend or a
+// cross-backend stage crosses a session-bearing node unscreened. nil = the
+// DSL reading.
+func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string) []string {
 	if w == nil || len(stages) == 0 {
 		return nil
 	}
@@ -414,7 +427,12 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 		if !ok {
 			continue
 		}
-		nodeBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		screenBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if nodeBackend != nil {
+			if ob := nodeBackend(nn); ob != "" {
+				screenBackend = ob
+			}
+		}
 		perm := EffectivePermission(nn.GetPermission(), w.Permission)
 		for i, st := range stages {
 			stage := stageBase + i
@@ -455,11 +473,11 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 				refuse(reason)
 				continue
 			}
-			if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
+			if reason := toolsInversionReason(screenBackend, routeBackend, nn.GetTools()); reason != "" {
 				refuse(reason)
 				continue
 			}
-			if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
+			if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
 				refuse(reason)
 				continue
 			}
