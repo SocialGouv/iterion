@@ -81,6 +81,14 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		err: forge.ErrProvisionApprovalNotFound, wantStatus: 0,
 		why: "an iterion store miss",
 	},
+	"forge.ErrLaunchVarsDrop": {
+		err: forge.ErrLaunchVarsDrop, wantStatus: 0,
+		why: "a partial launch_vars write refused before any forge call — the provisioning route answers 400, naming the pins to echo",
+	},
+	"forge.ErrProvisionDiverged": {
+		err: forge.ErrProvisionDiverged, wantStatus: 0,
+		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 with the converge-on-rerun remedy",
+	},
 
 	// Forge-answered 404s that stay out of the class because their own
 	// caller classifies them. Moving one in is a behaviour change to own.

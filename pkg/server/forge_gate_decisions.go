@@ -46,6 +46,15 @@ func newGateDecision(now time.Time) gateDecision {
 	return gateDecision{ID: rand.Text(), At: now.UTC().Truncate(time.Millisecond)}
 }
 
+// gateDecisionAt is a decision taken at an explicit instant. The publish
+// endpoint decides at now; the reconciler's synthetic failure decides at the
+// run's TERMINAL instant, so a verdict decided after the run died — the
+// relaunch's, a fresh push's review — supersedes it no matter which one
+// reaches the authority first.
+func gateDecisionAt(t time.Time) gateDecision {
+	return gateDecision{ID: rand.Text(), At: t.UTC().Truncate(time.Millisecond)}
+}
+
 // newerThan reports whether d was decided after o.
 func (d gateDecision) newerThan(o gateDecision) bool {
 	return d.At.After(o.At)
@@ -160,6 +169,20 @@ loop:
 		case !found || m.Decision.ID == cur.ID || !m.Decision.newerThan(cur) || m.Status.State == "":
 			break loop
 		}
+		// Never put a SYNTHETIC status back on top of what just landed. The
+		// reconciler's failure is anchored at its run's terminal instant, so
+		// it reads as "newer" than a verdict DECIDED before that death but
+		// POSTED after it — re-asserting buries a legitimate verdict under a
+		// marker (#1632 probe: R2's own re-assert covered its success with
+		// "review refused to certify", and nothing healed it). The asymmetry
+		// is deliberate: a synthetic marker is re-derivable (the reconciler's
+		// live read posts it again on a later pass if the head is still
+		// unanswered), a displaced real verdict is gone for good — the same
+		// hierarchy the reconciler applies when it reads (never overwrite a
+		// real verdict), applied to the write that re-assert performs.
+		if isSyntheticGateInterruption(m.Status.Description) {
+			break loop
+		}
 		if err := gc.SetCommitStatus(ctx, repo, sha, forge.CommitStatus{
 			State:       forge.CommitState(m.Status.State),
 			Context:     check,
@@ -214,10 +237,7 @@ func (v *valkeyGateDecisionStore) claim(ctx context.Context, key string, m gateM
 				break // an unreadable mark does not order anything
 			}
 			live := cur.live()
-			if live.Decision.newerThan(m.Decision) {
-				return nil // a newer decision owns the head
-			}
-			if live.Decision.ID == m.Decision.ID {
+			if live.Decision.ID != "" && live.Decision.ID == m.Decision.ID {
 				// This decision re-claiming its own mark (a replay): keep the
 				// entry as it stands, refresh its life.
 				_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
@@ -226,6 +246,15 @@ func (v *valkeyGateDecisionStore) claim(ctx context.Context, key string, m gateM
 				})
 				granted = err == nil
 				return err
+			}
+			// Tie-break toward the INCUMBENT: only a strictly newer decision
+			// displaces the live mark. Decisions truncate to the millisecond
+			// and the reconciler's anchor clamps to the server's now, so a
+			// tie is ordinary — and refusing it is what keeps a synthetic
+			// failure claiming in the same millisecond from beating a
+			// verdict (or an operator's approve) that claimed first.
+			if live.Decision.ID != "" && !m.Decision.newerThan(live.Decision) {
+				return nil
 			}
 			m.Prev = &live
 		}
@@ -356,13 +385,18 @@ func (s *memoryGateDecisionStore) claim(_ context.Context, key string, m gateMar
 	cur, held := s.marks[key]
 	live := cur.m.live()
 	if held && now.Before(cur.expires) {
-		if live.Decision.newerThan(m.Decision) {
-			return false, nil
-		}
-		if live.Decision.ID == m.Decision.ID {
+		if live.Decision.ID != "" && live.Decision.ID == m.Decision.ID {
 			cur.expires = now.Add(ttl) // this decision re-claiming its own mark
 			s.marks[key] = cur
 			return true, nil
+		}
+		// Tie-break toward the INCUMBENT: only a strictly newer decision
+		// displaces the live mark. Decisions truncate to the millisecond and
+		// the reconciler's anchor clamps to the server's now, so a tie is
+		// ordinary — and refusing it keeps a synthetic failure claiming in
+		// the same millisecond from beating a verdict that claimed first.
+		if live.Decision.ID != "" && !m.Decision.newerThan(live.Decision) {
+			return false, nil
 		}
 		m.Prev = &live
 	}

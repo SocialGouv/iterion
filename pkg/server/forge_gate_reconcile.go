@@ -141,15 +141,50 @@ func gateInterruptedDescriptionFor(run *store.Run) string {
 // gateDiedDescriptionPrefix opens the reasoned form of the synthetic status.
 const gateDiedDescriptionPrefix = "review died ("
 
+// gateRefusedDescriptionPrefix opens the OTHER diagnosis a missing verdict can
+// have: the review completed and the gate REFUSED its verdict (#1586: the
+// audited pin was stale or unreadable when the publish arrived). Distinct
+// from gateDiedDescriptionPrefix because the remedy differs — nothing died,
+// so re-running the same run is pointless; the new head needs a fresh review.
+const gateRefusedDescriptionPrefix = "review refused to certify ("
+
+// gateRefusedRemedy is the tail every refusal description ends with — the
+// way out, which is the one part a truncation must never eat.
+const gateRefusedRemedy = ") — push again or comment the bot's command to re-review"
+
+// gateRefusalDescription renders a recorded refusal as the status description
+// the head left bare gets. GitHub truncates descriptions at 140 runes, and
+// the remedy is the part the operator cannot reconstruct — so the REASON is
+// what gives way, bounded to what the envelope leaves it: 140 − 27 (prefix)
+// − 56 (remedy) = 57 runes, counted in RUNES on both constants — the remedy's
+// em-dash makes len() (bytes: 58) read two short of the truth.
+func gateRefusalDescription(r *gateRefusal) string {
+	reason := "no reason recorded"
+	if r != nil && strings.TrimSpace(r.Reason) != "" {
+		budget := 140 - utf8.RuneCountInString(gateRefusedDescriptionPrefix) - utf8.RuneCountInString(gateRefusedRemedy)
+		reason = boundedRunes(strings.TrimSpace(r.Reason), budget)
+	}
+	return gateRefusedDescriptionPrefix + reason + gateRefusedRemedy
+}
+
 // isSyntheticGateInterruption reports whether a gate status description is one
 // of the reconciler's own synthetic failures — a review that never happened —
 // as opposed to a real verdict a bot posted. The auto-fix lane keys off it:
 // there are no findings behind a synthetic failure for a fixer to address.
+//
+// Accepted collision: a bot's `gate.note` REPLACES the verdict description, so
+// a note beginning with one of these prefixes classifies a REAL verdict as
+// synthetic and denies it an auto-fix pass. The prefixes are iterion's own
+// vocabulary ("review died (", "review refused to certify ("), the note is the
+// bot's free text, and the failure direction is a skipped fixer launch — loud
+// in the lane's own logs, never a wrong verdict. Accepted deliberately rather
+// than escaped: a bot is told its prefixes are taken the day one collides.
 func isSyntheticGateInterruption(description string) bool {
 	d := strings.TrimSpace(description)
 	return d == gateInterruptedDescription || d == gateDLQDescription || d == gateDLQDescriptionReplay ||
 		d == gateDeclineDescription ||
-		strings.HasPrefix(d, gateDiedDescriptionPrefix)
+		strings.HasPrefix(d, gateDiedDescriptionPrefix) ||
+		strings.HasPrefix(d, gateRefusedDescriptionPrefix)
 }
 
 // startGateReconciler attaches the reconciler to the event spine. It rides the
@@ -332,6 +367,16 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		if s.replayGateDeferral(ctx, run, token, grant, d) {
 			return nil
 		}
+		// The replay is over and may have RECORDED a refusal on the grant
+		// (its pin was stale by the time the wait ended). Re-read: the copy
+		// in hand predates the replay, and the refusal check below would
+		// otherwise be blind to what THIS pass just learned — parking the
+		// run on a reversible settlement for hours with the answer in hand.
+		fresh, found := s.forgePublishTokens.lookup(token)
+		if !found {
+			return abstain("its publish grant expired or was revoked mid-repair")
+		}
+		grant = fresh
 	}
 
 	// Holding a grant is NOT owing a verdict. The server mints one for any bot
@@ -388,6 +433,24 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if v := grant.Verdict; v != nil && verdictAnswersRun(run, grant, v.SHA, v.Context) {
 		s.settleOwnVerdict(ctx, run, token, grant, v)
 		return nil
+	}
+	// A run whose verdict the gate REFUSED (#1586: a stale or unreadable
+	// audited pin) left nothing on the head either — but it is not dead, and
+	// it finished CLEANLY, so without this record no lane ever learns of it:
+	// the head-moved stand-down below would leave a required check nothing
+	// answers (review_on_sync is off by default — the stand-down's premise
+	// that a fresher review is coming is false), and the synthetic failure
+	// would read "review died" of a review that completed (#1632). The record
+	// is what lets the flow below tell both apart.
+	refusal := refusalAnswersRun(run, grant, gateCtx)
+	// A refusal is honored at most once, by the episode that produced it:
+	// every settle below retires the record with the episode (the settle
+	// marks are episode-scoped; the refusal must not outlive them — see
+	// clearGateRefusal).
+	clearRefusal := func() {
+		if refusal != nil {
+			s.clearGateRefusal(token, refusal)
+		}
 	}
 
 	host, repo, number, err := forge.ParsePullURL(prURL)
@@ -456,6 +519,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 			s.cutBackGrant(run, token)
 		}
 		s.settleGateRun(run, reason, pr.HeadSHA)
+		clearRefusal()
 		if s.logger != nil {
 			s.logger.Debug("forge gate: run %s owed %s on %s, but the pull request is %s — a closed pull request needs no verdict",
 				runID, gateCtx, prURL, pr.State)
@@ -467,7 +531,15 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// has its own review claiming its own check. Warning on it would bury the
 	// branches that mean something under routine noise. A force-push back to
 	// the reviewed commit is possible, so that settlement is re-checked.
-	if !strings.EqualFold(reviewed, pr.HeadSHA) {
+	//
+	// The exception is the recorded refusal: THIS run's verdict was declined
+	// for a stale pin, which is precisely the case where the premise above —
+	// "the newer head has its own review" — is unproven: review_on_sync is
+	// off by default, so nothing may be coming at all. Fall through with
+	// pr.HeadSHA as the revision to answer: the live status evaluation below
+	// decides — a real verdict or another run's claim stands the repair
+	// down, an absent check gets the refusal's own failure (#1632).
+	if !strings.EqualFold(reviewed, pr.HeadSHA) && refusal == nil {
 		s.settleGateRun(run, gateSettledHeadMoved, pr.HeadSHA)
 		if s.logger != nil {
 			s.logger.Debug("forge gate: run %s reviewed %s but %s is now at %s — leaving the newer head to its own review",
@@ -515,6 +587,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 			reason = gateSettledVerdictSuccess
 		}
 		s.settleGateRun(run, reason, pr.HeadSHA)
+		clearRefusal()
 		return nil
 
 	case isGateInFlight(gate):
@@ -582,17 +655,152 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		return nil
 	}
 
+	// The synthetic failure is a DECISION on this check like any verdict, and
+	// it crosses the same single authority (forge_gate_decisions.go) — the
+	// read-then-write above is not atomic, and without the claim a success
+	// published between the read and this write is painted over (#1590: the
+	// reconciler reads the dead run's pending, a fresh run's verdict lands,
+	// the failure covers it). Anchored at the run's TERMINAL instant, not at
+	// now: a verdict decided after the run died is always newer, whichever
+	// side reaches the authority first. What the anchor cannot save is a
+	// verdict decided BEFORE the death but POSTED inside the read-then-write
+	// window — the live read never saw it, decision-time ordering makes the
+	// synthetic "newer", and it is lawfully overwritten: that is the design's
+	// stated tradeoff (docs/merge-gate.md), and reassertNewerVerdict keeps it
+	// from being made worse (a real verdict that DID land is never covered
+	// back over by a synthetic).
+	//
+	// The terminal instant is FinishedAt, never UpdatedAt: granular setters
+	// keep stamping UpdatedAt after the run is over (a budget snapshot on
+	// every resume of a failed_resumable run, …), and an anchor reading
+	// bookkeeping as the death would refuse — as "superseded" — verdicts
+	// decided in the shadow between the true death and the stamp. UpdatedAt
+	// stays the fallback for runs written before FinishedAt existed.
+	anchorAt := run.UpdatedAt
+	if run.FinishedAt != nil {
+		anchorAt = *run.FinishedAt
+	}
+	// FinishedAt is stamped from the RUNNER's clock; every decision this
+	// authority compares it against is taken on OURS. A stamp from a clock
+	// running ahead would make the anchor "newer" than verdicts decided
+	// after the true death (an operator's approve among them), so clamp it
+	// to what this server can vouch for — the decision store's tie-break
+	// toward the incumbent then resolves the same-millisecond ties the
+	// clamp creates.
+	if now := s.gateNow(); anchorAt.After(now) {
+		anchorAt = now
+	}
+	decision := gateDecisionAt(anchorAt)
+	description := gateInterruptedDescriptionFor(run)
+	if refusal != nil {
+		// The review did not die — the gate declined its verdict. Say so:
+		// the remedy (a fresh review of the head) is not the died one's
+		// (re-run the dead bot), and an operator told the wrong one re-runs
+		// a refusal into a refusal.
+		description = gateRefusalDescription(refusal)
+	}
+	markKey := gateDecisionKey(conn, repo, pr.HeadSHA, gateCtx)
+	mark := gateMark{Decision: decision, Status: gateMarkStatus{
+		State: string(forge.CommitStateFailure), Description: description, TargetURL: runTarget.url,
+	}}
+	switch ok, claimErr := s.claimGateDecision(ctx, markKey, mark); {
+	case claimErr != nil:
+		// The authority cannot answer: same rule as an unreadable status —
+		// writing blind risks overwriting a real verdict, which is worse
+		// than a stuck check. The next offer retries.
+		return abstain("the verdict-order authority on %s@%s could not answer: %v", repo, shortSHA(pr.HeadSHA), claimErr)
+	case !ok:
+		// The claim was refused — but WHY decides whether the run may be
+		// settled. Settling superseded is PERMANENT, and its premise is "the
+		// incumbent's verdict is posted, or claimed and about to be". That
+		// premise is only sound when the incumbent is STRICTLY newer than
+		// this run's anchor: a real decision taken after the death. A TIE is
+		// this run's own twin pass (two racing offers anchor at the same
+		// FinishedAt) or a same-millisecond coincidence — and the twin's
+		// post can still fail (it releases and posts nothing), which with a
+		// permanent settle would strand the required check forever: the
+		// sweep never re-offers. So on a tie, or when the incumbent cannot
+		// be read at all, settle nothing: leaving the run offered costs the
+		// same one-offer-per-sweep the design already accepts for answered
+		// heads, and the next pass either finds the twin's posted synthetic
+		// (the speaksFor branch's cheap exit) or re-claims after the release
+		// and posts the repair itself.
+		// Last-offer detection, same rule as the abstain path: a run this
+		// branch leaves OFFERED ages out of the sweep horizon like any
+		// other, and a check that still has no answer then strands in the
+		// same silence the abstain's last-pass Warn exists to break. Levels
+		// mirror abstain's: Warn on the event path (it fires once per run),
+		// Debug on mid-horizon sweep passes (a stuck tie is otherwise ~60
+		// lines an hour), Warn on the last offer.
+		lastOffer := via == gateTriggerSweep && s.gateSweepIsLastPass(run)
+		logOffer := func(format string, args ...any) {
+			if s.logger == nil {
+				return
+			}
+			args = append([]any{runID, repo, shortSHA(pr.HeadSHA)}, args...)
+			switch {
+			case lastOffer:
+				s.logger.Warn("forge gate: run %s on %s@%s: "+format+" — this was the last sweep offer inside the "+
+					gateSweepHorizon.String()+" horizon: the check may stay unanswered until a human acts", args...)
+			case via != gateTriggerSweep:
+				s.logger.Warn("forge gate: run %s on %s@%s: "+format, args...)
+			default:
+				s.logger.Debug("forge gate: run %s on %s@%s: "+format, args...)
+			}
+		}
+		incumbent, found, readErr := s.gateDecisions.newest(ctx, markKey)
+		switch {
+		case readErr != nil || !found:
+			logOffer("its claim was refused but the incumbent could not be read (%v) — leaving the run offered, settling nothing", readErr)
+			return nil
+		case !incumbent.Decision.newerThan(decision):
+			logOffer("its claim tied the incumbent (its own twin pass, or a same-ms coincidence) — leaving the run offered: the incumbent's post is not yet proof")
+			return nil
+		}
+		s.settleGateRun(run, gateSettledSuperseded, pr.HeadSHA)
+		clearRefusal()
+		if s.logger != nil {
+			s.logger.Info("forge gate: run %s died on %s@%s but a strictly newer verdict decision owns the check — leaving it alone",
+				runID, repo, shortSHA(pr.HeadSHA))
+		}
+		return nil
+	}
 	st := forge.CommitStatus{
 		State:       forge.CommitStateFailure,
 		Context:     gateCtx,
-		Description: gateInterruptedDescriptionFor(run),
+		Description: description,
 		TargetURL:   runTarget.url,
 	}
 	if err := gc.SetCommitStatus(ctx, repo, pr.HeadSHA, st); err != nil {
+		// This verdict will neither post nor wait: free its claim so an
+		// older deferred verdict can still land (the sweep re-offers the
+		// run, and the next pass re-claims).
+		s.releaseGateDecision(ctx, markKey, decision)
 		if s.logger != nil {
 			s.logger.Error("forge gate: run %s left %s on %s unanswered and the failure status could not be posted: %v — that PR is blocked on a check that will never arrive",
 				runID, gateCtx, prURL, err)
 		}
+		return nil
+	}
+	s.reassertNewerVerdict(ctx, gc, markKey, repo, pr.HeadSHA, gateCtx, decision)
+	// The answer is posted; if it carried the refusal's diagnosis, the record
+	// is consumed — retire it with the episode (see clearGateRefusal).
+	clearRefusal()
+	if refusal != nil && !strings.EqualFold(reviewed, pr.HeadSHA) {
+		// The refusal's answer is the diagnosis itself, not a re-run: the
+		// relaunch replays the run's inputs verbatim — the STALE head
+		// included — and would audit the same superseded revision again at
+		// full price, earning the same refusal. The fresh review of the new
+		// head is the push's own lane (review_on_sync or the developer's),
+		// and the check now says why it is needed. Settled for good: the
+		// sweep must not re-offer a run that was answered.
+		if s.logger != nil {
+			s.logger.Info("forge gate: run %s's verdict was refused (%s) and nothing answered %s on the new head of %s — posted a failure naming the refusal",
+				runID, refusal.Reason, gateCtx, prURL)
+		}
+		s.settleGateRun(run, gateSettledRefused, pr.HeadSHA)
+		clearRefusal()
+		s.cutBackGrant(run, token)
 		return nil
 	}
 	if s.logger != nil {

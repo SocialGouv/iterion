@@ -39,6 +39,18 @@ type BotForgeLookup func(ctx context.Context, teamID, botID string) (*bundle.For
 // `/command` routes to a bot that does not answer to it.
 type BotInvocationsLookup func(ctx context.Context, teamID, botID string) ([]bundle.Invocation, error)
 
+// ErrLaunchVarsDrop refuses a launch_vars write that would silently drop keys
+// the repo already pins. The error names every key the caller must echo, and
+// the explicit gesture (LaunchVarsReplace) that replaces the whole map.
+var ErrLaunchVarsDrop = errors.New("forge: launch_vars would drop pinned key(s)")
+
+// ErrProvisionDiverged marks a write that landed on ONE of the two stores the
+// operator settings live on (the integration reports them, the webhook config
+// enforces them) and failed on the other. Re-running the same request
+// converges — Provision is idempotent, and the enforcement half is written
+// first so the report never certifies settings that are not in force.
+var ErrProvisionDiverged = errors.New("forge: provision wrote only one of the two operator-settings stores")
+
 // Orchestrator turns "enable bot(s) X on repo Y of connection C" into the
 // concrete trio — an iterion webhooks.Config, a forge-side hook, and a
 // per-webhook secret override pinning the connection's managed forge token
@@ -157,8 +169,16 @@ type ProvisionRequest struct {
 	// LaunchVars are operator overrides stamped onto every run this repo's
 	// bots launch, layered after their manifest vars. Persisted on the
 	// integration and re-applied on every Provision (see
-	// RepoIntegration.LaunchVars). Nil leaves the stored ones untouched.
+	// RepoIntegration.LaunchVars). Nil leaves the stored ones untouched. A
+	// non-nil map is the EXACT desired set: an EMPTY one clears every pin; a
+	// non-empty one that would drop keys the repo already pins is refused
+	// (ErrLaunchVarsDrop) unless LaunchVarsReplace makes the replacement
+	// explicit — a partial write must never silently drop a pin.
 	LaunchVars map[string]string
+	// LaunchVarsReplace acknowledges that LaunchVars replaces the whole map,
+	// including dropping keys the repo pins today. The greppable escape hatch
+	// for the drop refusal above.
+	LaunchVarsReplace bool
 	// HoldLabels is the operator's per-repo automation pause. Nil means "keep
 	// what the repo already has" — the same rule as LaunchVars.
 	HoldLabels []string
@@ -253,19 +273,95 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 	}
 
+	// A non-nil launch-vars map is the EXACT desired set. Two shapes are
+	// unambiguous: the EMPTY map clears every pin (nobody writes {} meaning
+	// "change one key"), and a map carrying every pinned key drops none. The
+	// dangerous shape is the one in between — "change gate_context" said with
+	// one key — which would drop the unmentioned pins in silence, leaving the
+	// repo certifying a configuration that is no longer in force. Refuse it
+	// and name them; LaunchVarsReplace is the explicit gesture for a genuine
+	// whole-map replacement.
+	if len(req.LaunchVars) > 0 && !req.LaunchVarsReplace && hasExisting {
+		// The baseline is the UNION of both stores: a crash between the
+		// config-first and integration-second writes (restart is normal, no
+		// error is ever returned) leaves the config pinning keys the
+		// integration lacks, and a baseline reading only the integration
+		// would wave a partial write through that silently drops them — with
+		// verifyOperatorSettings none the wiser, since it compares against
+		// what was just written.
+		baseline := make(map[string]string, len(existing.LaunchVars)+len(prevCfg.OperatorLaunchVars))
+		for k, v := range existing.LaunchVars {
+			baseline[k] = v
+		}
+		if hasPrevCfg {
+			for k, v := range prevCfg.OperatorLaunchVars {
+				baseline[k] = v
+			}
+		}
+		var dropped []string
+		for k := range baseline {
+			if _, kept := req.LaunchVars[k]; !kept {
+				dropped = append(dropped, k)
+			}
+		}
+		if len(dropped) > 0 {
+			sort.Strings(dropped)
+			return ProvisionResult{}, fmt.Errorf("%w [%s] — echo them in launch_vars to keep them, or set launch_vars_replace to replace the whole map",
+				ErrLaunchVarsDrop, strings.Join(dropped, " "))
+		}
+	}
+
 	// Operator overrides survive a re-provision: Provision rewrites the whole
 	// webhook config from the manifests, so anything PATCHed onto the webhook
 	// is lost at the next enable. A nil request map means "leave them alone",
 	// not "clear them" — enabling one more bot must not silently drop the
 	// repo's own settings.
-	// Each of the four resolves the same way — request, then the integration,
-	// then the config that still enforces the repo's choice. The last step is
-	// what keeps a setting made the documented way (a webhook PATCH) from
-	// being rebuilt away, and it is required of EVERY field the write block
-	// below stamps: one that skipped it would be re-written from an empty
-	// integration and dropped the moment any other field changes.
+	// Each of the four resolves from the request first, then the stored
+	// state — the integration AND the config that still enforces the repo's
+	// choice. The doctrine deciding disagreements: the integration's report
+	// is only ever written by Provision itself, while the config is the ONLY
+	// surface receiving OUT-OF-BAND writes (the documented webhook PATCH
+	// writes these fields to the config alone) — and the enforcement-first
+	// write order means the config half is never the stale one. So on a
+	// silent request, when the two stores disagree, the CONFIG wins and the
+	// provision converges the integration to it; when they agree, the adopt
+	// is unchanged. Launch vars are the exception that stays
+	// refuse-on-divergence: key-absence in a map is ambiguous (a deliberate
+	// drop vs a stale store is unreadable) in a way a scalar or a slice's
+	// explicit-empty is not.
 	operatorVars := req.LaunchVars
 	if operatorVars == nil && hasExisting {
+		// The adopt reads BOTH stores, and a diverged pair is REFUSED, never
+		// resolved: key-absence in the config is ambiguous — a deliberate
+		// drop whose integration write crashed (ErrProvisionDiverged's shape)
+		// is indistinguishable from a stale integration predating the config —
+		// so any merge risks resurrecting a dropped pin from the stale store
+		// and re-enforcing it at 200 OK. Fail closed: name the diverging keys
+		// and demand the explicit gesture (launch_vars echo, or
+		// launch_vars_replace), which converges both stores. A legacy repo
+		// whose keys live only on the integration meets this refusal once —
+		// the echo remedy is the same. maps.Equal(nil, empty) is true, so the
+		// nilIfEmpty normalization on the write path stays compatible.
+		if hasPrevCfg && !maps.Equal(existing.LaunchVars, prevCfg.OperatorLaunchVars) {
+			diverged := map[string]bool{}
+			for k, v := range existing.LaunchVars {
+				if prevCfg.OperatorLaunchVars[k] != v {
+					diverged[k] = true
+				}
+			}
+			for k, v := range prevCfg.OperatorLaunchVars {
+				if existing.LaunchVars[k] != v {
+					diverged[k] = true
+				}
+			}
+			keys := make([]string, 0, len(diverged))
+			for k := range diverged {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			return ProvisionResult{}, fmt.Errorf("%w: launch_vars diverge between the integration and the webhook config on key(s) [%s] — a silent re-provision cannot tell a deliberate drop from a stale store; re-run with an explicit launch_vars (echo what stays) or launch_vars_replace: provisioning converges",
+				ErrProvisionDiverged, strings.Join(keys, " "))
+		}
 		operatorVars = existing.LaunchVars
 		if len(operatorVars) == 0 && hasPrevCfg {
 			operatorVars = prevCfg.OperatorLaunchVars
@@ -274,29 +370,44 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	operatorOverlap := req.Overlap
 	if operatorOverlap == "" && hasExisting {
 		operatorOverlap = existing.Overlap
-		if operatorOverlap == "" && hasPrevCfg {
+		// A NON-EMPTY config overlap always wins: the documented PATCH set
+		// it (config-only, newer than the integration's stamp), whether the
+		// integration is empty (today's backfill) or disagrees (the
+		// regression this fixes: PATCH "supersede" over a provisioned
+		// "skip" silently reverted to "skip"). An EMPTY config overlap keeps
+		// the integration's value standing: a deliberate clear via the PATCH
+		// is normalized to "allow" at ingress (webhooks_routes.go), so an
+		// empty config value can no longer arrive that way — the remaining
+		// producers of this shape are a crashed two-store write or an
+		// integration Provision stamped before the value was cleared, and a
+		// scalar's empty is indistinguishable from never-set, so the
+		// integration side is the safe read.
+		if hasPrevCfg && prevCfg.Overlap != "" {
 			operatorOverlap = prevCfg.Overlap
 		}
 	}
 	operatorHold := req.HoldLabels
 	if operatorHold == nil && hasExisting {
 		operatorHold = existing.HoldLabels
-		// Backfill: hold labels were settable only on the webhook config before
-		// they lived here, and that is still what the webhook API PATCHes. A
-		// provision that read only the integration would wipe a pause an
-		// operator had set the documented way — so adopt it instead.
-		if len(operatorHold) == 0 && hasPrevCfg {
+		// Same rule, and here the deliberate gesture is a non-nil EMPTY: the
+		// PATCH lifts a hold with []. A nil config value leaves the
+		// integration's alone (legacy one-sided); a non-nil one — the empty
+		// lift included — wins any disagreement, so a lifted hold is never
+		// resurrected from the integration's stale stamp. The lift only
+		// reads as explicit because the store keeps empty slices (the bson
+		// tag on webhooks.Config.HoldLabels; lifts written before that tag
+		// change collapsed to nil and cannot be told from never-set).
+		if hasPrevCfg && prevCfg.HoldLabels != nil && !slices.Equal(prevCfg.HoldLabels, operatorHold) {
 			operatorHold = prevCfg.HoldLabels
 		}
 	}
 	operatorLabels := req.LabelAllowlist
 	if operatorLabels == nil && hasExisting {
 		operatorLabels = existing.LabelAllowlist
-		// Same backfill as the pause above: narrowing the issue lane was a
-		// webhook-config PATCH before it lived here, and that is still the
-		// documented gesture. Dropping it on re-provision fails OPEN — the repo
-		// silently returns to "any label dispatches the implementer".
-		if len(operatorLabels) == 0 && hasPrevCfg {
+		// Same rule as the pause above. A deliberate WIDENING ([]) must win
+		// too — this one fails OPEN when lost: the repo silently returns to
+		// "any label dispatches the implementer".
+		if hasPrevCfg && prevCfg.LabelAllowlist != nil && !slices.Equal(prevCfg.LabelAllowlist, operatorLabels) {
 			operatorLabels = prevCfg.LabelAllowlist
 		}
 	}
@@ -387,15 +498,15 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			if !hasPrevCfg {
 				return ProvisionResult{}, fmt.Errorf("forge: integration %s claims webhook %q, which does not exist — cannot apply the repo's operator settings", existing.ID, existing.WebhookID)
 			}
-			existing.LaunchVars = operatorVars
-			existing.Overlap = operatorOverlap
-			existing.HoldLabels = operatorHold
-			existing.LabelAllowlist = operatorLabels
-			existing.AutoFixOnGateFailure = operatorAutoFix
-			existing.UpdatedAt = o.clock()
-			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
-				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
-			}
+			// Two stores, no shared transaction: the integration REPORTS the
+			// settings, the config ENFORCES them. Write the enforcement half
+			// FIRST — a failure between the two then leaves the repo applying
+			// settings the report has not caught up with, never the report
+			// certifying a configuration that is not in force — and fail
+			// loudly with ErrProvisionDiverged. Every failure mode here
+			// converges on re-run: Provision is idempotent and the changed
+			// check above compares against BOTH stores, so the same request
+			// repeats exactly the write that did not land.
 			cfg := prevCfg
 			cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
 			cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
@@ -405,6 +516,18 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			cfg.UpdatedAt = o.clock()
 			if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: update webhook operator settings: %w", uerr)
+			}
+			existing.LaunchVars = operatorVars
+			existing.Overlap = operatorOverlap
+			existing.HoldLabels = operatorHold
+			existing.LabelAllowlist = operatorLabels
+			existing.AutoFixOnGateFailure = operatorAutoFix
+			existing.UpdatedAt = o.clock()
+			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
+				return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, uerr)
+			}
+			if verr := o.verifyOperatorSettings(ctx, existing, cfg); verr != nil {
+				return ProvisionResult{}, verr
 			}
 		}
 		// Backfill the per-bot routing table onto a config provisioned before
@@ -661,7 +784,11 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ri.LastSyncedAt = existing.LastSyncedAt
 		ri.MinAuthorRole = existing.MinAuthorRole
 		if err := o.Integrations.Update(ctx, ri); err != nil {
-			return ProvisionResult{}, fmt.Errorf("forge: update integration: %w", err)
+			// Same divergence as the operator-settings write: the config
+			// already carries the new settings (above), the report half
+			// failed. Typed so the route can say so; re-running the same
+			// request converges.
+			return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, err)
 		}
 	} else {
 		ri.ID = o.id()
@@ -1580,6 +1707,36 @@ func webhookRoleRank(role string) int {
 		return 1
 	}
 	return 0
+}
+
+// verifyOperatorSettings reads BOTH stores back after the operator-settings
+// write and refuses to certify a divergence: an Update can report success and
+// still lose to a concurrent writer, and a caller reading only the integration
+// would then certify a configuration the webhook does not enforce. Any
+// mismatch is ErrProvisionDiverged — re-running the same request converges.
+func (o *Orchestrator) verifyOperatorSettings(ctx context.Context, wantInteg RepoIntegration, wantCfg webhooks.Config) error {
+	integ, err := o.Integrations.Get(ctx, wantInteg.ID)
+	if err != nil {
+		return fmt.Errorf("%w: read the integration back: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, wantCfg.ID)
+	if err != nil {
+		return fmt.Errorf("%w: read the webhook config back: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, err)
+	}
+	switch {
+	case !maps.Equal(integ.LaunchVars, wantInteg.LaunchVars),
+		integ.Overlap != wantInteg.Overlap,
+		integ.AutoFixOnGateFailure != wantInteg.AutoFixOnGateFailure,
+		!slices.Equal(integ.HoldLabels, wantInteg.HoldLabels),
+		!slices.Equal(integ.LabelAllowlist, wantInteg.LabelAllowlist):
+		return fmt.Errorf("%w: the integration does not read back what was written — re-run the same request, provisioning converges", ErrProvisionDiverged)
+	case !maps.Equal(cfg.OperatorLaunchVars, wantCfg.OperatorLaunchVars),
+		cfg.Overlap != wantCfg.Overlap,
+		!slices.Equal(cfg.HoldLabels, wantCfg.HoldLabels),
+		!slices.Equal(cfg.LabelAllowlist, wantCfg.LabelAllowlist):
+		return fmt.Errorf("%w: the webhook config does not read back what was written — re-run the same request, provisioning converges", ErrProvisionDiverged)
+	}
+	return nil
 }
 
 func dedupSorted(in []string) []string {

@@ -1659,13 +1659,12 @@ func (s *Server) handleGitLabReviewApprove(ctx context.Context, w http.ResponseW
 	if reason != "" {
 		desc += ": " + reason
 	}
-	if err := gc.SetCommitStatus(ctx, p.ProjectPath, pr.HeadSHA, forge.CommitStatus{
-		State:       forge.CommitStateSuccess,
-		Context:     gateCtx,
-		Description: desc,
-		TargetURL:   p.NoteURL,
-	}); err != nil {
-		why := "set commit status: " + err.Error()
+	superseded, statusErr := s.postApproveGateStatus(ctx, path.conn, gc, p.ProjectPath, pr.HeadSHA, gateCtx, desc, p.NoteURL)
+	if superseded {
+		statusErr = errors.New("a newer verdict decision owns the check — the approval was not written; review the head's current state and approve again")
+	}
+	if statusErr != nil {
+		why := "set commit status: " + statusErr.Error()
 		s.warnApproveDidNotLand(cfg.Provider, p.ProjectPath, int(p.MRIID), p.AuthorUsername, why)
 		claim.Status, claim.Error = webhooks.StatusLaunchError, why
 		s.updateApproveDelivery(ctx, claim)
