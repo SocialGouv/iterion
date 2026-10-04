@@ -16,11 +16,12 @@ import { errorMessage } from "@/lib/errorHints";
 
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { useUIStore } from "@/store/ui";
 
 import { OriginBadge, SettingsScaffold } from "./SettingsScaffold";
-import { buildBotVarsPatch, newRow, rowsFromVars, type VarRow } from "./botVars";
+import { buildBotVarsPatch, newRow, refusedList, rowsFromVars, type VarRow } from "./botVars";
 
 export default function BotVarsPage() {
   const addToast = useUIStore((s) => s.addToast);
@@ -88,6 +89,20 @@ export default function BotVarsPage() {
         <>Propagation bound: {view?.propagation_bound_seconds ?? 0}s</>
       }
     >
+      {/* A refused entry is stored but NOT applied — the pod env and the .bot
+          default answer instead. Without this the operator reads it as live. */}
+      {refusedList(view?.refused).map(({ name, reason }) => (
+        <InlineBanner
+          key={name}
+          tone="warning"
+          layout="inline"
+          title={`${name} is stored but refused — not applied`}
+        >
+          {reason}. The pod env and the .bot default answer instead until the
+          entry is removed or replaced by a valid value.
+        </InlineBanner>
+      ))}
+
       {rows.length === 0 ? (
         <EmptyState message="No var overrides. Add one below." />
       ) : (
