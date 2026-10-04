@@ -18,6 +18,7 @@ import { useAutoValidation } from "@/hooks/useAutoValidation";
 import { useAutoOpenDiagnosticsOnError } from "@/hooks/useAutoOpenDiagnosticsOnError";
 import { useFileWatcher } from "@/hooks/useFileWatcher";
 import { editorDeepLinkTargetsDocument } from "@/lib/editorDeepLink";
+import { anyUnsavedBuffer } from "@/lib/unsavedBuffers";
 import {
   useAssistantPageContext,
   type AssistantPageContextContribution,
@@ -222,7 +223,11 @@ export default function EditorView({ active = true }: EditorViewProps) {
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (docStoreInst.getState().hasUnsavedWork()) {
+      // Beyond this tab's document and Source view, the buffers no document
+      // store owns — the bundle drawer's, the run file dialog's — hold work
+      // a browser close takes with it, wherever in the app their surface
+      // currently is (#1755).
+      if (docStoreInst.getState().hasUnsavedWork() || anyUnsavedBuffer()) {
         e.preventDefault();
       }
     };
