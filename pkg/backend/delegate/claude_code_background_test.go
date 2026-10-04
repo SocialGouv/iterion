@@ -233,17 +233,23 @@ func (r bgRun) resultText() string {
 // for AUTOTURN_GRACE, an immediately-lapsing deadline for ANSWER_WAIT) —
 // either way it honestly burns nothing and prices as nothing.
 //
-// The honesty of the arithmetic is bought with worst-case CI burn: a test
-// configuring a 20s grace prices a 100s answer wait, ×headroom — a genuine
-// wedge there trips the net after ~13 minutes of merge-queue wall clock
-// (~14 with the ceiling knobs set) where the fixed 30s tripped in one.
-// Bounded, and accepted: the daily cost this helper exists to kill is the
-// flake, not the slow wedge report.
+// The derivation is CAPPED: merge-group run 37232043905 (2026-10-04)
+// falsified the unbounded form — TestBackground_TheRestRequestSaysWhatItAsks
+// produced ONE turn and then made no progress for its whole 845.4s derived
+// budget while the rest of the package ran at normal speed: a genuine
+// wedge, not stretch, billed at the fattest scenario's knob values. A
+// wedge's cost must not be priced by the scenario it happens to strike:
+// the slowest honest session in this suite runs ~11s and the worst
+// stretch the queue has produced is ~11x (#2177), so 3 minutes covers a
+// ~16x stretch of the slowest honest shape and bills any wedge at most
+// that. A scenario honestly needing more than the ceiling belongs in a
+// slower harness, not in this one — say so in the test that writes it.
 func bgSessionSafetyNet(t *testing.T, script []string, mergedEnv map[string]string) time.Duration {
 	t.Helper()
 	const (
 		headroom       = 6
 		wedgeAllowance = 30 * time.Second
+		wedgeCeiling   = 3 * time.Minute
 	)
 	var sleeps time.Duration
 	for _, step := range script {
@@ -294,7 +300,10 @@ func bgSessionSafetyNet(t *testing.T, script []string, mergedEnv map[string]stri
 			drivers += answerWaitFactor * g
 		}
 	}
-	return wedgeAllowance + headroom*(sleeps+drivers)
+	if net := wedgeAllowance + headroom*(sleeps+drivers); net < wedgeCeiling {
+		return net
+	}
+	return wedgeCeiling
 }
 
 // runBgSession plays script through runSession. env sets iterion's knobs (the
