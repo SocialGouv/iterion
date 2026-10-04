@@ -99,6 +99,19 @@ func TestReprovisionDropsNoIntegrationFieldItDoesNotOwn(t *testing.T) {
 	if err := o.Integrations.Update(ctx, integ); err != nil {
 		t.Fatal(err)
 	}
+	// The sentinel fill created a launch_vars map the config does not carry;
+	// the nil-map adopt refuses such a divergence (fail-closed — a deliberate
+	// drop is indistinguishable from a stale store). A real repo holds the
+	// same map on both stores, so mirror it: this test is about field-carry
+	// on the rebuild path, not about the adopt.
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.OperatorLaunchVars = integ.LaunchVars
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	// Enabling one more bot, which is what takes the REBUILD path. Re-sending
 	// the identical request would short-circuit and never reach the Update

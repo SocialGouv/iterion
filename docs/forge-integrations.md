@@ -157,7 +157,7 @@ by signed state + an agent-binding cookie:
 | GET | `/repo-bots` | list active integrations |
 | GET | `/repo-bots/preview?connection_id=&bots=` | events + scopes + conflicts, no writes |
 | POST | `/repo-bots` | enable `{connection_id, repo, bot_ids}` → `ProvisionResult` |
-| PATCH | `/repo-bots/{integration_id}` | update an integration's bot set |
+| PATCH | `/repo-bots/{integration_id}` | update an integration — bot set and/or operator settings |
 | DELETE | `/repo-bots/{integration_id}` | disable |
 
 Both write routes also carry the repo's **operator-owned** settings —
@@ -169,9 +169,34 @@ webhook fields with no integration half (`review_request_logins`,
 `authorized_repliers`, `key_overrides`, rate/monthly limits, …), which the
 rebuild carries forward from the previous config precisely because the webhook
 PATCH is their only storage (see `carryOperatorWebhookSettings`). Omitting a
-field keeps the stored value; an explicit empty list clears it.
+field keeps the stored value; an explicit empty list clears it (durable on
+Mongo — `hold_labels`/`label_allowlist` carry no `omitempty` for exactly that
+reason). When the integration and the config disagree on one of these fields
+(a PATCH the integration never caught up with, or a crashed write), the silent
+adopt resolves it the same way every time: **the config wins** — it is the
+only out-of-band write surface and, with enforcement-first ordering, never
+the stale half — and the provision converges the integration to it.
 `label_allowlist` is the one that decides which freshly-applied issue label
-dispatches the implementer (empty = any label does).
+dispatches the implementer (empty = any label does). On the PATCH, `bot_ids`
+itself is optional — absent keeps the stored bot set, an *empty* list is a
+400 (removing the last bot is the DELETE).
+
+`launch_vars` has the sharpest rule, because it carries pins like
+`gate_context`: a non-nil map is the **exact** desired set — an empty map
+clears every pin, and a non-empty map that would drop keys the repo pins
+today (on the integration OR the config — the baseline is both stores) is
+**refused** (400) with each key named, unless
+`"launch_vars_replace": true` makes the whole-map replacement explicit. A
+partial write never applies silently. And an *absent* map adopts the stored
+one only when the two stores agree: on a diverged pair the silent adopt is
+refused too (`ErrProvisionDiverged`, naming the keys — a deliberate drop is
+indistinguishable from a stale store, so the echo or the replace flag is
+demanded explicitly). The two stores the settings live on
+(integration = report, webhook config = enforcement) are written
+enforcement-first; the operator-settings write additionally reads both back,
+and every divergence — there or on the full rebuild path — fails loudly
+and converges on re-run. Switching `gate_context` is
+a procedure, not just a PATCH — see [merge-gate.md](merge-gate.md#switch-gate).
 
 ## Provider support
 

@@ -59,6 +59,8 @@ import (
 //	  forge.ErrOAuthAppNotFound            0
 //	  forge.ErrBoardBindingNotFound        0
 //	  forge.ErrProvisionApprovalNotFound   0
+//	  forge.ErrLaunchVarsDrop              0  the provisioning route answers 400 itself
+//	  forge.ErrProvisionDiverged           0  the provisioning route answers 500 itself
 //
 //	OUTSIDE it, and never sent at all — the one 0 the caller never sees
 //	  forge.ErrLocalPreflight              0 here; writeForgeUpstreamError reads it through isIterionFault and answers 500

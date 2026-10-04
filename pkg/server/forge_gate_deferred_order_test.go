@@ -358,6 +358,11 @@ func TestANewerDeferralReplacesTheRecordedVerdict(t *testing.T) {
 	}
 	reset := w.now.Add(30 * time.Minute).Truncate(time.Second)
 	w.f.limitedUntil = reset
+	// The two decisions are causally ordered — give them the distinct
+	// instants production's clock would: the decision authority breaks
+	// millisecond ties toward the incumbent, and a frozen fixture clock
+	// manufactures one.
+	*w.now = w.now.Add(time.Minute)
 	if r := w.publish(t, "tok-gate", pGate(4, "deadbeef")); !strings.Contains(r.GateError, "deferred") {
 		t.Fatalf("second publish: %+v", r)
 	}
@@ -569,8 +574,11 @@ func TestTwoDeferralsInTwoWindowsTheNewestWins(t *testing.T) {
 }
 
 // A newer verdict deferred, then refused for good at replay (the head moved),
-// hands the run to the ordinary repair — which must not settle it on the
-// grant's record of the OLDER verdict the deferral replaced.
+// must not settle on the grant's record of the OLDER verdict the deferral
+// replaced — that record was erased when the deferral was kept. What answers
+// the run is the refusal itself, on the CURRENT head, in the same pass
+// (#1632): leaving the new head bare on the strength of an erased green is
+// exactly the deadlock the refusal repair exists to close.
 func TestARefusedReplayDoesNotFallBackOnAnOlderRecord(t *testing.T) {
 	w := newPWorld(t, gatingInputs(), "deadbeef")
 	if r := w.publish(t, "tok-gate", pGate(0, "deadbeef")); !r.GatePosted {
@@ -578,15 +586,25 @@ func TestARefusedReplayDoesNotFallBackOnAnOlderRecord(t *testing.T) {
 	}
 	reset := w.now.Add(30 * time.Minute).Truncate(time.Second)
 	w.f.limitedUntil = reset
+	// Same frozen-clock tie as above: causally ordered, so distinctly
+	// timestamped (the authority breaks ms ties toward the incumbent).
+	*w.now = w.now.Add(time.Minute)
 	if r := w.publish(t, "tok-gate", pGate(4, "deadbeef")); !strings.Contains(r.GateError, "deferred") {
 		t.Fatalf("second publish: %+v", r)
 	}
 	finishRun(t, w.s, "run-gating")
 	w.f.head = "0ther5ha" // a push lands before the replay
 	*w.now = reset.Add(time.Minute)
+	postsBefore := w.f.sets
 	_ = w.s.reconcileGateForRun(context.Background(), terminalEvent("run-gating"))
 	marks, _ := w.s.gateSettles.settled(context.Background(), []string{"run-gating"})
-	if m := marks["run-gating"]; m.Reason != gateSettledHeadMoved {
-		t.Errorf("after a refused replay the run was settled %q, want head_moved — it fell back on the older green record", m.Reason)
+	if m := marks["run-gating"]; m.Reason != gateSettledRefused {
+		t.Errorf("after a refused replay the run was settled %q, want refused — neither the erased green record (verdict_success) nor a bare head (head_moved)", m.Reason)
+	}
+	if w.f.sets != postsBefore+1 {
+		t.Fatalf("the refused replay was not answered (%d new writes, want 1)", w.f.sets-postsBefore)
+	}
+	if last := w.f.posted[len(w.f.posted)-1]; !strings.Contains(last, "review refused to certify") {
+		t.Errorf("the answer must carry the refusal's diagnosis, got %q", last)
 	}
 }

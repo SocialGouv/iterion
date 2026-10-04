@@ -315,15 +315,14 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	if reason != "" {
 		desc += ": " + reason
 	}
-	if err := gc.SetCommitStatus(ctx, p.ProjectPath, pr.HeadSHA, forge.CommitStatus{
-		State:       forge.CommitStateSuccess,
-		Context:     gateCtx,
-		Description: desc,
-		TargetURL:   p.CommentURL,
-	}); err != nil {
+	superseded, statusErr := s.postApproveGateStatus(ctx, path.conn, gc, p.ProjectPath, pr.HeadSHA, gateCtx, desc, p.CommentURL)
+	if superseded {
+		statusErr = errors.New("a newer verdict decision owns the check — the approval was not written; review the head's current state and approve again")
+	}
+	if statusErr != nil {
 		// The claim turns launch_error under its stable key: the replay
 		// check reads that as retryable, never as a duplicate.
-		why := "set commit status: " + err.Error()
+		why := "set commit status: " + statusErr.Error()
 		s.warnApproveDidNotLand(provider, p.ProjectPath, int(p.IssueNumber), p.AuthorLogin, why)
 		claim.Status, claim.Error = webhooks.StatusLaunchError, why
 		s.updateApproveDelivery(ctx, claim)

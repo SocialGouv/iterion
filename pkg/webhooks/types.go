@@ -124,14 +124,24 @@ type Config struct {
 	// ["implement"] so only that label dispatches the bot). Empty = any
 	// label triggers. Case-insensitive; see MatchLabel. Has no effect on the
 	// pull_request / issue_comment paths.
-	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+	//
+	// NO omitempty on the bson tag: the operator's clear gesture is a non-nil
+	// EMPTY slice (the webhook PATCH distinguishes absent = keep from [] =
+	// clear), and omitempty would drop it on write — a deliberate widening
+	// would read back as never-set and the silent adopt would resurrect the
+	// narrowing from the integration (see the adopt's config-wins rule in
+	// pkg/forge/orchestrator.go). Documents written before this tag change
+	// simply have the field absent and read nil, exactly as before.
+	LabelAllowlist []string `bson:"label_allowlist" json:"label_allowlist,omitempty"`
 	// HoldLabels is a bot-agnostic suppression set: when the triggering PR or
 	// issue carries any of these labels, the auto-launch lanes (PR-open review,
 	// auto-implement-on-open) suppress the launch — whatever bot would have
 	// run. It is the operator's escape hatch to pause automation on one
 	// PR/issue without disabling the webhook. Case-insensitive; empty = off.
 	// Distinct from LabelAllowlist (which selects a bot); this vetoes ALL bots.
-	HoldLabels []string `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
+	// Same no-omitempty rule as LabelAllowlist: a deliberate LIFT ([] ) must
+	// round-trip as explicit-empty, not collapse into never-set.
+	HoldLabels []string `bson:"hold_labels" json:"hold_labels,omitempty"`
 
 	// BranchImproveAsPR changes how the branch-improvement bot (Billy) lands
 	// its hardening on a PR it reviews. Default (false): it commits + pushes

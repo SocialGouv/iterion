@@ -52,8 +52,15 @@ type forgeEnableReq struct {
 	// bots launch, layered after their manifest vars and re-applied on every
 	// re-provision. Nil leaves the stored ones untouched. The canonical use is
 	// naming this repo's merge gate (`gate_context`) so several bots fill ONE
-	// required check, each for the PRs it owns.
+	// required check, each for the PRs it owns. A non-nil map is the exact
+	// desired set: an empty one clears every pin, and a non-empty one that
+	// would drop keys the repo pins today is refused with the keys named —
+	// unless launch_vars_replace makes the replacement explicit.
 	LaunchVars map[string]string `json:"launch_vars,omitempty"`
+	// LaunchVarsReplace acknowledges that launch_vars replaces the whole map,
+	// dropping pins the caller did not echo. The escape hatch for the drop
+	// refusal — without it a partial write never applies silently.
+	LaunchVarsReplace bool `json:"launch_vars_replace,omitempty"`
 	// Overlap is the repo's launch concurrency policy (pkg/schedgate
 	// vocabulary: allow | skip | supersede). Empty leaves the stored one
 	// untouched; on a review webhook `supersede` is the one worth setting.
@@ -137,17 +144,18 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
-		TenantID:       teamID,
-		ConnectionID:   req.ConnectionID,
-		RepoFullName:   strings.TrimSpace(req.Repo),
-		BotIDs:         req.BotIDs,
-		ScheduleCrons:  req.ScheduleCrons,
-		LaunchVars:     req.LaunchVars,
-		Overlap:        req.Overlap,
-		AutoFix:        req.AutoFixOnGateFailure,
-		HoldLabels:     req.HoldLabels,
-		LabelAllowlist: req.LabelAllowlist,
-		ActorID:        id.UserID,
+		TenantID:          teamID,
+		ConnectionID:      req.ConnectionID,
+		RepoFullName:      strings.TrimSpace(req.Repo),
+		BotIDs:            req.BotIDs,
+		ScheduleCrons:     req.ScheduleCrons,
+		LaunchVars:        req.LaunchVars,
+		LaunchVarsReplace: req.LaunchVarsReplace,
+		Overlap:           req.Overlap,
+		AutoFix:           req.AutoFixOnGateFailure,
+		HoldLabels:        req.HoldLabels,
+		LabelAllowlist:    req.LabelAllowlist,
+		ActorID:           id.UserID,
 	})
 	if err != nil {
 		s.writeForgeProvisionError(w, err)
@@ -159,9 +167,11 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, res)
 }
 
-// forgeUpdateReq sets an integration's EXACT bot set (replace semantics —
-// the per-bot unbind). An empty list is a 400: removing the last bot is
-// the DELETE (full deprovision), which also tears down webhook + hook.
+// forgeUpdateReq sets an integration's EXACT bot set when bot_ids is present
+// (replace semantics — the per-bot unbind). An ABSENT bot_ids keeps the
+// stored set, so a caller changing only the launch vars (the gate switch)
+// need not re-state the bots; an EMPTY list is a 400: removing the last bot
+// is the DELETE (full deprovision), which also tears down webhook + hook.
 type forgeUpdateReq struct {
 	BotIDs []string `json:"bot_ids"`
 	// ScheduleCrons follows forgeEnableReq semantics for bots (re)gaining a
@@ -171,8 +181,15 @@ type forgeUpdateReq struct {
 	// bots launch, layered after their manifest vars and re-applied on every
 	// re-provision. Nil leaves the stored ones untouched. The canonical use is
 	// naming this repo's merge gate (`gate_context`) so several bots fill ONE
-	// required check, each for the PRs it owns.
+	// required check, each for the PRs it owns. A non-nil map is the exact
+	// desired set: an empty one clears every pin, and a non-empty one that
+	// would drop keys the repo pins today is refused with the keys named —
+	// unless launch_vars_replace makes the replacement explicit.
 	LaunchVars map[string]string `json:"launch_vars,omitempty"`
+	// LaunchVarsReplace acknowledges that launch_vars replaces the whole map,
+	// dropping pins the caller did not echo. The escape hatch for the drop
+	// refusal — without it a partial write never applies silently.
+	LaunchVarsReplace bool `json:"launch_vars_replace,omitempty"`
 	// Overlap is the repo's launch concurrency policy (pkg/schedgate
 	// vocabulary: allow | skip | supersede). Empty leaves the stored one
 	// untouched; on a review webhook `supersede` is the one worth setting.
@@ -209,7 +226,12 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if len(req.BotIDs) == 0 {
+	if req.BotIDs == nil {
+		// Absent means "leave the bot set alone" — a launch-vars-only patch
+		// (the gate switch) must not have to echo it. An explicit empty list
+		// stays the 400 it always was.
+		req.BotIDs = ri.BotIDs
+	} else if len(req.BotIDs) == 0 {
 		httpError(w, http.StatusBadRequest, "bot_ids must be non-empty — use DELETE to remove the integration entirely")
 		return
 	}
@@ -229,6 +251,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			BotIDs:               req.BotIDs,
 			ScheduleCrons:        req.ScheduleCrons,
 			LaunchVars:           req.LaunchVars,
+			LaunchVarsReplace:    req.LaunchVarsReplace,
 			Overlap:              req.Overlap,
 			AutoFixOnGateFailure: req.AutoFixOnGateFailure,
 			HoldLabels:           req.HoldLabels,
@@ -238,18 +261,19 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
-		TenantID:       teamID,
-		ConnectionID:   ri.ConnectionID,
-		RepoFullName:   ri.RepoFullName,
-		BotIDs:         req.BotIDs,
-		ScheduleCrons:  req.ScheduleCrons,
-		LaunchVars:     req.LaunchVars,
-		Overlap:        req.Overlap,
-		AutoFix:        req.AutoFixOnGateFailure,
-		HoldLabels:     req.HoldLabels,
-		LabelAllowlist: req.LabelAllowlist,
-		ActorID:        id.UserID,
-		Replace:        true,
+		TenantID:          teamID,
+		ConnectionID:      ri.ConnectionID,
+		RepoFullName:      ri.RepoFullName,
+		BotIDs:            req.BotIDs,
+		ScheduleCrons:     req.ScheduleCrons,
+		LaunchVars:        req.LaunchVars,
+		LaunchVarsReplace: req.LaunchVarsReplace,
+		Overlap:           req.Overlap,
+		AutoFix:           req.AutoFixOnGateFailure,
+		HoldLabels:        req.HoldLabels,
+		LabelAllowlist:    req.LabelAllowlist,
+		ActorID:           id.UserID,
+		Replace:           true,
 	})
 	if err != nil {
 		s.writeForgeProvisionError(w, err)
@@ -361,6 +385,15 @@ func (s *Server) handlePreviewForgeEnable(w http.ResponseWriter, r *http.Request
 // shapes the studio can act on.
 func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, forge.ErrLaunchVarsDrop):
+		// The operator's own request is inadmissible as sent: it would drop
+		// pins it did not name. 400, with the echo and the escape hatch in
+		// the message — never a silent partial apply.
+		httpError(w, http.StatusBadRequest, "%v", err)
+	case errors.Is(err, forge.ErrProvisionDiverged):
+		// iterion's own stores diverged mid-write; the message carries the
+		// converge-on-rerun remedy. Not the forge's fault, so not a 502.
+		httpError(w, http.StatusInternalServerError, "%v", err)
 	case errors.Is(err, forge.ErrForbidden):
 		writeJSONStatus(w, http.StatusForbidden, map[string]any{
 			"error":  "insufficient_scope",

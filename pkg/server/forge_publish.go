@@ -92,6 +92,15 @@ type ForgePublishGrant struct {
 	// posted, without reading the forge. It names the grant, not the run: it
 	// speaks for the run only while the grant is not Shared.
 	Verdict *gateVerdict `json:"verdict,omitempty"`
+	// Refusal is a verdict the gate REFUSED to post (recordGateRefusal): the
+	// audited pin was stale or unreadable, so nothing was written — not
+	// success, not failure, not pending. The run then finishes CLEANLY, and
+	// without this record no lane can tell "the run left no verdict because
+	// it died" from "the gate declined its verdict": the reconciler would
+	// paint "review died — push again" over a refusal, or stand down on a
+	// moved head nothing else will ever answer (#1632). Same attribution rule
+	// as Verdict: it is this run's only while the grant is not Shared.
+	Refusal *gateRefusal `json:"refusal,omitempty"`
 	// Deferred is a verdict whose post the forge refused for a rate limit or a
 	// transient failure, kept for the reconciler to post once the wait is over
 	// (deferGateVerdict).
@@ -117,6 +126,19 @@ type gateVerdict struct {
 	Context string    `json:"context"`
 	State   string    `json:"state"`
 	At      time.Time `json:"at"`
+}
+
+// gateRefusal is one verdict the publish endpoint REFUSED to post: the pin it
+// was audited against, the head that made it stale, the check, a short reason
+// fit for a status description, and when. The reconciler reads it to answer
+// the head the refusal left bare — with the refusal's own diagnosis, never
+// with "review died".
+type gateRefusal struct {
+	AuditedSHA string    `json:"audited_sha"`
+	HeadSHA    string    `json:"head_sha"`
+	Context    string    `json:"context"`
+	Reason     string    `json:"reason"`
+	At         time.Time `json:"at"`
 }
 
 // grantTenantMismatchReason is the typed refusal a publish grant earns when
@@ -534,6 +556,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			s.releaseGateDecision(r.Context(), gate.markKey, decision)
 		}
 		s.recordGateVerdict(token, gate, decision)
+		s.recordGateRefusal(token, gate)
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %s %s#%d review failed (%v); gate posted=%v state=%q",
 				conn.Provider, grant.Repo, number, reviewErr, gate.posted, gate.state)
@@ -566,6 +589,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		s.releaseGateDecision(r.Context(), gate.markKey, decision)
 	}
 	s.recordGateVerdict(token, gate, decision)
+	s.recordGateRefusal(token, gate)
 	if s.logger != nil && gate.requested {
 		if gate.posted {
 			s.logger.Info("forge gate: %s %s#%d @%s → %s (%q)", conn.Provider, grant.Repo, number, gate.sha, gate.state, gate.context)
@@ -836,6 +860,10 @@ func (s *Server) recordGateVerdict(token string, gate gateOutcome, decision gate
 	v := &gateVerdict{SHA: gate.sha, Context: gate.context, State: gate.state, At: time.Now().UTC()}
 	_, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
 		g.Verdict = v
+		// A posted verdict retires any earlier refusal: the run DID certify
+		// in the end, and a refusal is episode-scoped — no later reconcile
+		// may diagnose one that is moot (clearGateRefusal's twin).
+		g.Refusal = nil
 		if d := g.Deferred; d != nil && gateContextOf(&d.Gate) == gate.context && !d.Decision.newerThan(decision) {
 			g.Deferred = nil
 		}
@@ -855,7 +883,64 @@ func (s *Server) recordGateVerdict(token string, gate gateOutcome, decision gate
 	s.logger.Warn("forge gate: %s posted on %s but not recorded on its grant — the reconciler will read the forge for it: %v", gate.state, shortSHA(gate.sha), err)
 }
 
-// gateOutcome is the internal result of posting the gate status.
+// recordGateRefusal writes a REFUSED verdict on the grant that carried it, so
+// the reconciler can answer the head the refusal left bare — the refusal
+// itself posted nothing, and the run finishing cleanly is exactly why no
+// other lane ever learns of it (#1632). Best-effort like recordGateVerdict:
+// a record that fails leaves the reconciler on the pre-#1632 behaviour (a
+// moved head stands down, an unmoved one reads "review died"), which is wrong
+// but never unsafe — so it is a Warn, not a failed publish.
+func (s *Server) recordGateRefusal(token string, gate gateOutcome) {
+	if gate.refusal == nil || s.forgePublishTokens == nil {
+		return
+	}
+	if _, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
+		g.Refusal = gate.refusal
+	}); err != nil && s.logger != nil {
+		s.logger.Warn("forge gate: %s was refused (%s) but the refusal could not be recorded on its grant: %v — the reconciler cannot tell it from a death",
+			gate.context, gate.errText, err)
+	}
+}
+
+// clearGateRefusal retires a recorded refusal once the reconciler has
+// consumed or settled the episode it belongs to. A refusal is episode-scoped
+// state on an episode-blind store: the endpoint that records it knows no run
+// (the token is the authority), so the record cannot be stamped with the
+// episode — clearing at consumption is what keeps a later dead episode of
+// the same run from inheriting a diagnosis it never earned. The clear is a
+// compare-and-swap on the CONSUMED refusal's identity (like replaceDeferral):
+// a refusal recorded after it — a fresher episode, inside the post→clear
+// window — is not this pass's to retire, or "honored at most once" degrades
+// into "possibly zero". Best-effort: a failed clear costs a wrong diagnosis
+// on one later reconcile, never a wrong write.
+func (s *Server) clearGateRefusal(token string, consumed *gateRefusal) {
+	if s.forgePublishTokens == nil || consumed == nil {
+		return
+	}
+	if _, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
+		if g.Refusal != nil && g.Refusal.At.Equal(consumed.At) &&
+			strings.EqualFold(g.Refusal.AuditedSHA, consumed.AuditedSHA) &&
+			strings.EqualFold(g.Refusal.Context, consumed.Context) {
+			g.Refusal = nil
+		}
+	}); err != nil && s.logger != nil {
+		s.logger.Warn("forge gate: a consumed refusal could not be cleared from its grant: %v — a later episode of the run may inherit the diagnosis", err)
+	}
+}
+
+// boundedRunes truncates s to at most n runes, ellipsis included — the
+// status-description budget the refusal reason feeds. n <= 0 yields "".
+func boundedRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
 type gateOutcome struct {
 	requested bool   // a gate was requested (enabled)
 	posted    bool   // the status landed on the forge
@@ -877,6 +962,10 @@ type gateOutcome struct {
 	// superseded reports a verdict not posted because a newer one owns the
 	// head (claimGateDecision).
 	superseded bool
+	// refusal records a verdict the gate REFUSED to post for its pin — stale
+	// or unreadable audited_sha — so the reconciler can answer the head the
+	// refusal left bare with the right diagnosis (#1632). Nil otherwise.
+	refusal *gateRefusal
 	// markKey is the verdict-order mark this decision claimed (set once the
 	// claim was granted), for the caller that must release it again.
 	markKey string
@@ -960,12 +1049,22 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		// reader diffing two revisions, or hunting a push that never happened.
 		out.errText = "audited_sha " + strconv.Quote(audited) + " is not a commit id (7-40 hex) — " +
 			"refusing to certify on a pin that cannot be read"
+		out.refusal = &gateRefusal{
+			AuditedSHA: audited, HeadSHA: head, Context: out.context,
+			Reason: "its audited_sha " + strconv.Quote(boundedRunes(audited, 24)) + " is not a commit id",
+			At:     s.gateNow(),
+		}
 		return out
 	case !equalSHA(head, audited):
 		// Full SHAs on both sides: this message's whole job is to tell two
 		// revisions apart, and abbreviating both is how it names one twice.
 		out.errText = "the head moved since the audit (audited " + audited +
 			", head is now " + head + ") — no status on a revision nobody audited"
+		out.refusal = &gateRefusal{
+			AuditedSHA: audited, HeadSHA: head, Context: out.context,
+			Reason: "it audited " + shortSHA(audited) + " but the head moved to " + shortSHA(head),
+			At:     s.gateNow(),
+		}
 		return out
 	}
 	out.sha = head
@@ -1030,6 +1129,43 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 			out.context, repo, out.sha)
 	}
 	return out
+}
+
+// postApproveGateStatus writes the operator's manual force-green through the
+// same verdict-order authority every other gate-status writer crosses
+// (#1590): the approve is a DECISION taken at click time, claimed before the
+// write — so a reconciler's synthetic failure anchored at the run's death
+// (before the click) is refused the claim and can never paint over it, and a
+// deferred replay reusing its ORIGINAL decision is likewise superseded.
+// releaseGateDecision on a failed write, reassertNewerVerdict after a landed
+// one (which can never re-post a synthetic — the guard there). superseded
+// means a newer decision claimed the check between the click and the claim:
+// nothing was written, and the caller must say so rather than report an
+// approval that is not on the forge.
+func (s *Server) postApproveGateStatus(ctx context.Context, conn forge.Connection, gc forgeGateClient, repo, sha, gateCtx, desc, targetURL string) (superseded bool, err error) {
+	decision := newGateDecision(s.gateNow())
+	markKey := gateDecisionKey(conn, repo, sha, gateCtx)
+	mark := gateMark{Decision: decision, Status: gateMarkStatus{
+		State: string(forge.CommitStateSuccess), Description: desc, TargetURL: targetURL,
+	}}
+	switch ok, claimErr := s.claimGateDecision(ctx, markKey, mark); {
+	case claimErr != nil:
+		return false, fmt.Errorf("order the approval against newer verdicts: %w", claimErr)
+	case !ok:
+		return true, nil
+	}
+	if err := gc.SetCommitStatus(ctx, repo, sha, forge.CommitStatus{
+		State:       forge.CommitStateSuccess,
+		Context:     gateCtx,
+		Description: desc,
+		TargetURL:   targetURL,
+	}); err != nil {
+		// The approval will neither post nor wait: free its claim.
+		s.releaseGateDecision(ctx, markKey, decision)
+		return false, err
+	}
+	s.reassertNewerVerdict(ctx, gc, markKey, repo, sha, gateCtx, decision)
+	return false, nil
 }
 
 // reviewClientFor resolves a connection's forge.ReviewClient. The

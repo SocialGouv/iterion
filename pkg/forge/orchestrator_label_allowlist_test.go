@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 )
@@ -170,10 +171,23 @@ func TestProvisionKeepsAConfigOnlyOverlapWhileAdoptingAnAllowlist(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// A studio bot-set PATCH: same bots, no operator field in the request.
+	// A studio bot-set PATCH with no operator field in the request meets the
+	// fail-closed adopt: the config-only gate_context makes the two stores
+	// diverge (deliberate or legacy is unreadable), so the silent re-provision
+	// is REFUSED, naming the key, and nothing moves.
 	if _, err := o.Provision(ctx, ProvisionRequest{
 		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
 		BotIDs: []string{"review-pr"}, ActorID: "u1",
+	}); !errors.Is(err, ErrProvisionDiverged) {
+		t.Fatalf("a nil-launch_vars re-provision over a config-only pin: err = %v, want ErrProvisionDiverged — the silent adopt would risk resurrecting a deliberate drop", err)
+	}
+
+	// The converging gesture is the explicit echo — and through it every other
+	// operator field the write stamps must still resolve from the config.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"review-pr"}, ActorID: "u1",
+		LaunchVars: map[string]string{"gate_context": "revi/review"},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -162,8 +162,11 @@ func TestADeferredVerdictStillLimitedIsRearmed(t *testing.T) {
 }
 
 // A deferred verdict the forge refuses for another reason — here the head
-// moved past the audited revision — is cleared, and the run handed back to
-// the ordinary repair, which settles the moved head.
+// moved past the audited revision — is cleared, and the refusal it recorded
+// is answered by the SAME pass: with no fresher review claiming the new head,
+// leaving it bare is the #1632 deadlock. The answer is the refusal's own
+// failure on the CURRENT head, settled refused (reversible — a force-push
+// back to the audited revision re-opens the repair).
 func TestADeferredVerdictForAMovedHeadIsClearedAndRepairedAsUsual(t *testing.T) {
 	w := newDeferredWorld(t)
 	resetAt := w.now.Add(30 * time.Minute).Truncate(time.Second)
@@ -178,15 +181,21 @@ func TestADeferredVerdictForAMovedHeadIsClearedAndRepairedAsUsual(t *testing.T) 
 	if err := w.s.reconcileGateForRun(context.Background(), terminalEvent(w.runID)); err != nil {
 		t.Fatal(err)
 	}
-	if w.gc.setCalls != 0 {
-		t.Errorf("a verdict for a head that moved was posted (%d writes)", w.gc.setCalls)
+	if w.gc.setCalls != 1 {
+		t.Fatalf("the replay's refusal was recorded and then ignored (%d writes) — the new head stays bare, the #1632 deadlock", w.gc.setCalls)
+	}
+	if !strings.HasPrefix(w.gc.last.Description, "review refused to certify") {
+		t.Errorf("the answer must carry the refusal's diagnosis, got %q", w.gc.last.Description)
+	}
+	if w.gc.lastSHA != "0ther5ha" {
+		t.Errorf("the answer belongs on the CURRENT head, got %q", w.gc.lastSHA)
 	}
 	if g := mustGrant(t, w.s, "tok-gate"); g.Deferred != nil {
 		t.Errorf("the refused deferral was kept: %+v", g.Deferred)
 	}
 	marks, _ := w.s.gateSettles.settled(context.Background(), []string{w.runID})
-	if marks[w.runID].Reason != gateSettledHeadMoved {
-		t.Errorf("the run was settled %+v, want head_moved by the ordinary repair", marks[w.runID])
+	if marks[w.runID].Reason != gateSettledRefused {
+		t.Errorf("the run was settled %+v, want refused — the refusal was consumed and answered", marks[w.runID])
 	}
 }
 
