@@ -10,12 +10,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
 
-// TestLaunchBundleDirFor: a file launch of `<bundle>/main.bot` compiles
-// against its bundle — read from the path the OPERATOR named, because the
-// studio's file picker sends the source inline and the materialised copy
-// is `<store>/inline-sources/<hash>-main.bot`, a name no promotion
-// recognises. A loose file, a child of the bundle, and a path the server
-// cannot place are label-only; a bundle that does not open is refused.
+// TestLaunchBundleDirFor: a file launch of a bundle's root-level entry —
+// `<bundle>/main.bot` or a sibling workflow beside it (the scaffold's
+// worker.bot, an entry of its own, #1367) — compiles against its bundle,
+// read from the path the OPERATOR named, because the studio's file picker
+// sends the source inline and the materialised copy is
+// `<store>/inline-sources/<hash>-main.bot`, a name no promotion
+// recognises. A loose file and a path the server cannot place are
+// label-only; a bundle that does not open is refused.
 func TestLaunchBundleDirFor(t *testing.T) {
 	srv, _ := newTestServer(t)
 	tpl, ok := botscaffold.TemplateByID("multi-file")
@@ -38,7 +40,13 @@ func TestLaunchBundleDirFor(t *testing.T) {
 	if err != nil || filepath.Clean(got) != filepath.Clean(dir) {
 		t.Fatalf("launchBundleDirFor(bots/mf/main.bot) = (%q, %v), want the bundle dir %s", got, err, dir)
 	}
-	for _, p := range []string{"", "loose.bot", "bots/mf/worker.bot", "../outside/main.bot", "nowhere/main.bot"} {
+	// The bundle's other root-level workflow is an entry of the bundle, as
+	// on the CLI: its launch gets the bundle's prompts, skills and manifest.
+	got, err = srv.launchBundleDirFor("bots/mf/worker.bot")
+	if err != nil || filepath.Clean(got) != filepath.Clean(dir) {
+		t.Fatalf("launchBundleDirFor(bots/mf/worker.bot) = (%q, %v), want the bundle dir %s", got, err, dir)
+	}
+	for _, p := range []string{"", "loose.bot", "../outside/main.bot", "nowhere/main.bot"} {
 		if got, err := srv.launchBundleDirFor(p); err != nil || got != "" {
 			t.Errorf("launchBundleDirFor(%q) = (%q, %v), want no bundle and no error", p, got, err)
 		}

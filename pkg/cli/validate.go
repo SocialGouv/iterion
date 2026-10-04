@@ -475,13 +475,30 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			// main.bot beside it is not read in its place.
 			syntax = bundle.MaxSyntaxRequirementsDirWithMain(bundleHandle.Dir, filepath.Base(doc.botPath), doc.text)
 		}
+		lintWorkflow := cr.Workflow
+		lintFrontmatter := bundle.ParseFrontmatter(frontmatterText(doc, src))
+		lintPath := parsePath
+		if filepath.Base(bundleHandle.IterPath) != bundle.MainBotFile {
+			// The manifest binds to the bundle's CANONICAL main —
+			// dispatch_vars, invocations, the chat surface, the
+			// per-bot-memory name triple — never to a sibling entry run by
+			// path: cross-check it against main.bot's compiled program, as
+			// the directory form does, so the sibling gets the bundle's
+			// findings and never a misreading of its own workflow as the
+			// manifest's main. The floor checks (C250–C253) read every
+			// root-level entry of the bundle either way, the sibling's
+			// included; a main that does not compile to a workflow leaves
+			// the manifest-bound checks silent, as its own invalid form
+			// leaves them.
+			lintWorkflow, lintFrontmatter, lintPath = lintMainOfBundle(bundleHandle)
+		}
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
 			// still run, the manifest-side ones are skipped.
 			Manifest: bundleHandle.Manifest,
-			Workflow: cr.Workflow,
+			Workflow: lintWorkflow,
 			// A .bot's own bytes; for a document, the .bot text it writes as.
-			Frontmatter: bundle.ParseFrontmatter(frontmatterText(doc, src)),
+			Frontmatter: lintFrontmatter,
 			DirName:     bundleDir,
 			Skills:      scanBundleSkills(bundleHandle.SkillsDir),
 			// The engine contract (C250/C251), held against THIS binary — the
@@ -494,7 +511,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			// The children's contracts, for the subbot projection (C255):
 			// each `subbot source:` read within the bundle's collection and
 			// compiled as its own unit.
-			SubbotContracts: subbotcontracts.Read(bundleHandle.Dir, parsePath, cr.Workflow),
+			SubbotContracts: subbotcontracts.Read(bundleHandle.Dir, lintPath, lintWorkflow),
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())
@@ -856,6 +873,36 @@ func validationFailed(p *Printer) error {
 		return fmt.Errorf("validation failed: %w", ErrReported)
 	}
 	return fmt.Errorf("validation failed")
+}
+
+// lintMainOfBundle compiles the bundle's CANONICAL main for the
+// manifest-bound consistency checks when the validated entry is a sibling:
+// the manifest (dispatch_vars, invocations, chat, the memory-name triple)
+// binds to main.bot, so the cross-check reads main.bot's compiled program,
+// its frontmatter and its children's contracts — the directory form's
+// verdict — whatever sibling the operator named. (nil, nil, "") when the
+// main cannot be read or compiled to a workflow: the manifest-bound checks
+// nil-guard themselves out, the floor checks (C250–C253, read off the
+// bundle's sources) still run — the same silence the directory form keeps
+// for a main that does not compile.
+func lintMainOfBundle(b *bundle.Bundle) (*ir.Workflow, *bundle.Frontmatter, string) {
+	mainPath := filepath.Join(b.Dir, bundle.MainBotFile)
+	src, err := os.ReadFile(mainPath)
+	if err != nil {
+		return nil, nil, ""
+	}
+	u := unit.LoadDirWithMain(mainPath, mainPath, src)
+	if u.Merged == nil {
+		return nil, nil, ""
+	}
+	if err := runview.MergeBundlePrompts(u.Merged, b); err != nil {
+		return nil, nil, ""
+	}
+	mcr := ir.Compile(u.Merged)
+	if mcr.Workflow == nil {
+		return nil, nil, ""
+	}
+	return mcr.Workflow, bundle.ParseFrontmatter(src), mainPath
 }
 
 // scanBundleSkills reads a bundle's skills/*.md frontmatter (name +

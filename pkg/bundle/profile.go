@@ -136,9 +136,11 @@ func within(path, root string) bool {
 // isRootEntry reports a bundle-relative slash path that is a .bot file at
 // the bundle root other than main.bot: an entry of its own (a child another
 // bot declares, or a workflow launched by path), never a fragment — those
-// live under lib/ and are reached through imports.
+// live under lib/ and are reached through imports. The extension folds case,
+// the rule workflowfile.IsWorkflowFile opens the file by: a path-promoted
+// entry (DirForEntry) must not be invisible to the floor walk.
 func isRootEntry(rel string) bool {
-	return rel != MainBotFile && !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".bot")
+	return rel != MainBotFile && !strings.Contains(rel, "/") && len(rel) >= 4 && strings.EqualFold(rel[len(rel)-4:], ".bot")
 }
 
 func walkSyntax(entries []string, read func(rel string) (string, sourceState)) SyntaxRequirements {
