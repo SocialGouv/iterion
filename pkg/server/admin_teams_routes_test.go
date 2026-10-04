@@ -11,8 +11,11 @@ import (
 
 // The F2 core at the route layer: the delegated caps route is a PATCH —
 // mapping the team to a sovereign pool and then PATCHing its caps must
-// leave the mapping standing. Red when the route goes back to the
-// whole-document UpdateTeam replace.
+// leave the mapping standing. On the MEMORY twin this row is behavioural
+// only (value aliasing cannot express a stale-read erase — rva F5); the
+// bite lives in the mongo leg of the identity patch conformance and in
+// TestUpdateTeamHasNoProductionCallers, which makes the whole-doc revert
+// uncommittable.
 func TestOrgTeamCaps_PatchPreservesTheRunnerPool(t *testing.T) {
 	s, _, done := newApprovalTestServer(t)
 	defer done()

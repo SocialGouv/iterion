@@ -38,7 +38,8 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusUnprocessableEntity, "runner_pool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", pool)
 		return
 	}
-	if _, err := s.authStore().GetTeam(r.Context(), teamID); err != nil {
+	cur, err := s.authStore().GetTeam(r.Context(), teamID)
+	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
@@ -47,6 +48,11 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	s.auditPlatform(r, "", "team.runner_pool_set", "team", teamID, map[string]any{"runner_pool": pool})
+	// A boundary field's trail must answer what the team WAS, not only what
+	// it became; the event is team-scoped, so the team id rides as the
+	// tenant, matching the sibling admin events.
+	s.auditPlatform(r, teamID, "team.runner_pool_set", "team", teamID, map[string]any{
+		"runner_pool": pool, "previous": cur.RunnerPool,
+	})
 	writeJSON(w, toTeamSummaryView(updated))
 }

@@ -167,6 +167,10 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	child.IterionVersion = parent.IterionVersion
 	child.TenantID = parent.TenantID
 	child.OwnerID = parent.OwnerID
+	// The frozen pool stamp travels with the fork: the child executes where
+	// the parent would, and a child doc reading unmapped would later hit the
+	// resume refusal (team mapping ≠ child stamp) with no recovery path.
+	child.RunnerPool = parent.RunnerPool
 	if spec.ForkName != "" {
 		child.Name = spec.ForkName
 	} else {

@@ -290,6 +290,13 @@ func (p *Publisher) orgIDForTeam(ctx context.Context, teamID string) string {
 	return t.OrgID
 }
 
+// ErrPoolRemapped marks a resume refused because the team's runner-pool
+// mapping has moved past the run's frozen stamp. It is PERMANENT: the retry
+// sweeper abandons (never re-arms) a resume failing with it — re-arming
+// would flip the doc queued→failed every cycle until the attempt budget
+// burned, on a refusal no retry can cure.
+var ErrPoolRemapped = errors.New("cloudpublisher: the run's runner pool no longer matches its team's mapping")
+
 // poolDispatchEnabled gates the transition from "a mapped team's launches
 // are refused" to "a mapped team's runs are routed to its pool's stream".
 // It is OFF until the queue side ships (per-pool streams, server-managed
@@ -304,7 +311,15 @@ const poolDispatchEnabled = false
 // onto the shared pool. A store error REFUSES the launch (fail closed);
 // only a definitive answer (mapped or not) lets it proceed.
 func (p *Publisher) runnerPoolForTeam(ctx context.Context, teamID string) (string, error) {
-	if p.identity == nil || teamID == "" {
+	if teamID == "" {
+		return "", nil
+	}
+	// p.identity == nil reads as "this deployment has no identity seam at
+	// all" — and therefore NO mapping table: no team can be mapped, so the
+	// only possible answer is the shared default. (The fail-closed case that
+	// matters is a STORE ERROR with the seam wired, refused above; prod
+	// wires the store at cmd/iterion/server.go.)
+	if p.identity == nil {
 		return "", nil
 	}
 	t, err := p.identity.GetTeam(ctx, teamID)
@@ -3284,7 +3299,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return err
 	}
 	if currentPool != prior.RunnerPool {
-		return fmt.Errorf("cloudpublisher: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", spec.RunID, prior.RunnerPool, currentPool)
+		return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, spec.RunID, prior.RunnerPool, currentPool)
+	}
+	// Same dispatch gate the launch carries: until pool dispatch is wired, a
+	// pool-stamped resume must not publish onto the shared stream where no
+	// runner-side admission guard exists yet.
+	if prior.RunnerPool != "" && !poolDispatchEnabled {
+		return fmt.Errorf("cloudpublisher: run %s is bound to runner pool %q, but pool dispatch is not enabled in this build — the resume is refused rather than served outside the team's pool", spec.RunID, prior.RunnerPool)
 	}
 	// prior.PinnedProviders, never a fresh derivation: a resume re-resolves
 	// its source, so re-deriving would let a program the launch never

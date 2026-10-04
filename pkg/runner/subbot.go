@@ -317,6 +317,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// The wire carries these (child := *msg); the DOCUMENT is built
 			// from a named field list and would otherwise read as trusted.
 			runtime.WithTrust(child.Trust, child.RepoSHAExpected),
+			// Same trap for the frozen pool stamp: the child's document must
+			// name the pool its message claims, or the admission guard (doc ≡
+			// message) would fail every subbot node of a pool-team run.
+			runtime.WithRunnerPool(child.RunnerPool),
 			runtime.WithParentNodeID(req.NodeID),
 			// Recursive wiring: a child that declares subbot nodes resolves
 			// its own children relative to ITS directory.

@@ -489,6 +489,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/teams/{id}/runner-pool": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/admin/teams/{id}/runner-pool */
+        put: operations["putAdminTeamsByIdRunnerPool"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/usage-readings/{fingerprint}": {
         parameters: {
             query?: never;
@@ -7661,6 +7680,7 @@ export interface components {
             name: string;
             org_id?: string;
             personal?: boolean;
+            runner_pool?: string;
             slug: string;
             status: string;
         };
@@ -8566,6 +8586,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["usageCapsView"];
                 };
+            };
+        };
+    };
+    putAdminTeamsByIdRunnerPool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

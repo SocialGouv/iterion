@@ -70,6 +70,21 @@ func TestSubmitLaunch_ATeamMappedToAPoolIsRefusedUntilDispatchShips(t *testing.T
 	}
 }
 
+// A deployment without the identity seam has no mapping table at all: the
+// launch proceeds with the shared default (the adjusted F10 disposition),
+// while a store ERROR with the seam wired refuses (the witness above).
+func TestSubmitLaunch_NoIdentitySeamLaunchesUnmapped(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	p := poolTestPublisher(st, nil, &[]*queue.RunMessage{})
+	ctx, wf, cs := poolLaunch()
+	if _, err := p.SubmitLaunch(ctx, "run-nil-identity", runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}, wf, cs); err != nil {
+		t.Fatalf("a no-seam deployment's launch must proceed unmapped: %v", err)
+	}
+}
+
 // An identity-store error is a refusal, not a silent fallback onto the
 // shared pool. Red when the resolver swallows the error.
 func TestSubmitLaunch_AnUnreadablePoolMappingRefusesTheLaunch(t *testing.T) {
@@ -127,13 +142,17 @@ func TestSubmitResume_APoolMoveRefusesTheResume(t *testing.T) {
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.ResumeSpec{RunID: "run-moved", FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
 	if err := p.SubmitResume(context.Background(), spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil ||
-		!strings.Contains(err.Error(), "old-pool") || !strings.Contains(err.Error(), "new-pool") {
-		t.Fatalf("a pool move must refuse the resume naming both pools, got: %v", err)
+		!errors.Is(err, ErrPoolRemapped) || !strings.Contains(err.Error(), "old-pool") || !strings.Contains(err.Error(), "new-pool") {
+		t.Fatalf("a pool move must refuse with the typed ErrPoolRemapped naming both pools, got: %v", err)
 	}
 }
 
-// The frozen stamp rides the resume wire, not the current mapping.
-func TestSubmitResume_TheFrozenPoolReachesTheWire(t *testing.T) {
+// The dispatch gate is symmetric: a POOL-stamped resume publishes onto the
+// pool's stream — unwired, it is refused exactly like a pool-mapped launch,
+// even when the frozen stamp still matches the mapping. Red when the resume
+// gate is dropped (F8). When P1b flips poolDispatchEnabled, this test flips
+// with it into the frozen-stamp-on-the-wire witness.
+func TestSubmitResume_TheFrozenPoolGate(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
@@ -148,10 +167,14 @@ func TestSubmitResume_TheFrozenPoolReachesTheWire(t *testing.T) {
 	p := poolTestPublisher(st, fakePoolTeamResolver{team: identity.Team{ID: "team-a", RunnerPool: "old-pool"}}, &published)
 	wf := &ir.Workflow{Name: "wf"}
 	spec := runview.ResumeSpec{RunID: "run-frozen", FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
-	if err := p.SubmitResume(context.Background(), spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
-		t.Fatalf("a same-pool resume must proceed: %v", err)
+	if poolDispatchEnabled {
+		t.Skip("pool dispatch is enabled — this becomes the frozen-stamp-on-the-wire witness")
 	}
-	if len(published) != 1 || published[0].RunnerPool != "old-pool" {
-		t.Fatalf("the resume wire must carry the frozen stamp: %+v", published)
+	if err := p.SubmitResume(context.Background(), spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil ||
+		!strings.Contains(err.Error(), "old-pool") || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("a pool-stamped resume must be gated while dispatch is off, got: %v", err)
+	}
+	if len(published) != 0 {
+		t.Fatalf("the gated resume published %d message(s)", len(published))
 	}
 }
