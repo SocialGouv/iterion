@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -50,6 +51,11 @@ func TestMultiplexerHandler_RefusesEveryToolNotPlacedOnTheLauncher(t *testing.T)
 		}
 		if !strings.Contains(err.Error(), "refusing to execute") {
 			t.Errorf("OnToolCall(%q) error = %v; want the placement refusal", name, err)
+		}
+		// The refusal is logged for the operator: it must carry the tool's
+		// name, so the offending call is greppable in the run's output.
+		if !strings.Contains(err.Error(), strconv.Quote(name)) {
+			t.Errorf("OnToolCall(%q): the refusal does not name the tool: %v", name, err)
 		}
 		if ran[name] {
 			t.Errorf("OnToolCall(%q): the host closure ran", name)

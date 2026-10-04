@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -324,6 +325,11 @@ func TestHybridToolDefs_RefusesWhatTheContainerCannotExecute(t *testing.T) {
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%q: error does not say why it cannot run in-container: %v", tc.name, err)
 		}
+		// The refusal is addressed to the workflow author: it must carry the
+		// refused tool's name, so the offending `tools:` entry is greppable.
+		if !strings.Contains(err.Error(), strconv.Quote(tc.name)) {
+			t.Errorf("%q: the refusal does not name the tool an operator would grep for: %v", tc.name, err)
+		}
 	}
 }
 
@@ -346,6 +352,9 @@ func TestHybridToolDefs_SandboxToolMissingLocallyIsAnError(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "must execute inside the sandbox") {
 			t.Errorf("%q: unexpected error: %v", name, err)
+		}
+		if !strings.Contains(err.Error(), strconv.Quote(name)) {
+			t.Errorf("%q: the refusal does not name the tool an operator would grep for: %v", name, err)
 		}
 	}
 	if stub.sawCall("bash") {
