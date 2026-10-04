@@ -374,6 +374,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: %w", err)
 	}
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
+		RunnerPools:                stores.runnerPools,
 		RequireLLMCredential:       requireLLMCredential,
 		NATS:                       natsConn,
 		Store:                      st,

@@ -142,6 +142,34 @@ func TestSubmitLaunch_AnUnknownTeamLaunchesUnmapped(t *testing.T) {
 	}
 }
 
+// The happy path this slice exists for: a mapped team whose pool is
+// registry-ACTIVE routes — the launch proceeds and BOTH carriers carry the
+// pool. The wiring gap (round 1: the production Config never set
+// RunnerPools) hid behind this witness's absence. Red when the registry
+// gate stops routing active pools.
+func TestSubmitLaunch_AnActivePoolRoutesTheLaunch(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	var published []*queue.RunMessage
+	p := poolTestPublisherWithRegistry(st, fakePoolTeamResolver{team: identity.Team{ID: "team-a", RunnerPool: "honorabilite"}}, activeRegistry("honorabilite"), &published)
+	ctx, wf, cs := poolLaunch()
+	if _, err := p.SubmitLaunch(ctx, "run-pool-routed", runview.LaunchSpec{FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}, wf, cs); err != nil {
+		t.Fatalf("an active pool must route the launch: %v", err)
+	}
+	if len(published) != 1 || published[0].RunnerPool != "honorabilite" {
+		t.Fatalf("the wire must carry the pool: %+v", published)
+	}
+	r, lerr := st.LoadRun(context.Background(), "run-pool-routed")
+	if lerr != nil {
+		t.Fatalf("LoadRun: %v", lerr)
+	}
+	if r.RunnerPool != "honorabilite" {
+		t.Fatalf("the document must freeze the pool: %+v", r)
+	}
+}
+
 // An unmapped team is untouched: the launch proceeds and both carriers
 // stamp the empty (shared default) pool.
 func TestSubmitLaunch_AnUnmappedTeamStillLaunches(t *testing.T) {

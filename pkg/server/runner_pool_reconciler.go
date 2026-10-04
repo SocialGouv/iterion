@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
-	"github.com/SocialGouv/iterion/pkg/queue/nats"
 )
 
 // poolTopology is the slice of the queue connection the reconciler drives.
@@ -48,7 +47,10 @@ func (s *Server) reconcileRunnerPools(ctx context.Context, topo poolTopology) er
 			errs = append(errs, fmt.Errorf("pool %s: %w", p.Name, err))
 			continue
 		}
-		if p.State == platformcfg.RunnerPoolActive || p.State == platformcfg.RunnerPoolDraining {
+		// The consumer exists from provisioning on (plan D4': present
+		// BEFORE activation, y compris à zéro pod) — the lifecycle gate
+		// belongs to routing (poolRoutes), not to the topology.
+		if p.State != platformcfg.RunnerPoolDisabled {
 			if _, err := topo.PreparePoolConsumer(ctx, p.Name); err != nil {
 				errs = append(errs, fmt.Errorf("pool %s consumer: %w", p.Name, err))
 			}
@@ -73,6 +75,14 @@ func (s *Server) runRunnerPoolReconciler(ctx context.Context, topo poolTopology,
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	reconcile := func() {
+		defer func() {
+			// A panicking store read or topology call kills THIS pass,
+			// not the process — the next tick retries (the codebase's
+			// Resolver anticipates panicking store reads the same way).
+			if r := recover(); r != nil && logf != nil {
+				logf("server: runner-pool reconcile panicked: %v (retrying next tick)", r)
+			}
+		}()
 		if err := s.reconcileRunnerPools(ctx, topo); err != nil && logf != nil {
 			logf("server: %v (retrying next tick)", err)
 		}
@@ -86,33 +96,4 @@ func (s *Server) runRunnerPoolReconciler(ctx context.Context, topo poolTopology,
 			reconcile()
 		}
 	}
-}
-
-// joinErrors is a local multi-error join that keeps nil for an empty list.
-func joinErrors(errs []error) error {
-	switch len(errs) {
-	case 0:
-		return nil
-	case 1:
-		return errs[0]
-	default:
-		joined := errs[0]
-		for _, e := range errs[1:] {
-			joined = fmt.Errorf("%v; %w", joined, e)
-		}
-		return joined
-	}
-}
-
-// natsPoolTopology adapts the real queue connection to poolTopology (the
-// consumer's concrete type is narrowed to any — the reconciler discards it;
-// the runner loop holds the real consumer).
-type natsPoolTopology struct{ conn *nats.Conn }
-
-func (t natsPoolTopology) EnsurePoolSchema(ctx context.Context, pool string) error {
-	return t.conn.EnsurePoolSchema(ctx, pool)
-}
-
-func (t natsPoolTopology) PreparePoolConsumer(ctx context.Context, pool string) (any, error) {
-	return t.conn.PreparePoolConsumer(ctx, pool)
 }

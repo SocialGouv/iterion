@@ -153,3 +153,22 @@ func (t *PoolTopology) EnsurePoolSchema(ctx context.Context, pool string) error 
 func (t *PoolTopology) PreparePoolConsumer(ctx context.Context, pool string) (any, error) {
 	return t.conn.PreparePoolConsumer(ctx, pool)
 }
+
+// PoolBacklog reports how many messages wait on the pool's durable
+// consumer. A missing consumer contributes zero (the reconciler makes
+// absence transient); an unreadable consumer is the caller's deferred
+// verdict, reported as the error.
+func (c *Conn) PoolBacklog(ctx context.Context, pool string) (uint64, error) {
+	if c == nil || c.js == nil {
+		return 0, fmt.Errorf("queue/nats: connection not initialised")
+	}
+	cons, err := c.js.Consumer(ctx, PoolStreamName(pool), PoolConsumerName(pool))
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: pool consumer %s: %w", PoolConsumerName(pool), err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: pool consumer %s info: %w", PoolConsumerName(pool), err)
+	}
+	return info.NumPending, nil
+}

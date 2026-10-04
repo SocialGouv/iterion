@@ -99,6 +99,8 @@ func updatedAtOf[T any](rec *T) time.Time {
 		return v.UpdatedAt
 	case *BotVars:
 		return v.UpdatedAt
+	case *RunnerPools:
+		return v.UpdatedAt
 	}
 	return time.Time{}
 }
@@ -196,6 +198,8 @@ func stampUpdatedAt[T any](rec *T) {
 	case *Sandbox:
 		v.UpdatedAt = time.Now().UTC()
 	case *BotVars:
+		v.UpdatedAt = time.Now().UTC()
+	case *RunnerPools:
 		v.UpdatedAt = time.Now().UTC()
 	}
 }

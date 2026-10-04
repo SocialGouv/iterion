@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,12 +13,12 @@ import (
 type fakePoolTopology struct {
 	schemas   []string
 	consumers []string
-	schemaErr error
+	broken    string // the ONE pool whose ensure fails; "" = none
 }
 
 func (f *fakePoolTopology) EnsurePoolSchema(_ context.Context, pool string) error {
-	if f.schemaErr != nil {
-		return f.schemaErr
+	if f.broken != "" && pool == f.broken {
+		return errors.New("broker down for " + pool)
 	}
 	f.schemas = append(f.schemas, pool)
 	return nil
@@ -56,13 +57,17 @@ func TestReconcileRunnerPools(t *testing.T) {
 	if err := s.reconcileRunnerPools(context.Background(), topo); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
+	_ = contains
 	wantSchema := []string{"active-pool", "drain-pool", "prov-pool"}
 	if len(topo.schemas) != 3 {
 		t.Fatalf("schemas = %v, want %v (a disabled pool gets nothing)", topo.schemas, wantSchema)
 	}
-	wantConsumers := []string{"active-pool", "drain-pool"}
-	if len(topo.consumers) != 2 {
-		t.Fatalf("consumers = %v, want %v (provisioning routes nothing yet)", topo.consumers, wantConsumers)
+	// The consumer exists from PROVISIONING on (plan D4': present before
+	// activation, y compris à zéro pod) — only the disabled entry gets
+	// nothing at all.
+	wantConsumers := []string{"active-pool", "drain-pool", "prov-pool"}
+	if len(topo.consumers) != 3 {
+		t.Fatalf("consumers = %v, want %v", topo.consumers, wantConsumers)
 	}
 	// No registry record: nothing to do, no error.
 	topo2 := &fakePoolTopology{}
@@ -81,9 +86,14 @@ func TestReconcileRunnerPools(t *testing.T) {
 		{Name: "brok"},
 		{Name: "healthy", State: platformcfg.RunnerPoolActive},
 	}}, nil)
-	topo3 := &fakePoolTopology{schemaErr: errors.New("broker down")}
+	topo3 := &fakePoolTopology{broken: "brok"}
 	err := s3.reconcileRunnerPools(context.Background(), topo3)
 	if err == nil || !strings.Contains(err.Error(), "broker down") {
 		t.Fatalf("the broken pool's error must surface: %v", err)
+	}
+	// The rva-1 M1 gap: continue-vs-return is only observable if the pools
+	// AFTER the broken one were ensured anyway.
+	if !slices.Contains(topo3.schemas, "healthy") {
+		t.Fatalf("one broken pool starved the others: ensured=%v", topo3.schemas)
 	}
 }

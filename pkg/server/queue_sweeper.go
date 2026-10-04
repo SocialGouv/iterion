@@ -11,6 +11,7 @@ import (
 
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -124,6 +125,47 @@ func (s *Server) queueBacklog(ctx context.Context, leases runLeaseChecker) (uint
 	return n, true
 }
 
+// poolBacklogReader is the optional pool capability: how much work waits
+// on a sovereign pool's consumer. The shared read alone cannot see a pool
+// run legitimately waiting its turn — flipping those queued rows is the
+// false orphaning the skip-pass exists to prevent.
+type poolBacklogReader interface {
+	PoolBacklog(ctx context.Context, pool string) (uint64, error)
+}
+
+// poolBacklogs sums the pending counts of every registry-known pool. The
+// second return is false when nothing is wired (no registry, no capability)
+// or a read failed — an unreadable pool backlog DEFERS the queued verdict
+// (plan D6': an unknown state must not produce an orphan), matching the
+// shared read's fail-safe.
+func (s *Server) poolBacklogs(ctx context.Context, leases runLeaseChecker) (uint64, bool) {
+	pbr, ok := leases.(poolBacklogReader)
+	if !ok || s.runnerPoolsStore == nil {
+		return 0, false
+	}
+	rec, err := s.runnerPoolsStore.Get(ctx)
+	if err != nil {
+		s.logWarn("sweeper: runner-pool registry unreadable (%v) — the queued pass defers", err)
+		return 0, false
+	}
+	if rec == nil {
+		return 0, false
+	}
+	total := uint64(0)
+	for _, p := range rec.Pools {
+		if p.State == platformcfg.RunnerPoolDisabled {
+			continue
+		}
+		n, err := pbr.PoolBacklog(ctx, p.Name)
+		if err != nil {
+			s.logWarn("sweeper: pool %s backlog unreadable (%v) — the queued pass defers", p.Name, err)
+			return 0, false
+		}
+		total += n
+	}
+	return total, true
+}
+
 // runQueueSweeper loops until ctx is cancelled. Started by
 // ListenAndServe in cloud mode when both the Mongo store and the
 // queue connection are wired.
@@ -167,6 +209,13 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	if backlog, ok := s.queueBacklog(ctx, leases); ok && backlog > 0 {
 		if s.logger != nil {
 			s.logger.Debug("sweeper: %d message(s) still waiting on the consumer — skipping the queued pass (those rows are unclaimed for want of a free runner, not orphaned)", backlog)
+		}
+		passes = passes[1:]
+	} else if poolBacklog, ok := s.poolBacklogs(ctx, leases); ok && poolBacklog > 0 {
+		// A pool consumer's pending count is the same signal, pool-scoped:
+		// a sovereign run waiting its turn is not an orphan.
+		if s.logger != nil {
+			s.logger.Debug("sweeper: %d message(s) still waiting on pool consumers — skipping the queued pass", poolBacklog)
 		}
 		passes = passes[1:]
 	}
