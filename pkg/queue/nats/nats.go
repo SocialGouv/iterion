@@ -493,6 +493,14 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 		headers.Set("iterion-span-id", msg.Trace.SpanID)
 	}
 
+	// Pool routing (plan D2'): the subject derives from the frozen pool
+	// stamp — JetStream picks the per-pool stream by subject, so a pool run
+	// cannot land on the shared stream and vice versa. The pool stream's
+	// existence is the reconciler's guarantee; a missing stream fails the
+	// publish (the launch rollback flips the doc), never a silent fall-back
+	// onto the shared subject.
+	subject := c.publishSubject(msg)
+
 	// Per-publish timeout: the NATS client is configured with
 	// MaxReconnects(-1) so a downed broker leaves PublishMsg blocked
 	// indefinitely waiting for ack — that froze studio handlers
@@ -502,7 +510,7 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return c.js.PublishMsg(pubCtx, &nats.Msg{
-		Subject: SubjectRuns,
+		Subject: subject,
 		Data:    body,
 		Header:  headers,
 	})
