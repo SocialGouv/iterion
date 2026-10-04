@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -68,7 +69,7 @@ func (c *Conn) PublishDLQ(ctx context.Context, d *Delivery, reason string) error
 	h.Set(dlqHeaderTenant, env.TenantID)
 	h.Set(dlqHeaderDelivered, fmt.Sprintf("%d", d.NumDelivered()))
 	_, err = c.js.PublishMsg(ctx, &nats.Msg{
-		Subject: SubjectRunsDLQ,
+		Subject: dlqPublishSubject(env),
 		Header:  h,
 		Data:    d.raw.Data(),
 	})
@@ -171,7 +172,7 @@ func (c *Conn) RepublishDLQ(ctx context.Context, seq uint64) (string, error) {
 	h := nats.Header{}
 	h.Set("Nats-Msg-Id", fmt.Sprintf("%s|dlq-replay-%d", view.RunID, seq))
 	if _, err := c.js.PublishMsg(ctx, &nats.Msg{
-		Subject: SubjectRuns,
+		Subject: dlqReplaySubject(payload),
 		Header:  h,
 		Data:    payload,
 	}); err != nil {
@@ -226,4 +227,26 @@ func (c *Conn) IsRunLocked(ctx context.Context, runID string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// dlqPublishSubject names where a parked payload belongs: its frozen pool
+// decides — a sovereign run parks on ITS pool's DLQ, never the shared one.
+func dlqPublishSubject(env queue.Envelope) string {
+	if env.RunnerPool != "" {
+		return PoolDLQSubject(env.RunnerPool)
+	}
+	return SubjectRunsDLQ
+}
+
+// dlqReplaySubject names where a parked payload replays: the same frozen
+// pool decides, from the stored bytes. A replay onto the shared subject
+// would be an escape hatch past the pool boundary — the shared consumer
+// claims exact-subject messages only, so a pool-stamped replay there would
+// sit forever anyway; deriving from the payload sends it home.
+func dlqReplaySubject(payload []byte) string {
+	env, err := queue.PeekEnvelope(payload)
+	if err != nil || env.RunnerPool == "" {
+		return SubjectRuns
+	}
+	return PoolSubject(env.RunnerPool)
 }

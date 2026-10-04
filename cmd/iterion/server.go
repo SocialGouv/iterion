@@ -374,6 +374,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: %w", err)
 	}
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
+		RunnerPools:                stores.runnerPools,
 		RequireLLMCredential:       requireLLMCredential,
 		NATS:                       natsConn,
 		Store:                      st,
@@ -647,6 +648,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PluginSourceFetcher:         pluginFetcher,
 		BotSources:                  stores.botSources,
 		BotRolesSettings:            stores.botRoles,
+		RunnerPoolsSettings:         stores.runnerPools,
 		BotVarsSettings:             stores.botVars,
 		BotVarsResolver:             botVarsResolver,
 		SandboxSettings:             stores.sandboxCfg,
@@ -732,6 +734,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := iterconfig.ScrubPlatformSecrets(); err != nil {
 		return fmt.Errorf("server: %w", err)
 	}
+	// The sovereign-pool reconciler (#2029): the server owns the per-pool
+	// topology — immediate pass + a tick, idempotent, self-healing; two
+	// replicas reconcile the same registry side by side.
+	go srv.RunRunnerPoolReconciler(rootCtx, natsq.NewPoolTopology(natsConn), 30*time.Second, logger.Warn)
 	return runServerLoop(rootCtx, srv, mreg, cfg.Metrics.Port, cfg.Server.ShutdownTeardown, logger)
 }
 
@@ -770,6 +776,7 @@ type cloudStores struct {
 	audit            *audit.MongoStore
 	usageCapSettings *usagecap.MongoSettingsStore
 	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
+	runnerPools      *platformcfg.MongoStore[platformcfg.RunnerPools]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
 	platformCreds    *platformcfg.MongoStore[platformcfg.PlatformCredentials]
@@ -803,6 +810,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
 		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
+		runnerPools:      platformcfg.NewMongoRunnerPools(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		botVars:          platformcfg.NewMongoBotVars(st.DB()),
 		platformCreds:    platformcfg.NewMongoPlatformCredentials(st.DB()),

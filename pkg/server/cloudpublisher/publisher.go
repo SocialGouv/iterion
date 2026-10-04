@@ -164,6 +164,20 @@ type Config struct {
 	// cannot attribute (no model prefix, no provider hint, `auto`, a hint
 	// outside the vocabulary) is never refused, on or off.
 	RequireLLMCredential bool
+	// RunnerPools, when non-nil, is the sovereign-pool registry: a mapped
+	// team's launch routes only when the registry knows the pool AND its
+	// state is active. Nil means no registry exists — no pool can be
+	// mapped, so every team reads as unmapped (the adjusted F10 shape).
+	// A registry read ERROR with a mapped team REFUSES: routing is a
+	// boundary, never served from a stale cache.
+	RunnerPools RunnerPoolResolver
+}
+
+// RunnerPoolResolver is the slice of the sovereign-pool registry the
+// publisher needs: a fresh registry read (never cached — routing is a
+// boundary).
+type RunnerPoolResolver interface {
+	Get(ctx context.Context) (*platformcfg.RunnerPools, error)
 }
 
 // TeamResolver is the slice of the identity store the publisher needs
@@ -207,6 +221,7 @@ type Publisher struct {
 	trust                usagecap.Trust
 	usageProbe           UsageProbe
 	identity             TeamResolver
+	pools                RunnerPoolResolver
 	requireLLMCredential bool
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -297,13 +312,38 @@ func (p *Publisher) orgIDForTeam(ctx context.Context, teamID string) string {
 // burned, on a refusal no retry can cure.
 var ErrPoolRemapped = errors.New("cloudpublisher: the run's runner pool no longer matches its team's mapping")
 
-// poolDispatchEnabled gates the transition from "a mapped team's launches
-// are refused" to "a mapped team's runs are routed to its pool's stream".
-// It is OFF until the queue side ships (per-pool streams, server-managed
-// consumers, runner admission guard — plan v2.1 D2'/D4'): flipping it with
-// any of those missing would dispatch pool-mapped runs onto the shared
-// default pool, which is the leak #2029 exists to make impossible.
-const poolDispatchEnabled = false
+// poolRoutes decides whether a team's frozen pool may route right now: the
+// registry must know the pool AND its state must be active (the operator's
+// explicit "runners for this pool are deployed and consuming" — plan v2.1
+// D4' lifecycle). A registry read error refuses; an unknown or non-active
+// pool refuses naming its state. No registry wired at all with a mapped
+// team also refuses: routing without an explicit registry is the leak this
+// slice exists to make impossible.
+func (p *Publisher) poolRoutes(ctx context.Context, pool string) error {
+	if pool == "" {
+		return nil
+	}
+	if p.pools == nil {
+		return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but no pool registry is wired — refusing (routing requires an explicit registry entry in state active)", pool)
+	}
+	rec, err := p.pools.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("cloudpublisher: read the runner-pool registry for pool %q: %w (refusing)", pool, err)
+	}
+	if rec == nil {
+		return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but the registry holds no pools — refusing", pool)
+	}
+	for i := range rec.Pools {
+		if rec.Pools[i].Name != pool {
+			continue
+		}
+		if rec.Pools[i].State != platformcfg.RunnerPoolActive {
+			return fmt.Errorf("cloudpublisher: runner pool %q is %q — routing requires state %q (the operator flips it when the pool's runners are deployed and consuming)", pool, rec.Pools[i].State, platformcfg.RunnerPoolActive)
+		}
+		return nil
+	}
+	return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but the registry does not know it — refusing", pool)
+}
 
 // runnerPoolForTeam names the runner pool the team is CURRENTLY mapped to,
 // reading the team FRESH — never the 5-min org cache: a mapping is a
@@ -379,6 +419,7 @@ func New(cfg Config) (*Publisher, error) {
 		trust:                cfg.UsageCapTrust.Normalized(),
 		usageProbe:           cfg.UsageProbe,
 		identity:             cfg.Identity,
+		pools:                cfg.RunnerPools,
 		requireLLMCredential: cfg.RequireLLMCredential,
 	}, nil
 }
@@ -2704,8 +2745,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
-	if runnerPool != "" && !poolDispatchEnabled {
-		return 0, fmt.Errorf("team %s is mapped to runner pool %q, but pool dispatch is not enabled in this build — the run is refused rather than served outside the team's pool", tenantID, runnerPool)
+	if runnerPool != "" {
+		if err := p.poolRoutes(ctx, runnerPool); err != nil {
+			return 0, err
+		}
 	}
 	if runnerPool != "" && !queue.ValidPoolName(runnerPool) {
 		return 0, fmt.Errorf("team %s is mapped to runner pool %q: invalid pool name (want 1–31 chars [a-z0-9-], starting alphanumeric)", tenantID, runnerPool)
@@ -3308,11 +3351,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if currentPool != prior.RunnerPool {
 		return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, spec.RunID, prior.RunnerPool, currentPool)
 	}
-	// Same dispatch gate the launch carries: until pool dispatch is wired, a
-	// pool-stamped resume must not publish onto the shared stream where no
-	// runner-side admission guard exists yet.
-	if prior.RunnerPool != "" && !poolDispatchEnabled {
-		return fmt.Errorf("cloudpublisher: run %s is bound to runner pool %q, but pool dispatch is not enabled in this build — the resume is refused rather than served outside the team's pool", spec.RunID, prior.RunnerPool)
+	// Same dispatch gate the launch carries: a pool-stamped resume routes
+	// only when its pool is registry-active, exactly like a launch.
+	if err := p.poolRoutes(ctx, prior.RunnerPool); err != nil {
+		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", spec.RunID, err)
 	}
 	// prior.PinnedProviders, never a fresh derivation: a resume re-resolves
 	// its source, so re-deriving would let a program the launch never

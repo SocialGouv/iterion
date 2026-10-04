@@ -286,7 +286,11 @@ type Config struct {
 	// webhook lanes, and the runtime-mutable sandbox default image. Nil
 	// keeps the hardcoded/env defaults (local mode).
 	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
-	SandboxSettings  platformcfg.Store[platformcfg.Sandbox]
+	// RunnerPoolsSettings is the sovereign-pool registry (#2029): which
+	// pools exist and their lifecycle state. Nil = no pools (every team
+	// reads unmapped).
+	RunnerPoolsSettings platformcfg.Store[platformcfg.RunnerPools]
+	SandboxSettings     platformcfg.Store[platformcfg.Sandbox]
 	// BotVarsSettings is the bot-variable override family: DB-resolved
 	// values for the `${ITERION_X:-default}` expansions bots declare, so
 	// re-tuning a bot (model pin, reasoning effort) is a settings write,

@@ -6260,6 +6260,32 @@
         }
       ]
     },
+    "/api/admin/runner-pools": {
+      "get": {
+        "operationId": "getAdminRunnerPools",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/runner-pools",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminRunnerPools",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/runner-pools",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/settings/bot-roles": {
       "get": {
         "operationId": "getAdminSettingsBotRoles",
