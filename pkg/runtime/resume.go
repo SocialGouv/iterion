@@ -34,6 +34,14 @@ import (
 // match it with errors.Is rather than parsing the human-readable explanation.
 var ErrWorkflowSourceChanged = errors.New("runtime: workflow source has changed")
 
+// ErrForkInputsViolated marks the first-resume refusal of a fork child's
+// recorded, operator-supplied var values (store.Run.ForkSuppliedInputs) that
+// fail the constraints the child's compiled workflow declares — the gate the
+// fork surface skips, judged here so a value can never ride from an
+// operator's keyboard into an executing run unchecked. Callers should match
+// it with errors.Is.
+var ErrForkInputsViolated = errors.New("runtime: fork var validation")
+
 // IsWorkflowSourceChanged reports whether err is the typed source-change
 // refusal. The text fallback is intentionally limited to compatibility
 // boundaries that flatten errors to prose (notably detached CLI runners and
@@ -122,6 +130,13 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// use this typed error to park the run for an explicit forced resume.
 	if err := e.checkWorkflowHash(ctx, r); err != nil {
 		return err
+	}
+	// A fork child's recorded, operator-supplied var values are judged HERE,
+	// against the workflow this engine compiles — the gate the fork surface
+	// skips, and the only verdict these values ever get. Runs without the
+	// record (every launch, a plain recovery fork) cross it unchanged.
+	if rerr := e.judgeForkSuppliedInputs(ctx, r); rerr != nil {
+		return rerr
 	}
 	// Engine.Resume is also a public execution boundary (the CLI calls it
 	// directly), so it repeats the policy-aware physical guard used by
@@ -354,6 +369,92 @@ func (e *Engine) sourceChange(r *store.Run) (workflowErr, bundleErr error, legac
 		return nil, nil, true
 	}
 	return workflowErr, bundleErr, false
+}
+
+// judgeForkSuppliedInputs is the floor the fork surface relies on (#1743): a
+// forked child is parked `cancelled` and executed by Resume — a path that
+// deliberately never re-judges stored values — so the values an operator
+// supplies to `fork --new-inputs` would run forever unjudged unless the
+// engine read them back at the child's FIRST resume. It judges exactly the
+// keys recorded on the child at fork time (store.Run.ForkSuppliedInputs),
+// against THIS engine's compiled workflow — the workflow the child actually
+// executes — with the same reading the launch gate gives its own inputs.
+//
+// Two properties are load-bearing:
+//
+//   - Nothing else is judged. The parent's stored values are the launch
+//     gate's verdicts; re-judging them is forbidden and pinned by
+//     TestResumeDoesNotReRefuseStoredValuesUnderATightenedPattern. An empty
+//     record leaves this function without a gate call at all.
+//   - The record is consumed on a PASS (clearForkSuppliedInputs). Judged
+//     once, never again: a declaration tightened between two resumes of a
+//     mid-flight fork child must not strand it — the same invariant, one
+//     gate later. A refusal keeps the record armed, so a forced resume
+//     against a changed workflow is still judged.
+func (e *Engine) judgeForkSuppliedInputs(ctx context.Context, r *store.Run) error {
+	if len(r.ForkSuppliedInputs) == 0 {
+		return nil
+	}
+	delta := make(map[string]any, len(r.ForkSuppliedInputs))
+	for _, k := range r.ForkSuppliedInputs {
+		// A recorded key that is absent from Inputs judges nothing — the
+		// honest reading of "the value the child executes" (the inputs map
+		// is launch-frozen from the fork merge onward).
+		if v, ok := r.Inputs[k]; ok {
+			delta[k] = v
+		}
+	}
+	if len(delta) == 0 {
+		return nil
+	}
+	// Judge with the run's OWN workdir/repo root — the values resume with
+	// exactly the reading restoreRunEnv will give them, not this engine's
+	// pre-resume state.
+	if r.WorkDir != "" {
+		e.workDir = r.WorkDir
+	}
+	e.seedRepoRootForResume(r)
+	if err := e.validateVarConstraints(delta); err != nil {
+		return fmt.Errorf("%w (recorded at fork time, judged at the child's first resume): %v", ErrForkInputsViolated, err)
+	}
+	e.clearForkSuppliedInputs(ctx, r)
+	return nil
+}
+
+// clearForkSuppliedInputs consumes the record on a PASS, so a later resume
+// does not re-judge values the child is already running on (a declaration
+// tightened mid-flight must not strand it). A whole-document CAS save with
+// the same conflict contract persistAdmission uses: on a concurrent writer,
+// reload fresh and clear ONLY the field, so the retry never reverts a
+// transition it did not observe. Failure is not fatal — the judgment already
+// passed — but it is SAID: a record left armed means a declaration tightened
+// before the next resume would refuse the run, so the operator can re-fork
+// deliberately instead of discovering the stranding.
+func (e *Engine) clearForkSuppliedInputs(ctx context.Context, r *store.Run) {
+	if e.store == nil {
+		return
+	}
+	writeCtx := context.WithoutCancel(ctx)
+	current := r
+	for attempt := 0; attempt < 3; attempt++ {
+		current.ForkSuppliedInputs = nil
+		if err := e.store.SaveRun(writeCtx, current); err == nil {
+			return
+		} else if !errors.Is(err, store.ErrRunConflict) {
+			if e.logger != nil {
+				e.logger.Error("runtime: resume %s: could not record the fork-input judgment (the values passed): %v — the record stays armed and a declaration tightened before the next resume would refuse the run", r.ID, err)
+			}
+			return
+		}
+		fresh, loadErr := e.store.LoadRun(writeCtx, r.ID)
+		if loadErr != nil {
+			if e.logger != nil {
+				e.logger.Error("runtime: resume %s: could not reload the run to clear the fork-input record (the values passed): %v — the record stays armed and a declaration tightened before the next resume would refuse the run", r.ID, loadErr)
+			}
+			return
+		}
+		current = fresh
+	}
 }
 
 // alsoNamingSourceChange is a refusal that comes before the source check

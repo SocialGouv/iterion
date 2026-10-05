@@ -16,12 +16,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// ErrForkInputsUnverifiable is returned when a fork supplies new values for
-// constrained vars and the parent's own recorded source cannot be read back.
-// It is greppable on purpose: a fork WITHOUT `new_inputs` never meets it, so
-// the recovery path an operator reaches for by default is never refused.
-var ErrForkInputsUnverifiable = errors.New("the parent's recorded workflow source cannot be read back, so the var constraints on the values you supplied cannot be checked")
-
 // ErrForkInputsRefused wraps every refusal of an operator-supplied value, so
 // the HTTP surface answers 400 for what the operator typed instead of the 500
 // its default arm gives a genuine fault.
@@ -36,7 +30,10 @@ var ErrForkInputsRefused = errors.New("fork: the values supplied in new_inputs w
 // (tightening a declaration must never make a run unresumable). So a
 // declaration read as enforced was inert on this path.
 //
-// Three properties, each load-bearing:
+// It returns the CHANGED map — the delta the caller records on the child as
+// store.Run.ForkSuppliedInputs, so the child's first resume judges exactly
+// these keys against the workflow it compiles — and a NOTE for the one case
+// it admits without a verdict:
 //
 //   - Only the values the operator CHANGED are judged. The studio's ForkDialog
 //     pre-fills its editor with the parent's whole input map, so an unmodified
@@ -54,15 +51,23 @@ var ErrForkInputsRefused = errors.New("fork: the values supplied in new_inputs w
 //     depending on the environment of whoever evaluates it. A verdict on such a
 //     value would be a guess, and a guess in a blocking gate is worse than the
 //     hole it closes.
-func (s *Service) gateForkInputs(parent *store.Run, newInputs map[string]any) error {
-	changed := changedForkInputs(parent.Inputs, newInputs)
+//   - A parent whose recorded source cannot be read back (over the 1 MiB
+//     record cap, pre-2026-08-04, cleared by a forced cloud resume, or no
+//     longer compiling) is ADMITTED with a note, not refused: the child's
+//     first resume judges the recorded delta, so nothing reaches execution
+//     unchecked and the cap stops costing forkability. Every path that would
+//     execute the values crosses that floor; a run whose source is so far
+//     gone that no engine can compile it cannot resume at all, so its values
+//     never execute either.
+func (s *Service) gateForkInputs(parent *store.Run, newInputs map[string]any) (changed map[string]any, note string, err error) {
+	changed = changedForkInputs(parent.Inputs, newInputs)
 	if len(changed) == 0 {
-		return nil
+		return changed, "", nil
 	}
-	wf, err := recordedWorkflow(parent)
-	if err != nil {
-		return fmt.Errorf("runview: fork: %w (%v). Runs record the source they executed since 2026-08-04; a run older than that, one whose source was dropped (over the 1 MiB record cap, or cleared by a forced cloud resume), or one whose recorded source no longer compiles, cannot be checked. Two ways on: fork without --new-inputs — a plain recovery fork is never refused — or launch the workflow afresh with the values you want. Admitting the change unchecked is not one: the child is executed by resume, which never re-judges stored values",
-			ErrForkInputsUnverifiable, err)
+	wf, werr := recordedWorkflow(parent)
+	if werr != nil {
+		note = fmt.Sprintf("the parent's recorded workflow source could not be read back (%v), so these values were admitted without a pre-check — the child's first resume judges them against the var constraints the workflow it compiles declares, and refuses it if they violate one", werr)
+		return changed, note, nil
 	}
 	var violations []string
 	literal := map[string]any{}
@@ -91,17 +96,43 @@ func (s *Service) gateForkInputs(parent *store.Run, newInputs map[string]any) er
 		literal[k] = changed[k]
 	}
 	if len(violations) > 0 {
-		return fmt.Errorf("runview: %w: %s", ErrForkInputsRefused, strings.Join(violations, "; "))
+		return changed, "", fmt.Errorf("runview: %w: %s", ErrForkInputsRefused, strings.Join(violations, "; "))
 	}
 	// Every remaining value reads the same in every environment, so the
 	// expander can never be consulted — proven one line above, per value.
-	if err := runtime.ValidateVarConstraints(wf.Vars, literal, noEnv); err != nil {
-		return fmt.Errorf("runview: %w: %v", ErrForkInputsRefused, err)
+	if verr := runtime.ValidateVarConstraints(wf.Vars, literal, noEnv); verr != nil {
+		return changed, "", fmt.Errorf("runview: %w: %v", ErrForkInputsRefused, verr)
 	}
-	return nil
+	return changed, "", nil
 }
 
 func noEnv(string) string { return "" }
+
+// unjudgedForkKeys is the child's ForkSuppliedInputs: the keys the operator
+// moved in this fork, plus the keys the PARENT itself inherited unjudged and
+// that this fork re-sends unchanged (their values are not judged here — an
+// unchanged value is never judged, the property that keeps the studio's
+// unmodified ForkDialog submits working — so they stay armed for the child's
+// first resume). Sorted and deduplicated: the field is a record, not a
+// multiset, and both stores round-trip it verbatim.
+func unjudgedForkKeys(parent *store.Run, changed map[string]any) []string {
+	keys := make(map[string]bool, len(changed)+len(parent.ForkSuppliedInputs))
+	for k := range changed {
+		keys[k] = true
+	}
+	for _, k := range parent.ForkSuppliedInputs {
+		keys[k] = true
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(keys))
+	for k := range keys {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
 
 // changedForkInputs keeps the keys whose value the operator actually moved.
 func changedForkInputs(parentInputs, newInputs map[string]any) map[string]any {

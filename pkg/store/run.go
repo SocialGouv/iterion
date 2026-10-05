@@ -800,9 +800,10 @@ type Run struct {
 	//
 	// Best-effort and size-capped (see runtime.maxPersistedWorkflowSource):
 	// an unreadable or oversized source disables auto-targeting, leaving
-	// `--node` to work as before, and makes `fork --new-inputs` refuse —
-	// the fork gate checks operator-supplied values against the var
-	// constraints declared in the source the run executed.
+	// `--node` to work as before, and stops `fork --new-inputs` from
+	// pre-checking the supplied values against the var constraints the
+	// source declares — those values are then admitted with a note and
+	// judged at the child's first resume instead (ForkSuppliedInputs).
 	WorkflowSource string `json:"workflow_source,omitempty" bson:"workflow_source,omitempty"`
 	// WorkflowSources is every file of the unit the run executed — the
 	// main and the fragments its imports reach — by slash path from the
@@ -1310,6 +1311,22 @@ type Run struct {
 	ForkedFrom string      `json:"forked_from,omitempty" bson:"forked_from,omitempty"`
 	ForkAnchor *ForkAnchor `json:"fork_anchor,omitempty" bson:"fork_anchor,omitempty"`
 	SourceHash string      `json:"source_hash,omitempty" bson:"source_hash,omitempty"`
+	// ForkSuppliedInputs names the var keys whose values an OPERATOR
+	// supplied to a fork and which no gate has judged yet: the fork's
+	// `new_inputs` delta over the parent's inputs, plus the keys this run
+	// itself inherited unjudged from the fork it was created from (a fork
+	// of a fork carries them until a resume settles them). The fork path
+	// is the one surface that writes var values into a run without
+	// entering Engine.Run, and Resume deliberately never re-judges stored
+	// values — so without this record the launch-time constraints
+	// (`[enum: …]`, `[matching: …]`) were inert on those values forever.
+	// The engine reads it at the child's FIRST resume, judges exactly
+	// these keys against the workflow the child compiles, and clears the
+	// field when they pass: a declaration tightened after that must never
+	// strand the run (the same invariant that keeps Resume off stored
+	// values). Empty for a plain recovery fork (nothing supplied, nothing
+	// inherited) and for every run that did not begin as a fork.
+	ForkSuppliedInputs []string `json:"fork_supplied_inputs,omitempty" bson:"fork_supplied_inputs,omitempty"`
 
 	// Source records the originating action that produced this run —
 	// today, only "dispatcher" runs carry an Issue back-reference, but

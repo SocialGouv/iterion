@@ -84,6 +84,10 @@ the chosen node boundary (requires per-node snapshots; Phase 2+).`,
 		p.JSON(result)
 		fmt.Fprintf(os.Stderr, "forked %s → %s (resume with: iterion resume --run-id %s)\n",
 			result.ParentRunID, result.NewRunID, result.NewRunID)
+		for _, note := range result.Notes {
+			fmt.Fprintf(os.Stderr, "note: %s\n", note)
+			fmt.Fprintf(os.Stderr, "      (recorded on the child as fork_supplied_inputs; its first resume judges them)\n")
+		}
 		return nil
 	},
 }
