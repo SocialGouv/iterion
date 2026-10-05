@@ -111,6 +111,9 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	if err != nil {
 		return nil, err
 	}
+	if err := poolContentRefusal(r.RunnerPool, spec); err != nil {
+		return nil, err
+	}
 	client, err := registry.Resolve(spec)
 	if err != nil {
 		return nil, fmt.Errorf("resolve model %q: %w", spec, err)

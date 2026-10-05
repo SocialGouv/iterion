@@ -126,7 +126,36 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 	if !supervise.DeclaredEnabledOrWarn(override, len(wf.Supervisors), logger) {
 		return func() {}
 	}
-	return supervise.StartDeclared(ctx, s, s, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
+	specs := supervise.SpecsFromWorkflow(wf, logger)
+	pool, err := s.frozenPoolStamp(ctx, runID)
+	if err != nil {
+		// The stamp is unreadable: the surface stays OFF rather than guess
+		// the run was never pool-stamped. The run itself is unaffected.
+		logger.Warn("supervisors: pool stamp unreadable for run %s — refusing to start (%v)", runID, err)
+		return func() {}
+	}
+	specs = poolSurvivingSpecs(specs, pool, logger)
+	return supervise.StartDeclared(ctx, s, s, runID, specs, logger)
+}
+
+// poolSurvivingSpecs filters declared supervisors against a run's frozen
+// pool stamp: on a pool-stamped run, a supervisor whose model is not
+// gateway-routed is refused (D12) — evaluating the run's content through a
+// vendor default would spend a provider the pool team never funded. A nil
+// pool keeps every spec.
+func poolSurvivingSpecs(specs []supervise.Spec, pool string, logger *iterlog.Logger) []supervise.Spec {
+	if pool == "" {
+		return specs
+	}
+	kept := specs[:0]
+	for _, spec := range specs {
+		if err := poolContentRefusal(pool, spec.Model); err != nil {
+			logger.Warn("supervisor %q: %v", spec.Name, err)
+			continue
+		}
+		kept = append(kept, spec)
+	}
+	return kept
 }
 
 // Publish persists an updated Session-board spec for runID. It satisfies
@@ -158,6 +187,17 @@ func (s *Service) SessionBoard(runID string) (sessionboard.Spec, error) {
 // and needs nothing here.
 func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, logger *iterlog.Logger) (stop func()) {
 	if s.sbStore == nil || !sessionboard.Enabled() {
+		return func() {}
+	}
+	pool, err := s.frozenPoolStamp(ctx, runID)
+	if err != nil {
+		// The stamp is unreadable: the surface stays OFF rather than guess
+		// the run was never pool-stamped. The run itself is unaffected.
+		logger.Warn("session board: pool stamp unreadable for run %s — refusing to start (%v)", runID, err)
+		return func() {}
+	}
+	if err := poolContentRefusal(pool, sessionboard.ModelFromEnv()); err != nil {
+		logger.Warn("session board: %v", err)
 		return func() {}
 	}
 	initial, _ := s.sbStore.Load(runID)
