@@ -1,0 +1,57 @@
+name: board-done
+
+# A closed issue's board card moves to Done. The built-in project workflow
+# ("item closed" -> set Status) is configurable only in the web UI, so this
+# owns the same behavior in the tree. Idempotent: an already-Done card is
+# written again to no effect. A card that is not on the board is a no-op.
+# A reopened issue stays Done — moving it back is the operator's call.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  projects: write
+
+concurrency:
+  group: board-done-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  done:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Move the board card to Done
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT_ID: PVT_kwDOAh0HH84BiOg8
+          STATUS_FIELD_ID: PVTSSF_lADOAh0HH84BiOg8zhhHUgk
+          DONE_OPTION_ID: "27139072"
+        run: |
+          item_id="$(gh api graphql \
+            -f query='query($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                  projectItems(first: 10) { nodes { id project { id } } }
+                }
+              }
+            }' \
+            -f owner="${{ github.repository_owner }}" \
+            -f repo="${{ github.event.repository.name }}" \
+            -F number="${{ github.event.issue.number }}" \
+            --jq ".data.repository.issue.projectItems.nodes[] | select(.project.id == \"$PROJECT_ID\") | .id" | head -1)"
+          if [ -z "$item_id" ]; then
+            echo "issue #${{ github.event.issue.number }} has no card on the board — nothing to move"
+            exit 0
+          fi
+          gh api graphql \
+            -f query='mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+              updateProjectV2ItemFieldValue(
+                input: {projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}
+              ) { projectV2Item { id } }
+            }' \
+            -F project="$PROJECT_ID" -F item="$item_id" \
+            -F field="$STATUS_FIELD_ID" -f option="$DONE_OPTION_ID" \
+            --jq '.data.updateProjectV2ItemFieldValue.projectV2Item.id' \
+            && echo "card $item_id moved to Done"
