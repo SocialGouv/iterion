@@ -268,14 +268,26 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	// Prove the durable consumer can be created before advancing the rollout
 	// high-water mark. The handle is inert until Runner.Run starts fetching.
-	preparedConsumer, err := natsConn.PrepareConsumer(rootCtx)
-	if err != nil {
-		return fmt.Errorf("runner: prepare queue consumer: %w", err)
+	// A POOL runner ATTACHES the consumer its server reconciler created —
+	// fail closed on a missing or mis-pointed consumer; it never creates
+	// topology (plan v2.1 D4').
+	var preparedConsumer *natsq.Consumer
+	if cfg.Runner.Pool != "" {
+		preparedConsumer, err = natsConn.AttachPoolConsumer(rootCtx, cfg.Runner.Pool)
+		if err != nil {
+			return fmt.Errorf("runner: attach pool consumer: %w", err)
+		}
+	} else {
+		preparedConsumer, err = natsConn.PrepareConsumer(rootCtx)
+		if err != nil {
+			return fmt.Errorf("runner: prepare queue consumer: %w", err)
+		}
 	}
 
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:                natsConn,
+		RunnerPool:          cfg.Runner.Pool,
 		PreparedConsumer:    preparedConsumer,
 		Events:              eventsBus,
 		Store:               st,

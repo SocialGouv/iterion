@@ -1261,6 +1261,11 @@ func dispatchDelivery(logger *iterlog.Logger, delivery jsDelivery, action delive
 // Config is the runner bootstrap.
 type Config struct {
 	NATS *natsq.Conn
+	// RunnerPool names the sovereign pool this pod serves (#2029). Empty =
+	// the shared default pool. It is the admission identity: a delivery
+	// stamped for another pool is parked with the run failed, never
+	// executed.
+	RunnerPool string
 	// PreparedConsumer, when non-nil, is a durable consumer whose creation was
 	// already proven by the entrypoint before it claims the rollout epoch. It
 	// remains inert until Run starts fetching. Nil preserves the convenient
@@ -1905,6 +1910,16 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 
 	if !r.verifyTenantOrTerm(pre, msg, delivery, logger) {
 		finalStatus = "tenant_mismatch"
+		return
+	}
+
+	// The pool admission (plan v2.1 D4'): the pod serves ONE pool — a
+	// delivery stamped for another pool, or whose frozen document stamp
+	// disagrees with its message, is a corrupted or replayed publish.
+	// Executing it under either pool's scope is the leak #2029 exists to
+	// make impossible.
+	if !r.verifyPoolOrTerm(pre, msg, delivery, logger) {
+		finalStatus = "pool_mismatch"
 		return
 	}
 
@@ -2684,6 +2699,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(msg.WorkflowHash),
 		runtime.WithWorkDir(workDir),
+		// The frozen pool stamp reaches the engine so any document the run
+		// writes (resume re-stamps, child flows) keeps naming the pool —
+		// the admission compares document ≡ message, and a doc the engine
+		// rebuilt without the stamp would contradict its own message.
+		runtime.WithRunnerPool(msg.RunnerPool),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and

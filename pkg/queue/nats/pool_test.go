@@ -90,3 +90,28 @@ func TestPoolFromStreamName(t *testing.T) {
 		t.Fatal("the shared stream must not read as a pool stream")
 	}
 }
+
+// The attach contract: fail closed on a mis-pointed consumer (durable or
+// filter not the pool's) — a pool runner never serves someone else's
+// topology. The pure half is verified directly; the js round-trip is the
+// nats-conformance scenario.
+func TestVerifyPoolConsumerAttachment(t *testing.T) {
+	if err := verifyPoolConsumerAttachment(jetstream.ConsumerConfig{
+		Durable:       "iterion-runners-pool-honorabilite",
+		FilterSubject: "iterion.queue.runs.pool.honorabilite",
+	}, "honorabilite"); err != nil {
+		t.Fatalf("a correctly pointed consumer verifies: %v", err)
+	}
+	if err := verifyPoolConsumerAttachment(jetstream.ConsumerConfig{
+		Durable:       "iterion-runners",
+		FilterSubject: "iterion.queue.runs.pool.honorabilite",
+	}, "honorabilite"); err == nil || !strings.Contains(err.Error(), "durable") {
+		t.Fatalf("a shared durable must be refused: %v", err)
+	}
+	if err := verifyPoolConsumerAttachment(jetstream.ConsumerConfig{
+		Durable:       "iterion-runners-pool-honorabilite",
+		FilterSubject: "iterion.queue.runs",
+	}, "honorabilite"); err == nil || !strings.Contains(err.Error(), "filter") {
+		t.Fatalf("a shared filter must be refused: %v", err)
+	}
+}

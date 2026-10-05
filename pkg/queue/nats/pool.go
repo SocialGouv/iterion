@@ -172,3 +172,41 @@ func (c *Conn) PoolBacklog(ctx context.Context, pool string) (uint64, error) {
 	}
 	return info.NumPending, nil
 }
+
+// AttachPoolConsumer attaches the pool's EXISTING durable consumer — the
+// server's reconciler owns the topology; a pool runner never creates it.
+// Fail closed: a missing or mis-pointed consumer is a refusal (the runner
+// does not start), never a silent fall-back onto the shared consumer.
+func (c *Conn) AttachPoolConsumer(ctx context.Context, pool string) (*Consumer, error) {
+	if c == nil || c.js == nil {
+		return nil, fmt.Errorf("queue/nats: connection not initialised")
+	}
+	if !queue.ValidPoolName(pool) {
+		return nil, fmt.Errorf("queue/nats: pool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", pool)
+	}
+	cons, err := c.js.Consumer(ctx, PoolStreamName(pool), PoolConsumerName(pool))
+	if err != nil {
+		return nil, fmt.Errorf("queue/nats: pool consumer %s does not exist — the server's reconciler creates it; a pool runner refuses to create topology: %w", PoolConsumerName(pool), err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("queue/nats: pool consumer %s info: %w", PoolConsumerName(pool), err)
+	}
+	if err := verifyPoolConsumerAttachment(info.Config, pool); err != nil {
+		return nil, err
+	}
+	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger}, nil
+}
+
+// verifyPoolConsumerAttachment is the pure half: the attached consumer must
+// be durable-named and filter-pointed for THIS pool — anything else is a
+// mis-pointed topology the runner refuses to serve.
+func verifyPoolConsumerAttachment(cfg jetstream.ConsumerConfig, pool string) error {
+	if cfg.Durable != PoolConsumerName(pool) {
+		return fmt.Errorf("queue/nats: consumer durable %q is not the pool %q consumer (%q)", cfg.Durable, pool, PoolConsumerName(pool))
+	}
+	if cfg.FilterSubject != PoolSubject(pool) {
+		return fmt.Errorf("queue/nats: consumer filter %q is not the pool %q subject (%q)", cfg.FilterSubject, pool, PoolSubject(pool))
+	}
+	return nil
+}
