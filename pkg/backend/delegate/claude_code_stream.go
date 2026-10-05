@@ -755,13 +755,12 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			now := time.Now()
 			switch bgKind {
 			case bgTimerWait:
-				// The parent is idle and the wait budget is spent: ask for the
-				// report now (it is between turns, so the message starts one).
-				if tracker.cliMovedOn() {
-					continue // a turn is starting; its close decides
-				}
-				action, msg := bg.wrapUp(now, tracker.view(), fmt.Sprintf("the background wait budget (%s) is spent", bgCfg.wait))
-				if action == bgReenterAfterSend {
+				// The wait budget is spent — but the tracker may have moved on
+				// since the timer was armed: waitExpired re-reads it and disarms
+				// a stale fire; only a genuinely spent budget with held work
+				// still running asks for the report (between turns, so the
+				// message starts one).
+				if msg, send := bg.waitExpired(now); send {
 					if err := sendTagged(msg); err != nil {
 						return bg.final(), meta, fmt.Errorf("claude session: could not send the background wrap-up: %w", err)
 					}
