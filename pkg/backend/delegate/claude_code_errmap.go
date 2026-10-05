@@ -222,11 +222,22 @@ func authFailureFast(result *string, task Task) error {
 
 // retypeNetworkError re-classifies an opaque claude_code failure as an
 // ErrTransient when the error message or captured stderr shows a transient-
-// connectivity marker (fetch failed, ECONNRESET, overloaded, 5xx, …), so the
-// executor retries it with backoff instead of failing the node on a blip.
-// Already-typed transient / rate-limit errors pass through unchanged. Emits
-// one explicit warn so the operator sees a connectivity issue, not just a
-// generic retry.
+// connectivity marker (fetch failed, ECONNRESET, …), so the executor retries
+// it with backoff instead of failing the node on a blip. Already-typed
+// transient / rate-limit errors pass through unchanged. Emits one explicit
+// warn so the operator sees a connectivity issue, not just a generic retry.
+//
+// The two channels are scoped differently, like the shared CLI-agent retry
+// loop: the process's own error text is matched against the FULL signature
+// set, but stderr is free-form crash-dump text — a Node stack trace quotes
+// arbitrary source, which can carry any signature verbatim (the #1645
+// collision class: a Bun "JSON Parse error: Unexpected EOF" substring-
+// matches "unexpected eof") — so only its transport-level lines count
+// (matchesTransportStderr). The prose signatures (overloaded, 5xx bodies)
+// stay load-bearing where the channel is structured: the result text
+// (isTransientAPIErrorResult), which is where the CLI renders its own API
+// failures — measured against a refused endpoint: "API Error: Connection
+// refused … (ECONNREFUSED)" on the result, stderr empty.
 func (b *ClaudeCodeBackend) retypeNetworkError(err error, stderr string, task Task) error {
 	if err == nil {
 		return nil
@@ -236,7 +247,7 @@ func (b *ClaudeCodeBackend) retypeNetworkError(err error, stderr string, task Ta
 	if errors.As(err, &t) || errors.As(err, &rl) {
 		return err
 	}
-	if !MatchesNetworkSignature(err.Error()) && !MatchesNetworkSignature(stderr) {
+	if !MatchesNetworkSignature(err.Error()) && !matchesTransportStderr(stderr) {
 		return err
 	}
 	b.Logger.Warn("[%s#%d/claude-code] network connectivity issue detected; flagging for retry: %v",
