@@ -1477,9 +1477,12 @@ workflow bm:
 
 // The ceiling lands first (three crossings) and the death later (five): a
 // run that cancelled the siblings of the first branch to end would never
-// see the death.
+// see the death. The dry-run crossing bound is LIFTED here (negative
+// LoopCrossings): the death this test exists for is the program's own at
+// the loop's cap of five, and the default bound of three would decline the
+// edge first — the bound's doing, not the death.
 func TestADeathInOneBranchBesideACeilingInAnotherIsADeath(t *testing.T) {
-	r, err := Run(context.Background(), compileBot(t, branchMixedBot), Options{})
+	r, err := Run(context.Background(), compileBot(t, branchMixedBot), Options{LoopCrossings: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1510,7 +1513,9 @@ func TestTwoCeilingsInTwoBranchesAreACeiling(t *testing.T) {
 }
 
 // A parent whose subbot sits inside a bounded loop: the child is crossed
-// once, then three more times on the false pass.
+// once, then three more times on the false pass — the dry run's default
+// crossing bound (3) declining the back-edge after three re-entries, well
+// short of the cap of 30 the loop declares.
 const loopingParentBot = `schema verdict:
   ok: bool
 
@@ -1529,7 +1534,7 @@ workflow p:
   budget:
     max_iterations: 30
   kid -> check
-  check -> kid when not ok as again(3)
+  check -> kid when not ok as again(30)
   check -> done when ok
 `
 
