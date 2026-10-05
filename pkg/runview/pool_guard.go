@@ -50,15 +50,16 @@ func (s *Service) frozenPoolStamp(ctx context.Context, runID string) (string, er
 // launched before the stamp existed carry RunnerPool=="", and the current
 // mapping is the only signal left (a team mapped today was sovereign in
 // intent for its older conflicted content). Nil lookup (local mode, no
-// identity seam) and a nil stamp both pass; an unreadable mapping refuses
-// — the ambiguity is the refusal, never a guess.
+// identity seam) and a nil stamp both pass. An UNREADABLE mapping is an
+// infrastructure error surfaced as such (HTTP 500 — the remedy is not a
+// model pin); only a DEFINITIVE mapped answer yields the policy refusal.
 func (s *Service) preStampPoolRefusal(ctx context.Context, r *store.Run) error {
 	if r.RunnerPool != "" || s.currentPoolForTenant == nil {
 		return nil
 	}
 	cur, err := s.currentPoolForTenant(ctx, r.TenantID)
 	if err != nil {
-		return fmt.Errorf("%w: the current pool mapping for tenant %q is unreadable (%v)", ErrPoolContentRefused, r.TenantID, err)
+		return fmt.Errorf("pool guard: the current pool mapping for tenant %q is unreadable (%v)", r.TenantID, err)
 	}
 	if cur == "" {
 		return nil

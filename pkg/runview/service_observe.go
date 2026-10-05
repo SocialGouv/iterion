@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -158,7 +159,10 @@ func PoolSurvivingSpecs(specs []supervise.Spec, pool string, logger *iterlog.Log
 	envDefault := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 	kept := specs[:0]
 	for _, spec := range specs {
-		model := spec.Model
+		// The pin may be an env form ("${VAR:-openai_compatible/x}") —
+		// expand it exactly like eval time does, else a supervisor whose
+		// effective model is the gateway would be refused here.
+		model := strings.TrimSpace(ir.ExpandEnvWithDefault(spec.Model))
 		if model == "" {
 			model = envDefault
 		}

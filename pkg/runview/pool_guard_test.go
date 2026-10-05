@@ -60,19 +60,24 @@ func TestPoolContentRefusalTable(t *testing.T) {
 // (unpinned) supervisors are refused; a gateway-pinned supervisor keeps
 // running; with no stamp every spec survives.
 func TestPoolSurvivingSpecs(t *testing.T) {
+	// The filter consults host env exactly like eval time; a host that
+	// exports either var must not flip these verdicts.
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_GLM", "")
 	logger := iterlog.Nop()
 	all := []supervise.Spec{
 		{Name: "vendor-pinned", Model: "anthropic/claude-opus-4-8"},
 		{Name: "gateway-pinned", Model: "openai_compatible/glm-5.2"},
+		{Name: "env-form gateway", Model: "${ITERION_GLM:-openai_compatible/glm-5.2}"},
 		{Name: "auto", Model: ""},
 	}
 	kept := PoolSurvivingSpecs(all, "", logger)
-	if len(kept) != 3 {
-		t.Fatalf("no stamp: %d specs kept, want 3", len(kept))
+	if len(kept) != 4 {
+		t.Fatalf("no stamp: %d specs kept, want 4", len(kept))
 	}
 	kept = PoolSurvivingSpecs(all, "honorabilite", logger)
-	if len(kept) != 1 || kept[0].Name != "gateway-pinned" {
-		t.Fatalf("pool run: %v kept, want only gateway-pinned", kept)
+	if len(kept) != 2 || kept[0].Name != "gateway-pinned" || kept[1].Name != "env-form gateway" {
+		t.Fatalf("pool run: %v kept, want both gateway forms", kept)
 	}
 }
 
@@ -238,6 +243,10 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 // run, and asserts the surface never starts; the unstamped control proves
 // the seam would have started it.
 func TestStartDeclaredSupervisorsRefusePoolRunContent(t *testing.T) {
+	// The kill switch short-circuits BEFORE the guard, and the env pins
+	// feed the filter: a host exporting either must not flip the verdicts.
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
 	logger := iterlog.Nop()
 	st, svc, ctx := newGuardTestService(t)
 	runID := "run-sup-site"
@@ -281,6 +290,7 @@ func TestStartSessionBoardRefusesPoolRunContent(t *testing.T) {
 	defer restore()
 
 	t.Setenv("ITERION_SESSION_BOARD", "on")
+	t.Setenv("ITERION_DEFAULT_SESSIONBOARD_MODEL", "")
 	svc.sbStore = guardStubSBStore{}
 	svc.startSessionBoard(ctx, "run-sb-site", "bot", logger)
 	if started != 0 {
