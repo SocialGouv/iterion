@@ -68,6 +68,7 @@ func loadEnv(cfg *Config) error {
 	}
 
 	lookupString("ITERION_RUNNER_WORKDIR", &cfg.Runner.WorkDir)
+	lookupString("ITERION_RUNNER_POOL", &cfg.Runner.Pool)
 	if err := lookupInt("ITERION_RUNNER_CONCURRENCY", &cfg.Runner.Concurrency); err != nil {
 		return err
 	}

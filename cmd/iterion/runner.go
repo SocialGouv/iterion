@@ -268,14 +268,32 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	// Prove the durable consumer can be created before advancing the rollout
 	// high-water mark. The handle is inert until Runner.Run starts fetching.
-	preparedConsumer, err := natsConn.PrepareConsumer(rootCtx)
-	if err != nil {
-		return fmt.Errorf("runner: prepare queue consumer: %w", err)
+	// A POOL runner ATTACHES the consumer its server reconciler created —
+	// fail closed on a missing or mis-pointed consumer; it never creates
+	// topology (plan v2.1 D4').
+	var preparedConsumer *natsq.Consumer
+	if cfg.Runner.Pool != "" {
+		preparedConsumer, err = natsConn.AttachPoolConsumer(rootCtx, cfg.Runner.Pool)
+		if err != nil {
+			return fmt.Errorf("runner: attach pool consumer: %w", err)
+		}
+		logger.Info("runner: serving sovereign pool %q (admission: only runs stamped for this pool execute)", cfg.Runner.Pool)
+	} else {
+		// The shared path KEEPS its pre-claim preparation: PrepareConsumer
+		// proves the durable consumer before the epoch claim advances (a
+		// NewConsumer after the claim fails ErrRunnerEpochUnclaimed on
+		// every shared pod — the boot break revi R442ad9 caught).
+		preparedConsumer, err = natsConn.PrepareConsumer(rootCtx)
+		if err != nil {
+			return fmt.Errorf("runner: prepare queue consumer: %w", err)
+		}
+		logger.Info("runner: serving the shared default pool (ITERION_RUNNER_POOL is empty)")
 	}
 
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:                natsConn,
+		RunnerPool:          cfg.Runner.Pool,
 		PreparedConsumer:    preparedConsumer,
 		Events:              eventsBus,
 		Store:               st,
