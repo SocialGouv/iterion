@@ -90,3 +90,39 @@ func TestPoolFromStreamName(t *testing.T) {
 		t.Fatal("the shared stream must not read as a pool stream")
 	}
 }
+
+// The attach's fail-closed refusals, one row per leg (rva Re3adb6: the
+// checks can be weakened with zero red if unwitnessed). The MaxDeliver leg
+// is the rva R33cc26 skew: the runner budgets on the POD's config while
+// the broker enforces the CONSUMER's — equality or refusal.
+func TestVerifyPoolConsumerAttachment(t *testing.T) {
+	base := jetstream.ConsumerConfig{
+		Durable:       "iterion-runners-pool-honorabilite",
+		FilterSubject: "iterion.queue.runs.pool.honorabilite",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		MaxDeliver:    8,
+	}
+	if err := verifyPoolConsumerAttachment(base, "honorabilite", 8); err != nil {
+		t.Fatalf("a correctly pointed, aligned consumer verifies: %v", err)
+	}
+	durable := base
+	durable.Durable = "iterion-runners"
+	if err := verifyPoolConsumerAttachment(durable, "honorabilite", 8); err == nil || !strings.Contains(err.Error(), "durable") {
+		t.Fatalf("a shared durable must be refused: %v", err)
+	}
+	filter := base
+	filter.FilterSubject = "iterion.queue.runs"
+	if err := verifyPoolConsumerAttachment(filter, "honorabilite", 8); err == nil || !strings.Contains(err.Error(), "filter") {
+		t.Fatalf("a shared filter must be refused: %v", err)
+	}
+	ack := base
+	ack.AckPolicy = jetstream.AckNonePolicy
+	if err := verifyPoolConsumerAttachment(ack, "honorabilite", 8); err == nil || !strings.Contains(err.Error(), "auto-acks") {
+		t.Fatalf("an auto-acking consumer must be refused: %v", err)
+	}
+	skew := base
+	skew.MaxDeliver = 3
+	if err := verifyPoolConsumerAttachment(skew, "honorabilite", 8); err == nil || !strings.Contains(err.Error(), "MaxDeliver 3 does not match") {
+		t.Fatalf("a MaxDeliver skew must be refused: %v", err)
+	}
+}
