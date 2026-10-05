@@ -3,8 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -178,5 +182,191 @@ func TestResolveRunLLMRoutePolicy_RunLevelOutranksAndReopens(t *testing.T) {
 	}
 	if got.Sources["strict"] != llmroute.SourcePlatform {
 		t.Fatalf("strict provenance = %q, want platform", got.Sources["strict"])
+	}
+}
+
+// ---- the tenant levels (delivery 2) ----
+
+// routingPolicyStores backs the fold's tenant reads with one memory
+// store per document, the way the platform record's tests wire theirs.
+func routingPolicyStores() (func(string) platformcfg.Store[platformcfg.RoutingPolicyRecord], map[string]*platformcfg.MemoryStore[platformcfg.RoutingPolicyRecord]) {
+	stores := map[string]*platformcfg.MemoryStore[platformcfg.RoutingPolicyRecord]{}
+	return func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord] {
+		st, ok := stores[docID]
+		if !ok {
+			st = platformcfg.NewMemoryStore[platformcfg.RoutingPolicyRecord]()
+			stores[docID] = st
+		}
+		return st
+	}, stores
+}
+
+func putRoutingPolicyRecord(t *testing.T, st platformcfg.Store[platformcfg.RoutingPolicyRecord], rec *platformcfg.RoutingPolicyRecord) {
+	t.Helper()
+	if rec != nil {
+		if err := st.Put(context.Background(), *rec); err != nil {
+			t.Fatalf("seed routing policy: %v", err)
+		}
+	}
+}
+
+// A team's and its org's records answer between the bot and the platform
+// level, team over org, and the snapshot NAMES them: "why did this run
+// route here" must be answerable per level from the run doc alone.
+func TestResolveRunLLMRoutePolicy_TeamThenOrgAnswerBetweenBotAndPlatform(t *testing.T) {
+	s := newOrgTestServer(t)
+	seedOrg(t, s, "org1", "org1")
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", OrgID: "org1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{PairOrder: []string{"claw+zai_key"}},
+	})
+	putRoutingPolicyRecord(t, factory(platformcfg.OrgRoutingPolicyID("org1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{PairOrder: []string{"claw+anthropic_key"}},
+	})
+
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.PairOrder[0] != "claw+zai_key" || got.Sources["pair_order"] != llmroute.SourceTeam {
+		t.Fatalf("team must answer over org: %v / %q", got.PairOrder, got.Sources["pair_order"])
+	}
+
+	// The team record gone, the org answers with its own provenance.
+	del, ok := factory(platformcfg.TeamRoutingPolicyID("team1")).(platformcfg.Deleter)
+	if !ok {
+		t.Fatal("the memory store must implement Deleter")
+	}
+	if err := del.Delete(context.Background()); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, err = s.resolveRunLLMRoutePolicy(context.Background(), "team1", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.PairOrder[0] != "claw+anthropic_key" || got.Sources["pair_order"] != llmroute.SourceOrg {
+		t.Fatalf("org must answer once the team level is absent: %v / %q", got.PairOrder, got.Sources["pair_order"])
+	}
+}
+
+// The platform's triggers are the ceiling the tenant levels may only
+// narrow: a team asking for auth above a platform that allows only
+// usage_window resolves to usage_window, and the provenance says
+// platform_ceiling — never a silent extension.
+func TestResolveRunLLMRoutePolicy_PlatformCeilingPrunesTeamTriggers(t *testing.T) {
+	s := newOrgTestServer(t)
+	seedOrg(t, s, "org1", "org1")
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", OrgID: "org1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{Triggers: []string{"usage_window", "auth"}},
+	})
+	// A platform record carrying a narrower trigger set — the route
+	// resolver takes the platform voice from PlatformCredentials, so the
+	// memory store needs the record BEFORE the resolver snapshot. The
+	// resolver fixture (rec0) seeds it.
+	s2 := routeResolveServer(t, &platformcfg.PlatformCredentials{Routing: &llmroute.Policy{
+		Triggers: []string{"usage_window"},
+	}})
+	s2.authSvc = s.authSvc
+	factory2, _ := routingPolicyStores()
+	s2.routingPolicyStoreFor = factory2
+	putRoutingPolicyRecord(t, factory2(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{Triggers: []string{"usage_window", "auth"}},
+	})
+
+	got, err := s2.resolveRunLLMRoutePolicy(context.Background(), "team1", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(got.Triggers) != 1 || got.Triggers[0] != "usage_window" {
+		t.Fatalf("triggers = %v, want the platform ceiling's [usage_window]", got.Triggers)
+	}
+	if got.Sources["triggers"] != llmroute.SourceCeiling {
+		t.Fatalf("triggers provenance = %q, want platform_ceiling", got.Sources["triggers"])
+	}
+}
+
+// Fail-closed is the ADR's non-negotiable: an unreadable team or org
+// record REFUSES the launch — folding around it would lift cost
+// governance on a blip. An unknown team refuses too (the org level
+// cannot be resolved), never degrades to platform-only.
+func TestResolveRunLLMRoutePolicy_UnreadableTenantLevelRefusesTheLaunch(t *testing.T) {
+	s := newOrgTestServer(t)
+	seedOrg(t, s, "org1", "org1")
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", OrgID: "org1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	s.routingPolicyStoreFor = func(string) platformcfg.Store[platformcfg.RoutingPolicyRecord] {
+		return failingRoutePolicyStore{err: errors.New("mongo wedged")}
+	}
+	if _, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", ""); err == nil {
+		t.Fatal("an unreadable team record must refuse the launch")
+	} else if !strings.Contains(err.Error(), "team routing policy") {
+		t.Fatalf("error = %v, want it to name the team level", err)
+	}
+
+	// The org read failing refuses too.
+	s.routingPolicyStoreFor = func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord] {
+		if strings.HasPrefix(docID, "org:") {
+			return failingRoutePolicyStore{err: errors.New("mongo wedged")}
+		}
+		return platformcfg.NewMemoryStore[platformcfg.RoutingPolicyRecord]()
+	}
+	if _, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", ""); err == nil {
+		t.Fatal("an unreadable org record must refuse the launch")
+	}
+
+	// An unknown team: the org level cannot resolve, refuse.
+	known := s.routingPolicyStoreFor
+	s.routingPolicyStoreFor = known
+	if _, err := s.resolveRunLLMRoutePolicy(context.Background(), "team-unknown", ""); err == nil {
+		t.Fatal("a team identity cannot resolve must refuse the launch")
+	}
+}
+
+// failingRoutePolicyStore is the wedged-store probe of the fail-closed
+// tests: every read fails, writes fail too (they must never be reached).
+type failingRoutePolicyStore struct{ err error }
+
+func (f failingRoutePolicyStore) Get(context.Context) (*platformcfg.RoutingPolicyRecord, error) {
+	return nil, f.err
+}
+
+func (f failingRoutePolicyStore) Put(context.Context, platformcfg.RoutingPolicyRecord) error {
+	return f.err
+}
+
+// The ("", "") fold — the platform admin view's call — answers the
+// PLATFORM chain without touching identity or the tenant store: with
+// an org record present but no team named, the org level is absent.
+// Removing the teamID guard would make every admin GET 500 on
+// GetTeam("").
+func TestResolveRunLLMRoutePolicy_AdminViewFoldIgnoresTenantLevels(t *testing.T) {
+	s := routeResolveServer(t, nil)
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.OrgRoutingPolicyID("org1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{PairOrder: []string{"claw+zai_key"}},
+	})
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Sources["pair_order"] == llmroute.SourceOrg {
+		t.Fatalf("the (\"\", \"\") fold must not consult tenant levels: %q", got.Sources["pair_order"])
 	}
 }

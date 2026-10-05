@@ -5079,6 +5079,9 @@
           "routing_effective": {
             "$ref": "#/components/schemas/RunLLMRoutePolicy"
           },
+          "routing_effective_scope": {
+            "type": "string"
+          },
           "stored": {
             "$ref": "#/components/schemas/PlatformCredentials"
           }
@@ -5087,7 +5090,8 @@
           "enforced",
           "origin",
           "keys_first_effective",
-          "facade_default_effective"
+          "facade_default_effective",
+          "routing_effective_scope"
         ],
         "type": "object"
       },
@@ -5252,6 +5256,31 @@
           "ambient_context",
           "permission",
           "backend"
+        ],
+        "type": "object"
+      },
+      "routingPolicyView": {
+        "properties": {
+          "origin": {
+            "type": "string"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "origin"
         ],
         "type": "object"
       },
@@ -8640,6 +8669,56 @@
           }
         },
         "summary": "POST /api/orgs/{id}/provision-approvals/{approval_id}/reject",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/routing-policy": {
+      "get": {
+        "operationId": "getOrgsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/routing-policy",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putOrgsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/orgs/{id}/routing-policy",
         "tags": [
           "orgs"
         ]
@@ -13091,6 +13170,56 @@
           }
         }
       ]
+    },
+    "/api/teams/{id}/routing-policy": {
+      "get": {
+        "operationId": "getTeamsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/routing-policy",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/routing-policy",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/secrets": {
       "get": {

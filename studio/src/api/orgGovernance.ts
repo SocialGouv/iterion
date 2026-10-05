@@ -118,3 +118,55 @@ export async function updateOrgTeamCaps(
     body: JSON.stringify(caps),
   });
 }
+
+// ---- Tenant routing policies (ADR-121 delivery 2) ----
+
+// Mirrors llmroute.Policy (pkg/llmroute/policy.go) — the fields delivery 2
+// folds per level. Served strict: unknown fields 400.
+export interface RoutingPolicy {
+  pair_order?: string[];
+  triggers?: string[];
+  refused_pinned_key?: string;
+  strict?: boolean;
+  locks?: string[];
+}
+
+// Mirrors server.routingPolicyView (pkg/server/routing_policy_routes.go).
+export interface RoutingPolicyView {
+  scope: string;
+  policy: RoutingPolicy | null;
+  origin: string;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface RoutingPolicyPut {
+  routing: RoutingPolicy | null;
+  expected_updated_at?: string;
+}
+
+export async function getOrgRoutingPolicy(orgID: string): Promise<RoutingPolicyView | null> {
+  try {
+    return await guard404("routing_policy", () => request<RoutingPolicyView>(`/orgs/${orgID}/routing-policy`));
+  } catch (err) {
+    if (err instanceof FeatureUnavailableError) return null;
+    throw err;
+  }
+}
+
+export async function putOrgRoutingPolicy(orgID: string, body: RoutingPolicyPut): Promise<RoutingPolicyView> {
+  return request(`/orgs/${orgID}/routing-policy`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function getTeamRoutingPolicy(teamID: string): Promise<RoutingPolicyView | null> {
+  try {
+    return await guard404("routing_policy", () => request<RoutingPolicyView>(`/teams/${teamID}/routing-policy`));
+  } catch (err) {
+    if (err instanceof FeatureUnavailableError) return null;
+    throw err;
+  }
+}
+
+export async function putTeamRoutingPolicy(teamID: string, body: RoutingPolicyPut): Promise<RoutingPolicyView> {
+  return request(`/teams/${teamID}/routing-policy`, { method: "PUT", body: JSON.stringify(body) });
+}

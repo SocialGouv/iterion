@@ -122,6 +122,7 @@ func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *htt
 		FacadeDefaultEffective: string(rec.Facade()),
 		Routing:                routing,
 		RoutingEffective:       routingEffective,
+		RoutingEffectiveScope:  "platform",
 	})
 }
 
@@ -537,4 +538,10 @@ type platformCredentialsSettingsView struct {
 	// else the built-in defaults, with each field's provenance.
 	Routing          *llmroute.Policy         `json:"routing,omitempty"`
 	RoutingEffective *store.RunLLMRoutePolicy `json:"routing_effective,omitempty"`
+	// RoutingEffectiveScope names what RoutingEffective answers once
+	// lower levels exist: the PLATFORM chain only (platform → env →
+	// default, the fold called with no tenant). It is never a tenant's
+	// effective policy — a team's answer runs through its org and team
+	// records at launch.
+	RoutingEffectiveScope string `json:"routing_effective_scope"`
 }

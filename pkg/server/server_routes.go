@@ -183,6 +183,13 @@ func (s *Server) routes() {
 			s.registerOrgCredentialRoutes()
 		}
 	}
+	// The tenant routing-policy levels (ADR-121 delivery 2): org- and
+	// team-scoped adaptive-routing records. Identity answers who may
+	// write them; the store factory answers whether the deployment
+	// carries tenants at all — the handlers degrade honestly without it.
+	if s.authSvc != nil {
+		s.registerRoutingPolicyRoutes()
+	}
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()
 	}

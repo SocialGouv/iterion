@@ -143,6 +143,18 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/admin/settings/platform-credentials": {response: platformCredentialsSettingsView{}},
 		"PUT /api/admin/settings/platform-credentials": {response: platformCredentialsSettingsView{}},
 
+		// Tenant routing policies (ADR-121 delivery 2) — the org and team
+		// levels of the adaptive-routing fold, org-admin / team-admin
+		// managed, CAS on updated_at. The PUT declares NO request schema,
+		// like the platform-credentials PUT: its routing field is a
+		// one-of(object, null) the generator cannot type (a json.RawMessage
+		// renders as a base64 string, which would teach every generated
+		// client to send base64).
+		"GET /api/orgs/{id}/routing-policy":  {response: routingPolicyView{}},
+		"PUT /api/orgs/{id}/routing-policy":  {response: routingPolicyView{}},
+		"GET /api/teams/{id}/routing-policy": {response: routingPolicyView{}},
+		"PUT /api/teams/{id}/routing-policy": {response: routingPolicyView{}},
+
 		// Per-credential usage (super-admin) — cross-tenant spend by
 		// tier/fingerprint/repo (query params, not typed by the generator).
 		"GET /api/admin/credentials/usage": {response: credentialUsageListView{}},

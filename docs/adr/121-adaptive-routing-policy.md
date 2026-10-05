@@ -104,4 +104,92 @@ Resume classifies every policy field as **identity or volatile**: identity field
 
 ## Out of scope (later deliveries)
 
-Cross-harness relaunch with transcript handoff (delivery 2 on this foundation: the pair order, the triggers and the levels are its vocabulary). Org and team levels (delivery 2, costed above).
+Delivery 2 — org and team levels, per-level model classes, cross-harness relaunch with transcript handoff, and the re-dated pool door — has its contract in § Delivery 2 (below).
+
+## Delivery 2 (amended 2026-10-05, slice 1 of #2210)
+
+The § Out of scope items land under this section's contract, which their tests
+cite. Shipped when the section says so; described here so each slice's
+arbitration is named where the flipped tests point.
+
+### Org and team levels
+
+The chain gains the two greenfield levels: platform < org < team < shipped bot
+< bot binding < run. Each level is one policy document per tenant in its own
+collection (`llm_routing_policies`, doc ids `org:<id>` / `team:<id>`), with
+compare-and-set on `updated_at` from day one and its own validated write
+surface (org admin / team admin, audit rows, a 409 on a lost race). The fold
+reads them between the bot and the platform layer.
+
+- **Fail-closed, scoped**: an unreadable ORG or TEAM record refuses the launch
+  (a read failure must never lift cost governance), and so does a team whose
+  org cannot be resolved. The BOT layer keeps its delivered fail-open shape
+  (an unresolvable manifest folds to the levels below) — this posture does not
+  change it. Absence is not failure: a missing record or an org-less team is
+  an absent level.
+- **No resolver, no TTL**: the platform record earns its 30-second resolver
+  because the publisher polls it per launch and serve-stale is the availability
+  trade it chose. The tenant levels are one bounded point read per launch, and
+  an outage refuses instead of serving stale — serve-stale would lift
+  governance on a blip.
+- **Lock doctrine, as delivered** (this is `Resolve`'s semantics, now named):
+  a lock at a level vetoes every MORE SPECIFIC level's setter and answers
+  at-or-below itself. A team lock does NOT bind the org below it — the org's
+  value answers with its own provenance. Only the platform's lock binds every
+  tenant-configurable level, because nothing answers below it. The platform's
+  triggers stay the ceiling: org and team may narrow, never extend.
+- The run snapshot's provenance map gains the `team` and `org` labels; the
+  snapshot, the resume replay and the publisher consumption are unchanged.
+- Named, not changed: a manual retry of a webhook/schedule run folds the
+  RETRYER's tenant policy (the fold is a function of the launching tenant —
+  pre-existing shape, the tenant levels give it weight); and a team moving
+  orgs between the fold's two reads can fold team:X + org:A once, healing at
+  the next launch. No transaction is asked for either.
+
+### Per-level model classes
+
+`model_classes` is an extension of the MODEL REGISTRY (the class vocabulary —
+`top`/`standard`/`fast` — and the shipped per-family table live there, with
+the out-of-routing consumers), and each policy level carries OVERRIDES: a
+class → family → model map folded ENTRY-WISE per class×family (the opposite
+of `pair_order`'s wholesale replace — the rule is stated per field, here). A
+cell that resolves nowhere on its family leaves the route as written, warned
+and named at the drop; unknown family or model spellings are accepted on
+write and warned at consumption. Locks bind the whole block.
+
+### Cross-harness relaunch with transcript handoff
+
+The policy field is `cross_harness: off|reuse|restart` — FLAT, deviating from
+the design ticket's `fallback.cross_harness`: delivery 1 shipped flat keys and
+exact-name locks, and a dotted key would introduce a second namespace
+convention one field before any `fallback.*` sibling exists. First-setter-
+wins like `refused_pinned_key`; lockable; NOT ceilinged (the ceiling stays
+triggers-only — the operator's veto here is the lock, not a prune).
+
+- **The session contract's THIRD state** (this amends §2's "a cross-BACKEND
+  switch evicts the session"): under `reuse` or `restart`, a cross-harness
+  fall-through on a session-bearing node REPLACES the session, said on the
+  `model_fallback` line with the handoff state — it is neither kept (one
+  provider's turns are never replayed into a harness that never issued them)
+  nor silently evicted. Under `off` (the default), delivery 1's refusal
+  stands byte-identical. Every other screen predicate — the C176 ask-rules,
+  tools inversion, unresolvable tools, codex under a sandbox — stands under
+  every value.
+- `reuse` = the fresh harness CONTINUES the node mid-work: the sealed
+  transcript is the continuation's input. `restart` = the node relaunches
+  from its ORIGINAL prompt, transcript as reference (arbitrated 2026-10-05).
+  The transcript is a read-only, harness-neutral rendering of the run's own
+  `assistant_text` / `tool_called` / `llm_step_finished` events, scoped to
+  the failed node, sealed into the run's shared scratch area and attached as
+  `Task.Handoff` where continuity is cleared today. The workspace is
+  unchanged (executor-level by construction).
+
+### The per-family pool fallback door
+
+§ Arbitrated 4 placed the door in the FIRST delivery; it was never coded (the
+delivery-1 slice notes listed it as "pool door (5)", deliberately out, and
+#2126 closed without it). Owned here and RE-DATED: delivery 2, slice 5 — the
+donor-facing fallback-usable consent, the per-family consult on a fired
+trigger when no owned credential serves it, the whole-bundle gate unchanged
+on the non-fallback path. Never silently re-dated; this paragraph is the
+record.

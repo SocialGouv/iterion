@@ -411,3 +411,79 @@ func TestResolve_BindingLockCannotUnsetStrict(t *testing.T) {
 		t.Fatalf("strict source = %q, want bot", src[FieldStrict])
 	}
 }
+
+// The tenant levels (ADR-121 delivery 2) fold by the same rules: team
+// outranks org, org outranks platform. Their PROVENANCE labels are the
+// run snapshot's "which level decided this" answer.
+func TestResolve_TenantLevelsOrderTeamOverOrgOverPlatform(t *testing.T) {
+	team := Policy{PairOrder: []string{Pair(HarnessClaw, "zai_key")}}
+	org := Policy{PairOrder: []string{Pair(HarnessClaw, "anthropic_key")}}
+	platform := Policy{PairOrder: []string{Pair(HarnessCodex, CredChatGPTForfait)}}
+
+	got, src := Resolve(
+		Layer{Source: SourceTeam, Policy: team},
+		Layer{Source: SourceOrg, Policy: org},
+		Layer{Source: SourcePlatform, Policy: platform},
+	)
+	if got.PairOrder[0] != Pair(HarnessClaw, "zai_key") || src[FieldPairOrder] != SourceTeam {
+		t.Fatalf("team must answer over org: %v / %q", got.PairOrder, src[FieldPairOrder])
+	}
+
+	got, src = Resolve(
+		Layer{Source: SourceOrg, Policy: org},
+		Layer{Source: SourcePlatform, Policy: platform},
+	)
+	if got.PairOrder[0] != Pair(HarnessClaw, "anthropic_key") || src[FieldPairOrder] != SourceOrg {
+		t.Fatalf("org must answer over platform: %v / %q", got.PairOrder, src[FieldPairOrder])
+	}
+}
+
+// The lock doctrine AS DELIVERED (Resolve's pre-pass, policy.go): a lock
+// at a level vetoes every MORE SPECIFIC level's setter and answers
+// at-or-below itself. A TEAM lock does not bind the org below it — the
+// org's value answers with its own provenance. Only the PLATFORM's lock
+// binds every tenant-configurable level, because nothing answers below
+// it. (The old seal-reading — "the lock stops the descent" — would make
+// team lock + org value answer team_lock; the delivered fold never does.)
+func TestResolve_TeamLockVetoesAboveAnswersBelow(t *testing.T) {
+	// (a) team lock + bot value above + org value below: the bot is
+	// vetoed, the ORG answers.
+	bot := Policy{PairOrder: []string{Pair(HarnessClaudeCode, "zai_key")}}
+	org := Policy{PairOrder: []string{Pair(HarnessClaw, "anthropic_key")}}
+	teamLock := Policy{Locks: []string{FieldPairOrder}}
+	got, src := Resolve(
+		Layer{Source: SourceRun, Policy: bot},
+		Layer{Source: SourceBot, Policy: bot},
+		Layer{Source: SourceTeam, Policy: teamLock},
+		Layer{Source: SourceOrg, Policy: org},
+	)
+	if got.PairOrder[0] != Pair(HarnessClaw, "anthropic_key") || src[FieldPairOrder] != SourceOrg {
+		t.Fatalf("team lock must let the org below answer: %v / %q", got.PairOrder, src[FieldPairOrder])
+	}
+
+	// (b) team lock + NOTHING at-or-below sets: the lock PINS THE DEFAULT
+	// (Normalize's answer) and the provenance says which level locked it.
+	got, src = Resolve(
+		Layer{Source: SourceRun, Policy: bot},
+		Layer{Source: SourceTeam, Policy: teamLock},
+	)
+	if len(got.PairOrder) == 0 {
+		t.Fatal("pair_order = nil, want the default pinned by the lock")
+	}
+	if src[FieldPairOrder] != SourceTeam+"_lock" {
+		t.Fatalf("pair_order provenance = %q, want team_lock", src[FieldPairOrder])
+	}
+
+	// The mirror case: an ORG lock binds the team above it — the team's
+	// value is vetoed and the org answers.
+	teamVal := Policy{PairOrder: []string{Pair(HarnessClaudeCode, "zai_key")}}
+	orgLock := Policy{Locks: []string{FieldPairOrder}}
+	got, src = Resolve(
+		Layer{Source: SourceTeam, Policy: teamVal},
+		Layer{Source: SourceOrg, Policy: orgLock},
+		Layer{Source: SourcePlatform, Policy: Policy{PairOrder: []string{Pair(HarnessCodex, CredChatGPTForfait)}}},
+	)
+	if got.PairOrder[0] != Pair(HarnessCodex, CredChatGPTForfait) || src[FieldPairOrder] != SourcePlatform {
+		t.Fatalf("org lock must veto the team and let the platform below answer: %v / %q", got.PairOrder, src[FieldPairOrder])
+	}
+}
