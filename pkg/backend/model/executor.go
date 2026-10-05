@@ -186,6 +186,10 @@ type ClawExecutor struct {
 	// branches. Unknown reset instants are never recorded: dispatch stays
 	// fail-open when the provider did not say when the route revives.
 	routeCooldowns routeCooldownLedger
+	// llmRouteTriggers is the run's resolved adaptive-routing trigger set
+	// (nil = no policy — the ledger arms only its typed two categories,
+	// today's behavior).
+	llmRouteTriggers []string
 	// now is a test seam for cooldown expiry. Nil means time.Now.
 	now func() time.Time
 
@@ -492,6 +496,16 @@ func WithToolPolicy(p tool.ToolChecker) ClawExecutorOption {
 // WithRetryPolicy sets the retry policy for transient LLM errors.
 func WithRetryPolicy(rp RetryPolicy) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.retry = rp }
+}
+
+// WithLLMRouteTriggers sets the run's RESOLVED adaptive-routing trigger set
+// (ADR-121 §1, the launch-frozen snapshot). The route cooldown ledger arms
+// the categories it names beyond its own typed two: an AUTH refusal on a
+// policy run is durable (a refused credential stays refused), so the ledger
+// records it run-long and later nodes skip the doomed spawn instead of
+// paying it again.
+func WithLLMRouteTriggers(triggers []string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.llmRouteTriggers = triggers }
 }
 
 // WithConnectors wires the connector catalog a `tool … action:` node resolves

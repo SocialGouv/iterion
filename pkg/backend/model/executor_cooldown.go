@@ -112,6 +112,31 @@ func (e *ClawExecutor) cooldownNow() time.Time {
 	return time.Now().UTC()
 }
 
+// authCooldownDuration is how long an AUTH refusal stays in the ledger on a
+// policy run: a refused credential stays refused, so it is durable for the
+// run's lifetime — 7 days, inside maxRouteCooldown's 8-day plausibility
+// guard (a value past the guard would be silently refused, the F7 cliff).
+const authCooldownDuration = 7 * 24 * time.Hour
+
+// authCooldown arms an AUTH refusal on a policy run whose resolved triggers
+// include auth (ADR-121 §2, slice 4): the selection's own scenario — a
+// claude_code primary on a chatgpt-only tenant — fails auth-typed, and the
+// ledger is what stops every LATER node from paying the same doomed spawn.
+// transient_exhausted deliberately arms nothing: its own definition says a
+// later attempt might work, and a run-long entry would darken healthy
+// routes (the F5 arbitration).
+func authCooldown(cat delegate.FallbackCategory, triggers []string, err error, now time.Time) (routeCooldown, bool) {
+	if cat != delegate.FallbackAuth {
+		return routeCooldown{}, false
+	}
+	for _, t := range triggers {
+		if t == "auth" {
+			return routeCooldown{Category: cat, Until: now.Add(authCooldownDuration), Cause: err}, true
+		}
+	}
+	return routeCooldown{}, false
+}
+
 func cooldownForFailure(err error, cat delegate.FallbackCategory) routeCooldown {
 	switch cat {
 	case delegate.FallbackUsageWindow:

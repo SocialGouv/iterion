@@ -228,7 +228,7 @@ func TestApplyRunFallback_ReadsDialsOnBothSides(t *testing.T) {
 		{Backend: "claude_code", Model: "claude-opus-5"},
 		{Backend: "${C1389_UNSET:-claude_code}", Model: "claude-opus-5"},
 	} {
-		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil)
+		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil, nil)
 		if len(refusals) != 1 {
 			t.Errorf("route %q: %d refusals, want 1 (the claw node has no tools: list)", route.Backend, len(refusals))
 			continue
@@ -244,7 +244,7 @@ func TestApplyRunFallback_ReadsDialsOnBothSides(t *testing.T) {
 		{Backend: "claw", Model: "anthropic/glm-5.2"},
 		{Backend: "${C1389_UNSET:-claw}", Model: "anthropic/glm-5.2"},
 	} {
-		if refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil); len(refusals) != 0 {
+		if refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil, nil); len(refusals) != 0 {
 			t.Errorf("route %q to the node's OWN backend was refused: %v", route.Backend, refusals)
 		}
 	}
@@ -401,7 +401,7 @@ func TestApplyRunFallback_RefusesADialledCodexRouteInASandbox(t *testing.T) {
 		if w == nil {
 			t.Fatal("the fixture does not compile")
 		}
-		refusals := ApplyRunFallback(w, []Fallback{{Backend: spelling, Model: "gpt-5"}}, true, nil)
+		refusals := ApplyRunFallback(w, []Fallback{{Backend: spelling, Model: "gpt-5"}}, true, nil, nil)
 		if len(refusals) != 1 {
 			t.Errorf("route %q in a sandbox: %d refusals, want 1", spelling, len(refusals))
 			continue
@@ -502,7 +502,7 @@ func TestApplyRunFallback_UsesTheRunReadingNotTheSourceOne(t *testing.T) {
 	if got := sourceBackend.name("${C1389_LAUNCH:-claw}"); got != "claw" {
 		t.Fatalf("the source reading = %q, want claw — the fixture proves nothing", got)
 	}
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil)
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals, want 1: %v", len(refusals), refusals)
 	}
@@ -523,7 +523,7 @@ func TestApplyRunFallback_UsesTheRunReadingNotTheSourceOne(t *testing.T) {
 	if got := sourceBackend.routeName("${C1389_LAUNCH_ROUTE:-claw}"); got != "claw" {
 		t.Fatalf("the source reading of the route = %q, want claw — the fixture proves nothing", got)
 	}
-	routed := ApplyRunFallback(clawNode, []Fallback{{Backend: "${C1389_LAUNCH_ROUTE:-claw}", Model: "claude-opus-5"}}, false, nil)
+	routed := ApplyRunFallback(clawNode, []Fallback{{Backend: "${C1389_LAUNCH_ROUTE:-claw}", Model: "claude-opus-5"}}, false, nil, nil)
 	if len(routed) != 1 {
 		t.Fatalf("%d refusals for a dialled route, want 1: %v", len(routed), routed)
 	}
@@ -643,7 +643,7 @@ func TestApplyRunFallback_ReadsVarsOnBothSides(t *testing.T) {
 		{Backend: "claude_code", Model: "claude-opus-5"},
 		{Backend: "{{vars.route_b}}", Model: "claude-opus-5"},
 	} {
-		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil)
+		refusals := ApplyRunFallback(fresh(), []Fallback{route}, false, nil, nil)
 		if len(refusals) != 1 {
 			t.Errorf("route %q: %d refusals, want 1 (the claw node has no tools: list)", route.Backend, len(refusals))
 			continue
@@ -653,7 +653,7 @@ func TestApplyRunFallback_ReadsVarsOnBothSides(t *testing.T) {
 		}
 	}
 	// A route to the SAME backend is not a crossing.
-	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil, nil); len(refusals) != 0 {
 		t.Errorf("a route to the node's own (vars-resolved) backend was refused: %v", refusals)
 	}
 }
@@ -678,14 +678,14 @@ func TestApplyRunFallback_LaunchVarDecidesWhatTheSourceLeftOpen(t *testing.T) {
 	// dispatches claude_code, so a claude_code route crosses nothing.
 	agent := fresh("claw")
 	if refusals := ApplyRunFallback(agent, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
-		map[string]string{"b": "claude_code"}); len(refusals) != 0 {
+		map[string]string{"b": "claude_code"}, nil); len(refusals) != 0 {
 		t.Errorf("the launch's reading (claude_code) was overridden by the source's default: %v", refusals)
 	}
 	// And the other direction: the source's default is claude_code, the
 	// launch says claw — a CLI route on the tools-less claw node is the
 	// refusal, and it is invisible to whoever reads only the default.
 	refusals := ApplyRunFallback(fresh("claude_code"), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
-		map[string]string{"b": "claw"})
+		map[string]string{"b": "claw"}, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals, want 1: %v", len(refusals), refusals)
 	}
@@ -706,7 +706,7 @@ func TestApplyRunFallback_SessionContinuityCrossingOnAVarsBackend(t *testing.T) 
 	}
 	// A declared tools: list makes the CLI→claw direction no inversion, so
 	// only the session predicate can fire.
-	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil)
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil, nil)
 	if len(refusals) == 0 {
 		t.Fatal("no refusal — a session: inherit node changed backend through a vars-resolved crossing")
 	}
@@ -736,7 +736,7 @@ func TestApplyRunFallback_WhatTheLaunchCannotAnswerStaysUndecided(t *testing.T) 
 	// An undecided field does NOT fall through to default_backend: (that
 	// rule is TestEffectiveNodeBackend_DoesNotSubstituteForAnUndecidedField's).
 	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
-		map[string]string{"zz": "claw"})
+		map[string]string{"zz": "claw"}, nil)
 	if len(refusals) != 0 {
 		t.Errorf("an undeclared var resolved for the screen: %v", refusals)
 	}
@@ -809,7 +809,7 @@ func TestApplyRunFallback_VarsBackendReadThroughTheOverlay(t *testing.T) {
 	t.Setenv("ITERION_ZZPROBE_BACKEND", "")
 	// Answered nowhere: dispatch resolves the var to "" and the node is
 	// undecided — no refusal.
-	if refusals := ApplyRunFallback(fresh(), route, false, nil); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(fresh(), route, false, nil, nil); len(refusals) != 0 {
 		t.Errorf("refused an undecided node: %v", refusals)
 	}
 	// A stored bot var answering it IS the run's reading.
@@ -820,7 +820,7 @@ func TestApplyRunFallback_VarsBackendReadThroughTheOverlay(t *testing.T) {
 		return "", false
 	})
 	defer SetEnvOverlay(nil)
-	refusals := ApplyRunFallback(fresh(), route, false, nil)
+	refusals := ApplyRunFallback(fresh(), route, false, nil, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals with the bot var set, want 1: %v", len(refusals), refusals)
 	}
@@ -878,14 +878,14 @@ func TestApplyRunFallback_DrilledJSONVarIsScreened(t *testing.T) {
 			},
 		}
 	}
-	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil)
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals, want 1 — dispatch resolves the node to claw and the crossing is real", len(refusals))
 	}
 	if !strings.Contains(refusals[0], "routes a claw node to a CLI backend") {
 		t.Errorf("refused for the wrong reason: %s", refusals[0])
 	}
-	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claw", Model: "anthropic/glm-5.2"}}, false, nil, nil); len(refusals) != 0 {
 		t.Errorf("a route to the node's own (drilled) backend was refused: %v", refusals)
 	}
 }
@@ -942,7 +942,7 @@ func TestApplyRunFallback_CoercionFailureKeepsTheFlatReading(t *testing.T) {
 		}
 	}
 	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false,
-		map[string]string{"b": "claw"})
+		map[string]string{"b": "claw"}, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals, want 1 — dispatch runs the node on claw, the crossing is real", len(refusals))
 	}
@@ -981,7 +981,7 @@ func TestApplyRunFallback_JSONLeafHoldingDataKeepsTheScreen(t *testing.T) {
 			},
 		}
 	}
-	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil)
+	refusals := ApplyRunFallback(fresh(), []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}}, false, nil, nil)
 	if len(refusals) != 1 {
 		t.Fatalf("%d refusals, want 1 — the note is data, the backend member resolves to claw, the crossing is real", len(refusals))
 	}

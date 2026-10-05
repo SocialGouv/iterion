@@ -209,7 +209,13 @@ func TestACarriedSessionGetsOneChanceThenTheBudgetGoesToACleanAttempt(t *testing
 // the flag it was unreachable, but a retry that carries a session forward
 // is a SECOND writer, so a stale `true` can now ride into an element that
 // was handed no session at all.
-func TestFallThroughClearsTheOptionalFlagWithTheSessionItQualifies(t *testing.T) {
+// The adaptive-routing arbitration (ADR-121 §2, F1, 2026-10-04) reverses
+// this contract for SAME-backend falls: the session is carried, and its
+// qualifying optional flag rides WITH it (a flag without the id it
+// qualifies would still be a stale true on an element handed no session —
+// that shape is now a CROSS-backend fall, which the screen refuses on
+// session-bearing nodes).
+func TestFallThroughCarriesTheOptionalFlagWithTheSessionItQualifies(t *testing.T) {
 	// SAME backend on both elements — a provider chain, the common shape —
 	// because the builder CACHES one task per backend NAME
 	// (executor_retry.go: `tasks := map[string]*delegate.Task{}`). Fall
@@ -237,10 +243,10 @@ func TestFallThroughClearsTheOptionalFlagWithTheSessionItQualifies(t *testing.T)
 		t.Fatalf("the head must have carried its session before falling through: %+v", be.tasks[1])
 	}
 	last := be.tasks[len(be.tasks)-1]
-	if last.SessionID != "" {
-		t.Fatalf("a session survived the fall-through: %q", last.SessionID)
+	if last.SessionID != "s-poison" {
+		t.Fatalf("the fall-through must carry the session (same harness): %q", last.SessionID)
 	}
-	if last.SessionOptional {
-		t.Error("the optional flag survived the fall-through without the id it qualifies — a stale true rides into an element handed no session at all")
+	if !last.SessionOptional {
+		t.Error("the optional flag must ride WITH the carried session — dropping it would flip a carried optional session into a required one")
 	}
 }

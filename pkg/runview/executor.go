@@ -130,6 +130,12 @@ type ExecutorSpec struct {
 	// node's own model at materialization. Cloud only: a local launch
 	// seals no channels, so no ladder exists to apply.
 	PolicyLadder []ir.PolicyLadderStage
+	// LLMRouteTriggers is the run's RESOLVED adaptive-routing trigger set
+	// (ADR-121, the launch-frozen snapshot) — threaded to the executor so
+	// the route cooldown ledger arms the categories the policy names
+	// (auth: run-long) on EVERY node of the run, judges and authored-route
+	// agents included.
+	LLMRouteTriggers []string
 	// SandboxOverride and SandboxDefault are the deployment tiers the
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
@@ -374,7 +380,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// silent fallback.
 	sandboxedHere := runtime.RunWillBeSandboxed(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault,
 		runtime.EngineRepoRoot(spec.WorkDir), spec.SandboxDrivers)
-	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars)
+	overrides := spec.ModelOverrides
+	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
+		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+		return ov.Backend
+	})
 	for _, refusal := range fallbackRefusals {
 		spec.Logger.Warn("run-level fallback not applied — %s", refusal)
 	}
@@ -383,13 +393,18 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// node's own model, and the stage's On carries the resolved policy's
 	// trigger set — the chain's default set would stop the auth-typed
 	// failure the launch-time selection exists to fall through.
-	overrides := spec.ModelOverrides
 	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		if ov.Model != "" {
 			return ir.ExpandEnvWithDefault(ov.Model)
 		}
 		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
+	}, func(n ir.LLMNode) string {
+		// The dispatch reads the override backend FIRST — the screen reads
+		// the same, or a cross-backend crossing crosses a session-bearing
+		// node unscreened (the review's F2).
+		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+		return ov.Backend
 	})
 	for _, refusal := range policyRefusals {
 		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
@@ -483,6 +498,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	opts := []model.ClawExecutorOption{
 		model.WithBackendRegistry(backendReg),
 		model.WithRetryPolicy(retryPolicy),
+		model.WithLLMRouteTriggers(spec.LLMRouteTriggers),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
 		model.WithLogger(spec.Logger),
