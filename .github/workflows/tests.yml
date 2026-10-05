@@ -885,6 +885,11 @@ jobs:
     # Deliberately NOT `task brand:check` (the asset-drift guard): that one
     # needs magick/pngquant/oxipng from devbox and is a different cost.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    # The other required jobs carry a timeout budget; brand is the one
+    # required job without one. Two shell scripts, ~40 s: 10 minutes is ~15x
+    # headroom, and a hung script fails this queue entry instead of holding
+    # the ruleset's 60-min check_response_timeout.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Positioning
