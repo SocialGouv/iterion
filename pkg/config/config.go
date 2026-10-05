@@ -335,7 +335,12 @@ type S3Config struct {
 
 // RunnerConfig holds runner-specific tuning.
 type RunnerConfig struct {
-	WorkDir     string        `yaml:"workdir"`
+	WorkDir string `yaml:"workdir"`
+	// Pool names the sovereign runner pool (#2029) this pod serves: the pod
+	// attaches the pool's durable consumer (created by the server's
+	// reconciler — never by the runner) and admits only runs stamped for
+	// this pool. Empty = the shared default pool.
+	Pool        string        `yaml:"pool"`
 	Concurrency int           `yaml:"concurrency"`
 	Heartbeat   time.Duration `yaml:"heartbeat"`
 	LockTTL     time.Duration `yaml:"lock_ttl"`

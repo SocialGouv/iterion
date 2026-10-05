@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"fmt"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 )
 
 // verifyTenantOrTerm refuses a delivery whose message tenant doesn't
@@ -28,4 +30,36 @@ func (r *Runner) verifyTenantOrTerm(pre preconditionOutcome, msg *queue.RunMessa
 		logger.Error("runner: term for %s after tenant mismatch FAILED (%v) — message will redeliver; purge the JetStream subject manually", msg.RunID, termErr)
 	}
 	return false
+}
+
+// verifyPoolOrTerm is the pool admission (plan v2.1 D4'): the pod serves
+// ONE pool, and the THREE stamps must agree — the delivery's message, the
+// persisted document (frozen at launch), and this pod's own pool identity.
+// Any disagreement is a corrupted or replayed publish: the delivery goes to
+// the admission-mismatch disposition (park on the run's pool's DLQ + the
+// attempt-safe document flip with the named reason) — never executed under
+// either pool's scope. Red when a leg is dropped or the disposition is
+// downgraded to a bare Term.
+func (r *Runner) verifyPoolOrTerm(pre preconditionOutcome, msg *queue.RunMessage, delivery *natsq.Delivery, logger *iterlog.Logger) bool {
+	if reason := poolAdmissionDecision(r.cfg.RunnerPool, msg.RunnerPool, pre.preRun.RunnerPool); reason != "" {
+		logger.Error("runner: pool mismatch for run %s: %s", msg.RunID, reason)
+		r.handleAdmissionMismatch(delivery, admissionMismatchPool, fmt.Errorf("%s", reason), 0)
+		return false
+	}
+	return true
+}
+
+// poolAdmissionDecision is the pure admission rule: "" when the three
+// stamps agree (pod serves msg, doc frozen = msg), otherwise the mismatch
+// reason. An empty pod pool is the shared default — it must never receive
+// a pool-stamped message (the shared consumer's exact subject filter
+// already prevents it structurally; this is the defence-in-depth leg).
+func poolAdmissionDecision(pod, msgPool, docPool string) string {
+	if msgPool != pod {
+		return fmt.Sprintf("message stamped %q, pod serves %q", msgPool, pod)
+	}
+	if docPool != msgPool {
+		return fmt.Sprintf("message stamped %q, document frozen %q", msgPool, docPool)
+	}
+	return ""
 }
