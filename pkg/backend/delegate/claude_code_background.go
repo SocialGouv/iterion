@@ -1558,6 +1558,24 @@ func (l *bgLifecycle) wrapUp(now time.Time, v bgView, reason string) (bgCloseAct
 	return bgReenterAfterSend, backgroundWrapUpMessage(v.held, reason)
 }
 
+// waitExpired acts on the wave's wait budget firing. The tracker is fed ahead
+// of the select loop, so the state the timer was armed for may be gone by the
+// fire: a turn the loop has not seen started, or the wave already came back.
+// Either disarms the fire — the loop's recompute arms the timer of the state
+// the tracker actually holds. Only a budget genuinely spent with held work
+// still running asks for the report.
+func (l *bgLifecycle) waitExpired(now time.Time) (msg string, send bool) {
+	if l.tracker.cliMovedOn() {
+		return "", false
+	}
+	v := l.tracker.view()
+	if len(v.held) == 0 {
+		return "", false
+	}
+	_, msg = l.wrapUp(now, v, fmt.Sprintf("the background wait budget (%s) is spent", l.cfg.wait))
+	return msg, true
+}
+
 // atClose decides what follows a turn's stream close that carried result last.
 // It ends the session on an error result and on the close of the turn that
 // answered the wrap-up; at rest, only on the node's turn budget, the grace or

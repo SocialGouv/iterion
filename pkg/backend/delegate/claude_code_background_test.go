@@ -383,6 +383,12 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 	mu.Lock()
 	defer mu.Unlock()
 	run.rm, run.meta, run.err, run.stdin, run.spawn = rm, meta, err, string(raw), string(spawn)
+	// A session that burned its whole net left its story in the lifecycle's
+	// warns and background events — without them a wedge is indistinguishable
+	// from stretch (#2197: one turn, then 845s of silence).
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Logf("wedge net fired; lifecycle warns: %q; background events: %+v", run.warns, run.events)
+	}
 	return run
 }
 
@@ -6350,6 +6356,57 @@ func TestBackground_ASpentBudgetAsksEvenPastTheGrace(t *testing.T) {
 	if act := h.close(t0.Add(2*time.Second), "event 1 noted"); act != bgReenterAfterSend {
 		t.Fatalf("the budget spent past the grace, t1's result owed: action %v, want the request for the report", act)
 	}
+}
+
+func TestBackground_ASpentWaveBudgetFiresOnlyWhileTheWaveRuns(t *testing.T) {
+	// The wait-budget timer is armed at a close with held work running, but
+	// the tracker is fed ahead of the select loop: by the fire the wave may
+	// have come back, or a turn the loop has not seen may have started.
+	// waitExpired re-reads the tracker and sends nothing then (#2197: a stale
+	// fire asked for the report on a settled wave, and the message — never
+	// taken, the work it named gone — parked the session to its wedge net).
+	feed := func(h *lifecycleAt, t0 time.Time) {
+		agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
+		mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "app log"}
+		h.feed(lnInit("2.1.280"),
+			lnAssistant("a1", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
+			lnSnapshotOf(agent, mon),
+			lnTaskStarted("t1", "tuA", true, false),
+			lnToolResult("tuA", "Async agent launched successfully.", false, ""),
+			lnAssistant("a2", "", cText("WAITING")))
+		if act := h.close(t0, "WAITING"); act != bgReenter {
+			t.Fatalf("close: action %v, want the wave's wait", act)
+		}
+	}
+	cfg := backgroundLifecycleConfig{wait: 2 * time.Second, autoTurnGrace: 20 * time.Second, finalizeTimeout: time.Minute, idleSettle: time.Second}
+
+	t.Run("the wave still runs", func(t *testing.T) {
+		t0 := time.Now()
+		h := newLifecycleAt(t, cfg, 0)
+		feed(h, t0)
+		msg, send := h.l.waitExpired(t0.Add(3 * time.Second))
+		if !send || !strings.Contains(msg, "t1") || !strings.Contains(msg, "the background wait budget (2s) is spent") {
+			t.Fatalf("send = %v, msg = %q: a budget spent with held work running must ask for the report", send, msg)
+		}
+	})
+	t.Run("the wave came back before the fire", func(t *testing.T) {
+		t0 := time.Now()
+		h := newLifecycleAt(t, cfg, 0)
+		feed(h, t0)
+		h.feedAt(t0.Add(time.Second), lnSnapshotOf(map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "app log"}))
+		if msg, send := h.l.waitExpired(t0.Add(3 * time.Second)); send {
+			t.Fatalf("sent %q for a wave the tracker already saw come back", msg)
+		}
+	})
+	t.Run("a turn started before the fire", func(t *testing.T) {
+		t0 := time.Now()
+		h := newLifecycleAt(t, cfg, 0)
+		feed(h, t0)
+		h.feedAt(t0.Add(time.Second), lnInit("2.1.280"))
+		if msg, send := h.l.waitExpired(t0.Add(3 * time.Second)); send {
+			t.Fatalf("sent %q with a turn in flight: its close decides", msg)
+		}
+	})
 }
 
 func TestBackground_TheRestRequestSaysWhatItAsks(t *testing.T) {
