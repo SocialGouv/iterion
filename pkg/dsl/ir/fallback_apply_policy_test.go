@@ -177,3 +177,71 @@ func TestApplyPolicyLadder_ClassOverrideBites(t *testing.T) {
 		t.Fatalf("overridden target = %q, want the level's astra", got)
 	}
 }
+
+// The screen's THIRD state (ADR-121 § Delivery 2): a policy stage riding
+// an ACTIVE cross-harness posture lands on a session-bearing cross-backend
+// crossing — the switch is said at dispatch, never silent — while every
+// other predicate stands, operator chains keep the full refusal, and the
+// gate is the ACTIVE modes (never emptiness: Normalize answers "off" on
+// every resolved policy).
+func TestApplyPolicyLadder_CrossHarnessThirdState(t *testing.T) {
+	mkSess := func(model string) *Workflow {
+		node := &AgentNode{
+			BaseNode:  BaseNode{ID: "implement"},
+			LLMFields: LLMFields{Backend: "claude_code", Model: model},
+			Session:   SessionInherit,
+			Tools:     []string{}, // declared-empty: the claw crossing's tools-inversion predicate needs it
+		}
+		return &Workflow{Nodes: map[string]Node{"implement": node}}
+	}
+	stages := func(mode string) []PolicyLadderStage {
+		return []PolicyLadderStage{{Harness: "claw", Credential: "anthropic_key", On: []string{"usage_window"}, CrossHarness: mode}}
+	}
+	tbl := llmroute.ResolveClasses(nil)
+
+	// OFF (the default): the cross-backend crossing is refused — the
+	// existing byte-identical contract.
+	w := mkSess("claude-opus-5-5")
+	if r := ApplyPolicyLadder(w, stages(""), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl); len(r) != 1 {
+		t.Fatalf("off: refusals = %v, want the session refusal", r)
+	}
+	// The ACTIVE modes land the stage on the same node.
+	for _, mode := range []string{"reuse", "restart"} {
+		w2 := mkSess("claude-opus-5-5")
+		if r := ApplyPolicyLadder(w2, stages(mode), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl); len(r) != 0 {
+			t.Fatalf("%s: refused = %v, want the stage to land (the third state)", mode, r)
+		}
+		got := w2.Nodes["implement"].(*AgentNode).Fallbacks[0]
+		if got.Backend != "claw" || got.CrossHarness != mode {
+			t.Fatalf("%s: landed = %+v, want the claw crossing carrying the mode", mode, got)
+		}
+	}
+
+	// Every OTHER predicate stands: a node whose tools list is UNDECLARED
+	// still refuses the claw crossing under an active posture (the
+	// tools-inversion refusal — an undeclared list means NO tools on claw
+	// but the full set on a CLI). The posture lifts ONE predicate, never
+	// the screen.
+	w3 := mkSess("claude-opus-5-5")
+	w3.Nodes["implement"].(*AgentNode).Tools = nil
+	if r := ApplyPolicyLadder(w3, stages("restart"), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl); len(r) == 0 || !strings.Contains(r[0], "tools") {
+		t.Fatalf("the undeclared-tools crossing landed under restart: %v — the screen must stand under every posture", r)
+	}
+
+	// The relaxation is POLICY-STAGES-ONLY: the SAME stage handed to
+	// ApplyRunFallback as an operator chain keeps the full session
+	// refusal — the operator route carries the flag in the IR, and the
+	// operator screen never reads it.
+	w4 := mkSess("claude-opus-5-5")
+	operator := []Fallback{{
+		Name: RunFallbackName, Backend: "claw", Model: "claude-opus-5-5",
+		On: []string{"usage_window"}, CrossHarness: "restart",
+	}}
+	refusals := ApplyRunFallback(w4, operator, false, nil, nil)
+	if len(refusals) == 0 || !strings.Contains(strings.Join(refusals, " "), "session") {
+		t.Fatalf("operator-chain refusals = %v, want the session refusal — the relaxation is policy-stages-only", refusals)
+	}
+	if got := len(w4.Nodes["implement"].(*AgentNode).Fallbacks); got != 0 {
+		t.Fatalf("the operator stage landed on a session node: %d — the operator screen never relaxes", got)
+	}
+}

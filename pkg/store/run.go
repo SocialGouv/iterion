@@ -547,6 +547,9 @@ type RunLLMRoutePolicy struct {
 	// cells (the consumer substitutes them), so a snapshot that named no
 	// override stays a snapshot that named no override.
 	ModelClasses map[string]map[string]string `json:"model_classes,omitempty" bson:"model_classes,omitempty"`
+	// CrossHarness is the resolved cross-harness posture ("off" once
+	// normalized — the delivery-1 refusal stands under it).
+	CrossHarness string `json:"cross_harness,omitempty" bson:"cross_harness,omitempty"`
 	// Sources maps each field name to the layer that won it ("platform",
 	// "env", "default", "platform_ceiling", or "<level>_lock" when a lock
 	// pinned the field to the default).

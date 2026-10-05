@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -1766,5 +1767,49 @@ func TestResolveDeliveryPreconditions_PRClosedIsReadFromTheTypedEndReason(t *tes
 				t.Fatalf("op = %q, want %q", out.op, c.wantOp)
 			}
 		})
+	}
+}
+
+// THE TRANSPORT OFF-GOLDEN (the review's critique case): the policy the
+// way route_resolve builds it — post-Resolve over the DEFAULT layers —
+// stamped into wire entries the way the publisher does, split by the
+// runner's own partition, screened by ir.ApplyPolicyLadder: the
+// session-continuity refusal STILL fires under the default. A presence
+// gate on cross_harness would lift it for EVERY cloud run — Normalize
+// answers "off" on every resolved policy, so the wire field is
+// non-empty even when inert.
+func TestSplitMsgFallback_TransportOffGolden(t *testing.T) {
+	pol, _ := llmroute.Resolve(
+		llmroute.Layer{Source: llmroute.SourceBot, Policy: llmroute.Policy{}},
+		llmroute.Layer{Source: llmroute.SourcePlatform, Policy: llmroute.Policy{}},
+		llmroute.Layer{Source: llmroute.SourceEnv, Policy: llmroute.FromEnv()},
+	)
+	entries := []queue.RunFallbackEntry{{Backend: "claw", Provider: "anthropic_key", On: pol.Triggers, Policy: true, CrossHarness: pol.CrossHarness}}
+	_, ladder := splitMsgFallback(entries)
+	if len(ladder) != 1 || ladder[0].CrossHarness != pol.CrossHarness || ladder[0].CrossHarness != llmroute.CrossHarnessOff {
+		t.Fatalf("wire round-trip: %+v, want the resolved off riding through", ladder)
+	}
+	w := &ir.Workflow{Nodes: map[string]ir.Node{"implement": &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "implement"},
+		LLMFields: ir.LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
+		Session:   ir.SessionInherit,
+		Tools:     []string{},
+	}}}
+	if r := ir.ApplyPolicyLadder(w, ladder, false, nil, func(n ir.LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 1 {
+		t.Fatalf("transport default: refusals = %v, want the session refusal — an emptiness gate would have lifted it", r)
+	}
+
+	// The active posture rides the same pipe and lands: the partition
+	// copies the field, the screen honours it.
+	entries[0].CrossHarness = llmroute.CrossHarnessRestart
+	_, ladder2 := splitMsgFallback(entries)
+	w2 := &ir.Workflow{Nodes: map[string]ir.Node{"implement": &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "implement"},
+		LLMFields: ir.LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
+		Session:   ir.SessionInherit,
+		Tools:     []string{},
+	}}}
+	if r := ir.ApplyPolicyLadder(w2, ladder2, false, nil, func(n ir.LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 0 {
+		t.Fatalf("transport restart: refused = %v, want the stage to land through the same pipe", r)
 	}
 }

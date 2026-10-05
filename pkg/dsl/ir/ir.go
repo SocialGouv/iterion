@@ -1736,6 +1736,13 @@ type Fallback struct {
 	// the timeline can say "policy-selected". Runtime-only, like
 	// RunStageSet: never authored in a .bot, never validated.
 	Policy bool
+	// CrossHarness carries the run's resolved cross-harness posture on
+	// THIS stage (ADR-121 § Delivery 2): an active mode ("reuse" |
+	// "restart") lifts the session-continuity refusal for this stage
+	// only, and the dispatch marks the model_fallback event with it when
+	// the crossing changes backend. Empty = off. Runtime-only, like
+	// Policy.
+	CrossHarness string
 }
 
 // FallbackActionSkip is the `action: skip` terminal route: instead of

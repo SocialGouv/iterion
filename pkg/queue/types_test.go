@@ -577,3 +577,34 @@ func TestRunMessage_FallbackModelClassesRoundTrip(t *testing.T) {
 		t.Fatalf("the entries slice disturbed: %+v", dst.Fallback)
 	}
 }
+
+// The cross-harness posture rides each policy stage on the wire and
+// survives the JSON round-trip; an entry without it round-trips absent
+// (the stale-runner record: no field, no capability).
+func TestRunMessage_CrossHarnessRoundTrip(t *testing.T) {
+	src := RunMessage{
+		V:            SchemaVersion,
+		RunID:        "run_xh",
+		WorkflowName: "demo",
+		WorkflowHash: "sha256:deadbeef",
+		IRCompiled:   json.RawMessage(`{"nodes":[]}`),
+		Fallback: RunFallback{
+			{Backend: "claw", On: []string{"usage_window"}, Policy: true, CrossHarness: "restart"},
+			{Backend: "codex", On: []string{"usage_window"}, Policy: true},
+		},
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dst RunMessage
+	if err := json.Unmarshal(b, &dst); err != nil {
+		t.Fatal(err)
+	}
+	if dst.Fallback[0].CrossHarness != "restart" {
+		t.Fatalf("entry 0 posture = %q, want restart", dst.Fallback[0].CrossHarness)
+	}
+	if dst.Fallback[1].CrossHarness != "" {
+		t.Fatalf("entry 1 posture = %q, want absent", dst.Fallback[1].CrossHarness)
+	}
+}

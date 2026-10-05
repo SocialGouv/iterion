@@ -178,6 +178,12 @@ type ProviderFallbackInfo struct {
 	// Without this flag the event would read as a bascule to ToBackend,
 	// which for a skip is the backend that just failed.
 	ToSkip bool
+	// CrossHarness is the run's resolved posture riding the element this
+	// fall-through moves TO — set only when the crossing CHANGED backend
+	// under an active mode (the session contract's third state: the
+	// switch is said on the event, never silent). Empty for every other
+	// fall-through.
+	CrossHarness string
 }
 
 // SessionDegradedInfo describes a best-effort session that could not be

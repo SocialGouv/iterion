@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -1412,6 +1413,7 @@ func (e *ClawExecutor) noteCooldownFallback(
 		Cooldown:      true,
 		CooldownUntil: cd.Until,
 		ToSkip:        to.Skip,
+		CrossHarness:  crossHarnessMarker(from, to, fromBackend, toBackend),
 	})
 }
 
@@ -1447,7 +1449,23 @@ func (e *ClawExecutor) noteFallback(
 		FallbackIndex: to.FallbackIndex,
 		Err:           err,
 		ToSkip:        to.Skip,
+		CrossHarness:  crossHarnessMarker(from, to, fromBackend, toBackend),
 	})
+}
+
+// crossHarnessMarker answers the model_fallback marker value for a
+// fall-through: the run's resolved posture when the crossing CHANGED
+// backend under an ACTIVE mode — the session contract's third state, the
+// switch said on the event, never silent. Empty for same-backend carries
+// (the session rides the first same-backend rung), for every delivery-1
+// route, and under "off". Both fall-through emitters share it on
+// purpose (the cooldown skip clears the jumped-to element's session
+// exactly like a fresh failure does).
+func crossHarnessMarker(from, to chainElement, fromBackend, toBackend string) string {
+	if fromBackend == toBackend || !llmroute.CrossHarnessActive(to.CrossHarness) {
+		return ""
+	}
+	return to.CrossHarness
 }
 
 // noteSessionDegrade emits the one log line and the one hook that make a

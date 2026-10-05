@@ -1167,7 +1167,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			stages := make([]ir.PolicyLadderStage, 0, len(held))
 			for _, pair := range held {
 				if h, c, err := llmroute.ParsePair(pair); err == nil {
-					stages = append(stages, ir.PolicyLadderStage{Harness: h, Credential: c, On: routePolicy.Triggers})
+					stages = append(stages, ir.PolicyLadderStage{Harness: h, Credential: c, On: routePolicy.Triggers, CrossHarness: routePolicy.CrossHarness})
 				}
 			}
 			// The OPERATOR chain lands first (the same screen the runner
@@ -1210,10 +1210,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 			for _, st := range stages {
 				res.Ladder = append(res.Ladder, queue.RunFallbackEntry{
-					Backend:  st.Harness,
-					Provider: st.Credential,
-					On:       st.On,
-					Policy:   true,
+					Backend:      st.Harness,
+					Provider:     st.Credential,
+					On:           st.On,
+					Policy:       true,
+					CrossHarness: st.CrossHarness,
 				})
 			}
 			res.ModelClasses = routePolicy.ModelClasses

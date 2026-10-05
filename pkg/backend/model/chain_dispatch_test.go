@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // backendScriptedBackend records the tasks it was handed, keyed by the
@@ -1073,5 +1075,75 @@ func TestChainDoesNotShareTheSessionItForks(t *testing.T) {
 	}
 	if got := out.Result.Tokens; got != 1300 {
 		t.Errorf("tokens = %d, want 1300", got)
+	}
+}
+
+// The session contract's THIRD state (ADR-121 § Delivery 2): a
+// cross-backend fall-through whose destination element rides an ACTIVE
+// cross-harness posture is SAID on the model_fallback event — the switch
+// is neither kept nor silently evicted. Same-backend carries, delivery-1
+// routes and the "off" posture mark nothing.
+func TestChainCrossHarnessMarksTheFallbackEvent(t *testing.T) {
+	mkChain := func(mode string) (*ClawExecutor, *fallbackRecorder, []chainElement, func(context.Context, string, []chainElement) (chainOutcome, error)) {
+		rec := &fallbackRecorder{}
+		head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"}, tokens: 10}
+		tail := &backendScriptedBackend{name: delegate.BackendClaw, tokens: 5}
+		reg := delegate.NewRegistry()
+		reg.Register(delegate.BackendClaudeCode, head)
+		reg.Register(delegate.BackendClaw, tail)
+		e := newFallbackExecutor(reg, EventHooks{
+			OnProviderFallback: func(_ string, info ProviderFallbackInfo) {
+				rec.events = append(rec.events, info)
+			},
+		})
+		chain := []chainElement{
+			{Label: "primary"},
+			{Label: "api", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5", CrossHarness: mode},
+		}
+		build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+			func(_ context.Context, bn string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: "review", Model: "claude-opus-5", SystemPromptMode: delegate.SystemPromptModeForBackend(bn)}, nil
+			})
+		run := func(ctx context.Context, nodeID string, ch []chainElement) (chainOutcome, error) {
+			return e.dispatchChain(ctx, nodeID, ch, "claude-opus-5", build)
+		}
+		return e, rec, chain, run
+	}
+
+	// restart: the crossing is said.
+	_, rec, chain, run := mkChain(llmroute.CrossHarnessRestart)
+	if _, err := run(context.Background(), "review", chain); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %d, want the one fall-through", len(rec.events))
+	}
+	if rec.events[0].CrossHarness != llmroute.CrossHarnessRestart {
+		t.Fatalf("marker = %q, want restart — the switch must be SAID", rec.events[0].CrossHarness)
+	}
+
+	// off (the default): the same crossing marks nothing.
+	_, rec, chain, run = mkChain(llmroute.CrossHarnessOff)
+	if _, err := run(context.Background(), "review", chain); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(rec.events) != 1 || rec.events[0].CrossHarness != "" {
+		t.Fatalf("off marker = %+v, want no cross_harness key (the event shape is unchanged)", rec.events)
+	}
+
+	// The cooldown-skip jump marks too (review F2: the remembered
+	// failure's jump clears the jumped-to element's session exactly like
+	// a fresh failure — an unmarked jump would be the silent eviction
+	// under another name). Direct stamp: the emitter shares the marker
+	// helper with the fresh-failure path.
+	from := chainElement{Label: "primary"}
+	to := chainElement{Label: "api", Backend: delegate.BackendClaw, CrossHarness: llmroute.CrossHarnessReuse}
+	if got := crossHarnessMarker(from, to, delegate.BackendClaudeCode, delegate.BackendClaw); got != llmroute.CrossHarnessReuse {
+		t.Fatalf("cooldown-path marker = %q, want reuse", got)
+	}
+	// A same-backend carry (the first same-backend rung rides the
+	// session) marks nothing.
+	if got := crossHarnessMarker(from, chainElement{Label: "same", CrossHarness: llmroute.CrossHarnessRestart}, delegate.BackendClaudeCode, delegate.BackendClaudeCode); got != "" {
+		t.Fatalf("same-backend marker = %q, want empty — the session rides", got)
 	}
 }

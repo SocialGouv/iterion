@@ -1358,6 +1358,12 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 	if info.FallbackIndex != nil {
 		data["fallback_index"] = *info.FallbackIndex
 	}
+	if info.CrossHarness != "" {
+		// The session contract's third state: this fall-through replaced
+		// a session-bearing node's harness under an active posture — the
+		// switch is SAID here (S4 adds handoff: beside it).
+		data["cross_harness"] = info.CrossHarness
+	}
 	if info.Cooldown {
 		data["cooldown"] = true
 	}

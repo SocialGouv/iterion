@@ -406,3 +406,42 @@ func TestResolveRunLLMRoutePolicy_ModelClassesFlowToTheSnapshot(t *testing.T) {
 		t.Fatalf("the block key must be omitted when cells spoke: %q", got.Sources["model_classes"])
 	}
 }
+
+// The cross-harness posture rides the snapshot (the fold's
+// first-setter-wins answer) — the wire stamps it from there, so a run
+// doc must answer "could this run cross harnesses" without replaying
+// the launch.
+func TestResolveRunLLMRoutePolicy_CrossHarnessFlowsToTheSnapshot(t *testing.T) {
+	s := newOrgTestServer(t)
+	seedOrg(t, s, "org1", "org1")
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", OrgID: "org1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{CrossHarness: llmroute.CrossHarnessRestart},
+	})
+
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.CrossHarness != llmroute.CrossHarnessRestart || got.Sources["cross_harness"] != llmroute.SourceTeam {
+		t.Fatalf("cross_harness = %q / %q, want the team's restart", got.CrossHarness, got.Sources["cross_harness"])
+	}
+
+	// Silence resolves to "off" (the normalized default), named default.
+	if err := factory(platformcfg.TeamRoutingPolicyID("team1")).(platformcfg.Deleter).Delete(context.Background()); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, err = s.resolveRunLLMRoutePolicy(context.Background(), "team1", "")
+	if err != nil {
+		t.Fatalf("resolve3: %v", err)
+	}
+	if got.CrossHarness != llmroute.CrossHarnessOff || got.Sources["cross_harness"] != llmroute.SourceDefault {
+		t.Fatalf("silent cross_harness = %q / %q, want off / default", got.CrossHarness, got.Sources["cross_harness"])
+	}
+}

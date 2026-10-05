@@ -364,9 +364,10 @@ func providerHintFor(credential string) string {
 // materialization — each node's own model is what the crossing maps — so
 // a stage carries the pair, never a run-level model.
 type PolicyLadderStage struct {
-	Harness    string
-	Credential string
-	On         []string // the resolved policy's trigger set (nil = the chain default)
+	Harness      string
+	Credential   string
+	On           []string // the resolved policy's trigger set (nil = the chain default)
+	CrossHarness string   // the run's resolved posture: active ("reuse"|"restart") lifts THIS stage's session refusal; empty/"off" = the delivery-1 refusal
 }
 
 // ApplyPolicyLadder materializes the policy's computed ladder onto the
@@ -458,9 +459,10 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 				continue
 			}
 			route := Fallback{
-				Name:    RunFallbackName,
-				Backend: st.Harness,
-				Model:   mdl,
+				Name:         RunFallbackName,
+				Backend:      st.Harness,
+				Model:        mdl,
+				CrossHarness: st.CrossHarness,
 				// The stage's PROVIDER HINT, not its policy slot: the hint
 				// steers the credential at dispatch ("anthropic", "zai") —
 				// the slot spelling ("anthropic_key") would be read as a
@@ -480,9 +482,22 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 				refuse(reason)
 				continue
 			}
-			if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
-				refuse(reason)
-				continue
+			// The session contract's THIRD state (ADR-121 § Delivery 2):
+			// an ACTIVE cross-harness posture lifts THIS policy stage's
+			// session-continuity refusal — the crossing lands and is SAID
+			// (the dispatch marks model_fallback), neither kept nor
+			// silently evicted. The gate is the ACTIVE modes, never
+			// emptiness: Normalize answers "off" on every resolved
+			// policy, and an emptiness gate would lift the refusal for
+			// every run under the default (the plan-review critique).
+			// Operator chains (ApplyRunFallback, above) and authored
+			// routes keep the full refusal — relaxation is
+			// policy-stages-only.
+			if !llmroute.CrossHarnessActive(st.CrossHarness) {
+				if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
+					refuse(reason)
+					continue
+				}
 			}
 			if reason := unresolvableToolsReason(routeBackend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
 				refuse(reason)
