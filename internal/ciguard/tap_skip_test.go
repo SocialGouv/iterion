@@ -19,8 +19,9 @@ import (
 // for both. On a push both operands are empty and the predicate is false.
 const tapUpdate = `startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')`
 
-// tapSkip is the only `if:` a required job may carry (see
-// TestEveryJobPicksASideOfTheMergeQueue).
+// tapSkip is the only `if:` a required job that does its own work may carry,
+// and the tap half of aggregatorIf, the only `if:` a required aggregator may
+// carry (see TestEveryJobPicksASideOfTheMergeQueue).
 const tapSkip = "!" + tapUpdate
 
 // tapVerifierJob hosts the check that makes tapSkip safe: required, and never
@@ -91,13 +92,13 @@ type tapWorkflow struct {
 //     PATH), and a BASH_ENV from the workflow or the job: the step pins it
 //     empty.
 func TestTheTapSkipIsVerifiedWhereNothingSkipsIt(t *testing.T) {
-	src, err := os.ReadFile(workflowPath)
+	src, err := os.ReadFile(workflowPaths[0])
 	if err != nil {
-		t.Fatalf("read %s: %v", workflowPath, err)
+		t.Fatalf("read %s: %v", workflowPaths[0], err)
 	}
 	var wf tapWorkflow
 	if err := yaml.Unmarshal(src, &wf); err != nil {
-		t.Fatalf("parse %s: %v", workflowPath, err)
+		t.Fatalf("parse %s: %v", workflowPaths[0], err)
 	}
 
 	if !requiredChecks[tapVerifierJob] {
@@ -105,7 +106,7 @@ func TestTheTapSkipIsVerifiedWhereNothingSkipsIt(t *testing.T) {
 	}
 	job, ok := wf.Jobs[tapVerifierJob]
 	if !ok {
-		t.Fatalf("%s defines no %q job — the tap skip has lost its verifier", workflowPath, tapVerifierJob)
+		t.Fatalf("%s defines no %q job — the tap skip has lost its verifier", workflowPaths[0], tapVerifierJob)
 	}
 	if strings.TrimSpace(job.If) != "" {
 		t.Errorf("%q carries `if: %s` — the job that verifies the tap skip must run on every event", tapVerifierJob, job.If)
@@ -117,7 +118,7 @@ func TestTheTapSkipIsVerifiedWhereNothingSkipsIt(t *testing.T) {
 		t.Errorf("%q sets continue-on-error — a verifier whose failure is forgiven verifies nothing", tapVerifierJob)
 	}
 	if wf.Defaults != nil || job.Defaults != nil {
-		t.Errorf("%s sets `defaults:` (workflow %v, %q job %v) — a default shell or directory changes what the verifier's `run:` executes", workflowPath, wf.Defaults, tapVerifierJob, job.Defaults)
+		t.Errorf("%s sets `defaults:` (workflow %v, %q job %v) — a default shell or directory changes what the verifier's `run:` executes", workflowPaths[0], wf.Defaults, tapVerifierJob, job.Defaults)
 	}
 
 	checkout, verifier := -1, -1
