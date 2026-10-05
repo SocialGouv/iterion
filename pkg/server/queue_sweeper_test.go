@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	cloudmetrics "github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -348,4 +350,75 @@ func TestSweepOrphanRuns_backlogUnknownKeepsPreviousBehaviour(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The DLQ gauge HOLDS on an unreadable leg (rva R62f922): zeroing on a
+// broker error paints the calm exactly when the broker struggles — the
+// shared leg, the pool leg, and the registry read each hold instead of
+// publishing a partial sum. Red when any leg's error zeroes its
+// contribution.
+type fakeDLQGaugeBackend struct {
+	QueueBackend
+	sharedDepth uint64
+	sharedErr   error
+	poolDepth   map[string]uint64
+	poolErr     error
+}
+
+func (f *fakeDLQGaugeBackend) DLQDepth(context.Context) (uint64, error) {
+	return f.sharedDepth, f.sharedErr
+}
+
+func (f *fakeDLQGaugeBackend) PoolDLQDepth(_ context.Context, pool string) (uint64, error) {
+	if f.poolErr != nil {
+		return 0, f.poolErr
+	}
+	return f.poolDepth[pool], nil
+}
+
+func TestDLQGaugeValue_HoldsOnUnreadableLegs(t *testing.T) {
+	reg := platformcfg.NewMemoryStore[platformcfg.RunnerPools]()
+	if err := reg.Put(context.Background(), platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{
+		{Name: "honorabilite", State: platformcfg.RunnerPoolActive},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{runnerPoolsStore: reg}
+
+	t.Run("happy path sums shared and pools", func(t *testing.T) {
+		s.queue = &fakeDLQGaugeBackend{QueueBackend: nil, sharedDepth: 5, poolDepth: map[string]uint64{"honorabilite": 3}}
+		got, ok := s.dlqGaugeValue(context.Background())
+		if !ok || got != 8 {
+			t.Fatalf("gauge = (%d, %v), want (8, true)", got, ok)
+		}
+	})
+	t.Run("a shared-leg error holds the last value", func(t *testing.T) {
+		s.queue = &fakeDLQGaugeBackend{QueueBackend: nil, sharedErr: errors.New("broker struggling")}
+		if _, ok := s.dlqGaugeValue(context.Background()); ok {
+			t.Fatal("a shared-leg error must HOLD the gauge, not publish a partial sum")
+		}
+	})
+	t.Run("a pool-leg error holds the last value", func(t *testing.T) {
+		s.queue = &fakeDLQGaugeBackend{QueueBackend: nil, sharedDepth: 5, poolErr: errors.New("pool read failed")}
+		if _, ok := s.dlqGaugeValue(context.Background()); ok {
+			t.Fatal("a pool-leg error must HOLD the gauge, not publish a partial sum")
+		}
+	})
+	t.Run("a registry read error holds the last value", func(t *testing.T) {
+		s.queue = &fakeDLQGaugeBackend{QueueBackend: nil, sharedDepth: 5}
+		s.runnerPoolsStore = errorRunnerPoolsStore{}
+		if _, ok := s.dlqGaugeValue(context.Background()); ok {
+			t.Fatal("an unreadable registry must HOLD the gauge")
+		}
+	})
+}
+
+// errorRunnerPoolsStore is a registry whose every read fails — the
+// hold-on-unknown leg.
+type errorRunnerPoolsStore struct {
+	platformcfg.Store[platformcfg.RunnerPools]
+}
+
+func (errorRunnerPoolsStore) Get(context.Context) (*platformcfg.RunnerPools, error) {
+	return nil, errors.New("registry down")
 }
