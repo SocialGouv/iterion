@@ -706,6 +706,12 @@ type Service struct {
 	// board (Phase 1) is unaffected; it lives entirely in the studio.
 	sbStore sessionboard.Store
 
+	// currentPoolForTenant, when non-nil, is the D12 guard's fresh
+	// tenant→pool lookup for the PRE-STAMP cohort: runs launched before
+	// the stamp existed carry no stamp, and the current mapping is the
+	// only signal left. Wired by the cloud server from the identity store.
+	currentPoolForTenant func(ctx context.Context, tenantID string) (string, error)
+
 	// alertSettings, when non-nil, requests construction of an alert
 	// Manager that observes the run event stream (via the file-event
 	// tail) and fans stall / budget / failure alerts out to a webhook,

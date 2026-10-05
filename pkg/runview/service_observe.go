@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -126,7 +127,52 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 	if !supervise.DeclaredEnabledOrWarn(override, len(wf.Supervisors), logger) {
 		return func() {}
 	}
-	return supervise.StartDeclared(ctx, s, s, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
+	specs := supervise.SpecsFromWorkflow(wf, logger)
+	pool, err := s.frozenPoolStamp(ctx, runID)
+	if err != nil {
+		// The stamp is unreadable: the surface stays OFF rather than guess
+		// the run was never pool-stamped. The run itself is unaffected.
+		logger.Warn("supervisors: pool stamp unreadable for run %s — refusing to start (%v)", runID, err)
+		return func() {}
+	}
+	specs = PoolSurvivingSpecs(specs, pool, logger)
+	return startDeclaredImpl(ctx, s, s, runID, specs, logger)
+}
+
+// startDeclaredImpl is the dispatchable seam behind startDeclaredSupervisors
+// (the test swaps it to capture the specs that survive the guard).
+var startDeclaredImpl = supervise.StartDeclared
+
+// PoolSurvivingSpecs filters declared supervisors against a run's frozen
+// pool stamp: on a pool-stamped run, a supervisor whose effective model is
+// not gateway-routed is refused (D12) — evaluating the run's content
+// through a vendor default would spend a provider the pool team never
+// funded. A supervisor with no DSL pin falls back to
+// ITERION_DEFAULT_SUPERVISOR_MODEL at eval time, so the filter consults the
+// same fallback: a gateway env pin keeps unpinned supervisors alive; a
+// vendor env pin or no env at all refuses them. A nil pool keeps every
+// spec.
+func PoolSurvivingSpecs(specs []supervise.Spec, pool string, logger *iterlog.Logger) []supervise.Spec {
+	if pool == "" {
+		return specs
+	}
+	envDefault := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+	kept := specs[:0]
+	for _, spec := range specs {
+		// The pin may be an env form ("${VAR:-openai_compatible/x}") —
+		// expand it exactly like eval time does, else a supervisor whose
+		// effective model is the gateway would be refused here.
+		model := strings.TrimSpace(ir.ExpandEnvWithDefault(spec.Model))
+		if model == "" {
+			model = envDefault
+		}
+		if err := poolContentRefusal(pool, model); err != nil {
+			logger.Warn("supervisor %q: %v", spec.Name, err)
+			continue
+		}
+		kept = append(kept, spec)
+	}
+	return kept
 }
 
 // Publish persists an updated Session-board spec for runID. It satisfies
@@ -160,16 +206,31 @@ func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, lo
 	if s.sbStore == nil || !sessionboard.Enabled() {
 		return func() {}
 	}
+	pool, err := s.frozenPoolStamp(ctx, runID)
+	if err != nil {
+		// The stamp is unreadable: the surface stays OFF rather than guess
+		// the run was never pool-stamped. The run itself is unaffected.
+		logger.Warn("session board: pool stamp unreadable for run %s — refusing to start (%v)", runID, err)
+		return func() {}
+	}
+	if err := poolContentRefusal(pool, sessionboard.ModelFromEnv()); err != nil {
+		logger.Warn("session board: %v", err)
+		return func() {}
+	}
 	initial, _ := s.sbStore.Load(runID)
 	cfg := sessionboard.Config{
 		BotID:   botID,
 		Model:   sessionboard.ModelFromEnv(),
 		Initial: initial,
 	}
-	coord := sessionboard.New(s, s, runID, cfg, nil, logger)
+	coord := newSessionBoardCoordinator(s, s, runID, cfg, nil, logger)
 	if coord == nil {
 		return func() {}
 	}
 	coord.Start(ctx)
 	return coord.Close
 }
+
+// newSessionBoardCoordinator is the dispatchable seam behind
+// startSessionBoard (the test swaps it to count constructions).
+var newSessionBoardCoordinator = sessionboard.New
