@@ -362,6 +362,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/ticket-context.md`](../ticket-context.md) | Ticket conformance — plugging tracker tickets into a review | Revi (`bots/review-pr` ≥ 0.6.0) can verify that a PR actually delivers | — |
 | [`docs/tool-name-aliases.md`](../tool-name-aliases.md) | Claw tool-name aliases | Claw accepts the exact spellings `Read`, `Bash`, and `Grep` as `read_file`, `bash`, | — |
 | [`docs/ultracode.md`](../ultracode.md) | Ultracode | `reasoning_effort: ultracode` is the highest setting on the effort dial. | — |
+| [`docs/upstream/claude-code-positional-args-2-1-220.md`](../upstream/claude-code-positional-args-2-1-220.md) | `$1`–`$9` in project commands resolve one position early — draft upstream report, not… | Measured evidence for iterion issue #1713 across Claude Code 2.1.220 and 2.1.282: the CLI substitutes `$N` zero-based and did not change,… | — |
 | [`docs/url-layout.md`](../url-layout.md) | URL layout — what answers at the root, and what lives under `/studio` | A deployment serves two things from one origin: the **product home** and the | — |
 | [`docs/usage-caps.md`](../usage-caps.md) | Usage caps — stop below the provider's wall | An LLM subscription ("forfait") meters two rolling windows, five hours and | — |
 | [`docs/visual-editor.md`](../visual-editor.md) | Visual Editor (web) | Iterion includes a browser-based visual workflow editor built with React and XYFlow. | — |

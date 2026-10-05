@@ -171,3 +171,4 @@ These collections are valuable evidence, but they do not override current code o
 - [reviews/](reviews/) — dated codebase reviews.
 - [security/](security/) — dated security audits.
 - [studio-ux-audit-2026-07.md](studio-ux-audit-2026-07.md) — UX audit snapshot.
+- [upstream/](upstream/) — draft reports and measured evidence for upstream (Anthropic) findings; nothing here is filed without an operator decision.

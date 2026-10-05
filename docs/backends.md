@@ -160,10 +160,15 @@ The citations, per cell that is not self-evident from the table:
     second node invoking the same command with a broader `tools:` set is a
     different exposure. Documenting it was never enough.
   - `$1`, `$2`, … (any index, not just the single digits) are **one-based**
-    on `claw` (`$1` is the first argument),
-    which is Claude Code's documented contract; the CLI itself resolves
-    them off by one (`/x alpha beta gamma` on `[$1][$2][$3]` expands to
-    `[beta][gamma][$3]`).
+    on `claw` (`$1` is the first argument) and **zero-based** on
+    `claude_code`, whose docs define `$N` as shorthand for `$ARGUMENTS[N]`
+    with `$0` the first argument — and whose CLI measures that way on
+    2.1.220 and 2.1.282 alike (`/x alpha beta gamma` on `[$1][$2][$3]`
+    expands to `[beta][gamma][$3]`). `claw` keeps the CLI's earlier "like
+    shell scripts" reading, which the docs have since replaced; flipping
+    it would rewrite bodies already written against `claw`, so the
+    divergence stays named
+    ([the re-measure record](upstream/claude-code-positional-args-2-1-220.md)).
   - `` !`cmd` ``, ` ```! ` shell substitution, `$0`, `$ARGUMENTS[n]`,
     `\$` escapes and the `${CLAUDE_PROJECT_DIR}` / `${CLAUDE_SESSION_ID}` /
     `${CLAUDE_EFFORT}` placeholders are not evaluated. A body using any of these — or the
