@@ -166,6 +166,37 @@ func (s *Server) poolBacklogs(ctx context.Context, leases runLeaseChecker) (uint
 	return total, true
 }
 
+// dlqGaugeValue sums the shared DLQ depth with every registry-known
+// pool's own DLQ stream. The second return is false when a leg cannot be
+// read — the caller HOLDS the last gauge value instead of publishing a
+// partial sum that reads as a calm during exactly the storm the gauge
+// exists to surface.
+func (s *Server) dlqGaugeValue(ctx context.Context) (uint64, bool) {
+	depth, err := s.queue.DLQDepth(ctx)
+	if err != nil {
+		return 0, false
+	}
+	if s.runnerPoolsStore != nil {
+		rec, rerr := s.runnerPoolsStore.Get(ctx)
+		if rerr != nil {
+			return 0, false
+		}
+		if rec != nil {
+			for _, p := range rec.Pools {
+				if p.State == platformcfg.RunnerPoolDisabled {
+					continue
+				}
+				pd, perr := s.queue.PoolDLQDepth(ctx, p.Name)
+				if perr != nil {
+					return 0, false
+				}
+				depth += pd
+			}
+		}
+	}
+	return depth, true
+}
+
 // runQueueSweeper loops until ctx is cancelled. Started by
 // ListenAndServe in cloud mode when both the Mongo store and the
 // queue connection are wired.
@@ -183,24 +214,12 @@ func (s *Server) runQueueSweeper(ctx context.Context, lister staleRunLister, lea
 			// The total sums the shared DLQ and every registry-known pool's
 			// own DLQ stream (a pool's parked messages live on their own
 			// stream — shared-only would read a calm zero during a storm).
+			// An unreadable leg HOLDS the last value: zeroing on a broker
+			// error would paint the calm exactly when the broker struggles.
 			if s.queue != nil && s.cfg.Metrics != nil {
-				depth, err := s.queue.DLQDepth(ctx)
-				if err != nil {
-					depth = 0
+				if depth, ok := s.dlqGaugeValue(ctx); ok {
+					s.cfg.Metrics.DLQDepth.Set(float64(depth))
 				}
-				if s.runnerPoolsStore != nil {
-					if rec, rerr := s.runnerPoolsStore.Get(ctx); rerr == nil && rec != nil {
-						for _, p := range rec.Pools {
-							if p.State == platformcfg.RunnerPoolDisabled {
-								continue
-							}
-							if pd, perr := s.queue.PoolDLQDepth(ctx, p.Name); perr == nil {
-								depth += pd
-							}
-						}
-					}
-				}
-				s.cfg.Metrics.DLQDepth.Set(float64(depth))
 			}
 		}
 	}
