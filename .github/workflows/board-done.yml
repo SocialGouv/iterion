@@ -29,7 +29,12 @@ jobs:
           STATUS_FIELD_ID: PVTSSF_lADOAh0HH84BiOg8zhhHUgk
           DONE_OPTION_ID: "27139072"
         run: |
-          item_id="$(gh api graphql \
+          set -o pipefail
+          # The lookup must not swallow a gh failure into the no-card branch:
+          # the assignment lets the step die on a refused call (org denying
+          # the default token, GraphQL error, rate limit) instead of
+          # reporting "no card" and exiting green.
+          lookup="$(gh api graphql \
             -f query='query($owner: String!, $repo: String!, $number: Int!) {
               repository(owner: $owner, name: $repo) {
                 issue(number: $number) {
@@ -39,8 +44,10 @@ jobs:
             }' \
             -f owner="${{ github.repository_owner }}" \
             -f repo="${{ github.event.repository.name }}" \
-            -F number="${{ github.event.issue.number }}" \
-            --jq ".data.repository.issue.projectItems.nodes[] | select(.project.id == \"$PROJECT_ID\") | .id" | head -1)"
+            -F number="${{ github.event.issue.number }}")"
+          item_id="$(jq -r --arg p "$PROJECT_ID" \
+            '.data.repository.issue.projectItems.nodes[] | select(.project.id == $p) | .id' \
+            <<<"$lookup")"
           if [ -z "$item_id" ]; then
             echo "issue #${{ github.event.issue.number }} has no card on the board — nothing to move"
             exit 0
