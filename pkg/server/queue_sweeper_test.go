@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cloudmetrics "github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -348,4 +349,75 @@ func TestSweepOrphanRuns_backlogUnknownKeepsPreviousBehaviour(t *testing.T) {
 			}
 		})
 	}
+}
+
+type fakePoolBacklogLeases struct {
+	fakeBacklogLeases
+	poolPending uint64
+	poolErr     error
+}
+
+func (f *fakePoolBacklogLeases) PoolBacklog(context.Context, string) (uint64, error) {
+	return f.poolPending, f.poolErr
+}
+
+// The queued-pass skip counts POOL consumers' backlogs too: a sovereign
+// run waiting its turn on its pool is not an orphan (rva F3 — the shared
+// read alone false-orphaned it). An unreadable pool backlog DEFERS the
+// verdict (the fail-open mutant flips legitimately-waiting runs), and a
+// disabled pool's consumer counts for nothing.
+func TestSweepOrphanRuns_PoolBacklogSkipsTheQueuedPass(t *testing.T) {
+	seed := func(s *Server, pools ...platformcfg.RunnerPool) {
+		s.runnerPoolsStore = platformcfg.NewMemoryStore[platformcfg.RunnerPools]()
+		if err := s.runnerPoolsStore.Put(context.Background(), platformcfg.RunnerPools{Pools: pools}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lister := func(runID string) *fakeStaleLister {
+		return &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+			"queued": {{ID: runID, TenantID: "t1", Status: "queued"}},
+		}}
+	}
+
+	t.Run("pool pending defers the orphan verdict", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		seed(s, platformcfg.RunnerPool{Name: "honorabilite", State: platformcfg.RunnerPoolActive})
+		fs := &fakeSweepStore{}
+		s.cfg.Store = fs
+		leases := &fakePoolBacklogLeases{fakeBacklogLeases: fakeBacklogLeases{backlog: 0}, poolPending: 3}
+		s.sweepOrphanRuns(context.Background(), lister("r-pool-wait"), leases, time.Now().UTC())
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		if code, flipped := fs.flipped["r-pool-wait"]; flipped {
+			t.Fatalf("a pool run waiting its consumer's turn was orphaned (%v) — the pool backlog must skip the queued pass", code)
+		}
+	})
+
+	t.Run("an unreadable pool backlog defers", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		seed(s, platformcfg.RunnerPool{Name: "honorabilite", State: platformcfg.RunnerPoolActive})
+		fs := &fakeSweepStore{}
+		s.cfg.Store = fs
+		leases := &fakePoolBacklogLeases{fakeBacklogLeases: fakeBacklogLeases{backlog: 0}, poolErr: context.DeadlineExceeded}
+		s.sweepOrphanRuns(context.Background(), lister("r-pool-err"), leases, time.Now().UTC())
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		if code, flipped := fs.flipped["r-pool-err"]; flipped {
+			t.Fatalf("an unreadable pool backlog must DEFER the verdict, not orphan (%v)", code)
+		}
+	})
+
+	t.Run("a disabled pool's consumer counts for nothing", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		seed(s, platformcfg.RunnerPool{Name: "dead-pool", State: platformcfg.RunnerPoolDisabled})
+		fs := &fakeSweepStore{}
+		s.cfg.Store = fs
+		leases := &fakePoolBacklogLeases{fakeBacklogLeases: fakeBacklogLeases{backlog: 0}, poolPending: 9}
+		s.sweepOrphanRuns(context.Background(), lister("r-dead-pool"), leases, time.Now().UTC())
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		if fs.flipped["r-dead-pool"] != store.RunStatusFailedResumable {
+			t.Fatalf("a disabled pool's pending must not defer the orphan verdict: %+v", fs.flipped)
+		}
+	})
 }

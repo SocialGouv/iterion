@@ -277,11 +277,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("runner: attach pool consumer: %w", err)
 		}
+		logger.Info("runner: serving sovereign pool %q (admission: only runs stamped for this pool execute)", cfg.Runner.Pool)
 	} else {
-		preparedConsumer, err = natsConn.PrepareConsumer(rootCtx)
-		if err != nil {
-			return fmt.Errorf("runner: prepare queue consumer: %w", err)
-		}
+		logger.Info("runner: serving the shared default pool (ITERION_RUNNER_POOL is empty)")
 	}
 
 	// 5. Runner loop.

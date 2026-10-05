@@ -138,10 +138,15 @@ type poolBacklogReader interface {
 // or a read failed — an unreadable pool backlog DEFERS the queued verdict
 // (plan D6': an unknown state must not produce an orphan), matching the
 // shared read's fail-safe.
+// The second return is "the pool answer is KNOWN": false when pools exist
+// but their backlog cannot be read — an unknown state must DEFER the queued
+// verdict (plan D6'), never run it. No registry store, an empty registry,
+// or only-disabled pools is known-zero: nothing pool-scoped exists, so the
+// shared logic alone decides.
 func (s *Server) poolBacklogs(ctx context.Context, leases runLeaseChecker) (uint64, bool) {
 	pbr, ok := leases.(poolBacklogReader)
 	if !ok || s.runnerPoolsStore == nil {
-		return 0, false
+		return 0, true
 	}
 	rec, err := s.runnerPoolsStore.Get(ctx)
 	if err != nil {
@@ -149,19 +154,24 @@ func (s *Server) poolBacklogs(ctx context.Context, leases runLeaseChecker) (uint
 		return 0, false
 	}
 	if rec == nil {
-		return 0, false
+		return 0, true
 	}
 	total := uint64(0)
+	any := false
 	for _, p := range rec.Pools {
 		if p.State == platformcfg.RunnerPoolDisabled {
 			continue
 		}
+		any = true
 		n, err := pbr.PoolBacklog(ctx, p.Name)
 		if err != nil {
 			s.logWarn("sweeper: pool %s backlog unreadable (%v) — the queued pass defers", p.Name, err)
 			return 0, false
 		}
 		total += n
+	}
+	if !any {
+		return 0, true
 	}
 	return total, true
 }
@@ -206,16 +216,18 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	// while legitimately waiting is worse than one recovered a tick late,
 	// and the running pass (whose lease check is a real signal) is
 	// unaffected.
-	if backlog, ok := s.queueBacklog(ctx, leases); ok && backlog > 0 {
+	sharedBacklog, sharedOK := s.queueBacklog(ctx, leases)
+	poolBacklog, poolKnown := s.poolBacklogs(ctx, leases)
+	if (sharedOK && sharedBacklog > 0) || (poolKnown && poolBacklog > 0) || !poolKnown {
+		// A backlog (shared or pool) means the queue still holds work
+		// nobody has fetched; an UNKNOWN pool backlog defers — the stale
+		// queued rows are runs WAITING for a free runner, not orphans. Skip
+		// the queued pass entirely rather than flip them — a run killed
+		// while legitimately waiting is worse than one recovered a tick
+		// late, and the running pass (whose lease check is a real signal)
+		// is unaffected.
 		if s.logger != nil {
-			s.logger.Debug("sweeper: %d message(s) still waiting on the consumer — skipping the queued pass (those rows are unclaimed for want of a free runner, not orphaned)", backlog)
-		}
-		passes = passes[1:]
-	} else if poolBacklog, ok := s.poolBacklogs(ctx, leases); ok && poolBacklog > 0 {
-		// A pool consumer's pending count is the same signal, pool-scoped:
-		// a sovereign run waiting its turn is not an orphan.
-		if s.logger != nil {
-			s.logger.Debug("sweeper: %d message(s) still waiting on pool consumers — skipping the queued pass", poolBacklog)
+			s.logger.Debug("sweeper: shared backlog %d (known=%v), pool backlog %d (known=%v) — skipping the queued pass", sharedBacklog, sharedOK, poolBacklog, poolKnown)
 		}
 		passes = passes[1:]
 	}

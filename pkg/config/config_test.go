@@ -879,3 +879,26 @@ func TestValidate_CanonicalRedirectNeedsAnOriginInEveryMode(t *testing.T) {
 		})
 	}
 }
+
+// The pool identity is env-driven on purpose (the chart's pool runner
+// Deployment sets it per pool): an unset env reads as the shared default,
+// a set env names the pod's pool — the admission identity. Red when the
+// mapping is dropped.
+func TestLoad_RunnerPoolFromEnv(t *testing.T) {
+	clearITERION(t)
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runner.Pool != "" {
+		t.Fatalf("an unset env reads as the shared default, got %q", cfg.Runner.Pool)
+	}
+	t.Setenv("ITERION_RUNNER_POOL", "honorabilite")
+	cfg, err = Load(LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runner.Pool != "honorabilite" {
+		t.Fatalf("ITERION_RUNNER_POOL did not reach cfg.Runner.Pool: %q", cfg.Runner.Pool)
+	}
+}

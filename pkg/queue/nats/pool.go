@@ -9,6 +9,7 @@ package nats
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -186,7 +187,10 @@ func (c *Conn) AttachPoolConsumer(ctx context.Context, pool string) (*Consumer, 
 	}
 	cons, err := c.js.Consumer(ctx, PoolStreamName(pool), PoolConsumerName(pool))
 	if err != nil {
-		return nil, fmt.Errorf("queue/nats: pool consumer %s does not exist — the server's reconciler creates it; a pool runner refuses to create topology: %w", PoolConsumerName(pool), err)
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil, fmt.Errorf("queue/nats: pool consumer %s does not exist — the server's reconciler creates it; a pool runner refuses to create topology", PoolConsumerName(pool))
+		}
+		return nil, fmt.Errorf("queue/nats: pool consumer %s unreadable (%w) — a transient broker error; retry the boot", PoolConsumerName(pool), err)
 	}
 	info, err := cons.Info(ctx)
 	if err != nil {
@@ -207,6 +211,17 @@ func verifyPoolConsumerAttachment(cfg jetstream.ConsumerConfig, pool string) err
 	}
 	if cfg.FilterSubject != PoolSubject(pool) {
 		return fmt.Errorf("queue/nats: consumer filter %q is not the pool %q subject (%q)", cfg.FilterSubject, pool, PoolSubject(pool))
+	}
+	// The ack SEMANTICS are part of the attachment: an AckPolicy=None
+	// consumer auto-acks deliveries — runs vanish without execution, the
+	// document stays queued and is orphan-flipped, indistinguishable from a
+	// drop. MaxDeliver<=0 silently rewrites redelivery. The pool path never
+	// self-heals drift (attach never updates), so it refuses it.
+	if cfg.AckPolicy != jetstream.AckExplicitPolicy {
+		return fmt.Errorf("queue/nats: consumer ack policy %v is not explicit — a pool consumer that auto-acks loses runs silently", cfg.AckPolicy)
+	}
+	if cfg.MaxDeliver < 0 {
+		return fmt.Errorf("queue/nats: consumer MaxDeliver %d is unlimited — redelivery semantics must match the shared consumer", cfg.MaxDeliver)
 	}
 	return nil
 }
