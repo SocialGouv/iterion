@@ -104,6 +104,11 @@ type run struct {
 // Driver returns "noop".
 func (r *run) Driver() string { return "noop" }
 
+// HostExecutesCommands answers the sandbox.HostRun question: noop commands
+// run on the operator's host, so callers handing a bot script a binary path
+// must resolve it against the HOST filesystem, not a container path.
+func (r *run) HostExecutesCommands() bool { return true }
+
 // Command returns a host *exec.Cmd. The noop driver is a transparent
 // passthrough — the returned cmd is what callers would build with
 // exec.CommandContext, with WorkDir and Env folded in.

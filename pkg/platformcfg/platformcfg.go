@@ -355,6 +355,7 @@ var botVarsInfraExact = map[string]bool{
 	// Written by the engine for a child process; a stored value would forge
 	// the directory, capabilities or provenance the child is promised.
 	"ITERION_ARTIFACT_FILES_DIR": true,
+	"ITERION_ENGINE_BIN":         true,
 	"ITERION_WORKSPACE":          true,
 	"ITERION_TENANT":             true,
 	"ITERION_PARENT_RUN_ID":      true,

@@ -333,8 +333,10 @@ lots:
 // finding that turned both guards into a silent no-op: lot_verify called `yq`
 // on the bare PATH and swallowed its absence, so a worker-written `done` and
 // an amputated gate converged green with an empty log_tail. The verifier now
-// finds yq where plan_read and mark_done do — the target's devbox profile —
-// and REFUSES, typed, when it cannot read the contract at all.
+// shares plan_read's and mark_done's lookup — PATH only — and REFUSES, typed,
+// when it cannot read the contract at all. A yq the TARGET repository ships
+// in its own devbox profile is refused like no yq at all (#1799): the
+// profile's binary is the audited checkout's, not the run's.
 func TestModernizeLotVerifyReadsTheContractOrRefuses(t *testing.T) {
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
@@ -362,24 +364,31 @@ lots:
 		git("commit", "-qam", "worker writes done")
 		return ws, base, git
 	}
-	yqPath, _ := exec.LookPath("yq")
 
-	t.Run("yq off PATH but in the target's devbox profile: the guard still fires", func(t *testing.T) {
+	t.Run("yq only in the target's devbox profile: the profile binary is refused, not run", func(t *testing.T) {
 		ws, base, _ := selfWrittenDone(t)
 		profile := filepath.Join(ws, ".devbox", "nix", "profile", "default", "bin")
 		if err := os.MkdirAll(profile, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(yqPath, filepath.Join(profile, "yq")); err != nil {
+		witness := filepath.Join(t.TempDir(), "profile-yq-witness")
+		// A shell-builtin redirect, not `touch`: the node runs under a
+		// restricted PATH, and an external binary there would fail for the
+		// wrong reason.
+		hostile := "#!/bin/sh\necho ran > " + witness + "\n"
+		if err := os.WriteFile(filepath.Join(profile, "yq"), []byte(hostile), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		env := append(os.Environ(), "PATH="+restrictedPATH(t, "python3", "git", "sh"))
 		res, exit := modernizeLotVerifyEnv(t, script, ws, "L1", base, gate, env)
-		if exit != 0 || !res.DoneSelfWritten {
-			t.Fatalf("exit=%d done_self_written=%v — with yq only in the devbox profile the guard must still fire (%s)", exit, res.DoneSelfWritten, res.LogTail)
+		if exit != 0 || !res.Unreadable {
+			t.Fatalf("exit=%d contract_unreadable=%v — a yq the TARGET repository ships must be refused like no yq at all: report %+v", exit, res.Unreadable, res)
 		}
-		if _, err := os.Stat(filepath.Join(ws, "gate.marker")); err == nil {
-			t.Fatalf("the exit_gate ran: the refusal must come first")
+		if !strings.HasPrefix(res.LogTail, "CONTRACT_UNREADABLE") {
+			t.Fatalf("log_tail = %q, want CONTRACT_UNREADABLE", res.LogTail)
+		}
+		if _, err := os.Stat(witness); !os.IsNotExist(err) {
+			t.Fatalf("the profile's yq ran (err=%v): a workspace fallback is the defect #1799 closes", err)
 		}
 	})
 

@@ -70,6 +70,16 @@ type ProcessIsolated interface {
 	ProcessIsolated() bool
 }
 
+// HostRun is a Run whose commands execute on the operator's host — the noop
+// passthrough. Answering this correctly is about the FILESYSTEM a command
+// resolves paths against, not the process namespace: a container run with a
+// shared pid namespace (docker --pid=host, ProcessIsolated() false) still
+// resolves paths inside its own filesystem. A Run that does not implement
+// this interface resolves paths inside its own container filesystem.
+type HostRun interface {
+	HostExecutesCommands() bool
+}
+
 // Run is a live sandbox handle.
 //
 // Each Run corresponds to one iterion run; the engine creates it once

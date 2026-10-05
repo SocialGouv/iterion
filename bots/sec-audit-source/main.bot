@@ -3047,16 +3047,27 @@ print(json.dumps({
 ## parent's exit code reflects shard failures.
 tool dispatch_shards:
   command: `mkdir -p {{input.scan_dir}} && WS={{input.workspace_dir}} SHARD_SIZE={{input.shard_size}} CONCURRENCY={{input.shard_concurrency}} SEVTHR={{input.severity_threshold}} FPP={{input.fp_path}} REC={{input.records_dir}} MAT={{input.matchers_dir}} FILES={{input.files_path}} WORKFLOW={{input.workflow_path}} ENV_PATH={{input.scan_dir}}/shards.json RUN_ID={{run.id}} python3 -I -c "
-import os, json, time, subprocess, shutil
+import os, json, sys, time, subprocess, shutil
 ws = os.environ['WS']
 shard_size = int(os.environ['SHARD_SIZE'])
 concurrency = int(os.environ['CONCURRENCY'])
 files_path = os.environ['FILES']
 workflow = os.environ['WORKFLOW']
 
-# Locate the iterion binary: prefer the one on PATH; fall back to the
-# repo-local build that ships with bundled runs.
-iterion = shutil.which('iterion') or os.path.join(ws, 'iterion')
+# Locate the iterion binary. ITERION_ENGINE_BIN is the engine's own
+# attestation — the same resolution proc.LocateIterionBinary serves the MCP
+# helpers, written into this node's environment; PATH is the fallback for an
+# engine older than the variable (the engine prepends a shim holding its own
+# binary, so an ambient iterion loses to it). The workspace is never a
+# source: a fallback there would execute the tree under audit (#1799).
+env_bin = os.environ.get('ITERION_ENGINE_BIN', '').strip()
+if env_bin and not (os.path.isfile(env_bin) and os.access(env_bin, os.X_OK)):
+    sys.stderr.write('dispatch_shards: ITERION_ENGINE_BIN=%s does not name an executable file; refusing rather than falling back\n' % env_bin)
+    sys.exit(1)
+iterion = env_bin or shutil.which('iterion') or ''
+if not iterion:
+    sys.stderr.write('dispatch_shards: no iterion binary: ITERION_ENGINE_BIN is unset and nothing named iterion is on PATH; the workspace is never a source for it (#1799)\n')
+    sys.exit(1)
 
 # Child runs re-enter this same workflow with shard_size=0, so they
 # fall through to the single-process pipeline on their assigned slice
