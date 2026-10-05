@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.238.0](https://github.com/SocialGouv/iterion/compare/v3.237.0...v3.238.0) (2026-10-05)
+
+### Features
+
+* **llmroute:** the org and team routing-policy levels ([#2210](https://github.com/SocialGouv/iterion/issues/2210) slice 1) ([#2217](https://github.com/SocialGouv/iterion/issues/2217)) ([a426004](https://github.com/SocialGouv/iterion/commit/a4260044db7164003da8156aadbca40a4bdad0db)), references [#2000](https://github.com/SocialGouv/iterion/issues/2000) [#2126](https://github.com/SocialGouv/iterion/issues/2126)
+
+    <details><summary>why</summary>
+
+    Delivery 2 of adaptive routing (epic #2000), slice 1 of 5, on the ADR-121 foundation (#2126): the two greenfield TENANT levels of the routing policy — platform < org < team < shipped bot < binding < run — with their store, their fold layers, their control surface, and the ADR amendment owning the whole delivery-2 contract.
+
+    </details>
+
 ## [3.237.0](https://github.com/SocialGouv/iterion/compare/v3.236.0...v3.237.0) (2026-10-05)
 
 ### Features
