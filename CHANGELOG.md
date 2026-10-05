@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.239.0](https://github.com/SocialGouv/iterion/compare/v3.238.0...v3.239.0) (2026-10-05)
+
+### Features
+
+* **llmroute:** the model class table and per-level overrides ([#2210](https://github.com/SocialGouv/iterion/issues/2210) slice 2) ([#2222](https://github.com/SocialGouv/iterion/issues/2222)) ([a64fcd4](https://github.com/SocialGouv/iterion/commit/a64fcd47eee2bc846512989826dfcae71f6f59c6))
+
+    <details><summary>why</summary>
+
+    Delivery 2 of adaptive routing, slice 2 of 5 (ADR-121 § Delivery 2): the model class table — top/standard/fast per family, shipped in pkg/llmroute beside the crossing default it generalizes — and every policy level's ENTRY-WISE per class×family overrides of it.
+
+    </details>
+* **runview,runner:** sovereign pools refuse server-side LLM content surfaces (P3/D12) ([#2221](https://github.com/SocialGouv/iterion/issues/2221)) ([9b8542a](https://github.com/SocialGouv/iterion/commit/9b8542a6f3ecca90304b77ac4ff4c8812a152c41))
+
+    <details><summary>why</summary>
+
+    The three server-side auxiliary LLM surfaces — the merge-conflict resolver, declared supervisors, the session board — send content derived from a run to a model resolved in the server process. On a run stamped to a sovereign runner pool, that content now crosses to a vendor only never: each surface consults the run document's frozen pool stamp and refuses with a typed error naming the remedy, unless its model is itself gateway-routed (the operator provided the pool's openai_compatible…
+
+    </details>
+
 ## [3.238.0](https://github.com/SocialGouv/iterion/compare/v3.237.0...v3.238.0) (2026-10-05)
 
 ### Features
