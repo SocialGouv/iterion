@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.237.0](https://github.com/SocialGouv/iterion/compare/v3.236.0...v3.237.0) (2026-10-05)
+
+### Features
+
+* **cloud:** pool-aware DLQ surface, the broker routing bite, and the pools doc (P1b-iii) ([#2216](https://github.com/SocialGouv/iterion/issues/2216)) ([c4725c2](https://github.com/SocialGouv/iterion/commit/c4725c270f33d7a0a8d6087d45e11d5d1f0f0c77)), references [#2029](https://github.com/SocialGouv/iterion/issues/2029)
+
+    <details><summary>why</summary>
+
+    The runner side of the sovereign pools (#2029, plan v2.1 D4'), rebased on the current main (the P1b-i topology it builds on landed through a parallel session):
+
+    </details>
+
 ## [3.236.0](https://github.com/SocialGouv/iterion/compare/v3.235.0...v3.236.0) (2026-10-05)
 
 ### Features
