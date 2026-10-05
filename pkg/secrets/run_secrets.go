@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -173,6 +174,15 @@ func SealRunBundle(sealer Sealer, tenantID, pool, runID string, b RunBundle) ([]
 	if !ok {
 		return nil, "", errors.New("secrets: sealing a run bundle needs a keyed sealer (a key ring), not a bare Sealer")
 	}
+	// The AAD's unambiguity rests on neither component carrying "/":
+	// enforce it here, at the chokepoint both seal callers traverse, not
+	// only at the launch site that validates its inputs.
+	if strings.Contains(tenantID, "/") {
+		return nil, "", fmt.Errorf("secrets: tenant id %q carries the AAD separator", tenantID)
+	}
+	if pool != "" && !validPoolName(pool) {
+		return nil, "", fmt.Errorf("secrets: pool %q is not a valid runner pool name", pool)
+	}
 	body, err := json.Marshal(b)
 	if err != nil {
 		return nil, "", fmt.Errorf("secrets: marshal bundle: %w", err)
@@ -240,6 +250,25 @@ func RunBundleAAD(tenantID, pool, runID string) []byte {
 
 func legacyRunBundleAAD(runID string) []byte {
 	return []byte("run_secrets:" + runID)
+}
+
+// validPoolName mirrors queue.ValidPoolName (1–31 chars [a-z0-9-],
+// starting alphanumeric). A local copy keeps the NATS client out of
+// every secrets importer; run_secrets_test.go pins the two to agree.
+func validPoolName(s string) bool {
+	if len(s) < 1 || len(s) > 31 {
+		return false
+	}
+	for i, r := range s {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-'
+		if i == 0 && r == '-' {
+			ok = false
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // NewSecretsRef returns a fresh opaque ref for a RunSecretsRecord.

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -256,5 +257,15 @@ func TestMemoryRunSecretsStore_DeleteTenantScoped(t *testing.T) {
 	}
 	if _, err := st.Get(store.WithTenant(ctx, "t1"), "ref-1"); !errors.Is(err, ErrRunSecretsNotFound) {
 		t.Fatalf("record still present after owning-tenant Delete: %v", err)
+	}
+}
+
+// The local pool-grammar copy is pinned to the queue package's — one
+// grammar, two homes, the test is the guard against drift.
+func TestValidPoolNameMatchesQueueGrammar(t *testing.T) {
+	for _, s := range []string{"", "a", "-lead", "UPPER", "with_underscore", strings.Repeat("a", 32), strings.Repeat("a", 31), "pool-1"} {
+		if got, want := validPoolName(s), queue.ValidPoolName(s); got != want {
+			t.Fatalf("validPoolName(%q) = %v, queue.ValidPoolName = %v — the copies drifted", s, got, want)
+		}
 	}
 }

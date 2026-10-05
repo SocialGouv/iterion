@@ -301,6 +301,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
+	if cfg.Auth.SecretsKeys != "" && cfg.Auth.SecretsKey != "" {
+		logger.Warn("both ITERION_SECRETS_KEYS and ITERION_SECRETS_KEY are set; the ring wins and the bare key is ignored")
+	}
+	if cfg.Auth.SecretsKeyID != "" && cfg.Auth.SecretsKeys == "" {
+		logger.Warn("ITERION_SECRETS_KEY_ID is set without ITERION_SECRETS_KEYS; the id is ignored")
+	}
 	sealer, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
 	if err != nil {
 		return fmt.Errorf("server: build sealer: %w", err)

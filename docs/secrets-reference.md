@@ -207,10 +207,17 @@ intended record so a sealed bundle cannot be silently transplanted:
 | `webhook_configs.hmac_secret_sealed` | `webhook_hmac_secret:<webhook_id>` |
 | `run_secrets.sealed_bundle` | `run_secrets:<tenant_id>/<runner_pool>/<run_id>` (records with a `key_id`; the pool segment is empty for shared-fleet runs) — legacy id-less records keep `run_secrets:<run_id>` |
 
-`ITERION_SECRETS_KEY` is required at boot in cloud mode (`openssl rand
--base64 32` → exactly 32 raw bytes). Server pods AND runner pods must
-agree on it, because the runner is the only thing that decrypts the
-per-run bundle the publisher sealed.
+`ITERION_SECRETS_KEY` — or the `ITERION_SECRETS_KEYS` ring — is required
+at boot in cloud mode (`openssl rand -base64 32` → exactly 32 raw
+bytes). Server pods AND runner pods must agree on it, because the
+runner is the only thing that decrypts the per-run bundle the
+publisher sealed.
+
+Upgrade ordering for THIS change: roll the RUNNERS (they learn the
+ring-aware opener) before or atomically with the servers — a
+server-first skew publishes ring-stamped bundles that pre-ring
+runners cannot open, and those runs fail at credential injection
+until the runners catch up.
 
 ### Rotating `ITERION_SECRETS_KEY` — current state
 

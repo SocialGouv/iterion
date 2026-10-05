@@ -612,8 +612,8 @@ func (c *Config) Validate() error {
 		if c.Auth.JWTSecret == "" {
 			return fmt.Errorf("ITERION_JWT_SECRET required when mode=cloud (base64 of >=32 random bytes)")
 		}
-		if c.Auth.SecretsKey == "" {
-			return fmt.Errorf("ITERION_SECRETS_KEY required when mode=cloud (base64 of 32 random bytes)")
+		if c.Auth.SecretsKey == "" && c.Auth.SecretsKeys == "" {
+			return fmt.Errorf("ITERION_SECRETS_KEY (or ITERION_SECRETS_KEYS) required when mode=cloud (base64 of 32 random bytes)")
 		}
 		switch c.Auth.SignupMode {
 		case "invite_only", "open":
