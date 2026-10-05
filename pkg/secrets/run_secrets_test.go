@@ -20,7 +20,7 @@ func testRing(t *testing.T, ids ...string) map[string][]byte {
 	for _, id := range ids {
 		key := make([]byte, 32)
 		for i := range key {
-			key[i] = byte(id[0]) // deterministic per-id material
+			key[i] = id[0] // deterministic per-id material
 		}
 		ring[id] = key
 	}
