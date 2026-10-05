@@ -525,6 +525,20 @@ tasks:
   lint:
     desc: Run fmt, vet, and golangci-lint
     deps: [fmt, vet]
+    env:
+      # golangci-lint's default cache (~/.cache/golangci-lint) is keyed on
+      # absolute file paths, so sibling worktrees of the same repo poison
+      # each other: one worktree's run can report findings pointing at a
+      # sibling's tree. Key the cache on a hash of the worktree's top-level
+      # path — stable across runs of the same worktree (the cache still
+      # pays off), disjoint across siblings. XDG-based, never inside the
+      # tracked tree; CI is unaffected (it invokes golangci-lint itself).
+      # With git absent from PATH the hash is impossible and the fallback
+      # is the old shared behaviour — reachable but contrived, and the
+      # lint still runs. Each worktree's cache (~54 MB) outlives the
+      # worktree; prune ~/.cache/golangci-lint/ by hand if it grows.
+      GOLANGCI_LINT_CACHE:
+        sh: 'top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$PWD; h=$(printf %s "$top" | git hash-object --stdin 2>/dev/null | cut -c1-12); echo "${XDG_CACHE_HOME:-$HOME/.cache}/golangci-lint/${h:-shared}"'
     cmds:
       - golangci-lint run
 

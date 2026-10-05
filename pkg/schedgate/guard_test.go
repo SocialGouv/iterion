@@ -8,7 +8,18 @@ import (
 	"time"
 )
 
+// scrubHome points HOME at an empty dir so the guard's `sh -lc` login
+// shell reads no user rc files: a dev machine's ~/.profile (pyenv init,
+// direnv hooks, …) otherwise pollutes the guard's stderr — and, under
+// full-suite parallelism, contends on host tool locks — reddening tests
+// for reasons unrelated to the gate. Production keeps the operator's env.
+func scrubHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestRunGuard_OK(t *testing.T) {
+	scrubHome(t)
 	res := RunGuard(context.Background(), GuardSpec{Command: "echo hello", Dir: t.TempDir()})
 	if res.Kind != GuardOK {
 		t.Fatalf("Kind = %v (err=%v), want GuardOK", res.Kind, res.Err)
@@ -22,6 +33,7 @@ func TestRunGuard_OK(t *testing.T) {
 }
 
 func TestRunGuard_NonZeroExit(t *testing.T) {
+	scrubHome(t)
 	res := RunGuard(context.Background(), GuardSpec{Command: "echo nope >&2; exit 7", Dir: t.TempDir()})
 	if res.Kind != GuardBlocked {
 		t.Fatalf("Kind = %v, want GuardBlocked", res.Kind)
@@ -35,6 +47,7 @@ func TestRunGuard_NonZeroExit(t *testing.T) {
 }
 
 func TestRunGuard_Timeout(t *testing.T) {
+	scrubHome(t)
 	start := time.Now()
 	res := RunGuard(context.Background(), GuardSpec{Command: "sleep 10", Dir: t.TempDir(), Timeout: 50 * time.Millisecond})
 	if res.Kind != GuardError {
@@ -53,6 +66,7 @@ func TestRunGuard_Timeout(t *testing.T) {
 }
 
 func TestRunGuard_DoesNotTouchParentCtx(t *testing.T) {
+	scrubHome(t)
 	parent, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	res := RunGuard(parent, GuardSpec{Command: "sleep 1", Dir: t.TempDir(), Timeout: 50 * time.Millisecond})
@@ -65,6 +79,7 @@ func TestRunGuard_DoesNotTouchParentCtx(t *testing.T) {
 }
 
 func TestRunGuard_WorkingDirectory(t *testing.T) {
+	scrubHome(t)
 	dir := t.TempDir()
 	res := RunGuard(context.Background(), GuardSpec{Command: "pwd", Dir: dir})
 	if res.Kind != GuardOK {

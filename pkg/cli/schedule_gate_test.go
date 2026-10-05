@@ -22,8 +22,19 @@ type gateFixture struct {
 	captured     []RunOptions
 }
 
+// scrubHome points HOME at an empty dir so the guard's `sh -lc` login
+// shell (schedgate.RunGuard) reads no user rc files: a dev machine's
+// ~/.profile (pyenv init, direnv hooks, …) otherwise writes into the
+// guard's captured streams — GuardPassInjectsStdoutIntoVar asserts exact
+// equality on them (#2196). Production keeps the operator's env.
+func scrubHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func newGateFixture(t *testing.T, entry ScheduleEntry) *gateFixture {
 	t.Helper()
+	scrubHome(t)
 	dir := t.TempDir()
 	f := &gateFixture{
 		manifestPath: filepath.Join(dir, "schedules.yaml"),
