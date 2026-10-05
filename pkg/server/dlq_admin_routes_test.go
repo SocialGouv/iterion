@@ -50,6 +50,10 @@ type fakeDLQQueue struct {
 	republished []string
 	discarded   []uint64
 	failReplay  error
+	// poolCalls records the pool-scoped calls as "op:pool", in order — the
+	// witness that the ?pool= parameter reaches the backend (rva: the
+	// threading is the bite; dropping it reads a calm shared DLQ forever).
+	poolCalls []string
 }
 
 type parkedMsg struct {
@@ -718,5 +722,70 @@ func TestDLQAdmin_ReplayIsRefusedForWhatARunnerDrops(t *testing.T) {
 				t.Fatalf("a refused replay must keep the message parked: republished=%v remaining=%d", republished, remaining)
 			}
 		})
+	}
+}
+
+func (q *fakeDLQQueue) ListPoolDLQ(_ context.Context, pool string, cursorSeq uint64, limit int) ([]natsq.DLQMessage, uint64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.poolCalls = append(q.poolCalls, "list:"+pool)
+	return q.ListDLQ(context.Background(), cursorSeq, limit)
+}
+
+func (q *fakeDLQQueue) PeekPoolDLQ(_ context.Context, pool string, seq uint64) (natsq.DLQMessage, json.RawMessage, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.poolCalls = append(q.poolCalls, "peek:"+pool)
+	return q.PeekDLQ(context.Background(), seq)
+}
+
+func (q *fakeDLQQueue) RepublishPoolDLQ(_ context.Context, pool string, seq uint64) (string, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.poolCalls = append(q.poolCalls, "replay:"+pool)
+	return q.RepublishDLQ(context.Background(), seq)
+}
+
+func (q *fakeDLQQueue) DiscardPoolDLQ(_ context.Context, pool string, seq uint64) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.poolCalls = append(q.poolCalls, "discard:"+pool)
+	return q.DiscardDLQ(context.Background(), seq)
+}
+
+func (q *fakeDLQQueue) PoolDLQDepth(_ context.Context, pool string) (uint64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.poolCalls = append(q.poolCalls, "depth:"+pool)
+	return q.DLQDepth(context.Background())
+}
+
+// The ?pool= parameter reaches the backend on every DLQ surface — the
+// pool's parked messages live on their OWN stream, and a handler that
+// drops the parameter reads a calm shared DLQ forever. Red when any
+// handler stops threading the pool.
+func TestDLQAdmin_ThePoolReachesTheBackend(t *testing.T) {
+	w := newDLQAdminServer(t)
+	w.park(t, 7, "run-pool", "usage_window")
+
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/admin/dlq?pool=honorabilite"},
+		{"GET", "/api/admin/dlq/7?pool=honorabilite"},
+		{"POST", "/api/admin/dlq/7/replay?pool=honorabilite"},
+		{"DELETE", "/api/admin/dlq/7?pool=honorabilite"},
+	} {
+		dlqDo(t, w.hs, tc.method, tc.path, w.admin)
+	}
+	for _, want := range []string{"list:honorabilite", "peek:honorabilite", "replay:honorabilite", "discard:honorabilite"} {
+		found := false
+		for _, c := range w.q.poolCalls {
+			if c == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("the %s call never reached the backend with the pool: %v", want, w.q.poolCalls)
+		}
 	}
 }

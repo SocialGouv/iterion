@@ -180,10 +180,27 @@ func (s *Server) runQueueSweeper(ctx context.Context, lister staleRunLister, lea
 			s.sweepOrphanRuns(ctx, lister, leases, time.Now().UTC())
 			// Piggy-back the DLQ depth gauge on the same cadence — the
 			// sweeper only runs in cloud mode where the queue is wired.
+			// The total sums the shared DLQ and every registry-known pool's
+			// own DLQ stream (a pool's parked messages live on their own
+			// stream — shared-only would read a calm zero during a storm).
 			if s.queue != nil && s.cfg.Metrics != nil {
-				if depth, err := s.queue.DLQDepth(ctx); err == nil {
-					s.cfg.Metrics.DLQDepth.Set(float64(depth))
+				depth, err := s.queue.DLQDepth(ctx)
+				if err != nil {
+					depth = 0
 				}
+				if s.runnerPoolsStore != nil {
+					if rec, rerr := s.runnerPoolsStore.Get(ctx); rerr == nil && rec != nil {
+						for _, p := range rec.Pools {
+							if p.State == platformcfg.RunnerPoolDisabled {
+								continue
+							}
+							if pd, perr := s.queue.PoolDLQDepth(ctx, p.Name); perr == nil {
+								depth += pd
+							}
+						}
+					}
+				}
+				s.cfg.Metrics.DLQDepth.Set(float64(depth))
 			}
 		}
 	}
@@ -357,6 +374,25 @@ type QueueBackend interface {
 	DiscardDLQ(ctx context.Context, seq uint64) error
 	DLQDepth(ctx context.Context) (uint64, error)
 	IsRunLocked(ctx context.Context, runID string) (bool, error)
+
+	// The sovereign-pool variants (#2029): each pool parks on its OWN DLQ
+	// stream — the pool-routed admin surface reads/peeks/discards/replays
+	// there, or a pool's parked messages would be invisible to the operator.
+	ListPoolDLQ(ctx context.Context, pool string, cursorSeq uint64, limit int) ([]natsq.DLQMessage, uint64, error)
+	PeekPoolDLQ(ctx context.Context, pool string, seq uint64) (natsq.DLQMessage, json.RawMessage, error)
+	RepublishPoolDLQ(ctx context.Context, pool string, seq uint64) (string, error)
+	DiscardPoolDLQ(ctx context.Context, pool string, seq uint64) error
+	PoolDLQDepth(ctx context.Context, pool string) (uint64, error)
+}
+
+// dlqPoolFromQuery resolves the optional ?pool= parameter: empty = the
+// shared default DLQ. A malformed name is a 400, not a silent shared read.
+func dlqPoolFromQuery(r *http.Request) (string, error) {
+	pool := r.URL.Query().Get("pool")
+	if pool != "" && !queue.ValidPoolName(pool) {
+		return "", fmt.Errorf("pool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", pool)
+	}
+	return pool, nil
 }
 
 func (s *Server) registerQueueAdminRoutes() {
@@ -378,7 +414,12 @@ func (s *Server) handleDLQList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	cursor, _ := strconv.ParseUint(q.Get("cursor"), 10, 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	msgs, next, err := s.queue.ListDLQ(r.Context(), cursor, limit)
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	msgs, next, err := s.queue.ListPoolDLQ(r.Context(), pool, cursor, limit)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "dlq list: %v", err)
 		return
@@ -392,7 +433,12 @@ func (s *Server) handleDLQPeek(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid seq")
 		return
 	}
-	view, payload, err := s.queue.PeekDLQ(r.Context(), seq)
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	view, payload, err := s.queue.PeekPoolDLQ(r.Context(), pool, seq)
 	if err != nil {
 		httpError(w, http.StatusNotFound, "dlq peek: %v", err)
 		return
@@ -459,12 +505,17 @@ func redactDLQPayload(payload json.RawMessage) json.RawMessage {
 // A doc that cannot be read fails CLOSED: a side-effectful act is not
 // performed on an unverifiable premise.
 func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
 	seq, ok := dlqSeq(r)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "invalid seq")
 		return
 	}
-	view, payload, err := s.queue.PeekDLQ(r.Context(), seq)
+	view, payload, err := s.queue.PeekPoolDLQ(r.Context(), pool, seq)
 	if err != nil {
 		httpError(w, http.StatusNotFound, "dlq replay: %v", err)
 		return
@@ -490,12 +541,15 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "dlq replay: %s", dlqReplayRefusal(admission.Drop, run, &msg, seq))
 		return
 	}
-	runID, err := s.queue.RepublishDLQ(r.Context(), seq)
+	// The replay publishes onto the payload's derived subject (the frozen
+	// stamp decides) and discards from the SAME stream the message was
+	// peeked from — shared or the pool's own.
+	runID, err := s.queue.RepublishPoolDLQ(r.Context(), pool, seq)
 	if err != nil && runID == "" {
 		httpError(w, http.StatusBadGateway, "dlq replay: %v", err)
 		return
 	}
-	s.auditPlatform(r, "", "dlq.replayed", "run", runID, map[string]any{"seq": seq})
+	s.auditPlatform(r, "", "dlq.replayed", "run", runID, map[string]any{"seq": seq, "pool": pool})
 	writeJSON(w, map[string]any{"status": "replayed", "run_id": runID})
 }
 
@@ -532,12 +586,17 @@ func dlqReplayRefusal(drop queue.Drop, run *store.Run, msg *queue.RunMessage, se
 }
 
 func (s *Server) handleDLQDiscard(w http.ResponseWriter, r *http.Request) {
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
 	seq, ok := dlqSeq(r)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "invalid seq")
 		return
 	}
-	if err := s.queue.DiscardDLQ(r.Context(), seq); err != nil {
+	if err := s.queue.DiscardPoolDLQ(r.Context(), pool, seq); err != nil {
 		httpError(w, http.StatusNotFound, "dlq discard: %v", err)
 		return
 	}
