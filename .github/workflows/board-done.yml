@@ -11,7 +11,7 @@ on:
     types: [closed]
 
 permissions:
-  projects: write
+  repository-projects: write
 
 concurrency:
   group: board-done-${{ github.event.issue.number }}
