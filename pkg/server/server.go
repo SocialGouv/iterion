@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -963,6 +965,20 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// Repo-targeted runs merge in a server-side clone; the service
 		// needs the forge credential lookup to clone and push.
 		opts = append(opts, runview.WithForgeTokenResolver(s.forgeTokenForRun))
+		// D12 pre-stamp cohort: the conflict resolver refuses an
+		// unstamped run whose tenant is NOW pool-mapped — the current
+		// mapping is the only signal left for runs that predate the
+		// stamp. Same seam the publisher's launch resolver reads.
+		opts = append(opts, runview.WithCurrentPoolForTenant(func(ctx context.Context, tenantID string) (string, error) {
+			t, err := s.authStore().GetTeam(ctx, tenantID)
+			if errors.Is(err, identity.ErrNotFound) {
+				return "", nil
+			}
+			if err != nil {
+				return "", err
+			}
+			return t.RunnerPool, nil
+		}))
 		if cfg.StreamSource != nil {
 			opts = append(opts, runview.WithStreamSource(cfg.StreamSource))
 		}

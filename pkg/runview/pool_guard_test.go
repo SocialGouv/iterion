@@ -14,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sessionboard"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
@@ -64,11 +66,11 @@ func TestPoolSurvivingSpecs(t *testing.T) {
 		{Name: "gateway-pinned", Model: "openai_compatible/glm-5.2"},
 		{Name: "auto", Model: ""},
 	}
-	kept := poolSurvivingSpecs(all, "", logger)
+	kept := PoolSurvivingSpecs(all, "", logger)
 	if len(kept) != 3 {
 		t.Fatalf("no stamp: %d specs kept, want 3", len(kept))
 	}
-	kept = poolSurvivingSpecs(all, "honorabilite", logger)
+	kept = PoolSurvivingSpecs(all, "honorabilite", logger)
 	if len(kept) != 1 || kept[0].Name != "gateway-pinned" {
 		t.Fatalf("pool run: %v kept, want only gateway-pinned", kept)
 	}
@@ -90,6 +92,11 @@ func TestConflictAgentRefusesPoolRunContent(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("OPENAI_BASE_URL", srv.URL)
 	t.Setenv("OPENAI_API_KEY", "test-key")
+	// A host that exports the gateway env would let the escape-hatch leg
+	// resolve a real client and send the fixture's conflict content to a
+	// live gateway — scrub it for determinism.
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
 	t.Setenv("ITERION_CONFLICT_RESOLVER_MODEL", "")
 
 	dir := t.TempDir()
@@ -209,11 +216,191 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pin := range []string{
-		"specs = poolSurvivingSpecs(specs, pool, logger)",
+		"specs = PoolSurvivingSpecs(specs, pool, logger)",
 		"poolContentRefusal(pool, sessionboard.ModelFromEnv())",
 	} {
 		if !strings.Contains(string(observe), pin) {
 			t.Fatalf("service_observe.go lost its D12 guard pin: %q", pin)
 		}
 	}
+	loop, err := os.ReadFile("../../pkg/runner/loop.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(loop), "runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, runLogger), msg.RunnerPool, runLogger)") {
+		t.Fatal("the runner pod no longer filters declared supervisors by the frozen pool stamp (D12)")
+	}
 }
+
+// The two coordinator sites, at their real dispositions (the round-1 F3
+// finding: the refusal branches had no witness that bit). Each test swaps
+// the dispatchable seam, drives the site against a store holding a stamped
+// run, and asserts the surface never starts; the unstamped control proves
+// the seam would have started it.
+func TestStartDeclaredSupervisorsRefusePoolRunContent(t *testing.T) {
+	logger := iterlog.Nop()
+	st, svc, ctx := newGuardTestService(t)
+	runID := "run-sup-site"
+	seedGuardRun(t, st, ctx, runID, "honorabilite")
+
+	var captured []supervise.Spec
+	restore := swapStartDeclared(func(ctx context.Context, obs supervise.Observer, inj supervise.Injector, id string, specs []supervise.Spec, l *iterlog.Logger) (stop func()) {
+		captured = specs
+		return func() {}
+	})
+	defer restore()
+
+	wf := &ir.Workflow{Supervisors: []*ir.Supervisor{
+		{Name: "vendor", Model: "anthropic/claude-opus-4-8"},
+		{Name: "gateway", Model: "openai_compatible/glm-5.2"},
+		{Name: "auto"},
+	}}
+	svc.startDeclaredSupervisors(ctx, runID, wf, logger, "")
+	if len(captured) != 1 || captured[0].Name != "gateway" {
+		t.Fatalf("pool run: %d specs reached StartDeclared (%v), want only gateway", len(captured), captured)
+	}
+
+	// Control: the same workflow on an unstamped run starts all three.
+	seedGuardRun(t, st, ctx, "run-sup-site-unstamped", "")
+	svc.startDeclaredSupervisors(ctx, "run-sup-site-unstamped", wf, logger, "")
+	if len(captured) != 3 {
+		t.Fatalf("unstamped control: %d specs reached StartDeclared, want 3", len(captured))
+	}
+}
+
+func TestStartSessionBoardRefusesPoolRunContent(t *testing.T) {
+	logger := iterlog.Nop()
+	st, svc, ctx := newGuardTestService(t)
+	seedGuardRun(t, st, ctx, "run-sb-site", "honorabilite")
+
+	started := 0
+	restore := swapSessionBoardCoordinator(func(obs sessionboard.Observer, emit sessionboard.Emitter, id string, cfg sessionboard.Config, eval sessionboard.Evaluator, l *iterlog.Logger) *sessionboard.Coordinator {
+		started++
+		return nil
+	})
+	defer restore()
+
+	t.Setenv("ITERION_SESSION_BOARD", "on")
+	svc.sbStore = guardStubSBStore{}
+	svc.startSessionBoard(ctx, "run-sb-site", "bot", logger)
+	if started != 0 {
+		t.Fatal("session board started on a pool-stamped run")
+	}
+
+	seedGuardRun(t, st, ctx, "run-sb-site-unstamped", "")
+	svc.startSessionBoard(ctx, "run-sb-site-unstamped", "bot", logger)
+	if started != 1 {
+		t.Fatal("unstamped control: the seam never constructed the coordinator")
+	}
+}
+
+// The D12 pre-stamp cohort: an unstamped run whose tenant is NOW mapped
+// refuses too — the current mapping is the only signal left for content
+// that predates the stamp.
+func TestConflictAgentRefusesPreStampRunOfMappedTenant(t *testing.T) {
+	st, svc, ctx := newGuardTestService(t)
+	runID := "run-prestamp"
+	seedGuardRun(t, st, ctx, runID, "")
+	seedTenantMapping(t, svc, "tenant-a", "honorabilite")
+
+	_, err := svc.resolveAllConflictsWithAgent(ctx, runID, "openai/gpt-5.5")
+	if !errors.Is(err, ErrPoolContentRefused) {
+		t.Fatalf("pre-stamp run of a mapped tenant: err = %v, want ErrPoolContentRefused", err)
+	}
+
+	// Unmapped tenant: the refusal does not apply.
+	seedGuardRun(t, st, ctx, "run-prestamp-unmapped", "")
+	seedTenantMapping(t, svc, "tenant-b", "")
+	svc.currentPoolForTenant = func(ctx context.Context, tenantID string) (string, error) {
+		if tenantID == "tenant-b" {
+			return "", nil
+		}
+		return "hooland", nil
+	}
+	if _, err := svc.resolveAllConflictsWithAgent(ctx, "run-prestamp-unmapped", "openai/gpt-5.5"); errors.Is(err, ErrPoolContentRefused) {
+		t.Fatal("unmapped tenant was refused; the pre-stamp check over-fires")
+	}
+}
+
+// --- guard-test helpers ---
+
+// newGuardTestService builds a file-backed store + its Service over the
+// same dir, the shape every site test needs.
+func newGuardTestService(t *testing.T) (*store.FilesystemRunStore, *Service, context.Context) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "store"), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc, err := NewService(filepath.Join(dir, "store"), WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return st, svc, context.Background()
+}
+
+// seedRun creates a run and stamps (or leaves empty) its pool stamp and
+// tenant. Conflicted-state fields are not needed by the site tests.
+func seedGuardRun(t *testing.T, st *store.FilesystemRunStore, ctx context.Context, runID, pool string) {
+	t.Helper()
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if _, err := st.CreateRun(ctx2, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := st.LoadRun(ctx2, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.RunnerPool = pool
+	r.TenantID = mapTenant(runID)
+	if err := st.SaveRun(ctx2, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+}
+
+// mapTenant names the tenant for a seeded run so the pre-stamp test can
+// bind a mapping to it.
+func mapTenant(runID string) string {
+	switch runID {
+	case "run-prestamp":
+		return "tenant-a"
+	case "run-prestamp-unmapped":
+		return "tenant-b"
+	default:
+		return ""
+	}
+}
+
+// seedTenantMapping installs the fresh lookup the pre-stamp check reads.
+func seedTenantMapping(t *testing.T, svc *Service, tenant, pool string) {
+	t.Helper()
+	svc.currentPoolForTenant = func(ctx context.Context, tenantID string) (string, error) {
+		if tenantID == tenant {
+			return pool, nil
+		}
+		return "", nil
+	}
+}
+
+// swapStartDeclared swaps the StartDeclared seam and returns its restore.
+func swapStartDeclared(f func(ctx context.Context, obs supervise.Observer, inj supervise.Injector, id string, specs []supervise.Spec, l *iterlog.Logger) (stop func())) (restore func()) {
+	prev := startDeclaredImpl
+	startDeclaredImpl = f
+	return func() { startDeclaredImpl = prev }
+}
+
+// swapSessionBoardCoordinator swaps the coordinator-construction seam and
+// returns its restore.
+func swapSessionBoardCoordinator(f func(sessionboard.Observer, sessionboard.Emitter, string, sessionboard.Config, sessionboard.Evaluator, *iterlog.Logger) *sessionboard.Coordinator) (restore func()) {
+	prev := newSessionBoardCoordinator
+	newSessionBoardCoordinator = f
+	return func() { newSessionBoardCoordinator = prev }
+}
+
+// guardStubSBStore satisfies sessionboard.Store for the site test.
+type guardStubSBStore struct{}
+
+func (guardStubSBStore) Load(string) (sessionboard.Spec, error) { return sessionboard.Spec{}, nil }
+func (guardStubSBStore) Save(string, sessionboard.Spec) error   { return nil }

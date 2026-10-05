@@ -134,22 +134,35 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 		logger.Warn("supervisors: pool stamp unreadable for run %s — refusing to start (%v)", runID, err)
 		return func() {}
 	}
-	specs = poolSurvivingSpecs(specs, pool, logger)
-	return supervise.StartDeclared(ctx, s, s, runID, specs, logger)
+	specs = PoolSurvivingSpecs(specs, pool, logger)
+	return startDeclaredImpl(ctx, s, s, runID, specs, logger)
 }
 
-// poolSurvivingSpecs filters declared supervisors against a run's frozen
-// pool stamp: on a pool-stamped run, a supervisor whose model is not
-// gateway-routed is refused (D12) — evaluating the run's content through a
-// vendor default would spend a provider the pool team never funded. A nil
-// pool keeps every spec.
-func poolSurvivingSpecs(specs []supervise.Spec, pool string, logger *iterlog.Logger) []supervise.Spec {
+// startDeclaredImpl is the dispatchable seam behind startDeclaredSupervisors
+// (the test swaps it to capture the specs that survive the guard).
+var startDeclaredImpl = supervise.StartDeclared
+
+// PoolSurvivingSpecs filters declared supervisors against a run's frozen
+// pool stamp: on a pool-stamped run, a supervisor whose effective model is
+// not gateway-routed is refused (D12) — evaluating the run's content
+// through a vendor default would spend a provider the pool team never
+// funded. A supervisor with no DSL pin falls back to
+// ITERION_DEFAULT_SUPERVISOR_MODEL at eval time, so the filter consults the
+// same fallback: a gateway env pin keeps unpinned supervisors alive; a
+// vendor env pin or no env at all refuses them. A nil pool keeps every
+// spec.
+func PoolSurvivingSpecs(specs []supervise.Spec, pool string, logger *iterlog.Logger) []supervise.Spec {
 	if pool == "" {
 		return specs
 	}
+	envDefault := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 	kept := specs[:0]
 	for _, spec := range specs {
-		if err := poolContentRefusal(pool, spec.Model); err != nil {
+		model := spec.Model
+		if model == "" {
+			model = envDefault
+		}
+		if err := poolContentRefusal(pool, model); err != nil {
 			logger.Warn("supervisor %q: %v", spec.Name, err)
 			continue
 		}
@@ -206,10 +219,14 @@ func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, lo
 		Model:   sessionboard.ModelFromEnv(),
 		Initial: initial,
 	}
-	coord := sessionboard.New(s, s, runID, cfg, nil, logger)
+	coord := newSessionBoardCoordinator(s, s, runID, cfg, nil, logger)
 	if coord == nil {
 		return func() {}
 	}
 	coord.Start(ctx)
 	return coord.Close
 }
+
+// newSessionBoardCoordinator is the dispatchable seam behind
+// startSessionBoard (the test swaps it to count constructions).
+var newSessionBoardCoordinator = sessionboard.New

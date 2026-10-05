@@ -2899,8 +2899,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	}
 	if superviseHub != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, runLogger), msg.RunnerPool, runLogger)
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
-			msg.RunID, supervise.SpecsFromWorkflow(wf, runLogger), runLogger)
+			msg.RunID, specs, runLogger)
 		defer stopSup()
 	}
 	// `subbot` nodes: the closure that compiles and runs a child bot on

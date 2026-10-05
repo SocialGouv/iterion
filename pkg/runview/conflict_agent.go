@@ -85,6 +85,9 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	if err != nil {
 		return nil, err
 	}
+	if err := s.preStampPoolRefusal(ctx, r); err != nil {
+		return nil, err
+	}
 	if r.MergeStatus != store.MergeStatusConflicted {
 		return nil, fmt.Errorf("run %q has no pending conflict (merge_status=%q)", runID, r.MergeStatus)
 	}
