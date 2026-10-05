@@ -1612,7 +1612,13 @@ work runs — is answered by the turn the
 CLI's replay shows took it — not by turns the CLI had queued before it —
 only a report written after that is kept, and its bound
 (`ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT`; past it, a retryable
-error) runs from then. A subagent streaming meanwhile does not count as the main
+error) runs from then. The take itself is bounded too, by
+`ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT` from the moment the request
+went out: the bound slides with the CLI's turn activity — each message of a
+turn it had queued, and each turn's close — so it only ever bounds idle
+opportunity, and a CLI that never takes the request ends the call on a
+named retryable error ("the CLI never took the wrap-up") instead of parking
+the session to the silence watchdog. A subagent streaming meanwhile does not count as the main
 agent moving on, and the consecutive tool-error breaker keeps one streak per
 agent. The session's results merge into one: per-query usage, turns and
 wall-clock durations add up; the figures the CLI keeps per process (cost, API

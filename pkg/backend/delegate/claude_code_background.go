@@ -1372,11 +1372,12 @@ const (
 type bgTimerKind int
 
 const (
-	bgTimerNone     bgTimerKind = iota
-	bgTimerWait                 // parent idle, held work running: the wave's wait budget
-	bgTimerAutoTurn             // parent idle, the CLI not: a turn it owes, or work iterion does not hold
-	bgTimerFinalize             // the wrap-up turn's own bound
-	bgTimerSettle               // the CLI reports idle: end once that holds
+	bgTimerNone       bgTimerKind = iota
+	bgTimerWait                   // parent idle, held work running: the wave's wait budget
+	bgTimerAutoTurn               // parent idle, the CLI not: a turn it owes, or work iterion does not hold
+	bgTimerFinalize               // the wrap-up turn's own bound
+	bgTimerWrapUpTake             // the wrap-up is out, no turn took it yet: the answer wait bounds the take
+	bgTimerSettle                 // the CLI reports idle: end once that holds
 )
 
 // bgLifecycle is runSession's background-work state machine. It runs on the
@@ -1397,6 +1398,7 @@ type bgLifecycle struct {
 	episodeSettles int
 
 	wrapUpSent       bool
+	wrapUpSentAt     time.Time // when iterion sent the wrap-up: the take's bound runs from it
 	wrapUpTakenAt    time.Time // when the CLI's replay showed a turn took the wrap-up
 	autoTurnNudged   bool
 	autoTurnDeadline time.Time
@@ -1552,7 +1554,7 @@ func (l *bgLifecycle) startWave(now time.Time) {
 }
 
 func (l *bgLifecycle) wrapUp(now time.Time, v bgView, reason string) (bgCloseAction, string) {
-	l.wrapUpSent = true
+	l.wrapUpSent, l.wrapUpSentAt = true, now
 	l.warn("%s with %d background task(s) still running: asking the agent to report now", reason, len(v.held))
 	l.emit(BackgroundWork{Phase: BackgroundFinalizing, Running: len(v.held), Tasks: bgTaskLabels(v.held), WaitedFor: l.waited(now), Reason: reason})
 	return bgReenterAfterSend, backgroundWrapUpMessage(v.held, reason)
@@ -1600,7 +1602,14 @@ func (l *bgLifecycle) atClose(now time.Time, last *claudesdk.ResultMessage) (bgC
 	l.sourceBefore = l.sourceBefore || ran || v.turnSource
 	if v.answering {
 		// No turn has taken iterion's last message and answered it yet: this
-		// turn ran for queued work, or held its query for a follower.
+		// turn ran for queued work, or held its query for a follower. Its
+		// close is turn activity all the same: with the wrap-up out, the
+		// take's bound slides to it — a close whose last message is older
+		// than the answer wait would otherwise recompute an expired
+		// deadline and kill the session just before the take.
+		if l.wrapUpSent {
+			l.wrapUpSentAt = now
+		}
 		return bgReenter, ""
 	}
 	if l.wrapUpSent {
@@ -1688,7 +1697,37 @@ func (l *bgLifecycle) timer(now time.Time, resultPending, turnActive bool) (d ti
 		if v.msgTaken && l.wrapUpTakenAt.IsZero() {
 			l.wrapUpTakenAt = now
 		}
-		if l.wrapUpTakenAt.IsZero() || l.cfg.finalizeTimeout <= 0 {
+		if l.wrapUpTakenAt.IsZero() {
+			// The wrap-up is out and no turn has taken it, but a turn is in
+			// flight: the CLI may run turns it had queued before the message
+			// landed, and a turn already running at the send replays the
+			// wrap-up only at its NEXT turn. The bound therefore bounds only
+			// idle opportunity: it slides with turn activity — the messages
+			// the select loop processes (here), and each turn's close
+			// (atClose) — so the CLI always gets a full answerWait of quiet
+			// after a close to pick the message up. An expired
+			// deadline returned here would instead 0-clamp, refire at once
+			// and spin — each pass re-arming the idle watchdog it starves —
+			// and the kill would land at the queued turn's close,
+			// microseconds before the take (#2202, adversarial round 1).
+			if turnActive {
+				l.wrapUpSentAt = now
+				return 0, bgTimerNone, false
+			}
+			// An idle CLI that never replays the wrap-up — wedged, or
+			// re-emitting it in a shape this version does not read as a
+			// take — shows no silence a generic watchdog would catch
+			// differently, its process alive and idle: without a bound the
+			// session would park until the stream's hot watchdog before the
+			// error even named the cause. The take gets the same answerWait
+			// a message of iterion's gets to be answered; answerWait <= 0 is
+			// the off-switch, the watchdog then governs as before.
+			if l.cfg.answerWait > 0 && !l.wrapUpSentAt.IsZero() {
+				return l.wrapUpSentAt.Add(l.cfg.answerWait).Sub(now), bgTimerWrapUpTake, false
+			}
+			return 0, bgTimerNone, false
+		}
+		if l.cfg.finalizeTimeout <= 0 {
 			return 0, bgTimerNone, false
 		}
 		return l.wrapUpTakenAt.Add(l.cfg.finalizeTimeout).Sub(now), bgTimerFinalize, false
@@ -1750,9 +1789,10 @@ func (l *bgLifecycle) restBound(now time.Time, v bgView, askReport bool, reason 
 
 // restWrapUp asks for the report at rest, when the last turn's may not be the
 // agent's answer: only one written after a turn took the request is kept, and
-// its bound (finalizeTimeout) runs from then.
+// its bound (finalizeTimeout) runs from then — the take itself runs on the
+// answer wait, from the send.
 func (l *bgLifecycle) restWrapUp(now time.Time, reason string) (bgCloseAction, string) {
-	l.wrapUpSent = true
+	l.wrapUpSent, l.wrapUpSentAt = true, now
 	l.warn("%s: asking the agent to report now", reason)
 	l.emit(BackgroundWork{Phase: BackgroundFinalizing, WaitedFor: l.waited(now), Reason: reason})
 	return bgReenterAfterSend, backgroundRestWrapUpMessage(reason)
@@ -1905,4 +1945,22 @@ func (l *bgLifecycle) finalizeExpired() error {
 	}
 	return &ErrTransient{Provider: BackendClaudeCode, Reason: "background wrap-up did not end",
 		Detail: reason + " (tune ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT)"}
+}
+
+// wrapUpTakeExpired handles the answer wait spent with no turn having taken
+// the wrap-up: the CLI never picked iterion's message up — wedged, or
+// replaying it in a shape this version does not read as a take — and no
+// generic watchdog would end that park any sooner or name its cause. The
+// work the wrap-up was sent about is lost with the session, which ends on an
+// error — its last answer is the one the wrap-up was sent to replace.
+func (l *bgLifecycle) wrapUpTakeExpired(now time.Time) error {
+	reason := fmt.Sprintf("the CLI never took the wrap-up within the answer wait (%s)", l.cfg.answerWait)
+	l.warn("%s — ending the session", reason)
+	if lost := l.tracker.view().lost; len(lost) > 0 {
+		l.terminate(lost, reason)
+	} else {
+		l.emit(BackgroundWork{Phase: BackgroundAbandoned, WaitedFor: l.waited(now), Reason: reason})
+	}
+	return &ErrTransient{Provider: BackendClaudeCode, Reason: "background wrap-up never taken",
+		Detail: reason + " (tune ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT)"}
 }

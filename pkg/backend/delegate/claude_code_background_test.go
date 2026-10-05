@@ -41,8 +41,9 @@ import (
 // a scenario needs. So:
 //   - a sleep whose ordering matters goes INSIDE a turn (after its init): the
 //     lifecycle arms no timer while a turn runs — only the wrap-up's finalize
-//     bound, once a turn took the wrap-up, still ticks — so the pacing cannot
-//     race one;
+//     bound, once a turn took the wrap-up, still ticks; the take's bound runs
+//     from the last turn activity, so a turn in flight silences it — so the
+//     pacing cannot race one;
 //   - a wave of held work whose budget must NOT fire settles at message
 //     speed — no sleep between the close that opened it and the snapshot
 //     that ends it (a budget that must fire is `@wait`ed for instead);
@@ -1288,6 +1289,189 @@ func TestBackground_AWrapUpTurnThatNeverEndsIsAnErrorCarryingTheSpend(t *testing
 	}
 	if ph := run.phases(); len(ph) == 0 || ph[len(ph)-1] != BackgroundAbandoned {
 		t.Fatalf("phases = %v, want the lost work reported", ph)
+	}
+}
+
+func TestBackground_AWrapUpTheCLINeverTakesIsAFastNamedError(t *testing.T) {
+	// The wave's wait budget sends the wrap-up; the CLI reads it off stdin but
+	// never replays it — no turn ever takes it — and says nothing more. The
+	// take runs on the answer wait, so the session ends on a named error well
+	// before the (here 30× longer) silence watchdog it would otherwise park to
+	// (#2202). The error's identity convicts, never the wall clock: a loaded
+	// runner stretches both.
+	script := append(launchAgent(),
+		lnAssistant("m2", "", cText("WAITING")),
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		// The wrap-up is read, never taken: no replay, no turn, no word.
+		"@drain",
+	)
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":        "1s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT": "1s",
+		"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT":    "30s",
+	}, Task{})
+	if !strings.Contains(run.stdin, "background wait budget") {
+		t.Fatalf("no wrap-up on stdin (scenario broken):\n%s", run.stdin)
+	}
+	var transient *ErrTransient
+	if !errors.As(run.err, &transient) || !strings.Contains(run.err.Error(), "never took the wrap-up") {
+		t.Fatalf("err = %v, want a retryable error naming the wrap-up the CLI never took", run.err)
+	}
+	if ph := run.phases(); len(ph) == 0 || ph[len(ph)-1] != BackgroundAbandoned {
+		t.Fatalf("phases = %v, want the lost work reported", ph)
+	}
+	if !lostIncludes(run, "t1") {
+		t.Fatalf("lost work = %v, want the held t1 recorded", run.meta.terminatedBackground)
+	}
+}
+
+func TestBackground_TheWrapUpTakeRunsOnTheAnswerWait(t *testing.T) {
+	// With the wrap-up out and no turn having taken it, the lifecycle arms the
+	// answer wait from the SEND — a bare recompute does not re-arm it; only
+	// the select loop's sight of a turn in flight slides it, the CLI's queued
+	// turns getting a full answer wait of quiet after they close — and its
+	// fire ends the session on a named error; a turn taking the wrap-up flips
+	// the bound to the finalize one, and a 0 answer wait arms nothing, the
+	// documented off-switch (#2202).
+	cfg := backgroundLifecycleConfig{wait: time.Second, answerWait: 2 * time.Second, autoTurnGrace: time.Hour, finalizeTimeout: time.Minute, idleSettle: time.Second}
+	t0 := time.Now()
+	// wrapUpOut drives a wave whose budget spent to the wrap-up's send, then
+	// mirrors what production does around it: sendTagged records the uuid, the
+	// select loop counts the re-entry (timer() answers only from one).
+	wrapUpOut := func(t *testing.T, cfg backgroundLifecycleConfig) *lifecycleAt {
+		h := newLifecycleAt(t, cfg, 0)
+		agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
+		h.feed(lnInit("2.1.280"),
+			lnAssistant("a1", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
+			lnSnapshotOf(agent),
+			lnTaskStarted("t1", "tuA", true, false),
+			lnToolResult("tuA", "Async agent launched successfully.", false, ""),
+			lnAssistant("a2", "", cText("WAITING")))
+		if act := h.close(t0, "WAITING"); act != bgReenter {
+			t.Fatalf("close: action %v, want the wave's wait", act)
+		}
+		if _, send := h.l.waitExpired(t0.Add(time.Second)); !send {
+			t.Fatal("the spent wait budget did not send the wrap-up (scenario broken)")
+		}
+		h.tr.sent("u-wrap")
+		h.l.reentries = 1
+		return h
+	}
+
+	t.Run("armed from the send until a turn takes the wrap-up", func(t *testing.T) {
+		h := wrapUpOut(t, cfg)
+		d, kind, _ := h.l.timer(t0.Add(time.Second), false, false)
+		if kind != bgTimerWrapUpTake || d <= 1900*time.Millisecond || d > 2*time.Second {
+			t.Fatalf("kind = %v, remaining = %s, want the take's bound at ~2s (the full answer wait from the send)", kind, d)
+		}
+		d2, kind2, _ := h.l.timer(t0.Add(1500*time.Millisecond), false, false)
+		if kind2 != bgTimerWrapUpTake || d2 >= d {
+			t.Fatalf("kind = %v, remaining %s then %s: the take's bound re-armed instead of running from the send", kind2, d, d2)
+		}
+		h.feed(lnInit("2.1.280"),
+			jsonLine(map[string]any{"type": "user", "isReplay": true, "uuid": "u-wrap", "session_id": "s1",
+				"message": map[string]any{"role": "user", "content": "report now"}}))
+		if d3, kind3, _ := h.l.timer(t0.Add(2*time.Second), false, false); kind3 != bgTimerFinalize {
+			t.Fatalf("kind = %v (remaining %s) after a turn took the wrap-up, want its finalize bound", kind3, d3)
+		}
+	})
+
+	t.Run("the fire is a named error", func(t *testing.T) {
+		h := wrapUpOut(t, cfg)
+		var transient *ErrTransient
+		if err := h.l.wrapUpTakeExpired(t0.Add(3 * time.Second)); !errors.As(err, &transient) || !strings.Contains(err.Error(), "never took the wrap-up") {
+			t.Fatalf("err = %v, want a retryable error naming the wrap-up the CLI never took", err)
+		}
+	})
+
+	t.Run("a turn in flight slides the bound", func(t *testing.T) {
+		// The CLI may run turns it had queued first, and a turn running at the
+		// send replays the wrap-up only at its NEXT turn: the bound bounds only
+		// idle opportunity, so a turn in flight silences it — it slides to the
+		// loop's last sight of turn activity, never expiring mid-turn into a
+		// 0-clamped refire spin.
+		h := wrapUpOut(t, cfg)
+		if d, kind, _ := h.l.timer(t0.Add(2*time.Second), false, true); kind != bgTimerNone {
+			t.Fatalf("kind = %v, remaining %s: a turn in flight must silence the take's bound, not let it run down mid-turn", kind, d)
+		}
+		if d, kind, _ := h.l.timer(t0.Add(3*time.Second), false, true); kind != bgTimerNone {
+			t.Fatalf("kind = %v, remaining %s: the bound must slide with the turn's activity, not expire into a refire spin", kind, d)
+		}
+		// The turn closed a half second ago: the CLI gets the full answer wait
+		// of quiet from its last activity to pick the wrap-up up.
+		d, kind, _ := h.l.timer(t0.Add(3500*time.Millisecond), false, false)
+		if kind != bgTimerWrapUpTake || d <= 1400*time.Millisecond || d > 1500*time.Millisecond {
+			t.Fatalf("kind = %v, remaining = %s after the turn closed, want ~1.5s — the full answer wait from the last turn activity", kind, d)
+		}
+	})
+
+	t.Run("a close slides the bound too", func(t *testing.T) {
+		// A turn's close IS turn activity: one whose last message is older
+		// than the answer wait must still leave the CLI a full wait of quiet
+		// to take the wrap-up — not recompute an expired deadline that kills
+		// the session just before the take.
+		h := wrapUpOut(t, cfg)
+		h.feedAt(t0.Add(2*time.Second), lnInit("2.1.280"), lnAssistant("q1", "", cText("queued work")))
+		if act := h.close(t0.Add(4*time.Second), "queued work done"); act != bgReenter {
+			t.Fatalf("close: action %v, want to keep reading — the wrap-up is sent, untaken", act)
+		}
+		d, kind, _ := h.l.timer(t0.Add(4*time.Second), false, false)
+		if kind != bgTimerWrapUpTake || d <= 1900*time.Millisecond || d > 2*time.Second {
+			t.Fatalf("kind = %v, remaining = %s after the close, want ~2s — the full answer wait from the close, not the send-anchored deadline (expired 1s ago)", kind, d)
+		}
+	})
+
+	t.Run("a 0 answer wait arms no take bound", func(t *testing.T) {
+		off := cfg
+		off.answerWait = 0
+		h := wrapUpOut(t, off)
+		if d, kind, _ := h.l.timer(t0.Add(time.Second), false, false); kind != bgTimerNone {
+			t.Fatalf("kind = %v, remaining %s: the documented off-switch must leave the take to the silence watchdog", kind, d)
+		}
+	})
+}
+
+func TestBackground_AWrapUpSurvivesATurnTheCLIHadQueued(t *testing.T) {
+	// The wrap-up goes out at the 1s wait budget, but the CLI runs a 7s turn
+	// of its own first — queued before the message landed — and takes the
+	// wrap-up only at the turn after, a half second of quiet in between. The
+	// take's bound must run from the CLI's last turn activity: armed from the
+	// send, it would expire mid-queued-turn, spin on the 0-clamped refire the
+	// dispatch guard drops, and kill the session at that turn's close —
+	// microseconds before the take (#2202, adversarial round 1). The in-turn
+	// sleep sits between the turn's last message and its result so the close,
+	// not the last mid-turn message, is the activity the bound slides to —
+	// otherwise the end-to-end red convicts only the mid-turn slide, never
+	// atClose's (adversarial round 3). In-turn sleeps are watchdog-safe by
+	// the pacing rules; the between-turns one needs the armed bound pinned
+	// far past it — 6s against 0.5s is 12x, past the file's ~11x stretch
+	// regime (#2177).
+	script := append(launchAgent(),
+		lnAssistant("m2", "", cText("WAITING")),
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		`@wait "type":"user"`,
+		lnInit("2.1.280"),
+		lnAssistant("m3", "", cText("finishing what was queued")),
+		"@sleep 7",
+		lnResult(resultSpec{text: "finishing what was queued", turns: 1, cost: 0.01}),
+		"@sleep 0.5",
+		lnInit("2.1.280"),
+		"@replay",
+		lnAssistant("m4", "", cText("REPORT: t1 not verified")),
+		lnResult(resultSpec{text: "REPORT: t1 not verified", turns: 1, cost: 0.02}),
+		"@drain",
+	)
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":        "1s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT": "6s",
+	}, Task{})
+	if run.err != nil || run.resultText() != "REPORT: t1 not verified" {
+		t.Fatalf("err = %v, text = %q: the take did not survive the turn the CLI had queued — the bound killed the session before it", run.err, run.resultText())
+	}
+	// t1 never reported back before the wrap-up turn ended: the ledger names
+	// it, as every wrap-up with unverified work does.
+	if !lostIncludes(run, "t1") {
+		t.Fatalf("lost = %v, want the held t1 recorded", run.meta.terminatedBackground)
 	}
 }
 
