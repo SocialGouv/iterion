@@ -6925,6 +6925,11 @@ export interface components {
         };
         Policy: {
             locks?: string[];
+            model_classes?: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            };
             pair_order?: string[];
             refused_pinned_key?: string;
             strict?: boolean;
@@ -7063,6 +7068,11 @@ export interface components {
             worktree_available: boolean;
         };
         RunLLMRoutePolicy: {
+            model_classes?: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            };
             pair_order?: string[];
             refused_pinned_key?: string;
             sources?: {

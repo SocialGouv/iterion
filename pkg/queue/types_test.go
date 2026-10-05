@@ -542,3 +542,38 @@ func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
 		t.Fatalf("the envelope lost the pool: %+v", env)
 	}
 }
+
+// The crossings' class targets ride MESSAGE-LEVEL, next to the entries
+// slice (one map per run, not per rung), and survive the JSON round-trip
+// — the runner derives ExecutorSpec.LLMRouteClasses from it verbatim.
+// No schema bump: a stale runner ignoring the field runs the shipped
+// table (never a partial override — the conservative-on-ignore record).
+func TestRunMessage_FallbackModelClassesRoundTrip(t *testing.T) {
+	src := RunMessage{
+		V:            SchemaVersion,
+		RunID:        "run_cls",
+		WorkflowName: "demo",
+		WorkflowHash: "sha256:deadbeef",
+		IRCompiled:   json.RawMessage(`{"nodes":[]}`),
+		Fallback: RunFallback{
+			{Backend: "codex", On: []string{"usage_window"}, Policy: true},
+		},
+		FallbackModelClasses: map[string]map[string]string{
+			"top": {"openai": "gpt-6-astra"},
+		},
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dst RunMessage
+	if err := json.Unmarshal(b, &dst); err != nil {
+		t.Fatal(err)
+	}
+	if dst.FallbackModelClasses["top"]["openai"] != "gpt-6-astra" {
+		t.Fatalf("FallbackModelClasses lost on round-trip: %+v", dst.FallbackModelClasses)
+	}
+	if len(dst.Fallback) != 1 || !dst.Fallback[0].Policy {
+		t.Fatalf("the entries slice disturbed: %+v", dst.Fallback)
+	}
+}

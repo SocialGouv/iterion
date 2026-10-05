@@ -1203,7 +1203,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}, func(n ir.LLMNode) string {
 				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
 				return ov.Backend
-			}); len(refusals) > 0 && p.logger != nil {
+			}, llmroute.ResolveClasses(routePolicy.ModelClasses)); len(refusals) > 0 && p.logger != nil {
 				for _, r := range refusals {
 					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)
 				}
@@ -1216,6 +1216,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					Policy:   true,
 				})
 			}
+			res.ModelClasses = routePolicy.ModelClasses
+
 		}
 	}
 
@@ -1376,9 +1378,13 @@ type credResolution struct {
 	// (ADR-121 §1) — the pairs the sealed bundle serves, in policy order.
 	// The caller composes them onto the RunMessage beside the operator's
 	// chain; the run doc's own Fallback stays the operator's.
-	Ladder     []queue.RunFallbackEntry
-	secretsRef string
-	grant      *credpool.Grant
+	Ladder []queue.RunFallbackEntry
+	// ModelClasses is the resolved policy's model_classes overrides — the
+	// crossings' class targets, riding the RunMessage message-level (one
+	// map per run, not per rung).
+	ModelClasses map[string]map[string]string
+	secretsRef   string
+	grant        *credpool.Grant
 	// families is the set of review families the sealed credentials back
 	// (reviewtopology), so the launch can resolve the credential-derived
 	// topology vars for a queued run. Empty = nothing resolved (env
@@ -3048,7 +3054,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// resolution computed (ADR-121 §1) — the runner screens both; the
 		// run DOC's Fallback stays the operator's (the resume recomputes
 		// the ladder from its re-sealed bundle under the frozen policy).
-		Fallback: append(queueFallbackOf(spec.Fallback), creds.Ladder...),
+		Fallback:             append(queueFallbackOf(spec.Fallback), creds.Ladder...),
+		FallbackModelClasses: creds.ModelClasses,
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		// The deferred choke point above flips the row to failed.
@@ -3467,7 +3474,8 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// The fallback chain is replayed from the doc for the same reason:
 		// the auto-retry that follows a usage-window park is exactly the
 		// publication that must still carry the rescue chain.
-		Fallback: append(queueFallbackFromRun(prior.Fallback), creds.Ladder...),
+		Fallback:             append(queueFallbackFromRun(prior.Fallback), creds.Ladder...),
+		FallbackModelClasses: creds.ModelClasses,
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming

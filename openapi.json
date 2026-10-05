@@ -2552,6 +2552,15 @@
             },
             "type": "array"
           },
+          "model_classes": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
           "pair_order": {
             "items": {
               "type": "string"
@@ -3005,6 +3014,15 @@
       },
       "RunLLMRoutePolicy": {
         "properties": {
+          "model_classes": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
           "pair_order": {
             "items": {
               "type": "string"

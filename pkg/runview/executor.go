@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/runops"
@@ -136,6 +137,11 @@ type ExecutorSpec struct {
 	// (auth: run-long) on EVERY node of the run, judges and authored-route
 	// agents included.
 	LLMRouteTriggers []string
+	// LLMRouteClasses is the run's RESOLVED model_classes overrides
+	// (ADR-121 § Delivery 2) — the crossings' class targets. Nil = the
+	// shipped table (ResolveClasses substitutes it; StageModel never sees
+	// an empty table).
+	LLMRouteClasses map[string]map[string]string
 	// SandboxOverride and SandboxDefault are the deployment tiers the
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
@@ -405,7 +411,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		// node unscreened (the review's F2).
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
-	})
+	}, llmroute.ResolveClasses(spec.LLMRouteClasses))
 	for _, refusal := range policyRefusals {
 		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
 	}

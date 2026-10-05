@@ -148,9 +148,12 @@ reads them between the bot and the platform layer.
 
 ### Per-level model classes
 
-`model_classes` is an extension of the MODEL REGISTRY (the class vocabulary —
-`top`/`standard`/`fast` — and the shipped per-family table live there, with
-the out-of-routing consumers), and each policy level carries OVERRIDES: a
+`model_classes` extends the MODEL REGISTRY's vocabulary (the classes —
+`top`/`standard`/`fast` — and the shipped per-family table live in
+`pkg/llmroute`, beside the crossing default they generalize: the fold is a
+zero-dependency leaf and the table is table-testable because of it;
+modelcatalog's display binding is a named follow-up), and each policy level
+carries OVERRIDES: a
 class → family → model map folded ENTRY-WISE per class×family (the opposite
 of `pair_order`'s wholesale replace — the rule is stated per field, here). A
 cell that resolves nowhere on its family leaves the route as written, warned

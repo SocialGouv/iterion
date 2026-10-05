@@ -309,6 +309,12 @@ type RoutingSpec struct {
 	RefusedPinnedKey string   `yaml:"refused_pinned_key,omitempty" json:"refused_pinned_key,omitempty"`
 	Strict           *bool    `yaml:"strict,omitempty" json:"strict,omitempty"`
 	Locks            []string `yaml:"locks,omitempty" json:"locks,omitempty"`
+	// ModelClasses is here BY NAME (delivery 2, #2210 S2): a field added
+	// to the shared struct does not silently become author-writable
+	// manifest YAML — this projection is the author's explicit door to
+	// the class table, for a bot tuned to a model. Same rules as the
+	// shared field: entry-wise per class×family, bare ids.
+	ModelClasses map[string]map[string]string `yaml:"model_classes,omitempty" json:"model_classes,omitempty"`
 }
 
 // policy projects the block onto the shared record. nil-safe.
@@ -322,6 +328,7 @@ func (r *RoutingSpec) policy() llmroute.Policy {
 		RefusedPinnedKey: r.RefusedPinnedKey,
 		Strict:           r.Strict,
 		Locks:            r.Locks,
+		ModelClasses:     r.ModelClasses,
 	}
 }
 

@@ -3349,6 +3349,7 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		RunFallback:      operatorFallbacks,
 		PolicyLadder:     policyLadder,
 		LLMRouteTriggers: llmRouteTriggers(msg),
+		LLMRouteClasses:  llmRouteClasses(msg),
 		// The same deployment default the engine resolves sandbox modes
 		// against — the fallback screen refuses codex stages on nodes
 		// that will run sandboxed, and sandboxed-or-not is this value's
@@ -3436,6 +3437,14 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 // off the wire (ADR-121 §1, the launch-frozen snapshot): the ledger's
 // extension gate is the RUN's set — every node teaches, judges and
 // authored-route agents included.
+// llmRouteClasses reads the run's RESOLVED model_classes overrides off
+// the wire (ADR-121 § Delivery 2): the crossings' class targets. Nil =
+// the shipped table (the empty-on-ignore direction — a stale runner or
+// an old publisher runs the shipped cells, never a partial override).
+func llmRouteClasses(msg *queue.RunMessage) map[string]map[string]string {
+	return msg.FallbackModelClasses
+}
+
 func llmRouteTriggers(msg *queue.RunMessage) []string {
 	seen := map[string]bool{}
 	var out []string
