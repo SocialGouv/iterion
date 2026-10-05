@@ -40,7 +40,9 @@ rebuilds each on `main` + earlier-queued PRs and merges only if that combined
 tree is green — closing the semantic inter-PR conflict class (two PRs green
 apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
 push / `--squash` without `--auto`). Required checks: `test`, `race`,
-`vendor-check`, `mongo-conformance`, `golangci`, `brand`, `revi/review`.
+`vendor-check`, `mongo-conformance`, `golangci`, `brand`, `revi/review`
+(`test` and `race` are aggregator contexts — the work runs in the gated legs
+behind them; see docs/merge-policy.md).
 `nats-conformance` remains advisory until an admin adds it to ruleset
 18857412; `fmt-check` reports on the PR and in the queue but is not required
 yet (staged — `internal/ciguard`'s `requiredChecks`). Full details + revert command:

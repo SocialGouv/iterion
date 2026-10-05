@@ -26,28 +26,45 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# A job that is NOT a required status check cannot block a merge, so running
-# it inside the merge queue buys a verdict nobody can act on — while holding a
-# runner slot the queue needs. The org shares 20 concurrent jobs across every
-# repository, and a queue entry is a full CI cycle, so those slots are what
-# decides how long a merge takes. The eight advisory jobs below therefore run
-# on the pull request and on main, and skip in `merge_group`.
+# Jobs pick one of THREE sides of the merge queue, and internal/ciguard holds
+# each side to its contract:
 #
-# The line to hold: the jobs carrying that skip are exactly the complement of
-# the ruleset's required checks (test, race, vendor-check, mongo-conformance,
-# golangci, brand, revi/review) — plus the job STAGED to become required,
-# `fmt-check`, which stays in the queue so its context already exists the
-# day the ruleset names it (a required check first reported at promotion
-# leaves the queue waiting for one that never arrives). internal/ciguard's
-# requiredChecks is that staging list, and is what refuses a job that picks
-# neither side. Promoting one of the advisory jobs to required means deleting
-# its skip in the same change — and the reason is worse than a stalled queue. A
-# job skipped by a job-level `if:` reports SUCCESS, so a required check that
-# never ran satisfies the gate: every queue entry would merge green on a check
-# that did not execute. (A workflow-level filter is the opposite — the check
-# never reports and the queue hangs. Same word, opposite failure.)
-# The list lives in a ruleset, outside this repo, so nothing here can assert
-# it — docs/merge-policy.md carries the same warning beside the required list.
+#   1. REQUIRED — the names ruleset 18857412 requires: test, race,
+#      vendor-check, mongo-conformance, golangci, brand, revi/review, plus the
+#      STAGED `fmt-check` (in the queue from day one, so its context exists
+#      the day the ruleset names it). `test` and `race` are AGGREGATORS: they
+#      run no tests, they `needs:` their legs and re-verify every leg's
+#      conclusion, so the required NAME survives while the work scales
+#      sideways. The ruleset lives outside this repo and keeps its names — a
+#      PR that renamed a required job could never pass its own queue build
+#      (the check would never report and the entry would hang 60 minutes).
+#   2. GATED LEGS — `test-unit`, `test-e2e`, `studio`, `race-shard`: the real
+#      work. They run in the queue (no `if:` at all) and are deliberately NOT
+#      required — their aggregator speaks for them. A leg that grew an `if:`
+#      would skip silently in the queue while its aggregator re-verifies a
+#      `skipped` into red, and on pull requests the guarantee would die
+#      without any queue signal — which is why ciguard refuses any `if:` on a
+#      leg outright.
+#   3. ADVISORY — the eight jobs that cannot block a merge. Running one
+#      inside the queue buys a verdict nobody can act on while holding a
+#      runner slot the queue needs, so they run on the pull request and on
+#      main and skip in `merge_group`.
+#
+# The trap the aggregator design answers, twice over: a job skipped by a
+# job-level `if:` reports SUCCESS, so a required check that never ran
+# satisfies the gate — every queue entry would merge green on a check that
+# did not execute. (A workflow-level filter is the opposite — the check never
+# reports and the queue hangs. Same word, opposite failure.) The same trap
+# reappears one level up with `needs:`: a plain `needs:` job is SKIPPED when
+# a leg fails — so both aggregators carry `if: ${{ !cancelled() }}`, the one
+# evaluated spelling (it reads only run-cancellation state, which cannot
+# differ inside a merge_group run), and re-verify every leg's `result ==
+# success` in their own step, turning any leg failure into a red REQUIRED
+# check. ciguard's TestAggregatorsReVerifyEveryLeg pins that trio.
+# Promoting an advisory job to required means deleting its skip in the same
+# change — the skip and the ruleset entry are one decision, never two. The
+# list lives in a ruleset, outside this repo, so nothing here can assert it —
+# docs/merge-policy.md carries the same warning beside the required list.
 
 # WHERE these jobs run. The organisation shares 20 concurrent GitHub-hosted
 # jobs across every repository, which is what makes a cycle here take 40
@@ -113,9 +130,16 @@ concurrency:
 # internal/ciguard: one copy edited alone turns it red.
 
 jobs:
-  test:
+  # ---- gated legs: the real work, one side each, aggregated by `test` ----
+
+  test-unit:
+    # The Go unit half of what `test` ran as one mega-job. Split so the wall
+    # clock stops stacking studio, e2e and unit on one pod (2026-10-04: the
+    # mega-job was 24-26 min; unit alone is ~10, dominated by the single
+    # `bots` package). Runs in the merge queue behind the required `test`
+    # aggregator; carries NO `if:` — see the header.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
     steps:
@@ -206,64 +230,14 @@ jobs:
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
+      # Bot-level tests execute `script:` nodes written in js, which exec
+      # `node`; without it they fail or skip. The old mega-job got Node
+      # transitively from its studio steps — this job runs none, so the
+      # dependency is explicit.
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-
-      - name: Build studio frontend
-        working-directory: studio
-        run: |
-          corepack enable
-          pnpm install --frozen-lockfile --prefer-offline
-          pnpm exec vite build
-          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
-          cp -r dist/* ../pkg/server/static/
-
-      - name: Studio lint + typecheck + unit tests
-        # Mirror of `task studio:check` (eslint / tsc -b / vitest), inlined so
-        # the test job doesn't pull go-task. Reuses the node_modules installed
-        # by the build step above.
-        working-directory: studio
-        run: |
-          pnpm exec eslint .
-          pnpm exec tsc -b
-          pnpm exec vitest run
-
-      - name: OpenAPI spec + client drift check
-        # The committed openapi.json (offline-generated from the in-code route
-        # table) and studio/src/api/schema.ts (typed client surface) must match
-        # the code. Mirror of `task openapi:check`, inlined so the test job
-        # doesn't pull go-task. Reuses the studio node_modules installed above.
-        shell: bash
-        run: |
-          set -euo pipefail
-          go run -mod=vendor ./cmd/iterion openapi -o openapi.json
-          pnpm -C studio exec openapi-typescript ../openapi.json -o src/api/schema.ts
-          if ! git diff --quiet -- openapi.json studio/src/api/schema.ts; then
-            echo "::error::OpenAPI spec / client drift — run 'task openapi:gen' and commit the result."
-            git --no-pager diff --stat -- openapi.json studio/src/api/schema.ts
-            exit 1
-          fi
-
-      - name: Helm chart version drift check
-        # Mirror of `task chart:check-version`, inlined so we don't pull
-        # go-task into the test job. release-it bumps package.json on
-        # release; if Chart.yaml's `version` or `appVersion` isn't synced
-        # (via `task chart:sync-version`), the OCI publish ships a chart
-        # whose image tag points to a stale build. Fail the PR before that
-        # happens.
-        shell: bash
-        run: |
-          set -euo pipefail
-          PKG=$(node -p "require('./package.json').version")
-          CHART_VER=$(awk '/^version:/ {print $2; exit}' charts/iterion/Chart.yaml)
-          CHART_APP=$(awk '/^appVersion:/ {gsub(/"/,""); print $2; exit}' charts/iterion/Chart.yaml)
-          if [ "$PKG" != "$CHART_VER" ] || [ "$PKG" != "$CHART_APP" ]; then
-            echo "::error::Chart.yaml drift: version=$CHART_VER appVersion=$CHART_APP package.json=$PKG"
-            echo "Run 'task chart:sync-version' to align them, then commit the result."
-            exit 1
-          fi
 
       - name: gofmt (check)
         shell: bash
@@ -283,39 +257,20 @@ jobs:
         run: go vet -mod=vendor ./...
 
       - name: Unit tests
-        # `./...` includes the e2e package, which has its own step below with
-        # its own budget; running it here too doubled the job's wall-clock
-        # AND ran the suite under Go's implicit per-package 10m first — the
+        # `./...` includes the e2e package, which has its own job (test-e2e)
+        # with its own budget; running it here too doubled the wall-clock AND
+        # ran the suite under Go's implicit per-package 10m first — the
         # timeout that actually ejected PRs from the merge queue. Unit tests
-        # are everything but e2e; the e2e step is the only e2e run.
+        # are everything but e2e; test-e2e is the only e2e run.
         #
         # The explicit -timeout is here for the same reason: the implicit 10m
         # is a budget a healthy run can reach, and did — ./bots carried the
         # whole job to the panic at 10m0s while the same commit passed on a
         # faster machine (measured: 521.8s on CI at one commit, a timeout at
-        # 10m0s on the next). Like the e2e budget above, the number bounds a
-        # HANG, not a slow machine; a package that genuinely needs 20 minutes
-        # of test time is a review finding either way.
+        # 10m0s on the next). The number bounds a HANG, not a slow machine; a
+        # package that genuinely needs 20 minutes of test time is a review
+        # finding either way.
         run: go test -mod=vendor -count=1 -timeout 1200s $(go list -mod=vendor ./... | grep -v '/e2e$')
-
-      - name: E2E tests
-        # The ONLY run of the e2e package in this job (the unit step excludes
-        # it). The number bounds a HANG, not a slow machine: a timeout that a
-        # healthy run can reach is a coin flip that ejects PRs from the merge
-        # queue with a panic dump naming whichever test happened to be in
-        # flight.
-        #
-        # The suite runs its tests in parallel (t.Parallel() on every row that
-        # owns its state; e2e/main_test.go caps how many run at once, because
-        # these tests wait on background loops and oversubscription starves
-        # them). Measured 2026-09-07 on a 32-core box, whole package, the two
-        # runs back to back: 503.8 s at -parallel 1, 114.5 s capped — a 4.4x
-        # cut, so the wall clock no longer tracks the suite's size the way the
-        # 568-572 s merge-group builds of 2026-09-06 did. Slowest parallel run
-        # observed across six measurements: 259 s, on a box shared with other
-        # builds. 900 s is past 2x that, so it stays as the hang bound rather
-        # than being re-tightened onto the new figure.
-        run: go test -mod=vendor -count=1 -v -timeout 900s ./e2e/...
 
       - name: Live e2e compile check
         # Builds every -tags=live test in the repo and runs NONE of them
@@ -334,27 +289,225 @@ jobs:
         # a warm cache: ./... = 11.4 s wall, ./e2e/... + ./pkg/webhooks/gitlab/...
         # = 3.3 s wall — the 8 s premium buys coverage at the CLASS and
         # avoids the periodic hunt for the next live-tagged package.
-        # Runs in-job to reuse the toolchain (Go, vendor) — the org
-        # caps concurrent runner slots at 20 across the fleet.
         run: go test -mod=vendor -tags live -count=1 -run '^$' ./...
 
-  race:
-    # Data-race detector pass. The `test` job runs CGO_ENABLED=0 with no
-    # -race, so it cannot surface the concurrency races that only the race
-    # detector finds — and the engine is concurrency-heavy (fan-out branch
-    # scheduling in pkg/runtime, the dispatcher actor in pkg/dispatcher, the
-    # store's parallel-branch turn writes in pkg/store). Without this job a
-    # data race regresses silently until it flakes a developer's machine.
-    #
-    # -race REQUIRES cgo, so this job overrides the repo-wide CGO_ENABLED=0;
-    # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.
-    # Runs in parallel with `test`; a compile error surfaces here too, so no
-    # `needs:` ordering. ~2-3x slower than the plain test job, hence the wider
-    # -timeout and job budget.
+  test-e2e:
+    # The e2e half. Its own pod, parallel with test-unit, so the suite's
+    # ~9 minutes stop appending to the unit floor. It rebuilds the studio
+    # frontend because `pkg/server/static/` is gitignored and embedded with
+    # `//go:embed all:static` — the e2e server boots against nothing without
+    # it, and artifact-sharing would serialize this job behind `studio`
+    # through the cache service ADR-105 measured at 1-3 MB/s. Runs in the
+    # merge queue behind the required `test` aggregator; carries NO `if:`.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 45
+    timeout-minutes: 25
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+
+      - name: Go came from the runner image
+        if: runner.environment == 'self-hosted'
+        run: |
+          baked="$RUNNER_TOOL_CACHE/iterion-ci-runner.env"
+          running="$(go env GOVERSION)"
+          if [ ! -f "$baked" ]; then
+            echo "::warning::this runner's image bakes no toolchain ($baked is missing): setup-go downloaded ${running}"
+          elif ! grep -qx "GO_VERSION=${running#go}" "$baked"; then
+            echo "::warning::the runner image bakes $(tr '\n' ' ' < "$baked")but this job runs ${running}, downloaded by setup-go: publish a new ci/arc-runner image and bump its pin in infra-apps"
+          else
+            echo "${running} from the runner image"
+          fi
+
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Build studio frontend
+        # Duplicated from the `studio` job on purpose: the e2e server embeds
+        # pkg/server/static (gitignored) and boots it. See the job comment.
+        working-directory: studio
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --prefer-offline
+          pnpm exec vite build
+          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+          cp -r dist/* ../pkg/server/static/
+
+      - name: E2E tests
+        # The ONLY run of the e2e package in this workflow (the unit job
+        # excludes it). The number bounds a HANG, not a slow machine: a
+        # timeout that a healthy run can reach is a coin flip that ejects PRs
+        # from the merge queue with a panic dump naming whichever test
+        # happened to be in flight.
+        #
+        # The suite runs its tests in parallel (t.Parallel() on every row that
+        # owns its state; e2e/main_test.go caps how many run at once, because
+        # these tests wait on background loops and oversubscription starves
+        # them). Measured 2026-09-07 on a 32-core box, whole package, the two
+        # runs back to back: 503.8 s at -parallel 1, 114.5 s capped — a 4.4x
+        # cut. CI runners are smaller than that box, so the wall is longer
+        # here (9-10 min measured 2026-10-04) and the 900 s hang bound now
+        # carries less headroom than it did on the big box: the job budget is
+        # the real ceiling.
+        run: go test -mod=vendor -count=1 -v -timeout 900s ./e2e/...
+
+  studio:
+    # The studio half: eslint + tsc -b + vitest, plus the two drift checks
+    # that reuse its node_modules (OpenAPI client, Helm chart version).
+    # ~3 min that used to sit serially inside the mega-job. Runs in the merge
+    # queue behind the required `test` aggregator; carries NO `if:`.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Studio lint + typecheck + unit tests
+        # Mirror of `task studio:check` (eslint / tsc -b / vitest), inlined so
+        # the job doesn't pull go-task. Installs its own node_modules: the
+        # frontend build that used to precede it now lives in test-e2e.
+        working-directory: studio
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --prefer-offline
+          pnpm exec eslint .
+          pnpm exec tsc -b
+          pnpm exec vitest run
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+
+      - name: OpenAPI spec + client drift check
+        # The committed openapi.json (offline-generated from the in-code route
+        # table) and studio/src/api/schema.ts (typed client surface) must match
+        # the code. Mirror of `task openapi:check`, inlined so the job doesn't
+        # pull go-task. Reuses the studio node_modules installed above.
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run -mod=vendor ./cmd/iterion openapi -o openapi.json
+          pnpm -C studio exec openapi-typescript ../openapi.json -o src/api/schema.ts
+          if ! git diff --quiet -- openapi.json studio/src/api/schema.ts; then
+            echo "::error::OpenAPI spec / client drift — run 'task openapi:gen' and commit the result."
+            git --no-pager diff --stat -- openapi.json studio/src/api/schema.ts
+            exit 1
+          fi
+
+      - name: Helm chart version drift check
+        # Mirror of `task chart:check-version`, inlined so we don't pull
+        # go-task. release-it bumps package.json on release; if Chart.yaml's
+        # `version` or `appVersion` isn't synced (via `task
+        # chart:sync-version`), the OCI publish ships a chart whose image tag
+        # points to a stale build. Fail the PR before that happens.
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./package.json').version")
+          CHART_VER=$(awk '/^version:/ {print $2; exit}' charts/iterion/Chart.yaml)
+          CHART_APP=$(awk '/^appVersion:/ {gsub(/"/,""); print $2; exit}' charts/iterion/Chart.yaml)
+          if [ "$PKG" != "$CHART_VER" ] || [ "$PKG" != "$CHART_APP" ]; then
+            echo "::error::Chart.yaml drift: version=$CHART_VER appVersion=$CHART_APP package.json=$PKG"
+            echo "Run 'task chart:sync-version' to align them, then commit the result."
+            exit 1
+          fi
+
+  # ---- required aggregator: the name the ruleset requires, no tests of its own ----
+
+  test:
+    # REQUIRED — the ruleset requires the NAME `test`, and this job is what
+    # reports it. It runs no tests: the three legs above do the work, and
+    # this job turns their conclusions into one required verdict.
+    #
+    # `if: ${{ !cancelled() }}` is load-bearing. With plain `needs:` and no
+    # `if:`, GitHub SKIPS this job when any leg fails — and a skipped check
+    # reports SUCCESS, the exact catastrophe the header describes. The one
+    # evaluated spelling reads only run-cancellation state, which cannot
+    # differ inside a merge_group run, unlike every event-dependent condition.
+    # The step then re-verifies each leg's result rather than trusting the
+    # needs-graph, so a red leg can only ever produce a red required check.
+    needs: [test-unit, test-e2e, studio]
+    if: ${{ !cancelled() }}
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 5
+    env:
+      TEST_UNIT_RESULT: ${{ needs.test-unit.result }}
+      TEST_E2E_RESULT: ${{ needs.test-e2e.result }}
+      STUDIO_RESULT: ${{ needs.studio.result }}
+    steps:
+      - name: Every leg reported success
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "test-unit:${TEST_UNIT_RESULT}" "test-e2e:${TEST_E2E_RESULT}" "studio:${STUDIO_RESULT}"; do
+            leg="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$result" != "success" ]; then
+              echo "::error::leg ${leg} reported ${result} — the required verdict is red because its leg is red."
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+  # ---- gated leg: the full suite under the detector, split across pods ----
+
+  race-shard:
+    # Data-race detector pass, SHARDED. The `test` legs run CGO_ENABLED=0 with
+    # no -race, so they cannot surface the concurrency races that only the
+    # race detector finds — and the engine is concurrency-heavy (fan-out
+    # branch scheduling in pkg/runtime, the dispatcher actor in
+    # pkg/dispatcher, the store's parallel-branch turn writes in pkg/store).
+    # Without this leg a data race regresses silently until it flakes a
+    # developer's machine.
+    #
+    # Sharding is purely mechanical and the guarantee is untouched: EVERY
+    # package still runs under -race, `./...` partitioned three ways by
+    # scripts/ci/testshards — a pure function of the commit, so the three
+    # legs of one merge-queue entry always pick complementary sets. The
+    # partition goes through an ASSIGNMENT (`pkgs=$(...)`), never inline
+    # `$( )`: inline substitution loses the splitter's exit code, and an
+    # empty-shard refusal would degrade into `go test` with no package
+    # arguments. Weights table: the single `bots` package measured 555 s
+    # plain — LPT gives it its own pod instead of one shard eating the floor.
+    #
+    # -race REQUIRES cgo, so this leg overrides the repo-wide CGO_ENABLED=0;
+    # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.
+    # `runs-on` stays at the JOB level, outside the matrix, where the
+    # ciguard regex and the fork guard can read it (the desktop-vet-cross
+    # lesson: a matrix over runs-on diverges from its id silently).
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 40
     env:
       CGO_ENABLED: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -390,15 +543,45 @@ jobs:
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
-      - name: Race tests (unit + e2e)
-        # 1800s bounds a HANG, not a slow machine. -race runs the e2e package
-        # 2-3x slower than the plain job; before the suite went parallel that
-        # measured 862 s on a green merge-group build and crossed 900 s
-        # (panic) on 2026-09-06. With t.Parallel() the same package measures
-        # 153.8 s under -race (2026-09-07, 32-core box, race detector clean),
-        # so the budget now carries an order of magnitude of headroom and
-        # stays as the hang bound. The 45-minute job budget caps the run.
-        run: go test -race -mod=vendor -count=1 -timeout 1800s ./...
+      - name: Race tests (shard ${{ matrix.shard }} of 3)
+        # 1800s bounds a HANG, not a slow machine — the same bound the
+        # unsharded job carried; with the suite split three ways it now
+        # carries ~3x the headroom it had. The 40-minute leg budget caps the
+        # run. See the scripts/ci/testshards doc for why the assignment form
+        # is load-bearing.
+        run: |
+          set -euo pipefail
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -weights scripts/ci/test-shards-weights.tsv)
+          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
+          go test -race -mod=vendor -count=1 -timeout 1800s $pkgs
+
+  # ---- required aggregator: the name the ruleset requires ----
+
+  race:
+    # REQUIRED — the ruleset requires the NAME `race`; this job reports it and
+    # re-verifies the three shards' conclusions. The full suite still runs
+    # under -race (see race-shard); sharding changed where it runs, not
+    # whether it does.
+    #
+    # A matrix `needs:` aggregates its legs' results: `success` only when
+    # EVERY leg succeeded. `if: ${{ !cancelled() }}` is load-bearing — a
+    # plain `needs:` job is SKIPPED when a leg fails, and a skipped check
+    # reports SUCCESS (the header's catastrophe, one level up).
+    needs: [race-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 5
+    env:
+      RACE_SHARD_RESULT: ${{ needs.race-shard.result }}
+    steps:
+      - name: Every shard reported success
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RACE_SHARD_RESULT}" != "success" ]; then
+            echo "::error::race-shard reported ${RACE_SHARD_RESULT} — the required verdict is red because a shard is red."
+            exit 1
+          fi
 
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo
