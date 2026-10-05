@@ -22,7 +22,7 @@ import (
 // read an empty list.
 func TestCredentialTiers_platformThenPoolAfterTheKeyIsWithdrawn(t *testing.T) {
 	ctx := context.Background()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestCredentialTiers_platformThenPoolAfterTheKeyIsWithdrawn(t *testing.T) {
 // while the GRANTED log line still named its tier as `<unstamped>`.
 func TestCredentialTiers_anUnstampedCredentialStillNamesItsTier(t *testing.T) {
 	ctx := context.Background()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

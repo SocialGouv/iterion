@@ -69,7 +69,7 @@ func TestResolve_RequireLLMCredentialRefusesOnlyARunThatCannotStart(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -105,7 +105,7 @@ func TestResolve_RequireLLMCredentialRefusesOnlyARunThatCannotStart(t *testing.T
 // The refusal names what it could not fund, so the operator reads which
 // provider to provision — not just that "something" was missing.
 func TestResolve_RequireLLMCredentialNamesTheUnfundedProviders(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

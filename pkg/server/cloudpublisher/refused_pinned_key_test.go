@@ -20,7 +20,7 @@ import (
 // shape whose restore lands sealPinnedOnly on a taken family.
 func refusedPinnedFixture(t *testing.T, provider secrets.Provider, rec *platformcfg.PlatformCredentials) *Publisher {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

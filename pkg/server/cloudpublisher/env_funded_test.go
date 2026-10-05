@@ -58,7 +58,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 		}}, false, true, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -135,7 +135,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 // the vocabulary: it is the runner-env fallback the flag describes, not a
 // provisionable run — unchanged either way.
 func TestEnvFundedRun_RequireLLMCredentialDoesNotRefuse(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestEnvFundedRun_RequireLLMCredentialDoesNotRefuse(t *testing.T) {
 // A closed team forfait beside the gateway route: nothing acquires, and the
 // window skip costs no Warn — the runner env is the plan, not a failure.
 func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 // The preview answers for an env-funded run the way the live fill does:
 // no candidate selected, and the reason said where the operator reads it.
 func TestCredentialPreviewMatchesTheEnvFundedRun(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,7 @@ func policyWf() *ir.Workflow {
 // OPENED bundle (the wf is mutated in place by the ladder's materialization).
 func resolveWithPolicy(t *testing.T, policy *store.RunLLMRoutePolicy, wf *ir.Workflow) secrets.RunBundle {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestResolve_EmptyTriggersBuildNoLadder(t *testing.T) {
 // unsealed lease releases cleanly.
 func TestResolve_PoolGrantRefusedByWhitelist(t *testing.T) {
 	ctx := context.Background()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

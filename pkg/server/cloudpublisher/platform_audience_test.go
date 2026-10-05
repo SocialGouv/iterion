@@ -23,7 +23,7 @@ func audienceResolver(rec *platformcfg.PlatformCredentials, err error) *platform
 // platformAudiencePublisher builds a publisher holding one platform key.
 func platformAudiencePublisher(t *testing.T, audience *platformcfg.Resolver[platformcfg.PlatformCredentials]) *Publisher {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

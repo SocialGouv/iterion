@@ -560,7 +560,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 		{"tier, team closed forfait: the platform key falls through", false, platformcfg.FacadeTier, "none", "", false, false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -725,7 +725,7 @@ func TestCredentialPreviewAgreesWhenAProviderIsAlreadyHeld(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}

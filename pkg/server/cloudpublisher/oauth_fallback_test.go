@@ -78,7 +78,7 @@ func resolveBundlePinned(t *testing.T, p *Publisher, runSecrets *secrets.MemoryR
 }
 
 func TestResolveOAuth_UserPrimaryOrgFallback(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

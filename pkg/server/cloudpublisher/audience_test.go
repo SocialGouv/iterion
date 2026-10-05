@@ -40,7 +40,7 @@ func seedScopedKey(t *testing.T, st secrets.ApiKeyStore, sealer secrets.Sealer, 
 // plus the log it wrote.
 func audiencePublisher(t *testing.T) (*Publisher, secrets.Sealer, *secrets.MemoryApiKeyStore, *bytes.Buffer) {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestAnOpenKeyIsNeitherWithheldNorAnnounced(t *testing.T) {
 // This is a REGRESSION test: it passed before the fold was introduced, failed
 // with it, and passes again now that the fold belongs to the audience alone.
 func TestTheAudienceFoldDoesNotReachBotSecretBindings(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

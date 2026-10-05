@@ -18,7 +18,7 @@ import (
 // and the next launch pinned to the facade hit `AT ITS CEILING (2/2)`,
 // resolved without the key, and failed AUTH_FAILED.
 func TestResolve_StampsOnlyTheSpendableFingerprints(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

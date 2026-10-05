@@ -3,6 +3,7 @@ package cloudpublisher
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,11 @@ import (
 )
 
 func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -57,6 +62,12 @@ func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 	rec, err := runSecrets.Get(ctx, creds.secretsRef)
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	// The stamp witness: the record names the ring key that sealed it —
+	// without it, rotation cannot target the bundle and every open falls
+	// back to the legacy cohort path.
+	if rec.KeyID != "default" {
+		t.Fatalf("record key id %q, want the sealer's current key default", rec.KeyID)
 	}
 	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
@@ -112,7 +123,11 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -209,7 +224,11 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 }
 
 func TestResolveAndSealCredentials_RequiredSecretUnresolvedFails(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -236,7 +255,11 @@ func TestResolveAndSealCredentials_RequiredSecretUnresolvedFails(t *testing.T) {
 }
 
 func TestResolveAndSealCredentials_OptionalSecretUnresolvedSkips(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -264,7 +287,11 @@ func TestSubmitLaunch_RequiredSecretUnresolved_NoRunRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -312,7 +339,11 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -371,7 +402,7 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 // to correlate it to a run without ad-hoc grep pipelines.
 func TestResolveAndSealCredentials_LogsGrantedCredentialSet(t *testing.T) {
 	var buf bytes.Buffer
-	sealer, err := secrets.NewAESGCMSealer(bytes.Repeat([]byte{9}, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": bytes.Repeat([]byte{9}, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

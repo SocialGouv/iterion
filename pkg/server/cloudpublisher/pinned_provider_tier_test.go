@@ -45,7 +45,7 @@ func wfPinning(provider string) *ir.Workflow {
 // and the tenant holding `tenantKeys`.
 func platformBundleFor(t *testing.T, provider string, platformKeys, tenantKeys []secrets.Provider, tenantForfait bool) secrets.RunBundle {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestDerivePinnedProviders_ReadsAClawModelPrefix(t *testing.T) {
 // store, the same tenant, once with the launch's frozen set and once with the
 // set a moved source would yield.
 func TestPinnedProvider_ResumeReplaysTheLaunchSetNotTheCurrentSource(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "platform-anthropic")
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderMoonshot, "platform-moonshot")
@@ -261,7 +261,7 @@ func TestSubmitResume_FundsFromTheLaunchStampNotTheResumedSource(t *testing.T) {
 			if err != nil {
 				t.Fatalf("store.New: %v", err)
 			}
-			sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			keys := secrets.NewMemoryApiKeyStore()
 			seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "platform-anthropic")
 			seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderMoonshot, "platform-moonshot")
@@ -344,7 +344,7 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 		{"nothing funds the pin", []secrets.Provider{secrets.ProviderAnthropic}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			keys := secrets.NewMemoryApiKeyStore()
 			for _, prov := range tc.platform {
 				seedKey(t, keys, sealer, secrets.PlatformTenantID, prov, "platform-"+string(prov))
@@ -379,7 +379,7 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 // line is what an operator reads to answer "which credential funded that
 // run?". Both walked APIKeys alone.
 func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	// With fingerprints: the stamp is what the per-key concurrency meter and
 	// the audit line read, and a key with none is invisible to both.

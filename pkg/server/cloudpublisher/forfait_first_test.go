@@ -27,7 +27,7 @@ import (
 // forfait under forfaitOwner — the platform's or an org's stores.
 func sharedTierFixture(t *testing.T, keyScope, forfaitOwner string) *Publisher {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestPlatformTier_forfaitStoreFailureStillFillsTheKeys(t *testing.T) {
 // all (the truth table below covers the other policies).
 func TestPlatformTier_bothClosedRestoresInTheFillOrder(t *testing.T) {
 	for _, keysFirst := range []bool{false, true} {
-		sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+		sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 		if err != nil {
 			t.Fatalf("sealer: %v", err)
 		}
@@ -186,7 +186,7 @@ func TestSharedTier_aPinOnTheForfaitsOwnProviderIsFundedPinnedOnly(t *testing.T)
 		{"openai beside a codex forfait", secrets.ProviderOpenAI, secrets.OAuthKindCodex},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -308,7 +308,7 @@ func TestSharedTier_codexForfaitHoldsTheOpenAIWire(t *testing.T) {
 		{"org", secrets.OrgTierTenantID(orgID), secrets.OrgTierOwnerKey(orgID), orgID, "team-in"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -356,7 +356,7 @@ func TestRestore_TheTenantsOwnCredentialComesBackFirst(t *testing.T) {
 	}
 	bench := func(t *testing.T) (*Publisher, secrets.ApiKeyStore, secrets.OAuthStore, *usagecap.MemStore) {
 		t.Helper()
-		sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+		sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 		if err != nil {
 			t.Fatalf("sealer: %v", err)
 		}
@@ -412,7 +412,7 @@ func TestRestore_TheTenantsOwnCredentialComesBackFirst(t *testing.T) {
 // key of the wire's own vendor. An Anthropic key then holds the anthropic wire
 // and the Claude forfait is its backstop.
 func TestPlatformTier_keysFirstPutsTheSameVendorKeyOnTheWire(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestSharedTier_facadePolicyTruthTable(t *testing.T) {
 		{"tier, no forfait: falls through", false, platformcfg.FacadeTier, "none", false, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -536,7 +536,7 @@ func TestSharedTier_facadePolicyTruthTable(t *testing.T) {
 func TestRestore_theFacadePolicyHoldsThere(t *testing.T) {
 	for _, keysFirst := range []bool{true, false} {
 		for _, pinned := range [][]string{{"zai"}, nil} {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -614,7 +614,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 			}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -658,7 +658,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 // keeps the first tier's.)
 func TestRestore_theOrgsCredentialComesBackBeforeThePlatforms(t *testing.T) {
 	const orgID = "org-1"
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestRestore_theOrgsCredentialComesBackBeforeThePlatforms(t *testing.T) {
 // would spend a key the provider is refusing.
 func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 	const orgID = "org-1"
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 // park on the tenant's refusal beside a key that serves it. The platform's
 // closed forfait comes back as the wire's park point instead.
 func TestRestore_aSharedRouteKeyKeepsItsRoutesOverTheTenantsRefusedKey(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -808,7 +808,7 @@ func wfPinningBeside(provider string, n *ir.AgentNode) *ir.Workflow {
 // tenant's key could refill the anthropic family.
 func restoreBench(t *testing.T, prov secrets.Provider) (*Publisher, *secrets.MemoryRunSecretsStore, secrets.Sealer) {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -931,7 +931,7 @@ func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
 		{"tier: the team's forfait is not the platform tier's", platformcfg.FacadeTier, "team", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}

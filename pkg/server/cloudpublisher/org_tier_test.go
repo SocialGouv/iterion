@@ -51,7 +51,7 @@ func resolveBundleForOrg(t *testing.T, p *Publisher, runID, orgID, tenant, owner
 // anthropic key, with `audience` deciding who may spend it.
 func orgTierPublisher(t *testing.T, orgID string, audience identity.CredentialAudience) *Publisher {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

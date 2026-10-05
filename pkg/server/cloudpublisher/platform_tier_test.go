@@ -38,7 +38,7 @@ func seedKey(t *testing.T, st secrets.ApiKeyStore, sealer secrets.Sealer, teamID
 // filled so the runner's usage-cap scope keeps metering them as ONE
 // shared meter.
 func TestPlatformTier_credentiallessRunGetsThePlatformCredentials(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestPlatformTier_credentiallessRunGetsThePlatformCredentials(t *testing.T) 
 // iteration. allKnownProviders order fixes anthropic (index 0) as the
 // winner every time.
 func TestPlatformTier_sameWireFamilyPicksADeterministicWinner(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-ant-platform")
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform")
@@ -103,7 +103,7 @@ func TestPlatformTier_sameWireFamilyPicksADeterministicWinner(t *testing.T) {
 // funds the families the run still lacks — matching the env fallback's
 // per-provider semantics.
 func TestPlatformTier_tenantKeyWinsItsSlotPlatformFillsTheRest(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	seedKey(t, keys, sealer, "team1", secrets.ProviderAnthropic, "sk-ant-tenant")
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-ant-platform")
@@ -134,7 +134,7 @@ func TestPlatformTier_tenantKeyWinsItsSlotPlatformFillsTheRest(t *testing.T) {
 // tenant's own forfait would silently make every call spend the platform
 // key. The platform must leave the whole anthropic wire alone.
 func TestPlatformTier_neverShadowsATenantsForfaitOnTheSameWire(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-ant-platform")
 	oauth := secrets.NewMemoryOAuthStore()
@@ -196,7 +196,7 @@ func (e erroringApiKeyStore) ListByTeam(ctx context.Context, teamID, userID stri
 // A degraded platform store must not fail a launch the env fallback can
 // still serve: best-effort, like the pool.
 func TestPlatformTier_storeErrorDegradesToNoOp(t *testing.T) {
-	slr, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	slr, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	p := &Publisher{
 		apiKeys:    erroringApiKeyStore{secrets.NewMemoryApiKeyStore()},
 		runSecrets: secrets.NewMemoryRunSecretsStore(),
@@ -218,7 +218,7 @@ func TestPlatformTier_storeErrorDegradesToNoOp(t *testing.T) {
 // runner falls back to the slot-shaped key and the fresh subscription
 // inherits the exhausted readings of the one it replaced.
 func TestPlatformTier_oauthFillCarriesTheCredentialsIdentity(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	oauth := secrets.NewMemoryOAuthStore()
 	seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
 

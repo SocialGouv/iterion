@@ -37,7 +37,7 @@ const (
 
 func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestResolveAndSealCredentials_WarnsOnceWhenNothingResolvedForASpendingRun(t
 // silenced it exactly there, and with the pool's static reasons at Debug the
 // run went out with no trace at all that no model credential was found.
 func TestResolveAndSealCredentials_WarnsWhenOnlyAGenericSecretResolved(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

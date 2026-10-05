@@ -20,7 +20,7 @@ import (
 // every run of that webhook fed the same wall, and nothing said so (#629
 // pt 4). The pin still wins; it is no longer silent.
 func TestResolve_pinnedKeyWithFreshRefusalsWarns(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestResolve_pinnedKeyWithFreshRefusalsWarns(t *testing.T) {
 // A pinned key with nothing against it must stay quiet: a warning that
 // fires on every launch is one nobody reads.
 func TestResolve_pinnedHealthyKeyIsQuiet(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

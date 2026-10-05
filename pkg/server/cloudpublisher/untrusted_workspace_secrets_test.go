@@ -18,7 +18,7 @@ import (
 // without proving anything about trust.
 func untrustedFixture(t *testing.T, name, value string) (*Publisher, *secrets.MemoryRunSecretsStore, secrets.Sealer) {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

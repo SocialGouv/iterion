@@ -29,7 +29,7 @@ import (
 // org resolves to ""). Every publish is captured.
 func donorClampedPublisher(t *testing.T, maxUSDPerDay float64) (*Publisher, store.RunStore, *[]*queue.RunMessage) {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

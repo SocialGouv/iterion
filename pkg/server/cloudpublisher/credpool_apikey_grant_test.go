@@ -28,7 +28,7 @@ import (
 // the run-doc fingerprints carry it, the bundle carries the key.
 func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 	ctx := context.Background()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 func zaiDonorPublisher(t *testing.T, buf *bytes.Buffer) (*Publisher, string) {
 	t.Helper()
 	ctx := context.Background()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
