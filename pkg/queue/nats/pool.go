@@ -177,7 +177,7 @@ func (c *Conn) AttachPoolConsumer(ctx context.Context, pool string) (*Consumer, 
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: pool consumer %s info: %w", PoolConsumerName(pool), err)
 	}
-	if err := verifyPoolConsumerAttachment(info.Config, pool); err != nil {
+	if err := verifyPoolConsumerAttachment(info.Config, pool, c.cfg.MaxDeliver); err != nil {
 		return nil, err
 	}
 	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger}, nil
@@ -191,7 +191,7 @@ func (c *Conn) AttachPoolConsumer(ctx context.Context, pool string) (*Consumer, 
 // orphan-flipped, indistinguishable from a drop; MaxDeliver<=0 silently
 // rewrites redelivery. The pool path never self-heals drift (attach never
 // updates), so it refuses it.
-func verifyPoolConsumerAttachment(cfg jetstream.ConsumerConfig, pool string) error {
+func verifyPoolConsumerAttachment(cfg jetstream.ConsumerConfig, pool string, wantMaxDeliver int) error {
 	if cfg.Durable != PoolConsumerName(pool) {
 		return fmt.Errorf("queue/nats: consumer durable %q is not the pool %q consumer (%q)", cfg.Durable, pool, PoolConsumerName(pool))
 	}
@@ -201,8 +201,13 @@ func verifyPoolConsumerAttachment(cfg jetstream.ConsumerConfig, pool string) err
 	if cfg.AckPolicy != jetstream.AckExplicitPolicy {
 		return fmt.Errorf("queue/nats: consumer ack policy %v is not explicit — a pool consumer that auto-acks loses runs silently", cfg.AckPolicy)
 	}
-	if cfg.MaxDeliver < 0 {
-		return fmt.Errorf("queue/nats: consumer MaxDeliver %d is unlimited — redelivery semantics must match the shared consumer", cfg.MaxDeliver)
+	// MaxDeliver must EQUAL the pod's configured value: the runner's
+	// delivery-budget decisions read the POD's config while the broker
+	// enforces the CONSUMER's — a skew means messages are lost silently
+	// (the pool attach never rewrites the consumer, so a skew cannot
+	// self-heal).
+	if cfg.MaxDeliver != wantMaxDeliver {
+		return fmt.Errorf("queue/nats: consumer MaxDeliver %d does not match this pod's configured %d — the delivery budgets would disagree; align the pool runner deployment with the server", cfg.MaxDeliver, wantMaxDeliver)
 	}
 	return nil
 }
