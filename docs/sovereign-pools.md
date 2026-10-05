@@ -39,15 +39,25 @@ The isolation chain, in the order a run meets it:
    authentication, not at egress; the network is not the enforcement layer
    (operator decision: the shared install, isolation by code).
 7. **Server-side auxiliary surfaces**: the merge-conflict resolver,
-   declared supervisors and the session board run in the server process and
-   send content derived from a run to a model resolved there. On a run
+   declared supervisors and the session board send content derived from a
+   run to a model resolved outside the run's own execution. On a run
    stamped to a pool they consult the run document's frozen stamp and
    refuse with `ErrPoolContentRefused` (HTTP 403 on the resolver route),
    naming the remedy — unless the surface's model is itself
    `openai_compatible/*` (the operator provided the pool's gateway
-   credential to the server). An unreadable stamp leaves the surface off.
-   Unmapping a team never declassifies its past runs: the historical stamp
-   is the boundary, not the current mapping.
+   credential to the calling process). The refusal holds where the run
+   actually executes: the runner pod filters its declared supervisors with
+   the message's frozen stamp; the server filters the in-process
+   coordinators. An unreadable stamp leaves the surface off. Runs that
+   predate the stamp carry none — the resolver refuses them when their
+   tenant is CURRENTLY mapped (read fresh through the identity seam); the
+   ambiguous case refuses, it never guesses. Unmapping a team never
+   declassifies its past runs: the historical stamp is the boundary, not
+   the current mapping.
+   Operator-local surfaces — `iterion run`, `iterion supervise`, and the
+   dispatcher's first-party runs — are unstamped documents on machines the
+   operator already trusts with vendor credentials; they are out of the
+   pool boundary by construction.
 
 ## Operations
 
