@@ -34,10 +34,14 @@ func TestClassOfIsFamilyKeyed(t *testing.T) {
 		{familyOpenAI, "gpt-6-luna", ClassFast},
 		{familyOpenAI, "gpt-6-mini", ClassStandard}, // unnamed → standard
 		// The family-keyed guard: gpt-6-luna UNDER the anthropic prefix is
-		// openai-family (modelFamily) and unnamed there → standard, so its
-		// crossing stays gpt-6-sol (delivery 1). A bare-keyed index would
-		// call it fast and cross it to gpt-6-luna — three un-named deltas.
-		{familyOpenAI, "gpt-6-luna", ClassFast},
+		// ANTHROPIC-WIRE family (modelFamily's own rule), where the fast
+		// cell names claude-haiku-4-5 — gpt-6-luna is unnamed there and
+		// classifies standard, so its crossing stays gpt-6-sol (delivery
+		// 1). A bare-keyed index would find fast and cross it to
+		// gpt-6-luna — three un-named byte deltas. (Review R837bf2: the
+		// first draft of this row duplicated the openai-family line above
+		// and pinned nothing.)
+		{familyAnthropicWire, "gpt-6-luna", ClassStandard},
 	}
 	for _, tc := range cases {
 		if got := tbl.ClassOf(tc.family, tc.bare); got != tc.want {
@@ -151,6 +155,16 @@ func TestValidateModelClasses(t *testing.T) {
 	}}
 	if err := Validate(ok); err != nil {
 		t.Fatalf("valid overrides refused: %v", err)
+	}
+	// The BLOCK lock is expressible: model_classes must be IN the Fields
+	// vocabulary Validate's lock check enforces, or the ADR's "locks bind
+	// the whole block" ships unexpressible in production (review
+	// R8e0e36 — the const existed, the slice did not).
+	if err := Validate(Policy{Locks: []string{FieldModelClasses}}); err != nil {
+		t.Fatalf("the model_classes block lock refused: %v", err)
+	}
+	if !validField(FieldModelClasses) {
+		t.Fatal("model_classes is not a valid lock field")
 	}
 	bad := []struct {
 		name string

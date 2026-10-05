@@ -205,7 +205,7 @@ const (
 
 // Fields lists the fold's fields — the vocabulary Locks validates against
 // and the provenance map completes.
-var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict}
+var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict, FieldModelClasses}
 
 // Normalize returns p with defaults applied. Idempotent; never returns a
 // Policy with a nil PairOrder, Triggers or empty RefusedPinnedKey. Only NIL

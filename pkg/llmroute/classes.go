@@ -93,11 +93,13 @@ func ResolveClasses(overrides map[string]map[string]string) ClassTable {
 }
 
 // ClassOf classifies a model by the PAIR (family, bare) — never bare
-// alone: the same bare id is a different model under a different family
-// prefix (anthropic/gpt-6-luna is openai-family by modelFamily's own
-// rule, and is not the fast cell's model). A model the table does not
-// name — and the empty family — classifies standard, the rule that keeps
-// delivery 1's crossing answer for everything the table is silent on.
+// alone: the same bare id classifies differently under a different
+// family prefix (gpt-6-luna is the fast cell on the openai family, but
+// anthropic/gpt-6-luna is ANTHROPIC-WIRE family by modelFamily's own
+// rule, where the fast cell names claude-haiku-4-5 — so it is unnamed
+// there and classifies standard). A model the table does not name — and
+// the empty family — classifies standard, the rule that keeps delivery
+// 1's crossing answer for everything the table is silent on.
 func (t ClassTable) ClassOf(family, bare string) string {
 	if c, ok := t.reverse[family][bare]; ok {
 		return c
