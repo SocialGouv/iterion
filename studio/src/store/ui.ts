@@ -78,11 +78,6 @@ interface UIState {
   // File picker dialog
   filePickerOpen: boolean;
   filesChangedAt: number;
-  // One-shot canvas-pan-and-zoom request: set by URL-driven navigation
-  // (e.g. "Open in editor" from a run) so the Canvas can fitView on the
-  // target node once the document has finished loading. Consumers must
-  // clear it via setPendingFitNodeId(null) after applying.
-  pendingFitNodeId: string | null;
   // Imperative bridge so the top Toolbar can trigger canvas-scoped
   // actions (Arrange, Fit view) that rely on React Flow's `useReactFlow`
   // hook — only callable inside the `<ReactFlowProvider>` subtree.
@@ -149,7 +144,6 @@ interface UIState {
   setFilePickerOpen: (open: boolean) => void;
   notifyFilesChanged: () => void;
   // Pending fit (URL-driven canvas centering)
-  setPendingFitNodeId: (id: string | null) => void;
   // Canvas action bridge
   setCanvasActions: (actions: { arrange: () => void; fitView: () => void } | null) => void;
 }
@@ -175,7 +169,6 @@ export const useUIStore = create<UIState>((set) => ({
   chatEnterSubmits: readBooleanFlag(CHAT_ENTER_SUBMITS_KEY, true),
   filePickerOpen: false,
   filesChangedAt: 0,
-  pendingFitNodeId: null,
   canvasActions: { arrange: null, fitView: null },
   commandPaletteOpen: false,
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
@@ -280,7 +273,6 @@ export const useUIStore = create<UIState>((set) => ({
   setFilePickerOpen: (filePickerOpen) => set({ filePickerOpen }),
   notifyFilesChanged: () => set({ filesChangedAt: Date.now() }),
   // Pending fit
-  setPendingFitNodeId: (id) => set({ pendingFitNodeId: id }),
   // Canvas action bridge — clearing (null) returns both handlers to null
   // so the Toolbar's Arrange/Fit-view buttons re-disable until Canvas
   // remounts (route switch away and back).

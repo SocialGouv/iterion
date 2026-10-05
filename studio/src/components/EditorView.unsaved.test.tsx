@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 //
-// A file-scoped deep link — /editor?file=P&node=n&from=r, "Open in editor"
-// from the run console — is consumed by the visible tab that was opened FOR
-// P: the key EditorTabsView matched the URL against is `tab.params.file`,
-// and this view has to read the same one. Compared against the document's
-// binding instead, the link was swallowed whenever the two differed: the
-// node never focused, the banner never showed (#1326).
-import { cleanup, render, screen } from "@testing-library/react";
+// The editor's `beforeunload` is the app's only browser-close warning. It
+// asks the tab's document store — and, since #1755, the registry of buffers
+// no document store owns: the bundle drawer's and the run file dialog's text
+// must light it wherever in the app their surface currently is, including
+// while none is mounted at all.
+import { cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let search = "";
@@ -16,7 +15,7 @@ vi.mock("wouter", () => ({
   useLocation: () => ["/editor", setLocation],
 }));
 // The panes are heavy (React Flow, Monaco) and irrelevant: this is about the
-// effect that reads the URL, which the selection store and the banner answer.
+// unload handler, which the document store and the buffer registry answer.
 vi.mock("@/components/Canvas/Canvas", () => ({ default: () => <div /> }));
 vi.mock("@/components/Inspector/Inspector", () => ({ default: () => <div /> }));
 vi.mock("@/components/Toolbar/Toolbar", () => ({ default: () => <div /> }));
@@ -36,6 +35,8 @@ vi.mock("@/components/ui", async (importOriginal) => ({
 import { DocumentStoreProvider, getOrCreateDocumentStore } from "@/store/document";
 import { SelectionStoreProvider, getOrCreateSelectionStore } from "@/store/selection";
 import { useTabsStore } from "@/store/tabs";
+import { bundleBufferKey, useEditBuffersStore } from "@/store/editBuffers";
+import { createEmptyDocument } from "@/lib/defaults";
 
 import EditorView from "./EditorView";
 
@@ -49,48 +50,52 @@ function mount(tabId: string) {
   );
 }
 
-const selectedNodeOf = (tabId: string) => getOrCreateSelectionStore(tabId).getState().selectedNodeId;
+// Dispatch through the real window listener the effect registered: what is
+// under test is the wiring, not a handler function of our own choosing.
+function fireUnload(): boolean {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+}
 
 beforeEach(() => {
   search = "";
   setLocation.mockClear();
   useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null });
+  useEditBuffersStore.setState({ bundle: {}, runFiles: {} });
 });
 
 afterEach(cleanup);
 
-describe("the editor deep link", () => {
-  it("is consumed by the tab opened for the requested file, whatever its document is bound to", () => {
+describe("the editor's unload warning", () => {
+  it("stays quiet when nothing holds work", () => {
     const tabId = useTabsStore.getState().openTab("editor", { file: "bots/x/main.bot" }, "x");
-    // The tab's document is bound to nothing — not the file the tab was
-    // opened for.
-    expect(getOrCreateDocumentStore(tabId).getState().currentFilePath).toBeNull();
-    search = "?file=bots%2Fx%2Fmain.bot&node=agent_1&from=run-9";
-
     mount(tabId);
-
-    expect(selectedNodeOf(tabId)).toBe("agent_1");
-    expect(screen.getByText(/Opened from run/)).toBeTruthy();
-    // And asks this tab's canvas to centre on it.
-    expect(getOrCreateSelectionStore(tabId).getState().pendingFitNodeId).toBe("agent_1");
+    expect(fireUnload()).toBe(false);
   });
 
-  it("is left alone by a tab opened for another file", () => {
-    const tabId = useTabsStore.getState().openTab("editor", { file: "bots/y/main.bot" }, "y");
-    search = "?file=bots%2Fx%2Fmain.bot&node=agent_1&from=run-9";
-
+  it("fires for the tab's own dirty document", () => {
+    const tabId = useTabsStore.getState().openTab("editor", { file: "bots/x/main.bot" }, "x");
+    const store = getOrCreateDocumentStore(tabId);
+    store.getState().setDocument(createEmptyDocument());
+    expect(store.getState().isDirty()).toBe(true);
     mount(tabId);
-
-    expect(selectedNodeOf(tabId)).toBeNull();
-    expect(screen.queryByText(/Opened from run/)).toBeNull();
+    expect(fireUnload()).toBe(true);
   });
 
-  it("is consumed by the visible tab when it names no file", () => {
+  it("fires for a buffer no document store owns, though the tab itself is clean", () => {
     const tabId = useTabsStore.getState().openTab("editor", { file: "bots/x/main.bot" }, "x");
-    search = "?node=agent_1";
-
     mount(tabId);
+    expect(getOrCreateDocumentStore(tabId).getState().hasUnsavedWork()).toBe(false);
 
-    expect(selectedNodeOf(tabId)).toBe("agent_1");
+    // The bundle drawer is not even mounted; its buffer is.
+    useEditBuffersStore.getState().setBundle(bundleBufferKey("team-1", "demo"), {
+      rel: "skills/notes.md",
+      value: "# typed\n",
+      original: "# notes\n",
+      created: false,
+    });
+
+    expect(fireUnload()).toBe(true);
   });
 });

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { useRecentsStore } from "@/store/recents";
 import * as api from "@/api/client";
 import ConfirmDialog from "../shared/ConfirmDialog";
 import { useConfirm } from "@/hooks/useConfirm";
-import { useLatchedBundleRef } from "@/hooks/useLatchedBundleRef";
 import { Spinner } from "@/components/ui/Spinner";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
 import FilePicker from "../FilePicker/FilePicker";
@@ -53,10 +53,16 @@ import {
   ListBulletIcon,
 } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
+import { useEditorTabActive } from "@/components/Editor/editorTabActive";
 import DocumentSaveAsDialog from "@/components/DocumentSaveAs/DocumentSaveAsDialog";
 
 export default function Toolbar() {
   const [, setLocation] = useLocation();
+  // Every open tab has its own Toolbar: only the one on screen answers the
+  // keyboard, or a key pressed on one tab would undo, save or open in all of
+  // them. (Its picker and dialogs render through the UI kit, which shows
+  // nothing from a hidden tab.)
+  const active = useEditorTabActive();
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const undo = useDocumentStore((s) => s.undo);
@@ -133,7 +139,11 @@ export default function Toolbar() {
 
   // Keyboard shortcuts
   useEffect(() => {
+    if (!active) return;
     const handler = (e: KeyboardEvent) => {
+      // A key the focused element already answered — the canvas takes Ctrl+Z
+      // and Ctrl+Y itself — is not answered twice.
+      if (e.defaultPrevented) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -153,7 +163,7 @@ export default function Toolbar() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [undo, redo, handleSave]);
+  }, [active, undo, redo, handleSave]);
 
   const workflows = document?.workflows ?? [];
 
@@ -162,16 +172,17 @@ export default function Toolbar() {
   // virtual path the editor loads a tenant bot under.
   const parsedBundleRef = api.parseBotSourceEditorPath(currentFilePath ?? "");
   const [bundleDrawerOpen, setBundleDrawerOpen] = useState(false);
-  // The drawer is mounted conditionally on this, so losing it UNMOUNTS the
-  // drawer — past its own discard gate, which is the one place that can ask
-  // about the buffer it holds (that buffer is component state, invisible to
-  // `hasUnsavedWork()`). File → New, Import and "Start blank" all reach here
-  // after their own guard said "nothing to lose", because none of them can
-  // see it. Latching the last bundle while the drawer is OPEN keeps the
-  // drawer mounted so its gate is reachable; it also keeps `onOpenChange`
-  // firing, without which the parent still believes the drawer is open and
-  // pops it back up on the next bundle.
-  const bundleRef = useLatchedBundleRef(parsedBundleRef, bundleDrawerOpen);
+  // The drawer is mounted conditionally on this, and losing it unmounts the
+  // drawer. That takes nothing the author typed any more — the buffer lives
+  // in `store/editBuffers.ts` (#1755), outlives the unmount, and the next
+  // mount adopts it back — so the unmount needs neither a gate nor a latch
+  // to keep one reachable. What it does need is the open flag reset: an
+  // unmounted drawer fires no `onOpenChange`, and a stale `true` would pop
+  // the drawer back open over the next bundle the toolbar names.
+  const bundleRef = parsedBundleRef;
+  useEffect(() => {
+    if (!bundleRef && bundleDrawerOpen) setBundleDrawerOpen(false);
+  }, [bundleRef, bundleDrawerOpen]);
 
   // "Duplicate & edit" for a read-only catalog bot open in the cloud editor:
   // fork it into the team's bot store and reopen the editable tenant copy.

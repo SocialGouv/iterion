@@ -12,7 +12,7 @@ import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
  * Warnings alone do NOT trigger auto-open: the panel is reserved for
  * blocking errors so non-fatal advice doesn't steal canvas real estate.
  */
-export function useAutoOpenDiagnosticsOnError(): void {
+export function useAutoOpenDiagnosticsOnError(active = true): void {
   const grouped = useGroupedDiagnostics();
   const openDiagnosticsPanel = useUIStore((s) => s.openDiagnosticsPanel);
 
@@ -24,10 +24,14 @@ export function useAutoOpenDiagnosticsOnError(): void {
   const prevErrorCountRef = useRef(errorCount);
 
   useEffect(() => {
+    // The panel is app-wide: a tab behind another does not open it over the
+    // one on screen. Its edge waits — read against the count it last saw on
+    // screen — so a tab that turned red while hidden opens it when shown.
+    if (!active) return;
     const prev = prevErrorCountRef.current;
     if (prev === 0 && errorCount > 0) {
       openDiagnosticsPanel();
     }
     prevErrorCountRef.current = errorCount;
-  }, [errorCount, openDiagnosticsPanel]);
+  }, [active, errorCount, openDiagnosticsPanel]);
 }

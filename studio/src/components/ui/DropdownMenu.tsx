@@ -1,6 +1,7 @@
 import * as RD from "@radix-ui/react-dropdown-menu";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import { ChevronRightIcon } from "@radix-ui/react-icons";
+import { useHiddenSubtree } from "./hiddenSubtree";
 
 // Thin wrapper over Radix DropdownMenu, styled to match the rest of the
 // UI kit (same surface / border / shadow tokens as Popover.tsx). Unlike
@@ -36,9 +37,11 @@ export function DropdownMenu({
   onOpenChange,
   contentClassName = "",
 }: DropdownMenuProps) {
+  const hidden = useHiddenSubtree();
   return (
     <RD.Root open={open} onOpenChange={onOpenChange}>
       <RD.Trigger asChild>{trigger}</RD.Trigger>
+      {!hidden && (
       <RD.Portal>
         <RD.Content
           side={side}
@@ -49,6 +52,7 @@ export function DropdownMenu({
           {children}
         </RD.Content>
       </RD.Portal>
+      )}
     </RD.Root>
   );
 }
@@ -94,6 +98,7 @@ export function DropdownMenuSub({
   disabled,
   contentClassName = "",
 }: DropdownMenuSubProps) {
+  const hidden = useHiddenSubtree();
   return (
     <RD.Sub>
       <RD.SubTrigger disabled={disabled} className={ROW_CLASS}>
@@ -101,6 +106,7 @@ export function DropdownMenuSub({
         <span className="flex-1 truncate">{label}</span>
         <ChevronRightIcon className="text-fg-subtle shrink-0" />
       </RD.SubTrigger>
+      {!hidden && (
       <RD.Portal>
         <RD.SubContent
           sideOffset={2}
@@ -110,6 +116,7 @@ export function DropdownMenuSub({
           {children}
         </RD.SubContent>
       </RD.Portal>
+      )}
     </RD.Sub>
   );
 }
