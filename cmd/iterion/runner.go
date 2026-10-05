@@ -279,6 +279,14 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		}
 		logger.Info("runner: serving sovereign pool %q (admission: only runs stamped for this pool execute)", cfg.Runner.Pool)
 	} else {
+		// The shared path KEEPS its pre-claim preparation: PrepareConsumer
+		// proves the durable consumer before the epoch claim advances (a
+		// NewConsumer after the claim fails ErrRunnerEpochUnclaimed on
+		// every shared pod — the boot break revi R442ad9 caught).
+		preparedConsumer, err = natsConn.PrepareConsumer(rootCtx)
+		if err != nil {
+			return fmt.Errorf("runner: prepare queue consumer: %w", err)
+		}
 		logger.Info("runner: serving the shared default pool (ITERION_RUNNER_POOL is empty)")
 	}
 
