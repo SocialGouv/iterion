@@ -729,35 +729,71 @@ func (q *fakeDLQQueue) ListPoolDLQ(_ context.Context, pool string, cursorSeq uin
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.poolCalls = append(q.poolCalls, "list:"+pool)
-	return q.ListDLQ(context.Background(), cursorSeq, limit)
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	seqs := make([]uint64, 0, len(q.parked))
+	for s := range q.parked {
+		if s >= cursorSeq {
+			seqs = append(seqs, s)
+		}
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	out := make([]natsq.DLQMessage, 0, limit)
+	var next uint64
+	for i, s := range seqs {
+		if i >= limit {
+			next = s
+			break
+		}
+		out = append(out, q.parked[s].view)
+	}
+	return out, next, nil
 }
 
 func (q *fakeDLQQueue) PeekPoolDLQ(_ context.Context, pool string, seq uint64) (natsq.DLQMessage, json.RawMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.poolCalls = append(q.poolCalls, "peek:"+pool)
-	return q.PeekDLQ(context.Background(), seq)
+	m, ok := q.parked[seq]
+	if !ok {
+		return natsq.DLQMessage{}, nil, fmt.Errorf("dlq get %d: message not found", seq)
+	}
+	return m.view, m.payload, nil
 }
 
 func (q *fakeDLQQueue) RepublishPoolDLQ(_ context.Context, pool string, seq uint64) (string, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.poolCalls = append(q.poolCalls, "replay:"+pool)
-	return q.RepublishDLQ(context.Background(), seq)
+	if q.failReplay != nil {
+		return "", q.failReplay
+	}
+	m, ok := q.parked[seq]
+	if !ok {
+		return "", fmt.Errorf("dlq get %d: message not found", seq)
+	}
+	delete(q.parked, seq)
+	q.republished = append(q.republished, m.view.RunID)
+	return m.view.RunID, nil
 }
 
 func (q *fakeDLQQueue) DiscardPoolDLQ(_ context.Context, pool string, seq uint64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.poolCalls = append(q.poolCalls, "discard:"+pool)
-	return q.DiscardDLQ(context.Background(), seq)
+	if _, ok := q.parked[seq]; !ok {
+		return fmt.Errorf("dlq delete %d: message not found", seq)
+	}
+	delete(q.parked, seq)
+	q.discarded = append(q.discarded, seq)
+	return nil
 }
 
 func (q *fakeDLQQueue) PoolDLQDepth(_ context.Context, pool string) (uint64, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.poolCalls = append(q.poolCalls, "depth:"+pool)
-	return q.DLQDepth(context.Background())
+	return uint64(len(q.parked)), nil
 }
 
 // The ?pool= parameter reaches the backend on every DLQ surface — the
@@ -767,12 +803,13 @@ func (q *fakeDLQQueue) PoolDLQDepth(_ context.Context, pool string) (uint64, err
 func TestDLQAdmin_ThePoolReachesTheBackend(t *testing.T) {
 	w := newDLQAdminServer(t)
 	w.park(t, 7, "run-pool", "usage_window")
+	w.park(t, 8, "run-pool-2", "usage_window")
 
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/api/admin/dlq?pool=honorabilite"},
 		{"GET", "/api/admin/dlq/7?pool=honorabilite"},
 		{"POST", "/api/admin/dlq/7/replay?pool=honorabilite"},
-		{"DELETE", "/api/admin/dlq/7?pool=honorabilite"},
+		{"DELETE", "/api/admin/dlq/8?pool=honorabilite"},
 	} {
 		dlqDo(t, w.hs, tc.method, tc.path, w.admin)
 	}
