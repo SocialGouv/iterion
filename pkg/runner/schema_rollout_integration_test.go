@@ -889,3 +889,60 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		}
 	})
 }
+
+// THE routing bite through a real broker (plan v2.1 D2', rva-1 M2: the
+// call-site revert shipped green twice under unit-only coverage): a
+// pool-stamped publish lands on the pool's stream and is claimed by the
+// POOL's consumer; the shared consumer never sees it. Red when the subject
+// derivation or the per-pool topology drifts.
+func TestPoolRoutingThroughABroker(t *testing.T) {
+	uri := schemaRolloutNATSURI(t)
+	conn, _ := schemaRolloutConn(t, uri)
+	ctx := context.Background()
+	if err := conn.ClaimRunnerEpoch(ctx); err != nil {
+		t.Fatalf("claim epoch: %v", err)
+	}
+	pool := fmt.Sprintf("routing-%d", time.Now().UnixNano())
+	if err := conn.EnsurePoolSchema(ctx, pool); err != nil {
+		t.Fatalf("ensure pool schema: %v", err)
+	}
+	poolCons, err := conn.PreparePoolConsumer(ctx, pool)
+	if err != nil {
+		t.Fatalf("pool consumer: %v", err)
+	}
+	sharedCons, err := conn.NewConsumer(ctx)
+	if err != nil {
+		t.Fatalf("shared consumer: %v", err)
+	}
+	runID := fmt.Sprintf("run-pool-routing-%d", time.Now().UnixNano())
+	msg := &queue.RunMessage{
+		V:              queue.SchemaVersion,
+		RunnerPool:     pool,
+		RunID:          runID,
+		WorkflowName:   "wf-pool-routing",
+		IRCompiled:     json.RawMessage(`{}`),
+		TenantID:       "tenant-pool",
+		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := conn.PublishRun(ctx, msg); err != nil {
+		t.Fatalf("pool publish: %v", err)
+	}
+	// The SHARED consumer must NOT see a pool-stamped run.
+	if d, err := sharedCons.Fetch(ctx, 2*time.Second); err == nil {
+		_ = d.Term()
+		t.Fatal("the shared consumer claimed a pool-stamped run — the boundary is crossed")
+	}
+	// The POOL consumer claims it, and the stamp survives the wire.
+	d, err := poolCons.Fetch(ctx, 5*time.Second)
+	if err != nil {
+		t.Fatalf("pool fetch: %v", err)
+	}
+	r := &Runner{cfg: Config{NATS: conn, Logger: iterlog.Nop()}}
+	got, ok := r.decodeOrTerm(d)
+	if !ok || got == nil || got.RunnerPool != pool {
+		t.Fatalf("pool decode = (%+v, %t), want the pool stamp on the wire", got, ok)
+	}
+	if err := d.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+}
