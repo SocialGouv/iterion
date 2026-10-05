@@ -37,7 +37,7 @@ func TestResolve_StampsOnlyTheSpendableFingerprints(t *testing.T) {
 	ctx := store.WithTenant(context.Background(), "team1")
 	resolve := func(runID string, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 		t.Helper()
-		creds, err := p.resolveAndSealCredentials(ctx, runID, "org1", "team1", "owner1", "rite", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+		creds, err := p.resolveAndSealCredentials(ctx, runID, "org1", "team1", "owner1", "rite", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
@@ -45,7 +45,7 @@ func TestResolve_StampsOnlyTheSpendableFingerprints(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run secrets: %v", err)
 		}
-		b, err := secrets.OpenRunBundle(sealer, runID, rec.SealedBundle)
+		b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
 		if err != nil {
 			t.Fatalf("open bundle: %v", err)
 		}

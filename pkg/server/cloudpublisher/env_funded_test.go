@@ -88,7 +88,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
 			}
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-2038", "", "team1", "webhook:cfg-1", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-2038", "", "team1", "webhook:cfg-1", "", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -102,7 +102,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, "run-2038", rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-2038", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,7 +146,7 @@ func TestEnvFundedRun_RequireLLMCredentialDoesNotRefuse(t *testing.T) {
 		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{}, nil),
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-2038b", "", "team1", "webhook:cfg-1", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-2038b", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("an env-funded run was refused under requireLLMCredential: %v", err)
 	}
 }
@@ -176,7 +176,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-2038c", "", "team1", "webhook:cfg-1", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-2038c", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 	// empty — which is the env-funded contract, not a failure.
 	if res.secretsRef != "" {
 		rec, _ := p.runSecrets.(*secrets.MemoryRunSecretsStore).Get(ctx, res.secretsRef)
-		b, err := secrets.OpenRunBundle(sealer, "run-2038c", rec.SealedBundle)
+		b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-2038c", rec.KeyID, rec.SealedBundle)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -231,7 +231,7 @@ func TestCredentialPreviewMatchesTheEnvFundedRun(t *testing.T) {
 	}
 
 	// The live resolution agrees: nothing sealed.
-	res, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), team), "run-2038d", "", team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	res, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), team), "run-2038d", "", team, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

@@ -124,6 +124,8 @@ func loadEnv(cfg *Config) error {
 
 	lookupString("ITERION_JWT_SECRET", &cfg.Auth.JWTSecret)
 	lookupString("ITERION_SECRETS_KEY", &cfg.Auth.SecretsKey)
+	lookupString("ITERION_SECRETS_KEYS", &cfg.Auth.SecretsKeys)
+	lookupString("ITERION_SECRETS_KEY_ID", &cfg.Auth.SecretsKeyID)
 	if err := lookupDuration("ITERION_ACCESS_TTL", &cfg.Auth.AccessTTL); err != nil {
 		return err
 	}

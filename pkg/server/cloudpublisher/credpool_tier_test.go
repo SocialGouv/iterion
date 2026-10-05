@@ -89,7 +89,7 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 func (f *poolFixture) resolve(t *testing.T, runID string, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -100,7 +100,7 @@ func (f *poolFixture) resolve(t *testing.T, runID string, wf *ir.Workflow) (secr
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(f.sealer, runID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(f.sealer, rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestResolveAndSealCredentials_WarnsOnceWhenNothingResolvedForASpendingRun(t
 			_ = f.pledges.Upsert(context.Background(), pledge)
 
 			ctx := store.WithTenant(context.Background(), poolTeam)
-			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-terminal", poolOrg, poolTeam, "u", "bot", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-terminal", poolOrg, poolTeam, "u", "bot", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -532,7 +532,7 @@ func TestResolveAndSealCredentials_WarnsWhenOnlyAGenericSecretResolved(t *testin
 	}
 
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := p.resolveAndSealCredentials(ctx, "run-generic-only", poolOrg, poolTeam, "requester", "review-pr", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-generic-only", poolOrg, poolTeam, "requester", "review-pr", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

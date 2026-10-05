@@ -153,7 +153,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// 4b. BYOK / OAuth wire-up. The runner consumes sealed bundles
 	//     keyed by RunMessage.SecretsRef; the master key MUST match
 	//     the publisher's. Phase C.
-	sealer, err := secrets.NewAESGCMSealerFromBase64(cfg.Auth.SecretsKey)
+	sealer, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
 	if err != nil {
 		return fmt.Errorf("runner: build sealer: %w", err)
 	}

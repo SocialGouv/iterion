@@ -39,7 +39,7 @@ func TestResolve_pinnedKeyWithFreshRefusalsWarns(t *testing.T) {
 	rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
 
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-pin", "", "team1", "owner1", "",
+	creds, err := p.resolveAndSealCredentials(ctx, "run-pin", "", "team1", "owner1", "", "",
 		nil, map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
@@ -48,7 +48,7 @@ func TestResolve_pinnedKeyWithFreshRefusalsWarns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "run-pin", rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-pin", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestResolve_pinnedHealthyKeyIsQuiet(t *testing.T) {
 		logger: iterlog.New(iterlog.LevelInfo, &buf)}
 
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-pin2", "", "team1", "owner1", "",
+	if _, err := p.resolveAndSealCredentials(ctx, "run-pin2", "", "team1", "owner1", "", "",
 		nil, map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

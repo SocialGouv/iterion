@@ -47,7 +47,7 @@ func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 		"kubeconfig": {As: "file"},
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "run-1", rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "run-resume", rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-resume", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestResolveAndSealCredentials_RequiredSecretUnresolvedFails(t *testing.T) {
 		"test_e2e_canary": {As: "file"}, // non-optional, no inline value
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	_, err = p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	_, err = p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err == nil {
 		t.Fatal("expected launch to fail for an unresolved required secret")
 	}
@@ -249,7 +249,7 @@ func TestResolveAndSealCredentials_OptionalSecretUnresolvedSkips(t *testing.T) {
 		"test_e2e_canary": {As: "file", Optional: true},
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("optional unresolved secret must not fail launch: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestResolveAndSealCredentials_LogsGrantedCredentialSet(t *testing.T) {
 		runSecrets: secrets.NewMemoryRunSecretsStore(),
 		logger:     iterlog.New(iterlog.LevelInfo, &buf),
 	}
-	if _, err := p.resolveAndSealCredentials(tenantCtx, "run-log-1", "", "team-1", "u1", "bot",
+	if _, err := p.resolveAndSealCredentials(tenantCtx, "run-log-1", "", "team-1", "u1", "bot", "",
 		&ir.Workflow{}, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

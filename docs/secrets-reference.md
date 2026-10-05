@@ -205,7 +205,7 @@ intended record so a sealed bundle cannot be silently transplanted:
 | `generic_secrets.sealed_secret` | `generic_secret:<id>` |
 | `oauth_credentials.sealed_blob` | `oauth:<user>:<kind>` |
 | `webhook_configs.hmac_secret_sealed` | `webhook_hmac_secret:<webhook_id>` |
-| `run_secrets.sealed_bundle` | `run_secrets:<run_id>` |
+| `run_secrets.sealed_bundle` | `run_secrets:<tenant_id>/<runner_pool>/<run_id>` (records with a `key_id`; the pool segment is empty for shared-fleet runs) — legacy id-less records keep `run_secrets:<run_id>` |
 
 `ITERION_SECRETS_KEY` is required at boot in cloud mode (`openssl rand
 -base64 32` → exactly 32 raw bytes). Server pods AND runner pods must
@@ -229,3 +229,23 @@ in KMS, per-tenant DEKs) so rotation becomes a single update; until
 then, the step-by-step above is the operator path. **Be deliberate**:
 this is a destructive change, every sealed blob becomes unreadable the
 moment the new key takes over.
+
+### Rotating the run-bundle key — the ring
+
+Run bundles (only those — `api_keys`, `oauth_credentials` and
+`generic_secrets` still seal under the single key) carry the id of the
+key that sealed them, so they rotate without a re-paste:
+
+1. Set `ITERION_SECRETS_KEYS="<old_id>=<b64>,<new_id>=<b64>"` and
+   `ITERION_SECRETS_KEY_ID="<new_id>"` on the server AND the runner
+   (both must share the full ring). Restart. New bundles seal under
+   `<new_id>`; bundles under `<old_id>` keep opening until the key
+   leaves the ring.
+2. After every in-flight bundle has expired (the 24 h TTL — leave one
+   full day; a DLQ-reparked message replays within that window),
+   remove `<old_id>` from the ring. A bundle whose key is gone refuses
+   with the key id named.
+
+The per-run AAD (`tenant/pool/run`) also makes a bundle
+undecryptable outside its own identity context — a record ref served
+across tenants yields authentication failure, not credentials.

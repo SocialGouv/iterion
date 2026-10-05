@@ -96,7 +96,7 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 			if err != nil {
 				t.Fatalf("RunSecrets.Get: %v", err)
 			}
-			if bundle, err = secrets.OpenRunBundle(sealer, "run-resume", rec.SealedBundle); err != nil {
+			if bundle, err = secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-resume", rec.KeyID, rec.SealedBundle); err != nil {
 				t.Fatalf("OpenRunBundle: %v", err)
 			}
 		}

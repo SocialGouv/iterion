@@ -149,6 +149,13 @@ type AuthConfig struct {
 	// rest. Required in cloud mode.
 	SecretsKey string `yaml:"secrets_key"`
 
+	// SecretsKeys is the rotation ring: "id=base64,id=base64" (each key
+	// 32 bytes raw). When set, ITERION_SECRETS_KEY_ID names the key new
+	// run-secret bundles seal under and the others stay open-only until
+	// the operator retires them. Empty keeps the single-key shape.
+	SecretsKeys string `yaml:"secrets_keys"`
+	// SecretsKeyID names the current key of SecretsKeys.
+	SecretsKeyID string `yaml:"secrets_key_id"`
 	// AccessTTL is the lifetime of an access JWT. Default 15m.
 	AccessTTL time.Duration `yaml:"access_ttl"`
 

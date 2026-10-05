@@ -42,7 +42,7 @@ func resolveWithPolicy(t *testing.T, policy *store.RunLLMRoutePolicy, wf *ir.Wor
 		logger:     testLogger(),
 	}
 	ctx := store.WithTenant(t.Context(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-pol", "", "team1", "owner1", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-pol", "", "team1", "owner1", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, policy)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -53,7 +53,7 @@ func resolveWithPolicy(t *testing.T, policy *store.RunLLMRoutePolicy, wf *ir.Wor
 	if err != nil {
 		t.Fatalf("run secrets: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "run-pol", rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-pol", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestResolve_PoolGrantRefusedByWhitelist(t *testing.T) {
 		PairOrder: []string{llmroute.Pair(llmroute.HarnessClaudeCode, llmroute.CredClaudeForfait)},
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 	}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-pw", poolOrg, poolTeam, "requester", "bot", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-pw", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, policy)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestResolve_PoolGrantRefusedByWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "run-pw", rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-pw", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -241,7 +241,7 @@ func seedOAuthKind(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, o
 func resolveCreds(t *testing.T, p *Publisher, orgID, tenant string, pinned []string) credResolution {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, "run-shadow", orgID, tenant, "webhook:cfg", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-shadow", orgID, tenant, "webhook:cfg", "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 			p := &Publisher{apiKeys: keys, oauthForfait: oauth, runSecrets: rs, sealer: sealer, logger: testLogger()}
 			pinned := derivePinnedProviders(tc.wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-stamp", "", "team1", "webhook:cfg", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-stamp", "", "team1", "webhook:cfg", "", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -634,7 +634,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run secrets: %v", err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, "run-stamp", rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-stamp", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
@@ -722,7 +722,7 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 		},
 	}
 	ctx := store.WithTenant(context.Background(), "team-in")
-	res, err := p.resolveAndSealCredentials(ctx, "run-in", orgID, "team-in", "webhook:cfg", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"zai"}, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-in", orgID, "team-in", "webhook:cfg", "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"zai"}, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -730,7 +730,7 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(sealer, "run-in", rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-in", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -828,7 +828,7 @@ func restoreBench(t *testing.T, prov secrets.Provider) (*Publisher, *secrets.Mem
 func resolveBundleForWorkflow(t *testing.T, p *Publisher, rs *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, wf *ir.Workflow) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "webhook:cfg-1", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, derivePinnedProviders(wf, model.ModelOverrides{}, nil), nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "webhook:cfg-1", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, derivePinnedProviders(wf, model.ModelOverrides{}, nil), nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -839,7 +839,7 @@ func resolveBundleForWorkflow(t *testing.T, p *Publisher, rs *secrets.MemoryRunS
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(sealer, "run-1", rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -970,7 +970,7 @@ func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
 			}
 			rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-1998", orgID, "team1", "webhook:cfg-1", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-1998", orgID, "team1", "webhook:cfg-1", "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -981,7 +981,7 @@ func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, "run-1998", rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1998", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}

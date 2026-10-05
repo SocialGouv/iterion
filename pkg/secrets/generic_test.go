@@ -3,6 +3,7 @@ package secrets
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"strings"
 	"testing"
 	"time"
@@ -131,14 +132,19 @@ func TestGenericSecretAADBound(t *testing.T) {
 }
 
 func TestRunBundleCarriesGenericSecrets(t *testing.T) {
-	sealer := newSealer(t)
-	sealed, err := SealRunBundle(sealer, "run-1", RunBundle{
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	sealer, err := NewKeyRingSealer(map[string][]byte{"k": key}, "k")
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	sealed, keyID, err := SealRunBundle(sealer, "t", "p", "run-1", RunBundle{
 		GenericSecrets: map[string]string{"kubeconfig": "payload"},
 	})
 	if err != nil {
 		t.Fatalf("SealRunBundle: %v", err)
 	}
-	got, err := OpenRunBundle(sealer, "run-1", sealed)
+	got, err := OpenRunBundle(sealer, "t", "p", "run-1", keyID, sealed)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}

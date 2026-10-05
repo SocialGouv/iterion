@@ -301,7 +301,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
-	sealer, err := secrets.NewAESGCMSealerFromBase64(cfg.Auth.SecretsKey)
+	sealer, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
 	if err != nil {
 		return fmt.Errorf("server: build sealer: %w", err)
 	}

@@ -885,7 +885,7 @@ const testSealerKeyB64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 func testSealer(t *testing.T) secrets.Sealer {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealerFromBase64(testSealerKeyB64)
+	sealer, err := secrets.NewKeyRingFromConfig(testSealerKeyB64, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -939,12 +939,12 @@ func TestInjectCredentials_UnknownRefFails(t *testing.T) {
 func TestInjectCredentials_TenantMismatchFails(t *testing.T) {
 	sealer := testSealer(t)
 	rs := secrets.NewMemoryRunSecretsStore()
-	sealed, err := secrets.SealRunBundle(sealer, "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
+	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-a", "", "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, recTenant := range []string{"team-other", ""} {
-		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", SealedBundle: sealed}); err != nil {
+		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
 			t.Fatal(err)
 		}
 		r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
@@ -973,11 +973,11 @@ func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
 		OAuthCredentials: map[string][]byte{string(secrets.OAuthKindCodex): []byte(`{"tokens":{}}`)},
 		ForgeAppBotLogin: "app[bot]",
 	}
-	sealed, err := secrets.SealRunBundle(sealer, "run-1", bundle)
+	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-a", "", "run-1", bundle)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", SealedBundle: sealed}); err != nil {
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 

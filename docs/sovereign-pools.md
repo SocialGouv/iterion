@@ -37,7 +37,11 @@ The isolation chain, in the order a run meets it:
 6. **Credentials**: a pool pod carries only its pool's gateway secret — no
    vendor keys are mounted. A mis-routed vendor call fails at
    authentication, not at egress; the network is not the enforcement layer
-   (operator decision: the shared install, isolation by code).
+   (operator decision: the shared install, isolation by code). The
+   per-run credential bundle seals under an AAD binding tenant, pool and
+   run — a bundle served outside its own identity context refuses to
+   decrypt — and records the key id that sealed it, so the run-bundle
+   key rotates without touching vendor credentials.
 7. **Server-side auxiliary surfaces**: the merge-conflict resolver,
    declared supervisors and the session board send content derived from a
    run to a model resolved outside the run's own execution. On a run
