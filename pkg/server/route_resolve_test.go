@@ -370,3 +370,39 @@ func TestResolveRunLLMRoutePolicy_AdminViewFoldIgnoresTenantLevels(t *testing.T)
 		t.Fatalf("the (\"\", \"\") fold must not consult tenant levels: %q", got.Sources["pair_order"])
 	}
 }
+
+// The resolved model_classes overrides ride the SNAPSHOT (entry-wise
+// fold, per-cell provenance) — the wire mirror stamps them onto the run
+// message so the runner's crossings map the same table the launch
+// resolved. An override a launch resolved but the run doc hid would make
+// "why did this run route to X" unanswerable from the snapshot alone.
+func TestResolveRunLLMRoutePolicy_ModelClassesFlowToTheSnapshot(t *testing.T) {
+	s := newOrgTestServer(t)
+	seedOrg(t, s, "org1", "org1")
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", OrgID: "org1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.OrgRoutingPolicyID("org1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{ModelClasses: map[string]map[string]string{
+			"top": {"openai": "gpt-6-astra"},
+		}},
+	})
+
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ModelClasses["top"]["openai"] != "gpt-6-astra" {
+		t.Fatalf("model_classes on the snapshot = %+v, want the org's override", got.ModelClasses)
+	}
+	if got.Sources["model_classes.top.openai"] != llmroute.SourceOrg {
+		t.Fatalf("cell provenance = %q, want org", got.Sources["model_classes.top.openai"])
+	}
+	if _, block := got.Sources["model_classes"]; block {
+		t.Fatalf("the block key must be omitted when cells spoke: %q", got.Sources["model_classes"])
+	}
+}

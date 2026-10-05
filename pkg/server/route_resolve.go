@@ -115,6 +115,7 @@ func (s *Server) resolveRunLLMRoutePolicy(ctx context.Context, teamID, botID str
 		Triggers:         pol.Triggers,
 		RefusedPinnedKey: pol.RefusedPinnedKey,
 		Strict:           pol.Strict != nil && *pol.Strict,
+		ModelClasses:     pol.ModelClasses,
 		Sources:          sources,
 	}, nil
 }

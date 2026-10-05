@@ -641,7 +641,7 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 			if ov.Model != "" {
 				nodeModel = ov.Model
 			}
-			if _, mappable := llmroute.StageModel(st.Backend, st.Provider, nodeModel); !mappable {
+			if _, mappable, _ := llmroute.StageModel(st.Backend, st.Provider, nodeModel, llmroute.ResolveClasses(msg.FallbackModelClasses)); !mappable {
 				continue
 			}
 			escapes[nn.NodeID()] = true

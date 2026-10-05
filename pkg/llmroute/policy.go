@@ -180,6 +180,17 @@ type Policy struct {
 	// levels above, under a "<level>_lock" provenance. Locks never bind
 	// the level that declares them.
 	Locks []string `yaml:"locks,omitempty" json:"locks,omitempty" bson:"locks,omitempty"`
+	// ModelClasses carries a level's OVERRIDES of the model class table
+	// (ADR-121 § Delivery 2): class → family → bare model id. The
+	// vocabulary (top/standard/fast), the shipped table and the
+	// out-of-routing consumers live with the table itself (classes.go) —
+	// the policy carries only what a level may tune. The fold merges
+	// ENTRY-WISE per class×family (a map of keyed cells merges like
+	// settings, where pair_order replaces); a cell naming an unknown
+	// family is accepted (families grow) and one naming an unknown model
+	// id too (consumed verbatim; dispatch refuses a bogus one, named).
+	// Nil = unset (inherit / the shipped table).
+	ModelClasses map[string]map[string]string `yaml:"model_classes,omitempty" json:"model_classes,omitempty" bson:"model_classes,omitempty"`
 }
 
 // The fold's field names, as the provenance map keys them (the wire field
@@ -189,6 +200,7 @@ const (
 	FieldTriggers         = "triggers"
 	FieldRefusedPinnedKey = "refused_pinned_key"
 	FieldStrict           = "strict"
+	FieldModelClasses     = "model_classes"
 )
 
 // Fields lists the fold's fields — the vocabulary Locks validates against
@@ -307,12 +319,40 @@ func Validate(p Policy) error {
 	default:
 		return fmt.Errorf("llmroute: refused_pinned_key %q — want %q or %q", p.RefusedPinnedKey, RefusedPinnedForfait, RefusedPinnedPark)
 	}
+	for class, fams := range p.ModelClasses {
+		if !validClass(class) {
+			return fmt.Errorf("llmroute: model_classes %q is not a class (want one of %s)", class, strings.Join(classVocabulary, ", "))
+		}
+		if len(fams) == 0 {
+			return fmt.Errorf("llmroute: model_classes %q is empty — omit it to inherit the class", class)
+		}
+		for fam, spec := range fams {
+			if fam == "" {
+				return fmt.Errorf("llmroute: model_classes %s names an empty family", class)
+			}
+			if spec == "" {
+				return fmt.Errorf("llmroute: model_classes %s.%s is empty — omit the cell to inherit the shipped rendering", class, fam)
+			}
+			if strings.Contains(spec, "/") {
+				return fmt.Errorf("llmroute: model_classes %s.%s = %q — cells are BARE ids (the per-credential spellings re-prefix; a %s/ prefix here would double it)", class, fam, spec, fam)
+			}
+		}
+	}
 	for _, f := range p.Locks {
 		if !validField(f) {
 			return fmt.Errorf("llmroute: locks %q is not a policy field (want a subset of %s)", f, strings.Join(Fields, ", "))
 		}
 	}
 	return nil
+}
+
+func validClass(c string) bool {
+	for _, v := range classVocabulary {
+		if v == c {
+			return true
+		}
+	}
+	return false
 }
 
 func validField(f string) bool {
@@ -467,8 +507,50 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 			src[f] = lockSource[f] + "_lock"
 		}
 	}
+	// model_classes folds ENTRY-WISE (the merge rule is the field's own,
+	// stated in the ADR: a map of keyed cells merges like settings, where
+	// pair_order replaces). First setter wins PER CELL within the range
+	// the locks leave; each cell's provenance names its level as
+	// model_classes.<class>.<family>. The BLOCK key answers only when no
+	// cell spoke — "default", or "<level>_lock" for a lock that pinned
+	// the block without setting cells; when cells spoke the block key is
+	// OMITTED, because a "default" beside named cells would lie about who
+	// decided.
+	var mcCells int
+	for i, l := range layers {
+		if !mayAnswer(i, FieldModelClasses) || len(l.Policy.ModelClasses) == 0 {
+			continue
+		}
+		for class, fams := range l.Policy.ModelClasses {
+			if len(fams) == 0 {
+				continue
+			}
+			if out.ModelClasses == nil {
+				out.ModelClasses = map[string]map[string]string{}
+			}
+			if out.ModelClasses[class] == nil {
+				out.ModelClasses[class] = map[string]string{}
+			}
+			for fam, spec := range fams {
+				if _, spoken := out.ModelClasses[class][fam]; spoken {
+					continue
+				}
+				out.ModelClasses[class][fam] = spec
+				src[FieldModelClasses+"."+class+"."+fam] = l.Source
+				mcCells++
+			}
+		}
+	}
+	if _, locked := lockedFrom[FieldModelClasses]; locked && mcCells == 0 {
+		src[FieldModelClasses] = lockSource[FieldModelClasses] + "_lock"
+	} else if mcCells == 0 {
+		src[FieldModelClasses] = SourceDefault
+	}
 	out = Normalize(out)
 	for _, f := range Fields {
+		if f == FieldModelClasses {
+			continue // answered above: per-cell keys, or the block key
+		}
 		if _, ok := src[f]; !ok {
 			src[f] = SourceDefault
 		}

@@ -394,7 +394,7 @@ type PolicyLadderStage struct {
 // field at DISPATCH — the screen MUST read the same backend or a
 // cross-backend stage crosses a session-bearing node unscreened. nil = the
 // DSL reading.
-func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string) []string {
+func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string, classes llmroute.ClassTable) []string {
 	if w == nil || len(stages) == 0 {
 		return nil
 	}
@@ -446,12 +446,15 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 					"agent %q: policy ladder stage %d (%s) %s", nn.NodeID(), stage+1, st.Harness, reason))
 			}
 			// The crossing's model, mapped per node from the pair. A pair
-			// with no delivery-1 mapping is skipped for THIS node — named,
-			// never emitted modelless (ApplyRunFallback's portability
-			// refusal would drop it anyway, later and less precisely).
-			mdl, ok := llmroute.StageModel(st.Harness, st.Credential, nodeMdl)
+			// with no mapping is skipped for THIS node — named, never
+			// emitted modelless (ApplyRunFallback's portability refusal
+			// would drop it anyway, later and less precisely). The reason
+			// distinguishes the structural no-mapping (the pair cannot
+			// serve the family) from the class table's cell resolving
+			// nowhere (a model_classes cell fixes that one).
+			mdl, ok, mapReason := llmroute.StageModel(st.Harness, st.Credential, nodeMdl, classes)
 			if !ok {
-				refuse("has no delivery-1 model mapping — stage skipped")
+				refuse(mapReason + " — stage skipped")
 				continue
 			}
 			route := Fallback{

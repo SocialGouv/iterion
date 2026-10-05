@@ -245,6 +245,14 @@ type RunMessage struct {
 	// exhausted usage window never fired on the path where runs park
 	// unattended.
 	Fallback RunFallback `json:"fallback,omitempty"`
+	// FallbackModelClasses is the run's RESOLVED model_classes overrides
+	// (ADR-121 § Delivery 2, the launch-frozen snapshot) — the crossings'
+	// class targets on this run. A message-level sibling of the entries
+	// slice (per-entry would duplicate one map per rung): a stale runner
+	// ignoring it runs the shipped table — never a partial override, the
+	// conservative-on-ignore direction (no RunMessage version bump: a
+	// lost capability, never a wrong execution).
+	FallbackModelClasses map[string]map[string]string `json:"fallback_model_classes,omitempty"`
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.

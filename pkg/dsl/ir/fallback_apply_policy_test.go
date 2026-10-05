@@ -3,6 +3,8 @@ package ir
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // The policy ladder's screen: the same eligibility ApplyRunFallback
@@ -28,7 +30,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	w := mk("claude-opus-5-5", "")
 	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string {
 		return n.GetLLMFields().Model
-	}, nil)
+	}, nil, llmroute.ResolveClasses(nil))
 	node := w.Nodes["implement"].(*AgentNode)
 	if len(node.Fallbacks) != 1 {
 		t.Fatalf("stages = %d (%+v), refusals = %v — want 1 (the claw crossing is refused: the node has no permission gate or claw-eligible toolset), refusals naming it", len(node.Fallbacks), node.Fallbacks, refusals)
@@ -55,7 +57,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	wn := wOp.Nodes["implement"].(*AgentNode)
 	wn.Fallbacks = append(wn.Fallbacks, Fallback{Name: RunFallbackName, Backend: "claude_code", Model: "claude-opus-5-5", RunStage: 0, RunStageSet: true})
 	opStages := stages[:1] // the claude_code crossing only: the claw stage needs a permission gate this node does not carry
-	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(refusals) != 0 {
 		t.Fatalf("operator-armed node refused the ladder: %v", refusals)
 	}
 	if got := len(wn.Fallbacks); got != 2 {
@@ -72,7 +74,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 		LLMFields: LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
 		Fallbacks: []Fallback{{Name: "authored", Backend: "claude_code", Model: "claude-opus-5-5"}},
 	}
-	if refusals := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(refusals) != 0 {
 		t.Fatalf("an authored node screened = %v, want silence (the author vetted where it may go)", refusals)
 	}
 	if got := len(w2.Nodes["implement"].(*AgentNode).Fallbacks); got != 1 {
@@ -81,7 +83,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 
 	// A node whose model maps nothing for the pair skips the stage, named.
 	w3 := mk("", "")
-	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return "" }, nil)
+	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return "" }, nil, llmroute.ResolveClasses(nil))
 	if got := len(w3.Nodes["implement"].(*AgentNode).Fallbacks); got != 0 {
 		t.Fatalf("modelless stages emitted: %d", got)
 	}
@@ -112,7 +114,7 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 
 	// Cross-backend on a session node: refused, named.
 	w := mkSession("claude_code", "claude-opus-5-5", SessionInherit)
-	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil)
+	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil))
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
 		t.Fatalf("refusals = %v, want the session-continuity refusal naming the crossing", refusals)
 	}
@@ -124,7 +126,7 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 	// (the dispatch keeps it; ADR-087 §3's rebuild-and-evict applies only
 	// to cross-backend falls, which the screen refuses here).
 	w2 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
-	refusals = ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil)
+	refusals = ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil))
 	if len(refusals) != 0 {
 		t.Fatalf("same-backend refused: %v", refusals)
 	}
@@ -138,8 +140,40 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 	w3 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
 	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, func(n LLMNode) string {
 		return "claude_code"
-	})
+	}, llmroute.ResolveClasses(nil))
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
 		t.Fatalf("override-blind refusals = %v, want the session refusal through the override", refusals)
+	}
+}
+
+// The crossings' class targets come from the EFFECTIVE table: a level's
+// model_classes override changes what a wholesale crossing carries —
+// the ladder materializes the override, not just the fold.
+func TestApplyPolicyLadder_ClassOverrideBites(t *testing.T) {
+	mk := func(model string) *Workflow {
+		node := &AgentNode{
+			BaseNode:  BaseNode{ID: "implement"},
+			LLMFields: LLMFields{Backend: "claude_code", Model: model},
+		}
+		return &Workflow{Nodes: map[string]Node{"implement": node}}
+	}
+	stages := []PolicyLadderStage{{Harness: "codex", Credential: "chatgpt_forfait", On: []string{"usage_window"}}}
+	w := mk("claude-opus-5-5")
+	if r := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 0 {
+		t.Fatalf("the shipped-table crossing refused: %v", r)
+	}
+	if got := w.Nodes["implement"].(*AgentNode).Fallbacks[0].Model; got != "gpt-6-sol" {
+		t.Fatalf("shipped-table target = %q, want the top rung gpt-6-sol", got)
+	}
+
+	// The override: top/openai = astra — the SAME node's crossing carries
+	// it, and the shipped cell would not.
+	w2 := mk("claude-opus-5-5")
+	overridden := llmroute.ResolveClasses(map[string]map[string]string{"top": {"openai": "gpt-6-astra"}})
+	if r := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, overridden); len(r) != 0 {
+		t.Fatalf("the overridden crossing refused: %v", r)
+	}
+	if got := w2.Nodes["implement"].(*AgentNode).Fallbacks[0].Model; got != "gpt-6-astra" {
+		t.Fatalf("overridden target = %q, want the level's astra", got)
 	}
 }
