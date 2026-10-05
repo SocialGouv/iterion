@@ -38,6 +38,16 @@ The isolation chain, in the order a run meets it:
    vendor keys are mounted. A mis-routed vendor call fails at
    authentication, not at egress; the network is not the enforcement layer
    (operator decision: the shared install, isolation by code).
+7. **Server-side auxiliary surfaces**: the merge-conflict resolver,
+   declared supervisors and the session board run in the server process and
+   send content derived from a run to a model resolved there. On a run
+   stamped to a pool they consult the run document's frozen stamp and
+   refuse with `ErrPoolContentRefused` (HTTP 403 on the resolver route),
+   naming the remedy — unless the surface's model is itself
+   `openai_compatible/*` (the operator provided the pool's gateway
+   credential to the server). An unreadable stamp leaves the surface off.
+   Unmapping a team never declassifies its past runs: the historical stamp
+   is the boundary, not the current mapping.
 
 ## Operations
 
@@ -49,6 +59,9 @@ The isolation chain, in the order a run meets it:
 - `GET /api/admin/dlq?pool=<p>` and the peek/replay/discard routes take the
   same `?pool=` parameter — each pool parks on its own DLQ stream, and the
   depth gauge sums the shared DLQ with every registry-known pool's.
+- The pool refusal is typed (`runview.ErrPoolContentRefused`): pin the
+  surface's model to the pool's `openai_compatible/*` gateway and provide
+  that gateway credential to the process, or run the surface on the pool.
 - The orphan sweeper's queued-pass skip counts pool consumers' backlogs;
   an unreadable pool backlog DEFERS the orphan verdict rather than
   flipping a run that is waiting its turn.
