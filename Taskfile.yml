@@ -1219,6 +1219,11 @@ tasks:
     cmds:
       - bash scripts/diagnostics/queue-stats.sh {{.CLI_ARGS}}
 
+  ci:shards:
+    desc: "Print one deterministic Go-test shard — the CI race-shard matrix legs split ./... with it. Assign, never inline $( ): `pkgs=$(task ci:shards -- -n 3 -i 0)` then use $pkgs, so a nonzero exit aborts. Bare or `-all` dumps every shard; `-weights scripts/ci/test-shards-weights.tsv` balances by measured duration"
+    cmds:
+      - go run -mod=vendor ./scripts/ci/testshards {{.CLI_ARGS}}
+
   # --- Helm chart targets (plan §F T-36, T-39) --------------------
   chart:sync-version:
     desc: Sync charts/iterion/Chart.yaml version + appVersion with package.json so `helm upgrade` picks up the right image tag
