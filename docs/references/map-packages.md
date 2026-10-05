@@ -193,7 +193,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/sandbox/noop` | provides the always-available passthrough sandbox driver. | — |
 | `pkg/sandbox/registry` | centralises the iterion-shipped sandbox-driver constructor list. | — |
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` |
-| `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` |
+| `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `KeyedSealer`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | — |
 | `pkg/server` | Admin team console: the super-admin surface for team-scoped settings an org admin must not touch. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `RunnerPoolResolver`, `TeamResolver` |
