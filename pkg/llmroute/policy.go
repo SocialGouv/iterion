@@ -352,6 +352,8 @@ const (
 	SourceSchedule = "schedule"
 	SourceTrigger  = "trigger"
 	SourceWebhook  = "webhook"
+	SourceTeam     = "team"
+	SourceOrg      = "org"
 	SourcePlatform = "platform"
 	SourceEnv      = "env"
 	SourceDefault  = "default"
@@ -493,10 +495,11 @@ func (c Ceiling) IsZero() bool { return len(c.Triggers) == 0 }
 // never restores one the policy already dropped. Pruning to an EMPTY list
 // is a legitimate answer ("never switch"), not an absence — the caller
 // stores it as-is (the snapshot's triggers field is not omitempty) and
-// must not re-Normalize the resolved policy. In delivery 1's slice 1 the
-// platform level is the only level, so the ceiling is a proven no-op — it
-// is wired now so slices 2–3 (bot, binding, run levels) inherit the
-// ordering instead of retrofitting it.
+// must not re-Normalize the resolved policy. The platform level sits
+// BELOW org and team (ADR-121's chain runs platform < org < team < bot <
+// binding < run), so its triggers are the ceiling those levels may only
+// narrow — a live semantic since the tenant levels landed, wired from
+// delivery 1's slice 1 so no level retrofitted the ordering.
 func Clamp(p Policy, c Ceiling, src map[string]string) Policy {
 	if c.IsZero() || len(p.Triggers) == 0 {
 		return p

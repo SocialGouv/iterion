@@ -254,8 +254,12 @@ type Server struct {
 	// credentials; nil (or an unenforced record) admits every tenant.
 	platformCreds      *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	platformCredsStore platformcfg.Store[platformcfg.PlatformCredentials]
-	botVars            *platformcfg.Resolver[platformcfg.BotVars]
-	botVarsStore       platformcfg.Store[platformcfg.BotVars]
+	// routingPolicyStoreFor builds the store for one tenant's routing-
+	// policy document (ADR-121 delivery 2: "org:<id>" / "team:<id>") —
+	// nil in local mode, where no tenant level exists to fold.
+	routingPolicyStoreFor func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord]
+	botVars               *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore          platformcfg.Store[platformcfg.BotVars]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
 	platformBots *platformcfg.Resolver[platformBotSet]
@@ -762,6 +766,17 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		usageCaps:           cfg.UsageCaps,
 		usageCapTrust:       usagecap.DefaultTrust(),
 		credUsage:           cfg.CredUsage,
+	}
+	// The tenant routing-policy levels (ADR-121 delivery 2): per-org and
+	// per-team policy documents in their own collection. No resolver, no
+	// TTL — one bounded point read per launch, and an outage refuses the
+	// launch instead of serving stale (serve-stale would lift cost
+	// governance on a blip).
+	if dbs, ok := cfg.Store.(interface{ DB() *mongo.Database }); ok && dbs.DB() != nil {
+		db := dbs.DB()
+		s.routingPolicyStoreFor = func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord] {
+			return platformcfg.NewMongoScoped[platformcfg.RoutingPolicyRecord](db, platformcfg.ColRoutingPolicies, docID)
+		}
 	}
 	// Platform settings families (bot_roles + sandbox): TTL resolvers over
 	// the stores. A nil store keeps them nil-safe — Get returns nil and

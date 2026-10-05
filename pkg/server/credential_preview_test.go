@@ -14,6 +14,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -174,5 +176,31 @@ func TestCredentialPreview_FoldsTheRunLevelRouting(t *testing.T) {
 	}
 	if pub2.preview.LLMRoutePolicy == nil || len(pub2.preview.LLMRoutePolicy.PairOrder) <= 5 {
 		t.Fatalf("default policy = %+v, want the full enumerated order (more than the five named pairs)", pub2.preview.LLMRoutePolicy)
+	}
+}
+
+// Parity across the tenant levels: with a team routing-policy record
+// present, the preview resolves the SAME snapshot a launch from that
+// team would — the fold is one function of (teamID, botID, higher),
+// and the preview passes the URL team's id. A level the launch would
+// obey but the preview hid would make the operator's "what will this
+// spend on" answer a lie.
+func TestCredentialPreview_FoldsTheTenantLevels(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	// The fixture already seeds team t1 (seedGate).
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("t1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{PairOrder: []string{"claw+zai_key"}},
+	})
+
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe"}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview=%d %s", w.Code, w.Body.String())
+	}
+	if pub.preview.LLMRoutePolicy == nil || pub.preview.LLMRoutePolicy.PairOrder[0] != "claw+zai_key" || pub.preview.LLMRoutePolicy.Sources["pair_order"] != llmroute.SourceTeam {
+		t.Fatalf("resolved policy = %+v, want the team level's order, named team", pub.preview.LLMRoutePolicy)
 	}
 }

@@ -2103,6 +2103,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/orgs/{id}/routing-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/routing-policy */
+        get: operations["getOrgsByIdRoutingPolicy"];
+        /** PUT /api/orgs/{id}/routing-policy */
+        put: operations["putOrgsByIdRoutingPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/orgs/{id}/settings": {
         parameters: {
             query?: never;
@@ -4768,6 +4788,26 @@ export interface paths {
         /** GET /api/teams/{id}/provision-approvals */
         get: operations["getTeamsByIdProvisionApprovals"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/routing-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/routing-policy */
+        get: operations["getTeamsByIdRoutingPolicy"];
+        /** PUT /api/teams/{id}/routing-policy */
+        put: operations["putTeamsByIdRoutingPolicy"];
         post?: never;
         delete?: never;
         options?: never;
@@ -7633,6 +7673,7 @@ export interface components {
             origin: string;
             routing?: components["schemas"]["Policy"];
             routing_effective?: components["schemas"]["RunLLMRoutePolicy"];
+            routing_effective_scope: string;
             stored?: components["schemas"]["PlatformCredentials"];
         };
         previewBackendOption: {
@@ -7681,6 +7722,14 @@ export interface components {
             backend: components["schemas"]["previewEffectiveKnob"];
             compress: components["schemas"]["previewEffectiveKnob"];
             permission: components["schemas"]["previewEffectiveKnob"];
+        };
+        routingPolicyView: {
+            origin: string;
+            policy?: components["schemas"]["Policy"];
+            scope: string;
+            /** Format: date-time */
+            updated_at?: string;
+            updated_by?: string;
         };
         sandboxSettingsView: {
             effective_default_image: string;
@@ -10766,6 +10815,50 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getOrgsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
+            };
+        };
+    };
+    putOrgsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
             };
         };
     };
@@ -14491,6 +14584,50 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getTeamsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
+            };
+        };
+    };
+    putTeamsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
             };
         };
     };

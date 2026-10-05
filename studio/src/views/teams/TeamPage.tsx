@@ -33,13 +33,15 @@ import { listOrgMembers } from "@/api/orgMembers";
 import AuditTab from "./tabs/AuditTab";
 import CredPoolTab from "./tabs/CredPoolTab";
 import MemoryTab from "./tabs/MemoryTab";
+import RoutingPolicySection from "@/views/orgs/RoutingPolicySection";
+import { getTeamRoutingPolicy, putTeamRoutingPolicy } from "@/api/orgGovernance";
 
 // SSO, Usage, members-roster and billing are ORG-level — they live on the Org
 // settings page (/orgs/:id). The team page keeps the team's own administrative
 // resources: who can access this team, its API keys, audit and memory. The
 // integration surfaces (forges, webhooks, secrets, bot bindings, model
 // providers) moved to their own top-level destination (/integrations).
-type Tab = "members" | "api-keys" | "cred-pool" | "audit" | "memory";
+type Tab = "members" | "api-keys" | "cred-pool" | "audit" | "memory" | "routing";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "members", label: "Team access" },
@@ -47,6 +49,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "cred-pool", label: "Credential pool" },
   { id: "audit", label: "Audit log" },
   { id: "memory", label: "Memory" },
+  { id: "routing", label: "Routing policy" },
 ];
 
 export default function TeamPage() {
@@ -167,6 +170,15 @@ export default function TeamPage() {
           )}
           {tab === "audit" && <AuditTab teamID={team.teamID} canManage={canManage} />}
           {tab === "memory" && <MemoryTab teamID={team.teamID} />}
+          {tab === "routing" && (
+            <RoutingPolicySection
+              scope="team"
+              id={team.teamID}
+              canManage={canManage}
+              getPolicy={getTeamRoutingPolicy}
+              putPolicy={putTeamRoutingPolicy}
+            />
+          )}
         </main>
       </div>
     </div>

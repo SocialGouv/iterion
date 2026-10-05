@@ -18,6 +18,11 @@ import (
 // lives in one place.
 const colPlatformSettings = "platform_settings"
 
+// ColRoutingPolicies is the tenant-scoped routing-policy collection —
+// one document per org or team (ADR-121's delivery-2 levels), never a
+// platform family: its documents are tenant data.
+const ColRoutingPolicies = "llm_routing_policies"
+
 // Family doc ids.
 const (
 	FamilyBotRoles = "bot_roles"
@@ -56,6 +61,14 @@ func NewMongoBotVars(db *mongo.Database) *MongoStore[BotVars] {
 // database.
 func NewMongoPlatformCredentials(db *mongo.Database) *MongoStore[PlatformCredentials] {
 	return &MongoStore[PlatformCredentials]{col: db.Collection(colPlatformSettings), docID: FamilyPlatformCredentials}
+}
+
+// NewMongoScoped binds a store for ONE document of a named collection —
+// the tenant-scoped routing-policy family (an org's or a team's own
+// record), where the document id varies per tenant. The struct is two
+// fields, so per-request instances are free.
+func NewMongoScoped[T any](db *mongo.Database, collection, docID string) *MongoStore[T] {
+	return &MongoStore[T]{col: db.Collection(collection), docID: docID}
 }
 
 func (s *MongoStore[T]) Get(ctx context.Context) (*T, error) {
@@ -101,6 +114,8 @@ func updatedAtOf[T any](rec *T) time.Time {
 		return v.UpdatedAt
 	case *RunnerPools:
 		return v.UpdatedAt
+	case *RoutingPolicyRecord:
+		return v.UpdatedAt
 	}
 	return time.Time{}
 }
@@ -138,6 +153,50 @@ func (s *MongoStore[T]) PutIfUnchanged(ctx context.Context, rec T, prevUpdatedAt
 		return false, fmt.Errorf("platformcfg: put %s: %w", s.docID, err)
 	}
 	return res.MatchedCount > 0 || res.UpsertedCount > 0, nil
+}
+
+// Delete removes the document outright. Absent stays absent — the fold
+// reads absence as "level not set", never as an error.
+func (s *MongoStore[T]) Delete(ctx context.Context) error {
+	if _, err := s.col.DeleteOne(ctx, bson.M{"_id": s.docID}); err != nil {
+		return fmt.Errorf("platformcfg: delete %s: %w", s.docID, err)
+	}
+	return nil
+}
+
+// DeleteIfUnchanged removes the document only if its updated_at still
+// equals prevUpdatedAt (zero = "no document existed") — the CAS twin of
+// the clear-outright write, so a null-clear cannot destroy a policy a
+// concurrent editor just landed. A lost race is a loud (false, nil),
+// the handler's 409 — never a silent wipe.
+func (s *MongoStore[T]) DeleteIfUnchanged(ctx context.Context, prevUpdatedAt time.Time) (bool, error) {
+	filter := bson.M{"_id": s.docID, "updated_at": prevUpdatedAt}
+	if prevUpdatedAt.IsZero() {
+		filter = bson.M{"_id": s.docID, "updated_at": bson.M{"$exists": false}}
+	}
+	res, err := s.col.DeleteOne(ctx, filter)
+	if err != nil {
+		return false, fmt.Errorf("platformcfg: delete %s: %w", s.docID, err)
+	}
+	if res.DeletedCount > 0 {
+		return true, nil
+	}
+	if !prevUpdatedAt.IsZero() {
+		// A live stamp matched nothing: the document was rewritten or
+		// cleared under us — a lost race, the handler's 409.
+		return false, nil
+	}
+	// Cold path: the zero stamp matched no absent document, so either the
+	// document is ABSENT already — the desired state, the clear is
+	// idempotent — or a concurrent FIRST write landed in the window (a
+	// lost race). Deleting nothing proves nothing; disambiguate.
+	if err := s.col.FindOne(ctx, bson.M{"_id": s.docID}).Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return true, nil
+		}
+		return false, fmt.Errorf("platformcfg: delete %s: %w", s.docID, err)
+	}
+	return false, nil
 }
 
 // MemoryStore is the in-process Store for tests and single-process wiring.
@@ -183,10 +242,50 @@ func (m *MemoryStore[T]) PutIfUnchanged(_ context.Context, rec T, prevUpdatedAt 
 	return true, nil
 }
 
+// Delete is the MemoryStore mirror of the Mongo clear-outright write.
+func (m *MemoryStore[T]) Delete(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec = nil
+	return nil
+}
+
+// DeleteIfUnchanged is the MemoryStore mirror of the Mongo CAS clear.
+func (m *MemoryStore[T]) DeleteIfUnchanged(_ context.Context, prevUpdatedAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case m.rec == nil:
+		if !prevUpdatedAt.IsZero() {
+			return false, nil
+		}
+	case !updatedAtOf(m.rec).Equal(prevUpdatedAt):
+		return false, nil
+	}
+	m.rec = nil
+	return true, nil
+}
+
 // CASStore is the optional conditional-write surface a Store may offer;
 // the merge handlers use it when present and fall back to Put otherwise.
 type CASStore[T any] interface {
 	PutIfUnchanged(ctx context.Context, rec T, prevUpdatedAt time.Time) (bool, error)
+}
+
+// Deleter is the optional clear-outright surface — tests and goal-state
+// cleanups. The ROUTE'S null-write takes the CAS twin (CASDeleter)
+// instead: an unconditional delete is how a clear destroys a concurrent
+// editor's policy behind a 200.
+type Deleter interface {
+	Delete(ctx context.Context) error
+}
+
+// CASDeleter is the conditional clear-outright surface: the null-write
+// of a tenant routing policy takes it, so a clear racing a concurrent
+// editor loses as a loud (false, nil) instead of destroying the
+// editor's policy.
+type CASDeleter interface {
+	DeleteIfUnchanged(ctx context.Context, prevUpdatedAt time.Time) (bool, error)
 }
 
 // stampUpdatedAt sets the family record's UpdatedAt on write — in the
@@ -201,12 +300,20 @@ func stampUpdatedAt[T any](rec *T) {
 		v.UpdatedAt = time.Now().UTC()
 	case *RunnerPools:
 		v.UpdatedAt = time.Now().UTC()
+	case *RoutingPolicyRecord:
+		v.UpdatedAt = time.Now().UTC()
 	}
 }
 
 // fetchTimeout bounds one refresh read so a wedged store can never hang a
 // request-path Get longer than this (the usagecap resolver's discipline).
 const fetchTimeout = 3 * time.Second
+
+// FetchTimeout bounds one point read of a settings store — the same
+// bound the resolver applies to its refreshes. A launch-path read
+// without it turns the fail-closed posture into fail-stuck: a wedged
+// store must surface an error the fold refuses on, not hang launches.
+const FetchTimeout = fetchTimeout
 
 // funcStore adapts a fetch function to the Store interface (read side
 // only) so a Resolver can cache ANY derivable value, not just a settings
