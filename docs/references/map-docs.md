@@ -352,6 +352,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/settings-precedence.md`](../settings-precedence.md) | Settings precedence & provenance | Five launch-relevant knobs share the same five-level precedence chain, | — |
 | [`docs/skill.md`](../skill.md) | AI Agent Skills | Iterion ships **two Agent Skills**, compatible with Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding… | — |
 | [`docs/skills-library.md`](../skills-library.md) | Skill library | The **skill library** is a curated, standalone collection of Claude-Code-style | — |
+| [`docs/sovereign-pools.md`](../sovereign-pools.md) | Sovereign runner pools | A team whose code must never reach a public LLM vendor runs on a **sovereign | — |
 | [`docs/stall-human-waits.md`](../stall-human-waits.md) | Human waits and stall detection | The dispatcher and runview alert manager both consult | — |
 | [`docs/state-of-the-art.md`](../state-of-the-art.md) | State of the art — how proven is each surface | backends.md and board-epics.md, and a leading emoji slugs differently on | — |
 | [`docs/studio-ux-audit-2026-07.md`](../studio-ux-audit-2026-07.md) | Studio UX coherence audit — 2026-07 | Snapshot of the systematic UX audit run against the studio (cloud-first | — |
