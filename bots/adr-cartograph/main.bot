@@ -574,10 +574,16 @@ schema gate_state:
 ## grounded in real files. Bounded by code_scope_globs +
 ## excluded_dirs + bundle_self_path. NO writes; fresh session
 ## (each run is an independent look).
+schema survey_input:
+  ## The narrow surveyor view — `adrs` carries the INDEX lines (the edge
+  ## binds scan_output.adrs_index), not the differ's full records.
+  adrs: string[]
+  recently_changed_code_files: string[]
+
 agent survey_code:
   model: "${ITERION_ADRY_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
-  input: scan_output
+  input: survey_input
   output: survey_output
   system: survey_code_system
   user: survey_code_user
