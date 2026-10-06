@@ -226,10 +226,10 @@ func OpenRunBundle(sealer Sealer, tenantID, pool, runID, keyID string, sealed []
 		pt  []byte
 		err error
 	)
-	switch {
-	case keyID == DEKKeyID:
+	switch keyID {
+	case DEKKeyID:
 		pt, err = sealer.Open(sealed, RunBundleAAD(tenantID, pool, runID))
-	case keyID == "":
+	case "":
 		pt, err = openLegacyBundle(sealer, runID, sealed)
 	default:
 		keyed, ok := sealer.(KeyedSealer)

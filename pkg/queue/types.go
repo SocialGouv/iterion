@@ -226,8 +226,8 @@ type RunMessage struct {
 	// the per-run sealer is built from it at claim time. A message that
 	// carries it without a SecretsRef (or a "dek"-stamped record whose
 	// message carries none) is corrupt and refused.
-	BundleDEK []byte `json:"bundle_dek,omitempty"`
-	TimeoutSec         int    `json:"timeout_sec,omitempty"`
+	BundleDEK  []byte `json:"bundle_dek,omitempty"`
+	TimeoutSec int    `json:"timeout_sec,omitempty"`
 	// PoolGrantless marks a publication that asked the credential pool and
 	// was granted nothing: the attempt runs on env/fallback credentials,
 	// holds no pool lease, and its spend report must never reach the
