@@ -555,6 +555,12 @@ type Server struct {
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
 
+	// forgeMergeOpsFor is a test seam overriding how the publish-review
+	// handler resolves a connection's merge-gate GESTURE capabilities
+	// (approve / arm auto-merge / add reviewers). Nil → real admin client
+	// via forgeAdminFor, capability-asserted.
+	forgeMergeOpsFor func(ctx context.Context, conn forge.Connection) (forgeMergeOps, error)
+
 	// forgeIssueCommenterFor is a test seam overriding how a connection's
 	// PR-comment client is resolved (the parked-review pause notice).
 	// Nil → real admin client via forgeAdminFor.
