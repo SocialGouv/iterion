@@ -282,7 +282,65 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	if len(wires) == 0 {
 		x.warn("No database credential is predicted; runner environment availability is unknown.")
 	}
+	// The routing fallback door's state (ADR-121 § Delivery 2): computed
+	// OUTSIDE the tier walk by the same derivation the live consult runs
+	// (doorWantsFor — the difference is only the serves argument, the
+	// preview's metadata assuming materialization). The pool block above
+	// stays bypassed for exactly these runs by the plan, so the door
+	// answers in its own fields; when armed, a second read-only Preview
+	// with FallbackOnly names what the donor-consented candidates look
+	// like. Same arm conditions as the live door: a run that holds its
+	// own credential, no whole-bundle grant predicted, not env-funded,
+	// and a policy whose ladder can dispatch a missing kind.
+	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
+		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil {
+		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, wf, buildModelOverrides(spec.Launch.ModelOverrides), doorServesMetadata(x))
+		if !ok {
+			x.out.Pool.DoorReason = "no_dispatchable_wants"
+		} else {
+			doorWants := make([]string, 0, len(wants))
+			for _, w := range wants {
+				doorWants = append(doorWants, string(w.Source)+":"+w.Ref)
+			}
+			x.out.Pool.DoorWants = doorWants
+			door, derr := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
+			if derr != nil {
+				x.out.Pool.DoorReason = "unknown"
+				x.warn("Fallback-door pool metadata unavailable; selection is conditional.")
+			} else if string(door.Reason) == "" {
+				// A healthy pool that would serve: the broker leaves its
+				// reason empty on success — the preview cannot grant, say
+				// what it WOULD serve, in the door_wants spelling.
+				x.out.Pool.DoorReason = "would_serve:" + string(wants[0].Source) + ":" + wants[0].Ref
+			} else {
+				x.out.Pool.DoorReason = "consulted:" + string(door.Reason)
+			}
+		}
+	}
 	return x.out, nil
+}
+
+// doorServesMetadata is the preview's answer to doorServes: the same
+// held-slot predicate over the metadata that assumes materialization.
+func doorServesMetadata(x *credentialPreview) func(_, credential string) bool {
+	return func(_, credential string) bool {
+		for prov := range x.api {
+			if slotOfProvider(prov) == credential {
+				return true
+			}
+		}
+		for prov := range x.pinnedAPI {
+			if slotOfProvider(prov) == credential {
+				return true
+			}
+		}
+		for kind := range x.oauth {
+			if slotOfKind(kind) == credential {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 type credentialPreview struct {

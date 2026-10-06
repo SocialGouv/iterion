@@ -307,4 +307,10 @@ const (
 	// and the author's `as name(N)` promise is not kept. Same argument as
 	// C244 (a loop on a fan-out is refused).
 	DiagLoopOnRouterEdge DiagCode = "C309" // a `round_robin` / non-multi `llm` router's outgoing edge carries `as name(N)` or `as foreach name(...)` — the iteration is accepted at compile time and silently ignored at run time (error; put the loop on the edge that re-enters the router)
+
+	// Public contracts: a declared output port whose producer runs more
+	// than once — a parallel branch body, a foreach, or a bounded loop
+	// cycle. The port capture keeps one entry per node id, so the declared
+	// value is whichever execution finished last.
+	DiagContractOutputOffFanOut DiagCode = "C310" // a contract output port's `from:` names a node that executes more than once (fan-out branch body, foreach, bounded loop cycle) — the port projects whichever execution finished last, one execution's output (warning)
 )

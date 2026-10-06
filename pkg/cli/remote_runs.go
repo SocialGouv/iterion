@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ type remoteRunSummary struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 	Error        string     `json:"error,omitempty"`
+	FailureCode  string     `json:"failure_code,omitempty"`
 }
 
 // RemoteRunsListOptions filter the run list (server-side query params).
@@ -36,6 +38,11 @@ type RemoteRunsListOptions struct {
 	Repo     string
 	Since    string // RFC3339, passed through verbatim
 	Limit    int
+	// FailureCode filters client-side on the run summary's failure_code
+	// (the server list endpoint returns it per run; a server-side filter
+	// would be a store query change). Pairs with Status: the usage-blocked
+	// sweep reads Status=failed_resumable + FailureCode=USAGE_LIMIT_BLOCKED.
+	FailureCode string
 	// Team scopes the listing to a team the caller can view (the
 	// server's resolveTenantScope reads it as ?team_id=). Empty = the
 	// caller's active team.
@@ -89,22 +96,47 @@ func RemoteRunsList(ctx context.Context, c *RemoteClient, p *Printer, opts Remot
 		q["team_id"] = opts.Team
 	}
 	path := "/api/runs" + QueryString(q)
-	if p.Format == OutputJSON {
-		return RemoteGetPrint(ctx, c, p, path)
-	}
 	var out struct {
 		Runs []remoteRunSummary `json:"runs"`
 	}
 	if _, err := c.Call(ctx, "GET", path, nil, &out); err != nil {
 		return err
 	}
+	// The failure-code filter is CLIENT-side, so it filters in BOTH output
+	// modes: a JSON consumer asking for USAGE_LIMIT_BLOCKED and receiving
+	// DLQ_PARKED rows too would see MORE than the operator's table — the
+	// dangerous direction for a fail-open filter.
+	if opts.FailureCode != "" {
+		filtered := make([]remoteRunSummary, 0, len(out.Runs))
+		for _, r := range out.Runs {
+			if r.FailureCode == opts.FailureCode {
+				filtered = append(filtered, r)
+			}
+		}
+		out.Runs = filtered
+	}
+	if p.Format == OutputJSON {
+		p.JSON(map[string]any{"runs": out.Runs})
+		return nil
+	}
 	rows := make([][]string, 0, len(out.Runs))
 	for _, r := range out.Runs {
+		if opts.FailureCode != "" && r.FailureCode != opts.FailureCode {
+			continue
+		}
 		name := r.Name
 		if name == "" {
 			name = r.WorkflowName
 		}
+		if opts.FailureCode != "" {
+			rows = append(rows, []string{r.ID, name, r.Status, r.FailureCode, FormatTime(r.CreatedAt)})
+			continue
+		}
 		rows = append(rows, []string{r.ID, name, r.Status, FormatTime(r.CreatedAt)})
+	}
+	if opts.FailureCode != "" {
+		p.Table([]string{"RUN ID", "NAME", "STATUS", "FAILURE CODE", "CREATED"}, rows)
+		return nil
 	}
 	p.Table([]string{"RUN ID", "NAME", "STATUS", "CREATED"}, rows)
 	return nil
@@ -840,5 +872,89 @@ func RemoteRunsPreviewCost(ctx context.Context, c *RemoteClient, p *Printer, fil
 		return err
 	}
 	PrintRemoteJSON(p, raw)
+	return nil
+}
+
+// RemoteRunsResumeUsageBlocked resumes every run parked on the provider's
+// usage window (status failed_resumable, failure_code USAGE_LIMIT_BLOCKED)
+// that the caller can see. It is the manual half of a forfait reset: the
+// provider's announced reset date armed those runs' retries days out, and a
+// manual reset is never observed on its own — the operator who just reset
+// the forfait runs this, and each resume walks the full admission gate and
+// the runner's own usage preflight, which is the authoritative probe (a run
+// whose window is still shut re-fails there, before anything spends, and
+// re-arms at the announced date). One failed resume does not stop the batch.
+func RemoteRunsResumeUsageBlocked(ctx context.Context, c *RemoteClient, p *Printer, opts RemoteRunsListOptions) error {
+	opts.Status = "failed_resumable"
+	opts.FailureCode = "USAGE_LIMIT_BLOCKED"
+	// No limit param: the server treats its absence as unbounded, and the
+	// sweep's promise is EVERY blocked run — a page cap would silently
+	// strand the oldest ones behind a full first page.
+	q := map[string]string{
+		"status": opts.Status,
+	}
+	if opts.Team != "" {
+		q["team_id"] = opts.Team
+	}
+	var out struct {
+		Runs []remoteRunSummary `json:"runs"`
+	}
+	if _, err := c.Call(ctx, "GET", "/api/runs"+QueryString(q), nil, &out); err != nil {
+		return err
+	}
+	// In JSON mode the per-run progress lines and the inner resume's own
+	// response body must stay out of stdout: the envelope below is the
+	// whole document. Human mode keeps both.
+	quiet := p
+	if p.Format == OutputJSON {
+		quiet = &Printer{W: io.Discard, Format: OutputJSON}
+	}
+	blocked, failed, resumed := 0, 0, 0
+	type result struct {
+		RunID  string `json:"run_id"`
+		Result string `json:"result"`
+		Detail string `json:"detail,omitempty"`
+	}
+	results := make([]result, 0, len(out.Runs))
+	for _, r := range out.Runs {
+		// The status query narrows to failed_resumable; the failure code is
+		// this sweep's own guard — a resumable run parked for another reason
+		// (a human answer, a scratch loss) is not ours to wake.
+		if r.FailureCode != "USAGE_LIMIT_BLOCKED" {
+			continue
+		}
+		blocked++
+		res := result{RunID: r.ID, Result: "resumed"}
+		if err := RemoteRunsResume(ctx, c, quiet, r.ID, RemoteRunsResumeOptions{}); err != nil {
+			res.Result, res.Detail = "failed", err.Error()
+			failed++
+		} else {
+			resumed++
+		}
+		results = append(results, res)
+		if p.Format != OutputJSON {
+			if res.Detail != "" {
+				p.Line("run %s: %s — %s", res.RunID, res.Result, res.Detail)
+			} else {
+				p.Line("run %s: %s", res.RunID, res.Result)
+			}
+		}
+	}
+	if p.Format == OutputJSON {
+		p.JSON(map[string]any{"processed": blocked, "resumed": resumed, "failed": failed, "runs": results})
+	} else {
+		switch blocked {
+		case 0:
+			p.Line("no run is parked on a usage window (status failed_resumable, failure_code USAGE_LIMIT_BLOCKED)")
+		default:
+			p.Line("%d usage-blocked run(s) processed — %d resumed, %d failed", blocked, resumed, failed)
+		}
+	}
+	// A sweep that could not resume a single run is a failed sweep, however
+	// politely each refusal was worded: the operator asked for work to
+	// resume and none did.
+	if blocked > 0 && resumed == 0 {
+		return fmt.Errorf("no usage-blocked run resumed (%d attempted, all failed)", failed)
+	}
 	return nil
 }

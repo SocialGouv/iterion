@@ -1055,6 +1055,15 @@
           "considered": {
             "type": "boolean"
           },
+          "door_reason": {
+            "type": "string"
+          },
+          "door_wants": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "reason": {
             "type": "string"
           },

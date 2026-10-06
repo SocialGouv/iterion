@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { FieldLabel } from "@/components/ui/FieldLabel";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Meter } from "@/components/ui/Meter";
 import { Select } from "@/components/ui/Select";
@@ -215,6 +216,7 @@ function PledgeCard({
   const [limits, setLimits] = useState<PoolLimits>({});
   const [hours, setHours] = useState<{ start: string; end: string }>({ start: "", end: "" });
   const [keyID, setKeyID] = useState<string>("");
+  const [fallbackUse, setFallbackUse] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Re-seed the form whenever the server's view changes, so a save or a
@@ -226,6 +228,7 @@ function PledgeCard({
       end: pledge?.window ? String(pledge.window.end_hour) : "",
     });
     setKeyID(pledge?.key_id ?? lendable.keys?.[0]?.id ?? "");
+    setFallbackUse(pledge?.fallback_use ?? false);
     // Keyed on the FIRST key's id, not on `lendable`: the parent rebuilds
     // that object on every render, so depending on it would re-seed — and
     // wipe — the form under a donor who is still typing their ceilings.
@@ -252,6 +255,7 @@ function PledgeCard({
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             },
       bots: pledge?.bots,
+      fallback_use: fallbackUse,
       key_id: keyID,
     };
   };
@@ -443,6 +447,20 @@ function PledgeCard({
           />
         </div>
       </div>
+
+      <Checkbox
+        checked={fallbackUse}
+        onChange={(e) => setFallbackUse(e.target.checked)}
+        label={
+          <span>
+            Also lend to <strong>fallback rungs</strong> of runs that hold their own credential
+            (the deployment's routing policy needing a kind they lack). An armed rung holds a
+            runs/day unit and a concurrency slot on your pledge until the run publishes, even
+            when the fallback never fires, and the attempt's whole spend books against your
+            ceilings — zero spend is not zero cost.
+          </span>
+        }
+      />
 
       <div className="flex flex-wrap gap-2 items-center">
         <Button variant="primary" disabled={disabled || busy} onClick={() => void save(true)}>
