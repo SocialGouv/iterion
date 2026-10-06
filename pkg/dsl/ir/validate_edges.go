@@ -302,25 +302,32 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 }
 
 // ---------------------------------------------------------------------------
-// C309 — a loop cap on a `round_robin` / `llm` router edge is never read
+// C309 — a loop cap or foreach on a `round_robin` / `llm` router edge is
+// never read
 // ---------------------------------------------------------------------------
 //
 // `execRoundRobin` collects the router's unconditional edges and alternates
 // over them; `execLLMRouter` takes the target the model named. Neither goes
-// through `evaluateEdgesWithLoopsRS`, so `as name(N)` on such an edge is
-// already accepted at compile time and silently ignored at run time — the
-// author's bounded promise is not kept. Symmetric to C244 (a loop on a
+// through `evaluateEdgesWithLoopsRS`, so `as name(N)` — and its foreach
+// sibling, `as foreach name(item in …)`, which the same evaluator is the
+// only reader of — on such an edge is already accepted at compile time and
+// silently ignored at run time: the author's bound iterates nothing, the
+// node runs once. Symmetric to C244 (a loop or foreach on a
 // fan_out_all / fan_out_each / llm-multi boundary is refused): a bounded
 // promise on an edge the runtime cannot bound is a program-time defect,
 // not something the runtime should have to catch.
 func (c *compiler) checkLoopOnRouterEdge(w *Workflow, r *RouterNode, mode string) {
 	for _, e := range w.Edges {
-		if e.From != r.ID || e.LoopName == "" {
+		if e.From != r.ID || (e.LoopName == "" && e.ForeachName == "") {
 			continue
 		}
+		cap := e.LoopName
+		if cap == "" {
+			cap = e.ForeachName
+		}
 		c.errorfAtEdge(DiagLoopOnRouterEdge, e,
-			"%s router %q edge to %q carries loop %q — the runtime does not read a cap on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the bound would silently do nothing; put the loop on the edge that re-enters the router",
-			mode, r.ID, e.To, e.LoopName, mode)
+			"%s router %q edge to %q carries %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the loop on the edge that re-enters the router, and give that node the loop-exhaustion exit C145 asks for",
+			mode, r.ID, e.To, cap, mode)
 	}
 }
 

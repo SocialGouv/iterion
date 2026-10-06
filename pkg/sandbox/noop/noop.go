@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -126,12 +127,25 @@ func (r *run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		c.Dir = r.info.WorkspacePath
 	}
 	c.Env = os.Environ()
-	// The spec's seeded env (default locale, ITERION_TREE_NOISE pathspecs,
-	// the artifact dir) reaches deliberately-pinned noop commands too — a
-	// pinned driver still runs engine-compiled tool scripts whose scope
-	// gates read those variables. Folded after the inherited environment
-	// and before the per-exec overrides, so an ExecOpts entry still wins.
+	// The spec's seeded env (default locale, ITERION_TREE_NOISE pathspecs)
+	// reaches deliberately-pinned noop commands too — a pinned driver still
+	// runs engine-compiled tool scripts whose scope gates read those
+	// variables. This driver executes on the HOST, so the operator's own
+	// environment is the claim: a key it already carries keeps its ambient
+	// value, and the seed only fills the gaps — the same rule
+	// seedTreeNoiseEnv applies to an operator export. A key that is not
+	// in the inherited environment, or a per-exec override, still lands:
+	// the fold order stays inherited < spec < opts.
+	ambient := make(map[string]bool, len(c.Env))
+	for _, kv := range c.Env {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			ambient[kv[:i]] = true
+		}
+	}
 	for k, v := range r.prepared.spec.Env {
+		if ambient[k] {
+			continue
+		}
 		c.Env = append(c.Env, k+"="+v)
 	}
 	for k, v := range opts.Env {

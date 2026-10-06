@@ -245,6 +245,17 @@ workflow w:
 			t.Fatalf("C309 fires on an `llm multi: true` router — C244 owns that shape, C309 must be silent:\n%s\n%v", d.Error(), cr.Diagnostics)
 		}
 	}
+	// The multi shape is not LEFT silent: C244 must be the one firing.
+	c244 := false
+	for _, d := range cr.Diagnostics {
+		if d.Code == DiagLoopInExecBranch {
+			c244 = true
+			break
+		}
+	}
+	if !c244 {
+		t.Fatalf("C244 did not fire on the llm-multi shape C309 skips — the edge would be silent altogether:\n%v", cr.Diagnostics)
+	}
 	// Mutation: same graph without multi — C309 must fire.
 	singleBad := strings.Replace(multiBad, "  multi: true\n", "", 1)
 	cr2 := compileText(t, singleBad)
@@ -257,5 +268,54 @@ workflow w:
 	}
 	if !found {
 		t.Fatalf("C309 did not fire once `multi: true` was removed — the guard is over-broad:\n%v", cr2.Diagnostics)
+	}
+}
+
+// The foreach form is the loop cap's sibling on the same blind edge: the
+// router's own selector (`execRoundRobin`'s alternation, `execLLMRouter`'s
+// pick) is the only reader of neither, so a `foreach` on the router's
+// outgoing edge would iterate nothing — the body runs once. C244 owns the
+// llm-multi shape for foreach too (IsBoundedIteration covers it), so the
+// skip carries over unchanged.
+func TestC309FiresOnAForeachOnARouterEdge(t *testing.T) {
+	for name, mode := range map[string]string{
+		"round_robin": "round_robin",
+		"llm single":  "llm",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := `dsl: 2
+
+schema pout:
+  ok: bool
+
+tool worker_a:
+  command: ` + "`echo hi`" + `
+  output: pout
+
+tool worker_b:
+  command: ` + "`echo hi`" + `
+  output: pout
+
+router pick:
+  mode: ` + mode + `
+  model: "m"
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: pick
+  pick -> worker_a as foreach spin(item in "['x','y']")
+  pick -> worker_b
+  worker_a -> done
+  worker_b -> done
+`
+			cr := compileText(t, src)
+			for _, d := range cr.Diagnostics {
+				if d.Code == DiagLoopOnRouterEdge {
+					return
+				}
+			}
+			t.Fatalf("C309 did not fire on a foreach carried by a %s router's outgoing edge:\n%v", mode, cr.Diagnostics)
+		})
 	}
 }
