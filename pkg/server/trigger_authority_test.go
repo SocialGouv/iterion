@@ -87,6 +87,28 @@ func TestTriggerRelayVerifiesRunEventAuthority(t *testing.T) {
 		t.Fatalf("forgeries relayed: %d handler calls, want 1", calls)
 	}
 
+	// A premature claim (R0a963c): a real RUNNING run of the victim
+	// tenant with a forged run.finished — the run has not exited, the
+	// event drops even though tenant and kind pass the rebuild.
+	if _, err := st.CreateRun(ctx, "run-live", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	live, err := st.LoadRun(ctx, "run-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.TenantID = "team-a"
+	live.Status = store.RunStatusRunning
+	if err := st.SaveRun(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := h(ctx, runEvent("team-a", trigger.KindRunFinished, "run-live")); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("premature finished claim relayed: %d handler calls, want 1", calls)
+	}
+
 	// A non-run source passes through unverified (its own admission governs).
 	if err := h(ctx, trigger.Event{Source: "forge", Kind: "forge.push", TenantID: "team-z"}); err != nil {
 		t.Fatal(err)

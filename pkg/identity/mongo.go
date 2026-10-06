@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -75,6 +77,22 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "org_id", Value: 1}, {Key: "role", Value: 1}}, Options: options.Index().SetName("org_role")},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure org_memberships indexes: %w", err)
+	}
+	// The unique index below fails its BUILD on a pre-existing duplicate
+	// (the pre-check window this closes, or manual edits) — sweep first
+	// and name the offenders, so an upgrade fails diagnosably instead of
+	// inside the index build.
+	cur, err := s.teams.Find(ctx, bson.M{"runner_pool": bson.M{"$exists": true, "$gt": ""}},
+		options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}, {Key: "slug", Value: 1}, {Key: "runner_pool", Value: 1}}))
+	if err != nil {
+		return fmt.Errorf("identity: sweep teams for pool duplicates: %w", err)
+	}
+	var mapped []Team
+	if err := cur.All(ctx, &mapped); err != nil {
+		return fmt.Errorf("identity: sweep teams for pool duplicates: %w", err)
+	}
+	if err := duplicatePoolHolders(mapped); err != nil {
+		return err
 	}
 	if _, err := s.teams.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "slug", Value: 1}}, Options: options.Index().SetUnique(true).SetName("slug_unique")},
@@ -547,4 +565,28 @@ func (s *MongoStore) ListOIDCLinksByUser(ctx context.Context, userID string) ([]
 
 func (s *MongoStore) DeleteOIDCLink(ctx context.Context, provider, providerUserID string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.oidcLinks, bson.M{"provider": provider, "provider_user_id": providerUserID}, ErrNotFound, "identity: delete oidc link")
+}
+
+// duplicatePoolHolders reports the teams that share a non-empty
+// runner_pool — the pre-flight the unique index's build would otherwise
+// fail on undiagnosed.
+func duplicatePoolHolders(mapped []Team) error {
+	holders := map[string][]string{}
+	for _, t := range mapped {
+		if t.RunnerPool == "" {
+			continue
+		}
+		holders[t.RunnerPool] = append(holders[t.RunnerPool], t.ID+"/"+t.Slug)
+	}
+	pools := make([]string, 0, len(holders))
+	for pool, ids := range holders {
+		if len(ids) > 1 {
+			pools = append(pools, fmt.Sprintf("%q held by %s", pool, strings.Join(ids, ", ")))
+		}
+	}
+	sort.Strings(pools)
+	if len(pools) > 0 {
+		return fmt.Errorf("identity: the one-team-per-pool invariant is violated — unmap all but one team per pool before upgrading: %s", strings.Join(pools, "; "))
+	}
+	return nil
 }

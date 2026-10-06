@@ -50,8 +50,29 @@ func verifyRunEventAuthority(runs store.RunStore, logger *iterlog.Logger, next e
 				}
 				return nil
 			}
+			// A running or queued run has not exited: BuildRunOutcome's
+			// default would classify it run.finished (R0a963c), firing the
+			// victim's finished-subscriptions prematurely. Only a status
+			// that IS an exit — or a human-gate pause — relays.
+			if !runStatusRelayable(store.RunStatus(rebuilt.Subject.State)) {
+				if logger != nil {
+					logger.Warn("trigger: dropped %s event for run %q — status %q is not an exit, the run is still going", ev.Kind, ev.Subject.ID, rebuilt.Subject.State)
+				}
+				return nil
+			}
 			return next(ctx, rebuilt)
 		}
 		return next(ctx, ev)
 	}
+}
+
+// runStatusRelayable reports whether a persisted status IS a run exit
+// (or a human-gate pause, which relays run.paused): a running or queued
+// run implies no outcome at all.
+func runStatusRelayable(s store.RunStatus) bool {
+	switch s {
+	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
+		return true
+	}
+	return s.IsPaused()
 }
