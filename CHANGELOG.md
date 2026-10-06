@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.244.0](https://github.com/SocialGouv/iterion/compare/v3.243.0...v3.244.0) (2026-10-06)
+
+### Features
+
+* **llmroute:** the transcript handoff - recorder, seal, attach, render ([#2210](https://github.com/SocialGouv/iterion/issues/2210) slice 4) ([#2237](https://github.com/SocialGouv/iterion/issues/2237)) ([a0fba82](https://github.com/SocialGouv/iterion/commit/a0fba82cbdeb17da0a3f7122750b702d0c64395b))
+
+    <details><summary>why</summary>
+
+    What a cross-harness switch hands the incoming harness (ADR-121 § Delivery 2). S3 said the switch; S4 records the outgoing node's work, seals it at the crossing, attaches it to the incoming element, and renders it - reuse continues the node mid-work, restart re-runs the original prompt with the transcript as reference.
+
+    </details>
+* **reviewtopology:** a pinned mono_family no credential serves refuses the launch ([#2258](https://github.com/SocialGouv/iterion/issues/2258)) ([be4837a](https://github.com/SocialGouv/iterion/commit/be4837a3f3bccfd26e07f2af6bab5dfe0e765691))
+
+    <details><summary>why</summary>
+
+    A launch whose configuration cannot succeed does not start. The resolver answered "is there a route for this family on this tenant?" only after the first review node died — a whole repo's required check went dark while every run failed identically, and the 7-day runs listing hid the cause (2026-09-22). An operator pin on mono_family naming a family the credential set cannot serve now refuses the launch, naming the pinned family, the available ones and the fix; the silent substitution it…
+
+    </details>
+* **store:** IR blob reads are mediated by the run's tenant (P5-b/D14 F7) ([#2260](https://github.com/SocialGouv/iterion/issues/2260)) ([a1d9191](https://github.com/SocialGouv/iterion/commit/a1d9191d0ae996ae36626d569d2f64ae29637c1f))
+
+    <details><summary>why</summary>
+
+    An IR blob (or bundle snapshot) read resolves the run id embedded in its key and loads that run under the caller's tenant filter before touching the bucket: a foreign tenant's key refuses with the same not-found a missing blob would return, and an unattributed caller fails closed rather than reading the bucket. The snapshot shape ("<runID>-bundle-<digest>") falls back to the owning run before the boundary. The S3 credential remains deployment-wide — the accepted residual (the pods sit inside…
+
+    </details>
+
 ## [3.243.0](https://github.com/SocialGouv/iterion/compare/v3.242.0...v3.243.0) (2026-10-06)
 
 ### Features
