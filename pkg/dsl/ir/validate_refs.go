@@ -117,6 +117,29 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 				})
 			}
 		}
+		// Edge `when` expressions. Only the run/loop kinds flow from here:
+		// the edge's field conditions (`when not ok`) are validateConditionFields'
+		// territory with different output semantics, and a double report would
+		// fire its diagnostics twice. The expr namespaces the evaluator DOES
+		// walk (`run`, `loop`) were never walked at all — `noise: run.tree_nose`
+		// compiled clean — so validateRunRef (C153) and validateLoopRef (C147)
+		// now see them. A `when` on the edge that DECLARES the loop is safe:
+		// `w.Loops` is fully populated before validation runs, so the
+		// self-edge's own loop resolves.
+		if e.Expression != nil {
+			for _, r := range e.Expression.Refs() {
+				ref := refFromExpr(r)
+				if ref == nil || (ref.Kind != RefRun && ref.Kind != RefLoop) {
+					continue
+				}
+				out = append(out, refContext{
+					Ref:      ref,
+					NodeID:   e.From,
+					Location: fmt.Sprintf("edge %s -> %s, when %q", e.From, e.To, e.ExpressionSrc),
+					Span:     edgeSpans[e],
+				})
+			}
+		}
 	}
 
 	// Node `with:` refs — the payload a subbot hands its child, the fields an
@@ -261,9 +284,10 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 
 // refFromExpr converts an [expr.Ref] (namespace + path) to an [ir.Ref]
 // so the shared template-ref validator can check compute-node refs
-// alongside prompt / edge / tool refs. Returns nil when the namespace
-// isn't one of the kinds the template validator handles (e.g. `loop`,
-// `run` — both legitimate but consumed by separate validators).
+// alongside prompt / edge / tool refs. `run` and `loop` flow through
+// too (validateRunRef / validateLoopRef — a `noise: run.tree_nose`
+// used to compile clean); the edge-`when` walk keeps only those two
+// kinds, so field conditions keep validateConditionFields' semantics.
 func refFromExpr(r expr.Ref) *Ref {
 	var kind RefKind
 	switch r.Namespace {
@@ -280,6 +304,10 @@ func refFromExpr(r expr.Ref) *Ref {
 	case "secrets":
 		// So C093 (unknown secret) fires for {{secrets.X}} in compute exprs too.
 		kind = RefSecrets
+	case "run":
+		kind = RefRun
+	case "loop":
+		kind = RefLoop
 	default:
 		return nil
 	}
