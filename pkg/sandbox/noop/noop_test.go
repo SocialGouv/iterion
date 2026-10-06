@@ -111,3 +111,31 @@ func TestConstructorMatchesNew(t *testing.T) {
 		t.Errorf("Constructor and New disagree: %q vs %q", a.Name(), b.Name())
 	}
 }
+
+func TestNoopExecDeliversTheSpecSeededEnv(t *testing.T) {
+	d, _ := New()
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode: sandbox.ModeNone,
+		Env:  map[string]string{"ITERION_TEST_SEED": "seeded", "ITERION_TEST_BOTH": "from-spec"},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "test"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(context.Background())
+
+	res, err := run.Exec(context.Background(), []string{"sh", "-c", "printf %s \"$ITERION_TEST_SEED|$ITERION_TEST_BOTH\""},
+		sandbox.ExecOpts{Env: map[string]string{"ITERION_TEST_BOTH": "from-opts"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d", res.ExitCode)
+	}
+	if got, want := string(res.Stdout), "seeded|from-opts"; got != want {
+		t.Errorf("stdout = %q, want %q — the spec's seeded env must reach a pinned noop command, and an ExecOpts entry must still win", got, want)
+	}
+}
