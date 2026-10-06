@@ -479,3 +479,144 @@ func TestAnOffStackDedentWithADeepTabLineBeforeTheCloseBailsAndKeepsTheWorkflowA
 		t.Fatalf("the broken block's own agent was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
 	}
 }
+
+// A mis-indented declaration standing at the landing line's own column —
+// `judge j3:` one level too shallow, after a rescued property — is not the
+// rescue's to keep: the landing keeps the ancestor's loop open across it,
+// and that loop reads it whole as its property (an `expected ->` fight with
+// the router-edge syntax). The rescue bails; the ordinary recovery closes
+// the blocks and the top level reads the declaration as itself.
+func TestADeclarationAtTheLandingColumnAfterARescueStandsAsItself(t *testing.T) {
+	res := Parse("x.bot", "workflow w1:\n  entry: v0\n  sandbox:\n    network:\n      rules: [a1,\n       workflow w2:\n          model: v2\n  rules: [a1, b]\n  judge j3:\n    model: v3\n")
+	if len(res.File.Agents) != 0 {
+		t.Errorf("the mis-indented `workflow w2:` was claimed as an agent: %+v", res.File.Agents)
+	}
+	if len(res.File.Judges) != 1 || res.File.Judges[0].Name != "j3" || res.File.Judges[0].Model != "v3" {
+		t.Fatalf("the declaration at the landing's column was eaten: %+v; diagnostics %v", res.File.Judges, res.Diagnostics)
+	}
+}
+
+// The same guard one line further: the close point itself must not be a
+// declaration a still-open block owns. The splice hands the loops above
+// their closing DEDENTs, and the loop at the close line's column reads
+// `judge j3:` whole — where main, bailing, read it at the top level. A
+// declaration at the TOP LEVEL's column reads as itself after the splice,
+// so only an owned column refuses.
+func TestACloseLineADeclarationStandsAtIsNeverARescueClosePoint(t *testing.T) {
+	res := Parse("x.bot", "workflow w1:\n  entry: v0\n  sandbox:\n    network:\n      rules: [a1,\n       workflow w2:\n          model: v2\n    allow: [a1, b]\n  judge j3:\n    model: v3\n  k: v1\n")
+	if len(res.File.Agents) != 0 {
+		t.Errorf("the mis-indented `workflow w2:` was claimed as an agent: %+v", res.File.Agents)
+	}
+	if len(res.File.Judges) != 1 || res.File.Judges[0].Name != "j3" || res.File.Judges[0].Model != "v3" {
+		t.Fatalf("the declaration at the close point was eaten: %+v; diagnostics %v", res.File.Judges, res.Diagnostics)
+	}
+}
+
+// A declaration starter mis-indented INSIDE the remainder — a `judge j4:`
+// pushed deeper than the broken list — is not the junk continuation the
+// off-stack read-past covers. Main bailed on the Error and let the ordinary
+// recovery route the lines after it to the shallower block that owns them:
+// the valid `mounts` list main reads whole, the read-past landing would
+// hand to the list's own block, which refuses it. The read-past disarms.
+func TestADeclarationInsideTheRemainderKeepsTheBailAndTheListMainReads(t *testing.T) {
+	res := Parse("x.bot", "workflow w3:\n  entry: v0\n  sandbox:\n    network:\n      rules: [a3,\n         judge j4:\n       model: v4\n      mounts: [a3, b]\n    allow: [a3, b]\n")
+	sb := res.File.Workflows[0].Sandbox
+	if sb == nil || !reflect.DeepEqual(sb.Mounts, []string{"a3", "b"}) {
+		t.Fatalf("the list main reads whole was lost to the list's own block: %+v; diagnostics %v", sb, res.Diagnostics)
+	}
+	if got := sb.Network.Rules; !reflect.DeepEqual(got, []string{"a3"}) {
+		t.Errorf("rules = %v, want [a3]", got)
+	}
+}
+
+// A less-indented line at a column NO open block owns — between the
+// ancestor's column and the list's own — leaves the lexer no level to match
+// (an off-stack dedent by construction), so the off-stack bail fires and
+// the rescue keeps main's exact refusal: the stray is said on its line, the
+// property behind it is lost the way main lost it, and the list's own
+// property still reads.
+func TestALineAtAStrangersColumnBailsAndKeepsMainRefusals(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n   stray: x\n    image: \"img\"\n")
+	sb := res.File.Workflows[0].Sandbox
+	if sb == nil || !reflect.DeepEqual(sb.Network.Rules, []string{"a"}) {
+		t.Fatalf("the list's own property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
+	}
+	if sb.Image != "" {
+		t.Errorf("the property behind an off-stack stray was rescued where main loses it: %+v", sb)
+	}
+	if len(res.Diagnostics) != 3 {
+		t.Errorf("want main's three diagnostics (the list, the stray's off-stack dedent, the stray property), got %v", res.Diagnostics)
+	}
+}
+
+// An ancestor landing whose close point hands the rest to the ordinary
+// recovery: the property is saved, and the line after it at the shallower
+// column is refused by the loop that owns it, exactly as main refused it.
+func TestARescuedPropertyKeepsTheFollowingLineReadAsMainReadsIt(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n    image: \"img\"\n  entry2: x\n")
+	sb := res.File.Workflows[0].Sandbox
+	if sb == nil || sb.Image != "img" {
+		t.Fatalf("the ancestor's property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
+	}
+	if len(res.Diagnostics) != 2 || !strings.Contains(res.Diagnostics[1].Message, "entry2") {
+		t.Errorf("want the list's diagnostic and entry2 refused as main refuses it, got %v", res.Diagnostics)
+	}
+}
+
+// A keyword that doubles as a property name is CLAIMABLE in its property
+// form: `contract: c` standing at the workflow's column after a rescued
+// list is the workflow's contract, not a mis-indented contract declaration
+// — the header form wants a NAME between the keyword and the colon. The
+// landing reads it whole; refusing every contract-starting line loses the
+// contract and drags the orphaned closer's stray and an `expected contract
+// name` fight behind it.
+func TestAPropertyFormOfADeclarationKeywordIsStillClaimable(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [github.com,\n]\n  contract: c\n")
+	if res.File.Workflows[0].Contract != "c" {
+		t.Fatalf("the workflow's contract was lost to the declaration refusal: %q; diagnostics %v", res.File.Workflows[0].Contract, res.Diagnostics)
+	}
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Line != 5 {
+		t.Errorf("want the list's diagnostic alone, got %v", res.Diagnostics)
+	}
+}
+
+// A group holds agent, judge, router, human, tool and compute DECLARATIONS
+// as members: a member header standing at the group's column after a
+// rescued list is the next member, not a misplaced top-level declaration —
+// refusing it silently drops the member, and a `use g as` would no longer
+// instantiate it.
+func TestAGroupMemberHeaderAfterARescuedListIsStillAMember(t *testing.T) {
+	res := Parse("x.bot", "group g:\n  agent a:\n    tools: [bash,\n]\n  agent b:\n    model: m\n")
+	if len(res.File.Groups) != 1 || len(res.File.Groups[0].Agents) != 2 {
+		t.Fatalf("the group lost a member to the declaration refusal: %+v; diagnostics %v", res.File.Groups, res.Diagnostics)
+	}
+	if res.File.Groups[0].Agents[0].Name != "a" || res.File.Groups[0].Agents[1].Name != "b" || res.File.Groups[0].Agents[1].Model != "m" {
+		t.Errorf("the members were not read whole: %+v", res.File.Groups[0].Agents)
+	}
+}
+
+// Keywords that name NO property anywhere — secrets, presets, mcp_server —
+// are a mis-indented top-level declaration in any form, and the rescue
+// refuses them: the ordinary recovery refuses the line exactly as it did
+// before the rescue existed, and the list's own property still reads.
+func TestAKeywordThatNamesNoPropertyIsRefusedInAnyForm(t *testing.T) {
+	for _, c := range []struct{ name, line string }{
+		{"secrets", "  secrets:\n    k: v\n"},
+		{"presets", "  presets:\n  p1: v\n"},
+		{"mcp_server", "  mcp_server fs:\n    command: x\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n"+c.line)
+			sb := res.File.Workflows[0].Sandbox
+			if sb == nil || !reflect.DeepEqual(sb.Network.Rules, []string{"a"}) {
+				t.Fatalf("the list's own property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
+			}
+			if res.File.Secrets != nil || res.File.Presets != nil || len(res.File.MCPServers) != 0 {
+				t.Errorf("the mis-indented declaration was claimed by the rescue: secrets=%v presets=%v mcp=%d", res.File.Secrets != nil, res.File.Presets != nil, len(res.File.MCPServers))
+			}
+			if len(res.Diagnostics) < 2 {
+				t.Errorf("want the line refused with main's diagnostics, got %v", res.Diagnostics)
+			}
+		})
+	}
+}
