@@ -35,6 +35,14 @@ type gitlabMR struct {
 	Author          gitlabUser `json:"author"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// Merge-status pair: legacy `merge_status` plus the authoritative
+	// `detailed_merge_status` (GitLab ≥ 15.6). Read by the mergeability
+	// verdict; every other lane ignores them.
+	MergeStatus         string `json:"merge_status"`
+	DetailedMergeStatus string `json:"detailed_merge_status"`
+	// BlockingDiscussionsResolved is nil when the instance does not report
+	// the field (a pointer, so "not reported" and "resolved" stay distinct).
+	BlockingDiscussionsResolved *bool `json:"blocking_discussions_resolved"`
 }
 
 // headProject is where a merge request's head branch lives, as far as it is
