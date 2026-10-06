@@ -171,3 +171,32 @@ func TestNoopExecAmbientEnvWinsOverTheSpecSeed(t *testing.T) {
 		t.Errorf("stdout = %q, want %q — the operator's ambient value must win, the seed must fill the gap", got, want)
 	}
 }
+
+// An explicitly EMPTY ambient export is not a claim — the same rule
+// seedTreeNoiseEnv applies to an operator export — so the spec's seed
+// lands over it: an empty ITERION_TREE_NOISE must never silence the host
+// gate's canonical pathspec list.
+func TestNoopExecEmptyAmbientExportIsNotAClaim(t *testing.T) {
+	t.Setenv("ITERION_TEST_EMPTY", "")
+	d, _ := New()
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode: sandbox.ModeNone,
+		Env:  map[string]string{"ITERION_TEST_EMPTY": "seeded"},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "test"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(context.Background())
+
+	res, err := run.Exec(context.Background(), []string{"sh", "-c", `printf %s "$ITERION_TEST_EMPTY"`}, sandbox.ExecOpts{})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got, want := string(res.Stdout), "seeded"; got != want {
+		t.Errorf("stdout = %q, want %q — an empty ambient export must not swallow the seed", got, want)
+	}
+}

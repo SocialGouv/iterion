@@ -321,13 +321,15 @@ func (c *compiler) checkLoopOnRouterEdge(w *Workflow, r *RouterNode, mode string
 		if e.From != r.ID || (e.LoopName == "" && e.ForeachName == "") {
 			continue
 		}
-		cap := e.LoopName
-		if cap == "" {
-			cap = e.ForeachName
+		if e.LoopName != "" {
+			c.errorfAtEdge(DiagLoopOnRouterEdge, e,
+				"%s router %q edge to %q carries loop %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the loop on the edge that re-enters the router, and give that node the loop-exhaustion exit C145 asks for",
+				mode, r.ID, e.To, e.LoopName, mode)
+			continue
 		}
 		c.errorfAtEdge(DiagLoopOnRouterEdge, e,
-			"%s router %q edge to %q carries %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the loop on the edge that re-enters the router, and give that node the loop-exhaustion exit C145 asks for",
-			mode, r.ID, e.To, cap, mode)
+			"%s router %q edge to %q carries foreach %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the iteration on the edge that re-enters the router",
+			mode, r.ID, e.To, e.ForeachName, mode)
 	}
 }
 
