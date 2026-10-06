@@ -28,13 +28,25 @@ const (
 // its vars, nodes, schemas and edges are compiled by now — and returns them
 // by name with the one the workflow keeps. Every contract is held, named by
 // the workflow or not: a contract describes THIS program.
-func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]*Var, edges []*Edge) (map[string]*PublicContract, *PublicContract) {
+func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]*Var, edges []*Edge, loops map[string]*Loop, foreaches map[string]*Foreach) (map[string]*PublicContract, *PublicContract) {
 	contracts := map[string]*PublicContract{}
 	succeeds := nodesOnAPathToDone(c.nodes, edges)
-	// The nodes a parallel branch body executes — one node id may run once
-	// per branch, so a contract port bound to one of them projects whichever
-	// branch execution finished last (C310).
+	// The nodes a parallel branch body executes, plus every iteration body:
+	// one node id may run once per branch, or once per item / iteration
+	// under a foreach or a bounded loop, so a contract port bound to one of
+	// them projects whichever execution finished last (C310). The loop
+	// bodies were computed on this same partial graph before the call.
 	fanBody := execBranchBodyNodes(&Workflow{Nodes: c.nodes, Edges: edges})
+	for _, loop := range loops {
+		for id := range loop.Body {
+			fanBody[id] = true
+		}
+	}
+	for _, fe := range foreaches {
+		for id := range fe.Body {
+			fanBody[id] = true
+		}
+	}
 	for _, decl := range c.file.Contracts {
 		if decl == nil {
 			continue
@@ -43,7 +55,7 @@ func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]
 			c.errorfAtSpan(DiagContractInput, decl.Span, "contract %q is declared twice: a name declares one contract", decl.Name)
 			continue
 		}
-			contracts[decl.Name] = c.compilePublicContract(decl, vars, succeeds, fanBody)
+		contracts[decl.Name] = c.compilePublicContract(decl, vars, succeeds, fanBody)
 	}
 	if wf.Contract == "" {
 		return contracts, nil
@@ -449,16 +461,16 @@ func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort, 
 	if !succeeds[nodeID] {
 		c.warnfAtSpan(DiagContractOutputOffSuccess, p.Span, "contract %q: output %q: node %q is on no path to done — the bot produces it only when it fails", contract, p.Name, nodeID)
 	}
-	// A node inside a parallel branch body runs once PER branch (and per
-	// item, under fan_out_each) under the same node id; the port capture
-	// keeps one entry per node id, so the declared port projects whichever
-	// branch execution finished last — a coin flip between runs, not a
-	// deterministic answer. A warning, not a refusal: the value may not
-	// actually vary per branch, and an author aware of the projection can
-	// mean it. Route the port through a convergence node instead when a
-	// deterministic answer is wanted.
+	// A node inside a parallel branch body, a foreach, or a bounded loop
+	// runs once PER branch / item / iteration under the same node id; the
+	// port capture keeps one entry per node id, so the declared port
+	// projects whichever execution finished last — one execution's output,
+	// not the collection. A warning, not a refusal: the value may not
+	// actually vary between executions, and an author aware of the
+	// projection can mean it. Route the port through the convergence node
+	// when a deterministic answer is wanted.
 	if fanBody[nodeID] {
-		c.warnfAtSpan(DiagContractOutputOffFanOut, p.Span, "contract %q: output %q: node %q executes inside a fan-out branch body — the port projects whichever branch execution finished last, one branch's output, not the collection", contract, p.Name, nodeID)
+		c.warnfAtSpan(DiagContractOutputOffFanOut, p.Span, "contract %q: output %q: node %q executes more than once across parallel branches or loop/foreach iterations — the port projects whichever execution finished last, one execution's output, not the collection", contract, p.Name, nodeID)
 	}
 	if p.FileSpec != nil {
 		if field != "" {

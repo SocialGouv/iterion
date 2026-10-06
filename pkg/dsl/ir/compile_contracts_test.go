@@ -422,7 +422,7 @@ func TestAnOutputBoundInsideAFanOutBodyIsAWarning(t *testing.T) {
 	if len(errorCodes(cr)) != 0 {
 		t.Fatalf("errors: %v", cr.Diagnostics)
 	}
-	d := diagWith(cr, DiagContractOutputOffFanOut, `node "build" executes inside a fan-out branch body`)
+	d := diagWith(cr, DiagContractOutputOffFanOut, `node "build" executes more than once across parallel branches or loop/foreach iterations`)
 	if d == nil || d.Severity != SeverityWarning || d.Line == 0 {
 		t.Fatalf("no positioned C310 warning: %v", cr.Diagnostics)
 	}
@@ -430,5 +430,20 @@ func TestAnOutputBoundInsideAFanOutBodyIsAWarning(t *testing.T) {
 	// single again: the deterministic answer, no warning.
 	if cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "merge")).File); diagWith(cr, DiagContractOutputOffFanOut, "") != nil {
 		t.Fatalf("a producer at the convergence drew C310: %v", cr.Diagnostics)
+	}
+}
+
+// The same capture under an iteration body: a port bound to a node inside
+// a foreach (or a bounded loop cycle) projects whichever iteration finished
+// last. Mutation: revert the Loop.Body union in compilePublicContracts and
+// the foreach case reddens.
+func TestAnOutputBoundInsideAForeachBodyIsAWarning(t *testing.T) {
+	src := "vars:\n  goal: string\n\nschema report:\n  summary: string\n  ok: bool\n\nprompt build_user:\n  Work toward {{vars.goal}}.\n\nprompt merge_user:\n  Summaries: {{outputs.build.summary}}.\n\nagent build:\n  model: \"m\"\n  user: build_user\n  output: report\n\nagent merge:\n  model: \"m\"\n  user: merge_user\n  output: report\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    summary: string\n      from: build.summary\n\nworkflow w:\n  contract: c\n  entry: build\n  build -> merge when ok as foreach scan(item in \"[\\\"a\\\", \\\"b\\\"]\")\n  build -> merge\n  merge -> done\n"
+	cr := Compile(parser.Parse("x.bot", src).File)
+	if len(errorCodes(cr)) != 0 {
+		t.Fatalf("errors: %v", cr.Diagnostics)
+	}
+	if diagWith(cr, DiagContractOutputOffFanOut, `node "build" executes more than once`) == nil {
+		t.Fatalf("no C310 for a producer inside a foreach body: %v", cr.Diagnostics)
 	}
 }
