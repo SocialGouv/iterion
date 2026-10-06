@@ -1218,12 +1218,16 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 		"exit_code":   info.ExitCode,
 	}
 	putDelegateModelFields(data, info)
+	// Same rule as delegate_finished: the credential slot the per-credential
+	// ledger keys on (claude_code only reads it as a route source).
+	if info.Fingerprint != "" {
+		data["fingerprint"] = info.Fingerprint
+	}
 	// Same rule as delegate_finished: omitted when the price table did not
-	// know the model. The org-metering accumulator reads delegate_finished
-	// alone today — a delegation that ends here is unbilled there, the
-	// pre-existing shape for every failed attempt; the event carries the
-	// figure so a reader that closes that gap (and the schema re-ask, whose
-	// error event prices the re-ask's own marginal) sees it.
+	// know the model, so an observer can tell "no cost data" from a measured
+	// $0 by the key's absence. A delegation that ends here used to be
+	// unbilled in the org-metering accumulator, which read delegate_finished
+	// alone; the accumulator now books this figure too.
 	if info.CostUSD > 0 {
 		data["cost_usd"] = info.CostUSD
 	}

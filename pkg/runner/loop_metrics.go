@@ -457,6 +457,58 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			phase = "unknown"
 		}
 		m.reg.DelegateBackgroundTotal.WithLabelValues(backend, phase).Inc()
+	case store.EventDelegateError:
+		// A delegation that dies (timeout, rate limit, transport error)
+		// burned its tokens and cost exactly like a finished one — booking
+		// only the finished branch left every failed attempt unbilled in
+		// RunTotals, and the org's monthly bucket under-read what the
+		// credential actually spent. Same accounting as the finished
+		// branch below: one aggregate token count to the aggregate
+		// direction, cost from the delegate's own figure, the claw
+		// summarised guard so a loop whose llm_step_finished steps were
+		// already priced is not charged twice when its aggregate then
+		// errors. The two events are mutually exclusive per attempt
+		// (the executor fires one or the other), so no sum double-counts.
+		backend, _ := evt.Data["backend"].(string)
+		if backend == "" {
+			backend = "delegate"
+		}
+		tokensF := toFloat(evt.Data["tokens"])
+		effective, _ := evt.Data["effective_model"].(string)
+		served, _ := evt.Data["route_model"].(string)
+		var source string
+		if backend == delegate.BackendClaudeCode {
+			source, _ = evt.Data["fingerprint"].(string)
+		}
+
+		m.mu.Lock()
+		switch {
+		case served != "" && evt.NodeID != "":
+			m.modelByNode[evt.NodeID] = servedRoute(served, effective)
+		case effective != "" && evt.NodeID != "":
+			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
+		}
+		modelName := m.modelByNode[evt.NodeID]
+		summarised := backend == "claw" && m.stepsSeen[evt.NodeID]
+		if !summarised {
+			costDelta := toFloat(evt.Data["cost_usd"])
+			if costDelta == 0 && backend == "claw" && tokensF > 0 && modelName != "" {
+				if rate := m.rateForLocked(modelName); rate.known {
+					costDelta = tokensF * rate.inputUSDPerToken
+				}
+			}
+			m.runAggregateTokens += int64(tokensF)
+			m.runCostUSD += costDelta
+			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
+		}
+		m.mu.Unlock()
+		if summarised {
+			return
+		}
+		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
+		if costDelta := toFloat(evt.Data["cost_usd"]); costDelta > 0 && m.reg != nil {
+			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
+		}
 	case store.EventDelegateFinished:
 		backend, _ := evt.Data["backend"].(string)
 		if backend == "" {
