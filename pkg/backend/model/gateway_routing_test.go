@@ -128,7 +128,7 @@ func TestElementBuilder_RefusedGatewayElementIsABuildError(t *testing.T) {
 			func(_ context.Context, _ string) (*delegate.Task, error) {
 				return &delegate.Task{NodeID: "gw", Model: "openai_compatible/m"}, nil
 			})
-		_, _, _, err := build(context.Background(), 0, chainElement{Model: "openai_compatible/m"})
+		_, _, _, err := build(context.Background(), 0, chainElement{Model: "openai_compatible/m"}, "")
 		if err == nil {
 			t.Fatal("a gateway element with no gateway env built cleanly — the builder's checkGatewayEnv is gone")
 		}
@@ -143,7 +143,7 @@ func TestElementBuilder_RefusedGatewayElementIsABuildError(t *testing.T) {
 			func(_ context.Context, _ string) (*delegate.Task, error) {
 				return &delegate.Task{NodeID: "gw", Model: "openai_compatible/m"}, nil
 			})
-		_, _, _, err := build(context.Background(), 0, chainElement{Provider: "anthropic", Model: "openai_compatible/m"})
+		_, _, _, err := build(context.Background(), 0, chainElement{Provider: "anthropic", Model: "openai_compatible/m"}, "")
 		if err == nil {
 			t.Fatal("a gateway element carrying a vendor hint built cleanly — the builder's refuseGatewayCrossing is gone")
 		}

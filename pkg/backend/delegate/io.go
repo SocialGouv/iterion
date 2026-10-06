@@ -55,6 +55,8 @@ type IOTask struct {
 	Capabilities           []string              `json:"capabilities,omitempty"`
 	StoreDir               string                `json:"store_dir,omitempty"`
 	RunStoreDir            string                `json:"run_store_dir,omitempty"`
+	Handoff                string                `json:"handoff,omitempty"`
+	HandoffMode            string                `json:"handoff_mode,omitempty"`
 	BoardHTTPEndpoint      string                `json:"board_http_endpoint,omitempty"`
 	BoardRunToken          string                `json:"board_run_token,omitempty"`
 	RunsHTTPEndpoint       string                `json:"runs_http_endpoint,omitempty"`
@@ -157,6 +159,8 @@ func ToIOTask(t Task) IOTask {
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
 		RunStoreDir:            t.RunStoreDir,
+		Handoff:                t.Handoff,
+		HandoffMode:            t.HandoffMode,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
 		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,
@@ -218,6 +222,8 @@ func FromIOTask(t IOTask) Task {
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
 		RunStoreDir:            t.RunStoreDir,
+		Handoff:                t.Handoff,
+		HandoffMode:            t.HandoffMode,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
 		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,

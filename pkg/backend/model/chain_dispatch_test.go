@@ -1146,4 +1146,13 @@ func TestChainCrossHarnessMarksTheFallbackEvent(t *testing.T) {
 	if got := crossHarnessMarker(from, chainElement{Label: "same", CrossHarness: llmroute.CrossHarnessRestart}, delegate.BackendClaudeCode, delegate.BackendClaudeCode); got != "" {
 		t.Fatalf("same-backend marker = %q, want empty — the session rides", got)
 	}
+
+	// A SKIP element marks nothing even under an active posture: no
+	// model runs on it, no harness takes over, so the walk reaches it
+	// before any build and the event would overstate a switch nobody
+	// made (its toBackend renders empty, which would otherwise read as
+	// a crossing).
+	if got := crossHarnessMarker(from, chainElement{Label: "out", Skip: true, CrossHarness: llmroute.CrossHarnessRestart}, delegate.BackendClaudeCode, ""); got != "" {
+		t.Fatalf("skip marker = %q, want empty — a skip runs no model, no switch is said", got)
+	}
 }

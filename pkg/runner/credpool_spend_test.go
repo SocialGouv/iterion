@@ -96,7 +96,7 @@ func newPoolHarnessForRun(t *testing.T, limits credpool.Limits, runID string) *p
 func usageWith(costUSD float64, tokens int) *metricsEmitter {
 	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
 	hooks := model.NewStoreEventHooks(
-		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil,
+		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
 	hooks.OnDelegateFinished("n1", model.DelegateInfo{
 		BackendName: "claude_code", Tokens: tokens, CostUSD: costUSD,

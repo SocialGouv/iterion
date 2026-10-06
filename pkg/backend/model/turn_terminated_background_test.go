@@ -24,7 +24,7 @@ func TestATurnCheckpointCarriesTheWorkThatDiedWithItsProcess(t *testing.T) {
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	e := &ClawExecutor{hooks: NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil)}
+	e := &ClawExecutor{hooks: NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil, nil)}
 	e.delegateHooksFor("worker", delegate.BackendClaudeCode, 0).OnTurnFinished(delegate.TurnFinishedInfo{
 		SessionID: "sess-1", Text: "waiting", TerminatedBackgroundTasks: dead,
 	})

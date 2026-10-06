@@ -25,7 +25,7 @@ func TestDelegateErrorCarriesItsCost(t *testing.T) {
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil, nil)
 	hooks.OnDelegateError("judge", DelegateInfo{
 		BackendName: "claude_code",
 		Tokens:      900,
@@ -55,7 +55,7 @@ func TestDelegateErrorCarriesItsCost(t *testing.T) {
 	if _, err := st.CreateRun(ctx, runID2, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks2 := NewStoreEventHooks(ctx, st, runID2, iterlog.New(iterlog.LevelError, nil), nil)
+	hooks2 := NewStoreEventHooks(ctx, st, runID2, iterlog.New(iterlog.LevelError, nil), nil, nil)
 	hooks2.OnDelegateError("judge", DelegateInfo{BackendName: "claude_code", Error: errors.New("boom")})
 	events2, err := st.LoadEvents(ctx, runID2)
 	if err != nil {

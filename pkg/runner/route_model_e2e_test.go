@@ -69,7 +69,7 @@ func TestRouteModel_ExecutorToMeterChargesTheRouteThatServed(t *testing.T) {
 			}
 			exec := model.NewClawExecutor(model.NewRegistry(), wf,
 				model.WithBackendRegistry(reg),
-				model.WithEventHooks(model.NewStoreEventHooks(context.Background(), usage, "run", iterlog.Nop(), nil)),
+				model.WithEventHooks(model.NewStoreEventHooks(context.Background(), usage, "run", iterlog.Nop(), nil, nil)),
 				model.WithLogger(iterlog.Nop()), model.WithDefaultBackend(delegate.BackendPi))
 			node := &ir.JudgeNode{
 				BaseNode:     ir.BaseNode{ID: "judge"},
@@ -113,7 +113,7 @@ func TestRouteModel_ASkipBooksTheRouteThatBurned(t *testing.T) {
 	reg.Register(delegate.BackendPi, usageWindowPi{})
 	exec := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{Prompts: map[string]*ir.Prompt{"ask": {Body: "go"}}, Schemas: map[string]*ir.Schema{}},
 		model.WithBackendRegistry(reg),
-		model.WithEventHooks(model.NewStoreEventHooks(context.Background(), usage, "run-skip", iterlog.Nop(), nil)),
+		model.WithEventHooks(model.NewStoreEventHooks(context.Background(), usage, "run-skip", iterlog.Nop(), nil, nil)),
 		model.WithLogger(iterlog.Nop()), model.WithDefaultBackend(delegate.BackendPi),
 		model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
 	node := &ir.AgentNode{}

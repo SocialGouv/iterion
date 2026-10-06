@@ -1813,3 +1813,24 @@ func TestSplitMsgFallback_TransportOffGolden(t *testing.T) {
 		t.Fatalf("transport restart: refused = %v, want the stage to land through the same pipe", r)
 	}
 }
+
+// The run-level posture derivation (ADR-121 § Delivery 2, S4): the FIRST
+// policy entry's value — the publisher stamps every entry from ONE
+// snapshot — feeds ExecutorSpec.LLMRouteCrossHarness, the field that
+// constructs the run's handoff recorder. Operator entries never speak;
+// no policy speaks nothing.
+// Mutants: reading the LAST policy entry → the first-wins case reds;
+// dropping the Policy filter → the operator-first case reds.
+func TestLLMRouteCrossHarnessDerivation(t *testing.T) {
+	msg := &queue.RunMessage{Fallback: []queue.RunFallbackEntry{
+		{Backend: "claude_code", Model: "claude-opus-5-5", On: []string{"auth"}},
+		{Backend: "claw", Provider: "anthropic_key", On: []string{"auth"}, Policy: true, CrossHarness: llmroute.CrossHarnessReuse},
+		{Backend: "codex", Provider: "chatgpt_forfait", On: []string{"auth"}, Policy: true, CrossHarness: llmroute.CrossHarnessRestart},
+	}}
+	if got := llmRouteCrossHarness(msg); got != llmroute.CrossHarnessReuse {
+		t.Fatalf("posture = %q, want the FIRST policy entry's reuse", got)
+	}
+	if got := llmRouteCrossHarness(&queue.RunMessage{}); got != "" {
+		t.Fatalf("no-policy posture = %q, want empty (no recorder constructed)", got)
+	}
+}
