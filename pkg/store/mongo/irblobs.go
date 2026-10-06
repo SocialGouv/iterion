@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
@@ -34,7 +35,35 @@ func (s *Store) PutIRBlob(ctx context.Context, runID string, body []byte) (strin
 // GetIRBlob implements store.IRBlobStore: fetch the IR bytes addressed by
 // the storage key carried on the queue message. A missing blob returns an
 // os.ErrNotExist-compatible error.
+//
+// D14 F7: the object read is MEDIATED by the tenant of the run the key
+// addresses — not by the bucket's topology. The key embeds that run's
+// id; loading the run under the caller's tenant filter refuses a
+// foreign tenant's key with the same not-found the blob itself would
+// return, and an unattributed caller (no tenant in ctx) fails closed
+// rather than reading the bucket.
 func (s *Store) GetIRBlob(ctx context.Context, storageKey string) ([]byte, error) {
+	embedded, err := blob.IRBlobKeyRunID(storageKey)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := store.TenantFromContext(ctx); !ok && !store.IsWithoutTenantFilter(ctx) {
+		return nil, fmt.Errorf("store/mongo: IR blob %s read without a tenant context — refused", storageKey)
+	}
+	ownerRun := embedded
+	if _, err := s.LoadRun(ctx, ownerRun); err != nil {
+		// The snapshot shape embeds "<runID>-bundle-<digest>": fall back
+		// to the owning run before the prefix.
+		if i := strings.LastIndex(embedded, "-bundle-"); i > 0 {
+			ownerRun = embedded[:i]
+		}
+		if _, err := s.LoadRun(ctx, ownerRun); err != nil {
+			if errors.Is(err, store.ErrRunNotFound) {
+				return nil, fmt.Errorf("store/mongo: IR blob %s not found: %w", storageKey, os.ErrNotExist)
+			}
+			return nil, fmt.Errorf("store/mongo: IR blob %s: %w", storageKey, err)
+		}
+	}
 	body, err := s.blob.GetIRBlob(ctx, storageKey)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
