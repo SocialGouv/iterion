@@ -109,6 +109,7 @@ func (s *Server) StartEmbedded() error {
 				s.scheduleGate(),
 				s.cfg.EventsBus,
 				s.logger,
+				s.cfg.Store,
 			)
 		}
 		if s.runs != nil {
@@ -246,7 +247,7 @@ func (s *Server) ListenAndServe() error {
 		if s.runs != nil {
 			launcher = s.triggerLauncher()
 		}
-		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.cfg.EventsBus, s.logger)
+		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.cfg.EventsBus, s.logger, s.cfg.Store)
 	}
 	// Cloud counterpart: the multi-tenant Mongo board spine (board_events
 	// poll-tail → NATS bus → evaluator with the atomic consume effect).
