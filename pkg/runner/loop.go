@@ -3471,7 +3471,7 @@ func llmRouteTriggers(msg *queue.RunMessage) []string {
 func splitMsgFallback(entries queue.RunFallback) (operator []ir.Fallback, ladder []ir.PolicyLadderStage) {
 	for _, f := range entries {
 		if f.Policy {
-			ladder = append(ladder, ir.PolicyLadderStage{Harness: f.Backend, Credential: f.Provider, On: f.On})
+			ladder = append(ladder, ir.PolicyLadderStage{Harness: f.Backend, Credential: f.Provider, On: f.On, CrossHarness: f.CrossHarness})
 			continue
 		}
 		operator = append(operator, ir.Fallback{

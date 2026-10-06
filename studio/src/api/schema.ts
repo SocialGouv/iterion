@@ -6924,6 +6924,7 @@ export interface components {
             updated_by?: string;
         };
         Policy: {
+            cross_harness?: string;
             locks?: string[];
             model_classes?: {
                 [key: string]: {
@@ -7068,6 +7069,7 @@ export interface components {
             worktree_available: boolean;
         };
         RunLLMRoutePolicy: {
+            cross_harness?: string;
             model_classes?: {
                 [key: string]: {
                     [key: string]: string;

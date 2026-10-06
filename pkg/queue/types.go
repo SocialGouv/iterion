@@ -434,6 +434,13 @@ type RunFallbackEntry struct {
 	// way back (the M4 round-trip).
 	On     []string `json:"on"`
 	Policy bool     `json:"policy,omitempty"`
+	// CrossHarness is the run's resolved cross-harness posture (ADR-121
+	// § Delivery 2) riding this policy stage: an active mode lifts the
+	// stage's session refusal at the authoritative screen and marks the
+	// dispatch's model_fallback. omitempty + additive: a stale runner
+	// ignoring it re-refuses at the screen — a lost capability, never a
+	// wrong execution (no schema bump).
+	CrossHarness string `json:"cross_harness,omitempty"`
 }
 
 // RunFallback is the ordered wire chain. Producers marshal it as an array;

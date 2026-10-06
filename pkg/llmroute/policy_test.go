@@ -487,3 +487,61 @@ func TestResolve_TeamLockVetoesAboveAnswersBelow(t *testing.T) {
 		t.Fatalf("org lock must veto the team and let the platform below answer: %v / %q", got.PairOrder, src[FieldPairOrder])
 	}
 }
+
+// The cross-harness posture folds first-setter-wins like
+// refused_pinned_key, the lock pins it, and — unlike triggers — there is
+// NO ceiling: the operator's veto here is a lock, not a prune. A platform
+// record speaking on triggers does not touch cross_harness.
+func TestResolveCrossHarness(t *testing.T) {
+	run := Policy{CrossHarness: CrossHarnessRestart}
+	bot := Policy{CrossHarness: CrossHarnessReuse}
+	platformTriggers := Policy{Triggers: []string{FieldTriggers}} // nonsense value; Validate would refuse — the fold does not care
+	got, src := Resolve(
+		Layer{Source: SourceRun, Policy: run},
+		Layer{Source: SourceBot, Policy: bot},
+		Layer{Source: SourcePlatform, Policy: platformTriggers},
+	)
+	_ = platformTriggers
+	if got.CrossHarness != CrossHarnessRestart || src[FieldCrossHarness] != SourceRun {
+		t.Fatalf("cross_harness = %q / %q, want the run's restart", got.CrossHarness, src[FieldCrossHarness])
+	}
+
+	// The lock pins off against a lower restart: the lock vetoes the
+	// more specific setter and the platform's silence answers "off".
+	got, src = Resolve(
+		Layer{Source: SourceRun, Policy: run},
+		Layer{Source: SourcePlatform, Policy: Policy{Locks: []string{FieldCrossHarness}}},
+	)
+	if got.CrossHarness != CrossHarnessOff || src[FieldCrossHarness] != SourcePlatform+"_lock" {
+		t.Fatalf("locked cross_harness = %q / %q, want off under platform_lock", got.CrossHarness, src[FieldCrossHarness])
+	}
+
+	// No ceiling: the platform's TRIGGERS record does not prune
+	// cross_harness — Clamp's ceiling is triggers-only.
+	resolved, _ := Resolve(
+		Layer{Source: SourceOrg, Policy: Policy{CrossHarness: CrossHarnessReuse}},
+		Layer{Source: SourcePlatform, Policy: Policy{Triggers: []string{TriggerUsageWindow}}},
+	)
+	clamped := Clamp(resolved, Ceiling{Triggers: []string{TriggerUsageWindow}}, map[string]string{FieldCrossHarness: SourceOrg})
+	if clamped.CrossHarness != CrossHarnessReuse {
+		t.Fatalf("Clamp touched cross_harness: %q — the ceiling is triggers-only", clamped.CrossHarness)
+	}
+
+	// Validation: the closed vocabulary.
+	if err := Validate(Policy{CrossHarness: "sometimes"}); err == nil {
+		t.Fatal("an unknown cross_harness accepted")
+	}
+	if err := Validate(Policy{CrossHarness: CrossHarnessReuse}); err != nil {
+		t.Fatalf("valid cross_harness refused: %v", err)
+	}
+	// The active-mode gate: the ONE consumers must use — "off" and empty
+	// are inert, the modes are not (review F1: Normalize answers "off" on
+	// every resolved policy, so an emptiness gate lifts the session
+	// refusal for every run under the default).
+	if CrossHarnessActive(CrossHarnessOff) || CrossHarnessActive("") {
+		t.Fatal("the inert postures read active")
+	}
+	if !CrossHarnessActive(CrossHarnessReuse) || !CrossHarnessActive(CrossHarnessRestart) {
+		t.Fatal("the active postures read inert")
+	}
+}

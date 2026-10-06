@@ -191,6 +191,31 @@ type Policy struct {
 	// id too (consumed verbatim; dispatch refuses a bogus one, named).
 	// Nil = unset (inherit / the shipped table).
 	ModelClasses map[string]map[string]string `yaml:"model_classes,omitempty" json:"model_classes,omitempty" bson:"model_classes,omitempty"`
+	// CrossHarness says whether a computed route may move a node onto a
+	// DIFFERENT HARNESS than it started on (ADR-121 § Delivery 2, the
+	// session contract's third state): "off" (the default) keeps the
+	// delivery-1 refusal — a cross-backend stage on a session-bearing
+	// node never lands; "restart" lets it land and the node relaunches
+	// from its original prompt, the failed attempt's transcript riding
+	// as reference; "reuse" lets it land and the fresh harness CONTINUES
+	// the node mid-work from the sealed transcript. A cross-harness
+	// switch REPLACES the session — said on the model_fallback line with
+	// the handoff state, neither kept (one provider's turns are never
+	// replayed into a harness that never issued them) nor silently
+	// evicted. First-setter-wins like refused_pinned_key; lockable; NOT
+	// ceilinged — the operator's veto here is a lock, not a prune.
+	// Empty = unset (Normalize answers "off").
+	CrossHarness string `yaml:"cross_harness,omitempty" json:"cross_harness,omitempty" bson:"cross_harness,omitempty"`
+}
+
+// CrossHarnessActive is the ONE gate for "may this stage cross harnesses
+// on a session-bearing node": the ACTIVE modes only. NEVER test
+// emptiness — Normalize promotes "" to "off", so every resolved policy
+// and every stamped wire entry carries a non-empty "off", and an
+// emptiness gate would lift the session refusal for every cloud run
+// under the default (the plan-review critique, probe-proven).
+func CrossHarnessActive(mode string) bool {
+	return mode == CrossHarnessReuse || mode == CrossHarnessRestart
 }
 
 // The fold's field names, as the provenance map keys them (the wire field
@@ -201,11 +226,19 @@ const (
 	FieldRefusedPinnedKey = "refused_pinned_key"
 	FieldStrict           = "strict"
 	FieldModelClasses     = "model_classes"
+	FieldCrossHarness     = "cross_harness"
+)
+
+// The cross_harness vocabulary (ADR-121 § Delivery 2).
+const (
+	CrossHarnessOff     = "off"
+	CrossHarnessReuse   = "reuse"
+	CrossHarnessRestart = "restart"
 )
 
 // Fields lists the fold's fields — the vocabulary Locks validates against
 // and the provenance map completes.
-var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict, FieldModelClasses}
+var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict, FieldModelClasses, FieldCrossHarness}
 
 // Normalize returns p with defaults applied. Idempotent; never returns a
 // Policy with a nil PairOrder, Triggers or empty RefusedPinnedKey. Only NIL
@@ -223,6 +256,9 @@ func Normalize(p Policy) Policy {
 	}
 	if p.RefusedPinnedKey == "" {
 		p.RefusedPinnedKey = RefusedPinnedForfait
+	}
+	if p.CrossHarness == "" {
+		p.CrossHarness = CrossHarnessOff
 	}
 	return p
 }
@@ -337,6 +373,11 @@ func Validate(p Policy) error {
 				return fmt.Errorf("llmroute: model_classes %s.%s = %q — cells are BARE ids (the per-credential spellings re-prefix; a %s/ prefix here would double it)", class, fam, spec, fam)
 			}
 		}
+	}
+	switch p.CrossHarness {
+	case "", CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart:
+	default:
+		return fmt.Errorf("llmroute: cross_harness %q — want %q, %q or %q", p.CrossHarness, CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart)
 	}
 	for _, f := range p.Locks {
 		if !validField(f) {
@@ -459,6 +500,10 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 		if mayAnswer(i, FieldStrict) && out.Strict == nil && l.Policy.Strict != nil {
 			out.Strict = l.Policy.Strict
 			src[FieldStrict] = l.Source
+		}
+		if mayAnswer(i, FieldCrossHarness) && out.CrossHarness == "" && l.Policy.CrossHarness != "" {
+			out.CrossHarness = l.Policy.CrossHarness
+			src[FieldCrossHarness] = l.Source
 		}
 	}
 	// Strict is monotone unless the LAUNCHER layer locked it (ADR-121:

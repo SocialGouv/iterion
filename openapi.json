@@ -2546,6 +2546,9 @@
       },
       "Policy": {
         "properties": {
+          "cross_harness": {
+            "type": "string"
+          },
           "locks": {
             "items": {
               "type": "string"
@@ -3014,6 +3017,9 @@
       },
       "RunLLMRoutePolicy": {
         "properties": {
+          "cross_harness": {
+            "type": "string"
+          },
           "model_classes": {
             "additionalProperties": {
               "additionalProperties": {
