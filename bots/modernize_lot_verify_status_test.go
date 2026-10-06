@@ -105,18 +105,25 @@ func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate strin
 	if env != nil {
 		cmd.Env = env
 	}
+	// stderr rides along, never into the parsed stream: the script reports
+	// its verdict as JSON on stdout and diagnoses on stderr, and a harness
+	// that hears only stdout leaves the next red occurrence as opaque as
+	// "output is not JSON (out \"\")" was (#2232 — a host shim's bash dying
+	// on the restricted PATH read as an empty report).
+	var sbuf strings.Builder
+	cmd.Stderr = &sbuf
 	out, err := cmd.Output()
 	exit := 0
 	if err != nil {
 		ee, ok := err.(*exec.ExitError)
 		if !ok {
-			t.Fatalf("lot_verify failed to execute: %v (out %q)", err, out)
+			t.Fatalf("lot_verify failed to execute: %v (out %q, stderr %q)", err, out, sbuf.String())
 		}
 		exit = ee.ExitCode()
 	}
 	var res modernizeLotVerifyOut
 	if uerr := json.Unmarshal(out, &res); uerr != nil {
-		t.Fatalf("lot_verify output is not JSON: %v (out %q)", uerr, out)
+		t.Fatalf("lot_verify output is not JSON: %v (out %q, stderr %q)", uerr, out, sbuf.String())
 	}
 	return res, exit
 }
