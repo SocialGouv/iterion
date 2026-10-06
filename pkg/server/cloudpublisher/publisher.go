@@ -3205,7 +3205,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			inputs = map[string]any{}
 			r.Inputs = inputs
 		}
-		if inj := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); inj.Summary() != "" {
+		if inj, err := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); err != nil {
+			return 0, fmt.Errorf("refusing to launch: %w", err)
+		} else if inj.Summary() != "" {
 			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
 		}
 	}

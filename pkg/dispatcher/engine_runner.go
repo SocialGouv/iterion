@@ -470,7 +470,9 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if spec.Vars == nil {
 		spec.Vars = map[string]any{}
 	}
-	if inj := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), ""); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), ""); err != nil {
+		return fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		r.logger.Info("%s", inj.Summary())
 	}
 	return eng.Run(ctx, spec.RunID, spec.Vars)
