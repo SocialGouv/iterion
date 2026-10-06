@@ -321,6 +321,15 @@ func (m *MemoryStore) PatchTeam(_ context.Context, id string, p TeamPatch) (Team
 	if !ok {
 		return Team{}, ErrNotFound
 	}
+	// The one-team-per-pool invariant at the store level (under the same
+	// write lock the race would want): only one team may hold a pool.
+	if p.RunnerPool != nil && *p.RunnerPool != "" && cur.RunnerPool != *p.RunnerPool {
+		for _, other := range m.teams {
+			if other.ID != id && other.RunnerPool == *p.RunnerPool {
+				return Team{}, ErrRunnerPoolHeld
+			}
+		}
+	}
 	if p.Slug != nil && *p.Slug != cur.Slug {
 		if _, taken := m.teamSlugs[*p.Slug]; taken {
 			return Team{}, ErrSlugAlreadyTaken
