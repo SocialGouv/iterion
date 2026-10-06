@@ -209,7 +209,8 @@ prompt survey_code_user:
    - excluded_dirs:    {{vars.excluded_dirs}}
    - bundle_self_path: {{vars.bundle_self_path}}
 
-  Existing ADRs (titles + slugs, do not re-author what already exists):
+  Existing ADRs, one line each — `NNN slug -- title` (do not re-author what
+  already exists):
   {{input.adrs}}
 
   Recently changed code files (a hint, may be empty):
@@ -448,6 +449,10 @@ prompt verify_user:
 ## non-empty when two ADRs share an NNN prefix (warning only).
 schema scan_output:
   adrs: json
+  ## The narrow surveyor view: one `NNN slug -- title` line per ADR. The
+  ## surveyor promises titles + slugs; the full 9-field records (sha,
+  ## cited_paths, age...) are the differ's, not its prompt's.
+  adrs_index: string[]
   adr_count: int
   next_adr_number: int
   duplicates: string[]
@@ -569,10 +574,16 @@ schema gate_state:
 ## grounded in real files. Bounded by code_scope_globs +
 ## excluded_dirs + bundle_self_path. NO writes; fresh session
 ## (each run is an independent look).
+schema survey_input:
+  ## The narrow surveyor view — `adrs` carries the INDEX lines (the edge
+  ## binds scan_output.adrs_index), not the differ's full records.
+  adrs: string[]
+  recently_changed_code_files: string[]
+
 agent survey_code:
   model: "${ITERION_ADRY_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
-  input: scan_output
+  input: survey_input
   output: survey_output
   system: survey_code_system
   user: survey_code_user
@@ -739,6 +750,7 @@ if cache_path:
         pass
 print(json.dumps({
     'adrs': adrs,
+    'adrs_index': [f"{a['nnn']} {a['slug']} -- {a['title']}" for a in adrs],
     'adr_count': len(adrs),
     'next_adr_number': max_nnn + 1,
     'duplicates': duplicates,
@@ -1304,7 +1316,7 @@ workflow adr_cartograph:
     preserve_recent: 8
 
   scan_adrs -> survey_code with {
-    adrs: "{{outputs.scan_adrs.adrs}}",
+    adrs: "{{outputs.scan_adrs.adrs_index}}",
     recently_changed_code_files: "{{outputs.scan_adrs.recently_changed_code_files}}",
   }
 
