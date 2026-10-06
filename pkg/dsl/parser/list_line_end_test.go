@@ -385,3 +385,97 @@ func TestAnEmptyStringIsNotARuleOrAMount(t *testing.T) {
 		})
 	}
 }
+
+// A less-indented line that OPENS A DECLARATION — `agent b:` dedented one
+// level too many, standing at an ancestor block's property column — is not
+// a property the ancestor rescue may land on: a declaration keyword lexes
+// as an ident, so the ancestor's property loop would eat the declaration
+// whole. Main, in bailing, let the dedents close the blocks and the top
+// level read the declaration as itself; the rescue keeps exactly that — a
+// declaration starter never lands.
+func TestAMisIndentedDeclarationAfterABrokenListStandsAsItself(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n]\n  agent b:\n    model: \"m\"\n")
+	if len(res.File.Workflows) != 1 || res.File.Workflows[0].Entry != "done" {
+		t.Fatalf("workflow w lost: %+v; diagnostics %v", res.File.Workflows, res.Diagnostics)
+	}
+	if len(res.File.Agents) != 1 || res.File.Agents[0].Name != "b" || res.File.Agents[0].Model != "m" {
+		t.Fatalf("the mis-indented declaration was eaten: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+}
+
+// The same for a declaration at the TOP LEVEL after a nested broken list:
+// column 1 is never an ancestor's column — the top level owns the line, and
+// the ordinary recovery reads it as itself.
+func TestADeclarationAtTheTopLevelAfterABrokenNestedListStandsAsItself(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n]\nagent b:\n  model: \"m\"\n")
+	if len(res.File.Workflows) != 1 || res.File.Workflows[0].Entry != "done" {
+		t.Fatalf("workflow w lost: %+v; diagnostics %v", res.File.Workflows, res.Diagnostics)
+	}
+	if len(res.File.Agents) != 1 || res.File.Agents[0].Name != "b" || res.File.Agents[0].Model != "m" {
+		t.Fatalf("the top-level declaration was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+}
+
+// An off-stack dedent whose close point the scan cannot trust — the next
+// outdented line opens with junk (`]` again, not a property) — bails and
+// consumes nothing: the plain landing there would eat the DEDENTs the open
+// loops close on, and every declaration after the block with them.
+func TestAnOffStackDedentWithAJunkCloseLineBailsAndKeepsTheDeclarationsAfterIt(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      tools: [bash,\n]\n       read,\n      preset: trusted\n]\n\nagent a:\n  model: \"m\"\n")
+	if len(res.File.Workflows) != 1 || res.File.Workflows[0].Entry != "done" {
+		t.Fatalf("workflow w lost: %+v; diagnostics %v", res.File.Workflows, res.Diagnostics)
+	}
+	if len(res.File.Agents) != 1 || res.File.Agents[0].Model != "m" {
+		t.Fatalf("the declaration after the block was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+}
+
+// An off-stack dedent with a TAB line standing between the sibling and the
+// close point bails too: the scan refuses a line-start lexer diagnosis
+// before the point, and the rescue never guesses past one. The workflow
+// after the block is read as itself, as on main.
+func TestAnOffStackDedentWithATabLineBeforeTheCloseBailsAndKeepsTheWorkflowAfterIt(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\n   read,\n  description: \"d\"\n\ttabbed\n\nworkflow w:\n  entry: done\n")
+	if len(res.File.Workflows) != 1 || res.File.Workflows[0].Entry != "done" {
+		t.Fatalf("the workflow after the block was lost: %+v; diagnostics %v", res.File.Workflows, res.Diagnostics)
+	}
+	if len(res.File.Agents) != 1 || res.File.Agents[0].Name != "a" {
+		t.Fatalf("the broken block's own agent was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+}
+
+// The bail for an off-stack dedent consumes NOTHING — so the orphaned `]`
+// that over-popped is said where IT stands, as a top-level stray on its own
+// line. A landing that claimed the less-indented `description:` at column 1
+// (a line the top level owns) would push the stray's diagnostic two lines
+// down: the top-level column is never an ancestor's column, and the resync
+// does not turn main's stray into a later one.
+func TestAnOffStackDedentBailSaysTheStrayCloserWhereItStands(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\n   read,\ndescription: \"top\"\n\nagent a:\n  model: \"m\"\n")
+	stray := false
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagUnexpectedToken && d.Line == 3 {
+			stray = true
+		}
+	}
+	if !stray {
+		t.Fatalf("the orphaned closer was not said on its own line 3: %v", res.Diagnostics)
+	}
+	if len(res.File.Agents) != 2 || res.File.Agents[1].Model != "m" {
+		t.Fatalf("the declarations after the block were lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+}
+
+// A tab-indented diagnosis at a DEEPER column than the sibling — the one
+// line-start error the junk arm does not cover — bails as well: the scan
+// refuses it, the plain landing is not taken, and the workflow after the
+// block is read as itself instead of becoming the broken block's property.
+func TestAnOffStackDedentWithADeepTabLineBeforeTheCloseBailsAndKeepsTheWorkflowAfterIt(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\n   read,\n  description: \"d\"\n  \tdeep note\n\nworkflow w:\n  entry: done\n")
+	if len(res.File.Workflows) != 1 || res.File.Workflows[0].Entry != "done" {
+		t.Fatalf("the workflow after the block was lost: %+v; diagnostics %v", res.File.Workflows, res.Diagnostics)
+	}
+	if len(res.File.Agents) != 1 || res.File.Agents[0].Name != "a" {
+		t.Fatalf("the broken block's own agent was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+}

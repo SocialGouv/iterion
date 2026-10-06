@@ -316,7 +316,14 @@ func (p *parser) resyncBrokenBracketList(propTok Token) {
 			p.consumeBrokenListRemainder(i)
 			return
 		case lineStart && t.Column < propTok.Column && tokenAsIdent(t) != "":
-			if offStack {
+			if offStack || declStartsBlock(t) {
+				// A line an ancestor rescue must never claim: an off-stack
+				// dedent leaves no level for the splice accounting to trust,
+				// and a declaration starter (`agent b:` dedented one level
+				// too many stands at the ancestor's column) would be eaten
+				// whole by the ancestor's property loop — main's bail lets
+				// the dedents close the blocks and the top level read it as
+				// itself.
 				return
 			}
 			// A less-indented line: an ancestor block's property, or a line
@@ -360,6 +367,24 @@ func (p *parser) consumeBrokenListRemainder(n int) {
 			p.lexerError(tok)
 		}
 	}
+}
+
+// declStartsBlock reports whether the token opens a top-level declaration —
+// the parseFile dispatch's keywords that NEVER name a block property: a
+// less-indented line starting with one is a declaration standing at the
+// wrong indentation, not a property a rescue may claim. The keywords left
+// out of this set (vars, presets, secrets, attachments, prompt, schema,
+// mcp_server, dsl) double as property and block names, so a line starting
+// with one may genuinely be the ancestor's own property.
+func declStartsBlock(t Token) bool {
+	switch t.Type {
+	case TokenWorkflow, TokenAgent, TokenJudge, TokenRouter, TokenHuman,
+		TokenTool, TokenCompute, TokenGroup, TokenUse, TokenEmit, TokenWait,
+		TokenAwaitAnswers, TokenFail, TokenSubbot, TokenContract, TokenCursor,
+		TokenSupervisor:
+		return true
+	}
+	return false
 }
 
 // spliceDedents inserts n synthetic DEDENTs ahead of the token at absolute
