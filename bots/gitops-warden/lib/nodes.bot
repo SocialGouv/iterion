@@ -186,7 +186,7 @@ emit({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': 
 ## The LLM classified; this table decides. Every branch that cannot
 ## prove its case folds to escalate (fail-closed); the escalation verb —
 ## reviewers — is the only gesture a RED verdict carries, and only in
-## enforce mode. ADR-123 is the doctrine; this node is its executable
+## enforce mode. ADR-124 is the doctrine; this node is its executable
 ## half, driven by bots/gitops_warden_gate_test.go.
 tool publish_verdict:
   command: `PR_URL={{input.pr_url}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_STATE_URL={{vars.forge_pr_state_url}} MODE={{vars.mode}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} REVIEWERS={{vars.reviewers}} PEER_CONTEXTS={{vars.peer_gate_contexts}} MERGE_METHOD={{vars.merge_method}} REMOVE_BRANCH={{vars.remove_source_branch}} RUN_ID={{run.id}} REVIEWED_SHA={{input.reviewed_sha}} BASE_SHA={{input.base_sha}} DECLARED_HEAD={{input.declared_head_sha}} ROUTE={{input.route}} SENTINEL_REASON={{input.sentinel_reason}} CHANGED_FILES={{input.changed_files}} FILES={{input.files}} DIFF_TOO_LARGE={{input.diff_too_large}} UNPARSEABLE={{input.unparseable}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} STALE_LAUNCH={{input.stale_launch}} POLICY_SOURCE={{input.policy_source}} POLICY_SHA={{input.policy_sha}} VERDICT={{input.verdict}} CLASSIFIED_FILES={{input.classified_files}} PLATFORM_FINDINGS={{input.platform_findings}} DOUBTS={{input.doubts}} JUDGE_SUMMARY={{input.summary}} FALLBACK_USED={{input.fallback_used}} python3 -I -c "
@@ -270,7 +270,14 @@ else:
         if isinstance(f, dict) and str(f.get('status', '')) in ('A', 'D', 'R', 'C'):
             reasons.append(str(f.get('path', '?')) + ': file ' + str(f.get('status')) + ' (added/removed/renamed — structural)')
     for fe in judged:
-        cls = str(fe.get('cls', 'unknown'))
+        # The judge's enums are LLM output over a json field the schema
+        # cannot per-entry validate: normalize case, and let anything
+        # unrecognized fail closed (unknown escalates, unlisted severity
+        # blocks) — 'Escalate'/'Blocking' passing clean is the green-gate
+        # shape this fold exists to prevent.
+        cls = str(fe.get('cls', 'unknown')).strip().lower()
+        if cls not in ('auto_approvable', 'escalate', 'unknown'):
+            cls = 'unknown'
         if cls in ('escalate', 'unknown'):
             why = str(fe.get('reason') or cls)
             reasons.append(str(fe.get('path', '?')) + ': ' + why)
@@ -282,7 +289,10 @@ else:
         reasons.append('the judge platform findings were unreadable')
         pf = []
     for f in pf:
-        if str(f.get('severity', '')) == 'blocking':
+        sev = str(f.get('severity', '')).strip().lower()
+        if sev not in ('blocking', 'advisory'):
+            sev = 'blocking'  # an unlisted severity blocks (fail closed)
+        if sev == 'blocking':
             reasons.append('platform: ' + str(f.get('rule', '?')) + ' on ' + str(f.get('path', '?')) + ': ' + str(f.get('detail', '')))
     doubts = [l for l in envs('DOUBTS').splitlines() if l.strip()]
     if doubts:
@@ -351,10 +361,17 @@ def esc(s):
 
 lines = []
 badge = 'dry-run' if mode != 'enforce' else 'enforce'
-if route == 'empty':
+if route == 'empty' and blocking == 0:
     lines.append('## Warden — nothing to review')
     lines.append('')
     lines.append('No change against ' + envs('BASE_SHA', '')[:12] + '. Check posted green.')
+elif route == 'empty':
+    lines.append('## Warden — the empty diff is not a clean verdict')
+    lines.append('')
+    for r in reasons:
+        lines.append('- ' + esc(r))
+    lines.append('')
+    lines.append('The gate posts red: an empty diff on the wrong revision or a drifted workspace is a verdict about nothing.')
 else:
     verdict_word = 'auto-approvable' if clean else 'needs devops review'
     lines.append('## Warden — ' + verdict_word + ' (' + badge + ')')
@@ -484,11 +501,24 @@ except Exception as e:
           'gate_skipped_reason': 'publish unreachable', 'approve_posted': False, 'reviewers_added': '',
           'merge_armed': False, 'merge_state': '', 'escalate_reasons': reasons_out, 'blocking': blocking})
 vr = res.get('verdict') or {}
-refusal = vr.get('refused') or verdict_note
-if peer_problem and not vr.get('refused'):
-    refusal = peer_problem
+# What the server echoed must be read through what THIS run sent. A
+# verb-less verdict (dry_run always; enforce when the arm is held or no
+# reviewers are pinned) gets the server's verb-less echo — that is the
+# contract, not a refusal: mapping it to refused bannered EVERY dry-run
+# verdict and masked the real hold reasons. A refusal is real only when
+# verbs were sent and something did not execute, or when THIS fold holds
+# the gestures itself (peer gate, no reviewers pinned).
+verbs_sent = bool(want_approve or want_arm or want_reviewers)
+if verbs_sent:
+    refusal = vr.get('refused') or verdict_note
+    gesture_landed = bool(vr.get('approve_posted') or vr.get('merge_armed') or vr.get('reviewers_added'))
+    outcome = 'refused' if refusal and not gesture_landed else 'posted'
+    refusal = refusal or ''
+else:
+    refusal = peer_problem or verdict_note or ''
+    outcome = 'refused' if refusal else 'posted'
 emit({'requested': True,
-      'outcome': 'refused' if (vr.get('refused') or verdict_note) and not (vr.get('approve_posted') or vr.get('merge_armed') or vr.get('reviewers_added')) else 'posted',
+      'outcome': outcome,
       'verdict_refused_reason': refusal,
       'review_url': str(res.get('review_url', '')),
       'gate_requested': gate_enabled, 'gate_posted': bool(res.get('gate_posted')),
