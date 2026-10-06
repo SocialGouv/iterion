@@ -425,7 +425,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// declares the matching var; then detect host provider credentials and
 	// inject the resolution (the --review-mode flag / a --var override wins
 	// over auto-detection). See pkg/reviewtopology.
-	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); err != nil {
+		return fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		logger.Info("%s", inj.Summary())
 	}
 

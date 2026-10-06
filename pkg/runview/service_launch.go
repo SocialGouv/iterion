@@ -442,7 +442,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
 	// launches auto-detect providers too. The spec override (studio toggle)
 	// wins over a --var review_mode; both win over auto.
-	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); err != nil {
+		s.dropRunLog(runID)
+		return nil, fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		runLogger.Info("%s", inj.Summary())
 	}
 
