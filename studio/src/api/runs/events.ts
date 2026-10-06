@@ -204,6 +204,7 @@ export interface RunPausedEvent extends RunEventBase {
   type: "run_paused";
   data?: {
     // "operator" (POST /pause) | "cost_cap_daily" (daily spend cap) |
+    // "budget_cap_run" (budget on_exceeded: pause) |
     // ""/"human" (human-input pause).
     reason?: string;
     [key: string]: unknown;

@@ -65,3 +65,28 @@ func (e *Engine) handleCostCapPause(rs *runState, nodeID string, st CapStatus) e
 			"date":      st.Date,
 		})
 }
+
+// handleBudgetCapPause pauses a run whose declared budget policy is
+// `on_exceeded: pause` at the boundary the cap crossing reached — instead
+// of the fail the default policy ends the run with. The run_paused event
+// carries reason=budget_cap_run and the dimension's numbers; an operator
+// raise (`raise-budget`) resumes it at the preserved checkpoint, and the
+// resume's own budget preflight re-judges the raised cap.
+func (e *Engine) handleBudgetCapPause(rs *runState, nodeID string, exc *budgetCheckResult) error {
+	e.logger.Warn("run %s paused: budget %s cap reached (%.0f/%.0f), policy pause",
+		rs.runID, exc.dimension, exc.used, exc.limit)
+	// paused_operator is a rewindable status: capture the workspace before
+	// the durable write opens the pause interval, so an `iterion rewind`
+	// on a budget park sees the same gap the fail path's
+	// captureFailureBoundary records — at the deadline kill the node HAS
+	// run and may have left files nothing else records.
+	e.capturePauseBoundary(rs, nodeID)
+	return e.pauseOperatorWithCheckpoint(rs, nodeID, "budget_cap_run",
+		fmt.Sprintf("budget %s cap reached (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
+		map[string]any{
+			"dimension":  exc.dimension,
+			"used":       exc.used,
+			"limit":      exc.limit,
+			"hard_limit": exc.hardLimited,
+		})
+}

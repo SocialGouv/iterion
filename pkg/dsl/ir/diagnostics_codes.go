@@ -313,4 +313,6 @@ const (
 	// cycle. The port capture keeps one entry per node id, so the declared
 	// value is whichever execution finished last.
 	DiagContractOutputOffFanOut DiagCode = "C310" // a contract output port's `from:` names a node that executes more than once (fan-out branch body, foreach, bounded loop cycle) — the port projects whichever execution finished last, one execution's output (warning)
+
+	DiagBudgetOnExceededInvalid DiagCode = "C311" // budget.on_exceeded: unknown policy, only fail and pause exist — treated as fail (error)
 )

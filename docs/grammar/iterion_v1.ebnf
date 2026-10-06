@@ -473,7 +473,9 @@ budget_prop = "max_parallel_branches" ":" INT_LIT NEWLINE
             | "max_cost_usd" ":" NUMBER_LIT NEWLINE
             | "max_tokens" ":" INT_LIT NEWLINE
             | "warn_tokens" ":" INT_LIT NEWLINE
-            | "max_iterations" ":" INT_LIT NEWLINE ;
+            | "max_iterations" ":" INT_LIT NEWLINE
+            | "on_exceeded" ":" budget_on_exceeded NEWLINE ;
+budget_on_exceeded = "fail" | "pause" ;
 
 resources_block = "resources" ":" NEWLINE [ INDENT
                     { IDENT ":" resource_capacity NEWLINE }

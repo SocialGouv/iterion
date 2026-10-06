@@ -122,6 +122,13 @@
           "minimum": 0,
           "type": "integer"
         },
+        "on_exceeded": {
+          "description": "What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word)",
+          "enum": [
+            "fail",
+            "pause"
+          ]
+        },
         "warn_tokens": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Advisory: crossing it emits budget_warning",
