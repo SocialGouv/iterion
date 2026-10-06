@@ -150,3 +150,16 @@ func TestPatchTeam_RunnerPoolHeldByAnotherTeam(t *testing.T) {
 		t.Fatalf("holder re-map refused: %v", err)
 	}
 }
+
+// CreateTeam enforces the same invariant — a team cannot be BORN
+// holding a pool another team already holds.
+func TestCreateTeam_RunnerPoolHeldByAnotherTeam(t *testing.T) {
+	m := NewMemoryStore()
+	ctx := context.Background()
+	if _, err := m.CreateTeam(ctx, Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: "o1", RunnerPool: "honorabilite"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateTeam(ctx, Team{ID: "t2", Name: "t2", Slug: "t2", OrgID: "o1", RunnerPool: "honorabilite"}); !errors.Is(err, ErrRunnerPoolHeld) {
+		t.Fatalf("err = %v, want ErrRunnerPoolHeld", err)
+	}
+}

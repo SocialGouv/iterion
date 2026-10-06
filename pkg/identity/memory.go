@@ -239,6 +239,14 @@ func (m *MemoryStore) CreateTeam(_ context.Context, t Team) (Team, error) {
 	if _, ok := m.teamSlugs[t.Slug]; ok {
 		return Team{}, ErrSlugAlreadyTaken
 	}
+	// The one-team-per-pool invariant at create time, same as PatchTeam.
+	if t.RunnerPool != "" {
+		for _, other := range m.teams {
+			if other.ID != t.ID && other.RunnerPool == t.RunnerPool {
+				return Team{}, ErrRunnerPoolHeld
+			}
+		}
+	}
 	m.teams[t.ID] = t
 	m.teamSlugs[t.Slug] = t.ID
 	return t, nil
