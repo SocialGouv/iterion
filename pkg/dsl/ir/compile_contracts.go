@@ -31,6 +31,10 @@ const (
 func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]*Var, edges []*Edge) (map[string]*PublicContract, *PublicContract) {
 	contracts := map[string]*PublicContract{}
 	succeeds := nodesOnAPathToDone(c.nodes, edges)
+	// The nodes a parallel branch body executes — one node id may run once
+	// per branch, so a contract port bound to one of them projects whichever
+	// branch execution finished last (C310).
+	fanBody := execBranchBodyNodes(&Workflow{Nodes: c.nodes, Edges: edges})
 	for _, decl := range c.file.Contracts {
 		if decl == nil {
 			continue
@@ -39,7 +43,7 @@ func (c *compiler) compilePublicContracts(wf *ast.WorkflowDecl, vars map[string]
 			c.errorfAtSpan(DiagContractInput, decl.Span, "contract %q is declared twice: a name declares one contract", decl.Name)
 			continue
 		}
-		contracts[decl.Name] = c.compilePublicContract(decl, vars, succeeds)
+			contracts[decl.Name] = c.compilePublicContract(decl, vars, succeeds, fanBody)
 	}
 	if wf.Contract == "" {
 		return contracts, nil
@@ -83,7 +87,7 @@ func nodesOnAPathToDone(nodes map[string]Node, edges []*Edge) map[string]bool {
 	return reach
 }
 
-func (c *compiler) compilePublicContract(decl *ast.ContractDecl, vars map[string]*Var, succeeds map[string]bool) *PublicContract {
+func (c *compiler) compilePublicContract(decl *ast.ContractDecl, vars map[string]*Var, succeeds map[string]bool, fanBody map[string]bool) *PublicContract {
 	pc := &PublicContract{Name: decl.Name, DisplayName: decl.DisplayName, Responsibility: decl.Responsibility, Version: 1}
 	if decl.Version != nil {
 		if *decl.Version < 1 {
@@ -108,7 +112,7 @@ func (c *compiler) compilePublicContract(decl *ast.ContractDecl, vars map[string
 			continue
 		}
 		pp := c.compilePublicPort(decl.Name, "output", p, seen)
-		c.bindOutput(decl.Name, p, pp, succeeds)
+		c.bindOutput(decl.Name, p, pp, succeeds, fanBody)
 		pc.Outputs = append(pc.Outputs, pp)
 		ports["output."+pp.Name] = pp
 	}
@@ -428,7 +432,7 @@ func (c *compiler) producerOf(from string) (nodeID, field string, n Node, ok boo
 // typed with the node's whole output schema. An output is produced, never
 // defaulted; one whose producer is on no path to done is produced only
 // when the bot fails (C304).
-func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort, succeeds map[string]bool) {
+func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort, succeeds map[string]bool, fanBody map[string]bool) {
 	if p.Default != nil {
 		c.errorfAtSpan(DiagContractOutput, p.Span, "contract %q: output %q has a default — an output is produced by the program, never defaulted", contract, p.Name)
 	}
@@ -444,6 +448,17 @@ func (c *compiler) bindOutput(contract string, p *ast.PortDecl, pp *PublicPort, 
 	pp.FromNode, pp.FromField = nodeID, field
 	if !succeeds[nodeID] {
 		c.warnfAtSpan(DiagContractOutputOffSuccess, p.Span, "contract %q: output %q: node %q is on no path to done — the bot produces it only when it fails", contract, p.Name, nodeID)
+	}
+	// A node inside a parallel branch body runs once PER branch (and per
+	// item, under fan_out_each) under the same node id; the port capture
+	// keeps one entry per node id, so the declared port projects whichever
+	// branch execution finished last — a coin flip between runs, not a
+	// deterministic answer. A warning, not a refusal: the value may not
+	// actually vary per branch, and an author aware of the projection can
+	// mean it. Route the port through a convergence node instead when a
+	// deterministic answer is wanted.
+	if fanBody[nodeID] {
+		c.warnfAtSpan(DiagContractOutputOffFanOut, p.Span, "contract %q: output %q: node %q executes inside a fan-out branch body — the port projects whichever branch execution finished last, one branch's output, not the collection", contract, p.Name, nodeID)
 	}
 	if p.FileSpec != nil {
 		if field != "" {
