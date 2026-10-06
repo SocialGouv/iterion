@@ -236,7 +236,7 @@ func TestMirrorLibrarySkills_MigrationFromDirOnlyWorkspace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, "deploy-target.md")); err != nil {
 		t.Fatalf("flat alias was not created on migration: %v", err)
 	}
-	if b, err := os.ReadFile(filepath.Join(markerDir, "deploy-target.SKILL.md.sha256" + iterionWroteSidecarSuffix)); err != nil || string(b) != "dir:deploy-target" {
+	if b, err := os.ReadFile(filepath.Join(markerDir, "deploy-target.SKILL.md.sha256"+iterionWroteSidecarSuffix)); err != nil || string(b) != "dir:deploy-target" {
 		t.Errorf("the legacy empty sidecar was not upgraded with the recorded form: %q (err %v) — the pruner would fall back to the disk-stat guess", b, err)
 	}
 	if _, err := os.Stat(filepath.Join(markerDir, "deploy-target.md.sha256"+iterionWroteSidecarSuffix)); err != nil {
