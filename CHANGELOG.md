@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.239.1](https://github.com/SocialGouv/iterion/compare/v3.239.0...v3.239.1) (2026-10-06)
+
+### Bug Fixes
+
+* **delegate:** the wrap-up take is bounded on the answer wait — no more 15-minute zombie sessions ([#2202](https://github.com/SocialGouv/iterion/issues/2202)) ([#2227](https://github.com/SocialGouv/iterion/issues/2227)) ([29b70d8](https://github.com/SocialGouv/iterion/commit/29b70d81da6fda0a1d276fae60df8ba7b2d72170))
+
+    <details><summary>why</summary>
+
+    Once iterion sent the background wrap-up, the lifecycle armed no timer until the CLI's replay showed a turn took it: timer() returned bgTimerNone while wrapUpSent && !msgTaken, and a CLI that never took the wrap-up parked the session until the 15-minute hot watchdog — one zombie session per occurrence in production.
+
+    </details>
+
 ## [3.239.0](https://github.com/SocialGouv/iterion/compare/v3.238.0...v3.239.0) (2026-10-05)
 
 ### Features
