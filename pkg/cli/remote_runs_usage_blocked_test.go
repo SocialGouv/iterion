@@ -141,9 +141,9 @@ func TestRemoteRunsResumeUsageBlocked_Round1Findings(t *testing.T) {
 // table would have hidden.
 func TestRemoteRunsList_FailureCodeFilterHoldsInJSON(t *testing.T) {
 	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"runs":[` +
-			`{"id":"blocked","workflow_name":"a","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:30:00Z"},` +
-			`{"id":"parked","workflow_name":"b","status":"failed_resumable","failure_code":"DLQ_PARKED","created_at":"2026-10-06T11:31:00Z"}` +
+		fmt.Fprint(w, `{"runs":[`+
+			`{"id":"blocked","workflow_name":"a","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:30:00Z"},`+
+			`{"id":"parked","workflow_name":"b","status":"failed_resumable","failure_code":"DLQ_PARKED","created_at":"2026-10-06T11:31:00Z"}`+
 			`]}`)
 	}))
 	p, buf := remotePrinter(cli.OutputJSON)
