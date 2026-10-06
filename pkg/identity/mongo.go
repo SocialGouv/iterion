@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -76,11 +78,31 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure org_memberships indexes: %w", err)
 	}
+	// The unique index below fails its BUILD on a pre-existing duplicate
+	// (the pre-check window this closes, or manual edits) — sweep first
+	// and name the offenders, so an upgrade fails diagnosably instead of
+	// inside the index build.
+	cur, err := s.teams.Find(ctx, bson.M{"runner_pool": bson.M{"$exists": true, "$gt": ""}},
+		options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}, {Key: "slug", Value: 1}, {Key: "runner_pool", Value: 1}}))
+	if err != nil {
+		return fmt.Errorf("identity: sweep teams for pool duplicates: %w", err)
+	}
+	var mapped []Team
+	if err := cur.All(ctx, &mapped); err != nil {
+		return fmt.Errorf("identity: sweep teams for pool duplicates: %w", err)
+	}
+	if err := duplicatePoolHolders(mapped); err != nil {
+		return err
+	}
 	if _, err := s.teams.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "slug", Value: 1}}, Options: options.Index().SetUnique(true).SetName("slug_unique")},
 		{Keys: bson.D{{Key: "created_at", Value: -1}}, Options: options.Index().SetName("created_desc")},
 		{Keys: bson.D{{Key: "status", Value: 1}}, Options: options.Index().SetName("status")},
 		{Keys: bson.D{{Key: "org_id", Value: 1}}, Options: options.Index().SetName("org_id")},
+		// D13's one-team-per-pool invariant at the STORE level: the route's
+		// check-then-act window (two super-admin writes in the same instant)
+		// ends here — only one non-empty runner_pool may exist.
+		{Keys: bson.D{{Key: "runner_pool", Value: 1}}, Options: options.Index().SetUnique(true).SetName("runner_pool_unique").SetPartialFilterExpression(bson.M{"runner_pool": bson.M{"$exists": true, "$gt": ""}})},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure teams indexes: %w", err)
 	}
@@ -210,6 +232,12 @@ func (s *MongoStore) UserCount(ctx context.Context) (int64, error) {
 func (s *MongoStore) CreateTeam(ctx context.Context, t Team) (Team, error) {
 	if _, err := s.teams.InsertOne(ctx, t); err != nil {
 		if mongoutil.IsDuplicateKey(err) {
+			// A runner_pool duplicate is the one-team-per-pool invariant
+			// speaking at the store level; a slug duplicate is a name
+			// collision.
+			if t.RunnerPool != "" {
+				return Team{}, ErrRunnerPoolHeld
+			}
 			return Team{}, ErrSlugAlreadyTaken
 		}
 		return Team{}, fmt.Errorf("identity: insert team: %w", err)
@@ -284,6 +312,12 @@ func (s *MongoStore) PatchTeam(ctx context.Context, id string, p TeamPatch) (Tea
 			return Team{}, ErrNotFound
 		}
 		if mongoutil.IsDuplicateKey(err) {
+			// A runner_pool duplicate is the one-team-per-pool invariant
+			// speaking at the store level (the partial unique index); a
+			// slug duplicate is a rename collision.
+			if p.RunnerPool != nil && *p.RunnerPool != "" {
+				return Team{}, ErrRunnerPoolHeld
+			}
 			return Team{}, ErrSlugAlreadyTaken
 		}
 		return Team{}, fmt.Errorf("identity: patch team: %w", err)
@@ -531,4 +565,28 @@ func (s *MongoStore) ListOIDCLinksByUser(ctx context.Context, userID string) ([]
 
 func (s *MongoStore) DeleteOIDCLink(ctx context.Context, provider, providerUserID string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.oidcLinks, bson.M{"provider": provider, "provider_user_id": providerUserID}, ErrNotFound, "identity: delete oidc link")
+}
+
+// duplicatePoolHolders reports the teams that share a non-empty
+// runner_pool — the pre-flight the unique index's build would otherwise
+// fail on undiagnosed.
+func duplicatePoolHolders(mapped []Team) error {
+	holders := map[string][]string{}
+	for _, t := range mapped {
+		if t.RunnerPool == "" {
+			continue
+		}
+		holders[t.RunnerPool] = append(holders[t.RunnerPool], t.ID+"/"+t.Slug)
+	}
+	pools := make([]string, 0, len(holders))
+	for pool, ids := range holders {
+		if len(ids) > 1 {
+			pools = append(pools, fmt.Sprintf("%q held by %s", pool, strings.Join(ids, ", ")))
+		}
+	}
+	sort.Strings(pools)
+	if len(pools) > 0 {
+		return fmt.Errorf("identity: the one-team-per-pool invariant is violated — unmap all but one team per pool before upgrading: %s", strings.Join(pools, "; "))
+	}
+	return nil
 }

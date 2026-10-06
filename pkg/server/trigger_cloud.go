@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"os"
 	"time"
 
@@ -432,7 +433,7 @@ type CloudTriggerCoordinator struct {
 // poll-tail. Returns nil (a no-op, logged) when a prerequisite is missing.
 // The schedule/keepalive kinds stay with cloudsched; forge events stay
 // observational (webhooks remain the launch authority).
-func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.SubscriptionStore, launcher trigger.Launcher, projection *boardProjectionEffect, bus eventbus.Bus, logger *iterlog.Logger) *CloudTriggerCoordinator {
+func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.SubscriptionStore, launcher trigger.Launcher, projection *boardProjectionEffect, bus eventbus.Bus, logger *iterlog.Logger, runs store.RunStore) *CloudTriggerCoordinator {
 	if coord == nil || subs == nil || bus == nil {
 		return nil
 	}
@@ -459,7 +460,12 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 		evalOpts = append(evalOpts, trigger.WithProjectionEffect(projection))
 	}
 	eval := trigger.NewEvaluator(subs, evalOpts...)
-	cancelSub, err := bus.Subscribe("trigger-evaluator", trigger.Matcher{}, eval.Handle)
+	// The relay's entry check here too — this IS the deployment the
+	// threat model names (the multi-tenant cloud spine; R81db3b).
+	if runs == nil && logger != nil {
+		logger.Warn("trigger: the relay authority check is OFF (no run store wired) — every event is trusted as published")
+	}
+	cancelSub, err := bus.Subscribe("trigger-evaluator", trigger.Matcher{}, verifyRunEventAuthority(runs, logger, eval.Handle))
 	if err != nil {
 		if logger != nil {
 			logger.Warn("server: cloud trigger spine disabled (bus subscribe failed): %v", err)
