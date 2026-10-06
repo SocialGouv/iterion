@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.243.0](https://github.com/SocialGouv/iterion/compare/v3.242.0...v3.243.0) (2026-10-06)
+
+### Features
+
+* **forge:** merge-gate gestures — approve, arm MWPS, request reviewers (ADR-123) ([#2238](https://github.com/SocialGouv/iterion/issues/2238)) ([c7f9df1](https://github.com/SocialGouv/iterion/commit/c7f9df1599fc537f502ab997a4a57405be1951ac))
+
+    <details><summary>why</summary>
+
+    A gating bot's deterministic verdict can now act: the publish endpoint gains an optional `verdict` block executed by the server after the review and the gate status land — approve → request reviewers → arm merge-when-pipeline-succeeds, arm skipped on a failed approval.
+
+    </details>
+* **server,identity:** the trigger relay verifies run events; one-team-per-pool backstopped at the store (P5-a/D14) ([#2252](https://github.com/SocialGouv/iterion/issues/2252)) ([5aa234e](https://github.com/SocialGouv/iterion/commit/5aa234e9b0518e3128d48f63cf083ab6af805b8d))
+
+    <details><summary>why</summary>
+
+    The trigger bus is a cross-tenant relay: a run-outcome event names a tenant and, through a matching subscription, launches a run under it with payload-derived vars. The publisher is not only the server — the cloud runner publishes its own runs' outcomes with the platform credential — so a compromised pod could forge iterion.events.run.finished.<victim> and fire the victim's subscriptions.
+
+    </details>
+
+### Bug Fixes
+
+* **dsl:** a broken inline list rescues the ancestor property and the off-stack sibling ([#2081](https://github.com/SocialGouv/iterion/issues/2081)) ([#2256](https://github.com/SocialGouv/iterion/issues/2256)) ([6d5bba3](https://github.com/SocialGouv/iterion/commit/6d5bba321e4133071f132365ea994741a1c084a6))
+
+    <details><summary>why</summary>
+
+    Two deferred rescues of the broken-inline-list recovery (#2081). A less-indented line an ANCESTOR block still owns — the parser replays the consumed INDENT/DEDENT history (openBlockColumns) to tell it from a line nothing open owns — is landed on, and each block loop between the list and the ancestor is handed the closing DEDENT it waits for, spliced ahead of the ancestor line. An off-stack dedent in the remainder (an Error after pops: the misaligned line leaves no level behind, so no DEDENT…
+
+    </details>
+* **dsl:** a C137 on a group member is fixed at the group's literal, one edit serving every use ([#2257](https://github.com/SocialGouv/iterion/issues/2257)) ([e4dec50](https://github.com/SocialGouv/iterion/commit/e4dec5076ce01d086607988afb496428c0eea8e1))
+
+    <details><summary>why</summary>
+
+    A tool declared inside a `group` is instantiated by `use` under the dotted id `<prefix>.<member>`, a name the source has not: `iterion fix` left the quoted reference to the author. The id now resolves through the AST (the use's group, the tool it declares), the member's literal is located inside `group <g>:` in the token stream, and ONE edit at it remedies the C137 of every instantiation — the proof counts the removed diagnostics per (node, reference), since the same literal raises one…
+
+    </details>
+
 ## [3.242.0](https://github.com/SocialGouv/iterion/compare/v3.241.0...v3.242.0) (2026-10-06)
 
 ### Features
