@@ -196,6 +196,12 @@ type Request struct {
 	// subscription paths first, so a metered key is only spent when no
 	// already-paid-for plan can serve.
 	Wants []Credential
+	// FallbackOnly restricts the candidates to pledges whose donor marked
+	// `fallback_use` — the routing fallback door (ADR-121 § The
+	// per-family pool fallback door). The whole-bundle tier never sets
+	// it: a run with no credential of its own is served by ANY active
+	// pledge, consenting or not, exactly as before the door existed.
+	FallbackOnly bool
 }
 
 // Grant is a served donation.
@@ -421,6 +427,14 @@ func eligiblePledges(candidates []Pledge, req Request, want Credential, now time
 		if p.UserID == req.UserID {
 			continue
 		}
+		// The fallback door serves only donors who consented to it: a
+		// pledge without the mark is whole-bundle currency, never a
+		// fallback rung's. Named so "why did nobody serve this door
+		// consult" reads as consent, not as paused or cooling.
+		if req.FallbackOnly && !p.FallbackUse {
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusNoFallbackConsent})
+			continue
+		}
 		if ok, status := p.AvailableForLaunch(now, req.BotID); ok {
 			eligible = append(eligible, p)
 		} else {
@@ -521,6 +535,39 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) (poolsEnabled in
 		return poolsEnabled, nil, noDonor(ReasonAudienceRejected, poolsEnabled, 0, 0, nil)
 	}
 	return poolsEnabled, allowed, nil
+}
+
+// HasFallbackDonors reports whether ANY audience-admitted pool holds a
+// pledge the door could consider: matching one of the wants, marked
+// `fallback_use`, not the requester. It is the door's AMORTIZATION probe
+// (ADR-121 § Delivery 2) — the publisher asks it before any consult, so
+// a deployment with zero opted-in donors pays no walk, no consult log and
+// no grant for the door. Shaped exactly like resolvePools (same
+// ListEnabled walk, same audience admission including the reciprocity
+// lookup) so the probe and the consult cannot diverge on who is
+// reachable; a community pool that opened itself to the requester is
+// seen by both or neither.
+func (b *Broker) HasFallbackDonors(ctx context.Context, req Request) (bool, error) {
+	_, allowed, err := b.resolvePools(ctx, req)
+	if err != nil {
+		// Nothing admitted the requester at all: no donor, fallback or
+		// otherwise. The typed abstention is the consult's answer, not a
+		// probe failure.
+		return false, nil
+	}
+	for _, pc := range allowed {
+		for _, p := range pc.candidates {
+			if !p.FallbackUse || p.UserID == req.UserID {
+				continue
+			}
+			for _, w := range req.Wants {
+				if p.Source == w.Source && p.Ref == w.Ref {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 // rank orders eligible pledges by fairness: least consumed today first

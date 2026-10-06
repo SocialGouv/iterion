@@ -45,16 +45,17 @@ var remotePoolHistoryCmd = &cobra.Command{
 }
 
 var (
-	remotePoolSource     string
-	remotePoolRef        string
-	remotePoolKeyID      string
-	remotePoolUSDPerDay  float64
-	remotePoolUSDPerWeek float64
-	remotePoolRunsPerDay int
-	remotePoolConcurrent int
-	remotePoolFromHour   int
-	remotePoolToHour     int
-	remotePoolBots       []string
+	remotePoolSource      string
+	remotePoolRef         string
+	remotePoolKeyID       string
+	remotePoolUSDPerDay   float64
+	remotePoolUSDPerWeek  float64
+	remotePoolRunsPerDay  int
+	remotePoolConcurrent  int
+	remotePoolFromHour    int
+	remotePoolToHour      int
+	remotePoolBots        []string
+	remotePoolFallbackUse bool
 )
 
 var remotePoolShareCmd = &cobra.Command{
@@ -73,8 +74,9 @@ var remotePoolShareCmd = &cobra.Command{
 				MaxRunsPerDay:     remotePoolRunsPerDay,
 				MaxConcurrentRuns: remotePoolConcurrent,
 			},
-			Bots:  remotePoolBots,
-			KeyID: remotePoolKeyID,
+			Bots:        remotePoolBots,
+			FallbackUse: remotePoolFallbackUse,
+			KeyID:       remotePoolKeyID,
 		}
 		if remotePoolFromHour != 0 || remotePoolToHour != 0 {
 			in.Window = &credpool.Window{
@@ -213,6 +215,7 @@ func init() {
 	remotePoolShareCmd.Flags().IntVar(&remotePoolFromHour, "from-hour", 0, "Share from this local hour (with --to-hour)")
 	remotePoolShareCmd.Flags().IntVar(&remotePoolToHour, "to-hour", 0, "Share until this local hour (exclusive)")
 	remotePoolShareCmd.Flags().StringSliceVar(&remotePoolBots, "bots", nil, "Only these bot ids may use it (default: any)")
+	remotePoolShareCmd.Flags().BoolVar(&remotePoolFallbackUse, "fallback-use", false, "Also lend to FALLBACK rungs of runs that hold their own credential (the routing policy's ladder); an armed rung holds a runs/day unit and a concurrency slot until the run publishes even when the fallback never fires, and the attempt's whole spend books against your ceilings")
 	remotePoolDonorsCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 
 	remotePoolPolicyCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
