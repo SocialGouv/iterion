@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.242.0](https://github.com/SocialGouv/iterion/compare/v3.241.0...v3.242.0) (2026-10-06)
+
+### Features
+
+* **cli:** resume every usage-blocked run in one command; list by failure code ([#2249](https://github.com/SocialGouv/iterion/issues/2249)) ([19189fc](https://github.com/SocialGouv/iterion/commit/19189fc442cd4e9a35ef985cbeac43d82f163777))
+
+    <details><summary>why</summary>
+
+    #2247's manual half. A forfait reset is never observed by the parked runs: their retries arm at the provider's ANNOUNCED reset (days out), so the operator who resets early wakes each run by hand, one id at a time. 'iterion remote runs resume --usage-blocked' sweeps every failed_resumable run carrying failure_code USAGE_LIMIT_BLOCKED and resumes each through the normal endpoint — the full admission gate and the runner's usage preflight, the authoritative probe: a run whose window is still shut…
+
+    </details>
+* **contracts:** C310 warns when a contract port binds a node that runs more than once ([#2243](https://github.com/SocialGouv/iterion/issues/2243)) ([b15a920](https://github.com/SocialGouv/iterion/commit/b15a9207bef613d50091a6d3296d840182ac2de8)), closes [#1536](https://github.com/SocialGouv/iterion/issues/1536)
+
+    <details><summary>why</summary>
+
+    A fan-out body executes its nodes once per branch (per item under fan_out_each) under the same node id, and the contract port capture keeps one entry per node id — a declared output port bound into the body projects whichever branch execution finished last, one branch's output, not the collection. bindOutput now warns beside C304 when the producer sits in execBranchBodyNodes' set; the convergence node — where the branches join and execution is single again — stays silent, and so does the trunk.…
+
+    </details>
+* **credpool:** the routing fallback door - consent, probe, consult, seal ([#2210](https://github.com/SocialGouv/iterion/issues/2210) slice 5) ([#2251](https://github.com/SocialGouv/iterion/issues/2251)) ([f783a64](https://github.com/SocialGouv/iterion/commit/f783a649dea892df234152adc6f68e766ddc6971))
+
+    <details><summary>why</summary>
+
+    A donor who marks their pledge fallback_use consents to serve a FALLBACK rung of a run that holds its own credential - the run's routing policy needing a kind the run lacks (ADR-121, Delivery 2 slice 5). The whole-bundle gate is untouched; with no opted-in donor the delivery costs one indexed probe and changes nothing else.
+
+    </details>
+
 ## [3.241.0](https://github.com/SocialGouv/iterion/compare/v3.240.0...v3.241.0) (2026-10-06)
 
 ### Features
