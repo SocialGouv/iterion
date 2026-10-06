@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,14 +96,28 @@ func RemoteRunsList(ctx context.Context, c *RemoteClient, p *Printer, opts Remot
 		q["team_id"] = opts.Team
 	}
 	path := "/api/runs" + QueryString(q)
-	if p.Format == OutputJSON {
-		return RemoteGetPrint(ctx, c, p, path)
-	}
 	var out struct {
 		Runs []remoteRunSummary `json:"runs"`
 	}
 	if _, err := c.Call(ctx, "GET", path, nil, &out); err != nil {
 		return err
+	}
+	// The failure-code filter is CLIENT-side, so it filters in BOTH output
+	// modes: a JSON consumer asking for USAGE_LIMIT_BLOCKED and receiving
+	// DLQ_PARKED rows too would see MORE than the operator's table — the
+	// dangerous direction for a fail-open filter.
+	if opts.FailureCode != "" {
+		filtered := make([]remoteRunSummary, 0, len(out.Runs))
+		for _, r := range out.Runs {
+			if r.FailureCode == opts.FailureCode {
+				filtered = append(filtered, r)
+			}
+		}
+		out.Runs = filtered
+	}
+	if p.Format == OutputJSON {
+		p.JSON(map[string]any{"runs": out.Runs})
+		return nil
 	}
 	rows := make([][]string, 0, len(out.Runs))
 	for _, r := range out.Runs {
@@ -872,12 +887,11 @@ func RemoteRunsPreviewCost(ctx context.Context, c *RemoteClient, p *Printer, fil
 func RemoteRunsResumeUsageBlocked(ctx context.Context, c *RemoteClient, p *Printer, opts RemoteRunsListOptions) error {
 	opts.Status = "failed_resumable"
 	opts.FailureCode = "USAGE_LIMIT_BLOCKED"
-	if opts.Limit <= 0 {
-		opts.Limit = 100
-	}
+	// No limit param: the server treats its absence as unbounded, and the
+	// sweep's promise is EVERY blocked run — a page cap would silently
+	// strand the oldest ones behind a full first page.
 	q := map[string]string{
 		"status": opts.Status,
-		"limit":  fmt.Sprintf("%d", opts.Limit),
 	}
 	if opts.Team != "" {
 		q["team_id"] = opts.Team
@@ -888,7 +902,14 @@ func RemoteRunsResumeUsageBlocked(ctx context.Context, c *RemoteClient, p *Print
 	if _, err := c.Call(ctx, "GET", "/api/runs"+QueryString(q), nil, &out); err != nil {
 		return err
 	}
-	blocked := 0
+	// In JSON mode the per-run progress lines and the inner resume's own
+	// response body must stay out of stdout: the envelope below is the
+	// whole document. Human mode keeps both.
+	quiet := p
+	if p.Format == OutputJSON {
+		quiet = &Printer{W: io.Discard, Format: OutputJSON}
+	}
+	blocked, failed, resumed := 0, 0, 0
 	type result struct {
 		RunID  string `json:"run_id"`
 		Result string `json:"result"`
@@ -904,21 +925,36 @@ func RemoteRunsResumeUsageBlocked(ctx context.Context, c *RemoteClient, p *Print
 		}
 		blocked++
 		res := result{RunID: r.ID, Result: "resumed"}
-		if err := RemoteRunsResume(ctx, c, p, r.ID, RemoteRunsResumeOptions{}); err != nil {
+		if err := RemoteRunsResume(ctx, c, quiet, r.ID, RemoteRunsResumeOptions{}); err != nil {
 			res.Result, res.Detail = "failed", err.Error()
+			failed++
+		} else {
+			resumed++
 		}
 		results = append(results, res)
-		p.Line("run %s: %s", res.RunID, res.Result)
+		if p.Format != OutputJSON {
+			if res.Detail != "" {
+				p.Line("run %s: %s — %s", res.RunID, res.Result, res.Detail)
+			} else {
+				p.Line("run %s: %s", res.RunID, res.Result)
+			}
+		}
 	}
 	if p.Format == OutputJSON {
-		p.JSON(map[string]any{"processed": blocked, "runs": results})
-		return nil
+		p.JSON(map[string]any{"processed": blocked, "resumed": resumed, "failed": failed, "runs": results})
+	} else {
+		switch blocked {
+		case 0:
+			p.Line("no run is parked on a usage window (status failed_resumable, failure_code USAGE_LIMIT_BLOCKED)")
+		default:
+			p.Line("%d usage-blocked run(s) processed — %d resumed, %d failed", blocked, resumed, failed)
+		}
 	}
-	switch blocked {
-	case 0:
-		p.Line("no run is parked on a usage window (status failed_resumable, failure_code USAGE_LIMIT_BLOCKED)")
-	default:
-		p.Line("%d usage-blocked run(s) processed", blocked)
+	// A sweep that could not resume a single run is a failed sweep, however
+	// politely each refusal was worded: the operator asked for work to
+	// resume and none did.
+	if blocked > 0 && resumed == 0 {
+		return fmt.Errorf("no usage-blocked run resumed (%d attempted, all failed)", failed)
 	}
 	return nil
 }

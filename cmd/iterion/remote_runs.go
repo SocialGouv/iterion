@@ -652,5 +652,6 @@ func init() {
 	remoteRunsStatsCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the aggregation to a team id you can view (default: your active team)")
 	remoteRunsReposCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id you can view (default: your active team)")
 	remoteRunsListCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id you can view (default: your active team)")
+	remoteRunsResumeCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "With --usage-blocked: sweep this team's blocked runs instead of your active team's (a team id you can view)")
 	remoteCmd.AddCommand(remoteRunsCmd)
 }
