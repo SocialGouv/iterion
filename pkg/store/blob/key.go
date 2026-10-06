@@ -118,6 +118,17 @@ func validateIRBlobKey(storageKey string) (string, error) {
 	return canonical, nil
 }
 
+// IRBlobKeyRunID returns the run id embedded in a canonical IR storage
+// key ("ir/<run_id>.json" — the snapshot shape embeds
+// "<run_id>-bundle-<digest>"). The mongo IR blob read uses it to bind
+// the fetch to the embedded run's tenant (D14 F7).
+func IRBlobKeyRunID(storageKey string) (string, error) {
+	if _, err := validateIRBlobKey(storageKey); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(storageKey, "ir/"), ".json"), nil
+}
+
 // toolBlobRunPrefix is the S3 key prefix containing every tool blob for
 // a run. Trailing slash guards against matching `tools/<runID>-other/`.
 func toolBlobRunPrefix(runID string) (string, error) {
