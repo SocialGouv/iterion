@@ -109,7 +109,7 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		// without the sidecar means a future UpToDate adoption cannot
 		// tell iterion's own file from an operator's identical copy —
 		// R2-F2 of the round-2 adversarial).
-		markIterionWrote(markerPath)
+		markIterionWrote(markerPath, destPath)
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
@@ -154,7 +154,7 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		// safe state (marker missing → pruner skips) instead of an unsafe
 		// one (marker present without provenance → next UpToDate cannot
 		// tell iterion's file from an identical operator copy).
-		markIterionWrote(markerPath)
+		markIterionWrote(markerPath, destPath)
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
@@ -693,19 +693,30 @@ func writeMarker(path, hash string, tier skillTier) error {
 }
 
 // markIterionWrote drops the sticky "iterion actively wrote this file"
-// sidecar next to the marker. Best-effort — losing the sidecar only
-// downgrades the pruner's certainty about this destination on some future
-// run (which is exactly what safety requires), never fails the mirror.
-// Called from reconcileSkillFile's Mirrored / Refreshed branches. NOT
-// called from UpToDate: an adopted-identical-operator-file must not be
-// pruneable, ever.
-func markIterionWrote(markerPath string) {
-	_ = os.WriteFile(markerPath+iterionWroteSidecarSuffix, nil, 0o644)
+// sidecar next to the marker. The sidecar names the write form —
+// `dir:<stem>` for a directory-form SKILL.md, `flat:<name>` for a flat
+// alias — so the orphan pruner resolves a marker whose name fits BOTH
+// grammars (a source literally named "<x>.SKILL.md") to the destination
+// iterion actually wrote, instead of guessing from what happens to exist
+// on disk (#1526: the disk-stat guess attributed iterion's flat-file
+// marker to an operator-placed directory and could prune it). Best-effort
+// — losing the sidecar only downgrades the pruner's certainty about this
+// destination on some future run (which is exactly what safety requires),
+// never fails the mirror. Called from reconcileSkillFile's Mirrored /
+// Refreshed branches. NOT called from UpToDate: an
+// adopted-identical-operator-file must not be pruneable, ever.
+func markIterionWrote(markerPath, destPath string) {
+	form := "flat:" + filepath.Base(destPath)
+	if filepath.Base(destPath) == "SKILL.md" {
+		form = "dir:" + filepath.Base(filepath.Dir(destPath))
+	}
+	_ = os.WriteFile(markerPath+iterionWroteSidecarSuffix, []byte(form), 0o644)
 }
 
 // iterionWroteFile reports whether the marker at path was actually written
-// by iterion (Mirrored/Refreshed) at some past run. Bare stat — the
-// sidecar's content is deliberately empty; presence is the whole signal.
+// by iterion (Mirrored/Refreshed) at some past run. Bare stat — presence is
+// the whole signal for THIS caller; the sidecar's recorded write form is
+// destPathFromMarkerName's (#1526).
 func iterionWroteFile(markerPath string) bool {
 	if _, err := os.Stat(markerPath + iterionWroteSidecarSuffix); err != nil {
 		return false
@@ -828,7 +839,7 @@ func pruneWorkspaceMirror(workDir string, isWorktreeOwned bool, logger *iterlog.
 			if _, err := os.Stat(markerPath + tierSidecarSuffix); err == nil {
 				continue
 			}
-			destPath := destPathFromMarkerName(kindDir, name)
+			destPath := destPathFromMarkerName(kindDir, name, markerPath)
 			if destPath == "" {
 				continue
 			}
@@ -915,12 +926,29 @@ func pruneWorkspaceMirror(workDir string, isWorktreeOwned bool, logger *iterlog.
 //
 // The two grammars overlap on a source file literally named "foo.SKILL.md":
 // its FLAT-alias marker is "foo.SKILL.md.sha256", which the DIRECTORY-form
-// pattern also matches. We disambiguate by checking the workspace: if the
-// directory-form path exists on disk we return it; otherwise we fall back
-// to the flat interpretation (the source was called foo.SKILL.md, its
-// flat alias is at kindDir/foo.SKILL.md). A marker name that fits neither
-// grammar is skipped (unknown grammar — leave it).
-func destPathFromMarkerName(kindDir, markerName string) string {
+// pattern also matches. The recorded write form (the .iterion-wrote sidecar,
+// #1526) resolves that overlap: it names the destination iterion actually
+// wrote, and it is the ONLY arbiter that cannot be fooled by an
+// operator-placed directory — a sidecar saying `flat:foo.SKILL.md` keeps
+// the pruner off an operator's foo/SKILL.md even when one exists. A
+// sidecar with no parsable form (legacy empty sidecar, or a torn write)
+// falls back to checking the workspace: if the directory-form path exists
+// on disk we return it; otherwise we fall back to the flat interpretation
+// (the source was called foo.SKILL.md, its flat alias is at
+// kindDir/foo.SKILL.md). A marker name that fits neither grammar is
+// skipped (unknown grammar — leave it).
+func destPathFromMarkerName(kindDir, markerName, markerPath string) string {
+	if b, err := os.ReadFile(markerPath + iterionWroteSidecarSuffix); err == nil {
+		form := strings.TrimSpace(string(b))
+		if stem, ok := strings.CutPrefix(form, "dir:"); ok &&
+			stem != "" && stem != "." && stem != ".." && !strings.ContainsAny(stem, "/\\") {
+			return filepath.Join(kindDir, stem, "SKILL.md")
+		}
+		if name, ok := strings.CutPrefix(form, "flat:"); ok &&
+			name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\") {
+			return filepath.Join(kindDir, name)
+		}
+	}
 	if strings.HasSuffix(markerName, ".SKILL.md.sha256") {
 		stem := strings.TrimSuffix(markerName, ".SKILL.md.sha256")
 		if stem == "" || stem == "." || stem == ".." || strings.ContainsAny(stem, "/\\") {

@@ -1086,3 +1086,78 @@ func TestMirrorLibrarySkills_BundleDirFormSatisfiesInjectedDeclaration(t *testin
 		t.Errorf("complete=false although declared ref %q is owned by a marker-less bundle directory skill — stationary veto on a healthy cloud run", "alpha")
 	}
 }
+
+// #1526: a marker whose name fits BOTH grammars (a source literally named
+// `foo.SKILL.md`) is resolved by the RECORDED write form in the
+// .iterion-wrote sidecar, never by what happens to exist on disk — an
+// operator-placed directory with byte-identical content must not inherit
+// iterion's flat-file provenance and get pruned with it. Mutation: make
+// destPathFromMarkerName ignore the sidecar (revert to the disk-stat
+// guess) and this test reddens on the operator's file being gone.
+func TestPruneWorkspaceMirror_OperatorDirectoryNeverPrunedForAFlatMarker(t *testing.T) {
+	workDir := t.TempDir()
+	skillsDir := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(skillsDir, bundleMirrorMarkerDir)
+
+	// iterion's flat orphan: a bundle shipped a source literally named
+	// `foo.SKILL.md`; its flat alias carries the shared marker.
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "foo.SKILL.md"),
+		filepath.Join(markerDir, "foo.SKILL.md.sha256"),
+		"body\n", "")
+	// Post-#1526 the sidecar records the form the mirror wrote.
+	if err := os.WriteFile(filepath.Join(markerDir, "foo.SKILL.md.sha256")+iterionWroteSidecarSuffix, []byte("flat:foo.SKILL.md"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator placed a directory form with byte-identical content —
+	// the exact shape the disk-stat guess attributed the marker to.
+	if err := os.MkdirAll(filepath.Join(skillsDir, "foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "foo", "SKILL.md"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pruneWorkspaceMirror(workDir, true, nil)
+
+	if _, err := os.Stat(filepath.Join(skillsDir, "foo", "SKILL.md")); err != nil {
+		t.Fatalf("the operator's directory-form file was pruned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "foo.SKILL.md")); !os.IsNotExist(err) {
+		t.Errorf("the flat orphan survived pruning: %v", err)
+	}
+}
+
+// The symmetric case: the recorded form is the directory one, and the flat
+// file beside it is the one that stays.
+func TestPruneWorkspaceMirror_DirFormMarkerPrunesTheDirFormNotTheFlat(t *testing.T) {
+	workDir := t.TempDir()
+	skillsDir := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(skillsDir, bundleMirrorMarkerDir)
+
+	// The operator's flat file, byte-identical to what the mirror wrote.
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "bar.SKILL.md"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// iterion wrote the directory form `bar/SKILL.md` — the sidecar says so.
+	installMirroredFile(t,
+		filepath.Join(skillsDir, "bar", "SKILL.md"),
+		filepath.Join(markerDir, "bar.SKILL.md.sha256"),
+		"body\n", "")
+	if err := os.WriteFile(filepath.Join(markerDir, "bar.SKILL.md.sha256")+iterionWroteSidecarSuffix, []byte("dir:bar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pruneWorkspaceMirror(workDir, true, nil)
+
+	if _, err := os.Stat(filepath.Join(skillsDir, "bar.SKILL.md")); err != nil {
+		t.Fatalf("the operator's flat file was pruned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "bar", "SKILL.md")); !os.IsNotExist(err) {
+		t.Errorf("the directory-form orphan survived pruning: %v", err)
+	}
+}
