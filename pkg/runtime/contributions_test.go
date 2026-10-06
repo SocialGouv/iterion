@@ -116,3 +116,31 @@ func TestContributions_IsEmpty(t *testing.T) {
 		t.Error("payload with a library skill should not be empty")
 	}
 }
+
+// #1478 on the cloud path: an injected library skill lands in BOTH
+// discovery shapes through the same mirrorFileSkill the local path uses —
+// identical layout across the three tiers.
+func TestMirrorInjectedLibrarySkills_LandsInBothDiscoveryShapes(t *testing.T) {
+	workDir := t.TempDir()
+	hints, owned, err := mirrorInjectedLibrarySkills(workDir, []LibrarySkillFile{
+		{Name: "deploy-target", Description: "Deploy an app", Content: []byte("---\nname: deploy-target\n---\nbody\n")},
+	}, nil)
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	dest := filepath.Join(workDir, ".claude", "skills")
+	dirForm := filepath.Join(dest, "deploy-target", "SKILL.md")
+	flat := filepath.Join(dest, "deploy-target.md")
+	if _, err := os.Stat(dirForm); err != nil {
+		t.Fatalf("directory form missing: %v", err)
+	}
+	if _, err := os.Stat(flat); err != nil {
+		t.Fatalf("flat alias missing on the cloud path: %v", err)
+	}
+	if len(owned) != 1 || owned[0] != dirForm {
+		t.Fatalf("owned = %v, want [%s]", owned, dirForm)
+	}
+	if hints["deploy-target"] != "Deploy an app" {
+		t.Errorf("hint description dropped: %q", hints["deploy-target"])
+	}
+}

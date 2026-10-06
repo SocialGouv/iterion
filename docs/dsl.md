@@ -1320,6 +1320,8 @@ A bounded loop or foreach may live wholly inside one `fan_out_all`, `fan_out_eac
 
 **C244** is reserved for iteration with no unambiguous owner: an iteration edge on the fan-out router, a back-edge from the collector into a body (`join -> a1 as more`), a cycle crossing sibling branches, or a shared-node shape owned by more than one branch. A loop that wraps the fan-out from the join (`join -> router as outer(N)`) remains a normal trunk loop. Use a `subbot` when independent budgets, workspace isolation, or a reusable capability boundary are desired—not merely to obtain per-item counters. See [composition/iteration/sub-bots](groups-iteration-subbots.md).
 
+**A loop cap — or a `foreach` — on a `round_robin` or `llm` router's outgoing edge is refused** at compile time ([C309](references/diagnostics.md)): those routers select their target on their own (`round_robin` alternates over its unconditional edges, `llm` takes the target the model named) without going through the loop-aware evaluator, so `as spin(N)` — or `as foreach spin(item in …)` — on such an edge would silently do nothing. Put the loop on the edge that re-enters the router — that edge does go through the evaluator, honours the cap, and wants the exhaustion exit [C145](references/diagnostics.md) asks for.
+
 Terminal targets `done` and `fail` are reserved and are never declared.
 
 ## Worktrees, sandboxing, permissions, and budgets

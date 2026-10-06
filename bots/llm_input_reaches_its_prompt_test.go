@@ -93,7 +93,6 @@ import (
 // render it. A schema shared with another node's output cannot simply lose a
 // field: give this node its own input schema.
 var unrenderedBaseline = map[string][]string{
-	"adr-cartograph/survey_code":             {"adr_count", "next_adr_number", "duplicates", "pre_verified_adrs", "bundle_self_path", "scope_notes"},
 	"app-dev/plan_revise":                    {"assumptions", "risks"},
 	"branch-improve-loop/plan_revise":        {"assumptions", "risks"},
 	"copilot/copi":                           {"mode", "session_id", "session_fingerprint", "manager_scope_exclusions", "scope_guard_attempt", "actionless_clarification_count", "actionless_clarification_key"},

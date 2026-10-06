@@ -615,9 +615,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
 		}
 		tenantNative = p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
-		platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
-		if orgID != "" {
-			orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+		// D13: a pool team's launch consults no shared tier — their
+		// natives stay unread exactly like the fill below skips them.
+		if runnerPool == "" {
+			platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
+			if orgID != "" {
+				orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+			}
 		}
 	}
 	// `auto` is the RUN's question, not a tier's (#1998): a native credential
@@ -639,6 +643,18 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			if envFunded && tier != credentialTierGeneric {
 				// Nothing on this tier funds an openai_compatible route.
 				return nil
+			}
+			if runnerPool != "" {
+				switch tier {
+				case credentialTierOrg, credentialTierPool, credentialTierPlatform:
+					// D13: a pool team's bundle never carries shared-tier
+					// credentials — the pod would hold other tenants' keys.
+					// The team's own tiers (BYOK, workflow secrets, its OAuth
+					// forfaits) and the restore of its own prior bundle walk
+					// as usual; a route nothing of the team's funds refuses
+					// the launch with the remedy named.
+					return nil
+				}
 			}
 			switch tier {
 			case credentialTierBYOK:
@@ -1348,7 +1364,18 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.grant)
 	p.keepFollowableRecordRefs(&bundle)
 
-	sealed, keyID, err := secrets.SealRunBundle(p.sealer, tenantID, runnerPool, runID, bundle)
+	// ADR-123: the bundle seals under a fresh per-run DEK that travels in
+	// the message — runner pods hold no platform key material. The ring
+	// stays server-side, sealing at-rest records only.
+	dek, err := secrets.NewRunBundleDEK()
+	if err != nil {
+		return res, fmt.Errorf("cloudpublisher: dek: %w", err)
+	}
+	dekSealer, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		return res, fmt.Errorf("cloudpublisher: dek sealer: %w", err)
+	}
+	sealed, keyID, err := secrets.SealRunBundle(dekSealer, tenantID, runnerPool, runID, bundle)
 	if err != nil {
 		return res, fmt.Errorf("cloudpublisher: seal bundle: %w", err)
 	}
@@ -1367,6 +1394,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		return res, fmt.Errorf("cloudpublisher: persist run secrets: %w", err)
 	}
 	res.secretsRef = ref
+	res.dek = dek
 	return res, nil
 }
 
@@ -1386,7 +1414,11 @@ type credResolution struct {
 	// map per run, not per rung).
 	ModelClasses map[string]map[string]string
 	secretsRef   string
-	grant        *credpool.Grant
+	// dek is the per-run bundle key (ADR-123): it rides the RunMessage
+	// beside the ref — the stream split is what carries it, not any
+	// platform key material.
+	dek   []byte
+	grant *credpool.Grant
 	// families is the set of review families the sealed credentials back
 	// (reviewtopology), so the launch can resolve the credential-derived
 	// topology vars for a queued run. Empty = nothing resolved (env
@@ -3000,6 +3032,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Vars:               inputs,
 		AllowUnknownInputs: spec.AllowUnknownInputs,
 		SecretsRef:         creds.secretsRef,
+		BundleDEK:          creds.dek,
 		// The stored-bundle ref THREADED from the launch surface's own
 		// resolution (never re-fetched here — a push racing the launch must
 		// not pair this compile's IR with newer resources). The runner
@@ -3440,6 +3473,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			AcceptScratchLoss: spec.AcceptScratchLoss,
 		},
 		SecretsRef: creds.secretsRef,
+		BundleDEK:  creds.dek,
 		// Re-resolved by the resume surface like credentials are re-sealed:
 		// the resumed attempt runs the CURRENT stored bundle, consistently
 		// across the compile above and the runner-side materialization.

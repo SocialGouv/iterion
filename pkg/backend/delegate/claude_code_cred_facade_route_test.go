@@ -20,6 +20,9 @@ var hostileAnthropicChannels = map[string]string{
 	"CLAUDE_CODE_USE_BEDROCK": "1",
 	"CLAUDE_CODE_USE_VERTEX":  "1",
 	"CLAUDE_CODE_USE_FOUNDRY": "1",
+	// #1476: applied LAST by the CLI (claw identity.go), so an ambient
+	// header rides every route the engine does not clear it on.
+	"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer sk-ambient-header",
 }
 
 // Every route that ends on a facade — pinned or not, BYOK or process-env key,

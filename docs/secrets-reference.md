@@ -237,29 +237,32 @@ then, the step-by-step above is the operator path. **Be deliberate**:
 this is a destructive change, every sealed blob becomes unreadable the
 moment the new key takes over.
 
-### Rotating the run-bundle key — the ring
+### Run bundles: no key to rotate
 
-Run bundles (only those — `api_keys`, `oauth_credentials` and
-`generic_secrets` still seal under the single key) carry the id of the
-key that sealed them, so they rotate without a re-paste:
+Since ADR-123 a run bundle seals under a fresh 32-byte per-run DEK
+that travels in the queue message (`BundleDEK`) — the only places it
+exists are the publishing server and the run's own pool stream, and a
+runner pod holds no platform key material at all. There is nothing to
+rotate: every bundle already has its own key, and the ring is out of
+the run path. Runner pods need no auth secret; a deployment may keep
+one during the transition window (it opens bundles published before
+the DEK rollout, until the 24 h TTL clears them).
+
+### Rotating the at-rest key — the ring
+
+The ring (`ITERION_SECRETS_KEYS` + `ITERION_SECRETS_KEY_ID`) covers
+`api_keys`, `oauth_credentials` and `generic_secrets` — the records
+that carry no key id and seal under the ring's current key:
 
 1. Set `ITERION_SECRETS_KEYS="<old_id>=<b64>,<new_id>=<b64>"` and
-   `ITERION_SECRETS_KEY_ID="<new_id>"` on the server AND the runner
-   (both must share the full ring). Restart. New run bundles seal
-   under `<new_id>`; bundles under `<old_id>` keep opening until the
-   key leaves the ring.
-   At-rest records (`api_keys`, `oauth_credentials`,
-   `generic_secrets`) carry no key id and seal under the ring's
-   current key — with the ring set, the bare `ITERION_SECRETS_KEY` is
-   ignored. Their opens fall back across the whole ring, so they keep
-   working while `<old_id>` stays; they re-seal under `<new_id>` only
-   when rewritten (a re-paste, a refresh-worker rewrite, a publisher
-   grant).
-2. Retire `<old_id>` from the ring once nothing seals under it
-   anymore: every run bundle has expired (the 24 h TTL — leave one
-   full day; a DLQ-reparked message replays within that window) AND
-   every at-rest record has been rewritten or re-pasted. A record
-   whose key is gone refuses with authentication failure.
+   `ITERION_SECRETS_KEY_ID="<new_id>"` on the server (the runner does
+   not need it any more). Restart. Opens fall back across the whole
+   ring, so records sealed under `<old_id>` keep working while it
+   stays; they re-seal under `<new_id>` only when rewritten (a
+   re-paste, a refresh-worker rewrite, a publisher grant).
+2. Retire `<old_id>` from the ring once every at-rest record has been
+   rewritten or re-pasted. A record whose key is gone refuses with
+   authentication failure.
 
 The per-run AAD (`tenant/pool/run`) also makes a bundle
 undecryptable outside its own identity context — a record ref served
