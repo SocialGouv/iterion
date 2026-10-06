@@ -22,11 +22,12 @@ var remoteRunsCmd = &cobra.Command{
 func remoteClient() (*cli.RemoteClient, error) { return cli.NewRemoteClient() }
 
 var (
-	remoteRunsListStatus   string
-	remoteRunsListWorkflow string
-	remoteRunsListRepo     string
-	remoteRunsListSince    string
-	remoteRunsListLimit    int
+	remoteRunsListStatus      string
+	remoteRunsListWorkflow    string
+	remoteRunsListRepo        string
+	remoteRunsListSince       string
+	remoteRunsListLimit       int
+	remoteRunsListFailureCode string
 )
 
 var remoteRunsListCmd = &cobra.Command{
@@ -35,12 +36,13 @@ var remoteRunsListCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		return cli.RemoteRunsList(cmd.Context(), c, p, cli.RemoteRunsListOptions{
-			Status:   remoteRunsListStatus,
-			Workflow: remoteRunsListWorkflow,
-			Repo:     remoteRunsListRepo,
-			Since:    remoteRunsListSince,
-			Limit:    remoteRunsListLimit,
-			Team:     remoteRunsScopeTeam,
+			Status:      remoteRunsListStatus,
+			Workflow:    remoteRunsListWorkflow,
+			Repo:        remoteRunsListRepo,
+			Since:       remoteRunsListSince,
+			Limit:       remoteRunsListLimit,
+			FailureCode: remoteRunsListFailureCode,
+			Team:        remoteRunsScopeTeam,
 		})
 	}),
 }
@@ -267,6 +269,7 @@ var (
 	remoteResumeAnswers             string
 	remoteResumeFile                string
 	remoteResumeForce               bool
+	remoteResumeUsageBlocked        bool
 	remoteResumeAcceptScratchLoss   bool
 	remoteResumeTimeout             string
 	remoteResumeMaxCostUSD          float64
@@ -277,10 +280,22 @@ var (
 )
 
 var remoteRunsResumeCmd = &cobra.Command{
-	Use:   "resume <run-id>",
-	Short: "Resume a paused/failed run (--answers @file for human answers)",
-	Args:  cobra.ExactArgs(1),
+	Use:   "resume [run-id]",
+	Short: "Resume a paused/failed run, or --usage-blocked to resume every run parked on a provider usage window",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if remoteResumeUsageBlocked {
+			if len(args) > 0 {
+				return fmt.Errorf("--usage-blocked resumes every usage-blocked run; pass no run id")
+			}
+			return cli.RemoteRunsResumeUsageBlocked(cmd.Context(), c, p, cli.RemoteRunsListOptions{
+				Team:  remoteRunsScopeTeam,
+				Limit: remoteRunsListLimit,
+			})
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("resume needs a run id (or --usage-blocked)")
+		}
 		answers := strings.TrimPrefix(remoteResumeAnswers, "@")
 		return cli.RemoteRunsResume(cmd.Context(), c, p, args[0], cli.RemoteRunsResumeOptions{
 			AnswersFile:         answers,
@@ -549,6 +564,7 @@ func init() {
 	remoteRunsListCmd.Flags().StringVar(&remoteRunsListRepo, "repo", "", "Filter by repository")
 	remoteRunsListCmd.Flags().StringVar(&remoteRunsListSince, "since", "", "Only runs created after (RFC3339)")
 	remoteRunsListCmd.Flags().IntVar(&remoteRunsListLimit, "limit", 0, "Max results")
+	remoteRunsListCmd.Flags().StringVar(&remoteRunsListFailureCode, "failure-code", "", "Filter by failure code (client-side; pairs with --status failed_resumable)")
 
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchBot, "bot", "", "Catalog bot id (alternative to a local file)")
 	remoteRunsLaunchCmd.Flags().StringArrayVar(&remoteLaunchVars, "var", nil, "Workflow var key=value (repeatable)")
@@ -595,6 +611,7 @@ func init() {
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeAnswers, "answers", "", "Answers JSON file (@file)")
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeFile, "file", "", "Push a modified workflow file with the resume")
 	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeForce, "force", false, "Resume even if the workflow source changed")
+	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeUsageBlocked, "usage-blocked", false, "Resume EVERY run parked on a provider usage window (failed_resumable + USAGE_LIMIT_BLOCKED) — the one command after a forfait reset; each resume walks the full admission gate, so a run whose window is still shut re-fails at its preflight before anything spends and re-arms at the announced date")
 	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeAcceptScratchLoss, "accept-scratch-loss", false, "Resume although the run's scratch does not travel (SCRATCH_NOT_PORTABLE): without it, or with an older bank — --force does not accept that")
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeTimeout, "timeout", "", "New timeout for the resumed run")
 	// #652 part 2: the local `iterion resume` accepts --max-* to raise
