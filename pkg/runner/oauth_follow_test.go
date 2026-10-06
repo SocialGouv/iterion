@@ -354,7 +354,7 @@ func TestInjectCredentials_FollowsTheRecordTheBundleNames(t *testing.T) {
 	rotate(t, r, st, id, rotated, "fp-team-restamped")
 
 	kind := string(secrets.OAuthKindClaudeCode)
-	sealed, err := secrets.SealRunBundle(r.cfg.Sealer, "run-1", secrets.RunBundle{
+	sealed, keyID, err := secrets.SealRunBundle(r.cfg.Sealer, "tenant-1", "", "run-1", secrets.RunBundle{
 		OAuthCredentials:  map[string][]byte{kind: sealedWith},
 		OAuthFingerprints: map[string]string{kind: "fp-team"},
 		OAuthRecordRefs:   map[string]string{kind: id},
@@ -363,7 +363,7 @@ func TestInjectCredentials_FollowsTheRecordTheBundleNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := secrets.NewMemoryRunSecretsStore()
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "tenant-1", RunID: "run-1", SealedBundle: sealed}); err != nil {
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "tenant-1", RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 	r.cfg.RunSecrets = rs
@@ -395,7 +395,7 @@ func TestInjectCredentials_aLentSlotIsHeldToItsSubscription(t *testing.T) {
 	reconnect(t, r, st, id, claudeBlob("at.never-lent", time.Now().Add(8*time.Hour)), "fp-another-account")
 
 	kind := string(secrets.OAuthKindClaudeCode)
-	sealed, err := secrets.SealRunBundle(r.cfg.Sealer, "run-1", secrets.RunBundle{
+	sealed, keyID, err := secrets.SealRunBundle(r.cfg.Sealer, "tenant-1", "", "run-1", secrets.RunBundle{
 		OAuthCredentials:  map[string][]byte{kind: sealedWith},
 		OAuthFingerprints: map[string]string{kind: "fp-lent"},
 		OAuthRecordRefs:   map[string]string{kind: id},
@@ -405,7 +405,7 @@ func TestInjectCredentials_aLentSlotIsHeldToItsSubscription(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := secrets.NewMemoryRunSecretsStore()
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "tenant-1", RunID: "run-1", SealedBundle: sealed}); err != nil {
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "tenant-1", RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 	r.cfg.RunSecrets = rs
@@ -436,7 +436,7 @@ func TestInjectCredentials_aLentSlotFollowsTheWorkersReStamp(t *testing.T) {
 	rotate(t, r, st, id, restamped, "fp-lent-as-an-account")
 
 	kind := string(secrets.OAuthKindClaudeCode)
-	sealed, err := secrets.SealRunBundle(r.cfg.Sealer, "run-1", secrets.RunBundle{
+	sealed, keyID, err := secrets.SealRunBundle(r.cfg.Sealer, "tenant-1", "", "run-1", secrets.RunBundle{
 		OAuthCredentials:       map[string][]byte{kind: sealedWith},
 		OAuthFingerprints:      map[string]string{kind: "fp-lent"},
 		OAuthRecordRefs:        map[string]string{kind: id},
@@ -447,7 +447,7 @@ func TestInjectCredentials_aLentSlotFollowsTheWorkersReStamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := secrets.NewMemoryRunSecretsStore()
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "tenant-1", RunID: "run-1", SealedBundle: sealed}); err != nil {
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "tenant-1", RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 	r.cfg.RunSecrets = rs

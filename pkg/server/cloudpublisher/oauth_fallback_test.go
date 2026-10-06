@@ -59,7 +59,7 @@ func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecr
 func resolveBundlePinned(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string, pinned []string) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -70,7 +70,7 @@ func resolveBundlePinned(t *testing.T, p *Publisher, runSecrets *secrets.MemoryR
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, runID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -78,7 +78,7 @@ func resolveBundlePinned(t *testing.T, p *Publisher, runSecrets *secrets.MemoryR
 }
 
 func TestResolveOAuth_UserPrimaryOrgFallback(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

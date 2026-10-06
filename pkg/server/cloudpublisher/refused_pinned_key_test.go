@@ -20,7 +20,7 @@ import (
 // shape whose restore lands sealPinnedOnly on a taken family.
 func refusedPinnedFixture(t *testing.T, provider secrets.Provider, rec *platformcfg.PlatformCredentials) *Publisher {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderRefusedPinnedKey(t *testing.T)
 			}
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(t.Context(), poolTeam)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +130,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderRefusedPinnedKey(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			bundle, err := secrets.OpenRunBundle(p.sealer, "oracle-run", record.SealedBundle)
+			bundle, err := secrets.OpenRunBundle(p.sealer, record.TenantID, "", "oracle-run", record.KeyID, record.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}

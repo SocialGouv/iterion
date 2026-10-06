@@ -52,7 +52,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	if rec.TenantID != msg.TenantID {
 		return ctx, nil, fmt.Errorf("run_secrets tenant mismatch (msg=%q sealed=%q)", msg.TenantID, rec.TenantID)
 	}
-	bundle, err := secrets.OpenRunBundle(r.cfg.Sealer, msg.RunID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(r.cfg.Sealer, msg.TenantID, msg.RunnerPool, msg.RunID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
 	}

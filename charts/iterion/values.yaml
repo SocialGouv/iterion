@@ -465,6 +465,11 @@ secrets:
     jwtSecret: ""
     # Base64 of exactly 32 random bytes — `openssl rand -base64 32`
     secretsKey: ""
+    # Run-bundle key rotation ring: "id=base64,id=base64", with
+    # secretsKeyID naming the key new bundles seal under (docs/
+    # secrets-reference.md § rotating the run-bundle key).
+    secretsKeys: ""
+    secretsKeyID: ""
     # First-boot super-admin email. When set on an empty users
     # collection the server creates the account with a one-time
     # random password printed at WARN level in the boot logs. Leave

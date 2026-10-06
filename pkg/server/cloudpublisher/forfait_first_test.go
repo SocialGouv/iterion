@@ -27,7 +27,7 @@ import (
 // forfait under forfaitOwner — the platform's or an org's stores.
 func sharedTierFixture(t *testing.T, keyScope, forfaitOwner string) *Publisher {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestPlatformTier_forfaitStoreFailureStillFillsTheKeys(t *testing.T) {
 // all (the truth table below covers the other policies).
 func TestPlatformTier_bothClosedRestoresInTheFillOrder(t *testing.T) {
 	for _, keysFirst := range []bool{false, true} {
-		sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+		sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 		if err != nil {
 			t.Fatalf("sealer: %v", err)
 		}
@@ -186,7 +186,7 @@ func TestSharedTier_aPinOnTheForfaitsOwnProviderIsFundedPinnedOnly(t *testing.T)
 		{"openai beside a codex forfait", secrets.ProviderOpenAI, secrets.OAuthKindCodex},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -241,7 +241,7 @@ func seedOAuthKind(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, o
 func resolveCreds(t *testing.T, p *Publisher, orgID, tenant string, pinned []string) credResolution {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, "run-shadow", orgID, tenant, "webhook:cfg", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-shadow", orgID, tenant, "webhook:cfg", "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestSharedTier_codexForfaitHoldsTheOpenAIWire(t *testing.T) {
 		{"org", secrets.OrgTierTenantID(orgID), secrets.OrgTierOwnerKey(orgID), orgID, "team-in"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -356,7 +356,7 @@ func TestRestore_TheTenantsOwnCredentialComesBackFirst(t *testing.T) {
 	}
 	bench := func(t *testing.T) (*Publisher, secrets.ApiKeyStore, secrets.OAuthStore, *usagecap.MemStore) {
 		t.Helper()
-		sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+		sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 		if err != nil {
 			t.Fatalf("sealer: %v", err)
 		}
@@ -412,7 +412,7 @@ func TestRestore_TheTenantsOwnCredentialComesBackFirst(t *testing.T) {
 // key of the wire's own vendor. An Anthropic key then holds the anthropic wire
 // and the Claude forfait is its backstop.
 func TestPlatformTier_keysFirstPutsTheSameVendorKeyOnTheWire(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestSharedTier_facadePolicyTruthTable(t *testing.T) {
 		{"tier, no forfait: falls through", false, platformcfg.FacadeTier, "none", false, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -536,7 +536,7 @@ func TestSharedTier_facadePolicyTruthTable(t *testing.T) {
 func TestRestore_theFacadePolicyHoldsThere(t *testing.T) {
 	for _, keysFirst := range []bool{true, false} {
 		for _, pinned := range [][]string{{"zai"}, nil} {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -614,7 +614,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 			}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -626,7 +626,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 			p := &Publisher{apiKeys: keys, oauthForfait: oauth, runSecrets: rs, sealer: sealer, logger: testLogger()}
 			pinned := derivePinnedProviders(tc.wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-stamp", "", "team1", "webhook:cfg", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-stamp", "", "team1", "webhook:cfg", "", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -634,7 +634,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run secrets: %v", err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, "run-stamp", rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-stamp", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
@@ -658,7 +658,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 // keeps the first tier's.)
 func TestRestore_theOrgsCredentialComesBackBeforeThePlatforms(t *testing.T) {
 	const orgID = "org-1"
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestRestore_theOrgsCredentialComesBackBeforeThePlatforms(t *testing.T) {
 // would spend a key the provider is refusing.
 func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 	const orgID = "org-1"
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 		},
 	}
 	ctx := store.WithTenant(context.Background(), "team-in")
-	res, err := p.resolveAndSealCredentials(ctx, "run-in", orgID, "team-in", "webhook:cfg", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"zai"}, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-in", orgID, "team-in", "webhook:cfg", "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"zai"}, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -730,7 +730,7 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(sealer, "run-in", rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-in", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 // park on the tenant's refusal beside a key that serves it. The platform's
 // closed forfait comes back as the wire's park point instead.
 func TestRestore_aSharedRouteKeyKeepsItsRoutesOverTheTenantsRefusedKey(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -808,7 +808,7 @@ func wfPinningBeside(provider string, n *ir.AgentNode) *ir.Workflow {
 // tenant's key could refill the anthropic family.
 func restoreBench(t *testing.T, prov secrets.Provider) (*Publisher, *secrets.MemoryRunSecretsStore, secrets.Sealer) {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -828,7 +828,7 @@ func restoreBench(t *testing.T, prov secrets.Provider) (*Publisher, *secrets.Mem
 func resolveBundleForWorkflow(t *testing.T, p *Publisher, rs *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, wf *ir.Workflow) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "webhook:cfg-1", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, derivePinnedProviders(wf, model.ModelOverrides{}, nil), nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "webhook:cfg-1", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, derivePinnedProviders(wf, model.ModelOverrides{}, nil), nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -839,7 +839,7 @@ func resolveBundleForWorkflow(t *testing.T, p *Publisher, rs *secrets.MemoryRunS
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(sealer, "run-1", rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -931,7 +931,7 @@ func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
 		{"tier: the team's forfait is not the platform tier's", platformcfg.FacadeTier, "team", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -970,7 +970,7 @@ func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
 			}
 			rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-1998", orgID, "team1", "webhook:cfg-1", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-1998", orgID, "team1", "webhook:cfg-1", "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -981,7 +981,7 @@ func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, "run-1998", rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1998", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}

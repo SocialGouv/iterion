@@ -69,7 +69,7 @@ func TestResolve_RequireLLMCredentialRefusesOnlyARunThatCannotStart(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -83,7 +83,7 @@ func TestResolve_RequireLLMCredentialRefusesOnlyARunThatCannotStart(t *testing.T
 				logger: iterlog.New(iterlog.LevelInfo, &buf), requireLLMCredential: tc.require}
 			wf := compileTestSource(t, tc.bot)
 			ctx := store.WithTenant(context.Background(), "team1")
-			_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "",
+			_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "",
 				wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if tc.refused {
 				if !errors.Is(err, runview.ErrNoLLMCredential) {
@@ -105,7 +105,7 @@ func TestResolve_RequireLLMCredentialRefusesOnlyARunThatCannotStart(t *testing.T
 // The refusal names what it could not fund, so the operator reads which
 // provider to provision — not just that "something" was missing.
 func TestResolve_RequireLLMCredentialNamesTheUnfundedProviders(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestResolve_RequireLLMCredentialNamesTheUnfundedProviders(t *testing.T) {
 		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
 		logger: iterlog.Nop(), requireLLMCredential: true}
 	ctx := store.WithTenant(context.Background(), "team1")
-	_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "",
+	_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "",
 		compileTestSource(t, twoRoutesBot), nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "anthropic") || !strings.Contains(err.Error(), "openai") {
 		t.Fatalf("refusal = %v, want it to name both pinned providers", err)

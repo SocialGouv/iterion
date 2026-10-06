@@ -289,13 +289,13 @@ func TestAdmitAttempt_BumpsHeldKeysOnceAdmitted(t *testing.T) {
 	apiKeys := secrets.NewMemoryApiKeyStore()
 	id, _ := seedFingerprintedKey(t, apiKeys, sealer, "sk-ant-held")
 	rs := secrets.NewMemoryRunSecretsStore()
-	sealed, err := secrets.SealRunBundle(sealer, "run-1", secrets.RunBundle{
+	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-a", "", "run-1", secrets.RunBundle{
 		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-held"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", SealedBundle: sealed}); err != nil {
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer, ApiKeys: apiKeys}}

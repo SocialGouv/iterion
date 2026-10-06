@@ -225,7 +225,7 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 			// Live resolution is the independent oracle, with real sealed records and
 			// real pool admission. Every metadata-only dependency above rejects writes.
 			ctx := store.WithTenant(t.Context(), poolTeam)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, nil, spec.Launch.KeyOverrides, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, "", nil, spec.Launch.KeyOverrides, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -239,7 +239,7 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				bundle, err = secrets.OpenRunBundle(f.sealer, "oracle-run", record.SealedBundle)
+				bundle, err = secrets.OpenRunBundle(f.sealer, poolTeam, "", "oracle-run", record.KeyID, record.SealedBundle)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -461,7 +461,7 @@ func TestCredentialPreviewMatchesSealedBundleOnAPinBesideAForfait(t *testing.T) 
 			}
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(t.Context(), poolTeam)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -469,7 +469,7 @@ func TestCredentialPreviewMatchesSealedBundleOnAPinBesideAForfait(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			bundle, err := secrets.OpenRunBundle(f.sealer, "oracle-run", record.SealedBundle)
+			bundle, err := secrets.OpenRunBundle(f.sealer, poolTeam, "", "oracle-run", record.KeyID, record.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -560,7 +560,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 		{"tier, team closed forfait: the platform key falls through", false, platformcfg.FacadeTier, "none", "", false, false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -628,7 +628,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 			}
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(t.Context(), team)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", orgID, team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", orgID, team, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -639,7 +639,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 				if err != nil {
 					t.Fatal(err)
 				}
-				bundle, err := secrets.OpenRunBundle(sealer, "oracle-run", record.SealedBundle)
+				bundle, err := secrets.OpenRunBundle(sealer, team, "", "oracle-run", record.KeyID, record.SealedBundle)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -725,7 +725,7 @@ func TestCredentialPreviewAgreesWhenAProviderIsAlreadyHeld(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -748,7 +748,7 @@ func TestCredentialPreviewAgreesWhenAProviderIsAlreadyHeld(t *testing.T) {
 			}
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(t.Context(), team)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", org, team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", org, team, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -756,7 +756,7 @@ func TestCredentialPreviewAgreesWhenAProviderIsAlreadyHeld(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			bundle, err := secrets.OpenRunBundle(sealer, "oracle-run", record.SealedBundle)
+			bundle, err := secrets.OpenRunBundle(sealer, team, "", "oracle-run", record.KeyID, record.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -29,7 +29,7 @@ func resolveBundleForOrg(t *testing.T, p *Publisher, runID, orgID, tenant, owner
 		t.Fatalf("resolveBundleForOrg needs a MemoryRunSecretsStore")
 	}
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenant, owner, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenant, owner, "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -40,7 +40,7 @@ func resolveBundleForOrg(t *testing.T, p *Publisher, runID, orgID, tenant, owner
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(p.sealer, runID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(p.sealer, rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -51,7 +51,7 @@ func resolveBundleForOrg(t *testing.T, p *Publisher, runID, orgID, tenant, owner
 // anthropic key, with `audience` deciding who may spend it.
 func orgTierPublisher(t *testing.T, orgID string, audience identity.CredentialAudience) *Publisher {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

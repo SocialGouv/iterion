@@ -30,7 +30,7 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 		if err != nil {
 			t.Fatalf("store.New: %v", err)
 		}
-		sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+		sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 		if err != nil {
 			t.Fatalf("sealer: %v", err)
 		}
@@ -96,7 +96,7 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 			if err != nil {
 				t.Fatalf("RunSecrets.Get: %v", err)
 			}
-			if bundle, err = secrets.OpenRunBundle(sealer, "run-resume", rec.SealedBundle); err != nil {
+			if bundle, err = secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-resume", rec.KeyID, rec.SealedBundle); err != nil {
 				t.Fatalf("OpenRunBundle: %v", err)
 			}
 		}

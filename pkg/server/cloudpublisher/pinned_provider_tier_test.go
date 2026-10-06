@@ -45,7 +45,7 @@ func wfPinning(provider string) *ir.Workflow {
 // and the tenant holding `tenantKeys`.
 func platformBundleFor(t *testing.T, provider string, platformKeys, tenantKeys []secrets.Provider, tenantForfait bool) secrets.RunBundle {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestDerivePinnedProviders_ReadsAClawModelPrefix(t *testing.T) {
 // store, the same tenant, once with the launch's frozen set and once with the
 // set a moved source would yield.
 func TestPinnedProvider_ResumeReplaysTheLaunchSetNotTheCurrentSource(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "platform-anthropic")
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderMoonshot, "platform-moonshot")
@@ -261,7 +261,7 @@ func TestSubmitResume_FundsFromTheLaunchStampNotTheResumedSource(t *testing.T) {
 			if err != nil {
 				t.Fatalf("store.New: %v", err)
 			}
-			sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			keys := secrets.NewMemoryApiKeyStore()
 			seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "platform-anthropic")
 			seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderMoonshot, "platform-moonshot")
@@ -310,7 +310,7 @@ func TestSubmitResume_FundsFromTheLaunchStampNotTheResumedSource(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RunSecrets.Get: %v", err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, "run-1", rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatalf("OpenRunBundle: %v", err)
 			}
@@ -344,7 +344,7 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 		{"nothing funds the pin", []secrets.Provider{secrets.ProviderAnthropic}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			keys := secrets.NewMemoryApiKeyStore()
 			for _, prov := range tc.platform {
 				seedKey(t, keys, sealer, secrets.PlatformTenantID, prov, "platform-"+string(prov))
@@ -359,7 +359,7 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 			wf := wfPinning("moonshot")
 			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 			ctx := store.WithTenant(context.Background(), "team1")
-			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "",
+			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "",
 				wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 			if tc.wantRefused {
 				if !errors.Is(err, runview.ErrNoLLMCredential) {
@@ -379,7 +379,7 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 // line is what an operator reads to answer "which credential funded that
 // run?". Both walked APIKeys alone.
 func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	// With fingerprints: the stamp is what the per-key concurrency meter and
 	// the audit line read, and a key with none is invisible to both.
@@ -395,7 +395,7 @@ func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
 	wf := wfPinning("moonshot")
 	pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "",
+	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "", "",
 		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
@@ -439,7 +439,7 @@ func TestPinnedProvider_AnOrgKeyFundedFirstKeepsItsSlotFromThePlatformTier(t *te
 	p.oauthForfait = oauth
 
 	ctx := store.WithTenant(context.Background(), "team-in")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "",
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "", "",
 		nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"moonshot"}, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
@@ -449,7 +449,7 @@ func TestPinnedProvider_AnOrgKeyFundedFirstKeepsItsSlotFromThePlatformTier(t *te
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(p.sealer, "run-1", rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(p.sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}

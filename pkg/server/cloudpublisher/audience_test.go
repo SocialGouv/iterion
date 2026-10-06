@@ -40,7 +40,7 @@ func seedScopedKey(t *testing.T, st secrets.ApiKeyStore, sealer secrets.Sealer, 
 // plus the log it wrote.
 func audiencePublisher(t *testing.T) (*Publisher, secrets.Sealer, *secrets.MemoryApiKeyStore, *bytes.Buffer) {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -54,7 +54,7 @@ func audiencePublisher(t *testing.T) (*Publisher, secrets.Sealer, *secrets.Memor
 func resolveWithBot(t *testing.T, p *Publisher, sealer secrets.Sealer, runID, botID string, pins map[string]string) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", "team1", "owner1", botID,
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", "team1", "owner1", botID, "",
 		nil, pins, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
@@ -66,7 +66,7 @@ func resolveWithBot(t *testing.T, p *Publisher, sealer secrets.Sealer, runID, bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, runID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(sealer, "team1", "", runID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestAnOpenKeyIsNeitherWithheldNorAnnounced(t *testing.T) {
 // This is a REGRESSION test: it passed before the fold was introduced, failed
 // with it, and passes again now that the fold belongs to the audience alone.
 func TestTheAudienceFoldDoesNotReachBotSecretBindings(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestTheAudienceFoldDoesNotReachBotSecretBindings(t *testing.T) {
 	wf := &ir.Workflow{Name: "w", Secrets: map[string]*ir.Secret{"forge_token": {}}}
 
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-binding", "", "team1", "owner1", underscoreBot,
+	if _, err := p.resolveAndSealCredentials(ctx, "run-binding", "", "team1", "owner1", underscoreBot, "",
 		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("a binding on a bot named %q stopped resolving — the audience's fold reached a store that matches exactly: %v", underscoreBot, err)
 	}
