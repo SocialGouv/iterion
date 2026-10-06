@@ -57,7 +57,7 @@ type TriggerCoordinator struct {
 // bus, when non-nil, is the process-wide event spine to ride (the cloud
 // NATSBus) so every run-outcome consumer — evaluator, usernotify — sees one
 // stream; nil builds the local InProcBus.
-func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, gate *trigger.ScheduleGate, bus eventbus.Bus, logger *iterlog.Logger) *TriggerCoordinator {
+func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, gate *trigger.ScheduleGate, bus eventbus.Bus, logger *iterlog.Logger, runs store.RunStore) *TriggerCoordinator {
 	if ns == nil || subs == nil {
 		return nil
 	}
@@ -70,7 +70,11 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 		trigger.WithLauncher(launcher),
 		trigger.WithLogger(logger),
 	)
-	cancelSub, err := bus.Subscribe("trigger-evaluator", trigger.Matcher{}, eval.Handle)
+	// The relay's entry check (D14 F5/F6): run-lifecycle events are
+	// verified against the store's own authority before any subscription
+	// matches — the runner publishes outcomes too, and its credential
+	// could forge another tenant's subject.
+	cancelSub, err := bus.Subscribe("trigger-evaluator", trigger.Matcher{}, verifyRunEventAuthority(runs, logger, eval.Handle))
 	if err != nil {
 		if logger != nil {
 			logger.Warn("server: trigger spine disabled (bus subscribe failed): %v", err)
