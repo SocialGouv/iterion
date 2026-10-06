@@ -726,15 +726,21 @@ func writeMarker(path, hash string, tier skillTier) error {
 // Refreshed branches. NOT called from UpToDate: an
 // adopted-identical-operator-file must not be pruneable, ever.
 func markIterionWrote(markerPath, destPath string) {
-	// The form keys on the MARKER grammar, not on the dest's basename: a
-	// file literally named SKILL.md in a flat-only kind would otherwise
-	// read as a directory-form skill and send the pruner after a dest
-	// nobody wrote.
-	form := "flat:" + filepath.Base(destPath)
-	if strings.HasSuffix(filepath.Base(markerPath), ".SKILL.md.sha256") {
-		form = "dir:" + filepath.Base(filepath.Dir(destPath))
+	// The dir form is the destination whose base is SKILL.md AND whose
+	// parent dir is the marker's own stem: skillDestDirForm writes
+	// <dest>/<stem>/SKILL.md against marker <stem>.SKILL.md.sha256, so the
+	// two must agree. Either signal alone mis-derives — a dest named
+	// SKILL.md in a flat-only kind (a command literally named that) has no
+	// marker stem at all, and a FLAT alias of a source literally named
+	// <x>.SKILL.md carries a marker whose suffix matches the directory
+	// grammar while the file it names is flat (#1526's own collision, on
+	// the recording side).
+	stem := strings.TrimSuffix(filepath.Base(markerPath), ".SKILL.md.sha256")
+	if filepath.Base(destPath) == "SKILL.md" && stem != "" && stem == filepath.Base(filepath.Dir(destPath)) {
+		_ = os.WriteFile(markerPath+iterionWroteSidecarSuffix, []byte("dir:"+stem), 0o644)
+		return
 	}
-	_ = os.WriteFile(markerPath+iterionWroteSidecarSuffix, []byte(form), 0o644)
+	_ = os.WriteFile(markerPath+iterionWroteSidecarSuffix, []byte("flat:"+filepath.Base(destPath)), 0o644)
 }
 
 // iterionWroteFile reports whether the marker at path was actually written

@@ -1178,3 +1178,66 @@ func TestMarkIterionWrote_DerivesTheFormFromTheMarkerGrammar(t *testing.T) {
 		t.Errorf("directory-form skill recorded %q (err %v), want dir:deploy", b, err)
 	}
 }
+
+// The RECORDING half of #1526, driven through the production write path: a
+// bundle source literally named `foo.SKILL.md` is mirrored by
+// mirrorFileSkill into BOTH shapes against two markers — the directory
+// form's `foo.SKILL.SKILL.md.sha256` and the flat alias's
+// `foo.SKILL.md.sha256` — and the sidecars must record each write's actual
+// form. The flat marker is exactly the collision shape: its name fits the
+// directory grammar, and the earlier suffix-only derivation recorded
+// `dir:skills` on it, sending the pruner after a dest nobody wrote while
+// the real flat orphan leaked.
+func TestMirrorFileSkill_FlatAliasOfASKILLMdSourceRecordsTheFlatForm(t *testing.T) {
+	workDir := t.TempDir()
+	dest := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
+	for _, d := range []string{dest, markerDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := filepath.Join(workDir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "foo.SKILL.md"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mirrorFileSkill(dest, markerDir, filepath.Join(src, "foo.SKILL.md"), "foo.SKILL.md", skillTierBundle, nil); err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+
+	if b, err := os.ReadFile(filepath.Join(markerDir, "foo.SKILL.md.sha256") + iterionWroteSidecarSuffix); err != nil || string(b) != "flat:foo.SKILL.md" {
+		t.Errorf("the flat alias's sidecar = %q (err %v), want flat:foo.SKILL.md", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(markerDir, "foo.SKILL.SKILL.md.sha256") + iterionWroteSidecarSuffix); err != nil || string(b) != "dir:foo.SKILL" {
+		t.Errorf("the directory form's sidecar = %q (err %v), want dir:foo.SKILL", b, err)
+	}
+
+	// The prune outcome on the recorded forms: the operator places a
+	// byte-identical directory form beside the flat orphan; the sweep
+	// resolves each marker from its sidecar and touches only what iterion
+	// wrote.
+	if err := os.MkdirAll(filepath.Join(dest, "foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "foo", "SKILL.md"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(src); err != nil {
+		t.Fatal(err)
+	}
+	ClearMirroredTierMarkers(workDir, nil)
+	pruneWorkspaceMirror(workDir, true, nil)
+
+	if _, err := os.Stat(filepath.Join(dest, "foo", "SKILL.md")); err != nil {
+		t.Fatalf("the operator's directory form was pruned: %v", err)
+	}
+	for _, orphan := range []string{filepath.Join(dest, "foo.SKILL.md"), filepath.Join(dest, "foo.SKILL", "SKILL.md")} {
+		if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+			t.Errorf("iterion's own orphan %s survived pruning: %v", orphan, err)
+		}
+	}
+}
