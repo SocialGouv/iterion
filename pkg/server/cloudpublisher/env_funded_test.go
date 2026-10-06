@@ -102,7 +102,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-2038", rec.KeyID, rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-2038", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,7 +184,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 	// empty — which is the env-funded contract, not a failure.
 	if res.secretsRef != "" {
 		rec, _ := p.runSecrets.(*secrets.MemoryRunSecretsStore).Get(ctx, res.secretsRef)
-		b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-2038c", rec.KeyID, rec.SealedBundle)
+		b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-2038c", rec.KeyID, rec.SealedBundle)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -276,6 +276,18 @@ func (m *MemoryStore) GetTeamBySlug(_ context.Context, slug string) (Team, error
 	return m.teams[id], nil
 }
 
+// GetTeamByRunnerPool implements Store.
+func (m *MemoryStore) GetTeamByRunnerPool(_ context.Context, pool string) (Team, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, t := range m.teams {
+		if t.RunnerPool == pool {
+			return t, nil
+		}
+	}
+	return Team{}, ErrNotFound
+}
+
 func (m *MemoryStore) GetTeamsByIDs(_ context.Context, ids []string) (map[string]Team, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

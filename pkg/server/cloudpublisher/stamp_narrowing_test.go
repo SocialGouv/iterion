@@ -45,7 +45,7 @@ func TestResolve_StampsOnlyTheSpendableFingerprints(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run secrets: %v", err)
 		}
-		b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
+		b, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
 		if err != nil {
 			t.Fatalf("open bundle: %v", err)
 		}

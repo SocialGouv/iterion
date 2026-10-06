@@ -67,6 +67,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
 		YAMLPath:         runnerConfigPath,
 		DefaultLogFormat: iterconfig.LogFormatJSON,
+		SealerOptional:   true,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: load config: %w", err)
@@ -159,9 +160,23 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if cfg.Auth.SecretsKeyID != "" && cfg.Auth.SecretsKeys == "" {
 		logger.Warn("ITERION_SECRETS_KEY_ID is set without ITERION_SECRETS_KEYS; the id is ignored")
 	}
-	sealer, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
-	if err != nil {
-		return fmt.Errorf("runner: build sealer: %w", err)
+	// ADR-123: the runner opens run bundles under the message's per-run
+	// DEK. The transition ring is built only when the deployment still
+	// mounts key material — it opens the pre-DEK cohort until the 24h
+	// bundle TTL clears it, then the auth secret leaves the pod.
+	var sealer secrets.Sealer
+	if cfg.Auth.SecretsKey != "" || cfg.Auth.SecretsKeys != "" {
+		if cfg.Auth.SecretsKeys != "" && cfg.Auth.SecretsKey != "" {
+			logger.Warn("both ITERION_SECRETS_KEYS and ITERION_SECRETS_KEY are set; the ring wins and the bare key is ignored")
+		}
+		if cfg.Auth.SecretsKeyID != "" && cfg.Auth.SecretsKeys == "" {
+			logger.Warn("ITERION_SECRETS_KEY_ID is set without ITERION_SECRETS_KEYS; the id is ignored")
+		}
+		ring, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
+		if err != nil {
+			return fmt.Errorf("runner: build sealer: %w", err)
+		}
+		sealer = ring
 	}
 	runSecretsStore := secrets.NewMongoRunSecretsStore(st.DB())
 	if err := runSecretsStore.EnsureSchema(rootCtx); err != nil {
