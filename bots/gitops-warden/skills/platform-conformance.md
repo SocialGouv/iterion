@@ -7,7 +7,7 @@ description: Atlas v2 platform facts for a merge verdict: managed resources (Ovh
 
 # Plateforme Atlas v2
 
-- **API** : `https://api.atlas-prod.public-cloud.social.gouv.fr/`
+- **API** : `https://<atlas-host>/`
 - **Code** : `.repos/atlas-monorepo` (« contient uniquement le code pour *builder* les artefacts d'un déploiement, aucune référence à des déploiements réels » — `README.md`).
 - **Rôle** : plateforme de déploiement Kubernetes **pilotée par API**. Les utilisateurs ne manipulent **pas** kubectl/Crossplane directement : tout passe par l'**API Atlas**.
 
@@ -135,18 +135,18 @@ Architecture **CQRS + Event Sourcing** (`services/api/README.md`) : **POST = com
 - **Quick links** (par instance/zone) : ArgoCD `https://argocd.<domain>`, Grafana `https://grafana.<domain>`, Vault `https://vault.<zone>.<domain>`.
 
 ### Auth & endpoints (prod — vérifié via l'OpenAPI servi)
-- **Base API** : `https://api.atlas-prod.public-cloud.social.gouv.fr/api/v1` (préfixe `/api/v1`).
-- **Keycloak** : `https://keycloak.atlas-prod.public-cloud.social.gouv.fr`, **realm `atlas-prod`**.
+- **Base API** : `https://<atlas-host>/api/v1` (préfixe `/api/v1`).
+- **Keycloak** : `https://<atlas-host>`, **realm `atlas-prod`**.
 - **Flow** : OAuth2 **authorization code + PKCE** (login interactif), client public `control-plane-atlas-portal`. Deuxième medium livré : **PAT Atlas** (`atlas-pat-…`, `Authorization: Bearer`) = **identité machine headless** pour la CI — cf. [atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md).
 - **Deux media d'auth** ([`authenticate.ts`](../../.repos/atlas-monorepo/services/api/src/http/middlewares/authenticate.ts), `detectAuthMedium`) : un bearer préfixé **`atlas-pat`** → branche PAT (résout le hash → principal `user`, hérite des rôles FGA) ; sinon **JWT** → l'API **ne valide que la signature** (JWKS realm `atlas-prod`, RS256, **sans contrôler l'audience ni le client** — `FIXME: allow audience for downstream services`) ⇒ **tout token signé par ce realm est accepté**, y compris l'`id_token` kubelogin `dev-kubernetes` (claims `groups`/`email`). C'est ce qui permet de **dériver `ATLAS_TOKEN` automatiquement** (cf. ci-dessous).
-- **Quick links** : ArgoCD/Grafana `https://{argocd,grafana}.atlas-prod.public-cloud.social.gouv.fr`, Vault par zone `https://vault.<zone>.atlas-prod.public-cloud.social.gouv.fr`.
+- **Quick links** : ArgoCD/Grafana `https://{argocd,grafana}<atlas-host>`, Vault par zone `https://vault.<zone><atlas-host>`.
 
 ```bash
 # Plus de copier-coller : atlas-token.sh dérive un id_token frais (client dev-kubernetes),
 # refresh silencieux depuis le cache kubelogin (= celui de kubectl).
 ATLAS_TOKEN="$(scripts/atlas/atlas-token.sh)" \
   curl -sS -H "Authorization: Bearer $ATLAS_TOKEN" \
-  "https://api.atlas-prod.public-cloud.social.gouv.fr/api/v1/zones"
+  "https://<atlas-host>/api/v1/zones"
 ```
 
 > 🪤 **L'`id_token` ne vit que 300 s (5 min)** — mesuré 2026-07-30 (`exp - iat`, client `dev-kubernetes`,
@@ -161,7 +161,7 @@ ATLAS_TOKEN="$(scripts/atlas/atlas-token.sh)" \
 > ⚠ Pas de flow `client_credentials` exposé en prod (≠ realm `atlas-sandbox` de basavi). Pour le poste de travail, le **client public `dev-kubernetes` + refresh token** (via `atlas-token.sh`) suffit et évite tout copier-coller. Pour une **CI 100 % headless**, la plateforme a livré les **PAT Atlas** (`atlas-pat-…`) : identité machine bearer, `atlas-env.sh`/`atlas-members.sh` l'acceptent tel quel — cf. [atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md). ⚠ le PAT couvre l'**API** (create/configure-gitops/delete) mais **pas le seed Vault** des secrets applicatifs (pas d'endpoint API secrets ; accès **Vault** zone toujours requis pour ce seed + le credential de lecture du repo gitops).
 
 ### Découvertes prod (session)
-- **Zones** (`GET /api/v1/zones`) : `dev` → `dev.atlas-prod.public-cloud.social.gouv.fr` ; `prod` → `prod.atlas-prod.public-cloud.social.gouv.fr`. Un host produit = `<app>-<slug>.dev.atlas-prod…` (review en zone dev).
+- **Zones** (`GET /api/v1/zones`) : `dev` → `<atlas-host>` ; `prod` → `<atlas-host>`. Un host produit = `<app>-<slug>.dev.atlas-prod…` (review en zone dev).
 - **Création d'Organization = admin-only** : `POST /admin/organizations` → `403 User must be admin` pour un user non-admin. Un **admin Atlas** doit créer l'Org + Workspace et rattacher l'utilisateur (sinon `/organizations` et `/workspaces` renvoient `[]`).
 - **Schémas de création** : org `{name, domains[], initialAdmin{userEmail|userId}}` ; workspace `{name, domains[] (⊆ org), initialAdmin}` ; environment `{name, zone(ZoneRef), gitops?}` ; `configure-gitops {gitops}`.
 - **CI ⇒ PAT Atlas** : l'auth prod étant PKCE interactif, automatiser les appels Atlas en CI (créer/supprimer env par branche) exigeait une identité machine. Livrée sous forme de **PAT** (`atlas-pat-…`, medium bearer géré par `authenticate.ts`) — cf. [atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md). Le PAT hérite des rôles FGA de l'utilisateur qui l'a minté ⇒ identité **dédiée** grantée **workspace `admin`** par workspace migré.
@@ -248,7 +248,7 @@ Acte d'**admin du workspace** (pas besoin du groupe `/admin`). Token chargé san
 Curls bruts équivalents (référence / dépannage) :
 ```bash
 set -a; source .secrets/.env; set +a
-API="https://api.atlas-prod.public-cloud.social.gouv.fr/api/v1"
+API="https://<atlas-host>/api/v1"
 WS="<wsId>"            # ex. workspace du produit
 
 # 1) Lister les membres actuels (champ "members" : [{id:"user-…", roles}], clé `id`, PAS d'email)
@@ -303,7 +303,7 @@ Source : `compositions/functions/environments.atlas.social.gouv.fr/composition.f
 - Annotation TLS : **`cert-manager.io/cluster-issuer: "letsencrypt"`** (ClusterIssuer `letsencrypt`, ACME **DNS-01** via webhook OVH — `gitops/lib/src/constructs/cert_manager_issuers.ts`). ⚠ **La section `ingress.tls` DOIT avoir un `secretName`** : sans lui, cert-manager (ingress-shim) **n'émet aucun Certificate** et Traefik sert un cert **auto-signé** → `curl: SSL certificate problem: self-signed certificate`, host injoignable en HTTPS public.
 - 🚧 **Kyverno `disallow-unknown-domains` (Enforce)** — *le gros piège*. Toute `Ingress` (+ annotations external-dns) dans un ns `atlas.social.gouv.fr/type: environment` doit avoir un host **sous un domaine autorisé**, sinon le sync ArgoCD échoue : `admission webhook "validate.kyverno.svc-fail" denied … Domain is prohibited in this namespace`. Policy : `gitops/workload-zone/src/platform-components/assets/policies/disallow-unknown-domains.yaml` (host accepté si `== ad` ou `endsWith('.'+ad)`).
   - **Domaines autorisés** = annotation namespace `atlas.social.gouv.fr/domains` = **`workspace.domains` + `<envId>.<zone-domain>`** (`compositions/functions/environments…/composition.fn.ts:105-106`).
-  - ⇒ **workspace `domains:[]` ⟹ seul host utilisable = `<...>.<envId>.<zone-domain>`** (ex. `app.env-01k….dev.atlas-prod.public-cloud.social.gouv.fr`). Un host « joli » (`<app>.<zone-domain>`) impose d'ajouter `<zone-domain>` à l'**org** (super-admin) puis au **workspace**.
+  - ⇒ **workspace `domains:[]` ⟹ seul host utilisable = `<...>.<envId>.<zone-domain>`** (ex. `app.env-01k…<atlas-host>`). Un host « joli » (`<app>.<zone-domain>`) impose d'ajouter `<zone-domain>` à l'**org** (super-admin) puis au **workspace**.
 - **DNS/TLS** : une fois l'ingress admis + doté d'une adresse, external-dns (`domainFilters:[<zone-domain>]`) crée l'enregistrement dans la zone publique et cert-manager émet le cert ⇒ le host résout depuis Internet.
 
 ## Base de données : CNPG (dev/review) vs OVH managé (preprod + prod)
@@ -373,7 +373,7 @@ Source : `compositions/functions/environments.atlas.social.gouv.fr/composition.f
 ## Accès cluster (kubectl) pour debug
 - `GET /api/v1/kubeconfig` → kubeconfig **OIDC** (pas de token embarqué). **Structure** (à reconstruire sans relire le fichier) :
   - `clusters`: `dev` (`server: https://<ip>:6443`, `certificate-authority-data`) et `prod`.
-  - `users`: `oidc@<zone>` avec `exec` (`apiVersion: client.authentication.k8s.io/v1beta1`, `command: kubectl`, `args: [oidc-login, get-token, --oidc-issuer-url=https://keycloak.atlas-prod…/realms/atlas-prod, --oidc-client-id=<zone>-kubernetes, --oidc-extra-scope=profile|email|groups]`).
+  - `users`: `oidc@<zone>` avec `exec` (`apiVersion: client.authentication.k8s.io/v1beta1`, `command: kubectl`, `args: [oidc-login, get-token, --oidc-issuer-url=https://<atlas-oidc>/realms/atlas, --oidc-client-id=<zone>-kubernetes, --oidc-extra-scope=profile|email|groups]`).
   - `contexts`: `dev`→(cluster dev,user oidc@dev), `prod`→idem.
 - Nécessite **kubelogin** (`devbox add kubelogin-oidc`). Login interactif **`authcode` par défaut** : le client `<zone>-kubernetes` enregistre `http://localhost:8000` / `:18000` (`tf-modules/services/kubernetes-oidc.tf`). ⚠ **Ne PAS** ajouter `--grant-type=authcode-keyboard` : ce mode utilise un redirect OOB non autorisé → `invalid redirect_uri`. Le token + un **refresh_token** sont cachés (`~/.kube/cache/oidc-login`) → appels suivants non interactifs. **RBAC** dérivé des groupes `<envId>:<role>` (admin workspace → admin du ns env). Helpers : **[`scripts/atlas/build-kubeconfig.sh`](../../scripts/atlas/build-kubeconfig.sh)** (kubeconfig TLS-vérifié via token rafraîchi).
 - **kubectl zone dev — `email_verified` obligatoire** : l'apiserver utilise `username-claim = email` → il **rejette tout token dont l'email n'est pas vérifié** (401 « propre » malgré aud/iss/kid/signature corrects). L'email du user doit être **vérifié dans Keycloak** (realm atlas-prod) ; avec un token frais, `kubectl --kubeconfig <kubeconfig API> --context dev get ns` fonctionne. `build-kubeconfig.sh` pour le non-interactif. *(Diag d'un 401 apiserver : si `iss`==well-known, `kid`∈JWKS, `/version`→200, alors c'est le token/claims, pas la connexion.)*

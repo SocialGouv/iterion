@@ -167,7 +167,7 @@ les produits migrés avant la décision du 2026-09-01, cf. § retrofit dans
 ```yaml
 atlasEnv:
   id: env-<ulid>            # envId Atlas -> namespace + segment de host
-  zoneDomain: dev.atlas-prod.public-cloud.social.gouv.fr
+  zoneDomain: <atlas-host>
 ```
 Le render lit `id`/`zoneDomain` et calcule `host = <dossier>.<id>.<zoneDomain>` (`--set-string …ingress.host`).
 Descripteur absent ⇒ env Atlas pas encore créé ⇒ le dossier review est **skippé** (invariant : pas d'état cassé).

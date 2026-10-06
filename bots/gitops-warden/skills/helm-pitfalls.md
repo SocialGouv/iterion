@@ -165,7 +165,7 @@ mv helm_charts/generated_manifests/sirena/charts/* <gitops>/deployment-targets/<
 > **Décision.** [`helm-docs`](https://github.com/norwoodj/helm-docs) génère le `README.md` d'un
 > chart (badges, description, table `Values`) à partir de `values.yaml` — pour que la doc ne
 > puisse pas diverger des vraies valeurs par défaut. Adopté dans
-> [`devops-charts`](https://pic.sg.social.gouv.fr/socialgouv/produits-dnum/studio-tech/devops/charts)
+> [`devops-charts`](https://<forge>/socialgouv/produits-dnum/studio-tech/devops/charts)
 > (dépôt des charts Helm transverses DNUM, cf. son propre README), premier chart couvert :
 > **mailpit** (`dnum/mailpit/`). **Opt-in par chart** — `loadtest` n'y est pas encore passé, ce
 > n'est pas un prérequis pour ajouter un chart au dépôt.

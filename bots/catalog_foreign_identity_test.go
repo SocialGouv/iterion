@@ -132,6 +132,7 @@ var catalogHostAllowlist = map[string]string{
 	"pi.dev":                "the public site of an execution backend named in an ADR",
 
 	// Public documentation of the tools and platforms this project uses.
+	"docs.ovhcloud.com":          "OVH's public documentation, cited by the gitops-warden platform skill",
 	"go.dev":                     "the Go project's public site",
 	"kubernetes.io":              "the public Kubernetes documentation",
 	"keda.sh":                    "the public documentation of an autoscaler a chart depends on",

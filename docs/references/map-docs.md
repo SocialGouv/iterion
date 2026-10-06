@@ -286,6 +286,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/forge-permissions.md`](../forge-permissions.md) | Forge permissions & identity — who a bot acts as | This is the model people most often get wrong: **the iterion user who launches | — |
 | [`docs/forge-security-read.md`](../forge-security-read.md) | Forge security-read — org-wide Dependabot alerts for bots | The security-read flow gives a bot read access to a GitHub org's | — |
 | [`docs/github-board-sync.md`](../github-board-sync.md) | GitHub project board ↔ native board sync | Making a GitHub **Projects v2** board (the roadmap humans read) and iterion's | — |
+| [`docs/gitops-warden-rollout.md`](../gitops-warden-rollout.md) | gitops-warden — binding, calibrating, and flipping a repo to enforce | The runbook for [gitops-warden](https://github.com/SocialGouv/iterion/tree/main/bots/gitops-warden) | — |
 | [`docs/grammar/V1_SCOPE.md`](../grammar/V1_SCOPE.md) | Current scope of the V1 grammar and AST | The filename and grammar version remain `V1` for compatibility: Iterion has | — |
 | [`docs/groups-iteration-subbots.md`](../groups-iteration-subbots.md) | Reuse & iteration: groups, foreach, subbots | This page documents the composition + iteration constructs added on top of the | — |
 | [`docs/human-in-the-loop.md`](../human-in-the-loop.md) | Human in the loop | Most iterion nodes run unattended. | — |

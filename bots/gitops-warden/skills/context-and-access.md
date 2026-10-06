@@ -50,7 +50,7 @@ Les secrets locaux sont dans `.secrets/` et **ne doivent jamais être lus en cla
 
 | Terme | Définition |
 |---|---|
-| **PIC** | Plateforme d'Intégration Continue — instance GitLab partagée (`pic.sg.social.gouv.fr`) : composants CI réutilisables + registre d'images. |
+| **PIC** | Plateforme d'Intégration Continue — instance GitLab partagée (`<forge>`) : composants CI réutilisables + registre d'images. |
 | **Atlas v2** | Plateforme de déploiement Kubernetes pilotée par API (Crossplane + ArgoCD + Vault + ESO). Cible de la CD. |
 | **Atlas v1** | Génération précédente d'Atlas : provisionnement des ressources via **CRDs Fabrique** (groupes `org/workspace.fabrique.social.gouv.fr`) en gitops, secrets via **Vault + ExternalSecrets** (pas Sealed Secrets — c'est en *Fabrique legacy* qu'on en trouvait). Remplacée par v2 (provisionnement par **API**, clés Vault par ID au lieu de nom). Voir [atlas-v1.md](../10-platforms/atlas-v1.md). |
 | **Fabrique** | Ancienne plateforme (« plateforme Fabrique »), déploiements via **kontinuous** + **sealed secrets**. Kubeconfig legacy : `.secrets/plateform-fabrique/kubeconfig` (contexts `ovh-dev`, `ovh-prod`). |
@@ -93,11 +93,11 @@ Les exemples ci-dessous ciblent la **zone `dev`**. Pour la prod : remplacer `dev
 
 ```bash
 curl -sS -H "Authorization: Bearer $(kubectl oidc-login get-token \
-  --oidc-issuer-url=https://keycloak.atlas-prod.public-cloud.social.gouv.fr/realms/atlas-prod \
+  --oidc-issuer-url=https://<atlas-host>/realms/atlas-prod \
   --oidc-client-id=control-plane-atlas-portal \
   --oidc-extra-scope=profile --oidc-extra-scope=email --oidc-extra-scope=groups \
   | jq -r .status.token)" \
-  https://api.atlas-prod.public-cloud.social.gouv.fr/api/v1/kubeconfig > ~/.kube/atlas.yaml
+  https://<atlas-host>/api/v1/kubeconfig > ~/.kube/atlas.yaml
 ```
 
 *(Le 1ᵉʳ `oidc-login` ouvre le login Keycloak dans le navigateur — `http://localhost:8000` — puis met en cache.)*
@@ -124,7 +124,7 @@ kubectl --context dev -n <envId> logs deploy/<app> -f
 Les secrets applicatifs vivent dans **Vault** (pas dans le cluster en clair) et sont matérialisés dans le namespace par ESO. Pour les **modifier**, on écrit dans Vault.
 
 ```bash
-export VAULT_ADDR=https://vault.dev.atlas-prod.public-cloud.social.gouv.fr
+export VAULT_ADDR=https://<atlas-host>
 vault login -method=oidc            # login navigateur ; sinon UI /ui (méthode OIDC)
 
 M=<wsId>/<envId>/kv                  # mount KV v2 de ton env (wsId = workspace, envId = environnement)
@@ -211,7 +211,7 @@ Par env, mount `<wsId>/<envId>/kv` : `proconnect` (`PROCONNECT_CLIENT_ID/SECRET`
 ## Coordonnées
 - **PIC** : `socialgouv/produits-dnum/studio-tech/architecture/da-manager/da-manager` (433, primaire, défaut `main`) + `…/architecture/da-manager/da-manager-gitops` (434). *(Réorganisés 2026-06-02 sous le sous-groupe `architecture/da-manager` ; anciens chemins `…/tooling/…` redirigés 301. Build CI = brique partagée [`studio-tech-commun/sdpsn-devops-ci-utils`](../15-build-ci/buildkit-mutualise.md), projet 439.)*
 - **Atlas** : Org SDPC `org-01ks7sjgcxkez4ebz81x6t7frc` · Workspace `ws-01ksq7185sfavebnnc8637mg43` · Env preprod `env-01kssbv4csvqg6xcvg63nhm9wy`.
-- **Host preprod** : `https://da-manager-preprod.env-01kssbv4csvqg6xcvg63nhm9wy.dev.atlas-prod.public-cloud.social.gouv.fr` *(suffixe `-preprod` ajouté 2026-06-02 ; même envId)*.
+- **Host preprod** : `https://<atlas-host>` *(suffixe `-preprod` ajouté 2026-06-02 ; même envId)*.
 
 ## Reste à faire
 - ✅ **create/delete env 100 % CI — EN PLACE (2026-07-07)** via PAT Atlas + brique ci-common `atlas-env-lifecycle` ([atlas-pat-machine-identity](../20-cd-pattern/atlas-pat-machine-identity.md)) : `apply` crée l'env à la 1re review (`atlas_env_ensure`), `cleanup-review` supprime aussi l'Environment Atlas (`atlas_env_delete`) — validé e2e pipelines 52688/52690. CI vars 434 : `ATLAS_TOKEN` (PAT), `ATLAS_GITOPS_DEPLOY_USER/_TOKEN`. Le seed Vault (`registry`,`proconnect`) reste opérateur post-create (`atlas-env.sh seed`).
