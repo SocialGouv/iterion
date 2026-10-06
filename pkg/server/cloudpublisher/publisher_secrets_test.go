@@ -17,6 +17,18 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// mustDEKSealer rebuilds the per-run bundle opener from the DEK the
+// resolution produced (ADR-123): the fixtures open exactly what the
+// runner would — no ring in the path.
+func mustDEKSealer(t *testing.T, dek []byte) secrets.Sealer {
+	t.Helper()
+	s, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		t.Fatalf("dek sealer: %v", err)
+	}
+	return s
+}
+
 func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -66,10 +78,10 @@ func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 	// The stamp witness: the record names the ring key that sealed it —
 	// without it, rotation cannot target the bundle and every open falls
 	// back to the legacy cohort path.
-	if rec.KeyID != "default" {
-		t.Fatalf("record key id %q, want the sealer's current key default", rec.KeyID)
+	if rec.KeyID != secrets.DEKKeyID {
+		t.Fatalf("record key id %q, want the dek scheme", rec.KeyID)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -214,7 +226,7 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-resume", rec.KeyID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, resume.BundleDEK), rec.TenantID, "", "run-resume", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}

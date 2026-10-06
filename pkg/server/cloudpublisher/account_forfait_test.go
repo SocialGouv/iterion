@@ -3,6 +3,8 @@ package cloudpublisher
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"testing"
 	"time"
 
@@ -189,5 +191,50 @@ func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
 	}
 	if got := b.OAuthRecordConnectedAt["claude_code"]; !got.Equal(first.CreatedAt) {
 		t.Fatalf("the restored slot carries connect time %s, want the primary record's %s", got, first.CreatedAt)
+	}
+}
+
+// D13: a pool-stamped launch consults no shared tier. The SAME fixture
+// serves the platform forfait unstamped and must leave the pool
+// bundle without it — the pod would hold the platform's key. Red when
+// the shared-tier skip is dropped.
+func TestPoolLaunchSkipsSharedTiers(t *testing.T) {
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform-primary")
+	rs := secrets.NewMemoryRunSecretsStore()
+	p := &Publisher{oauthForfait: oauth, runSecrets: rs, sealer: sealer, logger: testLogger()}
+
+	// Control: unstamped, the platform tier serves.
+	b := resolveBundle(t, p, rs, sealer, "pool-skip-unstamped", "team1", "webhook:config")
+	if b.OAuthFingerprints["claude_code"] == "" {
+		t.Fatal("fixture drifted: the unstamped resolve served no platform credential")
+	}
+
+	// Pool-stamped: the shared tier is out of the walk.
+	ctx := store.WithTenant(t.Context(), "team1")
+	creds, err := p.resolveAndSealCredentials(ctx, "pool-skip", "", "team1", "webhook:config", "", "honorabilite", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if creds.secretsRef == "" {
+		// Nothing of the team's own funds a route and the shared tiers
+		// are out of the walk: no bundle is stored at all — the strongest
+		// form of "no platform credential inside".
+		return
+	}
+	rec, err := rs.Get(ctx, creds.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	got, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "honorabilite", "pool-skip", rec.KeyID, rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+	if got.OAuthFingerprints["claude_code"] != "" || got.PlatformSourced["claude_code"] {
+		t.Fatalf("the pool bundle carries a platform credential: fingerprints=%v platform=%v", got.OAuthFingerprints, got.PlatformSourced)
 	}
 }

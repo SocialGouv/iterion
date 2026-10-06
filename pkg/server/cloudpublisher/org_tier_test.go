@@ -40,7 +40,7 @@ func resolveBundleForOrg(t *testing.T, p *Publisher, runID, orgID, tenant, owner
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(p.sealer, rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}

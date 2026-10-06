@@ -48,7 +48,7 @@ func TestResolve_pinnedKeyWithFreshRefusalsWarns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-pin", rec.KeyID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", "run-pin", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
