@@ -214,9 +214,20 @@ func authFailureFast(result *string, task Task) error {
 			ObservedAt: time.Now().UTC(),
 		})
 	}
+	// A node PINNED to a facade provider dies naming that provider and the
+	// variable that would have funded it — the unpinned wording indicts the
+	// forfait and the Anthropic key, channels the pin took out of the path,
+	// and sends the operator re-arming credentials that were never the
+	// route. An unpinned node's ambient-auth failure keeps the legacy
+	// wording: there the forfait and the Anthropic key ARE the channels.
+	detail := fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", redactAuthRender(t))
+	hint := normalizeProviderHint(task.ProviderHint)
+	if envVar := facadeEnvKey(hint); envVar != "" {
+		detail = fmt.Sprintf("no working %s credential — check %s: %s", hint, envVar, redactAuthRender(t))
+	}
 	return &ErrAuthFailed{
 		Provider: BackendClaudeCode,
-		Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", redactAuthRender(t)),
+		Detail:   detail,
 	}
 }
 

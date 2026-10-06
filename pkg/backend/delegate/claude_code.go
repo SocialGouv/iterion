@@ -1510,6 +1510,21 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
 		return opts, "", forfaitSpawn{}, err
 	}
+	// A facade route clears ANTHROPIC_CUSTOM_HEADERS (the ambient header
+	// rides the route otherwise), and the cleared value is applied AFTER
+	// the task's own ExtraEnv — an operator entry for a gateway header is
+	// dropped here. Said out loud: the channel has documented uses (client
+	// identity on a self-hosted gateway), so a silent drop reads as the
+	// header never having been written.
+	if selected["ANTHROPIC_CUSTOM_HEADERS"] == "" {
+		entries, _ := claudeExtraEnvEntries(task)
+		for _, kv := range entries {
+			if kv[0] == "ANTHROPIC_CUSTOM_HEADERS" && kv[1] != "" {
+				b.Logger.Warn("[%s#%d/claude-code] ExtraEnv sets ANTHROPIC_CUSTOM_HEADERS, which a facade route clears (the ambient header would ride the route otherwise): the entry is ignored on this node",
+					task.NodeID, task.Iteration)
+			}
+		}
+	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
 	currentFingerprint := providerFingerprint(anthropicFingerprintEnvForTask(task, credEnv, selected))
 
