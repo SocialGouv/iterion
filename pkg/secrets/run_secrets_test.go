@@ -42,14 +42,18 @@ func sealBundle(t *testing.T, s Sealer, tenant, pool, run string, b RunBundle) (
 // confused record store serve ciphertext that cannot decrypt, instead
 // of another tenant's credentials.
 func TestRunBundleAADBindsIdentity(t *testing.T) {
-	ring, err := NewKeyRingSealer(testRing(t, "k1"), "k1")
+	dek, err := NewRunBundleDEK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dekSealer, err := NewAESGCMSealer(dek)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := RunBundle{APIKeys: map[Provider]string{"anthropic": "sk-test"}}
-	sealed, keyID := sealBundle(t, ring, "tenant-a", "honorabilite", "run-1", b)
-	if keyID != "k1" {
-		t.Fatalf("sealed under %q, want k1", keyID)
+	sealed, keyID := sealBundle(t, dekSealer, "tenant-a", "honorabilite", "run-1", b)
+	if keyID != DEKKeyID {
+		t.Fatalf("sealed under %q, want the dek scheme", keyID)
 	}
 
 	for _, tc := range []struct{ tenant, pool, run string }{
@@ -57,11 +61,11 @@ func TestRunBundleAADBindsIdentity(t *testing.T) {
 		{"tenant-a", "other-pool", "run-1"},
 		{"tenant-a", "honorabilite", "run-2"},
 	} {
-		if _, err := OpenRunBundle(ring, tc.tenant, tc.pool, tc.run, keyID, sealed); err == nil {
+		if _, err := OpenRunBundle(dekSealer, tc.tenant, tc.pool, tc.run, keyID, sealed); err == nil {
 			t.Fatalf("bundle opened under foreign identity (%s/%s/%s) — the AAD binding is off", tc.tenant, tc.pool, tc.run)
 		}
 	}
-	got, err := OpenRunBundle(ring, "tenant-a", "honorabilite", "run-1", keyID, sealed)
+	got, err := OpenRunBundle(dekSealer, "tenant-a", "honorabilite", "run-1", keyID, sealed)
 	if err != nil {
 		t.Fatalf("own identity refused: %v", err)
 	}
@@ -70,42 +74,35 @@ func TestRunBundleAADBindsIdentity(t *testing.T) {
 	}
 }
 
-// Rotation: seals move to the new current key, bundles sealed under a
-// retired key stay openable through their recorded key id, and a key
-// gone from the ring is named by the error.
-func TestRunBundleRotation(t *testing.T) {
+// The P4a ring-id cohort (records stamped with a ring key id) stays
+// openable through the transition ring: by recorded id while the key
+// remains, with the key named once it leaves. Nothing produces these
+// anymore — the publisher seals per-run DEKs — but the 24h bundle TTL
+// is what retires the cohort, not this change.
+func TestRunBundleRingIDTransition(t *testing.T) {
 	b := RunBundle{GenericSecrets: map[string]string{"tok": "v1"}}
-
-	old, err := NewKeyRingSealer(testRing(t, "a"), "a")
+	body, err := json.Marshal(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealedA, keyIDA := sealBundle(t, old, "t", "p", "r", b)
-	if keyIDA != "a" {
-		t.Fatalf("pre-rotation key id %q, want a", keyIDA)
-	}
 
-	rotated, err := NewKeyRingSealer(testRing(t, "a", "b"), "b")
+	ring, err := NewKeyRingSealer(testRing(t, "a", "b"), "b")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealedB, keyIDB := sealBundle(t, rotated, "t", "p", "r", b)
-	if keyIDB != "b" {
-		t.Fatalf("post-rotation key id %q, want b", keyIDB)
+	sealedA, err := ring.SealWith("a", body, RunBundleAAD("t", "p", "r"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := OpenRunBundle(rotated, "t", "p", "r", keyIDA, sealedA); err != nil {
-		t.Fatalf("a bundle sealed under the retired key must stay openable while the key is in the ring: %v", err)
-	}
-	if _, err := OpenRunBundle(rotated, "t", "p", "r", keyIDB, sealedB); err != nil {
-		t.Fatalf("current-key bundle refused: %v", err)
+	if _, err := OpenRunBundle(ring, "t", "p", "r", "a", sealedA); err != nil {
+		t.Fatalf("a ring-id bundle must open by recorded id while the key is in the ring: %v", err)
 	}
 
-	// The operator retires "a": its bundles refuse, naming the key.
 	retired, err := NewKeyRingSealer(testRing(t, "b"), "b")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = OpenRunBundle(retired, "t", "p", "r", keyIDA, sealedA)
+	_, err = OpenRunBundle(retired, "t", "p", "r", "a", sealedA)
 	if err == nil || !strings.Contains(err.Error(), `"a"`) {
 		t.Fatalf("retired-key open: err = %v, want the key id named", err)
 	}
@@ -140,23 +137,33 @@ func TestRunBundleLegacyCompat(t *testing.T) {
 	}
 }
 
-// A bare Sealer is typed-refused at both ends: the key id is the
-// contract, and a sealer that cannot name a key cannot honor it.
-func TestRunBundleNeedsKeyedSealer(t *testing.T) {
-	plain, err := NewAESGCMSealer(testRing(t, "x")["x"])
+// The DEK scheme's contract: the seal stamps the scheme constant, and
+// a bundle opens only under its own DEK — a different per-run key,
+// even with the right identity, refuses.
+func TestRunBundleDEKScheme(t *testing.T) {
+	dek, err := NewRunBundleDEK()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := SealRunBundle(plain, "t", "p", "r", RunBundle{}); err == nil || !strings.Contains(err.Error(), "keyed sealer") {
-		t.Fatalf("plain sealer seal: err = %v, want the keyed-sealer refusal", err)
-	}
-	ring, err := NewKeyRingSealer(testRing(t, "x"), "x")
+	dekSealer, err := NewAESGCMSealer(dek)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, keyID := sealBundle(t, ring, "t", "p", "r", RunBundle{GenericSecrets: map[string]string{"k": "v"}})
-	if _, err := OpenRunBundle(plain, "t", "p", "r", keyID, sealed); err == nil || !strings.Contains(err.Error(), "keyed sealer") {
-		t.Fatalf("plain sealer open: err = %v, want the keyed-sealer refusal", err)
+	sealed, keyID := sealBundle(t, dekSealer, "t", "p", "r", RunBundle{GenericSecrets: map[string]string{"k": "v"}})
+	if _, err := OpenRunBundle(dekSealer, "t", "p", "r", keyID, sealed); err != nil {
+		t.Fatalf("own dek refused: %v", err)
+	}
+
+	other, err := NewRunBundleDEK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSealer, err := NewAESGCMSealer(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenRunBundle(otherSealer, "t", "p", "r", keyID, sealed); err == nil {
+		t.Fatal("a bundle opened under a foreign per-run key — the DEK binding is off")
 	}
 }
 

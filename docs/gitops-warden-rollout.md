@@ -1,7 +1,7 @@
 # gitops-warden — binding, calibrating, and flipping a repo to enforce
 
 The runbook for [gitops-warden](https://github.com/SocialGouv/iterion/tree/main/bots/gitops-warden)
-(the bot) and [ADR-123](adr/123-gating-bot-merge-gestures.md) (the doctrine).
+(the bot) and [ADR-124](adr/124-gating-bot-merge-gestures.md) (the doctrine).
 Read it when binding the bot to a gitops repository, before flipping any repo
 from `dry_run` to `enforce`, or when a warden verdict looks wrong and you need
 to know which half decided.

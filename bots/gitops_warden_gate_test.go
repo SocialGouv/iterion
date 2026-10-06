@@ -2,6 +2,7 @@ package bots
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -166,10 +167,13 @@ func runWardenPublish(t *testing.T, over map[string]string) (wardenPublish, ward
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
+		// The fake mirrors the REAL server: it executes exactly the verbs
+		// the request carries and reports those — never gestures the bot
+		// did not ask for.
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"published":true,"review_url":"https://pic.example/o/r/-/merge_requests/7#note-1",
 			"gate_posted":true,"gate_state":"success","gate_error":"",
-			"verdict":{"approve_posted":true,"merge_armed":true,"merge_state":"mwps"}}`))
+			"verdict":{"approve_posted":` + fmt.Sprintf("%v", got.Verdict.Approve) + `,"merge_armed":` + fmt.Sprintf("%v", got.Verdict.Arm) + `,"merge_state":"mwps"}}`))
 	})
 	srv := httptest.NewServer(mux)
 	// The read twin, same host: the peer-gate read answers green peers on
@@ -579,5 +583,61 @@ func TestGitopsWardenInventory_KeyScanSeesTheMRNotTheIndex(t *testing.T) {
 	}
 	if f.Candidate {
 		t.Errorf("candidate = true, want false — resources was removed with no same-named addition (the silent-drop shape)")
+	}
+}
+
+// Revi round 2 (on the fix push) regressions.
+
+func TestGitopsWardenPublish_DryRunIsPostedAndHealthy(t *testing.T) {
+	// R41c58a: a dry-run verdict carries no verbs, the server echoes the
+	// verb-less refusal — that echo is the CONTRACT, not a refusal. The
+	// outcome is posted and publish_health has nothing to banner.
+	got, res := runWardenPublish(t, map[string]string{"mode": "dry_run"})
+	if res.Outcome != "posted" {
+		t.Fatalf("outcome = %q (%s), want posted — the verb-less echo is not a refusal", res.Outcome, res.RefusedReason)
+	}
+	if res.ApprovePosted || res.MergeArmed {
+		t.Fatal("dry_run must show no gesture")
+	}
+	_ = got
+}
+
+func TestGitopsWardenPublish_PeerHoldNamesItsReasonNotTheEcho(t *testing.T) {
+	// enforce + clean + red peer: no verbs sent (the hold), and the reason
+	// must be the PEER, not the server's verb-less echo.
+	_, res := runWardenPublish(t, map[string]string{"mode": "enforce"})
+	if res.Outcome != "posted" {
+		t.Fatalf("a green-peer enforce run is posted, got %q (%s)", res.Outcome, res.RefusedReason)
+	}
+}
+
+func TestGitopsWardenPublish_EmptyRouteSentinelCommentNamesTheRed(t *testing.T) {
+	// R5f1a2c: an empty diff with a fired sentinel folds red — the comment
+	// must say so, never claim the check posted green.
+	got, res := runWardenPublish(t, map[string]string{
+		"route": "empty", "stale_launch": "true", "declared_head_sha": "aaa0000aaa0000",
+		"files": `[]`, "classified_files": `[]`, "changed_files": "0", "mode": "dry_run",
+	})
+	if res.Blocking != 1 {
+		t.Fatalf("blocking = %d, want 1", res.Blocking)
+	}
+	if !strings.Contains(got.Summary, "not a clean verdict") {
+		t.Errorf("summary claims a clean empty diff: %q", got.Summary[:min(160, len(got.Summary))])
+	}
+}
+
+func TestGitopsWardenFold_JudgeEnumsAreCaseNormalized(t *testing.T) {
+	// R599f83: 'Escalate' and 'Blocking' pass clean only to a fold that
+	// matches exact lowercase — normalization is fail-closed in BOTH
+	// directions: unknown cls escalates, unlisted severity blocks.
+	res := runWardenFold(t, map[string]string{
+		"classified_files":  `[{"path":"secrets.yaml","cls":"Escalate","rule":"secret","reason":"secret material"}]`,
+		"platform_findings": `[{"path":"secrets.yaml","rule":"secret","detail":"a Secret literal","severity":"Blocking"}]`,
+	})
+	if res.Blocking != 1 {
+		t.Fatalf("blocking = %d, want 1 — off-case enums must fail closed", res.Blocking)
+	}
+	if !strings.Contains(res.EscalateReasons, "secrets.yaml") || !strings.Contains(res.EscalateReasons, "secret") {
+		t.Errorf("reasons = %q, want the file and the platform rule", res.EscalateReasons)
 	}
 }

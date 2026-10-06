@@ -9,7 +9,7 @@ version: 0.1.0
 ## a green verdict — executes the merge-gate gestures through the server's
 ## deterministic publish surface (approve, arm merge-when-pipeline-succeeds).
 ## Ships in dry_run: the operator flips enforce via the integration's
-## launch_vars after calibration (ADR-123).
+## launch_vars after calibration (ADR-124).
 description: |
   GitOps merge gate. Classifies a merge request's diff against a policy —
   image-tag bumps, resource values and non-secret config are simple;
@@ -42,9 +42,9 @@ forge:
     pull_requests: write     # post the verdict comment
     repository: read         # clone + read the diff
     statuses: write          # post the gitops/conformance gate commit status
-    approvals: write         # ADR-123: cast the MR approval (enforce mode)
-    merge: write             # ADR-123: arm merge-when-pipeline-succeeds (enforce mode)
-    reviewers: write         # ADR-123: request reviewers on escalation
+    approvals: write         # ADR-124: cast the MR approval (enforce mode)
+    merge: write             # ADR-124: arm merge-when-pipeline-succeeds (enforce mode)
+    reviewers: write         # ADR-124: request reviewers on escalation
   secret: forge_token
   webhook:
     launch_vars:

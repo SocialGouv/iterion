@@ -893,6 +893,14 @@ schema terra_route_out:
   mode: string
   context_brief: string
   quick_replies: json
+  ## Typed constants for the re-entry edges (see the workflow): an edge
+  ## `with` value without a reference travels as TEXT, so a bare "''"
+  ## reached the json fields as the 2-byte string and "0"/"1" the int
+  ## fields as strings. Emitted typed, referenced by the edges.
+  no_host_event: json
+  no_history: json
+  clarification_first: int
+  clarification_repeat: int
   draft_bot: string
   has_draft: bool
   editor_session_id: string
@@ -1006,6 +1014,8 @@ schema implementation_handoff_out:
   plan_dropped: bool
   no_plan: string
   no_quick_replies: json
+  no_host_event: json
+  no_history: json
 
 ## The draft crosses into the deterministic validator as typed data. The
 ## engine shell-escapes command refs before execution, so even an LLM-authored
@@ -1501,6 +1511,10 @@ compute terra_route:
     file_changes_intent: "if(input.scope_guard_blocked, 'none', input.file_changes_intent)"
     reflection_request: "if(input.scope_guard_blocked, '', input.reflection_request)"
     host_event: "input.host_event"
+    no_host_event: "''"
+    no_history: "''"
+    clarification_first: "0"
+    clarification_repeat: "1"
     wait_for_operator: "if(input.scope_guard_blocked, false, (input.host_event != '' and input.host_event.kind == 'assistant-action-invalid' and if(input.host_event.attempt, input.host_event.attempt >= 2, false)) or input.wait_for_operator)"
     ## Prefer the graph-retained value. Copi's field is only a fresh-marker
     ## relay and must not erase a value that the graph already owns.
@@ -1586,6 +1600,8 @@ compute implementation_handoff:
     plan_dropped: "false"
     no_plan: "''"
     no_quick_replies: "tail(input.manager_scope_exclusions, 0)"
+    no_host_event: "''"
+    no_history: "''"
 
 ## Deterministic passthrough. It carries only Terra's final response back to
 ## the chat loop, so the next visible turn always resumes Terra's session.
@@ -1819,9 +1835,9 @@ workflow copilot:
   ## context remain intact; the bounded loop prevents a second repair.
   terra_route -> turn_state when scope_repair as terra_scope_repair(1) with {
     operator_message: "{{outputs.terra_route.scope_repair_instruction}}",
-    host_event: "''",
+    host_event: "{{outputs.terra_route.no_host_event}}",
     fresh_operator_turn: "{{outputs.seed.implementation_active}}",
-    conversation_history: "''",
+    conversation_history: "{{outputs.terra_route.no_history}}",
     mode: "{{outputs.terra_route.mode}}",
     context_brief: "{{outputs.terra_route.context_brief}}",
     implementation_plan: "{{outputs.terra_route.implementation_plan}}",
@@ -1846,7 +1862,7 @@ workflow copilot:
     manager_scope_exclusions: "{{outputs.terra_route.manager_scope_exclusions}}",
     effective_scope_exclusions: "{{outputs.terra_route.effective_scope_exclusions}}",
     scope_guard_attempt: "{{outputs.terra_route.scope_guard_attempt}}",
-    clarification_count: "0",
+    clarification_count: "{{outputs.terra_route.clarification_first}}",
   }
 
   ## A blocker while carrying out a judged plan may re-enter the full Sol →
@@ -1864,7 +1880,7 @@ workflow copilot:
     manager_scope_exclusions: "{{outputs.terra_route.manager_scope_exclusions}}",
     effective_scope_exclusions: "{{outputs.terra_route.effective_scope_exclusions}}",
     scope_guard_attempt: "{{outputs.terra_route.scope_guard_attempt}}",
-    clarification_count: "1",
+    clarification_count: "{{outputs.terra_route.clarification_repeat}}",
   }
 
   ## An execution turn which only restates its already-judged plan is malformed
@@ -1874,9 +1890,9 @@ workflow copilot:
   ## technical work, whereas repeated actionless Terra answers are malformed.
   terra_route -> turn_state when execution_retry as terra_actionless_execution_retry(3) with {
     operator_message: "Continue cette même mise en œuvre maintenant. Le tour précédent a expliqué le correctif sans proposer de changement ni action. Utilise les preuves et le document déjà joints ; ne résume pas le plan.",
-    host_event: "''",
+    host_event: "{{outputs.terra_route.no_host_event}}",
     fresh_operator_turn: "{{outputs.seed.implementation_active}}",
-    conversation_history: "''",
+    conversation_history: "{{outputs.terra_route.no_history}}",
     mode: "{{outputs.terra_route.mode}}",
     context_brief: "{{outputs.terra_route.context_brief}}",
     implementation_plan: "{{outputs.terra_route.implementation_plan}}",
@@ -1974,9 +1990,9 @@ workflow copilot:
 
   implementation_handoff -> turn_state as terra_plan_execution_cycle(1000) with {
     operator_message: "{{outputs.implementation_handoff.operator_message}}",
-    host_event: "''",
+    host_event: "{{outputs.implementation_handoff.no_host_event}}",
     fresh_operator_turn: "{{outputs.seed.implementation_active}}",
-    conversation_history: "''",
+    conversation_history: "{{outputs.implementation_handoff.no_history}}",
     mode: "{{outputs.implementation_handoff.mode}}",
     context_brief: "{{outputs.implementation_handoff.context_brief}}",
     implementation_plan: "{{outputs.implementation_handoff.implementation_plan}}",

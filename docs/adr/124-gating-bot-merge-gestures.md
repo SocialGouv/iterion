@@ -1,6 +1,7 @@
-# ADR-123 — A gating bot: merge-gate gestures as a declared capability, executed by the publish surface
+# ADR-124 — A gating bot: merge-gate gestures as a declared capability, executed by the publish surface
 
 - Status: accepted (2026-10-06, gitops-warden slice 1)
+- Note: numbered 124 — written as 123 in parallel with the DEK-envelope ADR that merged first; renumbered before publication, so no published citation says 123 for this record
 - Date: 2026-10-06
 - Deciders: jo (direction), Claude (analysis)
 - Relates to:

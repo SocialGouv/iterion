@@ -884,6 +884,26 @@ func TestResolveDeliveryPreconditions_StaleLaunchOnRequeuedRun(t *testing.T) {
 
 const testSealerKeyB64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
+// sealDekFixture seals a bundle under a fresh per-run DEK (ADR-123)
+// and returns the sealed bytes plus the DEK the test's message must
+// carry — the runner opens exactly that, no ring.
+func sealDekFixture(t *testing.T, tenant, run string, b secrets.RunBundle) ([]byte, []byte) {
+	t.Helper()
+	dek, err := secrets.NewRunBundleDEK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, _, err := secrets.SealRunBundle(ds, tenant, "", run, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed, dek
+}
+
 func testSealer(t *testing.T) secrets.Sealer {
 	t.Helper()
 	sealer, err := secrets.NewKeyRingFromConfig(testSealerKeyB64, "", "")
@@ -938,18 +958,14 @@ func TestInjectCredentials_UnknownRefFails(t *testing.T) {
 // binding: a sealed bundle stamped for another tenant (or a legacy
 // tenant-less record) must never be served to this run.
 func TestInjectCredentials_TenantMismatchFails(t *testing.T) {
-	sealer := testSealer(t)
 	rs := secrets.NewMemoryRunSecretsStore()
-	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-a", "", "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sealed, dek := sealDekFixture(t, "team-a", "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
 	for _, recTenant := range []string{"team-other", ""} {
-		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
+		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
 			t.Fatal(err)
 		}
-		r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
-		_, _, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+		r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
+		_, _, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1", BundleDEK: dek})
 		if err == nil || !strings.Contains(err.Error(), "tenant mismatch") {
 			t.Fatalf("rec tenant %q: expected tenant-mismatch error, got %v", recTenant, err)
 		}
@@ -963,7 +979,6 @@ func TestInjectCredentials_TenantMismatchFails(t *testing.T) {
 // redelivery contract — deletion is deleteRunSecrets' job, on
 // terminal-clean outcomes only).
 func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
-	sealer := testSealer(t)
 	rs := secrets.NewMemoryRunSecretsStore()
 	bundle := secrets.RunBundle{
 		APIKeys:           map[secrets.Provider]string{"anthropic": "sk-live-1"},
@@ -974,16 +989,13 @@ func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
 		OAuthCredentials: map[string][]byte{string(secrets.OAuthKindCodex): []byte(`{"tokens":{}}`)},
 		ForgeAppBotLogin: "app[bot]",
 	}
-	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-a", "", "run-1", bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
+	sealed, dek := sealDekFixture(t, "team-a", "run-1", bundle)
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 
-	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
-	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
+	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1", BundleDEK: dek})
 	if err != nil {
 		t.Fatalf("injectCredentials: %v", err)
 	}

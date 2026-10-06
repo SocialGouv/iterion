@@ -23,7 +23,7 @@
 ## a closed-vocabulary table decides. Unknown class, non-empty doubts,
 ## unreadable diff, over-cap diff, workspace anomaly, added/removed/renamed
 ## files, a policy the MR itself modifies — every one folds to escalate.
-## ADR-123 is the doctrine; the fold table is its executable half.
+## ADR-124 is the doctrine; the fold table is its executable half.
 ##
 ## HYBRID POLICY: the default classes ship in skills/review-policy.md; a
 ## repo may widen (value-level only) or tighten them via
@@ -74,7 +74,7 @@ vars:
   post_to_board: string = "false"
   pr_review_mode: string = "summary"
   pr_author: string = ""
-  ## THE POSTURE (ADR-123 §6): dry_run comments and gates but never
+  ## THE POSTURE (ADR-124 §6): dry_run comments and gates but never
   ## gestures. enforce is the calibrated posture, pinned per repo via the
   ## integration's launch_vars. The engine refuses verbs under dry_run
   ## regardless of what the bot sends — this var is the bot's half of the

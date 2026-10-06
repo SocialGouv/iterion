@@ -9,7 +9,7 @@ pinned reviewers** with the gate red. Fail-closed everywhere: unknown,
 doubt, unreadable, too-big, renamed keys, added files, secrets, datastores
 the platform offers managed — all escalate.
 
-- Doctrine: [ADR-123](../../docs/adr/123-gating-bot-merge-gestures.md) and
+- Doctrine: [ADR-124](../../docs/adr/124-gating-bot-merge-gestures.md) and
   [merge-gate.md → "Gating bots"](../../docs/merge-gate.md).
 - The default classes: [skills/review-policy.md](skills/review-policy.md).
 - A repo tightens or widens them (value-level only) via

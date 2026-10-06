@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.241.0](https://github.com/SocialGouv/iterion/compare/v3.240.0...v3.241.0) (2026-10-06)
+
+### Features
+
+* **dsl:** refuse the unread loop cap on a router edge (C309); walk run/loop refs in compute and when expressions ([#2239](https://github.com/SocialGouv/iterion/issues/2239)) ([3070832](https://github.com/SocialGouv/iterion/commit/307083219fc73f0db1befb461946282c543c6d67)), closes [#1314](https://github.com/SocialGouv/iterion/issues/1314) [#1506](https://github.com/SocialGouv/iterion/issues/1506), references [#1314](https://github.com/SocialGouv/iterion/issues/1314) [#1506](https://github.com/SocialGouv/iterion/issues/1506) [#1506](https://github.com/SocialGouv/iterion/issues/1506) [#1386](https://github.com/SocialGouv/iterion/issues/1386) [#1506](https://github.com/SocialGouv/iterion/issues/1506)
+
+    <details><summary>why</summary>
+
+    C309 (#1314): a round_robin or non-multi llm router's outgoing edge carrying 'as name(N)' compiled and the cap was never read at run time — execRoundRobin alternates over its unconditional edges and execLLMRouter takes the target the model named, neither through evaluateEdgesWithLoopsRS. The compiler now refuses the shape (error, symmetric to C244), skipped on llm multi: true where C244 already rejects it. Renumbered from the drafted C153 — main's C153 is DiagUnknownRunMember.
+
+    </details>
+* **secrets,queue,cloud:** sovereign sealing — key ring off the pods, one team per pool (P4/D13, ADR-123) ([#2236](https://github.com/SocialGouv/iterion/issues/2236)) ([4676f05](https://github.com/SocialGouv/iterion/commit/4676f05f88cfc0540d70a9518d34f3f0bee657f3))
+
+    <details><summary>why</summary>
+
+    The ring leaves the runner pod. The publisher generates a fresh 32-byte DEK per run, seals the bundle under it (same tenant/pool/run AAD), and puts the DEK on the RunMessage (schema v24) — it transits only the run's own pool stream. The runner builds the per-run sealer at claim time; a "dek"-stamped record whose message carries no key is corrupt and refuses with a typed error (errors.Is-able). The two older cohorts stay readable: id-less records through the legacy path, ring-id records through…
+
+    </details>
+
+### Bug Fixes
+
+* **backends:** ANTHROPIC_CUSTOM_HEADERS cleared on engine-owned routes; a facade-pinned auth failure names the provider ([#2242](https://github.com/SocialGouv/iterion/issues/2242)) ([9b95cb2](https://github.com/SocialGouv/iterion/commit/9b95cb2dee99c7defb4920ad5e831f892c3987e2)), closes [#1476](https://github.com/SocialGouv/iterion/issues/1476) [#1527](https://github.com/SocialGouv/iterion/issues/1527), references [#1527](https://github.com/SocialGouv/iterion/issues/1527)
+
+    <details><summary>why</summary>
+
+    #1476: an ambient ANTHROPIC_CUSTOM_HEADERS — applied LAST by the CLI (claw identity.go) — rode every route the engine claims to own: an ambient 'Authorization: Bearer …' handed the facade's gateway a foreign credential. The suppression map and facadeRouteEnv now clear it. The shared clearedAnthropicChannels deliberately does NOT: on a bound-direct route the header is the operator's gateway config and stays theirs, and the anthropic-hint env-only path keeps its inherit contract.
+
+    </details>
+* **runtime:** library skills mirror both discovery shapes; the pruner reads the recorded write form ([#2240](https://github.com/SocialGouv/iterion/issues/2240)) ([1ee4a45](https://github.com/SocialGouv/iterion/commit/1ee4a4549181226f6b6f571afb827873a0c8d633)), closes [#1478](https://github.com/SocialGouv/iterion/issues/1478) [#1526](https://github.com/SocialGouv/iterion/issues/1526), references [post-#1500](https://github.com/post-/issues/1500)
+
+    <details><summary>why</summary>
+
+    #1478: the bundle and plugin tiers write <name>/SKILL.md AND the flat <name>.md alias; the library tier still wrote the directory form only, so a bot Reading .claude/skills/<lib-name>.md NOENT'd on a library-referenced skill. Both library mirrors (local and cloud-injected) now route through mirrorFileSkill — identical shape and marker layout across the three tiers. The owned path is computed through skillDestDirForm so the case convention and marker layout match what was actually written. Port…
+
+    </details>
+
 ## [3.240.0](https://github.com/SocialGouv/iterion/compare/v3.239.1...v3.240.0) (2026-10-06)
 
 ### Features
