@@ -45,8 +45,8 @@ type Edit struct {
 	// `postcondition`); Refs are the references whose quotes the edit
 	// removes — together they name the diagnostics the edit remedies, the
 	// ones whose message says `<property>: <ref> sits inside quotes`.
-	Property   string   `json:"property"`
-	Refs       []string `json:"refs"`
+	Property string   `json:"property"`
+	Refs     []string `json:"refs"`
 	// Nodes are the node ids the edit remedies when the literal belongs to a
 	// group member: one per `use` of the group, `<prefix>.<member>` — the
 	// same literal raises one diagnostic per instantiation. Node then names

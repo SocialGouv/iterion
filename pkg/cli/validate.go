@@ -10,7 +10,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -710,13 +709,17 @@ func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic, 
 				nodes = []string{e.Node}
 			}
 			for _, ref := range e.Refs {
-				for j := range result.Diagnostics {
-					vd := &result.Diagnostics[j]
-					if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.File == f.Name &&
-						slices.Contains(nodes, vd.NodeID) &&
-						strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
-						vd.Edit = &e
-						break
+				// One edit remedies one diagnostic per instantiation: each
+				// node of Nodes carries it, not only the first match.
+				for _, node := range nodes {
+					for j := range result.Diagnostics {
+						vd := &result.Diagnostics[j]
+						if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.File == f.Name &&
+							vd.NodeID == node &&
+							strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+							vd.Edit = &e
+							break
+						}
 					}
 				}
 			}
