@@ -74,6 +74,9 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 	// verified against the store's own authority before any subscription
 	// matches — the runner publishes outcomes too, and its credential
 	// could forge another tenant's subject.
+	if runs == nil && logger != nil {
+		logger.Warn("trigger: the relay authority check is OFF (no run store wired) — every event is trusted as published")
+	}
 	cancelSub, err := bus.Subscribe("trigger-evaluator", trigger.Matcher{}, verifyRunEventAuthority(runs, logger, eval.Handle))
 	if err != nil {
 		if logger != nil {

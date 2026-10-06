@@ -462,6 +462,9 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 	eval := trigger.NewEvaluator(subs, evalOpts...)
 	// The relay's entry check here too — this IS the deployment the
 	// threat model names (the multi-tenant cloud spine; R81db3b).
+	if runs == nil && logger != nil {
+		logger.Warn("trigger: the relay authority check is OFF (no run store wired) — every event is trusted as published")
+	}
 	cancelSub, err := bus.Subscribe("trigger-evaluator", trigger.Matcher{}, verifyRunEventAuthority(runs, logger, eval.Handle))
 	if err != nil {
 		if logger != nil {

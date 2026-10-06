@@ -21,51 +21,36 @@ import (
 // claimed kind. A forged or stale event is dropped with a Warn, never
 // matched.
 
-// kindConsistentWithStatus reports whether a run.<outcome> kind is what
-// the run document's persisted status can produce (the mirror of
-// trigger.BuildRunOutcome's classification).
-func kindConsistentWithStatus(kind string, status store.RunStatus) bool {
-	switch kind {
-	case trigger.KindRunFinished:
-		return status == store.RunStatusFinished
-	case trigger.KindRunFailed:
-		return status == store.RunStatusFailed || status == store.RunStatusFailedResumable
-	case trigger.KindRunCancelled:
-		return status == store.RunStatusCancelled
-	case trigger.KindRunPaused:
-		return status.IsPaused()
-	}
-	return false
-}
-
 // verifyRunEventAuthority wraps a bus handler with the relay's entry
 // check for run-lifecycle events. A nil runs store (the local
 // single-process dispatch path, where the only publisher is this
-// process) skips the check.
+// process) skips the check — the wiring warns loudly when that happens
+// on a bus that could be cross-process.
+//
+// The check does NOT trust the wire copy: a terminal run's status is
+// immutable, so a replayed (runID, tenant, kind) triple would pass any
+// consistency test forever while the payload — vars, args, subject
+// title — is attacker-controlled on the wire and feeds the launch plan.
+// The relayed event is REBUILT from the run document
+// (trigger.BuildRunOutcome derives payload, subject and repo from the
+// store), so the wire event contributes only "this run exited"; a
+// genuine replay re-delivers the doc-derived event and the episode id
+// dedups it downstream. A claim that disagrees with the document
+// (tenant, kind, unknown run) is a forgery: dropped with a Warn.
 func verifyRunEventAuthority(runs store.RunStore, logger *iterlog.Logger, next eventbus.Handler) eventbus.Handler {
 	if runs == nil {
 		return next
 	}
 	return func(ctx context.Context, ev trigger.Event) error {
 		if ev.Source == trigger.SourceRun {
-			r, err := runs.LoadRun(store.WithoutTenantFilter(ctx), ev.Subject.ID)
-			switch {
-			case err != nil:
+			rebuilt := trigger.BuildRunOutcome(ctx, runs, ev.Subject.ID, nil)
+			if rebuilt.TenantID == "" || rebuilt.TenantID != ev.TenantID || rebuilt.Kind != ev.Kind {
 				if logger != nil {
-					logger.Warn("trigger: dropped %s event for unknown run %q (claimed tenant %q): %v", ev.Kind, ev.Subject.ID, ev.TenantID, err)
-				}
-				return nil
-			case r.TenantID != ev.TenantID:
-				if logger != nil {
-					logger.Warn("trigger: dropped %s event for run %q — tenant %q does not match the document's %q", ev.Kind, ev.Subject.ID, ev.TenantID, r.TenantID)
-				}
-				return nil
-			case !kindConsistentWithStatus(ev.Kind, r.Status):
-				if logger != nil {
-					logger.Warn("trigger: dropped %s event for run %q — status %q cannot produce it", ev.Kind, ev.Subject.ID, r.Status)
+					logger.Warn("trigger: dropped %s event for run %q claiming tenant %q — the document says tenant %q, status-derived kind %q", ev.Kind, ev.Subject.ID, ev.TenantID, rebuilt.TenantID, rebuilt.Kind)
 				}
 				return nil
 			}
+			return next(ctx, rebuilt)
 		}
 		return next(ctx, ev)
 	}

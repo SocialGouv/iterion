@@ -37,8 +37,10 @@ func TestTriggerRelayVerifiesRunEventAuthority(t *testing.T) {
 	}
 
 	var calls int
+	var lastSeen trigger.Event
 	h := verifyRunEventAuthority(st, iterlog.Nop(), func(ctx context.Context, ev trigger.Event) error {
 		calls++
+		lastSeen = ev
 		return nil
 	})
 
@@ -49,12 +51,24 @@ func TestTriggerRelayVerifiesRunEventAuthority(t *testing.T) {
 		}
 	}
 
-	// The honest event relays.
-	if err := h(ctx, runEvent("team-a", trigger.KindRunFinished, "run-real")); err != nil {
+	// The honest event relays — REBUILT from the document: an attacker
+	// replaying a real (run, tenant, kind) with forged payload vars must
+	// not see those vars reach the handler (Reb02b9: the launch plan
+	// consumes payload vars).
+	forge := runEvent("team-a", trigger.KindRunFinished, "run-real")
+	forge.Payload = map[string]any{"vars": map[string]string{"injected": "attacker"}, "args": "evil"}
+	forge.Subject.Title = "attacker title"
+	if err := h(ctx, forge); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatalf("honest event: %d handler calls, want 1", calls)
+	}
+	if _, injected := lastSeen.Payload["vars"]; injected {
+		t.Fatalf("the handler saw the wire's payload vars: %+v — the event was not rebuilt from the document", lastSeen.Payload)
+	}
+	if lastSeen.Subject.Title == "attacker title" {
+		t.Fatal("the handler saw the wire's subject title; the event was not rebuilt from the document")
 	}
 
 	// Forged tenant: dropped.
