@@ -225,6 +225,11 @@ func (s *MongoStore) GetTeamBySlug(ctx context.Context, slug string) (Team, erro
 	return mongoutil.FindOne[Team](ctx, s.teams, bson.M{"slug": slug}, ErrNotFound, "identity: get team by slug")
 }
 
+// GetTeamByRunnerPool implements Store.
+func (s *MongoStore) GetTeamByRunnerPool(ctx context.Context, pool string) (Team, error) {
+	return mongoutil.FindOne[Team](ctx, s.teams, bson.M{"runner_pool": pool}, ErrNotFound, "identity: get team by runner pool")
+}
+
 func (s *MongoStore) GetTeamsByIDs(ctx context.Context, ids []string) (map[string]Team, error) {
 	return findByIDs(ctx, s.teams, ids, func(t Team) string { return t.ID },
 		"identity: get teams by ids", "identity: decode teams by ids")

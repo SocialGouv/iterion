@@ -615,9 +615,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
 		}
 		tenantNative = p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
-		platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
-		if orgID != "" {
-			orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+		// D13: a pool team's launch consults no shared tier — their
+		// natives stay unread exactly like the fill below skips them.
+		if runnerPool == "" {
+			platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
+			if orgID != "" {
+				orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+			}
 		}
 	}
 	// `auto` is the RUN's question, not a tier's (#1998): a native credential
@@ -639,6 +643,18 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			if envFunded && tier != credentialTierGeneric {
 				// Nothing on this tier funds an openai_compatible route.
 				return nil
+			}
+			if runnerPool != "" {
+				switch tier {
+				case credentialTierOrg, credentialTierPool, credentialTierPlatform:
+					// D13: a pool team's bundle never carries shared-tier
+					// credentials — the pod would hold other tenants' keys.
+					// The team's own tiers (BYOK, workflow secrets, its OAuth
+					// forfaits) and the restore of its own prior bundle walk
+					// as usual; a route nothing of the team's funds refuses
+					// the launch with the remedy named.
+					return nil
+				}
 			}
 			switch tier {
 			case credentialTierBYOK:

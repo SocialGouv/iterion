@@ -18,7 +18,14 @@ The isolation chain, in the order a run meets it:
    `active` (the pool's runners are deployed and consuming: routing flows),
    `draining`, `disabled`. A mapped team whose pool is missing or not
    active has its launches and resumes REFUSED, naming the pool and the
-   state — never routed onto the shared pool.
+   state — never routed onto the shared pool. The mapping enforces the
+   one-team-per-pool invariant (D13): a second team onto a held pool is
+   refused with the holder named — two teams on one pool would let each
+   team's runs carry the other's credentials to the same pods.
+   A pool team's launch also consults no shared credential tier — org,
+   contributor pool and platform credentials never enter its bundle, so
+   the pod holds no stranger's key; a route nothing of the team's own
+   funds refuses the launch with the remedy named.
 3. **The frozen stamp**: the run document and the wire message carry the
    pool from launch. Resume follows the frozen stamp and refuses a
    re-mapping (`ErrPoolRemapped` — a pool move is a new launch). Forks and

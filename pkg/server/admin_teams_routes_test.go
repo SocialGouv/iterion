@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +143,50 @@ func TestAdminSetTeamRunnerPool_RequiresARegisteredPool(t *testing.T) {
 	// mapping itself is the operator's intent and may precede the topology.
 	if w := call("honorabilite"); w.Code != http.StatusOK {
 		t.Fatalf("a registered pool must map: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// D13's one-team-per-pool invariant: a second team mapping onto a held
+// pool is refused (409) with the holder named and nothing sticking;
+// the holder unmapping frees the pool; a team re-mapping itself is
+// fine. Red when the holder check is dropped.
+func TestAdminSetTeamRunnerPool_OneTeamPerPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	s.auditStore = audit.NewMemoryStore()
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "t2", Name: "t2", Slug: "t2", OrgID: "o1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed t2: %v", err)
+	}
+
+	call := func(teamID, body string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/"+teamID+"/runner-pool", body, teamID)
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamRunnerPool(w, req)
+		return w
+	}
+
+	if w := call("t1", `{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("holder map: code=%d body=%s", w.Code, w.Body.String())
+	}
+	w := call("t2", `{"runner_pool":"honorabilite"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("second team onto a held pool: code=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "t1") {
+		t.Fatalf("the refusal must name the holder: %s", w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t2"); err != nil || tm.RunnerPool != "" {
+		t.Fatalf("the refused mapping must not stick: %+v %v", tm, err)
+	}
+	if w := call("t1", `{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("a team re-mapping itself must pass: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call("t1", `{"runner_pool":""}`); w.Code != http.StatusOK {
+		t.Fatalf("unmap: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call("t2", `{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("map after the pool frees: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
