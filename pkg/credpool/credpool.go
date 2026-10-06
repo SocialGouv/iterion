@@ -157,6 +157,12 @@ const (
 	// asked. Distinct from paused so the UI never tells a willing
 	// contributor their contribution is off.
 	StatusBotFiltered Status = "bot_filtered"
+	// StatusNoFallbackConsent — the donor shares, but only with runs that
+	// have no credential of their own (the whole-bundle tier); the
+	// routing fallback door needs the explicit `fallback_use` mark, so a
+	// door consult over an unmarked pool names THIS rather than a
+	// generic abstention. Never produced on the normal path.
+	StatusNoFallbackConsent Status = "no_fallback_consent"
 )
 
 // Limits are the ceilings a donor sets on their own contribution. Every
@@ -325,6 +331,17 @@ type Pledge struct {
 	// Bots optionally restricts which bot ids this credential may run.
 	// Empty means any bot the pool serves.
 	Bots []string `bson:"bots,omitempty" json:"bots,omitempty"`
+	// FallbackUse consents this credential to serve a FALLBACK rung of a
+	// run that holds its own credential — the routing policy's ladder
+	// needing a kind the run lacks (ADR-121 § The per-family pool
+	// fallback door). Off (the default) keeps the pledge in the
+	// whole-bundle tier only; the mark ADDS a lane and removes none. An
+	// armed door holds a runs/day unit and a concurrency slot until the
+	// run publishes even when the fallback never fires, and the ATTEMPT'S
+	// WHOLE SPEND books against your ledger's ceilings (the spend report
+	// is per attempt, not per credential) — zero spend is not zero cost,
+	// and the consent UI says so.
+	FallbackUse bool `bson:"fallback_use,omitempty" json:"fallback_use,omitempty"`
 	// CooldownUntil holds the pledge out of the pool until the provider's
 	// quota window resets. Set from ErrRateLimited.ResetAt.
 	CooldownUntil *time.Time `bson:"cooldown_until,omitempty" json:"cooldown_until,omitempty"`

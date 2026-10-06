@@ -6478,6 +6478,8 @@ export interface components {
         };
         CredentialPreviewPool: {
             considered: boolean;
+            door_reason?: string;
+            door_wants?: string[];
             reason?: string;
             wants: string[];
         };
