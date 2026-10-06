@@ -245,13 +245,21 @@ key that sealed them, so they rotate without a re-paste:
 
 1. Set `ITERION_SECRETS_KEYS="<old_id>=<b64>,<new_id>=<b64>"` and
    `ITERION_SECRETS_KEY_ID="<new_id>"` on the server AND the runner
-   (both must share the full ring). Restart. New bundles seal under
-   `<new_id>`; bundles under `<old_id>` keep opening until the key
-   leaves the ring.
-2. After every in-flight bundle has expired (the 24 h TTL — leave one
-   full day; a DLQ-reparked message replays within that window),
-   remove `<old_id>` from the ring. A bundle whose key is gone refuses
-   with the key id named.
+   (both must share the full ring). Restart. New run bundles seal
+   under `<new_id>`; bundles under `<old_id>` keep opening until the
+   key leaves the ring.
+   At-rest records (`api_keys`, `oauth_credentials`,
+   `generic_secrets`) carry no key id and seal under the ring's
+   current key — with the ring set, the bare `ITERION_SECRETS_KEY` is
+   ignored. Their opens fall back across the whole ring, so they keep
+   working while `<old_id>` stays; they re-seal under `<new_id>` only
+   when rewritten (a re-paste, a refresh-worker rewrite, a publisher
+   grant).
+2. Retire `<old_id>` from the ring once nothing seals under it
+   anymore: every run bundle has expired (the 24 h TTL — leave one
+   full day; a DLQ-reparked message replays within that window) AND
+   every at-rest record has been rewritten or re-pasted. A record
+   whose key is gone refuses with authentication failure.
 
 The per-run AAD (`tenant/pool/run`) also makes a bundle
 undecryptable outside its own identity context — a record ref served

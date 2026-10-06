@@ -263,9 +263,48 @@ func TestMemoryRunSecretsStore_DeleteTenantScoped(t *testing.T) {
 // The local pool-grammar copy is pinned to the queue package's — one
 // grammar, two homes, the test is the guard against drift.
 func TestValidPoolNameMatchesQueueGrammar(t *testing.T) {
-	for _, s := range []string{"", "a", "-lead", "UPPER", "with_underscore", strings.Repeat("a", 32), strings.Repeat("a", 31), "pool-1"} {
+	for _, s := range []string{"", "a", "-lead", "trail-", "a-", "UPPER", "with_underscore", strings.Repeat("a", 32), strings.Repeat("a", 31), "pool-1", "po-ol"} {
 		if got, want := validPoolName(s), queue.ValidPoolName(s); got != want {
 			t.Fatalf("validPoolName(%q) = %v, queue.ValidPoolName = %v — the copies drifted", s, got, want)
 		}
+	}
+}
+
+// At-rest records (api_keys, oauth, generic) carry no key id: rotation
+// moves the ring's current key out from under them, and their opens
+// must fall back across the ring while the old key remains — the
+// reviewer's finding: a "non-destructive" rotation that bricks every
+// stored credential is neither.
+func TestKeyRingOpenFallsBackAfterRotation(t *testing.T) {
+	atRest := []byte("sealed-vendor-credential")
+	aad := []byte("api_key:k1")
+
+	pre, err := NewKeyRingSealer(testRing(t, "a"), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := pre.Seal(atRest, aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rotated, err := NewKeyRingSealer(testRing(t, "a", "b"), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := rotated.Open(sealed, aad)
+	if err != nil {
+		t.Fatalf("at-rest record refused after rotation: %v", err)
+	}
+	if !bytes.Equal(got, atRest) {
+		t.Fatal("round-trip lost the payload")
+	}
+
+	retired, err := NewKeyRingSealer(testRing(t, "b"), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retired.Open(sealed, aad); err == nil {
+		t.Fatal("a record whose key left the ring must refuse")
 	}
 }

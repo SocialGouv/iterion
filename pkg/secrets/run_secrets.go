@@ -256,15 +256,18 @@ func legacyRunBundleAAD(runID string) []byte {
 // starting alphanumeric). A local copy keeps the NATS client out of
 // every secrets importer; run_secrets_test.go pins the two to agree.
 func validPoolName(s string) bool {
-	if len(s) < 1 || len(s) > 31 {
+	if len(s) == 0 || len(s) > 31 {
 		return false
 	}
-	for i, r := range s {
-		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-'
-		if i == 0 && r == '-' {
-			ok = false
-		}
-		if !ok {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-':
+			if i == 0 || i == len(s)-1 {
+				return false
+			}
+		default:
 			return false
 		}
 	}

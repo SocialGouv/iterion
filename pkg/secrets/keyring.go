@@ -63,9 +63,19 @@ func (s *KeyRingSealer) Seal(plaintext, aad []byte) ([]byte, error) {
 	return s.keys[s.current].Seal(plaintext, aad)
 }
 
-// Open implements Sealer over the current key.
+// Open implements Sealer over the current key. A miss falls back to
+// the rest of the ring: the id-less records (api_keys, oauth,
+// generic_secrets — nothing on them names their key) were sealed under
+// whichever key was current when they were written, and rotation moves
+// that pointer. GCM authentication gates every attempt, so trying the
+// ring is not a weakening; it is what keeps a rotation non-destructive
+// for at-rest records that cannot be rewritten on the spot.
 func (s *KeyRingSealer) Open(sealed, aad []byte) ([]byte, error) {
-	return s.keys[s.current].Open(sealed, aad)
+	pt, err := s.keys[s.current].Open(sealed, aad)
+	if err == nil {
+		return pt, nil
+	}
+	return s.OpenAny(sealed, aad)
 }
 
 // SealWith implements KeyedSealer.
