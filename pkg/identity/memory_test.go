@@ -125,3 +125,28 @@ func TestSlugifyTeamName(t *testing.T) {
 		}
 	}
 }
+
+// The one-team-per-pool invariant at the store level: the mapping write
+// itself refuses when another team holds the pool — the backstop that
+// closes the route's check-then-act window (D13, R81a941).
+func TestPatchTeam_RunnerPoolHeldByAnotherTeam(t *testing.T) {
+	m := NewMemoryStore()
+	ctx := context.Background()
+	if _, err := m.CreateTeam(ctx, Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: "o1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateTeam(ctx, Team{ID: "t2", Name: "t2", Slug: "t2", OrgID: "o1"}); err != nil {
+		t.Fatal(err)
+	}
+	pool := "honorabilite"
+	if _, err := m.PatchTeam(ctx, "t1", TeamPatch{RunnerPool: &pool}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.PatchTeam(ctx, "t2", TeamPatch{RunnerPool: &pool}); !errors.Is(err, ErrRunnerPoolHeld) {
+		t.Fatalf("second team onto a held pool: err = %v, want ErrRunnerPoolHeld", err)
+	}
+	// Re-stamping the holder itself passes (idempotent re-map).
+	if _, err := m.PatchTeam(ctx, "t1", TeamPatch{RunnerPool: &pool}); err != nil {
+		t.Fatalf("holder re-map refused: %v", err)
+	}
+}

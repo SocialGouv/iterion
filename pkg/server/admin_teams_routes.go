@@ -79,6 +79,17 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 	}
 	updated, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{RunnerPool: &pool})
 	if err != nil {
+		// The store-level backstop (the partial unique index) spoke: name
+		// the holder the same way the pre-check would.
+		if errors.Is(err, identity.ErrRunnerPoolHeld) {
+			holder, herr := s.authStore().GetTeamByRunnerPool(r.Context(), pool)
+			if herr == nil {
+				httpError(w, http.StatusConflict, "runner pool %q is already held by team %q (%s) — one team per pool; unmap that team first", pool, holder.Slug, holder.ID)
+				return
+			}
+			httpError(w, http.StatusConflict, "%s", err.Error())
+			return
+		}
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
