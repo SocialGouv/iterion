@@ -1543,6 +1543,12 @@ type Foreach struct {
 	Item           string // element binding identifier (informational)
 	CollectionRaw  string // collection template source, e.g. "{{outputs.list.items}}"
 	CollectionRefs []*Ref // pre-parsed refs resolved to a []any at runtime
+	// Body is the set of node IDs on the foreach's cycle — the same shape
+	// Loop.Body carries for a loop: each node that executes once per item
+	// while the back-edge still has elements to deliver. Computed by
+	// computeLoopBodies alongside the loop bodies (the foreach edge is the
+	// same back-edge shape, keyed by ForeachName).
+	Body map[string]bool
 }
 
 // ---------------------------------------------------------------------------
