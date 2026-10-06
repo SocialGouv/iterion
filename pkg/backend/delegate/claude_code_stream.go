@@ -784,6 +784,18 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				endErr := bg.finalizeExpired()
 				cancelStream()
 				return bg.final(), meta, endErr
+			case bgTimerWrapUpTake:
+				// The tracker is fed ahead of the select loop: by the fire a
+				// turn may have taken the wrap-up after all — its replay
+				// arrived before the timer tick the next recompute would
+				// disarm. The taken path's own bound (bgTimerFinalize)
+				// governs from there.
+				if tracker.cliMovedOn() || tracker.view().msgTaken {
+					continue
+				}
+				endErr := bg.wrapUpTakeExpired(now)
+				cancelStream()
+				return bg.final(), meta, endErr
 			case bgTimerSettle:
 				// The CLI's idle held: everything it waited for came back and
 				// was delivered.
