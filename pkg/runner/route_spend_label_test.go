@@ -75,7 +75,7 @@ func runChainWith(t *testing.T, node *ir.AgentNode, regd map[string]delegate.Bac
 	t.Helper()
 	usage := newMetricsEmitter(discardEmitter{}, metrics.New())
 	log := &eventLog{inner: usage}
-	hooks := model.NewStoreEventHooks(context.Background(), log, "run", iterlog.Nop(), nil)
+	hooks := model.NewStoreEventHooks(context.Background(), log, "run", iterlog.Nop(), nil, nil)
 	reg := delegate.NewRegistry()
 	for _, b := range scripted {
 		if b.steps != nil {

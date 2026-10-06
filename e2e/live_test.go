@@ -98,7 +98,7 @@ func newLiveExecutor(t *testing.T, wf *ir.Workflow, s store.RunStore, runID, wor
 	if logger == nil {
 		logger = iterlog.New(iterlog.LevelDebug, os.Stderr)
 	}
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
@@ -1446,7 +1446,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	// Build executor with the populated tool registry.
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 	executor := model.NewClawExecutor(reg, wf,
@@ -1749,7 +1749,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 	executor := model.NewClawExecutor(reg, wf,
@@ -1924,7 +1924,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 	executor := model.NewClawExecutor(reg, wf,
@@ -2183,7 +2183,7 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 	// mcp.testsrv.* in the registry.
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 
@@ -2490,7 +2490,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 	executor := model.NewClawExecutor(reg, wf,

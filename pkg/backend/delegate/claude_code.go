@@ -799,7 +799,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// the agent still completes its tool work BEFORE finalizing (verified
 	// against claude 2.1.177), so this does not make it rush its output.
 	told := ledgerTerminated(task.SessionLedger, resumedSessionID(task, currentFingerprint))
-	prompt := terminatedBackgroundNote(told, task.UserPrompt)
+	prompt := terminatedBackgroundNote(told, task.HandoffPrompt())
 	needsTwoPass := len(task.OutputSchema) > 0 && len(task.AllowedTools) > 0
 	if len(task.OutputSchema) > 0 {
 		var schema map[string]any

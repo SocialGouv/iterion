@@ -35,7 +35,7 @@ func TestElementBuilder_SameBackendFallThroughKeepsTheSession(t *testing.T) {
 	ctx := context.Background()
 
 	sameBackendElement := chainElement{Backend: "claude_code", Model: "claude-opus-5-5"}
-	_, _, taskSame, err := eb(ctx, 1, sameBackendElement)
+	_, _, taskSame, err := eb(ctx, 1, sameBackendElement, "")
 	if err != nil {
 		t.Fatalf("same-backend build: %v", err)
 	}

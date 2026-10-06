@@ -822,6 +822,21 @@ type Task struct {
 	// otherwise run the user turn without the conversation it refers to).
 	ContinueConversation json.RawMessage
 
+	// Handoff is the absolute path of the sealed routing-handoff transcript
+	// the crossing hands this element (ADR-121 § Delivery 2): the previous
+	// harness's work on this node, recorded up to the failed attempt. Empty
+	// when there is none — no active cross_harness posture, an empty
+	// transcript, or a same-backend rung (the carry paths never attach).
+	// Rendered by the backend's own prompt surface via HandoffMode; the
+	// composer never writes back into UserPrompt/UserContent.
+	Handoff string
+
+	// HandoffMode is how the handoff transcript renders ("reuse": the node
+	// continues mid-work, preamble + transcript + the original prompt;
+	// "restart": the original prompt byte-preserved + a reference
+	// section). Set only alongside Handoff; empty otherwise.
+	HandoffMode string
+
 	// SharedStateDir is a directory reachable at the SAME absolute path from
 	// the host and from inside the sandbox, and which is NOT part of the target
 	// repository's checkout — the host `~/.iterion` that host_state

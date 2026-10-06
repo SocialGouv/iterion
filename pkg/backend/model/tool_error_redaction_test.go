@@ -27,7 +27,7 @@ func toolErrorWire(t *testing.T, g *secretguard.Guard) (delegate.TaskHooks, *byt
 	var logBuf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &logBuf)
 	em := &captureEmitter{}
-	hooks := NewStoreEventHooks(context.Background(), em, "run-1", logger, g)
+	hooks := NewStoreEventHooks(context.Background(), em, "run-1", logger, g, nil)
 	e := newFallbackExecutor(delegate.NewRegistry(), hooks)
 	e.secretGuard = g
 	e.logger = logger
@@ -85,7 +85,7 @@ func TestAToolErrorFromAnyProducerIsRedactedAtTheSink(t *testing.T) {
 	g := secretguard.New([]secretguard.Secret{{Name: "DB_PASSWORD", Value: pw}}, secretguard.DefaultConfig())
 	var logBuf bytes.Buffer
 	em := &captureEmitter{}
-	hooks := NewStoreEventHooks(context.Background(), em, "run-1", iterlog.New(iterlog.LevelInfo, &logBuf), g)
+	hooks := NewStoreEventHooks(context.Background(), em, "run-1", iterlog.New(iterlog.LevelInfo, &logBuf), g, nil)
 	hooks.OnToolCall("deploy", LLMToolCallInfo{ToolName: "Bash", ToolUseID: "tu1", Error: errors.New("attempted password \"" + pw + "\"")})
 	evs, _ := json.Marshal(em.events)
 	if strings.Contains(logBuf.String(), pw) || strings.Contains(string(evs), pw) {
@@ -141,7 +141,7 @@ func TestAToolNodesErrorLinesAreRedacted(t *testing.T) {
 	g := secretguard.New([]secretguard.Secret{{Name: "API_KEY", Value: key}}, secretguard.DefaultConfig())
 	var logBuf bytes.Buffer
 	em := &captureEmitter{}
-	h := NewStoreEventHooks(context.Background(), em, "run-1", iterlog.New(iterlog.LevelInfo, &logBuf), g)
+	h := NewStoreEventHooks(context.Background(), em, "run-1", iterlog.New(iterlog.LevelInfo, &logBuf), g, nil)
 	err := errors.New("mcp: tools/call search: 401 Unauthorized (api key " + key + " rejected)")
 	h.OnToolCall("fetch", LLMToolCallInfo{ToolName: "mcp__vendor__search", Duration: time.Millisecond, Error: err})
 	h.OnToolNodeResult("fetch", "mcp__vendor__search", []byte(`{"q":"x"}`), "", time.Millisecond, err)

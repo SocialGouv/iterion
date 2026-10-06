@@ -391,8 +391,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: ctx})
 	}
 
-	// User message.
-	userText := task.UserPrompt
+	// User message. A routing handoff composes here: the original
+	// prompt's bytes stay the prefix (restart) or the closing task
+	// statement (reuse), and the UserContent delta-slicing below gives
+	// the section its own block when content blocks exist.
+	userText := task.HandoffPrompt()
 
 	// When both tools AND output schema are present, inject schema format
 	// instruction into user text (GenerateText supports tool loop,
@@ -437,9 +440,15 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			}
 		}
 		// Surface the schema-injection suffix that buildUserContent
-		// can't emit (it's appended after, not from the prompt body).
+		// can't emit (it's appended after, not from the prompt body) - and
+		// a routing handoff's section the same way: the composed text with
+		// the original prompt removed ONCE, wherever it sits. A prefix
+		// slice would assume the prompt opens the composition, which is
+		// true for restart and false for reuse (revi R-finding on #2237).
 		if userText != "" && task.UserPrompt != userText {
-			blocks = append(blocks, api.ContentBlock{Type: "text", Text: userText[len(task.UserPrompt):]})
+			if extra := delegate.HandoffExtra(userText, task.UserPrompt); extra != "" {
+				blocks = append(blocks, api.ContentBlock{Type: "text", Text: extra})
+			}
 		}
 		if len(blocks) > 0 {
 			opts.Messages = []api.Message{{Role: "user", Content: blocks}}

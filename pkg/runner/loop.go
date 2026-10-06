@@ -3346,10 +3346,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// ROUTING ladder's stages (ADR-121, Policy-flagged) split off: their
 		// model maps PER NODE at materialization, so they ride
 		// PolicyLadder (ir.ApplyPolicyLadder) instead.
-		RunFallback:      operatorFallbacks,
-		PolicyLadder:     policyLadder,
-		LLMRouteTriggers: llmRouteTriggers(msg),
-		LLMRouteClasses:  llmRouteClasses(msg),
+		RunFallback:          operatorFallbacks,
+		PolicyLadder:         policyLadder,
+		LLMRouteTriggers:     llmRouteTriggers(msg),
+		LLMRouteClasses:      llmRouteClasses(msg),
+		LLMRouteCrossHarness: llmRouteCrossHarness(msg),
 		// The same deployment default the engine resolves sandbox modes
 		// against — the fallback screen refuses codex stages on nodes
 		// that will run sandboxed, and sandboxed-or-not is this value's
@@ -3443,6 +3444,22 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 // an old publisher runs the shipped cells, never a partial override).
 func llmRouteClasses(msg *queue.RunMessage) map[string]map[string]string {
 	return msg.FallbackModelClasses
+}
+
+// llmRouteCrossHarness reads the run's RESOLVED cross-harness posture off
+// the wire (ADR-121 § Delivery 2): the first policy entry's value — the
+// publisher stamps every entry from ONE snapshot value, so the first is
+// deterministic. Empty (an old publisher, no policy, or a posture the
+// snapshot clamped away) is the off direction: the runview layer
+// constructs no handoff recorder, the crossings re-refuse at the screen.
+func llmRouteCrossHarness(msg *queue.RunMessage) string {
+	for _, f := range msg.Fallback {
+		if !f.Policy {
+			continue
+		}
+		return f.CrossHarness
+	}
+	return ""
 }
 
 func llmRouteTriggers(msg *queue.RunMessage) []string {

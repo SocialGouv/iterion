@@ -1499,14 +1499,25 @@ func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []by
 // observers (ADR-046) fire on every persisted event emitted through the
 // backend-hook layer — the dispatcher's stall-heartbeat seam for the
 // high-frequency tool events that bypass the engine's WithEventObserver.
-func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, observers ...func(store.Event)) EventHooks {
+func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, handoff *HandoffRecorder, observers ...func(store.Event)) EventHooks {
 	// Capability detection must happen on the ORIGINAL emitter — the
-	// redacting wrapper below only implements AppendEvent.
+	// wrappers below only implement AppendEvent.
 	attachmentSink, _ := emitter.(AttachmentWriter)
 	toolBlobSink, _ := emitter.(ToolBlobWriter)
 	turnSink, _ := emitter.(TurnWriter)
 	planSink, _ := emitter.(PlanWriter)
 	servedSink, _ := emitter.(NodeServedRecorder)
+	// The routing handoff observes INSIDE the redaction boundary and
+	// OUTSIDE the store — the chain below is redacting(handoff(store)) —
+	// so the recorder sees exactly what persists and the model_fallback
+	// stamp lands on the event before the store reads it. Constructed
+	// here, never by the caller: a wrapper around the argument would hide
+	// the store's optional-sink interfaces from the detection above
+	// (revi R-finding on #2237 — every sink went nil under an active
+	// posture).
+	if handoff != nil {
+		emitter = handoffEmitter{inner: emitter, rec: handoff}
+	}
 	// All event payloads go through the redacting wrapper (Layer 0).
 	emitter = redactingEmitter{inner: emitter, guard: guard, observers: observers}
 	h := &storeHooks{
