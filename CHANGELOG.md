@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.240.0](https://github.com/SocialGouv/iterion/compare/v3.239.1...v3.240.0) (2026-10-06)
+
+### Features
+
+* **llmroute:** the cross_harness field, the screen third state, the dispatch marker ([#2210](https://github.com/SocialGouv/iterion/issues/2210) slice 3) ([#2226](https://github.com/SocialGouv/iterion/issues/2226)) ([160654f](https://github.com/SocialGouv/iterion/commit/160654fe046f03750381adb9a848b988c91a40a7))
+
+    <details><summary>why</summary>
+
+    Delivery 2 of adaptive routing, slice 3 of 5 (ADR-121 § Delivery 2, the session contract's THIRD state): `cross_harness: off|reuse|restart` — the policy field, the launch screen's relaxation, the wire, and the dispatch marker that says the switch.
+
+    </details>
+* **secrets:** run bundles carry a key id and bind to tenant, pool and run (P4/D13-a) ([#2225](https://github.com/SocialGouv/iterion/issues/2225)) ([8b693a2](https://github.com/SocialGouv/iterion/commit/8b693a2e9f787735549d2f9d0d81f967e77f6493))
+
+    <details><summary>why</summary>
+
+    A run-secrets record names the ring key that sealed it, and the AAD binds the ciphertext to the run's full identity — tenant, pool, run — so a bundle served outside its own identity context refuses to decrypt instead of handing over credentials. The binding makes the runner's tenant check cryptographic rather than a field comparison.
+
+    </details>
+
 ## [3.239.1](https://github.com/SocialGouv/iterion/compare/v3.239.0...v3.239.1) (2026-10-06)
 
 ### Bug Fixes
