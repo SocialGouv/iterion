@@ -3635,7 +3635,10 @@ func TestBackground_AShellsEndRestartsTheRestClock(t *testing.T) {
 
 func TestBackground_HeldWorkBackWithoutATurnRestartsTheRestClock(t *testing.T) {
 	// The CLI resumed a finished t1 outside its turn loop: that is held work
-	// again, and the close of its delivery starts a rest of its own.
+	// again, and the close of its delivery starts a rest of its own. The
+	// restart itself is pinned directly, close by close with no wall clock,
+	// by the lifecycleAt twin TestBackground_TheRestClockRestartsAtTheDeliverysClose
+	// (#2220); this test keeps the end-to-end shape.
 	script := resumedAgentStream([]string{"@sleep 0.2"}, "@sleep 0.5")
 	// The grace stays out of the resumed wave's way (20s): the half-second
 	// between t1's end and the CLI's re-kick would otherwise race the grace's
@@ -6551,6 +6554,79 @@ func (h *lifecycleAt) close(now time.Time, text string) bgCloseAction {
 	h.l.addResult(rm)
 	act, _ := h.l.atClose(now, rm)
 	return act
+}
+
+func TestBackground_TheRestClockRestartsAtTheDeliverysClose(t *testing.T) {
+	// The lifecycleAt twin of TestBackground_HeldWorkBackWithoutATurnRestartsTheRestClock
+	// (#2201's scenario; #2220). There the grace is pinned at 20s to keep it
+	// out of a ~1.5s scenario's way — no close then approaches it, so the
+	// named restart is not observable at that level. Here no clock sleeps:
+	// the rest clock is read directly at each close, and the grace bounds the
+	// closes that follow the delivery.
+	h := newLifecycleAt(t, backgroundLifecycleConfig{wait: time.Hour, autoTurnGrace: 2 * time.Second, finalizeTimeout: time.Minute, idleSettle: time.Hour}, 0)
+	t0 := time.Now()
+	// t1 launches and its turn closes with it held: the wave opens, no rest
+	// clock yet.
+	h.feedAt(t0, launchAgent()...)
+	h.feed(lnAssistant("m2", "", cText("waiting")))
+	if act := h.close(t0, "waiting"); act != bgReenter {
+		t.Fatalf("close 1: action %v, want the wave's wait", act)
+	}
+	if !h.l.restSince.IsZero() {
+		t.Fatalf("restSince = %v with t1 held: the rest clock arms at a close with nothing held running", h.l.restSince)
+	}
+	// t1 ends and its notification reaches a turn: the interim close is at
+	// rest, the rest clock arms there. The close is a beat AFTER the lines
+	// that fed it, here and at the delivery below: the restart is pinned to
+	// the close, not to when the lines were observed.
+	h.feedAt(t0.Add(300*time.Millisecond), lnSnapshot(), lnTaskNotif("t1", "tuA"),
+		lnInit("2.1.280"), lnAssistant("m3", "", cText("t1 interim")))
+	if act := h.close(t0.Add(400*time.Millisecond), "t1 interim"); act != bgReenter {
+		t.Fatalf("close 2: action %v", act)
+	}
+	if armed := t0.Add(400 * time.Millisecond); !h.l.restSince.Equal(armed) || h.l.restMark != h.tr.restEpoch() {
+		t.Fatalf("restSince = %v, restMark = %d (epoch %d): the rest clock did not arm at the interim close (%v)",
+			h.l.restSince, h.l.restMark, h.tr.restEpoch(), armed)
+	}
+	// t1 comes back WITHOUT a turn — the CLI resumed its finished subagent:
+	// held work again, and the rest epoch moves. This is what makes the
+	// restart observable: a clock that never restarted keeps the interim
+	// close's mark and counts the grace from there.
+	h.feedAt(t0.Add(800*time.Millisecond), lnSnapshot("t1"), lnTaskStarted("t1", "tuA", true, false))
+	if epoch := h.tr.restEpoch(); epoch == h.l.restMark {
+		t.Fatalf("restEpoch = %d, still the armed mark: t1 back without a turn must move the epoch", epoch)
+	}
+	// t1 ends again, the CLI re-kicks, and the delivering turn closes: the
+	// rest clock RESTARTS at that close — not still counting from the
+	// interim one, which would cut t1's delivery short once the grace neared.
+	h.feedAt(t0.Add(1300*time.Millisecond), lnSnapshot(), lnTaskNotif("t1", "tuA"),
+		lnRunning(), lnInit("2.1.280"), lnAssistant("m4", "", cText("t1 final: PASS")))
+	if act := h.close(t0.Add(1400*time.Millisecond), "t1 final: PASS"); act != bgReenter {
+		t.Fatalf("close 3: action %v", act)
+	}
+	restarted := t0.Add(1400 * time.Millisecond)
+	if !h.l.restSince.Equal(restarted) || h.l.restMark != h.tr.restEpoch() {
+		t.Fatalf("restSince = %v, restMark = %d (epoch %d): the rest clock did not restart at the delivery's close (%v)",
+			h.l.restSince, h.l.restMark, h.tr.restEpoch(), restarted)
+	}
+	// The observability the wall-clock twin lost: the grace's bound is
+	// restSince+2s = t0+3.4s. The CLI keeps running turns of its own; a close
+	// before the bound keeps reading, one past it acts — restWrapUp, not
+	// restEnd: no idle that held ever proved t1's delivery reached the agent
+	// (the harness runs no settle timer), so that turn's report may predate
+	// it and the report is asked for. A rest clock still counting from
+	// t0+0.4s ends this scenario already at the first of these closes.
+	h.feedAt(t0.Add(3200*time.Millisecond), lnRunning(), lnInit("2.1.280"), lnAssistant("m5", "", cText("polishing")))
+	if act := h.close(t0.Add(3300*time.Millisecond), "polishing"); act != bgReenter {
+		t.Fatalf("close 4: action %v before restSince+grace — a rest clock that never restarted cuts here", act)
+	}
+	if !h.l.restSince.Equal(restarted) {
+		t.Fatalf("restSince = %v after a close with no epoch move, want %v", h.l.restSince, restarted)
+	}
+	h.feedAt(t0.Add(3400*time.Millisecond), lnRunning(), lnInit("2.1.280"), lnAssistant("m6", "", cText("still polishing")))
+	if act := h.close(t0.Add(3500*time.Millisecond), "still polishing"); act != bgReenterAfterSend {
+		t.Fatalf("close 5: action %v, want the grace's rest bound asking for the report", act)
+	}
 }
 
 func TestBackground_TheCeilingCountsFromWhenATurnSourceStarts(t *testing.T) {
