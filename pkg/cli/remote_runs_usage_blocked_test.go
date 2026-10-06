@@ -23,10 +23,10 @@ func TestRemoteRunsResumeUsageBlocked_ResumesEachBlockedRun(t *testing.T) {
 			if r.URL.Query().Get("status") != "failed_resumable" {
 				t.Errorf("list status = %q, want failed_resumable", r.URL.Query().Get("status"))
 			}
-			fmt.Fprint(w, `{"runs":[` +
-				`{"id":"r1","workflow_name":"review_pr","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:30:00Z"},` +
-				`{"id":"r2","workflow_name":"review_pr","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:31:00Z"},` +
-				`{"id":"r3","workflow_name":"other","status":"failed_resumable","failure_code":"","created_at":"2026-10-06T11:32:00Z"}` +
+			fmt.Fprint(w, `{"runs":[`+
+				`{"id":"r1","workflow_name":"review_pr","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:30:00Z"},`+
+				`{"id":"r2","workflow_name":"review_pr","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:31:00Z"},`+
+				`{"id":"r3","workflow_name":"other","status":"failed_resumable","failure_code":"","created_at":"2026-10-06T11:32:00Z"}`+
 				`]}`)
 		case strings.HasPrefix(r.URL.Path, "/api/runs/") && strings.HasSuffix(r.URL.Path, "/resume") && r.Method == http.MethodPost:
 			resumes = append(resumes, r.URL.Path)
@@ -61,9 +61,9 @@ func TestRemoteRunsResumeUsageBlocked_OneFailureKeepsTheBatch(t *testing.T) {
 	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/runs" && r.Method == http.MethodGet:
-			fmt.Fprint(w, `{"runs":[` +
-				`{"id":"r1","workflow_name":"a","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:30:00Z"},` +
-				`{"id":"r2","workflow_name":"b","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:31:00Z"}` +
+			fmt.Fprint(w, `{"runs":[`+
+				`{"id":"r1","workflow_name":"a","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:30:00Z"},`+
+				`{"id":"r2","workflow_name":"b","status":"failed_resumable","failure_code":"USAGE_LIMIT_BLOCKED","created_at":"2026-10-06T11:31:00Z"}`+
 				`]}`)
 		case strings.HasPrefix(r.URL.Path, "/api/runs/") && strings.HasSuffix(r.URL.Path, "/resume") && r.Method == http.MethodPost:
 			resumes = append(resumes, r.URL.Path)
