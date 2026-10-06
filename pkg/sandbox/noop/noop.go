@@ -126,6 +126,14 @@ func (r *run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		c.Dir = r.info.WorkspacePath
 	}
 	c.Env = os.Environ()
+	// The spec's seeded env (default locale, ITERION_TREE_NOISE pathspecs,
+	// the artifact dir) reaches deliberately-pinned noop commands too — a
+	// pinned driver still runs engine-compiled tool scripts whose scope
+	// gates read those variables. Folded after the inherited environment
+	// and before the per-exec overrides, so an ExecOpts entry still wins.
+	for k, v := range r.prepared.spec.Env {
+		c.Env = append(c.Env, k+"="+v)
+	}
 	for k, v := range opts.Env {
 		c.Env = append(c.Env, k+"="+v)
 	}

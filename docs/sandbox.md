@@ -1168,7 +1168,7 @@ Running claw's own MCP servers inside the container — parity with
 | `docker`     | host has `docker` on PATH                  | Phase 1 ✅ |
 | `podman`     | host has `podman` on PATH (no `docker`)    | Phase 1 ✅ (shares the docker code path) |
 | `kubernetes` | running in-cluster (`ITERION_MODE=cloud`)  | Phase 5 V1 ✅ + V2-5 NetworkPolicy |
-| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`) | ✅ |
+| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`). The spec's seeded env (default locale, `ITERION_TREE_NOISE` pathspecs, the artifact dir) is folded into its commands like a real driver's, so an engine-compiled script pinned to `noop` still reads what the compiler seeded | ✅ |
 
 `iterion sandbox doctor` reports which driver is selected on the
 current host and what capabilities it advertises.

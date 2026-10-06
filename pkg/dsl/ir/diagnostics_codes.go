@@ -298,4 +298,11 @@ const (
 	// refuse at the node. C180–C182 are claimed by an in-flight branch, so
 	// the band starts at C183.
 	DiagComputeEnumLiteral DiagCode = "C183" // compute field with an enum constraint fed by a static string literal outside the enum (warning — the value fails SCHEMA_VALIDATION at run time)
+
+	// A loop cap on a router edge the runtime does not read. `round_robin`
+	// alternates over its unconditional edges; `llm` takes the route the
+	// model named — neither goes through `evaluateEdgesWithLoopsRS`, so the
+	// cap silently does nothing and the author's `as name(N)` promise is not
+	// kept. Same argument as C244 (a loop on a fan-out is refused).
+	DiagLoopOnRouterEdge DiagCode = "C309" // a `round_robin` / non-multi `llm` router's outgoing edge carries `as name(N)` — the cap is accepted at compile time and silently ignored at run time (error; put the loop on the edge that re-enters the router)
 )
