@@ -1161,3 +1161,20 @@ func TestPruneWorkspaceMirror_DirFormMarkerPrunesTheDirFormNotTheFlat(t *testing
 		t.Errorf("the directory-form orphan survived pruning: %v", err)
 	}
 }
+
+// The recorded form keys on the MARKER grammar, not on the dest's
+// basename: a file literally named SKILL.md in a flat-only kind must stay
+// `flat:`, and only a real `<stem>.SKILL.md.sha256` marker reads `dir:`.
+func TestMarkIterionWrote_DerivesTheFormFromTheMarkerGrammar(t *testing.T) {
+	dir := t.TempDir()
+	flatMarker := filepath.Join(dir, "SKILL.md.sha256") // a COMMAND named SKILL.md
+	markIterionWrote(flatMarker, filepath.Join(dir, "commands", "SKILL.md"))
+	if b, err := os.ReadFile(flatMarker + iterionWroteSidecarSuffix); err != nil || string(b) != "flat:SKILL.md" {
+		t.Errorf("flat-only kind named SKILL.md recorded %q (err %v), want flat:SKILL.md", b, err)
+	}
+	dirMarker := filepath.Join(dir, "deploy.SKILL.md.sha256")
+	markIterionWrote(dirMarker, filepath.Join(dir, "deploy", "SKILL.md"))
+	if b, err := os.ReadFile(dirMarker + iterionWroteSidecarSuffix); err != nil || string(b) != "dir:deploy" {
+		t.Errorf("directory-form skill recorded %q (err %v), want dir:deploy", b, err)
+	}
+}

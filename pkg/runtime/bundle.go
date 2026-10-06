@@ -144,6 +144,14 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
+		// A provenance sidecar that predates the recorded form carries no
+		// parsable content: upgrade it while the file is actively ours to
+		// describe — presence already certified iterion wrote this dest at
+		// some past run, so this only fills the form the pruner reads, and
+		// an operator-adopted file (no sidecar at all) stays unstamped.
+		if iterionWroteFile(markerPath) {
+			markIterionWrote(markerPath, destPath)
+		}
 		recordMirrorWrite(mirrorManifestPathForMarker(markerPath), destPath, srcHash, logger)
 		return skillOutcomeUpToDate, nil
 	}
@@ -718,8 +726,12 @@ func writeMarker(path, hash string, tier skillTier) error {
 // Refreshed branches. NOT called from UpToDate: an
 // adopted-identical-operator-file must not be pruneable, ever.
 func markIterionWrote(markerPath, destPath string) {
+	// The form keys on the MARKER grammar, not on the dest's basename: a
+	// file literally named SKILL.md in a flat-only kind would otherwise
+	// read as a directory-form skill and send the pruner after a dest
+	// nobody wrote.
 	form := "flat:" + filepath.Base(destPath)
-	if filepath.Base(destPath) == "SKILL.md" {
+	if strings.HasSuffix(filepath.Base(markerPath), ".SKILL.md.sha256") {
 		form = "dir:" + filepath.Base(filepath.Dir(destPath))
 	}
 	_ = os.WriteFile(markerPath+iterionWroteSidecarSuffix, []byte(form), 0o644)
@@ -989,7 +1001,11 @@ func destPathFromMarkerName(kindDir, markerName, markerPath string) string {
 		}
 	}
 	// The prunable grammar is LOWERCASE-ONLY on the `.md.sha256` tail —
-	// the decided shape after #1500 R9cbabe. A bundle may name a source
+	// the decided shape after #1500 R9cbabe. A recorded write form in the
+	// .iterion-wrote sidecar supersedes this grammar when present: the
+	// sidecar names the destination iterion actually wrote, so an
+	// uppercase flat orphan whose sidecar says `flat:Deploy.MD` is
+	// prunable after all. A bundle may name a source
 	// `Deploy.MD` (hasMarkdownSuffix accepts it and the mirror writes a
 	// `Deploy.MD.sha256` marker), but that marker is OUTSIDE the prunable
 	// set. For a SKILL the directory form still prunes

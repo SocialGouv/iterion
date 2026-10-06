@@ -217,7 +217,14 @@ func TestMirrorLibrarySkills_MigrationFromDirOnlyWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(markerDir, "deploy-target.SKILL.md.sha256"), []byte(preHash), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// NO iterion-wrote sidecar. That is the migration state.
+	// A pre-#1526 sidecar: present (iterion wrote this dest at some past
+	// run) but EMPTY — no recorded form. The first dual-shape pass touches
+	// the file UpToDate and upgrades the content, so the pruner resolves
+	// the marker to the DIRECTORY form and never to a byte-identical
+	// operator file that happens to exist beside it.
+	if err := os.WriteFile(filepath.Join(markerDir, "deploy-target.SKILL.md.sha256"+iterionWroteSidecarSuffix), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, _, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"deploy-target"}, nil), nil, nil, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
@@ -229,8 +236,8 @@ func TestMirrorLibrarySkills_MigrationFromDirOnlyWorkspace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, "deploy-target.md")); err != nil {
 		t.Fatalf("flat alias was not created on migration: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(markerDir, "deploy-target.SKILL.md.sha256"+iterionWroteSidecarSuffix)); err == nil {
-		t.Error("UpToDate branch wrote an iterion-wrote sidecar it shouldn't — an adopted file must not become pruneable")
+	if b, err := os.ReadFile(filepath.Join(markerDir, "deploy-target.SKILL.md.sha256" + iterionWroteSidecarSuffix)); err != nil || string(b) != "dir:deploy-target" {
+		t.Errorf("the legacy empty sidecar was not upgraded with the recorded form: %q (err %v) — the pruner would fall back to the disk-stat guess", b, err)
 	}
 	if _, err := os.Stat(filepath.Join(markerDir, "deploy-target.md.sha256"+iterionWroteSidecarSuffix)); err != nil {
 		t.Errorf("flat alias should have an iterion-wrote sidecar after Mirrored: %v", err)
