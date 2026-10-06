@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/git"
 )
 
 // The warden's FOLD is the executable half of ADR-123: the LLM classifies,
@@ -165,7 +169,7 @@ func runWardenPublish(t *testing.T, over map[string]string) (wardenPublish, ward
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"published":true,"review_url":"https://pic.example/o/r/-/merge_requests/7#note-1",
 			"gate_posted":true,"gate_state":"success","gate_error":"",
-			"verdict_result":{"approve_posted":true,"merge_armed":true,"merge_state":"mwps"}}`))
+			"verdict":{"approve_posted":true,"merge_armed":true,"merge_state":"mwps"}}`))
 	})
 	srv := httptest.NewServer(mux)
 	// The read twin, same host: the peer-gate read answers green peers on
@@ -309,7 +313,7 @@ func TestGitopsWardenPublish_RedPeerGateHoldsTheArm(t *testing.T) {
 			var _json map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&_json)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"published":true,"review_url":"x","gate_posted":true,"gate_state":"success","verdict_result":{}}`))
+			_, _ = w.Write([]byte(`{"published":true,"review_url":"x","gate_posted":true,"gate_state":"success","verdict":{}}`))
 		}))
 		defer srv.Close()
 		vals := map[string]string{
@@ -438,7 +442,7 @@ func TestGitopsWardenPublish_PeerStatesThatHoldTheArm(t *testing.T) {
 				_ = json.NewDecoder(r.Body).Decode(&body)
 				armSent = body.Verdict.Arm
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"published":true,"review_url":"x","gate_posted":true,"gate_state":"success","verdict_result":{}}`))
+				_, _ = w.Write([]byte(`{"published":true,"review_url":"x","gate_posted":true,"gate_state":"success","verdict":{}}`))
 			})
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
@@ -477,5 +481,103 @@ func TestGitopsWardenPublish_PeerStatesThatHoldTheArm(t *testing.T) {
 				t.Errorf("reason = %q, want it to name the held peer (%s)", res.RefusedReason, tc.wantIn)
 			}
 		})
+	}
+}
+
+// R831f30 regression: the key scan diffs the MR (base..worktree), not the
+// clean worktree against its index — on a real temp repository, a modified
+// values file yields non-empty key_paths, and a REMOVED key with no
+// addition marks candidate=false (the silent-drop triage the ticket asks
+// for).
+func TestGitopsWardenInventory_KeyScanSeesTheMRNotTheIndex(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		// git >= 2.48 detaches a maintenance run after every writing
+		// command; the child would outlive the command and race t.TempDir().
+		cmd := exec.Command("git", git.NoAutoMaintenance(args...)...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main", ".")
+	write := func(rel, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("apps/x/values.yaml", "image:\n  repository: registry/app\n  tag: 1.4.2\nreplicas: 2\nresources:\n  requests:\n    cpu: 100m\n")
+	run("add", ".")
+	run("commit", "-q", "-m", "base")
+	run("checkout", "-q", "-b", "bump")
+	// The MR: tag bump AND the silent-drop shape — the `resources` tree
+	// removed with nothing re-added under that name.
+	write("apps/x/values.yaml", "image:\n  repository: registry/app\n  tag: 1.4.3\nreplicas: 2\n")
+	run("add", ".")
+	run("commit", "-q", "-m", "bump")
+
+	cmdTemplate := toolCommand(t, "gitops-warden/main.bot", "diff_inventory")
+	rendered := cmdTemplate
+	for k, v := range map[string]string{
+		"workspace_dir": dir, "base_ref": "main", "policy_path": "review-policy.md",
+		"max_diff_files": "150", "max_diff_bytes": "400000", "head_sha": "",
+	} {
+		rendered = strings.ReplaceAll(rendered, "{{vars."+k+"}}", "'"+v+"'")
+	}
+	if strings.Contains(rendered, "{{") {
+		t.Fatalf("unsubstituted ref left: %s", firstRef(rendered))
+	}
+	out, err := exec.Command("sh", "-c", rendered).Output()
+	if err != nil {
+		t.Fatalf("diff_inventory failed: %v (%s)", err, out)
+	}
+	var inv struct {
+		Files []struct {
+			Path      string   `json:"path"`
+			Status    string   `json:"status"`
+			KeyPaths  []string `json:"key_paths"`
+			Candidate bool     `json:"candidate"`
+		} `json:"files"`
+		IsEmpty bool `json:"is_empty"`
+	}
+	if err := json.Unmarshal(out, &inv); err != nil {
+		t.Fatalf("bad inventory json: %v (%q)", err, out)
+	}
+	if inv.IsEmpty || len(inv.Files) != 1 {
+		t.Fatalf("inventory = %+v, want exactly the one modified values file", inv)
+	}
+	f := inv.Files[0]
+	if f.Status != "M" || f.Path != "apps/x/values.yaml" {
+		t.Fatalf("file = %s/%s, want M apps/x/values.yaml", f.Status, f.Path)
+	}
+	found := map[string]bool{}
+	for _, k := range f.KeyPaths {
+		found[k] = true
+	}
+	// The scan reads the DIFF: the changed lines' keys are there (the
+	// removed `resources:` tree, the bumped `tag`), the unchanged context
+	// keys are not.
+	for _, want := range []string{"resources", "tag"} {
+		if !found[want] {
+			t.Errorf("key_paths = %v, want it to include %q (the scan must read the MR diff)", f.KeyPaths, want)
+		}
+	}
+	if found["image"] || found["replicas"] {
+		t.Errorf("key_paths = %v contains unchanged context keys — the scan is reading something other than the diff", f.KeyPaths)
+	}
+	if f.Candidate {
+		t.Errorf("candidate = true, want false — resources was removed with no same-named addition (the silent-drop shape)")
 	}
 }

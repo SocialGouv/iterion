@@ -138,7 +138,7 @@ for fe in files:
     if fe['status'] != 'M' or fe['ext'] not in ('yaml', 'yml'):
         continue
     scanned += 1
-    d = git('diff', '-U0', '--', fe['path'])
+    d = git('diff', '-U0', mb, '--', fe['path'])
     if d.returncode != 0:
         continue
     added_keys, removed_keys = set(), set()
@@ -483,7 +483,7 @@ except Exception as e:
           'review_url': '', 'gate_requested': gate_enabled, 'gate_posted': False, 'gate_state': '',
           'gate_skipped_reason': 'publish unreachable', 'approve_posted': False, 'reviewers_added': '',
           'merge_armed': False, 'merge_state': '', 'escalate_reasons': reasons_out, 'blocking': blocking})
-vr = res.get('verdict_result') or {}
+vr = res.get('verdict') or {}
 refusal = vr.get('refused') or verdict_note
 if peer_problem and not vr.get('refused'):
     refusal = peer_problem
