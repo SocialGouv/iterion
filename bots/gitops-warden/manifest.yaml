@@ -1,0 +1,74 @@
+name: gitops-warden
+display_name: Warden
+icon: 🛡
+version: 0.1.0
+## 0.1.0 — first ship. A gitops merge gate: classifies every merge request
+## against a hybrid policy (baked default + optional per-repo
+## review-policy.md (the policy_path var pins the real path) read from the TARGET branch), posts a verdict
+## comment + a `gitops/conformance` gate, and — only in enforce mode, only on
+## a green verdict — executes the merge-gate gestures through the server's
+## deterministic publish surface (approve, arm merge-when-pipeline-succeeds).
+## Ships in dry_run: the operator flips enforce via the integration's
+## launch_vars after calibration (ADR-123).
+description: |
+  GitOps merge gate. Classifies a merge request's diff against a policy —
+  image-tag bumps, resource values and non-secret config are simple;
+  structural changes, secrets, datastores the platform offers managed, CI
+  and ArgoCD definitions escalate to human review — and publishes the
+  verdict as one comment plus a `gitops/conformance` commit status. In
+  enforce mode, a fully-simple verdict ALSO approves the merge request and
+  arms merge-when-pipeline-succeeds; any doubt, any unparseable diff, any
+  structural change escalates (fail-closed). The platform knowledge ships
+  as skills; a repo may tighten or widen the simple class with
+  review-policy.md (the policy_path var pins the real path) (read from the target branch — an MR editing
+  its own policy escalates).
+when_to_use: |
+  Bind to a gitops repository whose merge requests should merge without a
+  human when they only bump image tags, resources or non-secret values
+  within platform guardrails, and must reach a human otherwise. Pairs with
+  review-pr on the same repo (separate gate contexts). Start in dry_run,
+  calibrate against real merge requests, then pin mode=enforce per repo.
+author: SocialGouv (devthejo) — gitops-warden/main.bot
+category: verify
+tags: [code-review, read-only, deploy, git]
+schema_version: 1
+triggers: [gitops-warden, warden]
+requires:
+  iterion: ">= 3.240.0"
+
+forge:
+  events: [pull_request, pull_request_comment]  # MR open → verdict ; /warden note → re-run
+  token_scopes:
+    pull_requests: write     # post the verdict comment
+    repository: read         # clone + read the diff
+    statuses: write          # post the gitops/conformance gate commit status
+    approvals: write         # ADR-123: cast the MR approval (enforce mode)
+    merge: write             # ADR-123: arm merge-when-pipeline-succeeds (enforce mode)
+    reviewers: write         # ADR-123: request reviewers on escalation
+  secret: forge_token
+  webhook:
+    launch_vars:
+      post_to_board: "false"
+      mode: "dry_run"        # THE staged-rollout default; an operator pins
+                             # mode=enforce per repo via the integration's
+                             # launch_vars after calibration
+  rationale: |
+    Warden reads the merge request diff, posts one verdict comment and a
+    gitops/conformance commit status through the deterministic publish
+    endpoint. The three gesture scopes (approvals/merge/reviewers) are what
+    mint the run's publish-grant capabilities: in enforce mode a green
+    verdict approves the MR and arms merge-when-pipeline-succeeds; on
+    escalation it requests the pinned reviewers. Strip the scopes (or set
+    the forge_publish_mutations pin) and the bot comments and gates only.
+
+invocations:
+  - kind: forge
+    mode: direct
+    forge: { event: pull_request, actions: [opened, reopened] }
+  - kind: command
+    mode: direct
+    command: { name: warden, scope: pr, disambiguator: when_args_empty }
+
+launch:
+  primary: [pr_url, mode]
+  hidden: [head_sha, source_branch, forge_publish_url, forge_publish_token, forge_pr_state_url]
