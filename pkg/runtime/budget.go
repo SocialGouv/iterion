@@ -841,15 +841,13 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 //
 // What it does NOT reach is the runner's per-run totals, and from them the
 // org monthly bucket and the donor's post-hoc ledger: those accumulate
-// from EVENTS (`llm_step_finished`, `delegate_finished`), and a failed
-// delegation emits `delegate_error`, which metricsEmitter.observe has no
-// case for. claw reports step by step and fires that event BEFORE its
-// structured parse, so the in-process backend still reaches the org bucket
-// for everything but a stream that died mid-answer; a CLI backend reaches
-// it for nothing a failed node burned. Closing that half is a pkg/runner change
-// (a delegate_error case carrying cost_usd, with the same
-// already-summarised guard delegate_finished uses for claw), deliberately
-// not made here.
+// from EVENTS (`llm_step_finished`, `delegate_finished`, `delegate_error` —
+// the runner's accumulator books the error branch too, with the same
+// already-summarised guard `delegate_finished` uses for claw). claw reports
+// step by step and fires that event BEFORE its structured parse, so the
+// in-process backend reaches the org bucket for everything but a stream
+// that died mid-answer; this helper's reach ends where no event carries a
+// figure at all.
 //
 // A booking also counts an iteration, as every recordBudget does — so a
 // failed node that spent consumes a max_iterations slot and one that spent

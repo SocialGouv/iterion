@@ -701,6 +701,20 @@ func TestMetricsEmitter_delegateErrorBooksItsCost(t *testing.T) {
 	if got := counterValue(t, costC); got != 0.42 {
 		t.Errorf("LLMCostUSDTotal = %v, want 0.42", got)
 	}
+
+	// The per-credential ledger books the failed route too — the fingerprint
+	// the error event carries is the route source, as on finished.
+	routes := usage.RouteTotals()
+	found := false
+	for k, r := range routes {
+		if k.backend == "claude_code" && k.source == "fp-1" && r.costUSD == 0.42 && r.aggregateTokens == 310 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("the failed route never reached the per-credential ledger: %+v", routes)
+	}
 }
 
 // The claw summarised guard crosses to the error path: a claw loop whose

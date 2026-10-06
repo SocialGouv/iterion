@@ -17,8 +17,8 @@ import (
 )
 
 // metricsEmitter wraps a model.EventEmitter and taps llm_step_finished
-// / delegate_finished events to keep the LLM token + cost counters
-// up-to-date. The forward call to the underlying emitter happens
+// / delegate_finished / delegate_error events to keep the LLM token + cost
+// counters up-to-date. The forward call to the underlying emitter happens
 // regardless of metric outcome so write durability is unaffected.
 //
 // It also accumulates the run's own totals (cost + tokens) so the
@@ -490,8 +490,9 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		}
 		modelName := m.modelByNode[evt.NodeID]
 		summarised := backend == "claw" && m.stepsSeen[evt.NodeID]
+		var costDelta float64
 		if !summarised {
-			costDelta := toFloat(evt.Data["cost_usd"])
+			costDelta = toFloat(evt.Data["cost_usd"])
 			if costDelta == 0 && backend == "claw" && tokensF > 0 && modelName != "" {
 				if rate := m.rateForLocked(modelName); rate.known {
 					costDelta = tokensF * rate.inputUSDPerToken
@@ -506,7 +507,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			return
 		}
 		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
-		if costDelta := toFloat(evt.Data["cost_usd"]); costDelta > 0 && m.reg != nil {
+		if costDelta > 0 && m.reg != nil {
 			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
 		}
 	case store.EventDelegateFinished:
