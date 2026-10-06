@@ -1360,7 +1360,7 @@ re-running the REVIEWER (this lane), never launching the fixer.
 
 ## <a name="gating-bots"></a>Gating bots — a verdict that acts
 
-The doctrine line: a review advises, a human merges. [ADR-123](adr/123-gating-bot-merge-gestures.md)
+The doctrine line: a review advises, a human merges. [ADR-124](adr/124-gating-bot-merge-gestures.md)
 amends it narrowly for gitops repositories, where the reviewer executes a POLICY rather
 than advising a taste call: a **gating bot** may approve the merge request, arm
 merge-when-pipeline-succeeds, and request reviewers — under six conditions, all
