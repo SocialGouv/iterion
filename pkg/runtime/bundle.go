@@ -117,6 +117,18 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, lo
 		return skillOutcomeMirrored, nil
 	case destErr != nil:
 		return skillOutcomeShadowed, fmt.Errorf("runtime/bundle: stat %s: %w", destPath, destErr)
+	case destInfo.IsDir():
+		// The workspace object at this path is a DIRECTORY — the checkout
+		// shipped its own skill directory (or a repo-planted dir) where the
+		// mirror wanted a file. Workspace wins: this is a shadow, not an
+		// error. Returning fatal here made every run declaring the skill
+		// fail because a DIRECTORY existed at the path — inverting the
+		// workspace-wins doctrine for exactly the collision the policy
+		// exists to resolve.
+		if logger != nil {
+			logger.Warn("skill %q shadowed by an existing workspace DIRECTORY at %s", filepath.Base(srcPath), destPath)
+		}
+		return skillOutcomeShadowed, nil
 	}
 	destHash, err := hashFile(destPath)
 	if err != nil {
