@@ -289,17 +289,14 @@ func TestAdmitAttempt_BumpsHeldKeysOnceAdmitted(t *testing.T) {
 	apiKeys := secrets.NewMemoryApiKeyStore()
 	id, _ := seedFingerprintedKey(t, apiKeys, sealer, "sk-ant-held")
 	rs := secrets.NewMemoryRunSecretsStore()
-	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-a", "", "run-1", secrets.RunBundle{
+	sealed, dek := sealDekFixture(t, "team-a", "run-1", secrets.RunBundle{
 		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-held"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", KeyID: keyID, SealedBundle: sealed}); err != nil {
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer, ApiKeys: apiKeys}}
-	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"}
+	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1", BundleDEK: dek}
 	ctx, cleanup, err := r.injectCredentials(context.Background(), msg)
 	if err != nil {
 		t.Fatalf("injectCredentials: %v", err)

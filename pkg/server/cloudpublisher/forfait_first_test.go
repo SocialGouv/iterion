@@ -634,7 +634,7 @@ func TestStamp_aPinnedKeyNoRouteSpendsIsNotCounted(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run secrets: %v", err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-stamp", rec.KeyID, rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-stamp", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
@@ -730,7 +730,7 @@ func TestRestore_aRouteKeyAnotherTierFundedIsNotReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-in", rec.KeyID, rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-in", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -839,7 +839,7 @@ func resolveBundleForWorkflow(t *testing.T, p *Publisher, rs *secrets.MemoryRunS
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -981,7 +981,7 @@ func TestSharedTier_autoSpansTheRunFacadeStaysOffEveryTier(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1998", rec.KeyID, rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-1998", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}

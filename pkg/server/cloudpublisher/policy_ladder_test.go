@@ -53,7 +53,7 @@ func resolveWithPolicy(t *testing.T, policy *store.RunLLMRoutePolicy, wf *ir.Wor
 	if err != nil {
 		t.Fatalf("run secrets: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-pol", rec.KeyID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", "run-pol", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestResolve_PoolGrantRefusedByWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-pw", rec.KeyID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", "run-pw", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}

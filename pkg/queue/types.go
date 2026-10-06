@@ -150,7 +150,12 @@ import (
 // rides the new field on the message and the envelope. A stale runner
 // ignores it and serves the run outside the team's pool — the leak the
 // pool exists to make impossible — so it must reject.
-const SchemaVersion = 23
+// v=24: BundleDEK (#2029, ADR-123). Run bundles seal under a per-run
+// DEK that travels in the message; runner pods hold no platform key
+// material. Runner-first rollout: a pre-v24 runner refuses a v24
+// message at the schema check instead of failing later at credential
+// injection with a bundle it cannot open.
+const SchemaVersion = 24
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -215,6 +220,13 @@ type RunMessage struct {
 	// by having been admitted on an older build. False = the check runs.
 	AllowUnknownInputs bool   `json:"allow_unknown_inputs,omitempty"`
 	SecretsRef         string `json:"secrets_ref,omitempty"`
+	// BundleDEK is the per-run 32-byte key the run's sealed credential
+	// bundle encrypts under (ADR-123). It travels only here — the run's
+	// own pool stream — so runner pods hold no platform key material:
+	// the per-run sealer is built from it at claim time. A message that
+	// carries it without a SecretsRef (or a "dek"-stamped record whose
+	// message carries none) is corrupt and refused.
+	BundleDEK []byte `json:"bundle_dek,omitempty"`
 	TimeoutSec         int    `json:"timeout_sec,omitempty"`
 	// PoolGrantless marks a publication that asked the credential pool and
 	// was granted nothing: the attempt runs on env/fallback credentials,
@@ -585,6 +597,12 @@ func (m *RunMessage) Validate() error {
 	// fail-closed read, not a wire-format question.
 	if m.RunnerPool != "" && !ValidPoolName(m.RunnerPool) {
 		return fmt.Errorf("queue: RunnerPool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", m.RunnerPool)
+	}
+	if m.BundleDEK != nil && m.SecretsRef == "" {
+		return fmt.Errorf("queue: BundleDEK without SecretsRef — corrupt publish")
+	}
+	if len(m.BundleDEK) != 0 && len(m.BundleDEK) != 32 {
+		return fmt.Errorf("queue: BundleDEK must be 32 bytes, got %d", len(m.BundleDEK))
 	}
 	if m.WorkflowName == "" {
 		return fmt.Errorf("queue: WorkflowName required")

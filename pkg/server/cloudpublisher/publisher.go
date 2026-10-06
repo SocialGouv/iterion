@@ -1348,7 +1348,18 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.grant)
 	p.keepFollowableRecordRefs(&bundle)
 
-	sealed, keyID, err := secrets.SealRunBundle(p.sealer, tenantID, runnerPool, runID, bundle)
+	// ADR-123: the bundle seals under a fresh per-run DEK that travels in
+	// the message — runner pods hold no platform key material. The ring
+	// stays server-side, sealing at-rest records only.
+	dek, err := secrets.NewRunBundleDEK()
+	if err != nil {
+		return res, fmt.Errorf("cloudpublisher: dek: %w", err)
+	}
+	dekSealer, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		return res, fmt.Errorf("cloudpublisher: dek sealer: %w", err)
+	}
+	sealed, keyID, err := secrets.SealRunBundle(dekSealer, tenantID, runnerPool, runID, bundle)
 	if err != nil {
 		return res, fmt.Errorf("cloudpublisher: seal bundle: %w", err)
 	}
@@ -1367,6 +1378,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		return res, fmt.Errorf("cloudpublisher: persist run secrets: %w", err)
 	}
 	res.secretsRef = ref
+	res.dek = dek
 	return res, nil
 }
 
@@ -1386,7 +1398,11 @@ type credResolution struct {
 	// map per run, not per rung).
 	ModelClasses map[string]map[string]string
 	secretsRef   string
-	grant        *credpool.Grant
+	// dek is the per-run bundle key (ADR-123): it rides the RunMessage
+	// beside the ref — the stream split is what carries it, not any
+	// platform key material.
+	dek   []byte
+	grant *credpool.Grant
 	// families is the set of review families the sealed credentials back
 	// (reviewtopology), so the launch can resolve the credential-derived
 	// topology vars for a queued run. Empty = nothing resolved (env
@@ -3000,6 +3016,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Vars:               inputs,
 		AllowUnknownInputs: spec.AllowUnknownInputs,
 		SecretsRef:         creds.secretsRef,
+		BundleDEK:          creds.dek,
 		// The stored-bundle ref THREADED from the launch surface's own
 		// resolution (never re-fetched here — a push racing the launch must
 		// not pair this compile's IR with newer resources). The runner
@@ -3440,6 +3457,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			AcceptScratchLoss: spec.AcceptScratchLoss,
 		},
 		SecretsRef: creds.secretsRef,
+		BundleDEK:  creds.dek,
 		// Re-resolved by the resume surface like credentials are re-sealed:
 		// the resumed attempt runs the CURRENT stored bundle, consistently
 		// across the compile above and the runner-side materialization.

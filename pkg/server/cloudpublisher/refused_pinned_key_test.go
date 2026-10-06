@@ -130,7 +130,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderRefusedPinnedKey(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			bundle, err := secrets.OpenRunBundle(p.sealer, record.TenantID, "", "oracle-run", record.KeyID, record.SealedBundle)
+			bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), record.TenantID, "", "oracle-run", record.KeyID, record.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}

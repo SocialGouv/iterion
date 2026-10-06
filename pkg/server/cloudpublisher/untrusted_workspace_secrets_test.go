@@ -16,7 +16,7 @@ import (
 // workflow secret for (team, alice). The secret being present is the whole
 // point: a test that withheld the store too would pass on an empty bundle
 // without proving anything about trust.
-func untrustedFixture(t *testing.T, name, value string) (*Publisher, *secrets.MemoryRunSecretsStore, secrets.Sealer) {
+func untrustedFixture(t *testing.T, name, value string) (*Publisher, *secrets.MemoryRunSecretsStore) {
 	t.Helper()
 	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
@@ -35,10 +35,10 @@ func untrustedFixture(t *testing.T, name, value string) (*Publisher, *secrets.Me
 		t.Fatalf("Create: %v", err)
 	}
 	runSecrets := secrets.NewMemoryRunSecretsStore()
-	return &Publisher{genericSecrets: genericStore, runSecrets: runSecrets, sealer: sealer}, runSecrets, sealer
+	return &Publisher{genericSecrets: genericStore, runSecrets: runSecrets, sealer: sealer}, runSecrets
 }
 
-func bundleOf(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, ctx context.Context, runID, ref string) secrets.RunBundle {
+func bundleOf(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, ctx context.Context, runID, ref, deksrc string) secrets.RunBundle {
 	t.Helper()
 	if ref == "" {
 		return secrets.RunBundle{}
@@ -47,7 +47,7 @@ func bundleOf(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsSt
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(mustDEKSealer(t, []byte(deksrc)), rec.TenantID, "", runID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -71,26 +71,26 @@ func TestResolveAndSealCredentials_UntrustedWorkspaceGetsNoWorkflowSecret(t *tes
 	}
 
 	t.Run("a trusted run resolves it", func(t *testing.T) {
-		p, runSecrets, sealer := untrustedFixture(t, "forge_token", "ghp_realtoken")
+		p, runSecrets := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
 		creds, err := p.resolveAndSealCredentials(ctx, "run-trusted", "", "team", "alice", "", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 		if err != nil {
 			t.Fatalf("resolveAndSealCredentials = %v, want nil", err)
 		}
-		b := bundleOf(t, p, runSecrets, sealer, ctx, "run-trusted", creds.secretsRef)
+		b := bundleOf(t, p, runSecrets, ctx, "run-trusted", creds.secretsRef, string(creds.dek))
 		if b.GenericSecrets["forge_token"] != "ghp_realtoken" {
 			t.Fatalf("a trusted run did NOT get the secret (%+v) — the fixture proves nothing about trust if the secret cannot resolve at all", b.GenericSecrets)
 		}
 	})
 
 	t.Run("a fork-trust run does not", func(t *testing.T) {
-		p, runSecrets, sealer := untrustedFixture(t, "forge_token", "ghp_realtoken")
+		p, runSecrets := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
 		creds, err := p.resolveAndSealCredentials(ctx, "run-fork", "", "team", "alice", "", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrustFork, nil, nil)
 		if err != nil {
 			t.Fatalf("resolveAndSealCredentials = %v, want nil (an OPTIONAL secret is withheld, not an error)", err)
 		}
-		b := bundleOf(t, p, runSecrets, sealer, ctx, "run-fork", creds.secretsRef)
+		b := bundleOf(t, p, runSecrets, ctx, "run-fork", creds.secretsRef, string(creds.dek))
 		if got, ok := b.GenericSecrets["forge_token"]; ok {
 			t.Fatalf("forge_token = %q reached an untrusted workspace's bundle — the runner would write it into a fork author's clone as a git credential", got)
 		}
@@ -101,13 +101,13 @@ func TestResolveAndSealCredentials_UntrustedWorkspaceGetsNoWorkflowSecret(t *tes
 	// hand-edited row) must lose the secrets too. Mutating the check to
 	// `trust.IsFork()` leaves this subtest, and only this subtest, red.
 	t.Run("an unrecognised trust value does not either", func(t *testing.T) {
-		p, runSecrets, sealer := untrustedFixture(t, "forge_token", "ghp_realtoken")
+		p, runSecrets := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
 		creds, err := p.resolveAndSealCredentials(ctx, "run-unknown", "", "team", "alice", "", "", wf(true), nil, nil, model.ModelOverrides{}, nil, store.RunTrust("vendored"), nil, nil)
 		if err != nil {
 			t.Fatalf("resolveAndSealCredentials = %v, want nil", err)
 		}
-		b := bundleOf(t, p, runSecrets, sealer, ctx, "run-unknown", creds.secretsRef)
+		b := bundleOf(t, p, runSecrets, ctx, "run-unknown", creds.secretsRef, string(creds.dek))
 		if got, ok := b.GenericSecrets["forge_token"]; ok {
 			t.Fatalf("forge_token = %q reached a workspace whose trust this binary does not recognise — an unknown trust must fail CLOSED", got)
 		}
@@ -118,7 +118,7 @@ func TestResolveAndSealCredentials_UntrustedWorkspaceGetsNoWorkflowSecret(t *tes
 	// is a misconfigured lane, and running it anyway is the "dead capability,
 	// green test" shape.
 	t.Run("a REQUIRED secret makes the launch fail loudly", func(t *testing.T) {
-		p, _, _ := untrustedFixture(t, "forge_token", "ghp_realtoken")
+		p, _ := untrustedFixture(t, "forge_token", "ghp_realtoken")
 		ctx := store.WithTenant(context.Background(), "team")
 		_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team", "alice", "", "", wf(false), nil, nil, model.ModelOverrides{}, nil, store.RunTrustFork, nil, nil)
 		if !errors.Is(err, errUntrustedRequiresSecrets) {

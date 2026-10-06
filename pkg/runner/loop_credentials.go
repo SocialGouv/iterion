@@ -34,8 +34,8 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	if msg.SecretsRef == "" {
 		return ctx, nil, nil
 	}
-	if r.cfg.RunSecrets == nil || r.cfg.Sealer == nil {
-		return ctx, nil, fmt.Errorf("runner: SecretsRef set but RunSecrets/Sealer not wired")
+	if r.cfg.RunSecrets == nil {
+		return ctx, nil, fmt.Errorf("runner: SecretsRef set but RunSecrets not wired")
 	}
 	rec, err := r.cfg.RunSecrets.Get(ctx, msg.SecretsRef)
 	if err != nil {
@@ -52,7 +52,24 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	if rec.TenantID != msg.TenantID {
 		return ctx, nil, fmt.Errorf("run_secrets tenant mismatch (msg=%q sealed=%q)", msg.TenantID, rec.TenantID)
 	}
-	bundle, err := secrets.OpenRunBundle(r.cfg.Sealer, msg.TenantID, msg.RunnerPool, msg.RunID, rec.KeyID, rec.SealedBundle)
+	// ADR-123: a "dek"-stamped record opens under the message's per-run
+	// key — no platform key material on the pod. The two older cohorts
+	// (id-less, ring id) need the transition ring, which the runner
+	// carries only until the 24h bundle TTL clears them.
+	sealer := r.cfg.Sealer
+	if rec.KeyID == secrets.DEKKeyID {
+		if len(msg.BundleDEK) != 32 {
+			return ctx, nil, fmt.Errorf("run_secrets %s: %w", msg.SecretsRef, secrets.ErrBundleDEKMissing)
+		}
+		dekSealer, err := secrets.NewAESGCMSealer(msg.BundleDEK)
+		if err != nil {
+			return ctx, nil, fmt.Errorf("run_secrets %s dek sealer: %w", msg.SecretsRef, err)
+		}
+		sealer = dekSealer
+	} else if sealer == nil {
+		return ctx, nil, fmt.Errorf("run_secrets %s: the record predates per-run keys (key_id=%q) but this runner carries no key ring", msg.SecretsRef, rec.KeyID)
+	}
+	bundle, err := secrets.OpenRunBundle(sealer, msg.TenantID, msg.RunnerPool, msg.RunID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
 	}

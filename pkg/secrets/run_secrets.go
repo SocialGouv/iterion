@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,21 +159,39 @@ type RunSecretsStore interface {
 // (already consumed or never published).
 var ErrRunSecretsNotFound = errors.New("secrets: run secrets not found")
 
+// ErrBundleDEKMissing is the typed refusal for a "dek"-stamped record
+// whose message carries no per-run key: corrupt publish or a message
+// stripped in transit — never executed.
+var ErrBundleDEKMissing = errors.New("dek-stamped bundle but the message carries no BundleDEK")
+
+// DEKKeyID is the key-id scheme of ADR-123: the bundle sealed under
+// the message's per-run DEK — the sealer is built at claim time from
+// RunMessage.BundleDEK, and no platform key material ever reaches the
+// pod. The two older schemes remain readable: an empty id (pre-ring,
+// run-only AAD) and a ring id (P4a, extended AAD).
+const DEKKeyID = "dek"
+
+// NewRunBundleDEK generates the per-run key ADR-123 seals a bundle
+// under.
+func NewRunBundleDEK() ([]byte, error) {
+	dek := make([]byte, 32)
+	if _, err := rand.Read(dek); err != nil {
+		return nil, fmt.Errorf("secrets: dek: %w", err)
+	}
+	return dek, nil
+}
+
 // SealRunBundle marshals + seals a RunBundle for a run, bound to its
 // full identity — tenant, pool and run. The AAD makes a bundle from
 // one identity undecryptable under another's context, even if a
 // confused record store served the ref: the binding is cryptographic,
-// not a field comparison. The returned key id is the ring key the
-// bundle sealed under; the caller stamps it on the record. The pool
-// grammar (queue.ValidPoolName) and identity tenant ids carry no "/",
-// so the three components are unambiguous.
+// not a field comparison. The sealer is the run's per-run DEK sealer
+// (ADR-123); the returned key id is the constant DEK scheme. The pool
+// grammar and identity tenant ids carry no "/", so the three
+// components are unambiguous.
 func SealRunBundle(sealer Sealer, tenantID, pool, runID string, b RunBundle) ([]byte, string, error) {
 	if sealer == nil {
 		return nil, "", errors.New("secrets: nil sealer for SealRunBundle")
-	}
-	keyed, ok := sealer.(KeyedSealer)
-	if !ok {
-		return nil, "", errors.New("secrets: sealing a run bundle needs a keyed sealer (a key ring), not a bare Sealer")
 	}
 	// The AAD's unambiguity rests on neither component carrying "/":
 	// enforce it here, at the chokepoint both seal callers traverse, not
@@ -187,12 +206,11 @@ func SealRunBundle(sealer Sealer, tenantID, pool, runID string, b RunBundle) ([]
 	if err != nil {
 		return nil, "", fmt.Errorf("secrets: marshal bundle: %w", err)
 	}
-	keyID := keyed.CurrentKeyID()
-	sealed, err := keyed.Seal(body, RunBundleAAD(tenantID, pool, runID))
+	sealed, err := sealer.Seal(body, RunBundleAAD(tenantID, pool, runID))
 	if err != nil {
 		return nil, "", err
 	}
-	return sealed, keyID, nil
+	return sealed, DEKKeyID, nil
 }
 
 // OpenRunBundle is the inverse: decrypt + unmarshal, under the same
@@ -208,9 +226,12 @@ func OpenRunBundle(sealer Sealer, tenantID, pool, runID, keyID string, sealed []
 		pt  []byte
 		err error
 	)
-	if keyID == "" {
+	switch {
+	case keyID == DEKKeyID:
+		pt, err = sealer.Open(sealed, RunBundleAAD(tenantID, pool, runID))
+	case keyID == "":
 		pt, err = openLegacyBundle(sealer, runID, sealed)
-	} else {
+	default:
 		keyed, ok := sealer.(KeyedSealer)
 		if !ok {
 			return b, errors.New("secrets: opening a keyed run bundle needs a keyed sealer (a key ring)")

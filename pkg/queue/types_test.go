@@ -262,10 +262,10 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// the chain DEFAULT trigger set — dropping auth and
 	// transient_exhausted, the exact failures the launch-time selection
 	// exists to fall through.
-	// v=23 carries RunnerPool (#2029): dropped, a stale runner executes the
-	// run outside the team's sovereign pool.
-	if SchemaVersion != 23 {
-		t.Errorf("SchemaVersion = %d, want 23 (bump intentionally)", SchemaVersion)
+	// v=24 carries BundleDEK (#2029, ADR-123): dropped, a runner without
+	// platform keys cannot open the run's credentials.
+	if SchemaVersion != 24 {
+		t.Errorf("SchemaVersion = %d, want 24 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -495,8 +495,8 @@ func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
 // team's pool). Red when the Validate check, the Envelope mirror or the
 // bump is reverted.
 func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
-	if SchemaVersion != 23 {
-		t.Fatalf("SchemaVersion = %d, want 23 (the RunnerPool bump)", SchemaVersion)
+	if SchemaVersion != 24 {
+		t.Fatalf("SchemaVersion = %d, want 24 (the BundleDEK bump)", SchemaVersion)
 	}
 	base := RunMessage{
 		V:            SchemaVersion,
@@ -606,5 +606,30 @@ func TestRunMessage_CrossHarnessRoundTrip(t *testing.T) {
 	}
 	if dst.Fallback[1].CrossHarness != "" {
 		t.Fatalf("entry 1 posture = %q, want absent", dst.Fallback[1].CrossHarness)
+	}
+}
+
+// v=24 (ADR-123): the per-run DEK rides the message. It requires a
+// SecretsRef (a key for nothing is a corrupt publish) and exactly 32
+// bytes (the DEK sealer's contract).
+func TestRunMessage_BundleDEKWireContract(t *testing.T) {
+	good := func() *RunMessage {
+		return &RunMessage{V: SchemaVersion, RunID: "r", WorkflowName: "w", SecretsRef: "ref", IRCompiled: []byte("{}")}
+	}
+	m := good()
+	m.BundleDEK = make([]byte, 32)
+	if err := m.Validate(); err != nil {
+		t.Fatalf("valid dek-bearing message refused: %v", err)
+	}
+	m = good()
+	m.BundleDEK = make([]byte, 32)
+	m.SecretsRef = ""
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "without SecretsRef") {
+		t.Fatalf("dek without ref: err = %v", err)
+	}
+	m = good()
+	m.BundleDEK = make([]byte, 16)
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "32 bytes") {
+		t.Fatalf("short dek: err = %v", err)
 	}
 }
