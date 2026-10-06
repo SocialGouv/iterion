@@ -6,7 +6,10 @@
 //
 // The first remedy is C137: a `{{ref}}` an author quoted in a tool's
 // `command:` or `postcondition:` — the runtime shell-quotes a ref already,
-// and the two quotings cancel — loses exactly the quotes around it. Quotes
+// and the two quotings cancel — loses exactly the quotes around it. A tool
+// declared inside a `group` serves every `use` of that group: the dotted id
+// of an instantiation is resolved through the AST to the group's own
+// literal, and one edit at it remedies the diagnostic of every use. Quotes
 // that hold more than the reference (`'v={{vars.x}}'`) are not mechanical:
 // the diagnostic is left to the author, and said so.
 package fix
@@ -16,9 +19,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/internal/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -40,8 +45,14 @@ type Edit struct {
 	// `postcondition`); Refs are the references whose quotes the edit
 	// removes — together they name the diagnostics the edit remedies, the
 	// ones whose message says `<property>: <ref> sits inside quotes`.
-	Property   string   `json:"property"`
-	Refs       []string `json:"refs"`
+	Property string   `json:"property"`
+	Refs     []string `json:"refs"`
+	// Nodes are the node ids the edit remedies when the literal belongs to a
+	// group member: one per `use` of the group, `<prefix>.<member>` — the
+	// same literal raises one diagnostic per instantiation. Node then names
+	// the `<group>.<member>` the source declares, an id no diagnostic
+	// carries.
+	Nodes      []string `json:"nodes,omitempty"`
 	start, end int
 }
 
@@ -72,9 +83,11 @@ var ErrRefused = errors.New("fix refused")
 
 // PlanFor plans the edits for diags, the compile diagnostics of src, in
 // file order; a diagnostic with a remedy that cannot be placed is returned
-// among left. Diagnostics with no remedy are not left here: PlanFor is the
-// view a validator annotates its diagnostics with.
-func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left []Left) {
+// among left. file is the unit's merged program, the AST the dotted id of a
+// group instantiation is resolved through (nil leaves those to the author).
+// Diagnostics with no remedy are not left here: PlanFor is the view a
+// validator annotates its diagnostics with.
+func PlanFor(name string, src []byte, file *ast.File, diags []ir.Diagnostic) (edits []Edit, left []Left) {
 	norm := rewrite.Normalize(src)
 	toks := parser.NewLexer(name, norm.Text).All()
 	runeToByte := rewrite.RuneByteOffsets(norm.Text)
@@ -84,18 +97,31 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 			continue
 		}
 		// A member of a group, instantiated by `use`: its literal lives once
-		// under `group <g>:` and serves every use — not rewritten yet, said
-		// as such rather than searched for under a name the source has not.
-		if strings.Contains(d.NodeID, ".") {
-			left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: "a member of a group instantiated by `use`: the literal lives once under `group <name>:` and serves every use — not rewritten mechanically yet, remove the quotes there by hand"})
-			continue
+		// under `group <g>:` and serves every use. The dotted id resolves
+		// through the AST — `<prefix>.<member>` names the group the use
+		// instantiates and the tool it declares — and ONE edit at the
+		// group's literal remedies the diagnostic of every instantiation.
+		dotted := strings.Contains(d.NodeID, ".")
+		group, member := "", ""
+		if dotted && file != nil {
+			if prefix, m, ok := strings.Cut(d.NodeID, "."); ok {
+				if g, ok := groupOfUse(file, prefix); ok && hasGroupTool(file, g, m) {
+					group, member = g, m
+				}
+			}
 		}
 		// The node's `command:` first, its `postcondition:` next: the
 		// literal that still hugs the reference the diagnostic names is
 		// the one it speaks of.
 		var placed, found, raw bool
 		for _, prop := range []string{"command", "postcondition"} {
-			ti := literalToken(toks, d.NodeID, prop)
+			ti := -1
+			switch {
+			case group != "":
+				ti = groupLiteralToken(toks, group, member, prop)
+			case !dotted:
+				ti = literalToken(toks, d.NodeID, prop)
+			}
 			if ti < 0 {
 				continue
 			}
@@ -104,7 +130,13 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 			if e == nil {
 				t := toks[ti]
 				start, end := runeToByte[t.Offset], runeToByte[t.End]
-				e = &Edit{Code: d.Code, Node: d.NodeID, Line: t.Line, Column: t.Column, From: norm.Text[start:end], To: norm.Text[start:end], Property: prop, start: start, end: end}
+				e = &Edit{Code: d.Code, Line: t.Line, Column: t.Column, From: norm.Text[start:end], To: norm.Text[start:end], Property: prop, start: start, end: end}
+				if group != "" {
+					e.Node = group + "." + member
+					e.Nodes = instanceNodes(file, group, member)
+				} else {
+					e.Node = d.NodeID
+				}
 				byToken[ti] = e
 			}
 			// The diagnostic names the property and the reference — a
@@ -128,6 +160,13 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 					placed = true
 					break
 				}
+				if group != "" && slices.Contains(e.Refs, ref) {
+					// The literal serves every instantiation: an earlier
+					// use's diagnostic already removed this reference's
+					// quotes — this one rides the same edit.
+					placed = true
+					break
+				}
 			}
 			if placed || raw {
 				break
@@ -138,7 +177,11 @@ func PlanFor(name string, src []byte, diags []ir.Diagnostic) (edits []Edit, left
 		case raw:
 			left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: "the reference is raw (`!`): the runtime does not escape it, so the quotes are its only containment and removing them would leave the value bare in the shell — drop the bang, or keep the quotes knowing where the value comes from; not mechanical"})
 		case !found:
-			left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: fmt.Sprintf("no command: or postcondition: literal of tool %q was found in the source", d.NodeID)})
+			if dotted {
+				left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: "no `use` of the source instantiates a group tool under this id, so the literal cannot be located"})
+			} else {
+				left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: fmt.Sprintf("no command: or postcondition: literal of tool %q was found in the source", d.NodeID)})
+			}
 		default:
 			left = append(left, Left{Code: d.Code, Node: d.NodeID, Message: d.Message, Why: "the quotes hold more than the reference, or the reference is written more than once: removing them is not mechanical"})
 		}
@@ -173,6 +216,22 @@ func literalToken(toks []parser.Token, node, prop string) int {
 		if toks[i].Type != parser.TokenTool || toks[i+1].Type != parser.TokenIdent || toks[i+1].Value != node || toks[i+2].Type != parser.TokenColon {
 			continue
 		}
+		return blockPropLiteral(toks, i, prop)
+	}
+	return -1
+}
+
+// groupLiteralToken is the index of the string token of `<prop>:` inside
+// `tool <member>:` within the block of `group <group>:` — the one literal
+// every instantiation of the member serves — or -1.
+func groupLiteralToken(toks []parser.Token, group, member, prop string) int {
+	for i := 0; i+2 < len(toks); i++ {
+		if toks[i].Type != parser.TokenGroup || toks[i+1].Type != parser.TokenIdent || toks[i+1].Value != group {
+			continue
+		}
+		if toks[i+2].Type != parser.TokenColon && toks[i+2].Type != parser.TokenLParen {
+			continue
+		}
 		depth := 0
 		for j := i + 3; j < len(toks); j++ {
 			switch toks[j].Type {
@@ -189,14 +248,80 @@ func literalToken(toks []parser.Token, node, prop string) int {
 			if depth != 1 || j+2 >= len(toks) {
 				continue
 			}
-			isProp := (prop == "command" && toks[j].Type == parser.TokenCommand) || (toks[j].Type == parser.TokenIdent && toks[j].Value == prop)
-			if isProp && toks[j+1].Type == parser.TokenColon && toks[j+2].Type == parser.TokenString {
-				return j + 2
+			if toks[j].Type == parser.TokenTool && toks[j+1].Type == parser.TokenIdent && toks[j+1].Value == member && toks[j+2].Type == parser.TokenColon {
+				return blockPropLiteral(toks, j, prop)
 			}
 		}
 		return -1
 	}
 	return -1
+}
+
+// blockPropLiteral is the index of the string token of `<prop>:` inside the
+// block the `tool <name>:` header at i opens, or -1.
+func blockPropLiteral(toks []parser.Token, i int, prop string) int {
+	depth := 0
+	for j := i + 3; j < len(toks); j++ {
+		switch toks[j].Type {
+		case parser.TokenIndent:
+			depth++
+		case parser.TokenDedent:
+			depth--
+			if depth <= 0 {
+				return -1
+			}
+		case parser.TokenEOF:
+			return -1
+		}
+		if depth != 1 || j+2 >= len(toks) {
+			continue
+		}
+		isProp := (prop == "command" && toks[j].Type == parser.TokenCommand) || (toks[j].Type == parser.TokenIdent && toks[j].Value == prop)
+		if isProp && toks[j+1].Type == parser.TokenColon && toks[j+2].Type == parser.TokenString {
+			return j + 2
+		}
+	}
+	return -1
+}
+
+// groupOfUse is the group a `use` instantiates under the given prefix.
+func groupOfUse(file *ast.File, prefix string) (string, bool) {
+	for _, u := range file.Uses {
+		if u.Prefix == prefix {
+			return u.Group, true
+		}
+	}
+	return "", false
+}
+
+// hasGroupTool reports whether the named group declares a tool with the
+// given member name — the only member kind whose C137 can carry an edit.
+func hasGroupTool(file *ast.File, group, member string) bool {
+	for _, g := range file.Groups {
+		if g.Name != group {
+			continue
+		}
+		for _, t := range g.Tools {
+			if t.Name == member {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// instanceNodes are the node ids the `use` statements of the group give the
+// member — one diagnostic of the shared literal per instantiation, and the
+// set one edit remedies.
+func instanceNodes(file *ast.File, group, member string) []string {
+	var out []string
+	for _, u := range file.Uses {
+		if u.Group == group {
+			out = append(out, u.Prefix+"."+member)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Bytes fixes one file's bytes: name is the file's path. The unit it
@@ -221,21 +346,41 @@ func Bytes(name string, src []byte) (*Result, error) {
 	}
 	cr := ir.Compile(before.Merged)
 	mine := ownDiagnostics(cr.Diagnostics, own)
-	edits, left := PlanFor(name, src, mine)
+	edits, left := PlanFor(name, src, before.Merged, mine)
 	res.Left = left
 	// The diagnostics the edits remove: ONE per reference unquoted — the
 	// same reference quoted three times raises the same text three times,
-	// and an edit that removes two pairs of quotes removes two of them.
+	// and an edit that removes two pairs of quotes removes two of them. A
+	// group member's edit removes one per (node, reference): the same
+	// literal raises one diagnostic per instantiation, and Nodes names them
+	// all.
 	want := make([]string, len(mine))
 	for i, d := range mine {
 		want[i] = diagKey(d)
 	}
 	for _, e := range edits {
+		if len(e.Nodes) == 0 {
+			// A top-level literal: one removed pair (one Refs copy) removes
+			// one diagnostic.
+			for _, ref := range e.Refs {
+				for i, d := range mine {
+					if want[i] != "" && d.Code == e.Code && d.NodeID == e.Node && strings.Contains(d.Message, e.Property+": "+ref+" sits inside quotes") {
+						want[i] = ""
+						break
+					}
+				}
+			}
+			continue
+		}
+		// A group member's literal: ONE removed pair serves every
+		// instantiation — the same literal raises one diagnostic per node.
 		for _, ref := range e.Refs {
-			for i, d := range mine {
-				if want[i] != "" && d.Code == e.Code && d.NodeID == e.Node && strings.Contains(d.Message, e.Property+": "+ref+" sits inside quotes") {
-					want[i] = ""
-					break
+			for _, node := range e.Nodes {
+				for i, d := range mine {
+					if want[i] != "" && d.Code == e.Code && d.NodeID == node && strings.Contains(d.Message, e.Property+": "+ref+" sits inside quotes") {
+						want[i] = ""
+						break
+					}
 				}
 			}
 		}

@@ -701,16 +701,25 @@ func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic, 
 		if len(mine) == 0 {
 			continue
 		}
-		edits, _ := fix.PlanFor(f.Name, f.Source, mine)
+		edits, _ := fix.PlanFor(f.Name, f.Source, u.Merged, mine)
 		for i := range edits {
 			e := edits[i]
+			nodes := e.Nodes
+			if len(nodes) == 0 {
+				nodes = []string{e.Node}
+			}
 			for _, ref := range e.Refs {
-				for j := range result.Diagnostics {
-					vd := &result.Diagnostics[j]
-					if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.NodeID == e.Node && vd.File == f.Name &&
-						strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
-						vd.Edit = &e
-						break
+				// One edit remedies one diagnostic per instantiation: each
+				// node of Nodes carries it, not only the first match.
+				for _, node := range nodes {
+					for j := range result.Diagnostics {
+						vd := &result.Diagnostics[j]
+						if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.File == f.Name &&
+							vd.NodeID == node &&
+							strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+							vd.Edit = &e
+							break
+						}
 					}
 				}
 			}
