@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.246.0](https://github.com/SocialGouv/iterion/compare/v3.245.0...v3.246.0) (2026-10-07)
+
+### Features
+
+* **queue:** the run lease carries the run's admitted identity (P5-c/D14) ([#2266](https://github.com/SocialGouv/iterion/issues/2266)) ([8bfe6a4](https://github.com/SocialGouv/iterion/commit/8bfe6a48f406120ca7424f3afe601c1b081264e4))
+
+    <details><summary>why</summary>
+
+    The distributed run lease (NATS KV, per runID) carried no identity — a pod could acquire, refresh or release another pool's run lease, the revision guard attributing nothing. The lease now carries the tenant (and pool, when stamped) of the message the holder actually admitted, stamped from the delivery context on both the run's own lock and the engine path whose subbot children lock their own runs. Acquire fails closed without an admitted identity; a failed CAS write is classified by one read —…
+
+    </details>
+
 ## [3.245.0](https://github.com/SocialGouv/iterion/compare/v3.244.0...v3.245.0) (2026-10-07)
 
 ### Features
