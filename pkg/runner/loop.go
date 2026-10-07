@@ -1877,7 +1877,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// the API publishes on iterion.cancel.<run_id>; we react by cancelling
 	// runCtx with the OPERATOR cause, so the engine writes terminal
 	// cancelled (never resurrected), distinct from a shutdown-drain cancel.
-	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
+	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
 	}
 
@@ -1887,7 +1887,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// lifecycle as the cancel subscription — torn down with runCtx.
 	r.registerSteerChannel(runCtx, msg.RunID)
 	defer r.unregisterSteerChannel(msg.RunID)
-	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, func(body []byte, cmdID string) {
+	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}, func(body []byte, cmdID string) {
 		r.handleSteerDelivery(msg.RunID, body, cmdID)
 	}); err != nil {
 		logger.Warn("runner: subscribe steer %s: %v (steering disabled for this run)", msg.RunID, err)

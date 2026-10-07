@@ -31,6 +31,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Plan §C.2 — every named subject / stream / bucket lives here.
@@ -524,18 +525,23 @@ func runMessageID(msg *queue.RunMessage) string {
 }
 
 // CancelRun fires the transient `iterion.cancel.<run_id>` Core NATS
-// subject. The runner subscribes to its in-flight run's subject for
-// the duration of execution; an unsubscribed cancel is a silent
-// no-op, which matches the expectation that a queued (not yet
-// picked up) run is cancelled by deleting the stream message instead.
-func (c *Conn) CancelRun(runID string) error {
+// subject, stamped with the run's admitted identity. The runner
+// subscribes to its in-flight run's subject for the duration of
+// execution; an unsubscribed cancel is a silent no-op, and a queued
+// (not yet picked up) run never sees this subject at all — its cancel
+// is the persisted status flip, which the admission control reads
+// before executing anything.
+func (c *Conn) CancelRun(runID string, admitted store.LeaseIdentity) error {
 	if runID == "" {
 		return fmt.Errorf("queue/nats: cancel requires runID")
 	}
 	if c == nil || c.nc == nil {
 		return fmt.Errorf("queue/nats: connection not initialised")
 	}
-	if err := c.nc.Publish(fmt.Sprintf(SubjectCancelFmt, runID), nil); err != nil {
+	msg := nats.NewMsg(fmt.Sprintf(SubjectCancelFmt, runID))
+	msg.Header = nats.Header{}
+	stampAdmitted(msg.Header, admitted)
+	if err := c.nc.PublishMsg(msg); err != nil {
 		return fmt.Errorf("queue/nats: publish cancel %s: %w", runID, err)
 	}
 	// Core NATS Publish only queues to the client's flusher; force a
@@ -548,10 +554,13 @@ func (c *Conn) CancelRun(runID string) error {
 }
 
 // SubscribeCancel installs a one-shot Core NATS subscriber on
-// `iterion.cancel.<run_id>` and invokes onCancel when a message
-// arrives. The runner uses this for the duration of a single run;
-// the returned subscription is valid until ctx is cancelled.
-func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func()) (*nats.Subscription, error) {
+// `iterion.cancel.<run_id>` and invokes onCancel when a command
+// stamped with the run's admitted identity arrives. Commands carrying
+// another identity — or none — are ignored with an error log: this pod
+// never cancels a run it did not admit under that identity. The runner
+// uses this for the duration of a single run; the returned
+// subscription is valid until ctx is cancelled.
+func (c *Conn) SubscribeCancel(ctx context.Context, runID string, admitted store.LeaseIdentity, onCancel func()) (*nats.Subscription, error) {
 	if c == nil || c.nc == nil {
 		return nil, fmt.Errorf("queue/nats: connection not initialised")
 	}
@@ -561,7 +570,13 @@ func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sub, err := c.nc.Subscribe(fmt.Sprintf(SubjectCancelFmt, runID), func(_ *nats.Msg) {
+	sub, err := c.nc.Subscribe(fmt.Sprintf(SubjectCancelFmt, runID), func(m *nats.Msg) {
+		if err := verifyAdmitted(m, runID, admitted); err != nil {
+			if c.logger != nil {
+				c.logger.Error("%v — cancel ignored", err)
+			}
+			return
+		}
 		onCancel()
 	})
 	if err != nil {
