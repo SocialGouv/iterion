@@ -442,14 +442,19 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	}
 	if superviseHub != nil {
 		opts = append(opts, runtime.WithEventObserver(superviseHub.Publish))
-		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: s},
-			spec.RunID, supervise.SpecsFromWorkflow(r.workflow, runLogger), runLogger)
-		defer stopSup()
 	}
 	if len(r.runEnv) > 0 {
 		opts = append(opts, runtime.WithRunEnv(r.runEnv))
 	}
 	eng := runtime.New(r.workflow, s, exec, opts...)
+	if superviseHub != nil {
+		// The spawn needs the engine: a supervisor model pin resolves
+		// {{vars.name}} against the run's RESOLVED vars, the same values
+		// the nodes it watches see.
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: s},
+			spec.RunID, supervise.SpecsFromWorkflow(r.workflow, eng.ResolveVars(spec.Vars), runLogger), runLogger)
+		defer stopSup()
+	}
 
 	// Resume the prior run iff the dispatcher's scheduleRetry tagged
 	// this dispatch as a resume — the engine's Resume picks up at the

@@ -494,7 +494,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	if superviseHub != nil {
-		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, logger)
+		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, eng.ResolveVars(inputs), logger)
 		defer stop()
 	}
 
@@ -516,9 +516,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // store handle as the engine, so the inbox doorbell stays in lockstep).
 // Returns a stop func to drain them when the run ends. The kill switch
 // was already resolved where the hub was created.
-func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, logger *iterlog.Logger) func() {
+func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, vars, logger), logger)
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any

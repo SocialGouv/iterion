@@ -99,7 +99,13 @@ func ParseMonitorSpecs(specs []string) ([]Monitor, error) {
 // this point (the compiler warns on them first, C191) is dropped with
 // a warning — a supervisor is an enhancement and degrades rather than
 // blocking the run.
-func SpecsFromWorkflow(wf *ir.Workflow, logger *iterlog.Logger) []Spec {
+//
+// vars is the run's RESOLVED var map (the engine's ResolveVars — defaults
+// and coercions included, not the raw launch overrides); a supervisor's
+// model pin resolves its {{vars.name}} references against it, the same
+// values the nodes beside which the supervisor spawns see. nil resolves
+// nothing — the estimate paths that hold no run.
+func SpecsFromWorkflow(wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger) []Spec {
 	if wf == nil {
 		return nil
 	}
@@ -122,13 +128,14 @@ func SpecsFromWorkflow(wf *ir.Workflow, logger *iterlog.Logger) []Spec {
 			}
 			monitors = append(monitors, parsed...)
 		}
+		model := resolveModelVarsRefs(sup.Model, vars)
 		hint := ""
-		if sup.Model == "" {
+		if model == "" {
 			hint = providerHintFromWatched(wf, sup.Watches)
 		}
 		specs = append(specs, Spec{
 			Name:           sup.Name,
-			Model:          sup.Model,
+			Model:          model,
 			ProviderHint:   hint,
 			GatewayWatched: gatewayWatched(wf, sup.Watches),
 			System:         system,
@@ -139,6 +146,49 @@ func SpecsFromWorkflow(wf *ir.Workflow, logger *iterlog.Logger) []Spec {
 		})
 	}
 	return specs
+}
+
+// resolveModelVarsRefs substitutes the {{vars.name}} references of a
+// compiled supervisor model pin against the run's resolved vars. The
+// compiler holds the pin to whole {{vars.name}} references (C148 for
+// anything else), and the hint derivation reads the RESOLVED pin — a
+// var-resolved model is a pin, not an empty one. A reference the map does
+// not hold stays as written, the keep-literal the executor's resolver
+// honors on a node's routing field: C033 refused an undeclared name at
+// compile, so a surviving reference is a declared var the launch did not
+// set and whose default resolved empty, and the provider answers the
+// failure loudly at the first evaluation.
+func resolveModelVarsRefs(model string, vars map[string]any) string {
+	if model == "" || vars == nil || !strings.Contains(model, "{{") {
+		return model
+	}
+	var b strings.Builder
+	rest := model
+	for {
+		start := strings.Index(rest, "{{")
+		if start < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		end := strings.Index(rest[start:], "}}")
+		if end < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		end += start + 2
+		b.WriteString(rest[:start])
+		span := rest[start:end]
+		ref := strings.TrimSpace(span[2 : len(span)-2])
+		if name, ok := strings.CutPrefix(ref, "vars."); ok && !strings.Contains(name, ".") {
+			if v, held := vars[name]; held {
+				fmt.Fprint(&b, v)
+				rest = rest[end:]
+				continue
+			}
+		}
+		b.WriteString(span)
+		rest = rest[end:]
+	}
 }
 
 // gatewayWatched reports whether any route this supervisor may observe can
