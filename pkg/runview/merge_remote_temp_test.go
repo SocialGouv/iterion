@@ -44,7 +44,56 @@ func TestTheTempMergeCloneRefusesAPreplantedPath(t *testing.T) {
 		t.Fatalf("the root moved between two calls: %q then %q", root, again)
 	}
 	// A second run gets its own root.
-	if other := (&Service{}).repoTargetedMergeRoot("run-other"); other == root {
+	other := (&Service{}).repoTargetedMergeRoot("run-other")
+	if other == root {
 		t.Fatal("two runs share one temp merge root")
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(root)
+		_ = os.RemoveAll(other)
+	})
+}
+
+// The first temp merge root this process creates sweeps the orphaned
+// iterion-merge-* dirs a previous process left behind — a restart during a
+// merge orphaned a repo-sized clone the fresh instance could not reach
+// (the mapping is the in-memory cache). Non-matching dirs survive.
+func TestTheFirstTempMergeRootSweepsTheOrphans(t *testing.T) {
+	orphan, err := os.MkdirTemp("", "iterion-merge-orphan-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keeper, err := os.MkdirTemp("", "iterion-unrelated-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(orphan)
+		_ = os.RemoveAll(keeper)
+	})
+
+	sweepOrphanMergeTemps() // the sweep body under test; the Once wraps it in production
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("the orphaned clone survived the sweep: %v", err)
+	}
+	if _, err := os.Stat(keeper); err != nil {
+		t.Fatalf("the sweep took a directory that is not its own: %v", err)
+	}
+}
+
+// The read paths (the existence probe, the removal) create nothing: a run
+// whose clone was never materialised answers false and removes nothing,
+// and the service's temp map stays empty.
+func TestTheMergeRootReadPathsCreateNothing(t *testing.T) {
+	s := &Service{}
+	if s.hasRepoTargetedMergeRoot("run-never-materialised") {
+		t.Fatal("a run with no clone reads as materialised")
+	}
+	s.removeRepoTargetedMergeRoot("run-never-materialised")
+	s.mergeTempsMu.Lock()
+	n := len(s.mergeTemps)
+	s.mergeTempsMu.Unlock()
+	if n != 0 {
+		t.Fatalf("the read paths created %d temp roots", n)
 	}
 }
