@@ -2899,10 +2899,6 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	}
 	if superviseHub != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, runLogger), msg.RunnerPool, runLogger)
-		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
-			msg.RunID, specs, runLogger)
-		defer stopSup()
 	}
 	// `subbot` nodes: the closure that compiles and runs a child bot on
 	// this pod. Every other launch surface wired one; without it a subbot
@@ -2911,6 +2907,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// resume loop that recreates the sandbox pod on every attempt.
 	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger, snapshotRoot)))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
+	if superviseHub != nil {
+		// The spawn resolves the run's OWN inputs: on a resume the message
+		// carries none (the engine re-reads the stored ones), so read the
+		// row — a pin resolved from the defaults alone would diverge from
+		// the nodes it watches.
+		spawnVars := msg.Vars
+		if msg.Resume != nil {
+			if run, err := r.cfg.Store.LoadRun(ctx, msg.RunID); err == nil && run.Inputs != nil {
+				spawnVars = run.Inputs
+			}
+		}
+		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
+			msg.RunID, specs, runLogger)
+		defer stopSup()
+	}
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
 	r.registerRunEngine(msg.RunID, engine)
