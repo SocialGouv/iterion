@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.247.0](https://github.com/SocialGouv/iterion/compare/v3.246.0...v3.247.0) (2026-10-07)
+
+### Features
+
+* **pisdk:** report a subtree sweep that burns its whole wait budget ([#2269](https://github.com/SocialGouv/iterion/issues/2269)) ([0426727](https://github.com/SocialGouv/iterion/commit/04267277d351d96056e756f1e8ae27f80566e0bf)), closes [#2141](https://github.com/SocialGouv/iterion/issues/2141)
+
+    <details><summary>why</summary>
+
+    Close()'s orphan sweep kills the process group then joins it for up to 2s. When the group is still resolvable at the end of that budget — a zombie pinned to a parent that never reaps it, an orphan under a PID-1 container, or a group probe failing with a non-ESRCH error — the expiry was silent, indistinguishable from success: every Close paid the full wait without a word, and the zombie-orphan class stayed in the dark.
+
+    </details>
+
 ## [3.246.0](https://github.com/SocialGouv/iterion/compare/v3.245.0...v3.246.0) (2026-10-07)
 
 ### Features
