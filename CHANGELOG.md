@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.248.0](https://github.com/SocialGouv/iterion/compare/v3.247.0...v3.248.0) (2026-10-07)
+
+### Features
+
+* **queue:** control-plane commands carry the run's admitted identity (P6/D14) ([#2270](https://github.com/SocialGouv/iterion/issues/2270)) ([5be28b3](https://github.com/SocialGouv/iterion/commit/5be28b39f5f93df720245558bc0a57eadb46c4a8))
+
+    <details><summary>why</summary>
+
+    The cancel and steer commands rode shared core-NATS subjects with no identity — a pod could publish or act on another pool's run commands. The emitting server stamps the run's admitted identity (headers, from the document's frozen stamp it just read) and the pod holding the run verifies the stamp against the message it admitted before acting: a command of another tenant or pool, or unstamped, is ignored with an error log. The subjects stay shared — the guard lives at the pod, the one place that…
+
+    </details>
+
+### Bug Fixes
+
+* **dsl:** a mis-indented top-level declaration survives a broken inline list ([#2272](https://github.com/SocialGouv/iterion/issues/2272)) ([3fb3f4b](https://github.com/SocialGouv/iterion/commit/3fb3f4bed16e395041049f4953a24102ffce9bd0)), closes [#2259](https://github.com/SocialGouv/iterion/issues/2259)
+
+    <details><summary>why</summary>
+
+    A keyword that names no property anywhere — secrets, presets, prompt, mcp_server, dsl — is legal nowhere but the top level. Mis-indented after a broken inline list, it was refused with the enclosing block's own noise (E012 unknown property, or the edge-syntax fight on the header forms) and the whole block was swallowed with it.
+
+    </details>
+
 ## [3.247.0](https://github.com/SocialGouv/iterion/compare/v3.246.0...v3.247.0) (2026-10-07)
 
 ### Features
