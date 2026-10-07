@@ -250,6 +250,12 @@ func opensBracket(t Token) bool {
 // 1 needs, since it over-pops every level below the list's own. Every
 // declaration after the block then still reads as itself.
 //
+// A landing line that starts with a keyword naming NO property anywhere
+// (noPropertyKeywords) is rescued the same way only more so: such a line is
+// legal nowhere but the top level, so every open loop closes at once
+// (rescueTopLevelDeclaration) and the parseFile dispatch reads the
+// declaration as itself (#2259).
+//
 // What still bails, consuming nothing: a remainder that runs out of file,
 // reaches the top level, reaches a line whose column no open block owns, or
 // holds an off-stack dedent whose close point is unsafe to compute — the
@@ -260,17 +266,23 @@ func (p *parser) resyncBrokenBracketList(propTok Token) {
 	dedent := false     // a DEDENT since the last line end
 	offStack := false   // an off-stack dedent (Error after pops) in the span
 	declInSpan := false // a declaration starter stands in the span before the landing
+	lineIndent := false // the line now starting opened with an INDENT
+	depth := 0          // levels the span's junk lines pushed and popped, net
+	pending := 0        // DEDENTs of the line now starting, not yet attributed
 	for {
 		t := p.lex.PeekAt(i)
 		switch {
 		case t.Type == TokenEOF:
 			return
 		case lineEnds(t):
-			lineStart, dedent = true, false
+			lineStart, dedent, lineIndent = true, false, false
 			i++
 		case t.Type == TokenIndent:
+			lineIndent = true
+			depth++
 			i++
 		case t.Type == TokenDedent:
+			pending++
 			dedent = true
 			i++
 		case t.Type == TokenError:
@@ -311,6 +323,14 @@ func (p *parser) resyncBrokenBracketList(propTok Token) {
 				// to the list's own block, which refuses it); keep the bail.
 				return
 			}
+			if !offStack && matched && noPropertyKeywords[t.Type] &&
+				p.rescueTopLevelDeclaration(i, t, cols, depth, pending, lineIndent) {
+				// A keyword that names no property anywhere is legal only as
+				// a TOP-LEVEL declaration: every open loop closes and the
+				// parseFile dispatch reads it as itself (#2259). On an unsafe
+				// count the landing below keeps main's behavior.
+				return
+			}
 			if matched && (len(cols) > 2 || offStack) {
 				if at, n, ok := p.listBlockClosePoint(i, propTok.Column, cols, hosts); ok {
 					line := p.lex.PeekAt(at).Line
@@ -340,14 +360,25 @@ func (p *parser) resyncBrokenBracketList(propTok Token) {
 			if idx > 0 {
 				host = hosts[idx]
 			}
-			if offStack || p.rescueCannotClaim(t, i, host) {
-				// A line an ancestor rescue must never claim: an off-stack
-				// dedent leaves no level for the splice accounting to trust;
-				// a declaration the owning block cannot carry (`agent b:`
-				// dedented one level too many, standing at the ancestor's
-				// property column) would be eaten whole by the ancestor's
-				// property loop — main's bail lets the dedents close the
-				// blocks and the top level read it as itself.
+			if offStack {
+				return
+			}
+			if noPropertyKeywords[t.Type] {
+				// A keyword that names no property anywhere is legal only as
+				// a TOP-LEVEL declaration (see rescueTopLevelDeclaration); a
+				// stack that no longer matches the list's line keeps the bail.
+				if len(cols) >= 2 && cols[len(cols)-1] == propTok.Column {
+					p.rescueTopLevelDeclaration(i, t, cols, depth, pending, lineIndent)
+				}
+				return
+			}
+			if p.rescueCannotClaim(t, i, host) {
+				// A line an ancestor rescue must never claim: a declaration
+				// the owning block cannot carry (`agent b:` dedented one
+				// level too many, standing at the ancestor's property column)
+				// would be eaten whole by the ancestor's property loop —
+				// main's bail lets the dedents close the blocks and the top
+				// level read it as itself.
 				return
 			}
 			if idx <= 0 || cols[len(cols)-1] != propTok.Column {
@@ -366,13 +397,43 @@ func (p *parser) resyncBrokenBracketList(propTok Token) {
 			p.spliceDedents(p.lex.ti, len(cols)-1-idx, t.Line)
 			return
 		default:
-			if lineStart && p.rescueCannotClaim(t, i, "") {
-				declInSpan = true
+			if lineStart {
+				depth -= pending
+				pending = 0
+				lineIndent = false
+				if p.rescueCannotClaim(t, i, "") {
+					declInSpan = true
+				}
 			}
 			lineStart = false
 			i++
 		}
 	}
+}
+
+// rescueTopLevelDeclaration closes every open block loop and leaves the
+// cursor on a mis-indented top-level declaration the broken-list resync
+// landed on — a line starting with a keyword that names no property anywhere
+// (noPropertyKeywords): legal only at the top level, so the loops it
+// outranks get the closing DEDENTs they still wait for and the parseFile
+// dispatch reads it as itself (#2259). The declaration line's own leading
+// DEDENTs (pending) stay in the stream, where the loops they close close on
+// them naturally; depth is what the junk lines walked past popped, net. The
+// rescue says nothing — the give-up already did — and reports whether it
+// landed: false keeps main's refusal, when the count goes negative or the
+// declaration line opened with an INDENT the splice would strand above no
+// open loop.
+func (p *parser) rescueTopLevelDeclaration(i int, t Token, cols []int, depth, pending int, lineIndent bool) bool {
+	if lineIndent || pending > i {
+		return false
+	}
+	n := len(cols) - 1 + depth - pending
+	if n < 0 {
+		return false
+	}
+	p.consumeBrokenListRemainder(i - pending)
+	p.spliceDedents(p.lex.ti, n, t.Line)
+	return true
 }
 
 // consumeBrokenListRemainder eats the n peeked tokens of a broken inline
