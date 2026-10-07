@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.249.1](https://github.com/SocialGouv/iterion/compare/v3.249.0...v3.249.1) (2026-10-07)
+
+### Bug Fixes
+
+* **chart:** the pool pod takes ITERION_JWT_SECRET by key reference ([#2276](https://github.com/SocialGouv/iterion/issues/2276)) ([02b551b](https://github.com/SocialGouv/iterion/commit/02b551bb2d5721646ba0dc1c261f59dc77540d04))
+
+    <details><summary>why</summary>
+
+    The cloud-mode runner validates the JWT secret at boot; a pool pod booted into CrashLoopBackOff without it. It now takes that ONE key from the deployment's existing auth Secret by specific key reference — the ring (ITERION_SECRETS_KEY*) stays out of the pod (P4-b), the pool still carries the gateway credential only in its env.
+
+    </details>
+
 ## [3.249.0](https://github.com/SocialGouv/iterion/compare/v3.248.0...v3.249.0) (2026-10-07)
 
 ### Features
