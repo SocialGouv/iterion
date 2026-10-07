@@ -10,10 +10,10 @@
 package worktreepool
 
 import (
-	"github.com/SocialGouv/iterion/pkg/treenoise"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 	"io/fs"
 	"os"
 	"os/exec"
