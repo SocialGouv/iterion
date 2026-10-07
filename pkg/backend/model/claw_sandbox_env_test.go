@@ -302,6 +302,27 @@ func TestForwardableProviderEnv_CarriesTheMoonshotRoute(t *testing.T) {
 	}
 }
 
+// The stream-usage knob is the reporting twin of the base URL: the host and
+// the container must read the same, or a sandboxed openai node keeps its
+// stream tokens unreported while the host's accounting expects them.
+func TestForwardableProviderEnv_CarriesTheStreamUsageKnob(t *testing.T) {
+	t.Setenv("OPENAI_BASE_URL", "https://gateway.operator.example/v1")
+	t.Setenv("ITERION_OPENAI_STREAM_USAGE", "1")
+
+	env, err := forwardableProviderEnv(context.Background(), "openai/gpt-5")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+
+	// The container sees ONLY what crossed: rebuild that view and ask the
+	// registry's own helper, rather than reading the list back to itself.
+	t.Setenv("OPENAI_BASE_URL", env["OPENAI_BASE_URL"])
+	t.Setenv("ITERION_OPENAI_STREAM_USAGE", env["ITERION_OPENAI_STREAM_USAGE"])
+	if !openAIStreamUsage(os.Getenv("OPENAI_BASE_URL")) {
+		t.Error("in-container openAIStreamUsage = false with the knob set — the sandboxed lane stays blind to its own usage")
+	}
+}
+
 // The run's own key still beats the ambient one across the seam — the whole
 // point of the boundary is that a tenant's credential is what pays.
 func TestForwardableProviderEnv_MoonshotBYOKBeatsTheAmbientKey(t *testing.T) {

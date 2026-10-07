@@ -1152,8 +1152,9 @@ provider did not report in full is counted apart. Two causes:
 
 - A provider that sends no usage at all. On the OpenAI chat wire, usage
   is sent only when requested, and claw requests it from api.openai.com
-  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked,
-  so its calls count as unreported unless it sends usage anyway.
+  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked
+  unless the operator opted it in (`ITERION_OPENAI_STREAM_USAGE=1`), so its
+  calls count as unreported unless it sends usage anyway.
 - A call that ended before its final account: a cut, a stall, a failure
   frame carrying none, or a request abandoned unanswered by the cold-stream
   watchdog. A request the provider refused before serving any of it — a
