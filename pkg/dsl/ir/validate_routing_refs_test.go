@@ -19,7 +19,7 @@ import (
 // the first delegation with an "invalid spec" from claw, after a clean
 // validate.
 func TestRoutingFieldRefs(t *testing.T) {
-	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
+	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n  tags: string[] = \"a,b\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
 	agent := func(props string) string { return "agent a:\n  system: p\n" + props }
 	type tc struct {
 		name string
@@ -67,6 +67,8 @@ func TestRoutingFieldRefs(t *testing.T) {
 			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{outputs.a.m}}\"\n", want: DiagRoutingFieldRef},
 		{name: "supervisor model from a dotted vars path",
 			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.m.id}}\"\n", want: DiagRoutingFieldRef},
+		{name: "supervisor model from a list var",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.tags}}\"\n", want: DiagRoutingFieldRef},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
