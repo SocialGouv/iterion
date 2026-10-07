@@ -2253,6 +2253,17 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 			"workflow.budget.max_cost_usd %v is not a finite non-negative number; treating as unset", cost)
 		cost = 0
 	}
+	policy := b.OnExceeded
+	switch policy {
+	case "", "fail", "pause":
+	default:
+		// An unknown policy must not silently mean pause (a run the
+		// author expected to end would keep spending under a park) —
+		// it reads as fail, and the diagnostic says so.
+		c.errorf(DiagBudgetOnExceededInvalid,
+			"workflow.budget.on_exceeded %q is not a policy (fail, pause); treating as fail", policy)
+		policy = ""
+	}
 	return &Budget{
 		MaxParallelBranches: b.MaxParallelBranches,
 		MaxDuration:         b.MaxDuration,
@@ -2260,6 +2271,7 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 		MaxTokens:           b.MaxTokens,
 		WarnTokens:          b.WarnTokens,
 		MaxIterations:       b.MaxIterations,
+		OnExceeded:          policy,
 	}
 }
 

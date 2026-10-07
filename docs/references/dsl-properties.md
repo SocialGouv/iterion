@@ -576,6 +576,7 @@ A block opened by `budget:` inside `workflow`.
 | `max_tokens` | int | Total token cap |
 | `warn_tokens` | int | Advisory: crossing it emits budget_warning |
 | `max_iterations` | int | Total node executions; also the fuel of an unbounded loop (C097) |
+| `on_exceeded` | one of `fail`, `pause` | What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word) |
 
 ### resources
 

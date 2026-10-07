@@ -382,6 +382,7 @@ workflow:
     max_tokens: 400000
     warn_tokens: 300000
     max_iterations: 30
+    on_exceeded: pause
   resources:
     gpu: 2
     slots: [slot-a, slot-b]

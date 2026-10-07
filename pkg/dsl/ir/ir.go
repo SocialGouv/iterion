@@ -1565,6 +1565,17 @@ type Budget struct {
 	// (advisory) but never blocks execution. 0 = disabled.
 	WarnTokens    int
 	MaxIterations int
+	// OnExceeded is what a reached cap does on the run's own flow: "" /
+	// "fail" ends the run (checkpoint kept, resume after a raise),
+	// "pause" parks it paused_operator at the cap until an operator
+	// raises the budget. Any other value compiles to C311 and reads as
+	// fail. Branch budget checks keep the fail semantics whatever the
+	// policy: a branch cannot park a run its siblings are running. A
+	// SUBBOT child running under the pause policy parks for itself and
+	// its parent awaits it like any paused child (the human-gate
+	// precedent) — the v1 contract: raising the child is the child run's
+	// operator's act, and the parent's await has no bound of its own.
+	OnExceeded string
 	// CapImposed marks a budget at least one of whose limits was CLAMPED
 	// by an authority outside the run — the platform ceiling, a credential
 	// pool donor's remaining allowance. Set by ClampToCeiling when it

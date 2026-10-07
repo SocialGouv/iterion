@@ -606,6 +606,7 @@ var Kinds = append([]Kind{
 			prop("max_tokens", Int, "Total token cap"),
 			prop("warn_tokens", Int, "Advisory: crossing it emits budget_warning"),
 			prop("max_iterations", Int, "Total node executions; also the fuel of an unbounded loop (C097)"),
+			enum("on_exceeded", "What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word)", "fail", "pause"),
 		}},
 	{Name: "resources", Role: BlockRole, Opener: "resources", Hosts: []string{"workflow"}, Doc: "Named resources nodes lease with needs:.",
 		Entries: &Entries{Key: Ident, Doc: "A count is a semaphore; a quoted list is a pool whose members are leased one at a time",
