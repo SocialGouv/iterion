@@ -195,7 +195,7 @@ type Publisher struct {
 	// publishRetryDelays is nil in production (the bounded default below).
 	// Tests replace it with zero delays while exercising the same choke point.
 	publishRetryDelays []time.Duration
-	cancelRun          func(string) error
+	cancelRun          func(string, store.LeaseIdentity) error
 	// maxPayload reports the NATS server-negotiated max message size so
 	// the offload path can size a RunMessage against it. Nil (the default
 	// in unit tests) disables IR offload — the message is published as-is.
@@ -3432,7 +3432,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 		}
 		return nil
 	}
-	if err := p.cancel(runID); err != nil {
+	if err := p.cancel(runID, store.LeaseIdentity{TenantID: r.TenantID, Pool: r.RunnerPool}); err != nil {
 		p.logger.Warn("cloudpublisher: nats cancel %s: %v", runID, err)
 	}
 	return nil
@@ -4070,14 +4070,14 @@ func irBackendForName(name string) (queue.IRBackend, error) {
 	}
 }
 
-func (p *Publisher) cancel(runID string) error {
+func (p *Publisher) cancel(runID string, admitted store.LeaseIdentity) error {
 	if p.cancelRun != nil {
-		return p.cancelRun(runID)
+		return p.cancelRun(runID, admitted)
 	}
 	if p.nats == nil {
 		return fmt.Errorf("cloudpublisher: NATS publisher is not configured")
 	}
-	return p.nats.CancelRun(runID)
+	return p.nats.CancelRun(runID, admitted)
 }
 
 // queuePosition counts the runs with status=queued and created_at

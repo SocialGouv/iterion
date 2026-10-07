@@ -80,3 +80,22 @@ func TestEnginePathStampsLeaseIdentity(t *testing.T) {
 		t.Fatal("the subbot child's lock no longer takes the inherited delivery context — the child's lease would fail closed on acquire")
 	}
 }
+
+// The control-plane commands (cancel, steer) subscribe with the same
+// admitted identity the delivery was admitted under: the handlers
+// refuse any command whose stamp disagrees. Both subscription sites
+// are pinned — dropping the stamp would make this pod act on another
+// boundary's commands.
+func TestControlPlaneSubscriptionsCarryAdmittedIdentity(t *testing.T) {
+	src, err := os.ReadFile("loop.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelStamp := "SubscribeCancel(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}"
+	steerStamp := "SubscribeSteer(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}"
+	for _, pin := range []string{cancelStamp, steerStamp} {
+		if !strings.Contains(string(src), pin) {
+			t.Fatalf("the control-plane subscription lost its admitted-identity stamp (plan v2 §P6): %s", pin)
+		}
+	}
+}

@@ -8,6 +8,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Cross-process run steering (bump_loop / raise_budget).
@@ -43,10 +45,11 @@ var ErrSteerTimeout = errors.New("queue/nats: steer command timed out waiting fo
 // steer. The API maps it to 409.
 var ErrSteerNoRunner = errors.New("queue/nats: no runner holds this run's lease")
 
-// SteerRun publishes cmdBody (the JSON SteerCommand) for runID and
-// waits for the runner's reply body. commandID keys the reply subject
-// and the dedup header.
-func (c *Conn) SteerRun(ctx context.Context, runID string, cmdBody []byte, commandID string) ([]byte, error) {
+// SteerRun publishes cmdBody (the JSON SteerCommand) for runID —
+// stamped with the run's admitted identity, which the holding pod
+// verifies before applying the command — and waits for the runner's
+// reply body. commandID keys the reply subject and the dedup header.
+func (c *Conn) SteerRun(ctx context.Context, runID string, cmdBody []byte, commandID string, admitted store.LeaseIdentity) ([]byte, error) {
 	if c == nil || c.nc == nil {
 		return nil, fmt.Errorf("queue/nats: connection not initialised")
 	}
@@ -82,6 +85,7 @@ func (c *Conn) SteerRun(ctx context.Context, runID string, cmdBody []byte, comma
 
 	headers := nats.Header{}
 	headers.Set(HeaderSteerCommandID, commandID)
+	stampAdmitted(headers, admitted)
 	if err := c.nc.PublishMsg(&nats.Msg{
 		Subject: fmt.Sprintf(SubjectSteerFmt, runID),
 		Data:    cmdBody,
@@ -112,11 +116,14 @@ func (c *Conn) SteerRun(ctx context.Context, runID string, cmdBody []byte, comma
 	return msg.Data, nil
 }
 
-// SubscribeSteer installs the per-run steering subscriber. handler
-// receives each command's body + command id (from the header, falling
-// back to ""); it MUST publish its reply via PublishSteerAck. Lifecycle
-// mirrors SubscribeCancel: auto-unsubscribed when ctx ends.
-func (c *Conn) SubscribeSteer(ctx context.Context, runID string, handler func(cmdBody []byte, commandID string)) (*nats.Subscription, error) {
+// SubscribeSteer installs the per-run steering subscriber. A command
+// is delivered to handler only when it carries the run's admitted
+// identity; commands carrying another identity — or none — are ignored
+// with an error log. handler receives each command's body + command id
+// (from the header, falling back to ""); it MUST publish its reply via
+// PublishSteerAck. Lifecycle mirrors SubscribeCancel: auto-unsubscribed
+// when ctx ends.
+func (c *Conn) SubscribeSteer(ctx context.Context, runID string, admitted store.LeaseIdentity, handler func(cmdBody []byte, commandID string)) (*nats.Subscription, error) {
 	if c == nil || c.nc == nil {
 		return nil, fmt.Errorf("queue/nats: connection not initialised")
 	}
@@ -127,6 +134,12 @@ func (c *Conn) SubscribeSteer(ctx context.Context, runID string, handler func(cm
 		return nil, err
 	}
 	sub, err := c.nc.Subscribe(fmt.Sprintf(SubjectSteerFmt, runID), func(m *nats.Msg) {
+		if err := verifyAdmitted(m, runID, admitted); err != nil {
+			if c.logger != nil {
+				c.logger.Error("%v — steer ignored", err)
+			}
+			return
+		}
 		handler(m.Data, m.Header.Get(HeaderSteerCommandID))
 	})
 	if err != nil {

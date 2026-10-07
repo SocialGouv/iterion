@@ -45,7 +45,7 @@ func TestSubmitResume_aRefusedResumeLeavesAConcurrentResumesAttemptAlone(t *test
 	p := &Publisher{
 		store:              st,
 		publishRetryDelays: []time.Duration{},
-		cancelRun:          func(string) error { return nil },
+		cancelRun:          func(string, store.LeaseIdentity) error { return nil },
 		publishRun: func(_ context.Context, m *queue.RunMessage) error {
 			if m.Resume != nil && m.Resume.PriorStatus == store.RunStatusPausedWaitingHuman {
 				close(aInPublish)

@@ -95,6 +95,25 @@ The isolation chain, in the order a run meets it:
    against honest confusion, not an active forger: a pod forging the
    whole protocol is beyond the code's reach (the same accepted
    residual as the rest of the boundary — ADR-123's rest point).
+10. **Control-plane commands carry the run's admitted identity**: the
+   cancel and steer commands are stamped — in their NATS headers
+   (`iterion-admitted-tenant` / `iterion-admitted-pool`, exact
+   lower-case spelling; the vendored client's header map is
+   case-sensitive) — with the tenant (and pool) from the run
+   document's frozen stamp by the server that emits them, and the pod
+   holding the run verifies the stamp against the message it admitted
+   before acting; a command of another tenant or pool, or with no
+   stamp at all, is ignored with an error log. The subjects stay
+   shared (`iterion.cancel.<run_id>` / `iterion.steer.<run_id>`): the
+   guard lives at the pod, the one place that knows what it actually
+   admitted, so a shared subject can deliver a foreign command but
+   cannot make another pool's pod act on it. Fleet-mix window: a
+   not-yet-upgraded server emits unstamped commands and the upgraded
+   pods refuse them — a mid-rollout cancel or steer does not take
+   until both sides run this build (deploy server and runners
+   together). Headers are broker-visible and operator-writable — a
+   guard against misrouting and confusion, not an active forger (the
+   boundary's accepted residual).
 
 ## Operations
 
