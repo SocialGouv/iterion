@@ -3144,3 +3144,85 @@ func TestACeilingPredicateReadsOneTable(t *testing.T) {
 		}
 	}
 }
+
+// A contracted child projects the parent's answer from its contract ports
+// (#1535): the port name the runtime projects is the name the dry run
+// answers, so a parent reading {{outputs.kid.<port>}} — with no output
+// schema of its own, the ticket's case — resolves the reference where the
+// bare shape left it unresolved and the run ended off the declared path.
+func TestAContractedChildProjectsItsPorts(t *testing.T) {
+	const contractedKid = `schema verdict:
+  ok: bool
+
+judge judge:
+  model: "claude-opus-4-7"
+  output: verdict
+
+tool celebrate:
+  command: "echo yes"
+
+fail refused:
+  code: REFUSED
+  message: "no"
+
+contract kid_c:
+  outputs:
+    ok: bool
+      from: judge.ok
+
+workflow kid:
+  contract: kid_c
+  worktree: none
+  sandbox: none
+  entry: judge
+  judge -> celebrate when ok
+  judge -> refused when not ok
+  celebrate -> done
+`
+	const bareParent = `subbot kid:
+  source: "kid.bot"
+
+fail blocked:
+  code: BLOCKED
+  message: "the child said nothing"
+
+workflow p:
+  worktree: none
+  sandbox: none
+  entry: kid
+  kid -> done when "outputs.kid.ok == true"
+  kid -> blocked else
+`
+
+	// With the contract, the projected port resolves the edge's when: the
+	// run takes the declared path.
+	parent := compileBot(t, bareParent)
+	res, err := Run(context.Background(), parent, withChild(t, contractedKid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Children) == 0 {
+		t.Fatalf("the child was not simulated: %+v", res.Children)
+	}
+	if res.Passes[0].Status != "finished" || res.Passes[0].Deliberate {
+		t.Fatalf("the projected port did not resolve the when-edge: status %q deliberate %v, findings %+v", res.Passes[0].Status, res.Passes[0].Deliberate, res.Findings)
+	}
+	for _, f := range res.Findings {
+		if strings.Contains(f.Detail, "outputs.kid.ok") {
+			t.Fatalf("the projected port reads as unresolved: %+v", f)
+		}
+	}
+
+	// The control: the same parent over the UNCONTRACTED child — the bare
+	// shape answers nothing, the when stays unresolved, and the run does
+	// not take the declared path. This is the branch the projection
+	// closes; it reddens if the projection is muted.
+	parent = compileBot(t, bareParent)
+	res, err = Run(context.Background(), parent, withChild(t, kidBot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Passes[0].Deliberate {
+		t.Fatalf("the unresolved when resolved anyway: status %q, findings %+v", res.Passes[0].Status, res.Findings)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 )
 
 // Kind classifies what a dry run met.
@@ -266,6 +267,9 @@ type childRun struct {
 // node: done is closed once the first crossing has its pass.
 type childMemo struct {
 	done chan struct{}
+	// answer is the projected shape the first crossing returned, so every
+	// crossing of the same subbot node answers the same value.
+	answer map[string]any
 }
 
 // ChildRuns are the children this pass simulated, grandchildren included.
@@ -806,7 +810,11 @@ func (x *Executor) subbotRunner() runtime.SubbotRunner {
 							x.childRuns[i].crossings++
 						}
 					}
+					answer := memo.answer
 					x.mu.Unlock()
+					if answer != nil {
+						return answer, nil
+					}
 					break
 				}
 				// Under the node's own context: the child runs within what is
@@ -835,10 +843,58 @@ func (x *Executor) subbotRunner() runtime.SubbotRunner {
 					x.childRuns = append(x.childRuns, cr)
 				}
 				x.mu.Unlock()
+				// A contracted child projects its answer from its contract
+				// ports — the same subbotcontracts.ProjectOutput shape the
+				// runtime reads — each port's producer shape synthesized
+				// from the producer's own schema; the parent's declared
+				// schema remains the coarse validator of what comes back
+				// (#1535).
+				if projected := subbotContractShape(child, &pass, x.bias, x.iterated); len(projected) > 0 {
+					x.mu.Lock()
+					memo.answer = projected
+					x.mu.Unlock()
+					return projected, nil
+				}
 			}
 		}
 		return x.output(req.NodeID, schema), nil
 	}
+}
+
+// subbotContractShape projects the answer a contracted child gives from
+// its contract ports — the same subbotcontracts.ProjectOutput shape the
+// runtime reads — with each port's producer output synthesized from the
+// producer's own schema, a shape like every dry-run value. A producer no
+// pass reached projects nothing, the runtime's own rule (its capture
+// holds what ran). nil when the child keeps no contract: the parent's
+// declared schema stays the coarse answer.
+func subbotContractShape(child *ir.Workflow, pass *Pass, bias bool, iterated map[string]map[string]bool) map[string]any {
+	if child == nil || child.Contract == nil || len(child.Contract.Outputs) == 0 {
+		return nil
+	}
+	ran := make(map[string]bool, len(pass.Nodes))
+	for _, id := range pass.Nodes {
+		ran[id] = true
+	}
+	nodeShapes := map[string]map[string]any{}
+	for _, p := range child.Contract.Outputs {
+		if p == nil || p.FromNode == "" || !ran[p.FromNode] {
+			continue
+		}
+		if _, done := nodeShapes[p.FromNode]; done {
+			continue
+		}
+		node := child.Nodes[p.FromNode]
+		if node == nil {
+			continue
+		}
+		var sch *ir.Schema
+		if name := ir.NodeOutputSchema(node); name != "" {
+			sch = child.Schemas[name]
+		}
+		nodeShapes[p.FromNode] = SynthesizeAt(sch, bias, iterated[p.FromNode])
+	}
+	return subbotcontracts.ProjectOutput(child.Contract, nodeShapes)
 }
 
 // whyUnresolved says, for a reference kept as written, what a dry run can
