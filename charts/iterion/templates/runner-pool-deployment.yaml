@@ -1,17 +1,29 @@
 {{- range .Values.runnerPools }}
 {{- $pool := . }}
+{{- $gw := $pool.gateway | default dict }}
+{{- if not $pool.name }}
+{{- fail "runnerPools[]: every entry needs a name (the pool's registry name)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,29}[a-z0-9])?$" $pool.name) }}
+{{- fail (printf "runnerPools[]: pool name %q is invalid — the registry grammar is 1-31 chars of [a-z0-9-], alphanumeric at both ends (queue.ValidPoolName)" $pool.name) }}
+{{- end }}
+{{- if not $gw.baseUrl }}
+{{- fail (printf "runnerPools[]: pool %s needs gateway.baseUrl (the pool's regional gateway URL)" $pool.name) }}
+{{- end }}
+{{- if not $gw.existingSecret }}
+{{- fail (printf "runnerPools[]: pool %s needs gateway.existingSecret (a manual k8s Secret carrying the gateway API key)" $pool.name) }}
+{{- end }}
+---
 # One runner Deployment PER sovereign pool (plan v2 D10'): the pod is
 # pinned to the pool three ways — ITERION_RUNNER_POOL (the admission
 # stamps it checks every delivery against), the pool's JetStream stream
 # and DLQ (its only source of deliveries), and its gateway credential.
-# The pods carry the pool's gateway credential ONLY: never the platform
-# LLM secrets, never the run-secrets ring key — the run envelope is
-# self-contained (P4-b), so a leaked pool pod exposes exactly the
-# regional gateway it was built to serve, and nothing else.
-{{- if not $pool.name }}
-{{- fail "runnerPools[]: every entry needs a name (the pool's registry name)" }}
-{{- end }}
----
+# The pod carries the gateway credential ONLY IN ITS ENV — it runs
+# under the shared runner ServiceAccount, which (like the shared
+# runner's) can read the namespace's Secrets for the sandbox reaper
+# (ADR-068); that residual is the shared runner's own, not new here.
+# No platform LLM secrets, no run-secrets ring key: the run envelope
+# is self-contained (P4-b).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,7 +33,15 @@ metadata:
     app.kubernetes.io/component: runner-pool
     iterion.io/runner-pool: {{ $pool.name }}
 spec:
-  replicas: {{ $pool.replicas | default 1 }}
+  {{- with $.Values.runner.progressDeadlineSeconds }}
+  # Same lame-duck rationale as the shared runner: keep this above
+  # terminationGracePeriodSeconds so ArgoCD doesn't mark the rollout
+  # degraded while the old pod legitimately drains its in-flight run.
+  progressDeadlineSeconds: {{ . }}
+  {{- end }}
+  # hasKey, not sprig default: default treats 0 as empty, which would
+  # make scaling a pool to zero (pausing a team) impossible from values.
+  replicas: {{- if hasKey $pool "replicas" }} {{ $pool.replicas }}{{- else }} 1{{- end }}
   selector:
     matchLabels:
       {{- include "iterion.selectorLabels" $ | nindent 6 }}
@@ -94,6 +114,36 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            {{- with $.Values.runner.sandbox.scheduling }}
+            {{- with .requests }}
+            {{- if .cpu }}
+            - name: ITERION_SANDBOX_K8S_REQUESTS_CPU
+              value: {{ .cpu | quote }}
+            {{- end }}
+            {{- if .memory }}
+            - name: ITERION_SANDBOX_K8S_REQUESTS_MEMORY
+              value: {{ .memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .limits }}
+            {{- if .cpu }}
+            - name: ITERION_SANDBOX_K8S_LIMITS_CPU
+              value: {{ .cpu | quote }}
+            {{- end }}
+            {{- if .memory }}
+            - name: ITERION_SANDBOX_K8S_LIMITS_MEMORY
+              value: {{ .memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .spread }}
+            - name: ITERION_SANDBOX_K8S_SPREAD
+              value: {{ .spread | quote }}
+            {{- end }}
+            {{- if .podReadyTimeout }}
+            - name: ITERION_SANDBOX_K8S_POD_READY_TIMEOUT
+              value: {{ .podReadyTimeout | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             # The pool's gateway credential (P3's openai_compatible
             # escape hatch): the base URL is configuration, the API key
@@ -101,12 +151,16 @@ spec:
             # values. required: a pool without its gateway would admit
             # runs whose every LLM surface then refuses.
             - name: OPENAI_COMPATIBLE_BASE_URL
-              value: {{ required "runnerPools[]: gateway.baseUrl is required (the pool's regional gateway URL)" $pool.gateway.baseUrl | quote }}
+              value: {{ $gw.baseUrl | quote }}
             - name: OPENAI_COMPATIBLE_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "runnerPools[]: gateway.existingSecret is required (a manual k8s Secret carrying the gateway API key)" $pool.gateway.existingSecret }}
-                  key: {{ $pool.gateway.apiKeySecretKey | default "OPENAI_COMPATIBLE_API_KEY" }}
+                  name: {{ $gw.existingSecret }}
+                  key: {{ $gw.apiKeySecretKey | default "OPENAI_COMPATIBLE_API_KEY" }}
+            {{- range $key, $value := $pool.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "iterion.fullname" $ }}-config
@@ -152,4 +206,25 @@ spec:
         - name: run-iterion
           emptyDir:
             medium: Memory
+{{- if gt (int ($pool.replicas | default 1)) 1 }}
+---
+# A pool with more than one replica gets the same disruption budget as
+# the shared runner: a node drain must not evict every replica of a
+# team's pool at once.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "iterion.fullname" $ }}-runner-pool-{{ $pool.name }}
+  labels:
+    {{- include "iterion.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: runner-pool
+    iterion.io/runner-pool: {{ $pool.name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: runner-pool
+      iterion.io/runner-pool: {{ $pool.name }}
+{{- end }}
 {{- end }}

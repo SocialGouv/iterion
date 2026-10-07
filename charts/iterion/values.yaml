@@ -216,14 +216,17 @@ runner:
 # One runner Deployment PER entry, consuming that pool's JetStream
 # topology (ITERION_RUNS_POOL_<name> + its DLQ + its durable consumer,
 # created by the server's registry reconciler). The pool pod carries
-# the pool's gateway credential ONLY — never the platform LLM secrets,
-# never the run-secrets ring key (the run envelope is self-contained
-# since P4-b). Its admission is the pod's own: a delivery whose msg ≡
-# doc ≡ pod stamps do not all name THIS pool is parked on the pool's
-# DLQ, never executed. The name MUST match a pool registered in the
-# server's runner-pool registry (PUT /api/admin/runner-pools) — the
-# deployment without its registry entry consumes a stream nobody
-# writes and only the registry reconciler creates.
+# the pool's gateway credential ONLY in its env — never the platform
+# LLM secrets, never the run-secrets ring key (the run envelope is
+# self-contained since P4-b). It runs under the shared runner
+# ServiceAccount, whose sandbox-reaper role can read the namespace's
+# Secrets; scoping that is a follow-up. Its admission is the pod's
+# own: a delivery whose msg ≡ doc ≡ pod stamps do not all name THIS
+# pool is parked on the pool's DLQ, never executed. The name MUST
+# match a pool registered in the server's runner-pool registry
+# (PUT /api/admin/runner-pools) — the deployment without its registry
+# entry consumes a stream nobody writes and only the registry
+# reconciler creates.
 #
 # The gateway is the pool's escape hatch (P3): every LLM surface of a
 # pool run resolves to `openai_compatible/<model>` through THIS
