@@ -420,11 +420,13 @@ func (p *parser) resyncBrokenBracketList(propTok Token) {
 // DEDENTs (pending) stay in the stream, where the loops they close close on
 // them naturally; depth is what the junk lines walked past popped, net. The
 // rescue says nothing — the give-up already did — and reports whether it
-// landed: false keeps main's refusal, when the count goes negative or the
-// declaration line opened with an INDENT the splice would strand above no
-// open loop.
+// landed: false keeps main's refusal, when the count cannot be trusted — a
+// junk line of the remainder popped real levels (negative depth, the same
+// principle as the off-stack bail), the declaration line opened with an
+// INDENT the splice would strand above no open loop, or the count lands
+// negative.
 func (p *parser) rescueTopLevelDeclaration(i int, t Token, cols []int, depth, pending int, lineIndent bool) bool {
-	if lineIndent || pending > i {
+	if lineIndent || pending > i || depth < 0 {
 		return false
 	}
 	n := len(cols) - 1 + depth - pending

@@ -360,6 +360,37 @@ func TestABrokenInlineListKeepsTheTopLevelDeclarationAfterIt(t *testing.T) {
 	}
 }
 
+// The catch-up closer an author writes at column 1 — `]` dedented past
+// every open block — pops REAL levels before the scan reaches the
+// declaration. A depth gone negative means the remainder's pops cannot be
+// counted for the splice: the top-level rescue bails like the off-stack
+// one, and the ordinary recovery reads the declaration as ever.
+func TestAJunkCloserAtColumnOneKeepsTheTopLevelDeclarationAfterIt(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\nsecrets:\n  k: \"v\"\n")
+	if res.File.Secrets == nil || len(res.File.Secrets.Fields) != 1 ||
+		res.File.Secrets.Fields[0].Name != "k" {
+		t.Fatalf("the top-level secrets declaration after the column-1 closer was eaten: %+v; diagnostics %v",
+			res.File.Secrets, res.Diagnostics)
+	}
+	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash"}) {
+		t.Errorf("the list's own property was lost: %v", got)
+	}
+}
+
+// The same at a MIDDLE block's column — the closer pops the levels between
+// the list and that block. The count is poisoned the same way, the rescue
+// bails, and the declaration after the block is read as ever.
+func TestAJunkCloserAtAMiddleColumnKeepsTheTopLevelDeclarationAfterIt(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n  ]\nsecrets:\n  k: \"v\"\n")
+	if res.File.Secrets == nil || len(res.File.Secrets.Fields) != 1 || res.File.Secrets.Fields[0].Name != "k" {
+		t.Fatalf("the top-level secrets declaration after the column-3 closer was eaten: %+v; diagnostics %v",
+			res.File.Secrets, res.Diagnostics)
+	}
+	if sb := res.File.Workflows[0].Sandbox; sb == nil || !reflect.DeepEqual(sb.Network.Rules, []string{"a"}) {
+		t.Errorf("the list's own property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
+	}
+}
+
 // An empty string is neither a rule nor a mount: the sandbox would refuse it
 // only when it starts. The reader says it where it stands and leaves it out,
 // in both written forms, and the rest of the list is read.
@@ -726,10 +757,14 @@ func TestABrokenContractJSONKeepsTheMisIndentedDeclarationAfterIt(t *testing.T) 
 }
 
 // An off-stack dedent in the remainder — junk over-indented between the
-// broken list and the mis-indented declaration — keeps the bail: the DEDENT
-// accounting is uncertain there, and the ordinary recovery already routes
-// what follows to its owner. The rescue never guesses past the Error; this
-// pins the list's own property and the list's own diagnostic.
+// broken list and the mis-indented declaration — leaves the declaration
+// refused as the enclosing block's own unknown property. At depth 0 this
+// witness pins the OBSERVABLE only (the declaration never read at the top
+// level, the list's own property kept, the off-stack dedent said once):
+// several mechanisms produce those observables. The MECHANISM — the
+// off-stack bail of the noProperty rescue arms — is pinned by the
+// positive-depth witness below, the only one whose refusal that bail alone
+// produces.
 func TestAKeywordThatNamesNoPropertyIsStillRefusedAfterAnOffStackDedent(t *testing.T) {
 	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\n   read,\n  secrets:\n    k: \"v\"\n")
 	if len(res.File.Agents) != 1 {
@@ -737,6 +772,36 @@ func TestAKeywordThatNamesNoPropertyIsStillRefusedAfterAnOffStackDedent(t *testi
 	}
 	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash"}) {
 		t.Errorf("the list's own property was lost: %v", got)
+	}
+	if res.File.Secrets != nil {
+		t.Errorf("the off-stack bail was not kept: secrets = %+v", res.File.Secrets)
+	}
+	e003 := 0
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagBadIndentation {
+			e003++
+		}
+	}
+	if e003 != 1 {
+		t.Errorf("want the off-stack dedent said exactly once, got %v", res.Diagnostics)
+	}
+}
+
+// The same refusal where the junk lines' INDENTs outrun the closer's pops —
+// the depth the scan walks stays positive, so the negative-depth guard has
+// nothing to bite on and only the off-stack bail holds the rescue off: the
+// declaration stays refused as the block's own unknown property, never read
+// at the top level.
+func TestAnOffStackDedentAtPositiveDepthStillRefusesTheDeclaration(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\n   read,\n    deep,\n  secrets:\n    k: \"v\"\n")
+	if len(res.File.Agents) != 1 {
+		t.Fatalf("the broken block's own agent was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash"}) {
+		t.Errorf("the list's own property was lost: %v", got)
+	}
+	if res.File.Secrets != nil {
+		t.Errorf("the off-stack bail was not kept: secrets = %+v", res.File.Secrets)
 	}
 	e003 := 0
 	for _, d := range res.Diagnostics {
