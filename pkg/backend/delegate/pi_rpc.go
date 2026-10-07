@@ -160,6 +160,13 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		OnUIRequest: func(req pisdk.UIRequest) *pisdk.UIResponse {
 			return b.handleUIRequest(task, collector, req)
 		},
+		OnSubtreeWaitExpired: func(pid int, budget time.Duration) {
+			if b.Logger != nil {
+				b.Logger.Warn("[%s#%d/%s] pi process group %d still alive after kill — "+
+					"zombie or unreapable orphan (PID-1 container?); waited %v without the group dying",
+					task.NodeID, task.Iteration, BackendPi, pid, budget)
+			}
+		},
 	})
 
 	start := time.Now()
