@@ -360,6 +360,37 @@ func TestABrokenInlineListKeepsTheTopLevelDeclarationAfterIt(t *testing.T) {
 	}
 }
 
+// The catch-up closer an author writes at column 1 — `]` dedented past
+// every open block — pops REAL levels before the scan reaches the
+// declaration. A depth gone negative means the remainder's pops cannot be
+// counted for the splice: the top-level rescue bails like the off-stack
+// one, and the ordinary recovery reads the declaration as ever.
+func TestAJunkCloserAtColumnOneKeepsTheTopLevelDeclarationAfterIt(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\nsecrets:\n  k: \"v\"\n")
+	if res.File.Secrets == nil || len(res.File.Secrets.Fields) != 1 ||
+		res.File.Secrets.Fields[0].Name != "k" {
+		t.Fatalf("the top-level secrets declaration after the column-1 closer was eaten: %+v; diagnostics %v",
+			res.File.Secrets, res.Diagnostics)
+	}
+	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash"}) {
+		t.Errorf("the list's own property was lost: %v", got)
+	}
+}
+
+// The same at a MIDDLE block's column — the closer pops the levels between
+// the list and that block. The count is poisoned the same way, the rescue
+// bails, and the declaration after the block is read as ever.
+func TestAJunkCloserAtAMiddleColumnKeepsTheTopLevelDeclarationAfterIt(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n  ]\nsecrets:\n  k: \"v\"\n")
+	if res.File.Secrets == nil || len(res.File.Secrets.Fields) != 1 || res.File.Secrets.Fields[0].Name != "k" {
+		t.Fatalf("the top-level secrets declaration after the column-3 closer was eaten: %+v; diagnostics %v",
+			res.File.Secrets, res.Diagnostics)
+	}
+	if sb := res.File.Workflows[0].Sandbox; sb == nil || !reflect.DeepEqual(sb.Network.Rules, []string{"a"}) {
+		t.Errorf("the list's own property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
+	}
+}
+
 // An empty string is neither a rule nor a mount: the sandbox would refuse it
 // only when it starts. The reader says it where it stands and leaves it out,
 // in both written forms, and the rest of the list is read.
@@ -595,28 +626,190 @@ func TestAGroupMemberHeaderAfterARescuedListIsStillAMember(t *testing.T) {
 	}
 }
 
-// Keywords that name NO property anywhere — secrets, presets, mcp_server —
-// are a mis-indented top-level declaration in any form, and the rescue
-// refuses them: the ordinary recovery refuses the line exactly as it did
-// before the rescue existed, and the list's own property still reads.
-func TestAKeywordThatNamesNoPropertyIsRefusedInAnyForm(t *testing.T) {
-	for _, c := range []struct{ name, line string }{
-		{"secrets", "  secrets:\n    k: v\n"},
-		{"presets", "  presets:\n  p1: v\n"},
-		{"mcp_server", "  mcp_server fs:\n    command: x\n"},
+// reindented shifts every non-empty line of a declaration block by pad,
+// so one witness block covers a declaration mis-indented to each open
+// block's column.
+func reindented(block, pad string) string {
+	lines := strings.Split(block, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = pad + l
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// A keyword that names NO property anywhere — secrets, presets, prompt,
+// mcp_server, dsl — standing mis-indented after a broken inline list is a
+// top-level declaration the file legally carries: no block can hold it, so
+// the resync closes every open block and the parseFile dispatch reads it as
+// itself, with the broken list's own property intact (#2259). A declaration
+// keyword with a property form (contract, schema) is NOT in this set —
+// TestAPropertyFormOfADeclarationKeywordIsStillClaimable pins that side.
+func TestAKeywordThatNamesNoPropertyIsRescuedToTheTopLevel(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		line string
+	}{
+		{"secrets", "secrets:\n  k: \"v\"\n"},
+		{"presets", "presets:\n  p1:\n    v: \"1\"\n"},
+		{"mcp_server", "mcp_server fs:\n  command: x\n"},
+		{"prompt", "prompt greet:\n  hi there\n"},
+		{"dsl", "dsl: 2\n"},
 	} {
-		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n"+c.line)
-			sb := res.File.Workflows[0].Sandbox
-			if sb == nil || !reflect.DeepEqual(sb.Network.Rules, []string{"a"}) {
-				t.Fatalf("the list's own property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
-			}
-			if res.File.Secrets != nil || res.File.Presets != nil || len(res.File.MCPServers) != 0 {
-				t.Errorf("the mis-indented declaration was claimed by the rescue: secrets=%v presets=%v mcp=%d", res.File.Secrets != nil, res.File.Presets != nil, len(res.File.MCPServers))
-			}
-			if len(res.Diagnostics) < 2 {
-				t.Errorf("want the line refused with main's diagnostics, got %v", res.Diagnostics)
-			}
-		})
+		for _, ind := range []struct {
+			name string
+			pad  string
+		}{
+			{"at the workflow's column", "  "},
+			{"at the sandbox's column", "    "},
+		} {
+			t.Run(c.name+" "+ind.name, func(t *testing.T) {
+				res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n"+reindented(c.line, ind.pad))
+				sb := res.File.Workflows[0].Sandbox
+				if sb == nil || !reflect.DeepEqual(sb.Network.Rules, []string{"a"}) {
+					t.Fatalf("the list's own property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
+				}
+				switch c.name {
+				case "secrets":
+					if res.File.Secrets == nil || len(res.File.Secrets.Fields) != 1 ||
+						res.File.Secrets.Fields[0].Name != "k" || res.File.Secrets.Fields[0].Value != "v" {
+						t.Errorf("the mis-indented secrets block was not read at the top level: %+v; diagnostics %v", res.File.Secrets, res.Diagnostics)
+					}
+				case "presets":
+					if res.File.Presets == nil || len(res.File.Presets.Entries) != 1 || res.File.Presets.Entries[0].Name != "p1" {
+						t.Errorf("the mis-indented presets block was not read at the top level: %+v; diagnostics %v", res.File.Presets, res.Diagnostics)
+					}
+				case "mcp_server":
+					if len(res.File.MCPServers) != 1 || res.File.MCPServers[0].Name != "fs" {
+						t.Errorf("the mis-indented mcp_server was not read at the top level: %+v; diagnostics %v", res.File.MCPServers, res.Diagnostics)
+					}
+				case "prompt":
+					if len(res.File.Prompts) != 1 || res.File.Prompts[0].Name != "greet" || res.File.Prompts[0].Body != "hi there" {
+						t.Errorf("the mis-indented prompt was not read at the top level: %+v; diagnostics %v", res.File.Prompts, res.Diagnostics)
+					}
+				case "dsl":
+					// A mid-file dsl: header is not applied — the lexer read
+					// everything above it as profile 1 — so the surface stays
+					// unset and the refusal names the line, cleanly, instead
+					// of the unknown-property noise.
+					if res.File.Profile != 0 {
+						t.Errorf("a mid-file dsl: header was applied: profile %d", res.File.Profile)
+					}
+					misplaced := 0
+					for _, d := range res.Diagnostics {
+						if d.Code == DiagMisplacedHeader {
+							misplaced++
+							if d.Line != 6 {
+								t.Errorf("the misplaced-header refusal escaped the dsl line: %d %q", d.Line, d.Message)
+							}
+						}
+					}
+					if misplaced != 1 {
+						t.Errorf("want exactly one misplaced-header refusal on the dsl line, got %v", res.Diagnostics)
+					}
+				}
+				if c.name == "dsl" {
+					if len(res.Diagnostics) != 2 {
+						t.Errorf("want the list's diagnostic and the header refusal and no more, got %v", res.Diagnostics)
+					}
+				} else if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "expected ] to close the list") || res.Diagnostics[0].Line != 5 {
+					t.Errorf("want the broken list's diagnostic alone, got %v", res.Diagnostics)
+				}
+			})
+		}
+	}
+}
+
+// The same rescue when the mis-indented declaration lands at the LIST'S OWN
+// column — the sibling the list's block would otherwise read as its next
+// property and refuse with an unknown-property diagnostic: every open block
+// closes, the top level reads the declaration (#2259).
+func TestAKeywordAtTheListsOwnColumnIsRescuedToTheTopLevel(t *testing.T) {
+	res := Parse("x.bot", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [a,\n      secrets:\n        k: \"v\"\n")
+	sb := res.File.Workflows[0].Sandbox
+	if sb == nil || !reflect.DeepEqual(sb.Network.Rules, []string{"a"}) {
+		t.Fatalf("the list's own property was lost: %+v; diagnostics %v", sb, res.Diagnostics)
+	}
+	if res.File.Secrets == nil || len(res.File.Secrets.Fields) != 1 || res.File.Secrets.Fields[0].Name != "k" {
+		t.Errorf("the sibling declaration was not read at the top level: %+v; diagnostics %v", res.File.Secrets, res.Diagnostics)
+	}
+	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "expected ] to close the list") || res.Diagnostics[0].Line != 5 {
+		t.Errorf("want the broken list's diagnostic alone, got %v", res.Diagnostics)
+	}
+}
+
+// The contract's JSON value form shares the recovery: a mis-indented
+// top-level declaration after a broken `default:` is rescued the same way,
+// and the refused default still stores nothing.
+func TestABrokenContractJSONKeepsTheMisIndentedDeclarationAfterIt(t *testing.T) {
+	res := Parse("x.bot", "contract c:\n  outputs:\n    result: json\n      default: [1,\n  secrets:\n    k: \"v\"\n")
+	port := res.File.Contracts[0].Outputs[0]
+	if port.Default != nil {
+		t.Errorf("the refused default was read as a value: %s", port.Default)
+	}
+	if res.File.Secrets == nil || len(res.File.Secrets.Fields) != 1 || res.File.Secrets.Fields[0].Name != "k" {
+		t.Errorf("the mis-indented secrets block was not read at the top level: %+v; diagnostics %v", res.File.Secrets, res.Diagnostics)
+	}
+	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "expected a JSON value or ']'") || res.Diagnostics[0].Line != 4 {
+		t.Errorf("want the broken value's diagnostic alone, got %v", res.Diagnostics)
+	}
+}
+
+// An off-stack dedent in the remainder — junk over-indented between the
+// broken list and the mis-indented declaration — leaves the declaration
+// refused as the enclosing block's own unknown property. At depth 0 this
+// witness pins the OBSERVABLE only (the declaration never read at the top
+// level, the list's own property kept, the off-stack dedent said once):
+// several mechanisms produce those observables. The MECHANISM — the
+// off-stack bail of the noProperty rescue arms — is pinned by the
+// positive-depth witness below, the only one whose refusal that bail alone
+// produces.
+func TestAKeywordThatNamesNoPropertyIsStillRefusedAfterAnOffStackDedent(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\n   read,\n  secrets:\n    k: \"v\"\n")
+	if len(res.File.Agents) != 1 {
+		t.Fatalf("the broken block's own agent was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash"}) {
+		t.Errorf("the list's own property was lost: %v", got)
+	}
+	if res.File.Secrets != nil {
+		t.Errorf("the off-stack bail was not kept: secrets = %+v", res.File.Secrets)
+	}
+	e003 := 0
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagBadIndentation {
+			e003++
+		}
+	}
+	if e003 != 1 {
+		t.Errorf("want the off-stack dedent said exactly once, got %v", res.Diagnostics)
+	}
+}
+
+// The same refusal where the junk lines' INDENTs outrun the closer's pops —
+// the depth the scan walks stays positive, so the negative-depth guard has
+// nothing to bite on and only the off-stack bail holds the rescue off: the
+// declaration stays refused as the block's own unknown property, never read
+// at the top level.
+func TestAnOffStackDedentAtPositiveDepthStillRefusesTheDeclaration(t *testing.T) {
+	res := Parse("x.bot", "agent a:\n  tools: [bash,\n]\n   read,\n    deep,\n  secrets:\n    k: \"v\"\n")
+	if len(res.File.Agents) != 1 {
+		t.Fatalf("the broken block's own agent was lost: %+v; diagnostics %v", res.File.Agents, res.Diagnostics)
+	}
+	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash"}) {
+		t.Errorf("the list's own property was lost: %v", got)
+	}
+	if res.File.Secrets != nil {
+		t.Errorf("the off-stack bail was not kept: secrets = %+v", res.File.Secrets)
+	}
+	e003 := 0
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagBadIndentation {
+			e003++
+		}
+	}
+	if e003 != 1 {
+		t.Errorf("want the off-stack dedent said exactly once, got %v", res.Diagnostics)
 	}
 }
