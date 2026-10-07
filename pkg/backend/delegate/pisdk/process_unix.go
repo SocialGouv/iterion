@@ -56,8 +56,10 @@ func killSubtree(pid int) error {
 // delivered, not waited, and a still-dying member keeps its open files for a
 // moment. Poll the group away so Close does not return while a grandchild of
 // the session is still running. The leader itself is already reaped by reap;
-// only its orphans can remain.
-func awaitSubtreeGone(pid int, budget time.Duration) {
+// only its orphans can remain. A non-nil onWaitExpired runs once if the
+// budget is exhausted with the group still resolvable; it must return
+// quickly — this is the Close path, not a place to wait.
+func awaitSubtreeGone(pid int, budget time.Duration, onWaitExpired func(pid int, budget time.Duration)) {
 	if pid <= 0 {
 		return
 	}
@@ -67,6 +69,15 @@ func awaitSubtreeGone(pid int, budget time.Duration) {
 			return
 		}
 		if time.Now().After(deadline) {
+			// The last probe did not answer ESRCH, so the group is still
+			// resolvable — a member the SIGKILL cannot finish (zombie pinned
+			// to a parent that never reaps, an orphan under a PID-1
+			// container) — or the probe itself failed with a non-ESRCH error
+			// (EPERM). Both mean "cannot confirm the group is gone": report
+			// and leave, the wait budget is spent either way.
+			if onWaitExpired != nil {
+				onWaitExpired(pid, budget)
+			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
