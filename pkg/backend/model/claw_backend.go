@@ -1397,6 +1397,12 @@ var providerCredentialEnvVars = []string{
 	// that keeps a ChatGPT forfait off a third-party gateway
 	// (openAIOAuthAllowed) — the host and the container must read the same.
 	"OPENAI_BASE_URL",
+	// The stream-usage knob decides whether the openai factory asks the
+	// gateway for stream_options.include_usage, and the in-container runner
+	// is this same binary reading this same factory: without the knob
+	// across, the host's node reports usage while its sandboxed twin keeps
+	// its tokens unreported.
+	"ITERION_OPENAI_STREAM_USAGE",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
 	// key, which is METERED and billed to its lender.

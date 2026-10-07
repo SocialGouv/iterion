@@ -254,6 +254,7 @@ var botVarsInfraExact = map[string]bool{
 	// Spend and billing guards.
 	"ITERION_FORBID_SUBSCRIPTION_OAUTH": true,
 	"ITERION_OPENAI_USE_OAUTH":          true,
+	"ITERION_OPENAI_STREAM_USAGE":       true,
 	"ITERION_LOOP_BUDGET_GUARD":         true,
 	// Trust roots, host files and filesystem exposure.
 	"ITERION_JAVA_TRUSTSTORE": true,
