@@ -280,9 +280,18 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		// subjects-overlap — measured in prod on the first pool boot
 		// (2026-10-07). The KV buckets stay shared: the run lease is
 		// per-run, not per-pool.
-		if cfg.StreamName != StreamRuns || cfg.DLQStream != StreamRunsDLQ {
+		// The pod template stamps the derived names (the chart has done so
+		// since its first pool render) and the unstamped pod is equally
+		// correct — both are accepted; ANY other stream name would point
+		// this pool's deliveries elsewhere and is refused. Merged alone,
+		// this keeps every already-deployed pool pod booting.
+		if cfg.StreamName != StreamRuns && cfg.StreamName != PoolStreamName(cfg.Pool) {
 			nc.Close()
-			return nil, fmt.Errorf("queue/nats: Pool %q and explicit stream names are mutually exclusive (the pool's topology derives from the pool)", cfg.Pool)
+			return nil, fmt.Errorf("queue/nats: Pool %q with StreamName %q — want the default or the pool's own %s (a pool serves its derived topology)", cfg.Pool, cfg.StreamName, PoolStreamName(cfg.Pool))
+		}
+		if cfg.DLQStream != StreamRunsDLQ && cfg.DLQStream != PoolDLQStreamName(cfg.Pool) {
+			nc.Close()
+			return nil, fmt.Errorf("queue/nats: Pool %q with DLQStream %q — want the default or the pool's own %s", cfg.Pool, cfg.DLQStream, PoolDLQStreamName(cfg.Pool))
 		}
 		if err := ensurePoolSchema(ctx, js, cfg, cfg.Pool); err != nil {
 			nc.Close()

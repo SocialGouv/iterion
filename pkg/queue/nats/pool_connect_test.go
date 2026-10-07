@@ -81,15 +81,31 @@ func TestPoolConnectBringsUpPoolTopology(t *testing.T) {
 		t.Fatal("the shared KV buckets did not come up with a pool connect (the lease and the epoch need them)")
 	}
 
-	// An explicit stream name alongside Pool is a caller bug: refused.
+	// The pod template stamps the derived names: accepted (the deployed
+	// pool pods carry them — merged alone, this branch must keep them
+	// booting), and they land on the same pool topology.
+	stamped, err := Connect(ctx, Config{
+		URL:             uri,
+		Pool:            pool,
+		StreamName:      PoolStreamName(pool),
+		DLQStream:       PoolDLQStreamName(pool),
+		KVBucket:        kvBucket + "b",
+		RolloutKVBucket: rolloutBucket + "b",
+	})
+	if err != nil {
+		t.Fatalf("pool connect with the chart's derived stream names: %v", err)
+	}
+	stamped.Close()
+
+	// ANY other stream name points the pool's deliveries elsewhere: refused.
 	if _, err := Connect(ctx, Config{
 		URL:             uri,
 		Pool:            pool,
 		StreamName:      "ITERION_RUNS_EXPLICIT",
-		KVBucket:        kvBucket + "b",
-		RolloutKVBucket: rolloutBucket + "b",
-	}); err == nil || !contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("Pool with an explicit StreamName: err = %v, want the mutual-exclusion refusal", err)
+		KVBucket:        kvBucket + "c",
+		RolloutKVBucket: rolloutBucket + "c",
+	}); err == nil || !contains(err.Error(), PoolStreamName(pool)) {
+		t.Fatalf("Pool with an arbitrary StreamName: err = %v, want the derived-name refusal", err)
 	}
 }
 
