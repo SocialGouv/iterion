@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.249.0](https://github.com/SocialGouv/iterion/compare/v3.248.0...v3.249.0) (2026-10-07)
+
+### Features
+
+* **chart:** sovereign runner pools — one runner deployment per pool (P8/D10') ([#2273](https://github.com/SocialGouv/iterion/issues/2273)) ([c3796b4](https://github.com/SocialGouv/iterion/commit/c3796b4f51f809147b0f4494581389e4caa399d3))
+
+    <details><summary>why</summary>
+
+    runnerPools[] renders a runner Deployment per pool, pinned three ways: ITERION_RUNNER_POOL (the admission stamp the pod checks every delivery against), the pool's JetStream stream + DLQ (rendered from the pool name, overriding the shared configmap), and the pool's regional gateway credential (OPENAI_COMPATIBLE_BASE_URL configured, the API key from a manually-managed Secret — the chart never renders credentials).
+
+    </details>
+
 ## [3.248.0](https://github.com/SocialGouv/iterion/compare/v3.247.0...v3.248.0) (2026-10-07)
 
 ### Features
