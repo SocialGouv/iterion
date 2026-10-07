@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.250.1](https://github.com/SocialGouv/iterion/compare/v3.250.0...v3.250.1) (2026-10-07)
+
+### Bug Fixes
+
+* **chart:** the pool pod takes the authenticated Mongo URI by key reference ([#2282](https://github.com/SocialGouv/iterion/issues/2282)) ([4cb7a2e](https://github.com/SocialGouv/iterion/commit/4cb7a2e6d39726d103f606100a01d59855fc70ca))
+
+    <details><summary>why</summary>
+
+    Third prod-found break on the first pool boot: the runner's Mongo credentials ride ITERION_MONGO_URI in the auth Secret (envFrom on the shared runner), which the pool pod deliberately does not mount whole. It now takes that key by specific reference — the pod's Mongo privileges are the deployment's own (the accepted residual, D14 F4: the pods sit inside the install's network boundary).
+
+    </details>
+
 ## [3.250.0](https://github.com/SocialGouv/iterion/compare/v3.249.1...v3.250.0) (2026-10-07)
 
 ### Bug Fixes
