@@ -385,7 +385,7 @@ var Kinds = append([]Kind{
 	{Name: "cursor.bands", Role: BlockRole, Opener: "bands", Hosts: []string{"cursor"}, Doc: "The numeric bands of a cursor.",
 		Entries: &Entries{Key: String, KeyName: "lo..hi", Doc: "The range is parsed by the compiler (C085 when malformed)",
 			Fields: []Field{field("prompt", String, `"prompt fragment"`, "The fragment appended to the system prompt when the position falls in the band")}}},
-	{Name: "supervisor", Role: Declaration, Doc: "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+	{Name: "supervisor", Role: Declaration, Doc: "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
 		Properties: []Property{
 			prop("watches", IdentList, "Agent nodes the supervisor is armed for"),
 			pModel,

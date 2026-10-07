@@ -232,7 +232,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(loop), "runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(msg.Vars), runLogger), msg.RunnerPool, runLogger)") {
+	if !strings.Contains(string(loop), "runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)") {
 		t.Fatal("the runner pod no longer filters declared supervisors by the frozen pool stamp (D12)")
 	}
 }

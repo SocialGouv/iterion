@@ -2908,10 +2908,17 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger, snapshotRoot)))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	if superviseHub != nil {
-		// The spawn needs the engine: a supervisor model pin resolves
-		// {{vars.name}} against the run's RESOLVED vars, the same values
-		// the nodes it watches see.
-		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(msg.Vars), runLogger), msg.RunnerPool, runLogger)
+		// The spawn resolves the run's OWN inputs: on a resume the message
+		// carries none (the engine re-reads the stored ones), so read the
+		// row — a pin resolved from the defaults alone would diverge from
+		// the nodes it watches.
+		spawnVars := msg.Vars
+		if msg.Resume != nil {
+			if run, err := r.cfg.Store.LoadRun(ctx, msg.RunID); err == nil && run.Inputs != nil {
+				spawnVars = run.Inputs
+			}
+		}
+		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
 			msg.RunID, specs, runLogger)
 		defer stopSup()
