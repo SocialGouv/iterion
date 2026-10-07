@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.245.0](https://github.com/SocialGouv/iterion/compare/v3.244.0...v3.245.0) (2026-10-07)
+
+### Features
+
+* **budget:** on_exceeded: pause parks a run at its cap, resumably ([#2263](https://github.com/SocialGouv/iterion/issues/2263)) ([4775ecc](https://github.com/SocialGouv/iterion/commit/4775ecc0fef2c6c1cb0ac551bd4067e530a872de)), references [#560](https://github.com/SocialGouv/iterion/issues/560)
+
+    <details><summary>why</summary>
+
+    A per-run budget ceiling ended through the failure path — and the 90% block preempts every cap crossing a node-sized step can produce, so a run approaching its cap never even reached the choice. The declared policy now has a second member:
+
+    </details>
+
 ## [3.244.0](https://github.com/SocialGouv/iterion/compare/v3.243.0...v3.244.0) (2026-10-06)
 
 ### Features
