@@ -1337,7 +1337,7 @@ func (s *Service) spawnRun(
 		// Spawn any DSL-declared supervisors for the lifetime of the run.
 		// They observe via the broker (in-process) and steer via
 		// QueueMessage; Close drains them before the goroutine exits.
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger, ex.supervisors)
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(precreateInputs), runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via
