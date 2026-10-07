@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.250.0](https://github.com/SocialGouv/iterion/compare/v3.249.1...v3.250.0) (2026-10-07)
+
+### Bug Fixes
+
+* **queue:** a pool-serving Connect brings up the pool's own topology ([#2278](https://github.com/SocialGouv/iterion/issues/2278)) ([1bf50bc](https://github.com/SocialGouv/iterion/commit/1bf50bca11aa8a051f14cf7a5f7c1522d2282e68)), references [SocialGouv/iterion#2029](https://github.com/SocialGouv/iterion/issues/2029)
+
+    <details><summary>why</summary>
+
+    The first pool pod CrashLooped twice in prod: past the JWT (fixed in the chart), the boot's EnsureSchema created a shared-subject stream under the pool's name, and the install's shared stream refused the connection with subjects-overlap (API 10065). natsq.Config gains Pool: Connect brings up the pool's own stream pair (exact pool subjects) plus the shared KV buckets, refuses an explicit stream name alongside, and the shared topology is never touched. The KV part of ensureSchema is extracted so…
+
+    </details>
+
 ## [3.249.1](https://github.com/SocialGouv/iterion/compare/v3.249.0...v3.249.1) (2026-10-07)
 
 ### Bug Fixes
