@@ -75,6 +75,12 @@ pool pods to a dedicated account is a follow-up.
 
 To bring a pool up:
 
+0. The pool pod reads TWO keys from the auth Secret by specific
+   reference — `ITERION_JWT_SECRET` and the authenticated
+   `ITERION_MONGO_URI` (a pool without either fails at boot; the ring
+   `ITERION_SECRETS_KEY*` stays out of the pod). On a chart-managed
+   auth Secret, set `secrets.auth.mongoURI`; on an externally managed
+   one, the key must already be there.
 1. Register the pool in the server's registry first (`PUT
    /api/admin/runner-pools`) — the registry reconciler creates the
    pool's JetStream topology, and the name must match.

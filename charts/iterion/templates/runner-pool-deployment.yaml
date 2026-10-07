@@ -166,6 +166,15 @@ spec:
                 secretKeyRef:
                   name: {{ default (printf "%s-auth" (include "iterion.fullname" $)) $.Values.secrets.auth.existingSecret }}
                   key: ITERION_JWT_SECRET
+            # The authenticated Mongo URI lives in the same auth Secret and
+            # the runner needs it to work; the pod's Mongo privileges are
+            # the deployment's own (the accepted residual — the pods sit
+            # inside the install's network boundary).
+            - name: ITERION_MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-auth" (include "iterion.fullname" $)) $.Values.secrets.auth.existingSecret }}
+                  key: ITERION_MONGO_URI
             {{- range $key, $value := $pool.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
