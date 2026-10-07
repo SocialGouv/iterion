@@ -195,6 +195,15 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if perr != nil {
 		publishedAt = time.Time{}
 	}
+	// NO fine table rides yet (ADR-121 § Delivery 2, #2255): the emitter's
+	// route key names a CHANNEL (providerFingerprint's routing label), not
+	// a credential - the run's own OAuth and a donor's lent OAuth stamp the
+	// same label, so a table keyed on it cannot tell whose money spent, and
+	// the broker would book zero on every door-served run (revi R30d246).
+	// The coarse whole-attempt booking stands until the publisher stamps a
+	// node-to-credential-fingerprint plan into the message; the broker's
+	// fine consumer (Outcome.ByFingerprint + effectiveCharge) is shipped
+	// and tested, waiting for that producer.
 	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
 		InputTokens:     in,

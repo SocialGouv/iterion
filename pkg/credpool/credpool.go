@@ -473,6 +473,12 @@ type Lease struct {
 	TenantID    string `bson:"tenant_id,omitempty" json:"tenant_id,omitempty"`
 	RequesterID string `bson:"requester_id,omitempty" json:"requester_id,omitempty"`
 	BotID       string `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
+	// Fingerprint is the granted credential's stable audit identity (the
+	// grant's own stamp) — the key a fine spend report slices by: a
+	// door-served run's report carries per-fingerprint totals, and the
+	// lease books only the slice that ran on THIS credential (ADR-121 §
+	// Delivery 2, #2255).
+	Fingerprint string `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
 	// GrantedCostUSD is the allowance handed to this run (what remained of
 	// the donor's daily cap). It is not only for display: while the lease
 	// is open this is the donor's COMMITTED but unspent exposure, and the
