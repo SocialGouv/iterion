@@ -657,6 +657,13 @@ type ArtifactSummary struct {
 type Service struct {
 	store    store.RunStore
 	storeDir string
+	// mergeTemps caches the per-run private temp dirs the no-storeDir
+	// merge clone fallback lives in (merge_remote.go), keyed by run id —
+	// one os.MkdirTemp per run, so the clone materialises once and the
+	// later merge attempts reuse it. mergeTempsMu guards the lazily
+	// built map.
+	mergeTemps   map[string]string
+	mergeTempsMu sync.Mutex
 	// workspaceTracker versions the files a run produces, so a rewind can
 	// undo a node's real work — the output map is only a summary for a
 	// bot whose product is documentation or code. Filesystem-backed, so

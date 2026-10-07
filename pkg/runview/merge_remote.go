@@ -37,17 +37,44 @@ const mergeGitTimeout = 120 * time.Second
 // lives. Stable across calls on purpose: conflict resolution spans several
 // HTTP round-trips and each one must see the same tree. With a
 // filesystem store the clone sits under the store; the cloud service has
-// no local store dir, so it falls back to the OS temp dir — the clone is
-// re-creatable from the forge at any time, so losing it to a pod restart
-// only costs a re-clone.
+// no local store dir, so it falls back to a per-run private temp dir — the
+// clone is re-creatable from the forge at any time, so losing it to a pod
+// restart only costs a re-clone. The temp fallback is os.MkdirTemp —
+// 0700, unpredictable, never a pre-existing path — cached per run for the
+// service's lifetime so the clone materialises once and the later merge
+// attempts reuse it. The fixed `$TMPDIR/iterion-merges/<runID>` it
+// replaced was ADOPTABLE: a local attacker pre-planting the path (a
+// hostile `.git` among other shapes) had the run merge inside their clone.
 func (s *Service) repoTargetedMergeRoot(runID string) string {
 	if runID == "" {
 		return ""
 	}
 	if s.storeDir == "" {
-		return filepath.Join(os.TempDir(), "iterion-merges", runID)
+		return s.tempMergeRoot(runID)
 	}
 	return filepath.Join(s.storeDir, "merges", runID)
+}
+
+// tempMergeRoot is the per-run temp fallback of repoTargetedMergeRoot: one
+// os.MkdirTemp per run, cached for the service's lifetime. MkdirTemp
+// refuses a pre-existing path by construction, so the adoption the fixed
+// name allowed is gone; the unpredictable name is what keeps the
+// pre-plant from reaching the path at all.
+func (s *Service) tempMergeRoot(runID string) string {
+	s.mergeTempsMu.Lock()
+	defer s.mergeTempsMu.Unlock()
+	if dir, ok := s.mergeTemps[runID]; ok {
+		return dir
+	}
+	dir, err := os.MkdirTemp("", "iterion-merge-")
+	if err != nil {
+		return ""
+	}
+	if s.mergeTemps == nil {
+		s.mergeTemps = map[string]string{}
+	}
+	s.mergeTemps[runID] = dir
+	return dir
 }
 
 // hasRepoTargetedMergeRoot reports whether a materialised merge clone
