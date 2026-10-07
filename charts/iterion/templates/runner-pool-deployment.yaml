@@ -157,6 +157,15 @@ spec:
                 secretKeyRef:
                   name: {{ $gw.existingSecret }}
                   key: {{ $gw.apiKeySecretKey | default "OPENAI_COMPATIBLE_API_KEY" }}
+            # The cloud-mode runner validates ITERION_JWT_SECRET at boot:
+            # the pool takes that ONE key from the deployment's existing
+            # auth Secret, by specific key reference — the ring
+            # (ITERION_SECRETS_KEY*) stays out of the pod (P4-b).
+            - name: ITERION_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-auth" (include "iterion.fullname" $)) $.Values.secrets.auth.existingSecret }}
+                  key: ITERION_JWT_SECRET
             {{- range $key, $value := $pool.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
