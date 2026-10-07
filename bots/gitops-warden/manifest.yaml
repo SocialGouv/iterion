@@ -34,7 +34,7 @@ tags: [code-review, read-only, deploy, git]
 schema_version: 1
 triggers: [gitops-warden, warden]
 requires:
-  iterion: ">= 3.240.0"
+  iterion: ">= 3.243.0"
 
 forge:
   events: [pull_request, pull_request_comment]  # MR open → verdict ; /warden note → re-run
