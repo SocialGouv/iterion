@@ -669,7 +669,7 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		return nil
 	}
 	var out []supervisorRoute
-	for i, spec := range supervise.SpecsFromWorkflow(wf, nil, nil) {
+	for i, spec := range supervise.SpecsFromWorkflow(wf, msg.Vars, nil) {
 		// A gateway-watched supervisor with no pin and no env default
 		// resolves the VENDOR family here while its evaluator refuses every
 		// evaluation (supervise.ErrGatewayWatchNeedsPin): metering it under a

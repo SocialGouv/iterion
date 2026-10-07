@@ -100,7 +100,7 @@ Entries: `"<lo..hi>": "prompt fragment"` — The range is parsed by the compiler
 
 ### supervisor
 
-A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.
+A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.
 
 A top-level declaration: `supervisor <name>:`.
 

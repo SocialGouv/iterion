@@ -130,3 +130,31 @@ func TestSpecsFromWorkflowResolvesModelVars(t *testing.T) {
 		t.Fatalf("an empty resolution must derive the hint: %+v", specs)
 	}
 }
+
+// The rendering matches the executor's formatValue: nil renders empty (an
+// unset value, not the word "<nil>"), a non-string renders its JSON
+// spelling. A routing field is a NAME at dispatch, and the two resolvers
+// must not disagree on the spelling.
+func TestSpecsFromWorkflowRendersScalarsLikeTheExecutor(t *testing.T) {
+	wf := &ir.Workflow{
+		Supervisors: []*ir.Supervisor{{
+			Name:    "persy",
+			Watches: []string{"campaign"},
+			Model:   "{{vars.m}}",
+		}},
+	}
+	for name, vars := range map[string]struct {
+		vars map[string]any
+		want string
+	}{
+		"nil":          {map[string]any{"m": nil}, ""},
+		"string list":  {map[string]any{"m": []string{"claw", "claude_code"}}, `["claw","claude_code"]`},
+		"plain string": {map[string]any{"m": "anthropic/claude-haiku-4-5"}, "anthropic/claude-haiku-4-5"},
+		"json object":  {map[string]any{"m": map[string]any{"a": 1}}, `{"a":1}`},
+	} {
+		specs := SpecsFromWorkflow(wf, vars.vars, nil)
+		if len(specs) != 1 || specs[0].Model != vars.want {
+			t.Errorf("%s: rendered %q, want %q", name, specs[0].Model, vars.want)
+		}
+	}
+}

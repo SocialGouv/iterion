@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -156,8 +157,10 @@ func SpecsFromWorkflow(wf *ir.Workflow, vars map[string]any, logger *iterlog.Log
 // not hold stays as written, the keep-literal the executor's resolver
 // honors on a node's routing field: C033 refused an undeclared name at
 // compile, so a surviving reference is a declared var the launch did not
-// set and whose default resolved empty, and the provider answers the
-// failure loudly at the first evaluation.
+// set and whose default resolved empty — and that failure is not loud:
+// the garbage pin makes every eval soft-fail and the supervision parks, a
+// declared supervisor silently inert, which is why the compiler's warning
+// names the span instead of leaving it to the run.
 func resolveModelVarsRefs(model string, vars map[string]any) string {
 	if model == "" || vars == nil || !strings.Contains(model, "{{") {
 		return model
@@ -181,13 +184,32 @@ func resolveModelVarsRefs(model string, vars map[string]any) string {
 		ref := strings.TrimSpace(span[2 : len(span)-2])
 		if name, ok := strings.CutPrefix(ref, "vars."); ok && !strings.Contains(name, ".") {
 			if v, held := vars[name]; held {
-				fmt.Fprint(&b, v)
+				b.WriteString(renderScalar(v))
 				rest = rest[end:]
 				continue
 			}
 		}
 		b.WriteString(span)
 		rest = rest[end:]
+	}
+}
+
+// renderScalar renders a resolved var the way the executor's formatValue
+// renders it into a node's routing field: nil as the empty string (an
+// unset value, not the word "<nil>"), anything non-string as its JSON
+// spelling. A routing field is a NAME at dispatch — a scalar by nature —
+// and the two resolvers must not disagree on the spelling.
+func renderScalar(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	default:
+		if j, err := json.Marshal(t); err == nil {
+			return string(j)
+		}
+		return fmt.Sprint(t)
 	}
 }
 

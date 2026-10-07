@@ -131,7 +131,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v1.supervisor"
           },
-          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -2400,7 +2400,7 @@
     },
     "v1.supervisor": {
       "additionalProperties": false,
-      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
       "properties": {
         "cooldown": {
           "description": "Minimum delay between two evaluations, e.g. \"2m\"",
@@ -2808,7 +2808,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v2.supervisor"
           },
-          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -5073,7 +5073,7 @@
     },
     "v2.supervisor": {
       "additionalProperties": false,
-      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
       "properties": {
         "cooldown": {
           "description": "Minimum delay between two evaluations, e.g. \"2m\"",
