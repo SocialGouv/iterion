@@ -55,6 +55,61 @@ For the fuller control-plane / data-plane view, see [cloud-architecture.md](clou
 - **runner** pulls RunMessages, claims a NATS-KV lease, executes the
   workflow, and writes events + artifacts to Mongo + S3.
 
+### Sovereign runner pools
+
+`runnerPools[]` renders one runner Deployment per sovereign pool
+([sovereign-pools.md](sovereign-pools.md)): a team whose code must
+never reach a public LLM vendor runs on its own pool, isolated by the
+code on the shared install — no dedicated namespace, no NetworkPolicy.
+
+Each pool pod is pinned three ways: `ITERION_RUNNER_POOL` (the
+admission stamp — a delivery whose msg ≡ doc ≡ pod stamps do not all
+name THIS pool is parked on the pool's DLQ, never executed), the
+pool's own JetStream stream + DLQ + durable consumer, and its gateway
+credential. The pod carries the gateway credential ONLY in its env —
+no platform LLM secrets, no run-secrets ring key (the run envelope is
+self-contained since P4-b). It runs under the shared runner
+ServiceAccount, whose sandbox-reaper role can read the namespace's
+Secrets; that residual is the shared runner's own, and scoping the
+pool pods to a dedicated account is a follow-up.
+
+To bring a pool up:
+
+1. Register the pool in the server's registry first (`PUT
+   /api/admin/runner-pools`) — the registry reconciler creates the
+   pool's JetStream topology, and the name must match.
+2. Map the team (`PUT /api/admin/teams/{id}/runner-pool`) — one team
+   per pool.
+3. Create the gateway Secret manually (the chart never renders
+   credentials):
+   `kubectl create secret generic "<release>-pool-<name>-gateway"
+   --from-literal=OPENAI_COMPATIBLE_API_KEY=<key>`
+   (the Secret key defaults to `OPENAI_COMPATIBLE_API_KEY`;
+   `gateway.apiKeySecretKey` overrides it)
+4. Add the pool to `runnerPools[]` and upgrade:
+
+```yaml
+runnerPools:
+  - name: honorabilite
+    replicas: 1
+    gateway:
+      baseUrl: "https://<regional-gateway>"   # not a secret
+      existingSecret: "<release>-pool-honorabilite-gateway"
+    # env:                                   # per-pod literals, e.g.
+    #   ITERION_LLM_ENDPOINT_ALLOW_PRIVATE: "1"  # a private-address
+    #                                       # gateway — never set that
+    #                                       # through the SHARED configmap
+```
+
+When `networkPolicy.egress` is active, allow the gateway host through
+`networkPolicy.egress.extraAllow` (the pool pods use the same policy;
+the sandbox runs' own egress is governed by each run's `network:`
+allowlist as for any runner).
+
+Draining follows the shared runner contract (lame-duck
+`terminationGracePeriodSeconds`): scale the pool's Deployment down and
+its in-flight run finishes or checkpoints within the window.
+
 ## Prerequisites
 
 | Component | Requirement |

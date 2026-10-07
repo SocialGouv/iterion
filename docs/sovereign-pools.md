@@ -114,6 +114,37 @@ The isolation chain, in the order a run meets it:
    together). Headers are broker-visible and operator-writable — a
    guard against misrouting and confusion, not an active forger (the
    boundary's accepted residual).
+11. **The tenant-filter opt-outs are audited, by family**: the 62
+    call sites of `WithoutTenantFilter`/`TeamBlind` (tests excluded)
+    fall into six families, each audited against one question — does
+    the site act on an already-admitted run, or enumerate for a user?
+    - *System post-execution* (outcome router, schedule outcome, the
+      trigger relay): a platform consumer loads ONE run by id to
+      decide its follow-up. The run is already admitted; nothing
+      enumerates.
+    - *Cluster-wide sweeps* (the lifecycle reconcilers, the queue/
+      retry/gate sweepers, the reaper, the alert and usernotify
+      sweeps): the sweep IS a cluster operation — it discovers its
+      own work. A tenant filter would make it blind by construction.
+    - *Forge webhooks* (the gate autofix/reconcile/relaunch family):
+      the webhook is signature-verified, and the run id it names is
+      bound to that repository at launch — a foreign team's run can
+      never match another org's webhook. The blind load is by id;
+      nothing is searchable across tenants through it.
+    - *Already-mediated control* (the cloud publisher's cancel/steer):
+      the caller's tenant filter already gated the same read; the
+      blind load is the second, explicit one — commented at each
+      site.
+    - *User-facing reads* (artifacts, issue watchers, fork grants):
+      the scoped variants (`ListArtifactsCtx`, …) serve the HTTP
+      handlers; the opt-out sites are the explicit LOCAL variants.
+    - *Mediation itself* (`GetIRBlob` — P5-b item 8 —, `runTenant`,
+      the launch id-uniqueness check): the blind read is how the
+      tenant is resolved or the boundary enforced.
+    No site was found acting as a cross-tenant enumeration for a
+    caller. The families stay auditable by grepping the two helpers;
+    a new site outside these shapes owes its own justification in its
+    comment.
 
 ## Operations
 
