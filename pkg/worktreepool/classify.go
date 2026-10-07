@@ -10,6 +10,7 @@
 package worktreepool
 
 import (
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 	"context"
 	"errors"
 	"fmt"
@@ -836,13 +837,27 @@ func worktreeStatus(ctx context.Context, path string, countIgnored, excludeRunti
 // isRuntimeIgnoredPath recognises only top-level state Iterion or its
 // managed runtime writes into every checkout. Repositories commonly ignore
 // `.claude/` as one directory, so git reports the collapsed root rather
-// than the individual skills/settings that isScaffold can identify.
-// Unknown ignored paths remain protected: an ignored `.env` may belong to
-// the operator and unattended cleanup has no authority to decide otherwise.
+// than the individual skills/settings that isScaffold can identify. The
+// canonical noise entries (pkg/treenoise) are derived, not re-spelled: a
+// drifted devbox.lock and a hard-killed tool script's scratch are the
+// engine's own writes as much as the mirror is. Unknown ignored paths
+// remain protected: an ignored `.env` may belong to the operator and
+// unattended cleanup has no authority to decide otherwise.
 func isRuntimeIgnoredPath(path string) bool {
 	path = strings.TrimSuffix(filepath.ToSlash(path), "/")
 	if path == ".claude" || strings.HasPrefix(path, ".claude/") {
 		return true
+	}
+	for _, e := range treenoise.Entries {
+		if e.Prefix {
+			if strings.HasPrefix(path, e.Path) {
+				return true
+			}
+			continue
+		}
+		if path == e.Path || strings.HasPrefix(path, e.Path+"/") {
+			return true
+		}
 	}
 	if path == ".gomodcache" || strings.HasPrefix(path, ".gomodcache/") ||
 		path == ".devbox" || strings.HasPrefix(path, ".devbox/") {
