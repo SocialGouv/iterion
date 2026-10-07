@@ -21,6 +21,42 @@ type ownerCtxKey struct{}
 // tenant-stamped ctx, so a missing tenant_id is normally a bug.
 type withoutTenantFilterKey struct{}
 
+// leaseIdentityCtxKey carries the admitted identity a distributed run
+// lease must carry. Deliberately separate from tenantCtxKey: this is
+// the LEASE's identity — what the lock inscribes and later
+// re-verifies — not the caller's read scope, and stamping it must not
+// change store mediation.
+type leaseIdentityCtxKey struct{}
+
+// LeaseIdentity is the admitted identity a run lease is stamped with:
+// the tenant of the message the runner admitted, and the runner pool
+// when the run is pool-stamped.
+type LeaseIdentity struct {
+	TenantID string
+	Pool     string
+}
+
+// WithLeaseIdentity returns a child context carrying the admitted
+// identity for the run lease about to be acquired. Both values come
+// from the admitted message; an empty identity returns parent
+// unchanged.
+func WithLeaseIdentity(parent context.Context, tenantID, pool string) context.Context {
+	if tenantID == "" && pool == "" {
+		return parent
+	}
+	return context.WithValue(parent, leaseIdentityCtxKey{}, LeaseIdentity{TenantID: tenantID, Pool: pool})
+}
+
+// LeaseIdentityFromContext returns the lease identity stamped on ctx
+// and whether one was set.
+func LeaseIdentityFromContext(ctx context.Context) (LeaseIdentity, bool) {
+	if ctx == nil {
+		return LeaseIdentity{}, false
+	}
+	id, ok := ctx.Value(leaseIdentityCtxKey{}).(LeaseIdentity)
+	return id, ok
+}
+
 // WithTenant returns a child context carrying the given tenant_id.
 // An empty tenantID returns parent unchanged — the caller is then
 // responsible for ensuring the request is permitted to bypass tenant

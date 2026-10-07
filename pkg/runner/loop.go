@@ -1933,9 +1933,15 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		// (network partition, permissions) shows up in the runner
 		// logs instead of being silently dropped — without this, an
 		// expired-but-not-deleted lease blocks siblings for the full
-		// LockTTL window with no operator visibility.
+		// LockTTL window with no operator visibility. An identity
+		// refusal is the takeover class, not the stuck-KV class: same
+		// ERROR level the heartbeat uses mid-run.
 		if err := lock.Unlock(); err != nil {
-			logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
+			if errors.Is(err, natsq.ErrLeaseIdentityMismatch) {
+				logger.Error("runner: lock release for %s refused — the lease belongs to another admitted identity: %v", msg.RunID, err)
+			} else {
+				logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
+			}
 		}
 	}()
 

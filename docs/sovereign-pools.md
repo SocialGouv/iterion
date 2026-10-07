@@ -79,6 +79,22 @@ The isolation chain, in the order a run meets it:
    sit inside the install's network boundary); what the code guarantees
    is that the STORE opens no object for a tenant that does not own
    its run.
+9. **The run lease carries the run's admitted identity**: the
+   distributed lease a runner takes on a run (`pkg/queue/nats`) is
+   written with the tenant — and runner pool, when stamped — of the
+   message THAT pod admitted, taken from the delivery context
+   (`store.WithLeaseIdentity`). An acquire without an admitted identity
+   fails closed (`ErrLeaseUnattributed`): an unattributable lease never
+   comes to exist. Before a holder refreshes or releases the lease, it
+   re-reads the stored body — on the failure path of the revision CAS,
+   never in the nominal path — and refuses on any disagreement
+   (`ErrLeaseIdentityMismatch`): a lease rewritten under another
+   admission is never extended and never deleted by a holder of a
+   different identity; a takeover under the SAME identity (a sibling of
+   the same team) is caught by the revision itself. The guard is
+   against honest confusion, not an active forger: a pod forging the
+   whole protocol is beyond the code's reach (the same accepted
+   residual as the rest of the boundary — ADR-123's rest point).
 
 ## Operations
 
