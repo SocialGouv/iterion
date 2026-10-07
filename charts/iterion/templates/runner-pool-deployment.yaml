@@ -1,0 +1,155 @@
+{{- range .Values.runnerPools }}
+{{- $pool := . }}
+# One runner Deployment PER sovereign pool (plan v2 D10'): the pod is
+# pinned to the pool three ways — ITERION_RUNNER_POOL (the admission
+# stamps it checks every delivery against), the pool's JetStream stream
+# and DLQ (its only source of deliveries), and its gateway credential.
+# The pods carry the pool's gateway credential ONLY: never the platform
+# LLM secrets, never the run-secrets ring key — the run envelope is
+# self-contained (P4-b), so a leaked pool pod exposes exactly the
+# regional gateway it was built to serve, and nothing else.
+{{- if not $pool.name }}
+{{- fail "runnerPools[]: every entry needs a name (the pool's registry name)" }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "iterion.fullname" $ }}-runner-pool-{{ $pool.name }}
+  labels:
+    {{- include "iterion.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: runner-pool
+    iterion.io/runner-pool: {{ $pool.name }}
+spec:
+  replicas: {{ $pool.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: runner-pool
+      iterion.io/runner-pool: {{ $pool.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "iterion.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: runner-pool
+        iterion.io/runner-pool: {{ $pool.name }}
+      annotations:
+        # Roll the pool's pods when the rendered config changes (the pool
+        # shares the server's configmap envFrom; its own env are literal).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- with $pool.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "iterion.serviceAccountName" $ }}
+      {{- with $.Values.runner.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml (default $.Values.securityContext $.Values.runner.podSecurityContext) | nindent 8 }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Same lame-duck drain contract as the shared runner: SIGTERM lets
+      # the in-flight run finish within this window.
+      terminationGracePeriodSeconds: {{ $.Values.runner.terminationGracePeriodSeconds | default 90 }}
+      containers:
+        - name: iterion-runner
+          {{- if $pool.image }}
+          image: {{ $pool.image | quote }}
+          {{- else }}
+          image: {{ include "iterion.image" $ }}
+          {{- end }}
+          imagePullPolicy: {{ $.Values.runner.imagePullPolicy | default $.Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (default $.Values.containerSecurityContext $.Values.runner.containerSecurityContext) | nindent 12 }}
+          args:
+            {{- toYaml $.Values.runner.args | nindent 12 }}
+          env:
+            # The pod's own pool identity — the admission stamp it checks
+            # every delivery against (msg ≡ doc ≡ pod).
+            - name: ITERION_RUNNER_POOL
+              value: {{ $pool.name | quote }}
+            - name: ITERION_RUNNER_EPOCH
+              value: {{ $.Values.config.rollout.runnerEpoch | int64 | quote }}
+            - name: ITERION_RUNNER_EPOCH_MISMATCH_DELAY
+              value: {{ $.Values.config.rollout.epochMismatchDelay | quote }}
+            # The pool's JetStream topology. Literal env beat envFrom, so
+            # these override the shared configmap's default stream/DLQ.
+            - name: ITERION_NATS_STREAM
+              value: {{ printf "ITERION_RUNS_POOL_%s" $pool.name | quote }}
+            - name: ITERION_NATS_DLQ_STREAM
+              value: {{ printf "ITERION_RUNS_POOL_%s_DLQ" $pool.name | quote }}
+            {{- if $.Values.runner.sandbox.enabled }}
+            - name: ITERION_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: ITERION_RUNNER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ITERION_RUNNER_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            {{- end }}
+            # The pool's gateway credential (P3's openai_compatible
+            # escape hatch): the base URL is configuration, the API key
+            # is a manually-managed k8s Secret — never rendered into
+            # values. required: a pool without its gateway would admit
+            # runs whose every LLM surface then refuses.
+            - name: OPENAI_COMPATIBLE_BASE_URL
+              value: {{ required "runnerPools[]: gateway.baseUrl is required (the pool's regional gateway URL)" $pool.gateway.baseUrl | quote }}
+            - name: OPENAI_COMPATIBLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "runnerPools[]: gateway.existingSecret is required (a manual k8s Secret carrying the gateway API key)" $pool.gateway.existingSecret }}
+                  key: {{ $pool.gateway.apiKeySecretKey | default "OPENAI_COMPATIBLE_API_KEY" }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "iterion.fullname" $ }}-config
+            {{- if or $.Values.secrets.storage.create $.Values.secrets.storage.existingSecret }}
+            - secretRef:
+                name: {{ default (printf "%s-storage" (include "iterion.fullname" $)) $.Values.secrets.storage.existingSecret }}
+            {{- end }}
+          volumeMounts:
+            - name: run-iterion
+              mountPath: /run/iterion
+          resources:
+            {{- toYaml (default $.Values.runner.resources $pool.resources) | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ default $.Values.server.metricsPort $.Values.runner.metricsPort }}
+              protocol: TCP
+          {{- if ($.Values.probes.startup).enabled }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: {{ $.Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ $.Values.probes.startup.failureThreshold }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+      volumes:
+        - name: run-iterion
+          emptyDir:
+            medium: Memory
+{{- end }}
