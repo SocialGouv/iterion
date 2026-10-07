@@ -641,3 +641,49 @@ func TestGitopsWardenFold_JudgeEnumsAreCaseNormalized(t *testing.T) {
 		t.Errorf("reasons = %q, want the file and the platform rule", res.EscalateReasons)
 	}
 }
+
+// The engine passes an edge ref whose producer never ran AS ITS LITERAL:
+// an unresolved fallback_used template is the ABSENCE of the stamp (the
+// judge was served by its primary), never a fallback. Regression for the
+// live e2e run where the zai-dialed primary left the ref unresolved and
+// the fold read the literal as a fallback.
+func TestGitopsWardenFold_UnresolvedFallbackRefIsNotAFallback(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	cmdTemplate := toolCommand(t, "gitops-warden/main.bot", "publish_verdict")
+	vals := map[string]string{
+		"pr_url": "https://pic.example/o/r/-/merge_requests/7", "forge_publish_url": "", "forge_publish_token": "",
+		"forge_pr_state_url": "", "mode": "dry_run", "gate_enabled": "true", "gate_context": "gitops/conformance",
+		"reviewers": "", "peer_gate_contexts": "revi/review", "merge_method": "squash", "remove_source_branch": "false",
+		"run.id": "run-test-1", "reviewed_sha": "abc123defabc123", "base_sha": "base111base11111",
+		"route": "classify", "sentinel_reason": "", "changed_files": "1",
+		"files":          `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
+		"diff_too_large": "false", "unparseable": "false", "workspace_anomaly": "", "stale_launch": "false",
+		"policy_source": "default", "policy_sha": "", "declared_head_sha": "",
+		"verdict":           "auto_approvable",
+		"classified_files":  `[{"path":"apps/x/values.yaml","cls":"auto_approvable","rule":"image-bump","reason":"same image, new tag"}]`,
+		"platform_findings": `[]`, "doubts": "", "summary": "clean bump",
+		// THE fixture: the literal an unresolved edge ref leaves in the body.
+		"fallback_used": "{{outputs.classify._fallback_used}}",
+	}
+	rendered := cmdTemplate
+	for k, v := range vals {
+		rendered = strings.ReplaceAll(rendered, "{{input."+k+"}}", "'"+v+"'")
+		rendered = strings.ReplaceAll(rendered, "{{vars."+k+"}}", "'"+v+"'")
+	}
+	rendered = strings.ReplaceAll(rendered, "{{run.id}}", "'run-test-1'")
+	// No unsubstituted-ref assertion HERE on purpose: the literal in the
+	// body is the case under test.
+	out, err := exec.Command("sh", "-c", rendered).Output()
+	if err != nil && len(out) == 0 {
+		t.Fatalf("publish_verdict failed: %v (%q)", err, out)
+	}
+	var res wardenVerdict
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatalf("bad json: %v (%q)", err, out)
+	}
+	if res.Blocking != 0 {
+		t.Fatalf("blocking = %d (%s) — the unresolved template must read as no-fallback", res.Blocking, res.EscalateReasons)
+	}
+}

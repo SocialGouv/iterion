@@ -237,7 +237,15 @@ else:
         reasons.append('the run woke on a moved head (the launch named another revision)')
     if envs('POLICY_SOURCE') == 'target-modified':
         reasons.append('the MR modifies the review policy — it cannot judge itself')
-    if envs('FALLBACK_USED').strip():
+    fb = envs('FALLBACK_USED').strip()
+    # The engine passes an edge ref whose producer never ran AS ITS LITERAL
+    # (the _fallback_used stamp exists only when the node was actually
+    # fallback-served): an unresolved template reaching this env is the
+    # ABSENCE of the stamp, never its presence. The two opening braces are
+    # spelled chr(123) twice because a literal pair in this body is the
+    # marker the unsubstituted-ref guards grep for.
+    template_marker = chr(123) * 2
+    if fb and template_marker not in fb:
         reasons.append('the classifier was served by its fallback route — a degraded judge never enforces')
     try:
         judged = json.loads(envs('CLASSIFIED_FILES', '[]') or '[]')
