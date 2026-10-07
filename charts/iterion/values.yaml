@@ -504,6 +504,13 @@ secrets:
     # secrets-reference.md § rotating the run-bundle key).
     secretsKeys: ""
     secretsKeyID: ""
+    # The authenticated Mongo URI the RUNNER works under (the server's
+    # own comes from the same place). Rendered into the auth Secret when
+    # set; runnerPools[] pods take it from here by key reference — a
+    # pool pod without it fails at boot (the runner cannot reach the
+    # store). Leave empty on installs whose auth Secret is
+    # externally managed and already carries it.
+    mongoURI: ""
     # First-boot super-admin email. When set on an empty users
     # collection the server creates the account with a one-time
     # random password printed at WARN level in the boot logs. Leave
