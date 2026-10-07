@@ -19,14 +19,20 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// The subjects are package constants, so one broker serves one Conn:
-// these witnesses share a single connection (distinct run keys, no
-// publishes — only the KV bucket is exercised).
+// The witnesses share one KV-only connection: these tests exercise the
+// lease (the KV bucket) and never publish or consume, so they build the
+// Conn by hand instead of Connect/EnsureSchema — creating the runs
+// stream here would grab the package-constant subjects and collide with
+// the other packages' integration tests running in parallel against the
+// same broker (paid once in CI: pkg/runner failed EnsureSchema behind
+// this file's stream).
 var (
 	leaseConnOnce sync.Once
 	leaseShared   *Conn
@@ -39,21 +45,33 @@ func leaseConn(t *testing.T) *Conn {
 		t.Skip("ITERION_TEST_NATS_URI unset — skipping run-lease identity tests (CI: nats-conformance job)")
 	}
 	leaseConnOnce.Do(func() {
-		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-		leaseShared, leaseConnErr = Connect(context.Background(), Config{
-			URL:             os.Getenv("ITERION_TEST_NATS_URI"),
-			StreamName:      "ITERION_RUNS_TEST_LEASE_" + suffix,
-			DLQStream:       "ITERION_RUNS_DLQ_TEST_LEASE_" + suffix,
-			KVBucket:        "test-lease-id-" + suffix,
-			RolloutKVBucket: "test-lease-rollout-" + suffix,
-			ConsumerName:    "test-lease-runners-" + suffix,
-			MaxDeliver:      2,
-			AckWait:         2 * time.Second,
-			MaxAge:          time.Hour,
+		nc, err := natsgo.Connect(os.Getenv("ITERION_TEST_NATS_URI"),
+			natsgo.MaxReconnects(-1), natsgo.ReconnectWait(2*time.Second))
+		if err != nil {
+			leaseConnErr = fmt.Errorf("nats connect: %w", err)
+			return
+		}
+		js, err := jetstream.New(nc)
+		if err != nil {
+			nc.Close()
+			leaseConnErr = fmt.Errorf("jetstream: %w", err)
+			return
+		}
+		bucket := fmt.Sprintf("test-lease-id-%d", time.Now().UnixNano())
+		kv, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
+			Bucket:  bucket,
+			TTL:     DefaultLockTTL,
+			History: 1,
 		})
+		if err != nil {
+			nc.Close()
+			leaseConnErr = fmt.Errorf("kv %s: %w", bucket, err)
+			return
+		}
+		leaseShared = &Conn{nc: nc, js: js, kv: kv, cfg: Config{KVBucket: bucket, Logger: iterlog.Nop()}}
 	})
 	if leaseConnErr != nil {
-		t.Fatalf("connect: %v", leaseConnErr)
+		t.Fatalf("lease conn: %v", leaseConnErr)
 	}
 	return leaseShared
 }
