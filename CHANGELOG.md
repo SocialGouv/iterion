@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.251.0](https://github.com/SocialGouv/iterion/compare/v3.250.1...v3.251.0) (2026-10-07)
+
+### Features
+
+* **openai:** an operator knob opts the OPENAI_BASE_URL factory into stream usage ([#2283](https://github.com/SocialGouv/iterion/issues/2283)) ([832d437](https://github.com/SocialGouv/iterion/commit/832d4372aa11f00e7f02d80a79042a0595a1308f)), closes [#2085](https://github.com/SocialGouv/iterion/issues/2085)
+
+    <details><summary>why</summary>
+
+    Streaming calls through a custom OPENAI_BASE_URL never requested stream_options.include_usage, so their tokens stayed invisible to the usage_unreported accounting and to max_tokens/max_cost_usd. The new ITERION_OPENAI_STREAM_USAGE knob (classified infra, spend-adjacent) opts the openai factory into OpenAIStreamUsage on both forwarding sites (env and BYOK); unset keeps today's behavior exactly — providers that reject stream_options are untouched.
+
+    </details>
+
 ## [3.250.1](https://github.com/SocialGouv/iterion/compare/v3.250.0...v3.250.1) (2026-10-07)
 
 ### Bug Fixes
