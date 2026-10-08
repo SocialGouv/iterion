@@ -1109,13 +1109,13 @@ counted and spends no REST budget.
 The same hour's budget level follows on a line of its own, `forge budget:
 lowest remaining in the hour ending 2026-09-30T15:00Z — <host>
 <rest|graphql>[/<resource>] installation <id>: <remaining> of <limit> at <seen>
-(resets <reset>), …`: for each installation and API, the lowest
-`X-RateLimit-Remaining` any answer to that installation's token reported in the
-hour — GitHub sends it on every answer, 2xx included — when it was seen, and
-when that window resets. The `/resource` suffix appears only when an answer
-draws on a budget beyond the API's default one — GitHub's `search` budget
-behind a REST path — so it never names a separate budget what today's calls
-share. It shows an
+(resets <reset>), …`: for each installation, API and named resource, the
+lowest `X-RateLimit-Remaining` any answer to that installation's token
+reported in the hour — GitHub sends it on every answer, 2xx included — when it
+was seen, and when that window resets. The `/resource` suffix appears only
+when an answer draws on a budget beyond the API's default one — GitHub's
+`search` budget behind a REST path — so it never names a separate budget what
+today's calls share. It shows an
 installation approaching exhaustion before the first rate-limited 403, not after.
 Every lane spends the installation's one budget, so the line has no lane; an
 answer to any other credential reports a budget the line cannot name and is left
