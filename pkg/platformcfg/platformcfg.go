@@ -208,9 +208,9 @@ var botVarsInfraExact = map[string]bool{
 	// whether a missing botsource pin recovers to the nearest older
 	// version or refuses. It configures the process, never a bot's run.
 	"ITERION_BOTSOURCE_PIN_FALLBACK": true,
-	"ITERION_BIN":          true,
-	"ITERION_PI_BIN":       true,
-	"ITERION_OPENCODE_BIN": true,
+	"ITERION_BIN":                    true,
+	"ITERION_PI_BIN":                 true,
+	"ITERION_OPENCODE_BIN":           true,
 	// The two project-trust switches are ENFORCEMENT, not paths: each one
 	// lifts a refusal that stops an agent CLI executing code out of the
 	// repository under review.
