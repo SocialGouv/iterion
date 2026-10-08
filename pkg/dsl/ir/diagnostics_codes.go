@@ -91,7 +91,7 @@ const (
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
-	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, a dotted path drilling a json var's document included, the route being decided before the node runs — or resolves to a list-typed var's JSON spelling, a name no backend registered (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
+	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, a dotted path drilling a json var's document included, the route being decided before the node runs — or resolves to a list-typed var's JSON spelling, a name no backend registered (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model only a whole {{vars.name}} resolves at spawn, every other span leaves the supervisor on its provider hint)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
@@ -298,4 +298,21 @@ const (
 	// refuse at the node. C180–C182 are claimed by an in-flight branch, so
 	// the band starts at C183.
 	DiagComputeEnumLiteral DiagCode = "C183" // compute field with an enum constraint fed by a static string literal outside the enum (warning — the value fails SCHEMA_VALIDATION at run time)
+
+	// A loop cap — or its foreach sibling, the same evaluator being the
+	// only reader of both — on a router edge the runtime does not read.
+	// `round_robin` alternates over its unconditional edges; `llm` takes
+	// the route the model named — neither goes through
+	// `evaluateEdgesWithLoopsRS`, so the iteration silently does nothing
+	// and the author's `as name(N)` promise is not kept. Same argument as
+	// C244 (a loop on a fan-out is refused).
+	DiagLoopOnRouterEdge DiagCode = "C309" // a `round_robin` / non-multi `llm` router's outgoing edge carries `as name(N)` or `as foreach name(...)` — the iteration is accepted at compile time and silently ignored at run time (error; put the loop on the edge that re-enters the router)
+
+	// Public contracts: a declared output port whose producer runs more
+	// than once — a parallel branch body, a foreach, or a bounded loop
+	// cycle. The port capture keeps one entry per node id, so the declared
+	// value is whichever execution finished last.
+	DiagContractOutputOffFanOut DiagCode = "C310" // a contract output port's `from:` names a node that executes more than once (fan-out branch body, foreach, bounded loop cycle) — the port projects whichever execution finished last, one execution's output (warning)
+
+	DiagBudgetOnExceededInvalid DiagCode = "C311" // budget.on_exceeded: unknown policy, only fail and pause exist — treated as fail (error)
 )

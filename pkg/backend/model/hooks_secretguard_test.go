@@ -39,7 +39,7 @@ func TestStoreEventHooks_RedactsSecretsAtSinks(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelTrace, &logBuf)
-	hooks := NewStoreEventHooks(ctx, st, runID, logger, guard)
+	hooks := NewStoreEventHooks(ctx, st, runID, logger, guard, nil)
 
 	// Fire the secret through every high-risk sink.
 	hooks.OnLLMPrompt("n1", "system uses "+secret, "user sends "+b64)
@@ -91,7 +91,7 @@ func TestStoreEventHooks_NilGuardNoRedaction(t *testing.T) {
 	}
 
 	logger := iterlog.New(iterlog.LevelInfo, &bytes.Buffer{})
-	hooks := NewStoreEventHooks(ctx, st, runID, logger, nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, logger, nil, nil)
 	hooks.OnLLMPrompt("n1", "", "user sends "+secret)
 
 	evts, err := st.LoadEvents(ctx, runID)

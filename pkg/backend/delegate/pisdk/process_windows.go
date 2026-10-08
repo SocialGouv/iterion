@@ -29,7 +29,7 @@ func killSubtree(pid int) error {
 
 // awaitSubtreeGone is a no-op on Windows: there is no process group to join,
 // and the leader itself is already reaped by reap before Close reaches it.
-func awaitSubtreeGone(_ int, _ time.Duration) {}
+func awaitSubtreeGone(_ int, _ time.Duration, _ func(int, time.Duration)) {}
 
 // processStartTime has no procfs to read on Windows.
 func processStartTime(int) (uint64, bool) { return 0, false }

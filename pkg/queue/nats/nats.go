@@ -31,6 +31,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Plan §C.2 — every named subject / stream / bucket lives here.
@@ -144,7 +145,15 @@ type Config struct {
 	// nothing.
 	LeaseUnwindCeiling time.Duration
 	MaxPayload         int // default 0 → use server's negotiated MaxPayload
-	Logger             *iterlog.Logger
+	// Pool is the sovereign runner pool this connection serves. Non-empty,
+	// Connect brings up the POOL's stream pair (exact pool subjects) plus
+	// the shared KV buckets, instead of the shared stream pair — a
+	// shared-subject stream created under a pool's name is exactly the
+	// subjects-overlap failure a pre-existing pool stream then refuses.
+	// The stream/consumer/DLQ names derive from the pool; an explicit
+	// StreamName/DLQStream alongside Pool is refused.
+	Pool   string
+	Logger *iterlog.Logger
 }
 
 // Conn is the wired NATS layer. The publisher + consumer both consume
@@ -263,7 +272,38 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	}
 
 	c := &Conn{nc: nc, js: js, cfg: cfg, logger: cfg.Logger}
-	if err := c.EnsureSchema(ctx); err != nil {
+	if cfg.Pool != "" {
+		// A pool-serving connection brings up the pool's OWN stream pair —
+		// EnsureSchema would create a shared-subject stream under the
+		// pool's name, and the real pool stream (the server registry's
+		// reconciler made it) then refuses the connection with
+		// subjects-overlap — measured in prod on the first pool boot
+		// (2026-10-07). The KV buckets stay shared: the run lease is
+		// per-run, not per-pool.
+		// The pod template stamps the derived names (the chart has done so
+		// since its first pool render) and the unstamped pod is equally
+		// correct — both are accepted; ANY other stream name would point
+		// this pool's deliveries elsewhere and is refused. Merged alone,
+		// this keeps every already-deployed pool pod booting.
+		if cfg.StreamName != StreamRuns && cfg.StreamName != PoolStreamName(cfg.Pool) {
+			nc.Close()
+			return nil, fmt.Errorf("queue/nats: Pool %q with StreamName %q — want the default or the pool's own %s (a pool serves its derived topology)", cfg.Pool, cfg.StreamName, PoolStreamName(cfg.Pool))
+		}
+		if cfg.DLQStream != StreamRunsDLQ && cfg.DLQStream != PoolDLQStreamName(cfg.Pool) {
+			nc.Close()
+			return nil, fmt.Errorf("queue/nats: Pool %q with DLQStream %q — want the default or the pool's own %s", cfg.Pool, cfg.DLQStream, PoolDLQStreamName(cfg.Pool))
+		}
+		if err := ensurePoolSchema(ctx, js, cfg, cfg.Pool); err != nil {
+			nc.Close()
+			return nil, err
+		}
+		res, err := ensureKVs(ctx, js, cfg)
+		if err != nil {
+			nc.Close()
+			return nil, err
+		}
+		c.kv, c.rolloutKV = res.runLocks, res.rollout
+	} else if err := c.EnsureSchema(ctx); err != nil {
 		nc.Close()
 		return nil, err
 	}
@@ -412,6 +452,14 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaReso
 		return schemaResources{}, fmt.Errorf("queue/nats: stream %s: %w", cfg.DLQStream, err)
 	}
 
+	return ensureKVs(ctx, js, cfg)
+}
+
+// ensureKVs brings up the two SHARED KV buckets — the run-lease bucket
+// (per-run keys, pool-agnostic) and the rollout-epoch bucket. Both the
+// shared EnsureSchema and the pool-scoped Connect path need exactly
+// these; the streams differ between the two, the buckets do not.
+func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   cfg.KVBucket,
 		TTL:      cfg.LockTTL,
@@ -524,18 +572,23 @@ func runMessageID(msg *queue.RunMessage) string {
 }
 
 // CancelRun fires the transient `iterion.cancel.<run_id>` Core NATS
-// subject. The runner subscribes to its in-flight run's subject for
-// the duration of execution; an unsubscribed cancel is a silent
-// no-op, which matches the expectation that a queued (not yet
-// picked up) run is cancelled by deleting the stream message instead.
-func (c *Conn) CancelRun(runID string) error {
+// subject, stamped with the run's admitted identity. The runner
+// subscribes to its in-flight run's subject for the duration of
+// execution; an unsubscribed cancel is a silent no-op, and a queued
+// (not yet picked up) run never sees this subject at all — its cancel
+// is the persisted status flip, which the admission control reads
+// before executing anything.
+func (c *Conn) CancelRun(runID string, admitted store.LeaseIdentity) error {
 	if runID == "" {
 		return fmt.Errorf("queue/nats: cancel requires runID")
 	}
 	if c == nil || c.nc == nil {
 		return fmt.Errorf("queue/nats: connection not initialised")
 	}
-	if err := c.nc.Publish(fmt.Sprintf(SubjectCancelFmt, runID), nil); err != nil {
+	msg := nats.NewMsg(fmt.Sprintf(SubjectCancelFmt, runID))
+	msg.Header = nats.Header{}
+	stampAdmitted(msg.Header, admitted)
+	if err := c.nc.PublishMsg(msg); err != nil {
 		return fmt.Errorf("queue/nats: publish cancel %s: %w", runID, err)
 	}
 	// Core NATS Publish only queues to the client's flusher; force a
@@ -548,10 +601,13 @@ func (c *Conn) CancelRun(runID string) error {
 }
 
 // SubscribeCancel installs a one-shot Core NATS subscriber on
-// `iterion.cancel.<run_id>` and invokes onCancel when a message
-// arrives. The runner uses this for the duration of a single run;
-// the returned subscription is valid until ctx is cancelled.
-func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func()) (*nats.Subscription, error) {
+// `iterion.cancel.<run_id>` and invokes onCancel when a command
+// stamped with the run's admitted identity arrives. Commands carrying
+// another identity — or none — are ignored with an error log: this pod
+// never cancels a run it did not admit under that identity. The runner
+// uses this for the duration of a single run; the returned
+// subscription is valid until ctx is cancelled.
+func (c *Conn) SubscribeCancel(ctx context.Context, runID string, admitted store.LeaseIdentity, onCancel func()) (*nats.Subscription, error) {
 	if c == nil || c.nc == nil {
 		return nil, fmt.Errorf("queue/nats: connection not initialised")
 	}
@@ -561,7 +617,13 @@ func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sub, err := c.nc.Subscribe(fmt.Sprintf(SubjectCancelFmt, runID), func(_ *nats.Msg) {
+	sub, err := c.nc.Subscribe(fmt.Sprintf(SubjectCancelFmt, runID), func(m *nats.Msg) {
+		if err := verifyAdmitted(m, runID, admitted); err != nil {
+			if c.logger != nil {
+				c.logger.Error("%v — cancel ignored", err)
+			}
+			return
+		}
 		onCancel()
 	})
 	if err != nil {

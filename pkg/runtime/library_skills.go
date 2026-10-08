@@ -157,37 +157,45 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 			}
 			dirsReady = true
 		}
-		// Always mirror as <dest>/<name>/SKILL.md (directory form): a flat
-		// <name>.md is NOT discovered as a skill by claude_code's Skill tool
-		// (only the directory form is — Agent Skills spec), and claw discovers
-		// both, so the directory form is the one that satisfies both backends.
-		// A source that is already <name>/SKILL.md maps to the same dest.
-		skillDir := filepath.Join(dest, name)
-		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		// Mirror through mirrorFileSkill so a library skill lands in BOTH
+		// discovery shapes — the directory form <dest>/<name>/SKILL.md that
+		// claude_code's Skill tool discovers (Agent Skills spec) AND the
+		// flat alias <dest>/<name>.md that prompt Reads by path resolve —
+		// matching the bundle and plugin tiers so all three ship the same
+		// shape and marker layout, and a bot Reading
+		// `.claude/skills/<name>.md` for a library-referenced skill no
+		// longer NOENTs (#1478). The source's own shape stays free:
+		// skilllib.Store.Resolve accepts either <lib>/<name>.md or
+		// <lib>/<name>/SKILL.md; mirrorFileSkill reads it as bytes.
+		//
+		// The name is synthesised as <name>.md so skillDestDirForm's
+		// case-insensitive strip computes the same stem the bundle /
+		// plugin tiers do, and the markers align: dir form
+		// `<name>.SKILL.md.sha256` (unchanged pre/post-#1478), flat
+		// `<name>.md.sha256`.
+		mfName := name + ".md"
+		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, mfName, skillTierLibrary, logger)
+		if err != nil {
 			// I/O errors on a declared library skill (ENOSPC, EACCES,
 			// ENOTDIR when the checkout planted a plain file where the
 			// skill dir goes) stay FATAL: a run whose `.bot` explicitly
 			// declares `skills: [x]` must not proceed and report success
 			// without x — the doctrine is no silent fallback. skilllib
-			// name validation is already soft above (line ~61); anything
-			// reaching here is a filesystem issue.
-			return nil, nil, false, fmt.Errorf("runtime/library: mirror skill %q: mkdir %s: %w", name, skillDir, err)
-		}
-		destPath := filepath.Join(skillDir, "SKILL.md")
-		markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
-		outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, skillTierLibrary, logger)
-		if err != nil {
-			// Same rationale as the mkdir branch: an I/O failure on a
-			// declared library skill is fatal.
+			// name validation is already soft above; anything reaching
+			// here is a filesystem issue.
 			return nil, nil, false, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
+		}
+		_, destPath, _, dfErr := skillDestDirForm(dest, markerDir, mfName)
+		if dfErr != nil {
+			return nil, nil, false, fmt.Errorf("runtime/library: resolve dest for %q: %w", name, dfErr)
 		}
 		// The hint is recorded either way — claude_code and claw read the
 		// directory natively, so the agent sees the skill whoever wrote it. The
 		// OWNED list is what a backend passes explicitly, so a shadowed entry
 		// stays out of it: that content is the target repository's.
-		// The FILE, not skillDir: MkdirAll succeeds on a directory the checkout
-		// already shipped, so claiming the directory would hand over whatever
-		// else the target repo planted in it.
+		// The FILE, not the skill dir: a directory the checkout already
+		// shipped must not be claimed — it carries whatever else the target
+		// repo planted in it.
 		if outcome != skillOutcomeShadowed {
 			owned = append(owned, destPath)
 		}

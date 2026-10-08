@@ -1877,7 +1877,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// the API publishes on iterion.cancel.<run_id>; we react by cancelling
 	// runCtx with the OPERATOR cause, so the engine writes terminal
 	// cancelled (never resurrected), distinct from a shutdown-drain cancel.
-	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
+	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
 	}
 
@@ -1887,7 +1887,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// lifecycle as the cancel subscription — torn down with runCtx.
 	r.registerSteerChannel(runCtx, msg.RunID)
 	defer r.unregisterSteerChannel(msg.RunID)
-	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, func(body []byte, cmdID string) {
+	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}, func(body []byte, cmdID string) {
 		r.handleSteerDelivery(msg.RunID, body, cmdID)
 	}); err != nil {
 		logger.Warn("runner: subscribe steer %s: %v (steering disabled for this run)", msg.RunID, err)
@@ -1933,9 +1933,15 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		// (network partition, permissions) shows up in the runner
 		// logs instead of being silently dropped — without this, an
 		// expired-but-not-deleted lease blocks siblings for the full
-		// LockTTL window with no operator visibility.
+		// LockTTL window with no operator visibility. An identity
+		// refusal is the takeover class, not the stuck-KV class: same
+		// ERROR level the heartbeat uses mid-run.
 		if err := lock.Unlock(); err != nil {
-			logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
+			if errors.Is(err, natsq.ErrLeaseIdentityMismatch) {
+				logger.Error("runner: lock release for %s refused — the lease belongs to another admitted identity: %v", msg.RunID, err)
+			} else {
+				logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
+			}
 		}
 	}()
 
@@ -2899,10 +2905,6 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	}
 	if superviseHub != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, runLogger), msg.RunnerPool, runLogger)
-		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
-			msg.RunID, specs, runLogger)
-		defer stopSup()
 	}
 	// `subbot` nodes: the closure that compiles and runs a child bot on
 	// this pod. Every other launch surface wired one; without it a subbot
@@ -2911,6 +2913,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// resume loop that recreates the sandbox pod on every attempt.
 	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger, snapshotRoot)))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
+	if superviseHub != nil {
+		// The spawn resolves the run's OWN inputs: on a resume the message
+		// carries none (the engine re-reads the stored ones), so read the
+		// row — a pin resolved from the defaults alone would diverge from
+		// the nodes it watches.
+		spawnVars := msg.Vars
+		if msg.Resume != nil {
+			if run, err := r.cfg.Store.LoadRun(ctx, msg.RunID); err == nil && run.Inputs != nil {
+				spawnVars = run.Inputs
+			}
+		}
+		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
+			msg.RunID, specs, runLogger)
+		defer stopSup()
+	}
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
 	r.registerRunEngine(msg.RunID, engine)
@@ -3346,10 +3364,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// ROUTING ladder's stages (ADR-121, Policy-flagged) split off: their
 		// model maps PER NODE at materialization, so they ride
 		// PolicyLadder (ir.ApplyPolicyLadder) instead.
-		RunFallback:      operatorFallbacks,
-		PolicyLadder:     policyLadder,
-		LLMRouteTriggers: llmRouteTriggers(msg),
-		LLMRouteClasses:  llmRouteClasses(msg),
+		RunFallback:          operatorFallbacks,
+		PolicyLadder:         policyLadder,
+		LLMRouteTriggers:     llmRouteTriggers(msg),
+		LLMRouteClasses:      llmRouteClasses(msg),
+		LLMRouteCrossHarness: llmRouteCrossHarness(msg),
 		// The same deployment default the engine resolves sandbox modes
 		// against — the fallback screen refuses codex stages on nodes
 		// that will run sandboxed, and sandboxed-or-not is this value's
@@ -3443,6 +3462,22 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 // an old publisher runs the shipped cells, never a partial override).
 func llmRouteClasses(msg *queue.RunMessage) map[string]map[string]string {
 	return msg.FallbackModelClasses
+}
+
+// llmRouteCrossHarness reads the run's RESOLVED cross-harness posture off
+// the wire (ADR-121 § Delivery 2): the first policy entry's value — the
+// publisher stamps every entry from ONE snapshot value, so the first is
+// deterministic. Empty (an old publisher, no policy, or a posture the
+// snapshot clamped away) is the off direction: the runview layer
+// constructs no handoff recorder, the crossings re-refuse at the screen.
+func llmRouteCrossHarness(msg *queue.RunMessage) string {
+	for _, f := range msg.Fallback {
+		if !f.Policy {
+			continue
+		}
+		return f.CrossHarness
+	}
+	return ""
 }
 
 func llmRouteTriggers(msg *queue.RunMessage) []string {

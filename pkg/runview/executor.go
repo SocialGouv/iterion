@@ -142,6 +142,13 @@ type ExecutorSpec struct {
 	// shipped table (ResolveClasses substitutes it; StageModel never sees
 	// an empty table).
 	LLMRouteClasses map[string]map[string]string
+	// LLMRouteCrossHarness is the run's RESOLVED cross-harness posture
+	// (ADR-121 § Delivery 2): "off" (the empty-on-ignore default) or an
+	// active mode. An ACTIVE mode is what constructs the run's handoff
+	// recorder — the run-level consumer the posture waited for — and
+	// wraps the store emitter so the neutral event types buffer for the
+	// crossings to seal. Off constructs nothing.
+	LLMRouteCrossHarness string
 	// SandboxOverride and SandboxDefault are the deployment tiers the
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
@@ -452,7 +459,25 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// secrets, then thread it through the event hooks so every sink is
 	// scrubbed before persistence.
 	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
-	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, spec.EventObservers...)
+	// The routing handoff recorder (ADR-121 § Delivery 2) exists only for
+	// a run whose resolved posture is ACTIVE. Its fallback root is the
+	// run's artifact files dir (the shared state dir arrives later, from
+	// the sandbox driver, and upgrades it); the emitter wrapper makes the
+	// hooks observe post-redaction copies of the neutral event types.
+	var handoff *model.HandoffRecorder
+	artifactDir := ""
+	if fs, ok := spec.Store.(store.RunFilesStore); ok {
+		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
+			artifactDir = dir
+		}
+	}
+	if llmroute.CrossHarnessActive(spec.LLMRouteCrossHarness) {
+		handoff = model.NewHandoffRecorder(artifactDir)
+	}
+	// The recorder rides INSIDE the hooks constructor: the capability
+	// detection must see the store's own interfaces, and the wrap lands
+	// between the redaction boundary and the store.
+	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}
@@ -564,10 +589,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// closes the host/sandbox parity gap where a bot writing its outputs
 	// there only worked sandboxed. Best-effort: stores without the files
 	// area (or a mkdir failure) just leave the variable unset, as before.
-	if fs, ok := spec.Store.(store.RunFilesStore); ok {
-		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
-			opts = append(opts, model.WithArtifactFilesDir(dir))
-		}
+	if artifactDir != "" {
+		opts = append(opts, model.WithArtifactFilesDir(artifactDir))
+	}
+	if handoff != nil {
+		opts = append(opts, model.WithHandoffRecorder(handoff))
 	}
 
 	checker := buildToolChecker(spec.Workflow)

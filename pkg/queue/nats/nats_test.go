@@ -9,6 +9,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -270,7 +271,7 @@ func TestCancelRun_RejectsEmptyRunID(t *testing.T) {
 	// Conn dereference is guarded by the empty-RunID check, so we can
 	// pass a zero-value Conn here.
 	c := &Conn{}
-	err := c.CancelRun("")
+	err := c.CancelRun("", store.LeaseIdentity{})
 	if err == nil {
 		t.Fatal("expected error for empty runID")
 	}

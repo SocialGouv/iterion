@@ -445,12 +445,24 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 			// must not move the blast radius onto a graph the preview never
 			// saw. SourceVersion 0 (a baked-tier run, or a receipt from
 			// before the pin existed) keeps the current-row resolution.
-			currentPath, _, _, releaseBot, srcErr := c.rewindCurrentSourceAt(ctx, m.TargetRunID, r.SourceVersion, r.SourceID)
+			currentPath, resolvedVersion, _, releaseBot, srcErr := c.rewindCurrentSourceAt(ctx, m.TargetRunID, r.SourceVersion, r.SourceID)
 			if srcErr != nil {
 				// No fallback: an empty path here would rewind against the
 				// baked twin and drop the wrong nodes, with nothing red.
 				err = srcErr
 			} else {
+				// A resolved version DIFFERENT from the pin is the
+				// retention/purge fallback (#1517) — never silent: the
+				// receipt names what the pin was, the resolved pair is
+				// what the receipt already carries.
+				if r.SourceVersion > 0 && resolvedVersion != r.SourceVersion {
+					r.PinnedMissingFrom = r.SourceVersion
+					// Persisted HERE: the success path of this pass returns
+					// without a state write, and the substitution must
+					// outlive it.
+					update(*m)
+					c.server.logWarn("assistant mission %s: the pinned botsource version %d of %s is gone (retention or purge) — resolved version %d instead", m.ID, r.SourceVersion, r.SourceID, resolvedVersion)
+				}
 				_, err = c.runs.Rewind(ctx, runview.RewindSpec{
 					RunID: m.TargetRunID, NodeID: r.ExpectedPivot, ExpectedPivot: r.ExpectedPivot,
 					CurrentSourcePath: currentPath, RestoreScope: runview.RestoreScopeNone, ReceiptID: r.ID,

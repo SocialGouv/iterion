@@ -239,7 +239,7 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				bundle, err = secrets.OpenRunBundle(f.sealer, poolTeam, "", "oracle-run", record.KeyID, record.SealedBundle)
+				bundle, err = secrets.OpenRunBundle(mustDEKSealer(t, res.dek), poolTeam, "", "oracle-run", record.KeyID, record.SealedBundle)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -469,7 +469,7 @@ func TestCredentialPreviewMatchesSealedBundleOnAPinBesideAForfait(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			bundle, err := secrets.OpenRunBundle(f.sealer, poolTeam, "", "oracle-run", record.KeyID, record.SealedBundle)
+			bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), poolTeam, "", "oracle-run", record.KeyID, record.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -639,7 +639,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderTheFacadePolicy(t *testing.T) 
 				if err != nil {
 					t.Fatal(err)
 				}
-				bundle, err := secrets.OpenRunBundle(sealer, team, "", "oracle-run", record.KeyID, record.SealedBundle)
+				bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), team, "", "oracle-run", record.KeyID, record.SealedBundle)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -756,7 +756,7 @@ func TestCredentialPreviewAgreesWhenAProviderIsAlreadyHeld(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			bundle, err := secrets.OpenRunBundle(sealer, team, "", "oracle-run", record.KeyID, record.SealedBundle)
+			bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), team, "", "oracle-run", record.KeyID, record.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -40,7 +40,12 @@ const (
 // over defaults via the per-field defaultedXxx flags carried by the
 // loader.
 type Config struct {
-	Mode Mode `yaml:"mode"`
+	// sealerOptional marks a process that never seals at rest (the
+	// runner): ADR-123 removed run-bundle keys from its pod, so the
+	// cloud key requirement — a SERVER invariant — does not apply.
+	// Set through LoadOptions.SealerOptional, never from yaml/env.
+	sealerOptional bool
+	Mode           Mode `yaml:"mode"`
 
 	NATS    NATSConfig    `yaml:"nats"`
 	Mongo   MongoConfig   `yaml:"mongo"`
@@ -498,6 +503,11 @@ type LoadOptions struct {
 	// DefaultLogFormat overrides the compiled default ("human") to
 	// "json" for server/runner entry points. Env still wins.
 	DefaultLogFormat LogFormat
+	// SealerOptional marks a runner process (ADR-123): it opens run
+	// bundles under the message's per-run DEK and seals nothing at
+	// rest, so the cloud-mode key requirement does not apply. The
+	// transition ring is still built when key material is present.
+	SealerOptional bool
 }
 
 // Load builds a Config from defaults <- yaml <- env. Validation is
@@ -505,6 +515,7 @@ type LoadOptions struct {
 // not just by env-set; a missing field returns an error before any IO.
 func Load(opts LoadOptions) (Config, error) {
 	cfg := Defaults()
+	cfg.sealerOptional = opts.SealerOptional
 	if opts.DefaultLogFormat != "" {
 		cfg.Log.Format = opts.DefaultLogFormat
 	}
@@ -612,7 +623,7 @@ func (c *Config) Validate() error {
 		if c.Auth.JWTSecret == "" {
 			return fmt.Errorf("ITERION_JWT_SECRET required when mode=cloud (base64 of >=32 random bytes)")
 		}
-		if c.Auth.SecretsKey == "" && c.Auth.SecretsKeys == "" {
+		if c.Auth.SecretsKey == "" && c.Auth.SecretsKeys == "" && !c.sealerOptional {
 			return fmt.Errorf("ITERION_SECRETS_KEY (or ITERION_SECRETS_KEYS) required when mode=cloud (base64 of 32 random bytes)")
 		}
 		switch c.Auth.SignupMode {

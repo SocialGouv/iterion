@@ -319,7 +319,7 @@ func TestMetricsEmitter_delegateFinished_costReachesRunTotals(t *testing.T) {
 	usage := newMetricsEmitter(inner, metrics.New())
 
 	hooks := model.NewStoreEventHooks(
-		context.Background(), usage, "run-4", iterlog.New(iterlog.LevelError, nil), nil,
+		context.Background(), usage, "run-4", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
 	hooks.OnDelegateFinished("n1", model.DelegateInfo{
 		BackendName: "claude_code",
@@ -354,7 +354,7 @@ func TestMetricsEmitter_delegateFinished_unpricedStaysZero(t *testing.T) {
 	usage := newMetricsEmitter(inner, metrics.New())
 
 	hooks := model.NewStoreEventHooks(
-		context.Background(), usage, "run-5", iterlog.New(iterlog.LevelError, nil), nil,
+		context.Background(), usage, "run-5", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
 	hooks.OnDelegateFinished("n1", model.DelegateInfo{BackendName: "claude_code", Tokens: 900})
 
@@ -554,7 +554,7 @@ func TestMetricsEmitter_effectiveModelNamesTheRoute(t *testing.T) {
 // delegation total (a summary of those steps) is not booked again.
 func TestMetricsEmitter_relayedSandboxedClawStepsMeterLikeInProcess(t *testing.T) {
 	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
-	host := model.NewStoreEventHooks(context.Background(), usage, "run-relay", iterlog.New(iterlog.LevelError, nil), nil)
+	host := model.NewStoreEventHooks(context.Background(), usage, "run-relay", iterlog.New(iterlog.LevelError, nil), nil, nil)
 	relay := model.SandboxRelayHooks(func(env delegate.Envelope) error {
 		var ed delegate.EventData
 		if err := json.Unmarshal(env.Data, &ed); err != nil {

@@ -38,6 +38,8 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		CompactPreserveRecent: 4,
 		SessionID:             "sess-abc",
 		ForkSession:           true,
+		Handoff:               "/state/routing-handoff/implement.md",
+		HandoffMode:           "restart",
 		InteractionEnabled:    true,
 		ResumeAnswer:          "yes please",
 		SettingsHooks:         json.RawMessage(`{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}`),
@@ -56,6 +58,12 @@ func TestIOTaskRoundTrip(t *testing.T) {
 
 	if got.NodeID != original.NodeID {
 		t.Errorf("NodeID = %q, want %q", got.NodeID, original.NodeID)
+	}
+	if got.Handoff != original.Handoff {
+		t.Errorf("Handoff = %q, want %q — a field missing from the IPC mirror loses the handoff on the wire", got.Handoff, original.Handoff)
+	}
+	if got.HandoffMode != original.HandoffMode {
+		t.Errorf("HandoffMode = %q, want %q", got.HandoffMode, original.HandoffMode)
 	}
 	if got.Iteration != original.Iteration {
 		t.Errorf("Iteration = %d, want %d", got.Iteration, original.Iteration)

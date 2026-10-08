@@ -1,6 +1,7 @@
 package reviewtopology
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -66,7 +67,7 @@ func TestInjectPlanReviewIfDeclared(t *testing.T) {
 // Absent = the bot's own default, which is what dual must leave behind.
 func TestInjectDualDoesNotWriteEmptyMonoFamily(t *testing.T) {
 	inputs := map[string]any{}
-	mode, family, injected := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "dual")
+	mode, family, injected, _ := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "dual")
 	if !injected || mode != ModeDual || family != "" {
 		t.Fatalf("unexpected resolution: mode=%q family=%q injected=%v", mode, family, injected)
 	}
@@ -112,18 +113,43 @@ func TestInjectPlanReviewEnvDefault(t *testing.T) {
 }
 
 // An operator's explicit --var mono_family wins over the resolver's
-// preference when it names an available family; an unavailable one keeps
-// the resolver's pick.
+// preference when it names an available family; one no credential serves
+// REFUSES the launch, naming the pinned and the available families — the
+// silent substitution it replaces sent a repo's review gate dark while
+// every run died at its first review node (2026-09-22, #1221).
 func TestInjectMonoFamilyOverrideHonored(t *testing.T) {
 	inputs := map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
-	_, family, _ := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "")
-	if family != FamilyGPT || inputs[VarMonoFamily] != FamilyGPT {
-		t.Fatalf("explicit mono_family=gpt silently replaced: family=%q inputs=%+v", family, inputs)
+	_, family, _, err := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "")
+	if err != nil || family != FamilyGPT || inputs[VarMonoFamily] != FamilyGPT {
+		t.Fatalf("explicit mono_family=gpt not honored: family=%q err=%v inputs=%+v", family, err, inputs)
 	}
+	// Pinned onto a family no credential serves: the launch refuses, and
+	// says which families the launch could serve.
 	inputs = map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
-	_, family, _ = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude), "")
-	if family != FamilyClaude {
-		t.Fatalf("unavailable override must keep the resolver's pick: %q", family)
+	_, _, _, err = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude), "")
+	if err == nil {
+		t.Fatal("a pin on a family no credential serves must refuse the launch")
+	}
+	if !strings.Contains(err.Error(), `"gpt"`) || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("the refusal must name the pinned and available families: %v", err)
+	}
+	if _, present := inputs[VarMonoFamily]; !present || inputs[VarMonoFamily] != "gpt" {
+		t.Fatalf("the refusal must leave the inputs untouched: %+v", inputs)
+	}
+	// And on a credential-less launch entirely, the pin still refuses.
+	inputs = map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
+	_, _, _, err = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(), "")
+	if err == nil {
+		t.Fatal("the pin refuses even with no participating family at all")
+	}
+	// An available pin spelled otherwise is honored at the CANONICAL
+	// spelling: the family keys, the declaring bots' var enums and the
+	// router edges' comparisons are all lowercase, and a verbatim "GPT"
+	// would pass here to die at the launch enum gate, after the run exists.
+	inputs = map[string]any{VarReviewMode: "mono", VarMonoFamily: "GPT"}
+	_, family, _, err = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "")
+	if err != nil || family != FamilyGPT || inputs[VarMonoFamily] != FamilyGPT {
+		t.Fatalf(`a "GPT" pin on an available family must honor "gpt": family=%q inputs=%+v err=%v`, family, inputs, err)
 	}
 }
 
@@ -143,7 +169,7 @@ func TestInjectLLMFamiliesIfDeclared(t *testing.T) {
 func TestInjectAllSummary(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarPlanReview, VarLLMFamilies)
 	inputs := map[string]any{}
-	inj := InjectAll(wf, inputs, fams(FamilyClaude, FamilyGPT), "")
+	inj, _ := InjectAll(wf, inputs, fams(FamilyClaude, FamilyGPT), "")
 	want := "review topology: mono (family claude) · plan review: on · llm families: claude,gpt"
 	if got := inj.Summary(); got != want {
 		t.Fatalf("Summary = %q, want %q", got, want)

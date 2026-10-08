@@ -42,7 +42,7 @@ func TestDelegateHooksBridgeTheBackgroundWorkLifecycle(t *testing.T) {
 
 func TestStoreHooksPersistTheBackgroundWorkLifecycle(t *testing.T) {
 	em := &captureEmitter{}
-	hooks := NewStoreEventHooks(context.Background(), em, "run-bg", iterlog.Nop(), nil)
+	hooks := NewStoreEventHooks(context.Background(), em, "run-bg", iterlog.Nop(), nil, nil)
 	if hooks.OnBackgroundWork == nil {
 		t.Fatal("the store hooks do not register OnBackgroundWork")
 	}

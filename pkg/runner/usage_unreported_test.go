@@ -19,7 +19,7 @@ import (
 // runner does not say it.
 func TestUnreportedUsage_ReachesTheMeterAndTheRunnerLog(t *testing.T) {
 	usage := newMetricsEmitter(discardEmitter{}, metrics.New())
-	hooks := model.NewStoreEventHooks(context.Background(), usage, "run", iterlog.Nop(), nil)
+	hooks := model.NewStoreEventHooks(context.Background(), usage, "run", iterlog.Nop(), nil, nil)
 	hooks.OnLLMRequest("n", model.LLMRequestInfo{Model: "openai_compatible/glm-5"})
 	hooks.OnLLMStepFinish("n", model.LLMStepInfo{Number: 1, InputTokens: 40, OutputTokens: 2, UsageUnreported: true})
 	hooks.OnLLMStepFinish("n", model.LLMStepInfo{Number: 2, InputTokens: 50, OutputTokens: 3})

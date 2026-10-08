@@ -21,6 +21,7 @@ func resetClaudeCredEnv(t *testing.T) {
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",
 		"ANTHROPIC_BASE_URL",
+		"ANTHROPIC_CUSTOM_HEADERS",
 		"ZAI_API_KEY",
 		"MOONSHOT_API_KEY",
 		"MOONSHOT_BASE_URL",
@@ -259,6 +260,9 @@ func TestAnthropicCredEnv_HintZAINoKeySuppressesAmbientAnthropic(t *testing.T) {
 			t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
 			t.Setenv("CLAUDE_CODE_USE_VERTEX", "1")
 			t.Setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+			// #1476: an ambient custom header — applied LAST by the CLI —
+			// would ride the suppression route into the facade's gateway.
+			t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer sk-ambient-header")
 			got := anthropicCredEnvForCLI(context.Background(), "zai", sandboxed)
 			// Every secret / token / switch is cleared to "": the
 			// signal mergeCmdEnv reads as "actively suppress".
@@ -270,6 +274,7 @@ func TestAnthropicCredEnv_HintZAINoKeySuppressesAmbientAnthropic(t *testing.T) {
 				"CLAUDE_CODE_USE_BEDROCK",
 				"CLAUDE_CODE_USE_VERTEX",
 				"CLAUDE_CODE_USE_FOUNDRY",
+				"ANTHROPIC_CUSTOM_HEADERS",
 			} {
 				v, present := got[k]
 				if !present || v != "" {

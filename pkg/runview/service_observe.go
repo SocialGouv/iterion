@@ -120,14 +120,14 @@ func (s *Service) InjectOnce(ctx context.Context, runID, nodeID, text, deliveryI
 // before the run goroutine exits. A no-op when the workflow declares
 // none, or when the kill switch (override → ITERION_SUPERVISORS → on)
 // says off — the skip is logged by the shared gate.
-func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf *ir.Workflow, logger *iterlog.Logger, override string) (stop func()) {
+func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger, override string) (stop func()) {
 	if wf == nil || len(wf.Supervisors) == 0 {
 		return func() {}
 	}
 	if !supervise.DeclaredEnabledOrWarn(override, len(wf.Supervisors), logger) {
 		return func() {}
 	}
-	specs := supervise.SpecsFromWorkflow(wf, logger)
+	specs := supervise.SpecsFromWorkflow(wf, vars, logger)
 	pool, err := s.frozenPoolStamp(ctx, runID)
 	if err != nil {
 		// The stamp is unreadable: the surface stays OFF rather than guess

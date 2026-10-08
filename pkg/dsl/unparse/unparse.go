@@ -2178,6 +2178,9 @@ func writeBudget(b *buf, budget *ast.BudgetBlock) {
 	if budget.MaxIterations > 0 {
 		fmt.Fprintf(b, "    max_iterations: %d\n", budget.MaxIterations)
 	}
+	if budget.OnExceeded != "" {
+		fmt.Fprintf(b, "    on_exceeded: %s\n", budget.OnExceeded)
+	}
 }
 
 // writeResources serializes the workflow `resources:` block. Names are

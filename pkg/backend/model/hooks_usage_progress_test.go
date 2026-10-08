@@ -20,7 +20,7 @@ func newUsageHooks(t *testing.T, runID string) (EventHooks, func() []store.Event
 	if _, err := st.CreateRun(context.Background(), runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks := NewStoreEventHooks(context.Background(), st, runID, iterlog.Nop(), nil)
+	hooks := NewStoreEventHooks(context.Background(), st, runID, iterlog.Nop(), nil, nil)
 	return hooks, func() []store.Event {
 		all, err := st.LoadEvents(context.Background(), runID)
 		if err != nil {

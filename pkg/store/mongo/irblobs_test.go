@@ -3,41 +3,46 @@ package mongo
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
 
-// The IRBlobStore methods only touch the S3 blob backend (not Mongo), so a
-// bare *Store with an in-memory blob exercises the real cloud impl without
-// a live database.
+// The IRBlobStore's BLOB-layer contract, exercised on a bare *Store with
+// an in-memory blob: the key is canonical (ir/<run_id>.json), the
+// round-trip preserves the bytes, and the backend is S3. The READ itself
+// is tenant-mediated at the store level (see irblobs_mediation_test.go,
+// gated on ITERION_TEST_MONGO_URI — the mediation loads the run the key
+// addresses under the caller's tenant filter, which needs the runs
+// collection).
 
 func TestStoreIRBlob_RoundTrip(t *testing.T) {
-	s := &Store{blob: newInMemoryBlob()}
+	b := newInMemoryBlob()
 	ctx := context.Background()
 	body := []byte(`{"nodes":[{"id":"a"}]}`)
-	key, err := s.PutIRBlob(ctx, "run-1", body)
+	key, err := blob.IRBlobKey("run-1")
 	if err != nil {
+		t.Fatalf("IRBlobKey: %v", err)
+	}
+	if err := b.PutIRBlob(ctx, "run-1", body); err != nil {
 		t.Fatalf("PutIRBlob: %v", err)
 	}
-	if key != "ir/run-1.json" {
-		t.Fatalf("key = %q, want ir/run-1.json", key)
-	}
-	got, err := s.GetIRBlob(ctx, key)
+	got, err := b.GetIRBlob(ctx, key)
 	if err != nil {
 		t.Fatalf("GetIRBlob: %v", err)
 	}
 	if string(got) != string(body) {
 		t.Fatalf("round-trip mismatch: got %q want %q", got, body)
 	}
+	s := &Store{blob: b}
 	if s.IRBlobBackend() != "s3" {
 		t.Fatalf("backend = %q, want s3", s.IRBlobBackend())
 	}
 }
 
 func TestStoreIRBlob_NotFoundIsErrNotExist(t *testing.T) {
-	s := &Store{blob: newInMemoryBlob()}
-	_, err := s.GetIRBlob(context.Background(), "ir/absent.json")
-	if err == nil || !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected os.ErrNotExist, got %v", err)
+	b := newInMemoryBlob()
+	if _, err := b.GetIRBlob(context.Background(), "ir/absent.json"); !errors.Is(err, blob.ErrArtifactNotFound) {
+		t.Fatalf("expected blob.ErrArtifactNotFound, got %v", err)
 	}
 }

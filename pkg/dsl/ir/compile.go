@@ -666,8 +666,14 @@ func (c *compiler) compile() *Workflow {
 	// Compile edges.
 	edges, loops, foreaches := c.compileEdges(wf.Edges)
 
+	// Loop bodies before the contracts bind: a port bound into an iteration
+	// body projects whichever execution finished last — the same capture
+	// C310 names for fan-out branches. computeLoopBodies runs again on the
+	// built workflow below; same inputs, idempotent.
+	computeLoopBodies(&Workflow{Nodes: c.nodes, Edges: edges, Loops: loops, Foreaches: foreaches})
+
 	// Bind the public contracts: nodes, schemas, vars and edges are compiled.
-	contracts, contract := c.compilePublicContracts(wf, vars, edges)
+	contracts, contract := c.compilePublicContracts(wf, vars, edges, loops, foreaches)
 
 	// Compile budget.
 	var budget *Budget
@@ -2247,6 +2253,17 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 			"workflow.budget.max_cost_usd %v is not a finite non-negative number; treating as unset", cost)
 		cost = 0
 	}
+	policy := b.OnExceeded
+	switch policy {
+	case "", "fail", "pause":
+	default:
+		// An unknown policy must not silently mean pause (a run the
+		// author expected to end would keep spending under a park) —
+		// it reads as fail, and the diagnostic says so.
+		c.errorf(DiagBudgetOnExceededInvalid,
+			"workflow.budget.on_exceeded %q is not a policy (fail, pause); treating as fail", policy)
+		policy = ""
+	}
 	return &Budget{
 		MaxParallelBranches: b.MaxParallelBranches,
 		MaxDuration:         b.MaxDuration,
@@ -2254,6 +2271,7 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 		MaxTokens:           b.MaxTokens,
 		WarnTokens:          b.WarnTokens,
 		MaxIterations:       b.MaxIterations,
+		OnExceeded:          policy,
 	}
 }
 
@@ -2442,7 +2460,7 @@ func convertVarType(te ast.TypeExpr) VarType {
 // share a single source/target node still compute correctly (Body is at
 // minimum the {from, to} pair).
 func computeLoopBodies(w *Workflow) {
-	if len(w.Loops) == 0 || len(w.Edges) == 0 {
+	if (len(w.Loops) == 0 && len(w.Foreaches) == 0) || len(w.Edges) == 0 {
 		return
 	}
 	// Build forward / reverse adjacency lists from NON-LOOP edges only.
@@ -2481,15 +2499,37 @@ func computeLoopBodies(w *Workflow) {
 		return visited
 	}
 
+	// The foreach edges are the same back-edge shape keyed by ForeachName;
+	// their bodies compute identically and land on the Foreach's own Body.
+	type iterationName struct {
+		name  string
+		forea bool
+	}
+	names := make([]iterationName, 0, len(w.Loops)+len(w.Foreaches))
 	for name, loop := range w.Loops {
-		if loop == nil {
-			continue
+		if loop != nil {
+			names = append(names, iterationName{name: name})
 		}
+	}
+	for name, fe := range w.Foreaches {
+		if fe != nil {
+			names = append(names, iterationName{name: name, forea: true})
+		}
+	}
+	for _, it := range names {
+		name := it.name
 		var sources, targets []string
 		seen := make(map[string]bool)
 		entries := make(map[string]bool)
 		for _, edge := range w.Edges {
-			if edge == nil || edge.LoopName != name {
+			if edge == nil {
+				continue
+			}
+			if it.forea {
+				if edge.ForeachName != name {
+					continue
+				}
+			} else if edge.LoopName != name {
 				continue
 			}
 			sources = append(sources, edge.From)
@@ -2512,8 +2552,12 @@ func computeLoopBodies(w *Workflow) {
 				body[n] = true
 			}
 		}
-		loop.Body = body
-		loop.Entries = entries
+		if it.forea {
+			w.Foreaches[name].Body = body
+			continue
+		}
+		w.Loops[name].Body = body
+		w.Loops[name].Entries = entries
 	}
 }
 

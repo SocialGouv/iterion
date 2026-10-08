@@ -18,7 +18,14 @@ The isolation chain, in the order a run meets it:
    `active` (the pool's runners are deployed and consuming: routing flows),
    `draining`, `disabled`. A mapped team whose pool is missing or not
    active has its launches and resumes REFUSED, naming the pool and the
-   state — never routed onto the shared pool.
+   state — never routed onto the shared pool. The mapping enforces the
+   one-team-per-pool invariant (D13): a second team onto a held pool is
+   refused with the holder named — two teams on one pool would let each
+   team's runs carry the other's credentials to the same pods.
+   A pool team's launch also consults no shared credential tier — org,
+   contributor pool and platform credentials never enter its bundle, so
+   the pod holds no stranger's key; a route nothing of the team's own
+   funds refuses the launch with the remedy named.
 3. **The frozen stamp**: the run document and the wire message carry the
    pool from launch. Resume follows the frozen stamp and refuses a
    re-mapping (`ErrPoolRemapped` — a pool move is a new launch). Forks and
@@ -38,10 +45,11 @@ The isolation chain, in the order a run meets it:
    vendor keys are mounted. A mis-routed vendor call fails at
    authentication, not at egress; the network is not the enforcement layer
    (operator decision: the shared install, isolation by code). The
-   per-run credential bundle seals under an AAD binding tenant, pool and
-   run — a bundle served outside its own identity context refuses to
-   decrypt — and records the key id that sealed it, so the run-bundle
-   key rotates without touching vendor credentials.
+   per-run credential bundle seals under a fresh per-run DEK that
+   travels in the run's own queue message (ADR-123) — a runner pod
+   holds no platform key material at all — and binds to tenant, pool
+   and run: a bundle served outside its own identity context refuses
+   to decrypt.
 7. **Server-side auxiliary surfaces**: the merge-conflict resolver,
    declared supervisors and the session board send content derived from a
    run to a model resolved outside the run's own execution. On a run
@@ -62,6 +70,81 @@ The isolation chain, in the order a run meets it:
    dispatcher's first-party runs — are unstamped documents on machines the
    operator already trusts with vendor credentials; they are out of the
    pool boundary by construction.
+8. **Object storage reads are tenant-mediated**: an IR blob (or bundle
+   snapshot) read resolves the run id embedded in its key and loads that
+   run under the caller's tenant filter before touching the bucket — a
+   foreign tenant's key refuses with the same not-found a missing blob
+   would return, and an unattributed caller fails closed. The S3
+   credential remains deployment-wide (the accepted residual: the pods
+   sit inside the install's network boundary); what the code guarantees
+   is that the STORE opens no object for a tenant that does not own
+   its run.
+9. **The run lease carries the run's admitted identity**: the
+   distributed lease a runner takes on a run (`pkg/queue/nats`) is
+   written with the tenant — and runner pool, when stamped — of the
+   message THAT pod admitted, taken from the delivery context
+   (`store.WithLeaseIdentity`). An acquire without an admitted identity
+   fails closed (`ErrLeaseUnattributed`): an unattributable lease never
+   comes to exist. Before a holder refreshes or releases the lease, it
+   re-reads the stored body — on the failure path of the revision CAS,
+   never in the nominal path — and refuses on any disagreement
+   (`ErrLeaseIdentityMismatch`): a lease rewritten under another
+   admission is never extended and never deleted by a holder of a
+   different identity; a takeover under the SAME identity (a sibling of
+   the same team) is caught by the revision itself. The guard is
+   against honest confusion, not an active forger: a pod forging the
+   whole protocol is beyond the code's reach (the same accepted
+   residual as the rest of the boundary — ADR-123's rest point).
+10. **Control-plane commands carry the run's admitted identity**: the
+   cancel and steer commands are stamped — in their NATS headers
+   (`iterion-admitted-tenant` / `iterion-admitted-pool`, exact
+   lower-case spelling; the vendored client's header map is
+   case-sensitive) — with the tenant (and pool) from the run
+   document's frozen stamp by the server that emits them, and the pod
+   holding the run verifies the stamp against the message it admitted
+   before acting; a command of another tenant or pool, or with no
+   stamp at all, is ignored with an error log. The subjects stay
+   shared (`iterion.cancel.<run_id>` / `iterion.steer.<run_id>`): the
+   guard lives at the pod, the one place that knows what it actually
+   admitted, so a shared subject can deliver a foreign command but
+   cannot make another pool's pod act on it. Fleet-mix window: a
+   not-yet-upgraded server emits unstamped commands and the upgraded
+   pods refuse them — a mid-rollout cancel or steer does not take
+   until both sides run this build (deploy server and runners
+   together). Headers are broker-visible and operator-writable — a
+   guard against misrouting and confusion, not an active forger (the
+   boundary's accepted residual).
+11. **The tenant-filter opt-outs are audited, by family**: the 62
+    call sites of `WithoutTenantFilter`/`TeamBlind` (tests excluded)
+    fall into six families, each audited against one question — does
+    the site act on an already-admitted run, or enumerate for a user?
+    - *System post-execution* (outcome router, schedule outcome, the
+      trigger relay): a platform consumer loads ONE run by id to
+      decide its follow-up. The run is already admitted; nothing
+      enumerates.
+    - *Cluster-wide sweeps* (the lifecycle reconcilers, the queue/
+      retry/gate sweepers, the reaper, the alert and usernotify
+      sweeps): the sweep IS a cluster operation — it discovers its
+      own work. A tenant filter would make it blind by construction.
+    - *Forge webhooks* (the gate autofix/reconcile/relaunch family):
+      the webhook is signature-verified, and the run id it names is
+      bound to that repository at launch — a foreign team's run can
+      never match another org's webhook. The blind load is by id;
+      nothing is searchable across tenants through it.
+    - *Already-mediated control* (the cloud publisher's cancel/steer):
+      the caller's tenant filter already gated the same read; the
+      blind load is the second, explicit one — commented at each
+      site.
+    - *User-facing reads* (artifacts, issue watchers, fork grants):
+      the scoped variants (`ListArtifactsCtx`, …) serve the HTTP
+      handlers; the opt-out sites are the explicit LOCAL variants.
+    - *Mediation itself* (`GetIRBlob` — P5-b item 8 —, `runTenant`,
+      the launch id-uniqueness check): the blind read is how the
+      tenant is resolved or the boundary enforced.
+    No site was found acting as a cross-tenant enumeration for a
+    caller. The families stay auditable by grepping the two helpers;
+    a new site outside these shapes owes its own justification in its
+    comment.
 
 ## Operations
 

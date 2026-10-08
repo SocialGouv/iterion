@@ -485,9 +485,13 @@ type OIDCLink struct {
 // translate these to HTTP status codes (Not Found → 404, Conflict
 // → 409, etc.) without leaking internals.
 var (
-	ErrNotFound            = errors.New("identity: not found")
-	ErrEmailAlreadyTaken   = errors.New("identity: email already taken")
-	ErrSlugAlreadyTaken    = errors.New("identity: team slug already taken")
+	ErrNotFound          = errors.New("identity: not found")
+	ErrEmailAlreadyTaken = errors.New("identity: email already taken")
+	ErrSlugAlreadyTaken  = errors.New("identity: team slug already taken")
+	// ErrRunnerPoolHeld is the one-team-per-pool invariant (#2029 D13)
+	// rejecting a mapping at write time — the partial unique index on
+	// teams.runner_pool speaking, or the memory store's own check.
+	ErrRunnerPoolHeld      = errors.New("identity: runner pool already held by another team")
 	ErrOrgSlugAlreadyTaken = errors.New("identity: org slug already taken")
 	ErrInvalidRole         = errors.New("identity: invalid role")
 	ErrInvitationUsed      = errors.New("identity: invitation already accepted")

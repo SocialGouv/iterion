@@ -199,7 +199,7 @@ func TestGLMTaskWithoutHintIsRoutedToZAI(t *testing.T) {
 				func(_ context.Context, _ string) (*delegate.Task, error) {
 					return &delegate.Task{NodeID: "review", Model: tc.model}, nil
 				})
-			_, _, task, err := build(tc.ctx, 0, chainElement{Provider: tc.hint})
+			_, _, task, err := build(tc.ctx, 0, chainElement{Provider: tc.hint}, "")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -3,6 +3,313 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.254.1](https://github.com/SocialGouv/iterion/compare/v3.254.0...v3.254.1) (2026-10-08)
+
+### Bug Fixes
+
+* **server,docs:** the legacy knob's runbook says it is gone; the dead seams go with it ([#2298](https://github.com/SocialGouv/iterion/issues/2298)) ([c53f235](https://github.com/SocialGouv/iterion/commit/c53f2351d4cf0a22170a8c691af578d2919e5204))
+
+    <details><summary>why</summary>
+
+    The round's findings, all non-behavioral: browser-security.md still documented the env knob in the present tense as the instant reversal, when this deletion removed its reader — the reversal is `git revert` of the commit, and the doc says so now; the truncated comment remnant at the deletion site is gone; the acceptLegacy parameter — always false since its last true caller died — is removed from sessionCookie and its six callers (the host-prefixed branch refuses the bare name outright); and the…
+
+    </details>
+
+## [3.254.0](https://github.com/SocialGouv/iterion/compare/v3.253.0...v3.254.0) (2026-10-08)
+
+### Features
+
+* **forge:** report each App installation's lowest rate-limit budget hourly ([#2296](https://github.com/SocialGouv/iterion/issues/2296)) ([ab9c8e3](https://github.com/SocialGouv/iterion/commit/ab9c8e32289c8fb76c411dd4a300b73f315186d9)), closes [#2105](https://github.com/SocialGouv/iterion/issues/2105), references [#1995](https://github.com/SocialGouv/iterion/issues/1995)
+
+    <details><summary>why</summary>
+
+    The forge transport received X-RateLimit-* on every GitHub answer and read them only on a refusal, so an installation's budget was seen once spent (#1995), never while it drained. The forge client's counting transport now reads the budget each answer reports, and the hourly report gains a line:
+
+    </details>
+
+## [3.253.0](https://github.com/SocialGouv/iterion/compare/v3.252.0...v3.253.0) (2026-10-08)
+
+### Features
+
+* **bench:** discovery reports the within-node split between orientation and work ([#2295](https://github.com/SocialGouv/iterion/issues/2295)) ([381c449](https://github.com/SocialGouv/iterion/commit/381c449431e8cfdeb74402f247adb8a089f9d5d6)), references [#1481](https://github.com/SocialGouv/iterion/issues/1481)
+
+    <details><summary>why</summary>
+
+    Usage landed once per node, at node end — the report said so itself ("the intra-node split … is not reported"). The turn checkpoints carry per-turn usage AND per-turn tool summaries, so the split is turn-granular and the report carries it: a mutating node's turns attribute to orientation before its first mutating tool call and to work from that turn on (the boundary is sticky; a turn mixing reads and a write counts whole to work). The corpus aggregates the split with its coverage — how many…
+
+    </details>
+
+### Bug Fixes
+
+* **review-pr:** the claude slots' backend is tunable like every other slot's ([#2294](https://github.com/SocialGouv/iterion/issues/2294)) ([b0a1e26](https://github.com/SocialGouv/iterion/commit/b0a1e263650d505ac43c8a09f368b88ac04fe3cb))
+
+    <details><summary>why</summary>
+
+    The claude slots were the only nodes with a hard-wired backend — the gpt/emit slots already carry ITERION_VIBE_BACKEND_* env-forms (claw by default). A sovereign pool pod carries ONLY its regional gateway credential, so its claude slots must route to claw (the backend that serves openai_compatible/* routes); hard-wired, the slot went to a z.ai/Anthropic wire the pool cannot serve and parked the run on an auth recovery — measured on the first pool review (prod, 2026-10-08).
+
+    </details>
+
+## [3.252.0](https://github.com/SocialGouv/iterion/compare/v3.251.0...v3.252.0) (2026-10-08)
+
+### Features
+
+* **credpool:** fine spend attribution for the fallback door's leases ([#2255](https://github.com/SocialGouv/iterion/issues/2255)) ([#2279](https://github.com/SocialGouv/iterion/issues/2279)) ([d8a7d00](https://github.com/SocialGouv/iterion/commit/d8a7d003c26d027e291c95016004284caccd5474))
+
+    <details><summary>why</summary>
+
+    The arbitration's answer: per-credential attribution IS derivable - the runner's metrics emitter already accumulates per (backend, model, fingerprint) - so a door-served run books only the slice that ran on the donor's credential, and the consent copy slims down.
+
+    </details>
+* **supervise:** the turn-boundary step event carries the message's token accounting ([#2287](https://github.com/SocialGouv/iterion/issues/2287)) ([73dade3](https://github.com/SocialGouv/iterion/commit/73dade3216071254813911873a80969409aac8dd)), references [#1481](https://github.com/SocialGouv/iterion/issues/1481)
+
+    <details><summary>why</summary>
+
+    The transcript observer emitted its turn-boundary llm_step_finished with nil data — the per-message usage the claude_code transcript already carries (input, output, cache read, cache creation) was decoded past and dropped, so a supervisor session's spend attributed to nothing. The event carries it now under the model hooks' field names, and a usage-less message emits the bare event as before (#1481).
+
+    </details>
+
+## [3.251.0](https://github.com/SocialGouv/iterion/compare/v3.250.1...v3.251.0) (2026-10-07)
+
+### Features
+
+* **openai:** an operator knob opts the OPENAI_BASE_URL factory into stream usage ([#2283](https://github.com/SocialGouv/iterion/issues/2283)) ([832d437](https://github.com/SocialGouv/iterion/commit/832d4372aa11f00e7f02d80a79042a0595a1308f)), closes [#2085](https://github.com/SocialGouv/iterion/issues/2085)
+
+    <details><summary>why</summary>
+
+    Streaming calls through a custom OPENAI_BASE_URL never requested stream_options.include_usage, so their tokens stayed invisible to the usage_unreported accounting and to max_tokens/max_cost_usd. The new ITERION_OPENAI_STREAM_USAGE knob (classified infra, spend-adjacent) opts the openai factory into OpenAIStreamUsage on both forwarding sites (env and BYOK); unset keeps today's behavior exactly — providers that reject stream_options are untouched.
+
+    </details>
+
+## [3.250.1](https://github.com/SocialGouv/iterion/compare/v3.250.0...v3.250.1) (2026-10-07)
+
+### Bug Fixes
+
+* **chart:** the pool pod takes the authenticated Mongo URI by key reference ([#2282](https://github.com/SocialGouv/iterion/issues/2282)) ([4cb7a2e](https://github.com/SocialGouv/iterion/commit/4cb7a2e6d39726d103f606100a01d59855fc70ca))
+
+    <details><summary>why</summary>
+
+    Third prod-found break on the first pool boot: the runner's Mongo credentials ride ITERION_MONGO_URI in the auth Secret (envFrom on the shared runner), which the pool pod deliberately does not mount whole. It now takes that key by specific reference — the pod's Mongo privileges are the deployment's own (the accepted residual, D14 F4: the pods sit inside the install's network boundary).
+
+    </details>
+
+## [3.250.0](https://github.com/SocialGouv/iterion/compare/v3.249.1...v3.250.0) (2026-10-07)
+
+### Bug Fixes
+
+* **queue:** a pool-serving Connect brings up the pool's own topology ([#2278](https://github.com/SocialGouv/iterion/issues/2278)) ([1bf50bc](https://github.com/SocialGouv/iterion/commit/1bf50bca11aa8a051f14cf7a5f7c1522d2282e68)), references [SocialGouv/iterion#2029](https://github.com/SocialGouv/iterion/issues/2029)
+
+    <details><summary>why</summary>
+
+    The first pool pod CrashLooped twice in prod: past the JWT (fixed in the chart), the boot's EnsureSchema created a shared-subject stream under the pool's name, and the install's shared stream refused the connection with subjects-overlap (API 10065). natsq.Config gains Pool: Connect brings up the pool's own stream pair (exact pool subjects) plus the shared KV buckets, refuses an explicit stream name alongside, and the shared topology is never touched. The KV part of ensureSchema is extracted so…
+
+    </details>
+
+## [3.249.1](https://github.com/SocialGouv/iterion/compare/v3.249.0...v3.249.1) (2026-10-07)
+
+### Bug Fixes
+
+* **chart:** the pool pod takes ITERION_JWT_SECRET by key reference ([#2276](https://github.com/SocialGouv/iterion/issues/2276)) ([02b551b](https://github.com/SocialGouv/iterion/commit/02b551bb2d5721646ba0dc1c261f59dc77540d04))
+
+    <details><summary>why</summary>
+
+    The cloud-mode runner validates the JWT secret at boot; a pool pod booted into CrashLoopBackOff without it. It now takes that ONE key from the deployment's existing auth Secret by specific key reference — the ring (ITERION_SECRETS_KEY*) stays out of the pod (P4-b), the pool still carries the gateway credential only in its env.
+
+    </details>
+
+## [3.249.0](https://github.com/SocialGouv/iterion/compare/v3.248.0...v3.249.0) (2026-10-07)
+
+### Features
+
+* **chart:** sovereign runner pools — one runner deployment per pool (P8/D10') ([#2273](https://github.com/SocialGouv/iterion/issues/2273)) ([c3796b4](https://github.com/SocialGouv/iterion/commit/c3796b4f51f809147b0f4494581389e4caa399d3))
+
+    <details><summary>why</summary>
+
+    runnerPools[] renders a runner Deployment per pool, pinned three ways: ITERION_RUNNER_POOL (the admission stamp the pod checks every delivery against), the pool's JetStream stream + DLQ (rendered from the pool name, overriding the shared configmap), and the pool's regional gateway credential (OPENAI_COMPATIBLE_BASE_URL configured, the API key from a manually-managed Secret — the chart never renders credentials).
+
+    </details>
+
+## [3.248.0](https://github.com/SocialGouv/iterion/compare/v3.247.0...v3.248.0) (2026-10-07)
+
+### Features
+
+* **queue:** control-plane commands carry the run's admitted identity (P6/D14) ([#2270](https://github.com/SocialGouv/iterion/issues/2270)) ([5be28b3](https://github.com/SocialGouv/iterion/commit/5be28b39f5f93df720245558bc0a57eadb46c4a8))
+
+    <details><summary>why</summary>
+
+    The cancel and steer commands rode shared core-NATS subjects with no identity — a pod could publish or act on another pool's run commands. The emitting server stamps the run's admitted identity (headers, from the document's frozen stamp it just read) and the pod holding the run verifies the stamp against the message it admitted before acting: a command of another tenant or pool, or unstamped, is ignored with an error log. The subjects stay shared — the guard lives at the pod, the one place that…
+
+    </details>
+
+### Bug Fixes
+
+* **dsl:** a mis-indented top-level declaration survives a broken inline list ([#2272](https://github.com/SocialGouv/iterion/issues/2272)) ([3fb3f4b](https://github.com/SocialGouv/iterion/commit/3fb3f4bed16e395041049f4953a24102ffce9bd0)), closes [#2259](https://github.com/SocialGouv/iterion/issues/2259)
+
+    <details><summary>why</summary>
+
+    A keyword that names no property anywhere — secrets, presets, prompt, mcp_server, dsl — is legal nowhere but the top level. Mis-indented after a broken inline list, it was refused with the enclosing block's own noise (E012 unknown property, or the edge-syntax fight on the header forms) and the whole block was swallowed with it.
+
+    </details>
+
+## [3.247.0](https://github.com/SocialGouv/iterion/compare/v3.246.0...v3.247.0) (2026-10-07)
+
+### Features
+
+* **pisdk:** report a subtree sweep that burns its whole wait budget ([#2269](https://github.com/SocialGouv/iterion/issues/2269)) ([0426727](https://github.com/SocialGouv/iterion/commit/04267277d351d96056e756f1e8ae27f80566e0bf)), closes [#2141](https://github.com/SocialGouv/iterion/issues/2141)
+
+    <details><summary>why</summary>
+
+    Close()'s orphan sweep kills the process group then joins it for up to 2s. When the group is still resolvable at the end of that budget — a zombie pinned to a parent that never reaps it, an orphan under a PID-1 container, or a group probe failing with a non-ESRCH error — the expiry was silent, indistinguishable from success: every Close paid the full wait without a word, and the zombie-orphan class stayed in the dark.
+
+    </details>
+
+## [3.246.0](https://github.com/SocialGouv/iterion/compare/v3.245.0...v3.246.0) (2026-10-07)
+
+### Features
+
+* **queue:** the run lease carries the run's admitted identity (P5-c/D14) ([#2266](https://github.com/SocialGouv/iterion/issues/2266)) ([8bfe6a4](https://github.com/SocialGouv/iterion/commit/8bfe6a48f406120ca7424f3afe601c1b081264e4))
+
+    <details><summary>why</summary>
+
+    The distributed run lease (NATS KV, per runID) carried no identity — a pod could acquire, refresh or release another pool's run lease, the revision guard attributing nothing. The lease now carries the tenant (and pool, when stamped) of the message the holder actually admitted, stamped from the delivery context on both the run's own lock and the engine path whose subbot children lock their own runs. Acquire fails closed without an admitted identity; a failed CAS write is classified by one read —…
+
+    </details>
+
+## [3.245.0](https://github.com/SocialGouv/iterion/compare/v3.244.0...v3.245.0) (2026-10-07)
+
+### Features
+
+* **budget:** on_exceeded: pause parks a run at its cap, resumably ([#2263](https://github.com/SocialGouv/iterion/issues/2263)) ([4775ecc](https://github.com/SocialGouv/iterion/commit/4775ecc0fef2c6c1cb0ac551bd4067e530a872de)), references [#560](https://github.com/SocialGouv/iterion/issues/560)
+
+    <details><summary>why</summary>
+
+    A per-run budget ceiling ended through the failure path — and the 90% block preempts every cap crossing a node-sized step can produce, so a run approaching its cap never even reached the choice. The declared policy now has a second member:
+
+    </details>
+
+## [3.244.0](https://github.com/SocialGouv/iterion/compare/v3.243.0...v3.244.0) (2026-10-06)
+
+### Features
+
+* **llmroute:** the transcript handoff - recorder, seal, attach, render ([#2210](https://github.com/SocialGouv/iterion/issues/2210) slice 4) ([#2237](https://github.com/SocialGouv/iterion/issues/2237)) ([a0fba82](https://github.com/SocialGouv/iterion/commit/a0fba82cbdeb17da0a3f7122750b702d0c64395b))
+
+    <details><summary>why</summary>
+
+    What a cross-harness switch hands the incoming harness (ADR-121 § Delivery 2). S3 said the switch; S4 records the outgoing node's work, seals it at the crossing, attaches it to the incoming element, and renders it - reuse continues the node mid-work, restart re-runs the original prompt with the transcript as reference.
+
+    </details>
+* **reviewtopology:** a pinned mono_family no credential serves refuses the launch ([#2258](https://github.com/SocialGouv/iterion/issues/2258)) ([be4837a](https://github.com/SocialGouv/iterion/commit/be4837a3f3bccfd26e07f2af6bab5dfe0e765691))
+
+    <details><summary>why</summary>
+
+    A launch whose configuration cannot succeed does not start. The resolver answered "is there a route for this family on this tenant?" only after the first review node died — a whole repo's required check went dark while every run failed identically, and the 7-day runs listing hid the cause (2026-09-22). An operator pin on mono_family naming a family the credential set cannot serve now refuses the launch, naming the pinned family, the available ones and the fix; the silent substitution it…
+
+    </details>
+* **store:** IR blob reads are mediated by the run's tenant (P5-b/D14 F7) ([#2260](https://github.com/SocialGouv/iterion/issues/2260)) ([a1d9191](https://github.com/SocialGouv/iterion/commit/a1d9191d0ae996ae36626d569d2f64ae29637c1f))
+
+    <details><summary>why</summary>
+
+    An IR blob (or bundle snapshot) read resolves the run id embedded in its key and loads that run under the caller's tenant filter before touching the bucket: a foreign tenant's key refuses with the same not-found a missing blob would return, and an unattributed caller fails closed rather than reading the bucket. The snapshot shape ("<runID>-bundle-<digest>") falls back to the owning run before the boundary. The S3 credential remains deployment-wide — the accepted residual (the pods sit inside…
+
+    </details>
+
+## [3.243.0](https://github.com/SocialGouv/iterion/compare/v3.242.0...v3.243.0) (2026-10-06)
+
+### Features
+
+* **forge:** merge-gate gestures — approve, arm MWPS, request reviewers (ADR-123) ([#2238](https://github.com/SocialGouv/iterion/issues/2238)) ([c7f9df1](https://github.com/SocialGouv/iterion/commit/c7f9df1599fc537f502ab997a4a57405be1951ac))
+
+    <details><summary>why</summary>
+
+    A gating bot's deterministic verdict can now act: the publish endpoint gains an optional `verdict` block executed by the server after the review and the gate status land — approve → request reviewers → arm merge-when-pipeline-succeeds, arm skipped on a failed approval.
+
+    </details>
+* **server,identity:** the trigger relay verifies run events; one-team-per-pool backstopped at the store (P5-a/D14) ([#2252](https://github.com/SocialGouv/iterion/issues/2252)) ([5aa234e](https://github.com/SocialGouv/iterion/commit/5aa234e9b0518e3128d48f63cf083ab6af805b8d))
+
+    <details><summary>why</summary>
+
+    The trigger bus is a cross-tenant relay: a run-outcome event names a tenant and, through a matching subscription, launches a run under it with payload-derived vars. The publisher is not only the server — the cloud runner publishes its own runs' outcomes with the platform credential — so a compromised pod could forge iterion.events.run.finished.<victim> and fire the victim's subscriptions.
+
+    </details>
+
+### Bug Fixes
+
+* **dsl:** a broken inline list rescues the ancestor property and the off-stack sibling ([#2081](https://github.com/SocialGouv/iterion/issues/2081)) ([#2256](https://github.com/SocialGouv/iterion/issues/2256)) ([6d5bba3](https://github.com/SocialGouv/iterion/commit/6d5bba321e4133071f132365ea994741a1c084a6))
+
+    <details><summary>why</summary>
+
+    Two deferred rescues of the broken-inline-list recovery (#2081). A less-indented line an ANCESTOR block still owns — the parser replays the consumed INDENT/DEDENT history (openBlockColumns) to tell it from a line nothing open owns — is landed on, and each block loop between the list and the ancestor is handed the closing DEDENT it waits for, spliced ahead of the ancestor line. An off-stack dedent in the remainder (an Error after pops: the misaligned line leaves no level behind, so no DEDENT…
+
+    </details>
+* **dsl:** a C137 on a group member is fixed at the group's literal, one edit serving every use ([#2257](https://github.com/SocialGouv/iterion/issues/2257)) ([e4dec50](https://github.com/SocialGouv/iterion/commit/e4dec5076ce01d086607988afb496428c0eea8e1))
+
+    <details><summary>why</summary>
+
+    A tool declared inside a `group` is instantiated by `use` under the dotted id `<prefix>.<member>`, a name the source has not: `iterion fix` left the quoted reference to the author. The id now resolves through the AST (the use's group, the tool it declares), the member's literal is located inside `group <g>:` in the token stream, and ONE edit at it remedies the C137 of every instantiation — the proof counts the removed diagnostics per (node, reference), since the same literal raises one…
+
+    </details>
+
+## [3.242.0](https://github.com/SocialGouv/iterion/compare/v3.241.0...v3.242.0) (2026-10-06)
+
+### Features
+
+* **cli:** resume every usage-blocked run in one command; list by failure code ([#2249](https://github.com/SocialGouv/iterion/issues/2249)) ([19189fc](https://github.com/SocialGouv/iterion/commit/19189fc442cd4e9a35ef985cbeac43d82f163777))
+
+    <details><summary>why</summary>
+
+    #2247's manual half. A forfait reset is never observed by the parked runs: their retries arm at the provider's ANNOUNCED reset (days out), so the operator who resets early wakes each run by hand, one id at a time. 'iterion remote runs resume --usage-blocked' sweeps every failed_resumable run carrying failure_code USAGE_LIMIT_BLOCKED and resumes each through the normal endpoint — the full admission gate and the runner's usage preflight, the authoritative probe: a run whose window is still shut…
+
+    </details>
+* **contracts:** C310 warns when a contract port binds a node that runs more than once ([#2243](https://github.com/SocialGouv/iterion/issues/2243)) ([b15a920](https://github.com/SocialGouv/iterion/commit/b15a9207bef613d50091a6d3296d840182ac2de8)), closes [#1536](https://github.com/SocialGouv/iterion/issues/1536)
+
+    <details><summary>why</summary>
+
+    A fan-out body executes its nodes once per branch (per item under fan_out_each) under the same node id, and the contract port capture keeps one entry per node id — a declared output port bound into the body projects whichever branch execution finished last, one branch's output, not the collection. bindOutput now warns beside C304 when the producer sits in execBranchBodyNodes' set; the convergence node — where the branches join and execution is single again — stays silent, and so does the trunk.…
+
+    </details>
+* **credpool:** the routing fallback door - consent, probe, consult, seal ([#2210](https://github.com/SocialGouv/iterion/issues/2210) slice 5) ([#2251](https://github.com/SocialGouv/iterion/issues/2251)) ([f783a64](https://github.com/SocialGouv/iterion/commit/f783a649dea892df234152adc6f68e766ddc6971))
+
+    <details><summary>why</summary>
+
+    A donor who marks their pledge fallback_use consents to serve a FALLBACK rung of a run that holds its own credential - the run's routing policy needing a kind the run lacks (ADR-121, Delivery 2 slice 5). The whole-bundle gate is untouched; with no opted-in donor the delivery costs one indexed probe and changes nothing else.
+
+    </details>
+
+## [3.241.0](https://github.com/SocialGouv/iterion/compare/v3.240.0...v3.241.0) (2026-10-06)
+
+### Features
+
+* **dsl:** refuse the unread loop cap on a router edge (C309); walk run/loop refs in compute and when expressions ([#2239](https://github.com/SocialGouv/iterion/issues/2239)) ([3070832](https://github.com/SocialGouv/iterion/commit/307083219fc73f0db1befb461946282c543c6d67)), closes [#1314](https://github.com/SocialGouv/iterion/issues/1314) [#1506](https://github.com/SocialGouv/iterion/issues/1506), references [#1314](https://github.com/SocialGouv/iterion/issues/1314) [#1506](https://github.com/SocialGouv/iterion/issues/1506) [#1506](https://github.com/SocialGouv/iterion/issues/1506) [#1386](https://github.com/SocialGouv/iterion/issues/1386) [#1506](https://github.com/SocialGouv/iterion/issues/1506)
+
+    <details><summary>why</summary>
+
+    C309 (#1314): a round_robin or non-multi llm router's outgoing edge carrying 'as name(N)' compiled and the cap was never read at run time — execRoundRobin alternates over its unconditional edges and execLLMRouter takes the target the model named, neither through evaluateEdgesWithLoopsRS. The compiler now refuses the shape (error, symmetric to C244), skipped on llm multi: true where C244 already rejects it. Renumbered from the drafted C153 — main's C153 is DiagUnknownRunMember.
+
+    </details>
+* **secrets,queue,cloud:** sovereign sealing — key ring off the pods, one team per pool (P4/D13, ADR-123) ([#2236](https://github.com/SocialGouv/iterion/issues/2236)) ([4676f05](https://github.com/SocialGouv/iterion/commit/4676f05f88cfc0540d70a9518d34f3f0bee657f3))
+
+    <details><summary>why</summary>
+
+    The ring leaves the runner pod. The publisher generates a fresh 32-byte DEK per run, seals the bundle under it (same tenant/pool/run AAD), and puts the DEK on the RunMessage (schema v24) — it transits only the run's own pool stream. The runner builds the per-run sealer at claim time; a "dek"-stamped record whose message carries no key is corrupt and refuses with a typed error (errors.Is-able). The two older cohorts stay readable: id-less records through the legacy path, ring-id records through…
+
+    </details>
+
+### Bug Fixes
+
+* **backends:** ANTHROPIC_CUSTOM_HEADERS cleared on engine-owned routes; a facade-pinned auth failure names the provider ([#2242](https://github.com/SocialGouv/iterion/issues/2242)) ([9b95cb2](https://github.com/SocialGouv/iterion/commit/9b95cb2dee99c7defb4920ad5e831f892c3987e2)), closes [#1476](https://github.com/SocialGouv/iterion/issues/1476) [#1527](https://github.com/SocialGouv/iterion/issues/1527), references [#1527](https://github.com/SocialGouv/iterion/issues/1527)
+
+    <details><summary>why</summary>
+
+    #1476: an ambient ANTHROPIC_CUSTOM_HEADERS — applied LAST by the CLI (claw identity.go) — rode every route the engine claims to own: an ambient 'Authorization: Bearer …' handed the facade's gateway a foreign credential. The suppression map and facadeRouteEnv now clear it. The shared clearedAnthropicChannels deliberately does NOT: on a bound-direct route the header is the operator's gateway config and stays theirs, and the anthropic-hint env-only path keeps its inherit contract.
+
+    </details>
+* **runtime:** library skills mirror both discovery shapes; the pruner reads the recorded write form ([#2240](https://github.com/SocialGouv/iterion/issues/2240)) ([1ee4a45](https://github.com/SocialGouv/iterion/commit/1ee4a4549181226f6b6f571afb827873a0c8d633)), closes [#1478](https://github.com/SocialGouv/iterion/issues/1478) [#1526](https://github.com/SocialGouv/iterion/issues/1526), references [post-#1500](https://github.com/post-/issues/1500)
+
+    <details><summary>why</summary>
+
+    #1478: the bundle and plugin tiers write <name>/SKILL.md AND the flat <name>.md alias; the library tier still wrote the directory form only, so a bot Reading .claude/skills/<lib-name>.md NOENT'd on a library-referenced skill. Both library mirrors (local and cloud-injected) now route through mirrorFileSkill — identical shape and marker layout across the three tiers. The owned path is computed through skillDestDirForm so the case convention and marker layout match what was actually written. Port…
+
+    </details>
+
 ## [3.240.0](https://github.com/SocialGouv/iterion/compare/v3.239.1...v3.240.0) (2026-10-06)
 
 ### Features

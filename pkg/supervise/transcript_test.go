@@ -236,3 +236,33 @@ func TestReadFrom(t *testing.T) {
 		t.Fatalf("shrunk read = (%q, %d, %v); want restart from 0", data, off4, err)
 	}
 }
+
+// The turn-boundary step event carries the message's token accounting —
+// the intra-node split a bench read attributes spend with — under the
+// same field names the model hooks' step events use. A message without
+// usage (older transcripts) emits the event with an empty data map, and
+// a zero-usage message does not grow cache keys.
+func TestTheTurnBoundaryCarriesTheMessageUsage(t *testing.T) {
+	got := runHandleLine(t, []string{
+		`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"text","text":"done"}],"usage":{"input_tokens":120,"output_tokens":34,"cache_read_input_tokens":5000,"cache_creation_input_tokens":210}}}`,
+	})
+	if len(got) != 1 || got[0].Type != store.EventLLMStepFinished {
+		t.Fatalf("the turn boundary is not the one event: %+v", got)
+	}
+	d := got[0].Data
+	for k, want := range map[string]any{
+		"input_tokens": 120, "output_tokens": 34,
+		"cache_read_tokens": 5000, "cache_write_tokens": 210,
+	} {
+		if d[k] != want {
+			t.Errorf("%s = %v, want %v", k, d[k], want)
+		}
+	}
+	// A transcript without usage: the event stands, the map is empty.
+	got = runHandleLine(t, []string{
+		`{"type":"assistant","uuid":"u2","message":{"content":[{"type":"text","text":"done"}]}}`,
+	})
+	if len(got) != 1 || got[0].Type != store.EventLLMStepFinished || len(got[0].Data) != 0 {
+		t.Fatalf("a usage-less message must emit a bare step event: %+v", got)
+	}
+}

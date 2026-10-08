@@ -1919,6 +1919,18 @@ export ITERION_OPENAI_USE_OAUTH=0
 # unintended backend.
 ```
 
+**Stream usage through a gateway.** On the OpenAI chat wire, token usage
+travels only when the request asks for it
+(`stream_options.include_usage`). api.openai.com is asked whatever the
+setup; an endpoint set through `OPENAI_BASE_URL` is not — providers that
+reject the `stream_options` parameter must not see it unasked. When your
+gateway accepts it, opt in with `ITERION_OPENAI_STREAM_USAGE=1`: streaming
+calls then report their usage instead of counting against the run's
+`usage_unreported` floor. The ChatGPT forfait never carries the
+parameter, and the `openai_compatible/` gateway factory asks
+unconditionally — a gateway that rejects `stream_options` breaks that
+path regardless of this knob.
+
 The studio status pill renders both detected sources, with the
 inactive one struck-through and labelled `(overridden by …)`.
 

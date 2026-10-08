@@ -28,7 +28,7 @@ func TestDelegateModelReachesStore(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	var logBuf bytes.Buffer
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil, nil)
 
 	info := DelegateInfo{
 		BackendName:     "claude_code",
@@ -120,7 +120,7 @@ func TestDelegateErrorDoesNotBlankRecordedModel(t *testing.T) {
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil, nil)
 	hooks.OnDelegateFinished("campaign", DelegateInfo{
 		BackendName:    "claude_code",
 		DeclaredModel:  "anthropic/claude-opus-5",
@@ -181,7 +181,7 @@ func TestDelegateModelNoDriftWhenSameModel(t *testing.T) {
 			if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 				t.Fatalf("CreateRun: %v", err)
 			}
-			hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil)
+			hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil, nil)
 			hooks.OnDelegateFinished("n", DelegateInfo{
 				BackendName:    "pi",
 				DeclaredModel:  tc.declared,
@@ -210,7 +210,7 @@ func TestDelegateModelDriftDeduped(t *testing.T) {
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil, nil)
 	info := DelegateInfo{
 		BackendName:    "claude_code",
 		DeclaredModel:  "anthropic/claude-opus-5",
@@ -321,7 +321,7 @@ func TestDelegateFacadeRoutingReachesStore(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	var logBuf bytes.Buffer
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil, nil)
 
 	facade := DelegateInfo{
 		BackendName:    "claude_code",
@@ -389,7 +389,7 @@ func TestDelegateFacadeRoutingSilentOnFailure(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	var logBuf bytes.Buffer
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil, nil)
 
 	hooks.OnDelegateError("triage", DelegateInfo{
 		BackendName:    "claude_code",

@@ -66,7 +66,7 @@ func resolveWithBot(t *testing.T, p *Publisher, sealer secrets.Sealer, runID, bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "team1", "", runID, rec.KeyID, rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), "team1", "", runID, rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}

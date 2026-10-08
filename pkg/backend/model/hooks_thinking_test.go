@@ -23,7 +23,7 @@ func newThinkingHooks(t *testing.T, runID string) (EventHooks, *bytes.Buffer) {
 	}
 	var logBuf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &logBuf)
-	return NewStoreEventHooks(context.Background(), st, runID, logger, nil), &logBuf
+	return NewStoreEventHooks(context.Background(), st, runID, logger, nil, nil), &logBuf
 }
 
 // TestStoreEventHooks_ThinkingFoldsInRunLog proves a step's extended-thinking

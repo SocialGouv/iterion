@@ -66,6 +66,14 @@ func TestForgeAdminForGitHubAppCapabilityMatrix(t *testing.T) {
 		"CommitStatusLister": assertsAs[forge.CommitStatusLister](admin),
 		"RepoCreator":        assertsAs[forge.RepoCreator](admin),
 		"BoardClient":        assertsAs[forge.BoardClient](admin),
+		// The merge-gate gestures: a gating bot publishes through the App
+		// connection the wizard creates by default, so a gesture missing here
+		// is a lane that answers "provider implements no X capability" in
+		// production.
+		"MergeApprover":      assertsAs[forge.MergeApprover](admin),
+		"AutoMergeArmer":     assertsAs[forge.AutoMergeArmer](admin),
+		"PullReviewerSetter": assertsAs[forge.PullReviewerSetter](admin),
+		"MergeabilityReader": assertsAs[forge.MergeabilityReader](admin),
 	}
 	for name, ok := range served {
 		if !ok {

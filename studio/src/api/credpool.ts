@@ -62,6 +62,8 @@ export interface PledgeView {
   limits: PoolLimits;
   window?: PoolWindow;
   bots?: string[];
+  /** Consent to serve FALLBACK rungs of runs that hold their own credential. */
+  fallback_use?: boolean;
   health: string;
   health_detail?: string;
   cooldown_until?: string;
@@ -88,6 +90,8 @@ export interface PledgeInput {
   limits: PoolLimits;
   window?: PoolWindow | null;
   bots?: string[];
+  /** Consent to serve FALLBACK rungs of runs that hold their own credential (the routing fallback door). */
+  fallback_use?: boolean;
   /** Which of the donor's keys is lent. Required for an api_key pledge. */
   key_id?: string;
 }

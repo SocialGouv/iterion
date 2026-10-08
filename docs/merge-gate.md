@@ -1095,13 +1095,27 @@ Reading it in production: the replica holding a term logs `merge-gate sweeper:
 the `merge-gate-sweeper` document of the Mongo `leases` collection (`owner`,
 `expires_at`). Every replica logs one line per hour in which it sent forge
 requests — `forge HTTP: N requests in the hour ending 2026-09-30T15:00Z —
-<host> <rest|graphql> <lane>=<n>, …` — when its next request arrives, and
-flushes the hour it was counting when it stops; a partial hour carries `(counted
-from …)` or `(until …, stopping)`. The `merge-gate-sweeper` lane is what the
-sweep spent that hour. The count is of attempts as the forge client sends them
-— each redirect hop, each answer whatever its status, a rate-limited 403
+<host> <rest|graphql> [installation <id>] <lane>=<n>, …` — when its next
+request arrives, and flushes the hour it was counting when it stops; a partial
+hour carries `(counted from …)` or `(until …, stopping)`. The `merge-gate-sweeper`
+lane is what the sweep spent that hour; `installation <id>` names the GitHub App
+installation whose token sent the request, and an entry without it was sent with
+another credential (a PAT, a user token, the App's own JWT for a token mint, a
+bot's `forge_token` binding). The count is of attempts as the forge client sends
+them — each redirect hop, each answer whatever its status, a rate-limited 403
 included — so it is close to the budget spent, not identical: a token mint is
 counted and spends no REST budget.
+
+The same hour's budget level follows on a line of its own, `forge budget:
+lowest remaining in the hour ending 2026-09-30T15:00Z — <host> <rest|graphql>
+installation <id>: <remaining> of <limit> at <seen> (resets <reset>), …`: for
+each installation and API, the lowest `X-RateLimit-Remaining` any answer to that
+installation's token reported in the hour — GitHub sends it on every answer, 2xx
+included — when it was seen, and when that window resets. It shows an
+installation approaching exhaustion before the first rate-limited 403, not after.
+Every lane spends the installation's one budget, so the line has no lane; an
+answer to any other credential reports a budget the line cannot name and is left
+out.
 
 The sweep's cadence — interval, lookback, deep-pass frequency — is the
 operator's to set without a release (`ITERION_GATE_SWEEP_*`,
@@ -1357,3 +1371,37 @@ marker, so both are repairable and both are ignored by the lane below.
 The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
 failures: `review died` means there are no findings to fix, so the recovery is
 re-running the REVIEWER (this lane), never launching the fixer.
+
+## <a name="gating-bots"></a>Gating bots — a verdict that acts
+
+The doctrine line: a review advises, a human merges. [ADR-124](adr/124-gating-bot-merge-gestures.md)
+amends it narrowly for gitops repositories, where the reviewer executes a POLICY rather
+than advising a taste call: a **gating bot** may approve the merge request, arm
+merge-when-pipeline-succeeds, and request reviewers — under six conditions, all
+enforced by the engine, none by the bot's good manners:
+
+1. The verdict is a deterministic fold over a closed vocabulary (the LLM classifies; a
+   compute node decides; unknown, doubt and unreadable all fold to escalate).
+2. The gestures cross the publish endpoint's `verdict` block — no forge credential in the
+   run workspace, no provider API spoken from a bundle (the vetty `arm_automerge` pattern
+   is the legacy this retires).
+3. Every mutation is pinned to `verdict.audited_sha`; a moved head is a refusal, never a
+   retarget.
+4. The gate status is the anchor: gestures execute only after the check posted on the
+   same head, under the same decision.
+5. Capability is minted from the manifest (`forge.token_scopes: approvals / merge /
+   reviewers` at write) into the run's publish grant — and stripped wholesale by the
+   operator pin `forge_publish_mutations` set to anything but `true` (the per-repo
+   disarm; no release, no bot redeploy).
+6. The bundle ships in `mode: dry_run` (comment + gate, zero verbs); `enforce` is an
+   operator launch-vars pin, flipped after calibration, reversible the same way.
+
+What the engine refuses, always: verdict gestures without an enabled gate (the check is
+the audit and ordering anchor), gestures on a superseded or refused gate, gestures whose
+approval was requested and failed (never arm on an unconfirmed approval), and an arming
+without a sha (an unpinned arming is refused by contract in the forge layer itself).
+
+The forge gestures are optional capabilities (`forge.MergeApprover`, `forge.AutoMergeArmer`,
+`forge.PullReviewerSetter`, `forge.MergeabilityReader`) — a provider that lacks one
+answers "implements no X capability" in the verdict result, which the bot's publish-health
+check surfaces as loudly as a gate that did not post.

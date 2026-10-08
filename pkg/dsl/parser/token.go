@@ -153,6 +153,7 @@ const (
 	TokenMaxTokens
 	TokenMaxIterations
 	TokenWarnTokens
+	TokenOnExceeded
 	// Compaction block + properties
 	TokenCompaction
 	TokenThreshold
@@ -336,6 +337,7 @@ var tokenNames = map[TokenType]string{
 	TokenMaxTokens:           "max_tokens",
 	TokenMaxIterations:       "max_iterations",
 	TokenWarnTokens:          "warn_tokens",
+	TokenOnExceeded:          "on_exceeded",
 
 	TokenCompaction:          "compaction",
 	TokenThreshold:           "threshold",
@@ -486,6 +488,7 @@ var keywords = map[string]TokenType{
 	"max_tokens":            TokenMaxTokens,
 	"max_iterations":        TokenMaxIterations,
 	"warn_tokens":           TokenWarnTokens,
+	"on_exceeded":           TokenOnExceeded,
 	"compaction":            TokenCompaction,
 	"threshold":             TokenThreshold,
 	"preserve_recent":       TokenPreserveRecent,

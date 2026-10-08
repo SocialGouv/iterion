@@ -588,7 +588,7 @@ describe("applyEventsBatch — run termination & pause status overrides", () => 
     expect(e.error).toBe("user cancelled");
   });
 
-  it("run_paused maps operator/cost_cap_daily reasons to paused_operator, default to paused_waiting_human", () => {
+  it("run_paused maps operator/cost_cap_daily/budget_cap_run reasons to paused_operator, default to paused_waiting_human", () => {
     seed();
     runStore.getState().applyEventsBatch([
       {
@@ -602,7 +602,18 @@ describe("applyEventsBatch — run termination & pause status overrides", () => 
     expect(runStore.getState().snapshot?.run.status).toBe("paused_operator");
 
     runStore.getState().applyEventsBatch([
-      { seq: 2, timestamp: ts(2), type: "run_paused", run_id: "run_test" },
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "run_paused",
+        run_id: "run_test",
+        data: { reason: "budget_cap_run" },
+      },
+    ]);
+    expect(runStore.getState().snapshot?.run.status).toBe("paused_operator");
+
+    runStore.getState().applyEventsBatch([
+      { seq: 3, timestamp: ts(3), type: "run_paused", run_id: "run_test" },
     ]);
     expect(runStore.getState().snapshot?.run.status).toBe(
       "paused_waiting_human",

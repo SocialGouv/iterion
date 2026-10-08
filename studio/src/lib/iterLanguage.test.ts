@@ -32,7 +32,9 @@ describe("iter tokenizer", () => {
         const [line] = paint([`  ${property}: ${value}`]);
         // `human` and `llm` are also declaration/lexer keywords and win the
         // word rule's earlier cases; both colours say "recognised word".
-        expect(typeAt(line, property.length + 4), `${property}: ${value}`).toMatch(/keyword|constant/);
+        // `fail` (and `done`) are node-declaration names on top of that and
+        // paint as the builtin node word — recognised all the same.
+        expect(typeAt(line, property.length + 4), `${property}: ${value}`).toMatch(/keyword|constant|type\.builtin/);
       }
     }
   });

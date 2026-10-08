@@ -467,7 +467,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	if superviseHub != nil {
-		stop := startCLISupervisors(ctx, superviseHub, s, opts.RunID, wf, logger)
+		// The stored inputs re-resolve for the spawn: a supervisor model
+		// pin reads the same resolved vars the resumed run's nodes see.
+		stop := startCLISupervisors(ctx, superviseHub, s, opts.RunID, wf, eng.ResolveVars(r.Inputs), logger)
 		defer stop()
 	}
 

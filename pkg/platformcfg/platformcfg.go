@@ -204,9 +204,13 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_PUBLIC_URL":   true,
 	"ITERION_DISABLE_AUTH": true,
 	"ITERION_SIGNUP_MODE":  true,
-	"ITERION_BIN":          true,
-	"ITERION_PI_BIN":       true,
-	"ITERION_OPENCODE_BIN": true,
+	// The pinned-version fallback dial (#1517): the SERVER's own posture —
+	// whether a missing botsource pin recovers to the nearest older
+	// version or refuses. It configures the process, never a bot's run.
+	"ITERION_BOTSOURCE_PIN_FALLBACK": true,
+	"ITERION_BIN":                    true,
+	"ITERION_PI_BIN":                 true,
+	"ITERION_OPENCODE_BIN":           true,
 	// The two project-trust switches are ENFORCEMENT, not paths: each one
 	// lifts a refusal that stops an agent CLI executing code out of the
 	// repository under review.
@@ -220,7 +224,6 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_REQUIRE_ORIGIN":              true,
 	"ITERION_REQUIRE_WS_ORIGIN":           true,
 	"ITERION_SECURITY_HEADERS":            true,
-	"ITERION_LEGACY_REFRESH_COOKIE":       true,
 	"ITERION_CANONICAL_REDIRECT":          true,
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK": true,
 	// Private-network reach (SSRF) and host allowlists.
@@ -254,6 +257,7 @@ var botVarsInfraExact = map[string]bool{
 	// Spend and billing guards.
 	"ITERION_FORBID_SUBSCRIPTION_OAUTH": true,
 	"ITERION_OPENAI_USE_OAUTH":          true,
+	"ITERION_OPENAI_STREAM_USAGE":       true,
 	"ITERION_LOOP_BUDGET_GUARD":         true,
 	// Trust roots, host files and filesystem exposure.
 	"ITERION_JAVA_TRUSTSTORE": true,

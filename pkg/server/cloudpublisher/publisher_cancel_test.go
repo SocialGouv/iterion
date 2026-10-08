@@ -25,7 +25,7 @@ func TestCancelRunWithReason(t *testing.T) {
 		}
 		return &Publisher{
 			store:     st,
-			cancelRun: func(string) error { return nil },
+			cancelRun: func(string, store.LeaseIdentity) error { return nil },
 		}, st
 	}
 	seed := func(t *testing.T, st store.RunStore, id string, status store.RunStatus, runErr string) {
@@ -142,7 +142,7 @@ func TestCancelRun_PausedOperatorIsCancellable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &Publisher{store: st, cancelRun: func(string) error { return nil }}
+	p := &Publisher{store: st, cancelRun: func(string, store.LeaseIdentity) error { return nil }}
 	run, err := st.CreateRun(context.Background(), "run-po", "wf", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -163,5 +163,42 @@ func TestCancelRun_PausedOperatorIsCancellable(t *testing.T) {
 	}
 	if got.FailureCode != store.FailureCancelled {
 		t.Errorf("failure code = %q, want CANCELLED", got.FailureCode)
+	}
+}
+
+// The nats cancel carries the run's admitted identity — the frozen
+// stamp of the document the caller's tenant filter just read — so the
+// holding pod can verify the command against what it admitted. A stamp
+// of the wrong fields (or the zero identity) is refused pod-side and
+// every operator cancel in the fleet would silently no-op.
+func TestCancelRunWithReason_CarriesAdmittedIdentity(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotRun string
+	var gotIdent store.LeaseIdentity
+	p := &Publisher{store: st, cancelRun: func(id string, ident store.LeaseIdentity) error {
+		gotRun, gotIdent = id, ident
+		return nil
+	}}
+	run, err := st.CreateRun(context.Background(), "run-stamp", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.TenantID = "team-a"
+	run.RunnerPool = "pool-honorabilite"
+	run.Status = store.RunStatusRunning
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CancelRunWithReason(context.Background(), "run-stamp", store.RunEndReasonOperator); err != nil {
+		t.Fatalf("CancelRunWithReason: %v", err)
+	}
+	if gotRun != "run-stamp" {
+		t.Fatalf("cancel went to %q, want run-stamp", gotRun)
+	}
+	if gotIdent.TenantID != "team-a" || gotIdent.Pool != "pool-honorabilite" {
+		t.Fatalf("cancel stamped %+v, want the document's frozen stamp team-a/pool-honorabilite", gotIdent)
 	}
 }

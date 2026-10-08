@@ -38,38 +38,18 @@ func TestHostPrefixOnProductionCookieShape(t *testing.T) {
 		}
 	}
 
-	// The bare ACCESS name must NOT also be set: two live access cookies is
-	// the ambiguity the prefix exists to remove, and the read refuses the bare
-	// one anyway.
+	// Neither bare name is set: two live access cookies is the ambiguity the
+	// prefix exists to remove, and the legacy refresh name is gone with the
+	// migration it served (docs/browser-security.md records the two
+	// conditions that gated its removal).
 	for _, c := range cookies {
 		if c.Name == authCookieName {
 			t.Errorf("bare %q written alongside the prefixed cookie", c.Name)
 		}
-	}
-	// The bare REFRESH name IS written, for one release, and deliberately:
-	// see setAuthCookies. Its consumer is out-of-process — a desktop binary
-	// that updates on its own schedule — so flipping the write name with no
-	// migration would make an older desktop replay a rotated token and get
-	// every session of that user revoked.
-	legacy := findCookie(t, cookies, refreshCookieName)
-	if legacy.Value != "refresh-token" {
-		t.Errorf("legacy refresh cookie value = %q; it must carry the SAME token, or an old desktop harvests a stale one", legacy.Value)
-	}
-}
-
-// TestLegacyRefreshCookieCanBeTurnedOff pins the switch that ends the
-// migration: release N+1 drops this write, and an operator can do it early.
-func TestLegacyRefreshCookieCanBeTurnedOff(t *testing.T) {
-	s := newAuthCookieServer(true, "")
-	t.Setenv("ITERION_LEGACY_REFRESH_COOKIE", "0")
-	w := httptest.NewRecorder()
-	s.setAuthCookies(w, "a", time.Now().Add(time.Minute), "r", time.Now().Add(time.Hour))
-	for _, c := range w.Result().Cookies() {
 		if c.Name == refreshCookieName {
-			t.Fatalf("legacy refresh cookie still written with the switch off")
+			t.Errorf("bare %q written alongside the prefixed cookie — the migration is over", c.Name)
 		}
 	}
-	findCookie(t, w.Result().Cookies(), hostCookiePrefix+refreshCookieName)
 }
 
 // TestHostPrefixWithheldWhenItsTermsCannotBeMet locks the conditional. On a
@@ -171,12 +151,23 @@ func TestStaleHostCookieIgnoredAfterRollback(t *testing.T) {
 // keeps its legacy fallback — it is server-verified, single-use and rotating,
 // so a stale one is a far smaller surface than an access cookie, and without it
 // the deploy signs out every existing browser.
-func TestLegacyRefreshStillAccepted(t *testing.T) {
+// The migration is over: the legacy bare name is neither written nor read.
+// (This test once pinned the OPPOSITE — that a deploy dropping the read
+// alone would sign everyone out; the two conditions in
+// docs/browser-security.md gated the simultaneous removal.)
+func TestLegacyRefreshIsNeitherWrittenNorRead(t *testing.T) {
 	s := newAuthCookieServer(true, "")
+	w := httptest.NewRecorder()
+	s.setAuthCookies(w, "access", time.Now().Add(time.Minute), "refresh", time.Now().Add(time.Hour))
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			t.Fatalf("the legacy bare refresh cookie is written again: %v", c)
+		}
+	}
 	r := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
 	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "legacy-refresh"})
-	if got := s.refreshTokenFromRequest(r); got != "legacy-refresh" {
-		t.Fatalf("refreshTokenFromRequest = %q; want legacy-refresh — the deploy would sign everyone out", got)
+	if got := s.refreshTokenFromRequest(r); got == "legacy-refresh" {
+		t.Fatal("the legacy bare refresh cookie is accepted again")
 	}
 }
 
@@ -292,47 +283,24 @@ func clearAuthCookiesCase(t *testing.T, secure bool, domain string) {
 // however the removal is spelled: does the server WRITE the legacy name, and
 // does it ACCEPT one? Those two answers must agree.
 //
-// This pins that the two halves move TOGETHER; it says nothing about whether
-// the moment is safe, and a compliant simultaneous deletion passes it. The two
-// conditions that decide the moment — the refresh TTL for the read, and a soak
-// with ITERION_LEGACY_REFRESH_COOKIE=0 for the write, whose desktop consumer no
-// TTL bounds — live in docs/browser-security.md. Delete this test with them.
-func TestLegacyRefreshCookieHalvesLiveAndDieTogether(t *testing.T) {
-	// The kill switch is a RUNTIME override and orthogonal to the pairing this
-	// test pins; neutralise any inherited value so the assertion is about the
-	// code, not the environment it happens to run in.
-	t.Setenv("ITERION_LEGACY_REFRESH_COOKIE", "")
-	s := newAuthCookieServer(true, "") // the shape that carries the prefix
-	if !s.usesHostPrefix() {
-		t.Fatal("test precondition: this server should be writing the __Host- prefix")
-	}
 
+// The legacy bare refresh cookie is gone — both halves. A prefixed server
+// must not emit the bare name at all, and the read accepts only the
+// prefixed spelling. (The pairing test that once guarded the migration
+// died with it; docs/browser-security.md records the two conditions the
+// removal waited on.)
+func TestLegacyRefreshCookieIsGone(t *testing.T) {
+	s := newAuthCookieServer(true, "")
 	w := httptest.NewRecorder()
 	s.setAuthCookies(w, "access", time.Now().Add(time.Minute), "refresh", time.Now().Add(time.Hour))
-	writesLegacy := false
 	for _, c := range w.Result().Cookies() {
 		if c.Name == refreshCookieName {
-			writesLegacy = true
+			t.Errorf("the legacy bare refresh cookie is written again: %v", c)
 		}
 	}
-
 	r := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
 	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "legacy-token"})
-	acceptsLegacy := s.refreshTokenFromRequest(r) == "legacy-token"
-
-	switch {
-	case writesLegacy && !acceptsLegacy:
-		// The READ went first. The cookie is still set on every browser and
-		// nothing accepts it: a stale name, and a desktop presenting it just
-		// gets a 401. Dead surface, not a session massacre.
-		t.Fatal("the legacy refresh cookie is still WRITTEN but no longer ACCEPTED: " +
-			"it is set on every browser and nothing reads it — dead surface, drop the write too")
-	case !writesLegacy && acceptsLegacy:
-		// The WRITE went first, and this is the dangerous order: an older
-		// desktop harvests nothing, keeps its previous token and replays it,
-		// which the server reads as theft.
-		t.Fatal("the legacy refresh cookie is no longer WRITTEN but is still ACCEPTED: " +
-			"an older desktop harvests nothing, replays its previous token, and gets every session of that user revoked — " +
-			"restore the write and soak with ITERION_LEGACY_REFRESH_COOKIE=0 first")
+	if got := s.refreshTokenFromRequest(r); got == "legacy-token" {
+		t.Error("the legacy bare refresh cookie is accepted again")
 	}
 }

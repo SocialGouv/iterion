@@ -53,6 +53,11 @@ type Store interface {
 	CreateTeam(ctx context.Context, t Team) (Team, error)
 	GetTeam(ctx context.Context, id string) (Team, error)
 	GetTeamBySlug(ctx context.Context, slug string) (Team, error)
+	// GetTeamByRunnerPool returns the team currently mapped to pool, or
+	// ErrNotFound when no team holds it — the one-team-per-pool
+	// invariant's own accessor (#2029 D13). Only meaningful for a
+	// non-empty pool: an empty mapping is "unmapped", not a pool.
+	GetTeamByRunnerPool(ctx context.Context, pool string) (Team, error)
 	// GetTeamsByIDs returns the teams matching ids, keyed by id; missing
 	// ids are absent from the result (see GetUsersByIDs).
 	GetTeamsByIDs(ctx context.Context, ids []string) (map[string]Team, error)

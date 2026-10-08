@@ -3,7 +3,6 @@ package server
 import (
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -45,23 +44,22 @@ func (s *Server) authCookieWriteName(base string) string {
 //     bug: flipping CookieSecure or CookieDomain back leaves the browser
 //     holding a __Host- cookie this build can neither overwrite nor delete,
 //     and a fresh login would then read the PREVIOUS user's session.
-//   - `acceptLegacy` is for the migration, and only the refresh cookie gets
-//     it. Accepting a legacy ACCESS cookie reopens the very fixation it
-//     closes: the prefixed access cookie expires in 15 minutes while a tossed
-//     bare one is attacker-controlled and can outlive it, so every idle tab
-//     past the access TTL would silently adopt the attacker's session — and
-//     logout cannot clear a Domain-scoped cookie, so "log out, reload" would
-//     land on their account. A legacy browser instead pays one 401, which the
-//     SPA answers with a silent refresh (api/client.ts), and comes back fully
-//     migrated.
-func (s *Server) sessionCookie(r *http.Request, base string, acceptLegacy bool) string {
+//   - The legacy dual-name read (the migration's `acceptLegacy` parameter,
+//     refresh cookie only) is gone: accepting a legacy ACCESS cookie would
+//     reopen the very fixation it closed — the prefixed access cookie expires
+//     in 15 minutes while a tossed bare one is attacker-controlled and can
+//     outlive it, so every idle tab past the access TTL would silently adopt
+//     the attacker's session, and logout cannot clear a Domain-scoped cookie.
+//     A legacy browser instead pays one 401, which the SPA answers with a
+//     silent refresh (api/client.ts), and comes back fully migrated.
+func (s *Server) sessionCookie(r *http.Request, base string) string {
 	if s.usesHostPrefix() {
 		if c, err := r.Cookie(hostCookiePrefix + base); err == nil && c != nil && c.Value != "" {
 			return c.Value
 		}
-		if !acceptLegacy {
-			return ""
-		}
+		// A host-prefixed deployment refuses the bare name outright: the
+		// migration's dual-name read is gone (removed 2026-10, #1076).
+		return ""
 	}
 	if c, err := r.Cookie(base); err == nil && c != nil {
 		return c.Value
@@ -94,34 +92,6 @@ func (s *Server) setAuthCookies(w http.ResponseWriter, access string, accessExp 
 			SameSite: http.SameSiteLaxMode,
 			Expires:  refreshExp,
 		})
-		// RELEASE N ONLY — remove in N+1, together with the legacy READ in
-		// sessionCookie.
-		//
-		// The refresh cookie has an OUT-OF-PROCESS consumer: the desktop app
-		// harvests the rotated token from Set-Cookie, and it is a separately
-		// installed binary (.deb / AppImage / macOS) that updates on its own
-		// schedule, against a server that may already have flipped. A desktop
-		// built before this branch matches only the bare name, so it harvests
-		// "", keeps the previous token and replays it — which the server reads
-		// as theft and answers by revoking EVERY session that user holds.
-		//
-		// Giving the read a two-release migration and the write none would
-		// have left exactly that hole for anyone who updates the server first,
-		// which is the normal order. So the legacy name is written alongside
-		// for one release. It carries the same value, and reads prefer the
-		// prefixed one, so a tossed bare cookie still cannot win.
-		if s.usesHostPrefix() && os.Getenv("ITERION_LEGACY_REFRESH_COOKIE") != "0" {
-			http.SetCookie(w, &http.Cookie{
-				Name:     refreshCookieName,
-				Value:    refresh,
-				Path:     "/api/auth",
-				Domain:   s.cfg.CookieDomain,
-				HttpOnly: true,
-				Secure:   s.cfg.CookieSecure,
-				SameSite: http.SameSiteLaxMode,
-				Expires:  refreshExp,
-			})
-		}
 	}
 }
 
@@ -182,10 +152,11 @@ func (s *Server) clearAuthCookies(w http.ResponseWriter) {
 }
 
 func (s *Server) refreshTokenFromRequest(r *http.Request) string {
-	// acceptLegacy: a session minted before the migration must keep
-	// working until it expires, and the refresh token is server-verified,
-	// single-use and rotating — a far smaller window than the access cookie.
-	if v := s.sessionCookie(r, refreshCookieName, true); v != "" {
+	// The legacy bare name is no longer read: both halves of the migration
+	// are gone (docs/browser-security.md records the two conditions that
+	// gated the removal). The refresh token is server-verified, single-use
+	// and rotating, so the prefixed name is the only spelling.
+	if v := s.sessionCookie(r, refreshCookieName); v != "" {
 		return v
 	}
 	// Fallback for SDK clients that send it in the body via header.

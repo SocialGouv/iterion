@@ -442,7 +442,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
 	// launches auto-detect providers too. The spec override (studio toggle)
 	// wins over a --var review_mode; both win over auto.
-	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); err != nil {
+		s.dropRunLog(runID)
+		return nil, fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		runLogger.Info("%s", inj.Summary())
 	}
 
@@ -1334,7 +1337,17 @@ func (s *Service) spawnRun(
 		// Spawn any DSL-declared supervisors for the lifetime of the run.
 		// They observe via the broker (in-process) and steer via
 		// QueueMessage; Close drains them before the goroutine exits.
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger, ex.supervisors)
+		// The spawn map is the run's stored inputs — the same map the
+		// engine re-resolves for its nodes — never the precreateInputs
+		// nil-out, which is a doc-creation knob: a resume (or a
+		// pipeline-launched run) would otherwise resolve a supervisor
+		// model pin against the defaults alone, diverging from the nodes
+		// it watches.
+		spawnVars := precreateInputs
+		if run, err := s.store.LoadRun(context.Background(), runID); err == nil && run.Inputs != nil {
+			spawnVars = run.Inputs
+		}
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via

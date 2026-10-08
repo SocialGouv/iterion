@@ -791,6 +791,14 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 			"limit":      hl.limit,
 			"hard_limit": true,
 		})
+		// The pause policy parks the run here too, not only at 100%: the
+		// 90% block PRECEDES every cap crossing a node-sized step can
+		// produce, so a policy that only paused at 100% would almost never
+		// engage. On the run's own flow no sibling runs, so parking costs
+		// nobody its in-flight work.
+		if e.budgetPausePolicy() {
+			return e.handleBudgetCapPause(rs, nodeID, hl)
+		}
 		// Cause carries the sentinel: the cloud runner's terminal-ack carve-out
 		// matches errors.Is(err, ErrBudgetExceeded), and without it a budget
 		// death here was naked back to JetStream — observed in production as a
@@ -1023,11 +1031,16 @@ func (e *Engine) graceOrFailBudget(rs *runState, nodeID string, exc *budgetCheck
 // checkBudgetBeforeExec — it has a distinct message, hint, and event
 // field, and is reached from only one site.
 func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetCheckResult) error {
-	_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]any{
-		"dimension": exc.dimension,
-		"used":      exc.used,
-		"limit":     exc.limit,
-	})
+	_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, budgetExceededData(exc))
+	// The pause policy parks the run instead of ending it: checkpoint
+	// kept, status paused_operator, an operator raise resumes at the
+	// preserved boundary. The branch scheduler never calls this — its own
+	// checks keep the fail semantics whatever the policy (a branch cannot
+	// park a run its siblings are running), and that is the explicit v1
+	// contract: pause applies to the run's own flow.
+	if e.budgetPausePolicy() {
+		return e.handleBudgetCapPause(rs, nodeID, exc)
+	}
 	return e.failRunErrWithCheckpoint(rs, nodeID, &RuntimeError{
 		Code:    ErrCodeBudgetExceeded,
 		Message: fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
@@ -1035,6 +1048,28 @@ func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetChec
 		Hint:    fmt.Sprintf("raise budget.%s and resume — local: `iterion resume --max-%s`; cloud: `runs resume --file <workflow with the raised budget>`", exc.dimension, exc.dimension),
 		Cause:   ErrBudgetExceeded,
 	})
+}
+
+// budgetExceededData is the event payload both policy paths emit: the
+// dimension's numbers, plus the hard-limit mark when the crossing is the
+// 90% block rather than the cap itself.
+func budgetExceededData(exc *budgetCheckResult) map[string]any {
+	data := map[string]any{
+		"dimension": exc.dimension,
+		"used":      exc.used,
+		"limit":     exc.limit,
+	}
+	if exc.hardLimited {
+		data["hard_limit"] = true
+	}
+	return data
+}
+
+// budgetPausePolicy reads the workflow's declared `on_exceeded: pause`
+// policy. The declared budget is the policy's home — the runtime overrides
+// and live raises move the LIMITS, never the policy.
+func (e *Engine) budgetPausePolicy() bool {
+	return e.workflow != nil && e.workflow.Budget != nil && e.workflow.Budget.OnExceeded == "pause"
 }
 
 // newRunBudget is the one door every run budget this engine builds goes

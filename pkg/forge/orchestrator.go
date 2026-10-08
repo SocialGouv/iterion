@@ -646,6 +646,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	if hasPrevCfg && prevCfg.ReviewOnSync && !reviewOnSync && o.LogWarn != nil {
 		o.LogWarn("forge: webhook %s (%s): rebuilt without review_on_sync — pushes no longer auto-review; re-review is on-demand", prevCfg.ID, req.RepoFullName)
 	}
+	if anyBotMerges(desiredBots, frByBot) && o.LogWarn != nil {
+		o.LogWarn("forge: %s: bots carry merge-gate gesture scopes (approvals/merge/reviewers) — their runs may approve, arm merge-when-pipeline-succeeds and request reviewers through the publish surface; strip with the forge_publish_mutations launch pin", req.RepoFullName)
+	}
 
 	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
 	// it keeps the forge hook secret and the iterion config hash in lockstep
@@ -1554,6 +1557,31 @@ func anyBotGatesMerges(bots []string, frByBot map[string]*bundle.ForgeRequiremen
 	for _, b := range bots {
 		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
 			return true
+		}
+	}
+	return false
+}
+
+// anyBotMerges reports whether any of these bots declares a merge-gate
+// GESTURE scope (approvals / merge / reviewers) — i.e. can mutate the merge
+// request through the publish surface, not just check it. Deliberately only a
+// provisioning LOG line: a repo whose bots can arm merges is an operator-
+// visible posture change, and the enable dialog (scopes rationale) is where
+// it is consented — but the log is where an audit starts. Derived from the
+// DECLARED capability, never from a bot id.
+func anyBotMerges(bots []string, frByBot map[string]*bundle.ForgeRequirements) bool {
+	for _, b := range bots {
+		fr := frByBot[b]
+		if fr == nil {
+			continue
+		}
+		for _, scope := range []string{bundle.ForgeScopeApprovals, bundle.ForgeScopeMerge, bundle.ForgeScopeReviewers} {
+			// Same level the grant mint reads: a read-level declaration
+			// mints no capability, so it is not a merge-gesture posture.
+			switch fr.TokenScopes[scope] {
+			case "write", "admin":
+				return true
+			}
 		}
 	}
 	return false

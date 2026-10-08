@@ -249,6 +249,15 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 	case TokenMaxIterations:
 		p.expect(TokenColon)
 		bb.MaxIterations = p.expectInt()
+	case TokenOnExceeded:
+		p.expect(TokenColon)
+		t := p.next()
+		switch w := enumWord(t); w {
+		case "fail", "pause":
+			bb.OnExceeded = w
+		default:
+			p.addError(DiagInvalidValue, t, "expected budget policy (fail, pause), got "+strconv.Quote(t.Value))
+		}
 	default:
 		p.unknownProperty("budget", propTok, propTok.Value)
 		p.skipUnknownProperty()

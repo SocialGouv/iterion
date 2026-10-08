@@ -178,7 +178,7 @@ func TestARoutersReasoningKeepsItsText(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			hooks := model.NewStoreEventHooks(context.Background(), s, "router-run", nil, guard)
+			hooks := model.NewStoreEventHooks(context.Background(), s, "router-run", nil, guard, nil)
 			br := delegate.NewRegistry()
 			br.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{MaxAttempts: 1}))
 			exec := model.NewClawExecutor(reg, wf, model.WithWorkDir(ws), model.WithSecretGuard(guard), model.WithToolRegistry(tr),
@@ -231,7 +231,7 @@ func TestAnAsyncQuestionsEventKeepsTheQuestion(t *testing.T) {
 				guard = secretguard.New([]secretguard.Secret{{Name: "hook_key", Value: key}}, secretguard.DefaultConfig())
 				opts = append(opts, model.WithSecretGuard(guard))
 			}
-			hooks := model.NewStoreEventHooks(context.Background(), s, "async-run", nil, guard)
+			hooks := model.NewStoreEventHooks(context.Background(), s, "async-run", nil, guard, nil)
 			br := delegate.NewRegistry()
 			br.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{MaxAttempts: 1}))
 			opts = append(opts, model.WithWorkDir(ws), model.WithToolRegistry(tr),

@@ -5,6 +5,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -58,8 +59,37 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
+	// D13's one-team-per-pool invariant: two teams on one pool would let
+	// each team's runs carry the other's credentials to the same pods.
+	// The widening is a product decision, never a mapping accident —
+	// refuse and name the holder; re-mapping a team onto its own pool is
+	// fine. The check-then-act window is two super-admin writes in the
+	// same instant: a partial unique index would close it at the store;
+	// the sequential case — the realistic one — is refused here.
+	if pool != "" {
+		holder, err := s.authStore().GetTeamByRunnerPool(r.Context(), pool)
+		if err != nil && !errors.Is(err, identity.ErrNotFound) {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if err == nil && holder.ID != teamID {
+			httpError(w, http.StatusConflict, "runner pool %q is already held by team %q (%s) — one team per pool; unmap that team first", pool, holder.Slug, holder.ID)
+			return
+		}
+	}
 	updated, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{RunnerPool: &pool})
 	if err != nil {
+		// The store-level backstop (the partial unique index) spoke: name
+		// the holder the same way the pre-check would.
+		if errors.Is(err, identity.ErrRunnerPoolHeld) {
+			holder, herr := s.authStore().GetTeamByRunnerPool(r.Context(), pool)
+			if herr == nil {
+				httpError(w, http.StatusConflict, "runner pool %q is already held by team %q (%s) — one team per pool; unmap that team first", pool, holder.Slug, holder.ID)
+				return
+			}
+			httpError(w, http.StatusConflict, "%s", err.Error())
+			return
+		}
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}

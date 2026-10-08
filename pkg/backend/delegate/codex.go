@@ -150,7 +150,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}))
 
-	resultMsg, totalDuration, lastThreadID, err := b.runQueryWithRetry(ctx, task, task.UserPrompt, task.Images, opts)
+	resultMsg, totalDuration, lastThreadID, err := b.runQueryWithRetry(ctx, task, task.HandoffPrompt(), task.Images, opts)
 	if err != nil {
 		return Result{
 			Duration:    totalDuration,

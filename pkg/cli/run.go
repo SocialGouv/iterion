@@ -425,7 +425,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// declares the matching var; then detect host provider credentials and
 	// inject the resolution (the --review-mode flag / a --var override wins
 	// over auto-detection). See pkg/reviewtopology.
-	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); err != nil {
+		return fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		logger.Info("%s", inj.Summary())
 	}
 
@@ -492,7 +494,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	if superviseHub != nil {
-		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, logger)
+		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, eng.ResolveVars(inputs), logger)
 		defer stop()
 	}
 
@@ -514,9 +516,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // store handle as the engine, so the inbox doorbell stays in lockstep).
 // Returns a stop func to drain them when the run ends. The kill switch
 // was already resolved where the hub was created.
-func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, logger *iterlog.Logger) func() {
+func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, vars, logger), logger)
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any

@@ -261,6 +261,7 @@ func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 				"round_robin router %q has %d unconditional outgoing edge(s); at least 2 are needed for alternation",
 				r.ID, count)
 		}
+		c.checkLoopOnRouterEdge(w, r, "round_robin")
 	}
 }
 
@@ -290,6 +291,45 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 				"llm router %q has %d outgoing edge(s); at least 2 are needed",
 				r.ID, count)
 		}
+		// `llm multi: true` spawns one branch per selected route (each is a
+		// fan-out body), and a loop-bearing edge crossing that boundary is
+		// C244's rejection, not C309's. Skip C309 there to avoid two errors
+		// on the same edge — C244 already refuses the shape.
+		if !r.RouterMulti {
+			c.checkLoopOnRouterEdge(w, r, "llm")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C309 — a loop cap or foreach on a `round_robin` / `llm` router edge is
+// never read
+// ---------------------------------------------------------------------------
+//
+// `execRoundRobin` collects the router's unconditional edges and alternates
+// over them; `execLLMRouter` takes the target the model named. Neither goes
+// through `evaluateEdgesWithLoopsRS`, so `as name(N)` — and its foreach
+// sibling, `as foreach name(item in …)`, which the same evaluator is the
+// only reader of — on such an edge is already accepted at compile time and
+// silently ignored at run time: the author's bound iterates nothing, the
+// node runs once. Symmetric to C244 (a loop or foreach on a
+// fan_out_all / fan_out_each / llm-multi boundary is refused): a bounded
+// promise on an edge the runtime cannot bound is a program-time defect,
+// not something the runtime should have to catch.
+func (c *compiler) checkLoopOnRouterEdge(w *Workflow, r *RouterNode, mode string) {
+	for _, e := range w.Edges {
+		if e.From != r.ID || (e.LoopName == "" && e.ForeachName == "") {
+			continue
+		}
+		if e.LoopName != "" {
+			c.errorfAtEdge(DiagLoopOnRouterEdge, e,
+				"%s router %q edge to %q carries loop %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the loop on the edge that re-enters the router, and give that node the loop-exhaustion exit C145 asks for",
+				mode, r.ID, e.To, e.LoopName, mode)
+			continue
+		}
+		c.errorfAtEdge(DiagLoopOnRouterEdge, e,
+			"%s router %q edge to %q carries foreach %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the iteration on the edge that re-enters the router",
+			mode, r.ID, e.To, e.ForeachName, mode)
 	}
 }
 
@@ -837,6 +877,22 @@ func isExhaustive(edges []*Edge) bool {
 // conditions; the validator can't statically prove disjointness or overlap of
 // arbitrary boolean expressions, so we trust the author and only flag exact
 // duplicates of the same expression source.
+//
+// A loop back-edge sharing a condition with a non-loop sibling is a
+// legitimate shape #1386 asks for (guard the exhaustion exit with the
+// same `when` as the back-edge), and the runtime IS write-order-
+// dependent for it — the evaluator iterates edges in source order and
+// returns the first matching conditional, so a bot like modernize's
+// `lot_gate` ships that dependency on purpose: `mark_done when
+// converged` before `upgrade_campaign when not stop as repair_loop(N)`
+// picks mark_done over the loop when both hold. Making the compiler
+// permit the same-condition pair without a runtime fix that respects
+// that contract would ship a permission the runtime does not honour;
+// the runtime opt-in (loop priority while budget remains, without
+// reordering any existing pair) is left to a follow-up. Until then
+// C011's refusal stands; the exhaustion exit is written
+// as a bare or `else` edge, which the wave-1 fallback-slot rule orders
+// correctly regardless of source order.
 func (c *compiler) checkAmbiguousConditions(nodeID string, edges []*Edge) {
 	type condKey struct {
 		field      string

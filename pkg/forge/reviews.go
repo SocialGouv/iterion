@@ -36,8 +36,11 @@ type ReviewComment struct {
 
 // NewReview is the payload for CreatePullReview: one review with a summary
 // body plus zero or more inline comments. Reviews are always posted as
-// non-blocking comments (never approve / request-changes) — iterion bots
-// advise, they do not gate the merge.
+// non-blocking comments (never approve / request-changes) — a review advises;
+// the merge-gate gestures live in their own capability set (approvals.go:
+// MergeApprover / AutoMergeArmer), declared per bot as manifest scopes and
+// executed only through the server's deterministic publish surface, so a
+// gating bot is a grant an operator can see and revoke, never a prompt.
 type NewReview struct {
 	Body     string
 	Comments []ReviewComment

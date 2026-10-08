@@ -40,6 +40,22 @@ type forgePullRequestResponse struct {
 	TargetBranch string `json:"target_branch,omitempty"`
 	// Number is the pull request's own number, echoed for the caller's logs.
 	Number int `json:"number,omitempty"`
+	// CommitStatuses are the commit statuses currently on the head — the
+	// peer-gate read: a gating bot checks its peers' checks before arming a
+	// merge on the same head. Best-effort: a failed read is reported in
+	// CommitStatusesErr instead of failing the whole answer, and an empty
+	// list means "no statuses" (or the read failed — the error field says
+	// which).
+	CommitStatuses []commitStatusWire `json:"commit_statuses,omitempty"`
+	// CommitStatusesErr is why the statuses read failed, when it failed.
+	CommitStatusesErr string `json:"commit_statuses_error,omitempty"`
+}
+
+// commitStatusWire is one commit status on the head, reduced to the pair a
+// peer-gate check needs.
+type commitStatusWire struct {
+	Context string `json:"context"`
+	State   string `json:"state"`
 }
 
 // handleForgePullRequest answers the state of the pull request a run's grant
@@ -124,12 +140,40 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
-	writeJSON(w, forgePullRequestResponse{
+	resp := forgePullRequestResponse{
 		Open:         pr.State == "" || pr.State == "open",
 		State:        pr.State,
 		HeadSHA:      pr.HeadSHA,
 		SourceBranch: pr.SourceBranch,
 		TargetBranch: pr.TargetBranch,
 		Number:       number,
-	})
+	}
+	// Peer-gate read, best-effort but never SILENT: the statuses live on the
+	// SAME head this answer just resolved, and a failed read degrades the
+	// field, not the answer — but every failure class must land in
+	// CommitStatusesErr, because "empty list, no error" reads as "no peer
+	// checks" to a caller that fails closed on its peers. An admin
+	// resolution failure and a provider without the lister are answers too.
+	if pr.HeadSHA != "" {
+		admin, aerr := s.forgeAdminFor(r.Context(), conn)
+		switch {
+		case aerr != nil:
+			resp.CommitStatusesErr = aerr.Error()
+		default:
+			lister, ok := admin.(forge.CommitStatusLister)
+			if !ok {
+				resp.CommitStatusesErr = "provider " + string(conn.Provider) + " implements no commit-status lister"
+				break
+			}
+			statuses, lerr := lister.ListCommitStatuses(r.Context(), repo, pr.HeadSHA)
+			if lerr != nil {
+				resp.CommitStatusesErr = lerr.Error()
+				break
+			}
+			for _, st := range statuses {
+				resp.CommitStatuses = append(resp.CommitStatuses, commitStatusWire{Context: st.Context, State: string(st.State)})
+			}
+		}
+	}
+	writeJSON(w, resp)
 }

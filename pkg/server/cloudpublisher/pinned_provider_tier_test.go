@@ -310,7 +310,7 @@ func TestSubmitResume_FundsFromTheLaunchStampNotTheResumedSource(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RunSecrets.Get: %v", err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(mustDEKSealer(t, published.BundleDEK), rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatalf("OpenRunBundle: %v", err)
 			}
@@ -449,7 +449,7 @@ func TestPinnedProvider_AnOrgKeyFundedFirstKeepsItsSlotFromThePlatformTier(t *te
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	b, err := secrets.OpenRunBundle(p.sealer, rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
+	b, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}

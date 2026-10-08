@@ -111,3 +111,92 @@ func TestConstructorMatchesNew(t *testing.T) {
 		t.Errorf("Constructor and New disagree: %q vs %q", a.Name(), b.Name())
 	}
 }
+
+func TestNoopExecDeliversTheSpecSeededEnv(t *testing.T) {
+	d, _ := New()
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode: sandbox.ModeNone,
+		Env:  map[string]string{"ITERION_TEST_SEED": "seeded", "ITERION_TEST_BOTH": "from-spec"},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "test"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(context.Background())
+
+	res, err := run.Exec(context.Background(), []string{"sh", "-c", "printf %s \"$ITERION_TEST_SEED|$ITERION_TEST_BOTH\""},
+		sandbox.ExecOpts{Env: map[string]string{"ITERION_TEST_BOTH": "from-opts"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d", res.ExitCode)
+	}
+	if got, want := string(res.Stdout), "seeded|from-opts"; got != want {
+		t.Errorf("stdout = %q, want %q — the spec's seeded env must reach a pinned noop command, and an ExecOpts entry must still win", got, want)
+	}
+}
+
+// The host passthrough keeps what the operator's own environment carries:
+// a spec-seeded key the ambient environment already has keeps its ambient
+// value — the same rule seedTreeNoiseEnv applies to an operator export —
+// while a key the ambient lacks still lands.
+func TestNoopExecAmbientEnvWinsOverTheSpecSeed(t *testing.T) {
+	t.Setenv("ITERION_TEST_AMBIENT", "from-operator")
+	d, _ := New()
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode: sandbox.ModeNone,
+		Env: map[string]string{
+			"ITERION_TEST_AMBIENT": "from-spec",
+			"ITERION_TEST_GAP":     "seeded",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "test"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(context.Background())
+
+	res, err := run.Exec(context.Background(), []string{"sh", "-c", `printf %s "$ITERION_TEST_AMBIENT|$ITERION_TEST_GAP"`}, sandbox.ExecOpts{})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got, want := string(res.Stdout), "from-operator|seeded"; got != want {
+		t.Errorf("stdout = %q, want %q — the operator's ambient value must win, the seed must fill the gap", got, want)
+	}
+}
+
+// An explicitly EMPTY ambient export is not a claim — the same rule
+// seedTreeNoiseEnv applies to an operator export — so the spec's seed
+// lands over it: an empty ITERION_TREE_NOISE must never silence the host
+// gate's canonical pathspec list.
+func TestNoopExecEmptyAmbientExportIsNotAClaim(t *testing.T) {
+	t.Setenv("ITERION_TEST_EMPTY", "")
+	d, _ := New()
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode: sandbox.ModeNone,
+		Env:  map[string]string{"ITERION_TEST_EMPTY": "seeded"},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	run, err := d.Start(context.Background(), prepared, sandbox.RunInfo{RunID: "test"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer run.Cleanup(context.Background())
+
+	res, err := run.Exec(context.Background(), []string{"sh", "-c", `printf %s "$ITERION_TEST_EMPTY"`}, sandbox.ExecOpts{})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got, want := string(res.Stdout), "seeded"; got != want {
+		t.Errorf("stdout = %q, want %q — an empty ambient export must not swallow the seed", got, want)
+	}
+}
