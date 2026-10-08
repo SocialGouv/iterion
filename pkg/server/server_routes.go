@@ -242,6 +242,10 @@ func (s *Server) routes() {
 	// (team-scoped CRUD behind canEditBots).
 	if s.botSources != nil && s.authSvc != nil {
 		s.registerBotSourceRoutes()
+		// The super-admin history purge (#1517) — gated on the same store
+		// presence, not on the team auth stack: its gate is
+		// requireSuperAdmin's.
+		s.registerAdminBotSourceHistoryRoutes()
 	}
 
 	// Recurring cloud schedules — team-scoped CRUD. Cloud-only (the ticker

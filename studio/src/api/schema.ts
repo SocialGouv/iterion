@@ -526,6 +526,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/tenants/{tenant}/bot-sources/{slug}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/admin/tenants/{tenant}/bot-sources/{slug}/history */
+        delete: operations["deleteAdminTenantsByTenantBotSourcesBySlugHistory"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/usage-readings/{fingerprint}": {
         parameters: {
             query?: never;
@@ -8713,6 +8733,27 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAdminTenantsByTenantBotSourcesBySlugHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                slug: string;
             };
             cookie?: never;
         };
