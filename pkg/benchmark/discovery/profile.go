@@ -68,6 +68,16 @@ type NodeProfile struct {
 	CallsWithElapsed  int  `json:"calls_with_elapsed"`
 	Tokens            int  `json:"tokens"`
 	TokensKnown       bool `json:"tokens_known"`
+	// The within-node split (#1481): the node's turn usage attributed to
+	// orientation (the turns before the node's first mutating tool call)
+	// and to work (that turn and everything after it — the boundary turn's
+	// own spend pays for the mutation it carried). Turn-granularity is the
+	// finest the checkpoints support: a turn that mixes reads and a write
+	// counts whole to work. TokensSplitKnown reports whether any turn
+	// carried usage, so an empty split reads as "not recorded".
+	TokensBeforeMutation int  `json:"tokens_before_mutation,omitempty"`
+	TokensAfterMutation  int  `json:"tokens_after_mutation,omitempty"`
+	TokensSplitKnown     bool `json:"tokens_split_known"`
 	// Verbs counts the shell verbs this node ran; UnknownVerbs counts the
 	// subset the table could not name. The second is the actionable one:
 	// a verb high in that ranking is the table's next entry, and its size
@@ -279,7 +289,8 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string) (*RunProfile,
 	for _, id := range nodeOrder {
 		n := perNode[id]
 		if turns != nil {
-			n.Tokens, n.TokensKnown = nodeTokens(ctx, turns, runID, id, iters[id])
+			n.Tokens, n.TokensBeforeMutation, n.TokensAfterMutation, n.TokensSplitKnown = nodeTokens(ctx, turns, runID, id, iters[id])
+			n.TokensKnown = n.TokensSplitKnown
 		}
 		prof.Nodes = append(prof.Nodes, *n)
 	}
@@ -335,14 +346,18 @@ func (n *NodeProfile) record(c ToolCall) {
 }
 
 // nodeTokens sums a node's turn-checkpoint usage across every loop
-// iteration the event stream showed. Returns known=false when no
-// checkpoint carried any usage at all, so the caller can tell "no spend
-// recorded" from "spent nothing".
-func nodeTokens(ctx context.Context, ts store.TurnStore, runID, nodeID string, iterations map[int]bool) (int, bool) {
+// iteration the event stream showed, and SPLITS it at the node's first
+// mutating tool call: the turns before it are orientation, that turn and
+// everything after it are work (#1481). The boundary is sticky — a node
+// that mutated once works for the rest of its life — and turn-granular:
+// a turn mixing reads and a write counts whole to work. Returns
+// known=false when no checkpoint carried any usage at all, so the caller
+// can tell "no spend recorded" from "spent nothing".
+func nodeTokens(ctx context.Context, ts store.TurnStore, runID, nodeID string, iterations map[int]bool) (total, before, after int, known bool) {
 	if len(iterations) == 0 {
 		iterations = map[int]bool{0: true}
 	}
-	total, known := 0, false
+	mutated := false
 	for iter := range iterations {
 		list, err := ts.ListTurns(ctx, runID, nodeID, iter)
 		if err != nil {
@@ -352,15 +367,28 @@ func nodeTokens(ctx context.Context, ts store.TurnStore, runID, nodeID string, i
 			if t == nil {
 				continue
 			}
+			if !mutated {
+				for _, tc := range t.ToolCalls {
+					if Classify(tc.Name, []byte(tc.InputPreview)) == ClassMutation {
+						mutated = true
+						break
+					}
+				}
+			}
 			u := t.Usage
 			sum := u.InputTokens + u.OutputTokens + u.AggregateTokens
 			if sum > 0 {
 				known = true
 				total += sum
+				if mutated {
+					after += sum
+				} else {
+					before += sum
+				}
 			}
 		}
 	}
-	return total, known
+	return total, before, after, known
 }
 
 // rawInput returns the tool input bytes an event carries, preferring the
