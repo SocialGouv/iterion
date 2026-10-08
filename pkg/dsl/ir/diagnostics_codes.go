@@ -315,4 +315,12 @@ const (
 	DiagContractOutputOffFanOut DiagCode = "C310" // a contract output port's `from:` names a node that executes more than once (fan-out branch body, foreach, bounded loop cycle) — the port projects whichever execution finished last, one execution's output (warning)
 
 	DiagBudgetOnExceededInvalid DiagCode = "C311" // budget.on_exceeded: unknown policy, only fail and pause exist — treated as fail (error)
+
+	// A network: block with no mode resolves to open at the policy layer
+	// (ResolveNetworkPolicy keeps its default when the mode names no case),
+	// so the preset and rules the author wrote are never enforced — the
+	// proxy does not even start. The runtime completes the block to
+	// allowlist when it can (see pkg/runtime fuseDevcontainerSpec); the
+	// warning is what tells the author to name the mode.
+	DiagNetworkModeMissing DiagCode = "C312" // a sandbox network: block with content but no mode: resolves to open — the preset/rules are inert (warning)
 )
