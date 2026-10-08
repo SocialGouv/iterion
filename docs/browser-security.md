@@ -256,17 +256,17 @@ first, which would have caused the very outage the write exists to prevent:
    being signed out everywhere at once; `RevokeUserSessions` in the auth
    logs). A quiet soak is the evidence the code deletion needs.
 
-Only then delete the legacy write in `setAuthCookies`, the legacy read in
-`sessionCookie`, and `TestLegacyRefreshCookieHalvesLiveAndDieTogether` with
-them — at which point the switch has already proven the outcome.
-
-That test is there because each half-removal fails differently and neither is
-loud. Drop the **write** alone and an older desktop harvests nothing, replays
-its previous token, and has every one of its sessions revoked. Drop the
-**read** alone and the bare cookie is still set on every browser but no longer
-accepted — pure fixation surface for no benefit. The test asserts the two
-answers agree, behaviourally rather than by grepping the source, so it holds
-however the removal is spelled.
+**Removed 2026-10** on those two conditions: the legacy write in
+`setAuthCookies`, the legacy read in `sessionCookie`, and the pairing test
+that pinned the two halves moving together all went in one deletion. The
+reasoning the migration carried is kept above because it is the template
+for any future dual-name rollout: each half-removal fails differently and
+neither is loud — drop the **write** alone and an older desktop harvests
+nothing, replays its previous token, and has every one of its sessions
+revoked; drop the **read** alone and the bare cookie is still set on every
+browser but no longer accepted, pure fixation surface for no benefit. The
+prod knob stays documented here: if a legacy desktop ever resurfaces, the
+reintroduction re-reads this section first.
 
 The access cookie takes no such migration in either direction — it has no
 out-of-process consumer, and accepting a legacy one reopens the fixation
