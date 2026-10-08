@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.253.0](https://github.com/SocialGouv/iterion/compare/v3.252.0...v3.253.0) (2026-10-08)
+
+### Features
+
+* **bench:** discovery reports the within-node split between orientation and work ([#2295](https://github.com/SocialGouv/iterion/issues/2295)) ([381c449](https://github.com/SocialGouv/iterion/commit/381c449431e8cfdeb74402f247adb8a089f9d5d6)), references [#1481](https://github.com/SocialGouv/iterion/issues/1481)
+
+    <details><summary>why</summary>
+
+    Usage landed once per node, at node end — the report said so itself ("the intra-node split … is not reported"). The turn checkpoints carry per-turn usage AND per-turn tool summaries, so the split is turn-granular and the report carries it: a mutating node's turns attribute to orientation before its first mutating tool call and to work from that turn on (the boundary is sticky; a turn mixing reads and a write counts whole to work). The corpus aggregates the split with its coverage — how many…
+
+    </details>
+
+### Bug Fixes
+
+* **review-pr:** the claude slots' backend is tunable like every other slot's ([#2294](https://github.com/SocialGouv/iterion/issues/2294)) ([b0a1e26](https://github.com/SocialGouv/iterion/commit/b0a1e263650d505ac43c8a09f368b88ac04fe3cb))
+
+    <details><summary>why</summary>
+
+    The claude slots were the only nodes with a hard-wired backend — the gpt/emit slots already carry ITERION_VIBE_BACKEND_* env-forms (claw by default). A sovereign pool pod carries ONLY its regional gateway credential, so its claude slots must route to claw (the backend that serves openai_compatible/* routes); hard-wired, the slot went to a z.ai/Anthropic wire the pool cannot serve and parked the run on an auth recovery — measured on the first pool review (prod, 2026-10-08).
+
+    </details>
+
 ## [3.252.0](https://github.com/SocialGouv/iterion/compare/v3.251.0...v3.252.0) (2026-10-08)
 
 ### Features
