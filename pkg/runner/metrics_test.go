@@ -649,7 +649,7 @@ func TestMetricsEmitter_delegateErrorBooksItsCost(t *testing.T) {
 	usage := newMetricsEmitter(inner, metrics.New())
 
 	hooks := model.NewStoreEventHooks(
-		context.Background(), usage, "run-e", iterlog.New(iterlog.LevelError, nil), nil,
+		context.Background(), usage, "run-e", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
 	hooks.OnDelegateError("n-e", model.DelegateInfo{
 		BackendName: "claude_code",
