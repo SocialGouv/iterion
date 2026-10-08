@@ -85,6 +85,11 @@ const BotSourceVersionTTLDays = 30
 func (s *MongoStore) snapshotVersion(ctx context.Context, bs BotSource) error {
 	snap := bs
 	snap.ID = fmt.Sprintf("%s:%d", bs.ID, bs.Version)
+	// The snapshot's created_at is the WRITE time, not the row's: Update
+	// never rewrites the row's created_at, and the TTL index expires on
+	// THIS field — copying the row's would measure the row's age and sweep
+	// every version published past 30 days of it, pin and all (#1517).
+	snap.CreatedAt = time.Now().UTC()
 	if _, err := s.versions.InsertOne(ctx, snap); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return nil
@@ -138,6 +143,10 @@ func (s *MongoStore) GetVersionAtOrBefore(ctx context.Context, tenantID, id stri
 	if bestV == 0 {
 		return BotSource{}, ErrNotFound
 	}
+	// The composite _id stays in the document: the caller keys rows by
+	// their identity, and a composite leaking out aliases nothing today
+	// and everything tomorrow (GetByVersion's own comment).
+	best.ID = id
 	return best, nil
 }
 

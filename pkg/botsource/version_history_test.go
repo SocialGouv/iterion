@@ -164,6 +164,10 @@ func assertVersionHistoryContract(t *testing.T, st Store, ctx context.Context, t
 
 	// (7) the fallback read (#1517): the NEWEST snapshot at or below the
 	// asked ceiling — the nearest older version a missing pin resolves to.
+	v2snap, err := st.GetByVersion(scoped, tenantID, v2.ID, 2)
+	if err != nil {
+		t.Fatalf("GetByVersion(2): %v", err)
+	}
 	// A ceiling below the oldest snapshot, an unknown row, and a foreign
 	// tenant are ErrNotFound; the prefix-collision twin (an id extending
 	// this one's) must not answer.
@@ -176,6 +180,16 @@ func assertVersionHistoryContract(t *testing.T, st Store, ctx context.Context, t
 	}
 	if fb.Files[MainBotFile] != v1Files {
 		t.Errorf("the fallback content is not v1's: %q", fb.Files[MainBotFile])
+	}
+	// The fallback read keys rows by their IDENTITY: a composite snapshot
+	// id leaking out aliases nothing today and everything tomorrow.
+	if fb.ID != v2.ID {
+		t.Errorf("the fallback read leaks a composite id: %q, want the row id %q", fb.ID, v2.ID)
+	}
+	// A snapshot's created_at is its WRITE time (the TTL expires on it):
+	// later writes carry later stamps, whatever the row's own age.
+	if v2snap.CreatedAt.Before(got1.CreatedAt) {
+		t.Errorf("v2's snapshot stamp (%v) predates v1's (%v) — the snapshot ages with the row, and the TTL would sweep live versions", v2snap.CreatedAt, got1.CreatedAt)
 	}
 	if _, err := st.GetVersionAtOrBefore(scoped, tenantID, v2.ID, 0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a ceiling below every snapshot: %v, want ErrNotFound", err)

@@ -139,6 +139,7 @@ func (s *Server) resolveResumeBotAtVersion(ctx context.Context, botSourceTenant,
 		// never certified (#1381).
 		cur, curErr := s.botSources.Get(store.WithTenant(ctx, botSourceTenant), pinnedRowID)
 		fallbackable := curErr == nil && cur.Version >= version
+		fallbackErr := ""
 		if botsourcePinFallbackEnabled() && fallbackable {
 			if fb, ferr := s.botSources.GetVersionAtOrBefore(store.WithTenant(ctx, botSourceTenant), botSourceTenant, pinnedRowID, version-1); ferr == nil {
 				forigin := "team"
@@ -152,16 +153,28 @@ func (s *Server) resolveResumeBotAtVersion(ctx context.Context, botSourceTenant,
 					}
 					if out, serr := s.snapshotResumeBot(ctx, teamID, lb); serr == nil {
 						return out, nil
+					} else {
+						fallbackErr = serr.Error()
 					}
+				} else {
+					fallbackErr = lerr.Error()
 				}
+			} else {
+				fallbackErr = ferr.Error()
 			}
 		}
 		cause := "the store's version history does not carry it (history reset)"
 		if curErr == nil {
 			if fallbackable {
-				cause = fmt.Sprintf("the row is at version %d and its snapshot was removed by retention or purge, and no older snapshot survives it", cur.Version)
+				// The row having advanced past the pin says the snapshot
+				// EXISTED; whether retention, a purge or a raced write took
+				// it is an inference, and the refusal words it as one.
+				cause = fmt.Sprintf("the row is at version %d and its snapshot is gone (retention, purge, or a raced write)", cur.Version)
 			} else {
 				cause = fmt.Sprintf("the row is at version %d but its snapshot is missing (a write raced it, or its snapshot write failed)", cur.Version)
+			}
+			if fallbackErr != "" {
+				cause += fmt.Sprintf("; the fallback to the nearest older snapshot also failed: %s", fallbackErr)
 			}
 		} else if !errors.Is(curErr, botsource.ErrNotFound) {
 			return nil, fmt.Errorf("%w: resolve stored bot %s/%s at version %d: %v", errResumeResolveTransient, botSourceTenant, pinnedRowID, version, curErr)

@@ -1,7 +1,10 @@
 package server
 
 import (
+	"errors"
 	"net/http"
+
+	"github.com/SocialGouv/iterion/pkg/botsource"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -33,6 +36,16 @@ func (s *Server) handleAdminPurgeBotSourceHistory(w http.ResponseWriter, r *http
 		return
 	}
 	purged, err := s.botSources.PurgeHistory(ctx, tenantID, bs.ID)
+	if errors.Is(err, botsource.ErrNotFound) {
+		// An empty history is a normal answer — a second purge, a
+		// pre-history row, or snapshots the TTL already swept (#1517).
+		s.writeJSONFor(w, r, map[string]any{
+			"bot":              bs.Slug,
+			"tenant":           tenantID,
+			"snapshots_purged": 0,
+		})
+		return
+	}
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "purge history of %s/%s: %v", tenantID, slug, err)
 		return
