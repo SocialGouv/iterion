@@ -56,7 +56,14 @@ if [ -f "$FORMULA" ]; then
   SHA_LINUX_ARM64="$(resolve_sha "$ARTIFACTS/iterion-linux-arm64")"
   SHA_LINUX_AMD64="$(resolve_sha "$ARTIFACTS/iterion-linux-amd64")"
 
-  if [ -n "$SHA_DARWIN_ARM64$SHA_DARWIN_AMD64$SHA_LINUX_ARM64$SHA_LINUX_AMD64" ]; then
+  # ALL OR NOTHING: the formula advances only when the four platform
+  # hashes resolved. A partial set (a download failure mid-way — the
+  # workflow's artifact download is best-effort) must not advance the
+  # version with the PREVIOUS release's hashes filling the gaps: brew
+  # would download the new binaries and verify them against stale
+  # checksums, on every platform but the one that landed. The next
+  # complete run updates the formula then.
+  if [ -n "$SHA_DARWIN_ARM64" ] && [ -n "$SHA_DARWIN_AMD64" ] && [ -n "$SHA_LINUX_ARM64" ] && [ -n "$SHA_LINUX_AMD64" ]; then
     tmp="$(mktemp)"
     awk -v ver="$VERSION" \
         -v s_darm="$SHA_DARWIN_ARM64" \
@@ -95,7 +102,7 @@ if [ -f "$FORMULA" ]; then
     mv "$tmp" "$FORMULA"
     echo "updated Formula/iterion.rb to v${VERSION}"
   else
-    echo "skipped Formula/iterion.rb (no CLI artefacts found in $ARTIFACTS)"
+    echo "skipped Formula/iterion.rb (missing or incomplete CLI artefacts in $ARTIFACTS — all four platform hashes are required, all or nothing)"
   fi
 fi
 
