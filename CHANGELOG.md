@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.256.0](https://github.com/SocialGouv/iterion/compare/v3.255.0...v3.256.0) (2026-10-08)
+
+### Features
+
+* **server,forge:** the rate-limit resource joins the budget key; the [#2296](https://github.com/SocialGouv/iterion/issues/2296) assumptions get witnesses that bite ([#2306](https://github.com/SocialGouv/iterion/issues/2306)) ([9e8385c](https://github.com/SocialGouv/iterion/commit/9e8385ca3a60034e42226271a5c67b57e7fd4e59))
+
+    <details><summary>why</summary>
+
+    The two surviving-mutant witnesses the round could not kill: an hour that began before counting did now has a witness for its "counted from" marker and for the stop falling exactly on the hour's end, and flush has one proving it hands the hour out and empties the tally — a second flush reports nothing, post-flush work is the hour's only remaining content. Both behaviors were already right; the witnesses were missing.
+
+    </details>
+
+### Bug Fixes
+
+* **runner:** a delegate_error books its cost and tokens in RunTotals ([#2241](https://github.com/SocialGouv/iterion/issues/2241)) ([1e5284d](https://github.com/SocialGouv/iterion/commit/1e5284da183765313b857a05824e6cd7b5e526c5)), closes [#1548](https://github.com/SocialGouv/iterion/issues/1548), references [#992](https://github.com/SocialGouv/iterion/issues/992) [#1385](https://github.com/SocialGouv/iterion/issues/1385)
+
+    <details><summary>why</summary>
+
+    The org-metering accumulator read delegate_finished alone, so a delegation that died (timeout, rate limit, transport error) was unbilled — the org's monthly bucket and the credential-pool ledger under-read what the credential actually spent. The error case mirrors the finished one: the delegate's own cost figure (omitted when the price table did not know the model — unknown, never free), one aggregate token count to the aggregate direction (#992), the claw summarised guard so a loop whose…
+
+    </details>
+
 ## [3.255.0](https://github.com/SocialGouv/iterion/compare/v3.254.1...v3.255.0) (2026-10-08)
 
 ### Features
