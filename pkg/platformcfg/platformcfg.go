@@ -204,6 +204,10 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_PUBLIC_URL":   true,
 	"ITERION_DISABLE_AUTH": true,
 	"ITERION_SIGNUP_MODE":  true,
+	// The pinned-version fallback dial (#1517): the SERVER's own posture —
+	// whether a missing botsource pin recovers to the nearest older
+	// version or refuses. It configures the process, never a bot's run.
+	"ITERION_BOTSOURCE_PIN_FALLBACK": true,
 	"ITERION_BIN":          true,
 	"ITERION_PI_BIN":       true,
 	"ITERION_OPENCODE_BIN": true,

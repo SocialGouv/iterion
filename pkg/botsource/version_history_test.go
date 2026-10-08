@@ -161,6 +161,62 @@ func assertVersionHistoryContract(t *testing.T, st Store, ctx context.Context, t
 	if got := craftedV1.Files[MainBotFile]; got != "workflow main:\n  CRAFTED -> done\n" {
 		t.Errorf("crafted row's v1 = %q; want the crafted content under its own minted id", got)
 	}
+
+	// (7) the fallback read (#1517): the NEWEST snapshot at or below the
+	// asked ceiling — the nearest older version a missing pin resolves to.
+	// A ceiling below the oldest snapshot, an unknown row, and a foreign
+	// tenant are ErrNotFound; the prefix-collision twin (an id extending
+	// this one's) must not answer.
+	fb, err := st.GetVersionAtOrBefore(scoped, tenantID, v2.ID, 1)
+	if err != nil {
+		t.Fatalf("GetVersionAtOrBefore(1): %v", err)
+	}
+	if fb.Version != 1 {
+		t.Errorf("the nearest older of v2 at ceiling 1 = version %d, want 1", fb.Version)
+	}
+	if fb.Files[MainBotFile] != v1Files {
+		t.Errorf("the fallback content is not v1's: %q", fb.Files[MainBotFile])
+	}
+	if _, err := st.GetVersionAtOrBefore(scoped, tenantID, v2.ID, 0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a ceiling below every snapshot: %v, want ErrNotFound", err)
+	}
+	if _, err := st.GetVersionAtOrBefore(scoped, tenantID, "no-such-row", 9); !errors.Is(err, ErrNotFound) {
+		t.Errorf("an unknown row: %v, want ErrNotFound", err)
+	}
+	if _, err := st.GetVersionAtOrBefore(store.WithTenant(context.Background(), "other-team"), "other-team", v2.ID, 9); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a foreign tenant: %v, want ErrNotFound", err)
+	}
+
+	// (8) the purge (#1517): every snapshot of the row goes, the live row
+	// stays, the count is what was there, and the purge of an already-purged
+	// row is ErrNotFound.
+	n, err := st.PurgeHistory(scoped, tenantID, v2.ID)
+	if err != nil {
+		t.Fatalf("PurgeHistory: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("PurgeHistory removed %d snapshots, want 2 (v1, v2)", n)
+	}
+	if _, err := st.GetByVersion(scoped, tenantID, v2.ID, 2); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a purged snapshot: %v, want ErrNotFound", err)
+	}
+	if _, err := st.PurgeHistory(scoped, tenantID, v2.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a second purge: %v, want ErrNotFound", err)
+	}
+	// The purge never touches the LIVE row: crafted's row survives its own
+	// history's purge.
+	if _, err := st.Get(scoped, crafted.ID); err != nil {
+		t.Fatalf("the live row must survive the purge: %v", err)
+	}
+	// An id extending another's ("v2.ID" vs a crafted prefix) reads and
+	// purges nothing of the OTHER row: purge the crafted row only.
+	n, err = st.PurgeHistory(scoped, tenantID, crafted.ID)
+	if err != nil {
+		t.Fatalf("PurgeHistory(crafted): %v", err)
+	}
+	if n == 0 {
+		t.Error("the crafted row's snapshots did not purge")
+	}
 }
 
 // TestMemoryStore_VersionHistory runs the shared by-version contract on the

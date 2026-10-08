@@ -113,6 +113,16 @@ type Store interface {
 	// outliving its row is deliberate — the preview certified that
 	// content, and the apply is safe acting on exactly it.
 	GetByVersion(ctx context.Context, tenantID, id string, version int) (BotSource, error)
+	// GetVersionAtOrBefore reads the NEWEST snapshot of one row at or
+	// below maxVersion — what a missing pin falls back to (#1517): the pin
+	// certifies a lineage point, and the nearest older version keeps that
+	// lineage where a newer one is a republication the receipt never saw.
+	// ErrNotFound when the row carries no snapshot that old.
+	GetVersionAtOrBefore(ctx context.Context, tenantID, id string, maxVersion int) (BotSource, error)
+	// PurgeHistory removes every snapshot of one row, the live row
+	// untouched — the sensitive-deletion act (#1517): explicit, super-admin
+	// gated, audit-trailed at the route. Returns the snapshots removed.
+	PurgeHistory(ctx context.Context, tenantID, id string) (int64, error)
 	Update(ctx context.Context, s BotSource) (BotSource, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]BotSource, error)

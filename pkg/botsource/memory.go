@@ -155,6 +155,53 @@ func (m *MemoryStore) GetByVersion(ctx context.Context, tenantID, id string, ver
 	return s, nil
 }
 
+// GetVersionAtOrBefore is the memory twin of the mongo one: the newest
+// snapshot of (tenant, id) at or below maxVersion.
+func (m *MemoryStore) GetVersionAtOrBefore(ctx context.Context, tenantID, id string, maxVersion int) (BotSource, error) {
+	if tenantID == "" {
+		return BotSource{}, ErrTenantMissing
+	}
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	best, bestV := BotSource{}, 0
+	for k, s := range m.history {
+		if k.tenantID == tenantID && k.id == id && k.version <= maxVersion && k.version > bestV {
+			best, bestV = s, k.version
+		}
+	}
+	if bestV == 0 {
+		return BotSource{}, ErrNotFound
+	}
+	return best, nil
+}
+
+// PurgeHistory removes every snapshot of (tenant, id), the live row
+// untouched, and returns how many snapshots went.
+func (m *MemoryStore) PurgeHistory(ctx context.Context, tenantID, id string) (int64, error) {
+	if tenantID == "" {
+		return 0, ErrTenantMissing
+	}
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return 0, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for k := range m.history {
+		if k.tenantID == tenantID && k.id == id {
+			delete(m.history, k)
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, ErrNotFound
+	}
+	return n, nil
+}
+
 func (m *MemoryStore) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

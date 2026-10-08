@@ -114,13 +114,18 @@ type ActionReceipt struct {
 	// mints a new row whose versions must not serve the old pin — without
 	// it, both twins would alias the incarnations and the apply could act
 	// in content the preview never certified.
-	SourceID       string           `json:"source_id,omitempty" bson:"source_id,omitempty"`
-	State          ReceiptState     `json:"state" bson:"state"`
-	CreatedAt      time.Time        `json:"created_at" bson:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at" bson:"updated_at"`
-	EventSeq       int64            `json:"event_seq,omitempty" bson:"event_seq,omitempty"`
-	Error          string           `json:"error,omitempty" bson:"error,omitempty"`
-	ResultDelivery *DeliveryReceipt `json:"result_delivery,omitempty" bson:"result_delivery,omitempty"`
+	SourceID string `json:"source_id,omitempty" bson:"source_id,omitempty"`
+	// PinnedMissingFrom records the retention/purge fallback (#1517): the
+	// version the pin named is gone and the apply resolved an older one
+	// instead — the substitution the receipt must never omit. 0 = the pin
+	// resolved as itself.
+	PinnedMissingFrom int              `json:"pinned_missing_from,omitempty" bson:"pinned_missing_from,omitempty"`
+	State             ReceiptState     `json:"state" bson:"state"`
+	CreatedAt         time.Time        `json:"created_at" bson:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at" bson:"updated_at"`
+	EventSeq          int64            `json:"event_seq,omitempty" bson:"event_seq,omitempty"`
+	Error             string           `json:"error,omitempty" bson:"error,omitempty"`
+	ResultDelivery    *DeliveryReceipt `json:"result_delivery,omitempty" bson:"result_delivery,omitempty"`
 }
 
 type Mission struct {

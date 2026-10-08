@@ -4,11 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// BotSourcePinFallbackEnv is the deployment dial for the pinned-version
+// fallback (#1517): set to "off" (or any value the switch does not read)
+// the missing-pin resolution refuses, the pre-#1517 behavior — the
+// conservative direction, like every fail-safe dial. Unset resolves the
+// fallback.
+const BotSourcePinFallbackEnv = "ITERION_BOTSOURCE_PIN_FALLBACK"
+
+func botsourcePinFallbackEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(BotSourcePinFallbackEnv))) {
+	case "off", "no", "false", "none":
+		return false
+	}
+	return true
+}
 
 // currentStoredBotSource materializes, for a run served by a STORED bot tier,
 // the CURRENT version of that bot, and returns the path of its main — the
@@ -102,28 +119,56 @@ func (s *Server) resolveResumeBotAtVersion(ctx context.Context, botSourceTenant,
 		return nil, fmt.Errorf("cannot pin version %d of %q: it does not name a stored bot on a tenant", version, filePath)
 	}
 	bs, err := s.botSources.GetByVersion(store.WithTenant(ctx, botSourceTenant), botSourceTenant, pinnedRowID, version)
-	if err != nil {
-		if errors.Is(err, botsource.ErrNotFound) {
-			// The pinned (row, version) pair has no snapshot. Deletion is
-			// NOT a cause — history is retained across Delete precisely so
-			// the pin still serves what the preview certified. What remains:
-			// the snapshot was never written (the CAS winner's snapshot
-			// write failed — a permanent hole no later write backfills — or
-			// a concurrent write raced it), or the history itself was reset.
-			// Probe the row to say which — an explicit refusal either way,
-			// never a fall-through to the current row, which would
-			// recompute the blast radius in a program the preview never
-			// certified (#1381). A probe blip is typed transient for
-			// consistency with the resolution seam below; the mission
-			// records either error as a rejected receipt.
-			cause := "the store's version history does not carry it (history reset)"
-			if cur, gerr := s.botSources.Get(store.WithTenant(ctx, botSourceTenant), pinnedRowID); gerr == nil {
-				cause = fmt.Sprintf("the row is at version %d but its snapshot is missing (a write raced it, or its snapshot write failed)", cur.Version)
-			} else if !errors.Is(gerr, botsource.ErrNotFound) {
-				return nil, fmt.Errorf("%w: resolve stored bot %s/%s at version %d: %v", errResumeResolveTransient, botSourceTenant, pinnedRowID, version, gerr)
+	if errors.Is(err, botsource.ErrNotFound) {
+		// The pinned (row, version) pair has no snapshot. Deletion is
+		// NOT a cause — history is retained across Delete precisely so
+		// the pin still serves what the preview certified. What remains:
+		// the snapshot was never written (the CAS winner's snapshot
+		// write failed — a permanent hole no later write backfills — or
+		// a concurrent write raced it), the history itself was reset, or
+		// the retention clock (#1517) or a purge removed it. The FALLBACK
+		// keeps the pin's lineage: the nearest OLDER surviving version of
+		// the same row — a newer version is a republication the preview
+		// never saw, and stepping back one keeps the certified lineage at
+		// its closest. The substitution is never silent: the resolved
+		// version differs from the pin, and the mission stamps the
+		// receipt (PinnedMissingFrom). Strict deployments turn the
+		// fallback off; without a fallback (or under it) the refusal
+		// below stands — never a fall-through to the CURRENT row, which
+		// would recompute the blast radius in a program the preview
+		// never certified (#1381).
+		cur, curErr := s.botSources.Get(store.WithTenant(ctx, botSourceTenant), pinnedRowID)
+		fallbackable := curErr == nil && cur.Version >= version
+		if botsourcePinFallbackEnabled() && fallbackable {
+			if fb, ferr := s.botSources.GetVersionAtOrBefore(store.WithTenant(ctx, botSourceTenant), botSourceTenant, pinnedRowID, version-1); ferr == nil {
+				forigin := "team"
+				if botsource.IsPlatform(botSourceTenant) {
+					forigin = "platform"
+				}
+				if lb, lerr := s.storedLaunchBot(fb, forigin); lerr == nil {
+					teamID := botSourceTenant
+					if botsource.IsPlatform(teamID) {
+						teamID = ""
+					}
+					if out, serr := s.snapshotResumeBot(ctx, teamID, lb); serr == nil {
+						return out, nil
+					}
+				}
 			}
-			return nil, fmt.Errorf("the stored bot version this preview certified (tenant %s, row %s, version %d) has no snapshot — %s; re-propose the rewind against the current version: %w", botSourceTenant, pinnedRowID, version, cause, err)
 		}
+		cause := "the store's version history does not carry it (history reset)"
+		if curErr == nil {
+			if fallbackable {
+				cause = fmt.Sprintf("the row is at version %d and its snapshot was removed by retention or purge, and no older snapshot survives it", cur.Version)
+			} else {
+				cause = fmt.Sprintf("the row is at version %d but its snapshot is missing (a write raced it, or its snapshot write failed)", cur.Version)
+			}
+		} else if !errors.Is(curErr, botsource.ErrNotFound) {
+			return nil, fmt.Errorf("%w: resolve stored bot %s/%s at version %d: %v", errResumeResolveTransient, botSourceTenant, pinnedRowID, version, curErr)
+		}
+		return nil, fmt.Errorf("the stored bot version this preview certified (tenant %s, row %s, version %d) has no snapshot — %s; re-propose the rewind against the current version: %w", botSourceTenant, pinnedRowID, version, cause, err)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("%w: resolve stored bot %s/%s at version %d: %v", errResumeResolveTransient, botSourceTenant, pinnedRowID, version, err)
 	}
 	origin := "team"
