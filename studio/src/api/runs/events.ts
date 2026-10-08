@@ -446,6 +446,8 @@ export type PassthroughEventType =
   | "sandbox_user_remap"
   | "sandbox_uid_mismatch_warning"
   | "sandbox_devbox_provisioned"
+  | "sandbox_env_denied"
+  | "sandbox_network_defaulted"
   | "network_blocked"
   | "sandbox_build_started"
   | "sandbox_build_finished"

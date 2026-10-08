@@ -352,9 +352,14 @@ ephemeral port). The container receives the proxy URL via standard
 `HTTPS_PROXY` / `HTTP_PROXY` env vars and reaches it via the
 `host.docker.internal` alias.
 
-**Default mode is `open`** — no proxy, full egress. Workflows that
-need the stricter security-first posture opt in by declaring an
-explicit `network:` block:
+**Default mode is `open`** — no proxy, full egress — except on a
+repo-defined sandbox (mode `auto` with a found `devcontainer.json`)
+where the workflow declares no `network:` block: there the default is
+the `iterion-default` allowlist preset, because open egress on such a
+run is the repository's choice, not the operator's (see [the
+devcontainer trust rules](#the-devcontainer-is-the-repositorys-file-not-the-operators)).
+Workflows that need the stricter security-first posture elsewhere opt
+in by declaring an explicit `network:` block:
 
 ```iter fragment:workflow
 sandbox:
@@ -370,9 +375,12 @@ starting point for allowlist mode: it covers the LLM endpoints
 (anthropic, openai, xAI/Grok, openrouter, bedrock, googleapis,
 azure, mistral, z.ai) plus package registries (npm, PyPI, golang
 proxy) plus code hosts (github, gitlab, bitbucket) plus apt
-mirrors. It is **not** applied implicitly — operators name it
-explicitly so the default-open posture and the curated-allowlist
-posture are unambiguous from the YAML.
+mirrors. It is **not** applied implicitly to a workflow that
+declares `network:` — operators name it explicitly so the
+default-open posture and the curated-allowlist posture are
+unambiguous from the YAML. Its one implicit application is the
+repo-defined sandbox above, which announces itself with the
+`sandbox_network_defaulted` event.
 
 By default the proxy does NOT terminate TLS — only the CONNECT
 host:port is inspected, and the encrypted bytes pass through
@@ -460,6 +468,60 @@ workspace if present; otherwise it falls back to the published
 That fallback ships with `git`, Node 24, devbox, and Nix preinstalled,
 so the typical "agent installs deps, edits code, opens a PR" workflow
 runs out of the box. See [Default image](#default-image) below.
+
+#### The devcontainer is the repository's file, not the operator's
+
+A found `devcontainer.json` defines the run's sandbox — and the
+repository under review authored it. iterion therefore trusts the
+workflow over the devcontainer on env and network — the two channels
+where the repository could otherwise speak for the operator — and
+never lets the repository speak for the operator:
+
+- **Env.** The workflow's `sandbox.env:` keys win per key; the
+  devcontainer's `containerEnv`/`remoteEnv` fill what the workflow
+  did not author. Keys the repository contributed never shadow the
+  values the launch environment carried: an env var the operator
+  changed for the run (the overlay carries ONLY the keys the launch
+  environment changed or added relative to iterion's own
+  environment) overwrites a repo-contributed one (the same authority
+  rule a project `.env` lives under). The devcontainer's own keys are
+  additionally screened against a deny class, and denied keys are
+  removed outright with a `sandbox_env_denied` event naming each one:
+  the case-insensitive suffixes `*_BASE_URL`, `*_API_KEY`, `*_TOKEN`,
+  `*_SECRET`, `*_PROXY` (covering `NO_PROXY`), plus the exact
+  case-sensitive names `LD_PRELOAD`, `NODE_OPTIONS`, `PATH`,
+  `BASH_ENV`, `ENV`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_GLOBAL`,
+  `GIT_CONFIG_SYSTEM`, `GIT_ASKPASS`, `GOFLAGS`,
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `ANTHROPIC_CUSTOM_HEADERS`,
+  `AZURE_OPENAI_ENDPOINT` and `OPENAI_API_BASE`. A planted
+  `ANTHROPIC_BASE_URL` would re-route every LLM call the container
+  makes to the planter's collector; `LD_PRELOAD`, `PATH`, `BASH_ENV`
+  and `GOFLAGS` would execute the planter's code before any prompt is
+  read. The same names in the workflow's `sandbox.env:` or the launch
+  environment are the operator's and pass untouched. Malformed
+  entries (a name carrying `=`, a newline or a NUL; a value carrying
+  a newline) are dropped the same way — the docker driver would
+  refuse the run outright and the kubernetes driver would drop them
+  silently.
+- **Network.** The workflow's `network:` block is carried into a
+  found-devcontainer run exactly as into a default-image run. When
+  the workflow declares none, the run does not inherit the
+  repository's implicit "open" posture: the `iterion-default`
+  allowlist preset applies and a `sandbox_network_defaulted` event
+  says so. A block written without a `mode:` (C312 warns at compile)
+  is completed to the allowlist its content is shaped like — and
+  rules without a preset also gain the `iterion-default` base, since
+  a rules-only allowlist would leave out every LLM endpoint and kill
+  the run on its first model call; the event says when the runtime
+  chose that base. Declare `network: {mode: open}` (or any other
+  policy) to choose explicitly.
+
+The devcontainer's image/build, mounts, user, `workspaceFolder` and
+`postCreateCommand` still define the container it describes — that is
+auto mode's contract. The default-image fallback branches (no
+devcontainer, or one the sandbox cannot use) keep the historical
+open-network default: nothing repo-authored survives into those
+specs.
 
 Block form without `mode:` is treated as `mode: inline`. You may also
 write `mode: inline` explicitly. Inline mode must declare exactly one of
@@ -661,13 +723,17 @@ each project's profile bin dir
 container `PATH` at container creation, so every exec inherits it with
 nothing to source.
 
-The prepend never clobbers. A `sandbox.env.PATH:` you declare (or a
-devcontainer `containerEnv.PATH`) is kept as the suffix; when you
-declare none, the base is the FHS default
+The prepend never clobbers. A `sandbox.env.PATH:` you declare is kept
+as the suffix; when you declare none, the base is the FHS default
 (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) that
-the iterion sandbox images ship. An image with a non-standard `PATH`
-should declare `sandbox.env.PATH:` explicitly so its own entries are
-preserved.
+the iterion sandbox images ship. A devcontainer `containerEnv.PATH` is
+not honored — `PATH` is in the env deny class (a repository must not
+choose what binaries its review runs against) — so with devbox
+provisioning the base is the FHS default unless the workflow declares
+one; without devbox provisioning there is no prepend and the image's
+own `PATH` stands. An image with a non-standard
+`PATH` should declare `sandbox.env.PATH:` explicitly so its own entries
+are preserved.
 
 ### Best-effort, never silent
 

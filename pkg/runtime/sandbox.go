@@ -323,6 +323,69 @@ func workflowMaxDurationSeconds(wf *ir.Workflow) int64 {
 	return int64(d.Seconds())
 }
 
+// mergeEnvironmentOverlay applies the operator's environment delta
+// (ONLY the keys the launch environment changed or added relative to
+// the engine's own environment — equal values are not carried) to the
+// resolved spec. A key the WORKFLOW authored wins — the DSL is the
+// operator's reviewed channel. A key the target repository's
+// devcontainer contributed does not: a planted value does not speak
+// for the operator (the authority rule internal/envtrust documents for
+// a project `.env`, applied to the delta the overlay carries), so
+// repoEnv-named keys are overwritten like unfilled slots. With a nil
+// repoEnv — every spec that did not come from a found devcontainer —
+// this is the plain fill-the-gaps overlay it has always been.
+func mergeEnvironmentOverlay(spec *sandbox.Spec, overlay map[string]string, repoEnv map[string]bool) {
+	if spec == nil || len(overlay) == 0 {
+		return
+	}
+	if spec.Env == nil {
+		spec.Env = make(map[string]string, len(overlay))
+	}
+	for key, value := range overlay {
+		if _, wfAuthored := spec.Env[key]; wfAuthored && !repoEnv[key] {
+			continue
+		}
+		spec.Env[key] = value
+	}
+}
+
+// emitRepoTrustEvents announces what the target repository tried to
+// put in the run: the env keys the deny class removed, and the
+// iterion-default base the runtime chose when the workflow's network
+// stance named no preset of its own. Called after driver selection
+// succeeded — a run that degrades to the host must not claim either;
+// the events describe the resolved spec, not a started container.
+func emitRepoTrustEvents(
+	emit func(store.EventType, map[string]any) error,
+	logger *iterlog.Logger,
+	res resolvedSpec,
+	source, runID string,
+) {
+	if len(res.deniedEnv) > 0 {
+		_ = emit(store.EventSandboxEnvDenied, map[string]any{
+			"keys":   res.deniedEnv,
+			"source": source,
+			"run_id": runID,
+		})
+		if logger != nil {
+			logger.Warn("runtime: sandbox env denied from %s (run %s): %s — the devcontainer is the repository's file, not the operator's",
+				source, runID, strings.Join(res.deniedEnv, ", "))
+		}
+	}
+	if res.repoNetworkDefaulted {
+		_ = emit(store.EventSandboxNetworkDefaulted, map[string]any{
+			"mode":   string(sandbox.NetworkModeAllowlist),
+			"preset": netproxy.PresetIterionDefault,
+			"source": source,
+			"run_id": runID,
+		})
+		if logger != nil {
+			logger.Info("runtime: repo-defined sandbox starts on the %s allowlist default (run %s) — declare a network: block to choose otherwise",
+				netproxy.PresetIterionDefault, runID)
+		}
+	}
+}
+
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
 // active sandbox spec, or (nil, nil) when no sandbox is requested.
 //
@@ -362,10 +425,11 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return err
 	}
 	defaultImage, defaultImageFallback := resolveDefaultSandboxImageWithFallback(p.DefaultImage)
-	spec, source, skipReason, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
+	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
 	if err != nil {
 		return nil, err
 	}
+	spec, source, skipReason := res.spec, res.source, res.skipReason
 	if spec == nil || !spec.Mode.IsActive() {
 		// Explicit opt-out (Mode=none / override none), or the built-in
 		// default degraded because the host can't sandbox — the latter
@@ -380,16 +444,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return nil, nil
 	}
-	if len(p.Environment) > 0 {
-		if spec.Env == nil {
-			spec.Env = make(map[string]string, len(p.Environment))
-		}
-		for key, value := range p.Environment {
-			if _, authored := spec.Env[key]; !authored {
-				spec.Env[key] = value
-			}
-		}
-	}
+	// The operator's env overlay never loses to the target repo's
+	// devcontainer: repo-contributed keys (repoEnv) are exactly the
+	// ones that may be overwritten, workflow-authored keys stay.
+	mergeEnvironmentOverlay(spec, p.Environment, res.repoEnv)
 
 	// Select the driver up front: its capabilities decide which
 	// host-convenience mounts are even possible. selectSandboxDriver keys
@@ -445,6 +503,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return nil, err
 	}
+	// A sandbox that will actually start announces what the repository
+	// tried to put in it — after selection, so a run that degrades to
+	// the host never claims an allowlist it never had.
+	emitRepoTrustEvents(emitEvent, logger, res, source, p.RunID)
 	caps := driver.Capabilities()
 
 	// Configure all mounts BEFORE the driver prepares resources. Each
@@ -588,10 +650,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// not after start — a change to the secret-file path, not to this line.
 	exportForfaitConfigDirs(spec, p.Logger, claudeOAuthMounted, codexOAuthMounted)
 
-	// Optionally start the network proxy. When the workflow has no
-	// explicit network policy, default to the iterion-default
-	// allowlist preset so users get sensible defaults out of the box —
-	// this is the security-first posture the design plan §5 calls for.
+	// Optionally start the network proxy — the spec's resolved policy
+	// decides: open starts nothing, allowlist/denylist enforce through
+	// the host-side CONNECT proxy. A repo-defined sandbox whose
+	// workflow named no network base of its own was already completed
+	// to the iterion-default allowlist at resolution time
+	// (fuseDevcontainerSpec).
 	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
@@ -957,8 +1021,11 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 //	    preset: iterion-default   # or a custom rule list
 //
 // The iterion-default preset is still shipped — it's the recommended
-// starting point for the allowlist mode — but is no longer applied
-// implicitly. ModeAllowlist with an empty rule list is unchanged: it
+// starting point for the allowlist mode. This function itself applies
+// nothing implicitly (a nil Network is open); the one implicit
+// application happens up-stream, when fuseDevcontainerSpec completes
+// a repo-defined sandbox whose workflow named no network base of its
+// own. ModeAllowlist with an empty rule list is unchanged: it
 // blocks everything, surfacing as `network_blocked` events.
 func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 	mode := netproxy.ModeOpen
@@ -1008,19 +1075,46 @@ func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, string, error) {
-	return resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+	if err != nil {
+		return nil, res.source, res.skipReason, err
+	}
+	return res.spec, res.source, res.skipReason, nil
+}
+
+// resolvedSpec is what the sandbox resolution chain hands the run:
+// the spec, where it came from, and the trust metadata the start path
+// needs — which env keys the target repository contributed (the only
+// untrusted source the spec merges) and which keys the repo-env
+// denylist removed (#2303).
+type resolvedSpec struct {
+	spec       *sandbox.Spec
+	source     string
+	skipReason string
+	// repoEnv names the spec.Env keys taken from the target repo's
+	// devcontainer.json. They must not shadow the operator's own env
+	// overlay: a planted value does not speak for the operator.
+	repoEnv map[string]bool
+	// deniedEnv lists the repo env keys removed by the deny class,
+	// sorted; nil when the spec came from any other source.
+	deniedEnv []string
+	// repoNetworkDefaulted records that the iterion-default base in
+	// the resolved network policy was chosen by the runtime, not the
+	// workflow — the workflow declared no network: block, an empty
+	// one, or rules without a preset, on a repo-defined sandbox.
+	repoNetworkDefaulted bool
 }
 
 // resolveSandboxSpecWithFallback carries the registry fallback for a
 // version-pinned built-in image (see resolveDefaultSandboxImageWithFallback)
-// down to the spec the driver receives.
+// down to the spec the driver receives, plus the trust metadata.
 func resolveSandboxSpecWithFallback(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage, defaultImageFallback string,
-) (*sandbox.Spec, string, string, error) {
+) (resolvedSpec, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
-		return nil, source, "", nil
+		return resolvedSpec{source: source}, nil
 	}
 
 	switch mode {
@@ -1035,7 +1129,7 @@ func resolveSandboxSpecWithFallback(
 			// the runner all resolve a repo root first (EngineRepoRoot
 			// falls back to the working directory), so a run reaches
 			// this only through a library caller that passes none.
-			return nil, source, "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)", nil
+			return resolvedSpec{source: source, skipReason: "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)"}, nil
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -1053,13 +1147,13 @@ func resolveSandboxSpecWithFallback(
 					spec.Image = defaultImage
 					spec.ImageFallback = defaultImageFallback
 					expandSandboxSpec(&spec, repoRoot)
-					return &spec, source + " (default image: " + defaultImage + ")", "", nil
+					return resolvedSpec{spec: &spec, source: source + " (default image: " + defaultImage + ")"}, nil
 				}
 				// Reached only by a caller that resolves no default image:
 				// every product entry point routes through
 				// resolveDefaultSandboxImage*, which always returns one, so
 				// this guards embedders rather than runs.
-				return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
+				return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
 			}
 			// A devcontainer the sandbox cannot use (parse error,
 			// refused runArgs like --privileged, …) must not disable
@@ -1078,12 +1172,11 @@ func resolveSandboxSpecWithFallback(
 				spec.Image = defaultImage
 				spec.ImageFallback = defaultImageFallback
 				expandSandboxSpec(&spec, repoRoot)
-				return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
+				return resolvedSpec{spec: &spec, source: source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage)}, nil
 			}
-			return nil, source, fmt.Sprintf("devcontainer.json unreadable: %v", err), nil
+			return resolvedSpec{source: source, skipReason: fmt.Sprintf("devcontainer.json unreadable: %v", err)}, nil
 		}
-		spec := devcontainer.ToSandboxSpec(dc)
-		return &spec, source + " (" + path + ")", "", nil
+		return fuseDevcontainerSpec(wf, dc, source+" ("+path+")", repoRoot)
 
 	case string(sandbox.ModeInline):
 		// Inline mode requires the workflow's DSL to carry the spec
@@ -1092,7 +1185,7 @@ func resolveSandboxSpecWithFallback(
 		// parser lands. The IR field still goes through unchanged so
 		// future block-form parsing wires up automatically.
 		if wf == nil || wf.Sandbox == nil {
-			return nil, source, "", fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
+			return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
 		}
 		spec := fromIRSpec(wf.Sandbox)
 		// Expand devcontainer-style host-side variables in the inline
@@ -1102,10 +1195,116 @@ func resolveSandboxSpecWithFallback(
 		// expansion docker run rejects the literal `${localEnv:HOME}`
 		// string with "mount path must be absolute".
 		expandSandboxSpec(&spec, repoRoot)
-		return &spec, source, "", nil
+		return resolvedSpec{spec: &spec, source: source}, nil
 	}
 
-	return nil, source, "", fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
+	return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
+}
+
+// fuseDevcontainerSpec builds the spec for a run whose devcontainer
+// was found: the workflow's own sandbox block (the operator's
+// reviewed channel) carries over exactly as it does on the
+// default-image branches beside it, and the devcontainer — the
+// repository's file, not the operator's (#2303) — fills what the
+// workflow did not author. Field by field:
+//
+//   - Env: workflow keys win per key; repo keys fill the rest, minus
+//     the deny class [devcontainer.DeniedEnvKey] removes outright.
+//     The repo-contributed names travel back in resolvedSpec.repoEnv
+//     so the operator's env overlay can still overwrite them.
+//   - Network: the workflow's block is kept verbatim. When the
+//     workflow declares none, the allowlist default applies — open
+//     egress on a repo-defined sandbox is the repository's choice,
+//     not the operator's — and resolvedSpec.repoNetworkDefaulted
+//     records it for the start event. A mode-less block with content
+//     is completed to allowlist; rules without a preset also gain the
+//     iterion-default base, since a rules-only allowlist would leave
+//     out every LLM endpoint and kill the run on its first model
+//     call — that base is the runtime's choice and the event says so.
+//   - Image/Build are the devcontainer's whenever it declares them —
+//     a found devcontainer always declares one (Parse refuses
+//     neither-only), and "run the repo's dev environment" is auto
+//     mode's contract. Mounts, User, PostCreate and WorkspaceFolder
+//     follow the same devcontainer-wins rule, but a devcontainer
+//     that stays silent on those keeps the workflow's value.
+func fuseDevcontainerSpec(wf *ir.Workflow, dc *devcontainer.File, source, repoRoot string) (resolvedSpec, error) {
+	dcSpec, deniedEnv := devcontainer.ToSandboxSpec(dc)
+	res := resolvedSpec{
+		source:    source,
+		repoEnv:   make(map[string]bool, len(dcSpec.Env)),
+		deniedEnv: deniedEnv,
+	}
+
+	var spec sandbox.Spec
+	if wf != nil && wf.Sandbox != nil {
+		spec = fromIRSpec(wf.Sandbox)
+	}
+	spec.Mode = sandbox.ModeAuto
+
+	if dcSpec.Image != "" || dcSpec.Build != nil {
+		spec.Image = dcSpec.Image
+		spec.Build = dcSpec.Build
+	}
+	if len(dcSpec.Mounts) > 0 {
+		spec.Mounts = dcSpec.Mounts
+	}
+	if dcSpec.User != "" {
+		spec.User = dcSpec.User
+	}
+	if dcSpec.PostCreate != "" {
+		spec.PostCreate = dcSpec.PostCreate
+	}
+	if dcSpec.WorkspaceFolder != "" {
+		spec.WorkspaceFolder = dcSpec.WorkspaceFolder
+	}
+
+	if len(dcSpec.Env) > 0 {
+		if spec.Env == nil {
+			spec.Env = make(map[string]string, len(dcSpec.Env))
+		}
+		for key, value := range dcSpec.Env {
+			if _, wfAuthored := spec.Env[key]; wfAuthored {
+				continue
+			}
+			spec.Env[key] = value
+			res.repoEnv[key] = true
+		}
+	}
+
+	// Host-side ${localEnv:...} expansion for the workflow-sourced
+	// fields; the devcontainer's own values were already expanded by
+	// ExpandLocalVarsInFile, so re-expanding them is a no-op.
+	expandSandboxSpec(&spec, repoRoot)
+
+	// A network: block the workflow wrote but left mode-less resolves
+	// to open at the policy layer — inert as written (C312 warns at
+	// compile). On a repo-defined sandbox the content the author did
+	// write (a preset, rules) is allowlist-shaped, so the safe reading
+	// completes the mode instead of dropping the block. When the
+	// preset the block names resolves to nothing (an unknown name, or
+	// none), the completed allowlist would be exactly the author's
+	// rules — every LLM endpoint absent, the run dead on its first
+	// model call, silently — so the iterion-default base joins them;
+	// repoNetworkDefaulted records that the runtime chose the base.
+	// An empty or absent block gets the default below.
+	if spec.Network != nil && spec.Network.Mode == "" &&
+		(spec.Network.Preset != "" || len(spec.Network.Rules) > 0) {
+		spec.Network.Mode = sandbox.NetworkModeAllowlist
+		if _, known := netproxy.PresetRules(spec.Network.Preset); !known {
+			spec.Network.Preset = netproxy.PresetIterionDefault
+			res.repoNetworkDefaulted = true
+		}
+	}
+	if spec.Network == nil || spec.Network.Mode == "" {
+		spec.Network = &sandbox.Network{
+			Mode:   sandbox.NetworkModeAllowlist,
+			Preset: netproxy.PresetIterionDefault,
+		}
+		res.repoNetworkDefaulted = true
+	}
+
+	res.spec = &spec
+	return res, nil
 }
 
 // ResolveSandboxSpecForDoctor produces the effective sandbox spec a run

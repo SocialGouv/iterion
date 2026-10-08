@@ -619,6 +619,31 @@ const (
 	//     (devbox binary missing, staging or install failures); the run
 	//     proceeds, the named packages are absent
 	EventSandboxDevboxProvisioned EventType = "sandbox_devbox_provisioned"
+	// EventSandboxEnvDenied fires when the target repository's
+	// devcontainer.json (containerEnv/remoteEnv) declares env keys in
+	// the deny class and the runtime removes them instead of copying
+	// them into the sandbox env (#2303). The devcontainer is the
+	// reviewed repository's file, not the operator's: a planted
+	// *_BASE_URL re-routes every LLM call the container makes, a
+	// planted LD_PRELOAD or PATH executes the planter's code, and a
+	// repo-authored value does not speak for the operator. Data:
+	//   - keys: []string of the removed names, sorted
+	//   - source: the resolution source label (names the
+	//     devcontainer.json path)
+	//   - run_id: the run scope
+	EventSandboxEnvDenied EventType = "sandbox_env_denied"
+	// EventSandboxNetworkDefaulted fires when a repo-defined sandbox
+	// (mode auto and a devcontainer.json found) runs on an
+	// iterion-default base the runtime chose because the workflow
+	// named none: no network: block, an empty one, or rules without a
+	// preset (#2303). Open egress on such a run is the repository's
+	// choice, not the operator's; a workflow block naming a preset (or
+	// a mode) is the override and never triggers this event. Data:
+	//   - mode: "allowlist"
+	//   - preset: "iterion-default"
+	//   - source: the resolution source label
+	//   - run_id: the run scope
+	EventSandboxNetworkDefaulted EventType = "sandbox_network_defaulted"
 	// EventNetworkBlocked fires every time the iterion CONNECT proxy
 	// rejects a request. Data:
 	//   - host: blocked hostname

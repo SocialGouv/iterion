@@ -375,6 +375,11 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 				scope, name, blk.Network.Inherit)
 			return nil
 		}
+		if blk.Network.Mode == "" {
+			c.warnfAtScope(DiagNetworkModeMissing, scope, name,
+				"%s %q declares sandbox.network without a mode: as written the block is inert — at the policy layer it resolves to open (the proxy does not start); on a repo-defined sandbox (mode auto with a found devcontainer.json) the runtime instead completes it to the allowlist its content is shaped like. Write mode: allowlist (or open / denylist) to say which you mean",
+				scope, name)
+		}
 		spec.Network = &SandboxNetwork{
 			Mode:    blk.Network.Mode,
 			Preset:  blk.Network.Preset,
