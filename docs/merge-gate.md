@@ -1095,13 +1095,27 @@ Reading it in production: the replica holding a term logs `merge-gate sweeper:
 the `merge-gate-sweeper` document of the Mongo `leases` collection (`owner`,
 `expires_at`). Every replica logs one line per hour in which it sent forge
 requests — `forge HTTP: N requests in the hour ending 2026-09-30T15:00Z —
-<host> <rest|graphql> <lane>=<n>, …` — when its next request arrives, and
-flushes the hour it was counting when it stops; a partial hour carries `(counted
-from …)` or `(until …, stopping)`. The `merge-gate-sweeper` lane is what the
-sweep spent that hour. The count is of attempts as the forge client sends them
-— each redirect hop, each answer whatever its status, a rate-limited 403
+<host> <rest|graphql> [installation <id>] <lane>=<n>, …` — when its next
+request arrives, and flushes the hour it was counting when it stops; a partial
+hour carries `(counted from …)` or `(until …, stopping)`. The `merge-gate-sweeper`
+lane is what the sweep spent that hour; `installation <id>` names the GitHub App
+installation whose token sent the request, and an entry without it was sent with
+another credential (a PAT, a user token, the App's own JWT for a token mint, a
+bot's `forge_token` binding). The count is of attempts as the forge client sends
+them — each redirect hop, each answer whatever its status, a rate-limited 403
 included — so it is close to the budget spent, not identical: a token mint is
 counted and spends no REST budget.
+
+The same hour's budget level follows on a line of its own, `forge rate limit:
+lowest remaining in the hour ending 2026-09-30T15:00Z — <host> <rest|graphql>
+installation <id>: <remaining> of <limit> at <seen> (resets <reset>), …`: for
+each installation and API, the lowest `X-RateLimit-Remaining` any answer to that
+installation's token reported in the hour — GitHub sends it on every answer, 2xx
+included — when it was seen, and when that window resets. It shows an
+installation approaching exhaustion before the first rate-limited 403, not after.
+Every lane spends the installation's one budget, so the line has no lane; an
+answer to any other credential reports a budget the line cannot name and is left
+out.
 
 The sweep's cadence — interval, lookback, deep-pass frequency — is the
 operator's to set without a release (`ITERION_GATE_SWEEP_*`,

@@ -133,6 +133,29 @@ func LimitResetAt(hdr http.Header, now time.Time) time.Time {
 	return at
 }
 
+// RateLimitBudget is the budget a forge answer reports: what is left, out of
+// how much, and when the window resets. Limit and ResetAt are zero when the
+// answer does not say.
+type RateLimitBudget struct {
+	Remaining, Limit int64
+	ResetAt          time.Time
+}
+
+// RateLimitBudgetOf reads the budget GitHub reports on every answer, 2xx
+// included — X-RateLimit-Remaining, -Limit and -Reset — read at now. ok is
+// false when the answer reports no remaining count.
+func RateLimitBudgetOf(hdr http.Header, now time.Time) (RateLimitBudget, bool) {
+	remaining, err := strconv.ParseInt(strings.TrimSpace(hdr.Get("X-RateLimit-Remaining")), 10, 64)
+	if err != nil || remaining < 0 {
+		return RateLimitBudget{}, false
+	}
+	b := RateLimitBudget{Remaining: remaining, ResetAt: parseRateLimitReset(hdr.Get("X-RateLimit-Reset"), now)}
+	if limit, err := strconv.ParseInt(strings.TrimSpace(hdr.Get("X-RateLimit-Limit")), 10, 64); err == nil && limit > 0 {
+		b.Limit = limit
+	}
+	return b, true
+}
+
 // parseRateLimitReset reads a reset header as an instant: a Unix epoch
 // (GitHub, GitLab) or, for a small value, a delta in seconds from now (the
 // IETF RateLimit-Reset form). Anything unparsable or not after now yields the
