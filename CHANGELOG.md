@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.252.0](https://github.com/SocialGouv/iterion/compare/v3.251.0...v3.252.0) (2026-10-08)
+
+### Features
+
+* **credpool:** fine spend attribution for the fallback door's leases ([#2255](https://github.com/SocialGouv/iterion/issues/2255)) ([#2279](https://github.com/SocialGouv/iterion/issues/2279)) ([d8a7d00](https://github.com/SocialGouv/iterion/commit/d8a7d003c26d027e291c95016004284caccd5474))
+
+    <details><summary>why</summary>
+
+    The arbitration's answer: per-credential attribution IS derivable - the runner's metrics emitter already accumulates per (backend, model, fingerprint) - so a door-served run books only the slice that ran on the donor's credential, and the consent copy slims down.
+
+    </details>
+* **supervise:** the turn-boundary step event carries the message's token accounting ([#2287](https://github.com/SocialGouv/iterion/issues/2287)) ([73dade3](https://github.com/SocialGouv/iterion/commit/73dade3216071254813911873a80969409aac8dd)), references [#1481](https://github.com/SocialGouv/iterion/issues/1481)
+
+    <details><summary>why</summary>
+
+    The transcript observer emitted its turn-boundary llm_step_finished with nil data — the per-message usage the claude_code transcript already carries (input, output, cache read, cache creation) was decoded past and dropped, so a supervisor session's spend attributed to nothing. The event carries it now under the model hooks' field names, and a usage-less message emits the bare event as before (#1481).
+
+    </details>
+
 ## [3.251.0](https://github.com/SocialGouv/iterion/compare/v3.250.1...v3.251.0) (2026-10-07)
 
 ### Features
