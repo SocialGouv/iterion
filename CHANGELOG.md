@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.254.0](https://github.com/SocialGouv/iterion/compare/v3.253.0...v3.254.0) (2026-10-08)
+
+### Features
+
+* **forge:** report each App installation's lowest rate-limit budget hourly ([#2296](https://github.com/SocialGouv/iterion/issues/2296)) ([ab9c8e3](https://github.com/SocialGouv/iterion/commit/ab9c8e32289c8fb76c411dd4a300b73f315186d9)), closes [#2105](https://github.com/SocialGouv/iterion/issues/2105), references [#1995](https://github.com/SocialGouv/iterion/issues/1995)
+
+    <details><summary>why</summary>
+
+    The forge transport received X-RateLimit-* on every GitHub answer and read them only on a refusal, so an installation's budget was seen once spent (#1995), never while it drained. The forge client's counting transport now reads the budget each answer reports, and the hourly report gains a line:
+
+    </details>
+
 ## [3.253.0](https://github.com/SocialGouv/iterion/compare/v3.252.0...v3.253.0) (2026-10-08)
 
 ### Features
