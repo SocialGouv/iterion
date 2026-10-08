@@ -94,6 +94,5 @@ func (a *AppClient) CreateRepo(ctx context.Context, spec forge.RepoCreateSpec) (
 	if err != nil {
 		return forge.RepoSummary{}, err
 	}
-	c := &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: tok}
-	return c.CreateRepo(ctx, spec)
+	return a.tokenClient(tok).CreateRepo(ctx, spec)
 }
