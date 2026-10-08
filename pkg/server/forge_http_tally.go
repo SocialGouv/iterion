@@ -352,7 +352,7 @@ func formatForgeBudgets(hour, start, until time.Time, budgets map[forgeBudgetKey
 		}
 		parts = append(parts, entry)
 	}
-	return fmt.Sprintf("forge rate limit: lowest remaining in %s — %s", forgeTallyWindow(hour, start, until), strings.Join(parts, ", "))
+	return fmt.Sprintf("forge budget: lowest remaining in %s — %s", forgeTallyWindow(hour, start, until), strings.Join(parts, ", "))
 }
 
 // flushForgeTally reports this process's last, partial hour of forge
