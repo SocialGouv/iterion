@@ -176,6 +176,7 @@ type tallyAnswer struct {
 	lane, url    string
 	remaining    string
 	limit        string
+	resource     string
 	reset        time.Time
 	sent, seen   time.Time
 }
@@ -212,6 +213,9 @@ func (a tallyAnswer) feed(t *testing.T, tally *forgeRequestTally, clock *tallyCl
 	}
 	if !a.reset.IsZero() {
 		hdr.Set("X-RateLimit-Reset", strconv.FormatInt(a.reset.Unix(), 10))
+	}
+	if a.resource != "" {
+		hdr.Set("X-RateLimit-Resource", a.resource)
 	}
 	clock.set(a.sent)
 	tally.observe(req)
@@ -501,5 +505,107 @@ func TestTeamControlsGitHubOrg_ChargesAnAppConnectionToItsInstallation(t *testin
 	}
 	if b, ok := s.forgeRequests.budgets[forgeBudgetKey{host: host, api: "rest", installation: 55}]; !ok || b.remaining != 4321 {
 		t.Errorf("installation 55's budget = %+v (recorded %v), want its 4321 remaining", b, ok)
+	}
+}
+
+// An hour that began before counting did is never read as a whole one: its
+// lines say where counting began. The next hour's lines say nothing — counting
+// had been running since before it — and a stop falling exactly on that
+// hour's end leaves it whole: nothing after the end could have been counted
+// in it.
+func TestForgeRequestTally_AnHourStartedLateSaysWhereCountingBegan(t *testing.T) {
+	clock := &tallyClock{now: time.Date(2026, 9, 30, 14, 20, 37, 0, time.UTC)}
+	tally, reports := newTestTally(clock)
+	(tallyAnswer{
+		installation: 5, url: "https://api.github.com/repos/o/r/pulls/1", remaining: "4000", limit: "5000",
+		reset: time.Date(2026, 9, 30, 15, 10, 0, 0, time.UTC),
+		sent:  time.Date(2026, 9, 30, 14, 21, 0, 0, time.UTC), seen: time.Date(2026, 9, 30, 14, 21, 0, 0, time.UTC),
+	}).feed(t, tally, clock)
+	(tallyAnswer{
+		installation: 5, url: "https://api.github.com/repos/o/r/pulls/2", remaining: "3900", limit: "5000",
+		reset: time.Date(2026, 9, 30, 16, 10, 0, 0, time.UTC),
+		sent:  time.Date(2026, 9, 30, 15, 1, 0, 0, time.UTC), seen: time.Date(2026, 9, 30, 15, 1, 0, 0, time.UTC),
+	}).feed(t, tally, clock)
+	clock.set(time.Date(2026, 9, 30, 16, 0, 0, 0, time.UTC))
+	tally.flush()
+	want := []string{
+		"forge HTTP: 1 requests in the hour ending 2026-09-30T15:00Z (counted from 14:20:37Z) — api.github.com rest installation 5 other=1",
+		"forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z (counted from 14:20:37Z) — " +
+			"api.github.com rest installation 5: 4000 of 5000 at 14:21:00Z (resets 15:10:00Z)",
+		"forge HTTP: 1 requests in the hour ending 2026-09-30T16:00Z — api.github.com rest installation 5 other=1",
+		"forge budget: lowest remaining in the hour ending 2026-09-30T16:00Z — " +
+			"api.github.com rest installation 5: 3900 of 5000 at 15:01:00Z (resets 16:10:00Z)",
+	}
+	if got := reports(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("reports =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// flush hands the hour out and empties the tally: a second flush reports
+// nothing — an hour already handed out has nothing left to report — and work
+// after a flush is that report's only content, never the hour counted twice.
+func TestForgeRequestTally_AFlushEmptiesTheHourItReported(t *testing.T) {
+	at := func(m, s int) time.Time { return time.Date(2026, 9, 30, 14, m, s, 0, time.UTC) }
+	clock := &tallyClock{now: at(0, 0)}
+	tally, reports := newTestTally(clock)
+	(tallyAnswer{
+		installation: 5, url: "https://api.github.com/repos/o/r/pulls/1", remaining: "4000", limit: "5000",
+		reset: at(50, 0), sent: at(1, 0), seen: at(1, 0),
+	}).feed(t, tally, clock)
+	clock.set(at(30, 0))
+	tally.flush()
+	first := []string{
+		"forge HTTP: 1 requests in the hour ending 2026-09-30T15:00Z (until 14:30:00Z, stopping) — api.github.com rest installation 5 other=1",
+		"forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z (until 14:30:00Z, stopping) — " +
+			"api.github.com rest installation 5: 4000 of 5000 at 14:01:00Z (resets 14:50:00Z)",
+	}
+	if got := reports(); len(got) != 2 || strings.Join(got, "\n") != strings.Join(first, "\n") {
+		t.Errorf("first flush: reports =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(first, "\n"))
+	}
+	tally.flush()
+	if got := reports(); len(got) != 2 {
+		t.Errorf("second flush: reports = %q, want nothing more — the hour was handed out already", got)
+	}
+	(tallyAnswer{
+		installation: 5, url: "https://api.github.com/repos/o/r/pulls/2", remaining: "3999", limit: "5000",
+		reset: at(50, 0), sent: at(40, 0), seen: at(40, 0),
+	}).feed(t, tally, clock)
+	clock.set(at(45, 0))
+	tally.flush()
+	third := []string{
+		"forge HTTP: 1 requests in the hour ending 2026-09-30T15:00Z (until 14:45:00Z, stopping) — api.github.com rest installation 5 other=1",
+		"forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z (until 14:45:00Z, stopping) — " +
+			"api.github.com rest installation 5: 3999 of 5000 at 14:40:00Z (resets 14:50:00Z)",
+	}
+	if got := reports(); len(got) != 4 || strings.Join(got[2:], "\n") != strings.Join(third, "\n") {
+		t.Errorf("third flush: reports =\n%s\nwant only the post-flush work\n%s", strings.Join(got, "\n"), strings.Join(third, "\n"))
+	}
+}
+
+// A resource the answer's API does not bill on its default budget — GitHub's
+// search budget behind a REST path — is its own budget, never folded into the
+// core minimum, which would describe neither. The default resource (core, or
+// nothing the answer says) keeps the line it always had.
+func TestForgeRequestTally_AnotherResourcesBudgetGetsItsOwnEntry(t *testing.T) {
+	at := func(m int) time.Time { return time.Date(2026, 9, 30, 14, m, 0, 0, time.UTC) }
+	clock := &tallyClock{now: at(0)}
+	tally, reports := newTestTally(clock)
+	for _, a := range []tallyAnswer{
+		{installation: 5, url: "https://api.github.com/repos/o/r/pulls/1", remaining: "4000", limit: "5000", resource: "core", reset: at(50), sent: at(1), seen: at(1)},
+		{installation: 1, url: "https://api.github.com/search/repositories?q=iterion", remaining: "28", limit: "30", resource: "search", reset: at(50), sent: at(2), seen: at(2)},
+		{installation: 5, url: "https://api.github.com/repos/o/r/issues", remaining: "3900", limit: "5000", reset: at(50), sent: at(3), seen: at(3)},
+	} {
+		a.feed(t, tally, clock)
+	}
+	clock.set(time.Date(2026, 9, 30, 15, 0, 1, 0, time.UTC))
+	tally.flush()
+	want := []string{
+		"forge HTTP: 3 requests in the hour ending 2026-09-30T15:00Z — api.github.com rest installation 5 other=2, api.github.com rest installation 1 other=1",
+		"forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
+			"api.github.com rest installation 5: 3900 of 5000 at 14:03:00Z (resets 14:50:00Z), " +
+			"api.github.com rest/search installation 1: 28 of 30 at 14:02:00Z (resets 14:50:00Z)",
+	}
+	if got := reports(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("reports =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

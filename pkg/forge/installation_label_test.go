@@ -58,7 +58,9 @@ func TestInstallationClient_LabelsEveryRequestItSends(t *testing.T) {
 
 // The budget GitHub reports on every answer: what is left, out of how much,
 // and when the window resets. No remaining count, no budget; a limit or a
-// reset it did not report stays zero rather than guessed.
+// reset it did not report stays zero rather than guessed. The resource names
+// a budget beyond the API's default one: core and graphql ARE the defaults,
+// an unnamed resource is the answer's API's own.
 func TestRateLimitBudgetOf(t *testing.T) {
 	now := time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC)
 	reset := now.Add(20 * time.Minute)
@@ -69,10 +71,12 @@ func TestRateLimitBudgetOf(t *testing.T) {
 		want RateLimitBudget
 		ok   bool
 	}{
-		{"every header", map[string]string{"X-RateLimit-Remaining": "4210", "X-RateLimit-Limit": "5000", "X-RateLimit-Reset": epoch}, RateLimitBudget{Remaining: 4210, Limit: 5000, ResetAt: reset}, true},
+		{"every header", map[string]string{"X-RateLimit-Remaining": "4210", "X-RateLimit-Limit": "5000", "X-RateLimit-Reset": epoch, "X-RateLimit-Resource": "core"}, RateLimitBudget{Remaining: 4210, Limit: 5000, ResetAt: reset}, true},
 		{"spent to zero", map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Limit": "5000", "X-RateLimit-Reset": epoch}, RateLimitBudget{Remaining: 0, Limit: 5000, ResetAt: reset}, true},
 		{"no limit or reset said", map[string]string{"X-RateLimit-Remaining": "17"}, RateLimitBudget{Remaining: 17}, true},
 		{"an unreadable limit and reset", map[string]string{"X-RateLimit-Remaining": "17", "X-RateLimit-Limit": "lots", "X-RateLimit-Reset": "later"}, RateLimitBudget{Remaining: 17}, true},
+		{"the graphql resource is its API's default", map[string]string{"X-RateLimit-Remaining": "4999", "X-RateLimit-Resource": "graphql"}, RateLimitBudget{Remaining: 4999}, true},
+		{"another resource names its budget", map[string]string{"X-RateLimit-Remaining": "28", "X-RateLimit-Limit": "30", "X-RateLimit-Resource": "search"}, RateLimitBudget{Remaining: 28, Limit: 30, Resource: "search"}, true},
 		{"no remaining count", map[string]string{"X-RateLimit-Limit": "5000", "X-RateLimit-Reset": epoch}, RateLimitBudget{}, false},
 		{"an unreadable remaining count", map[string]string{"X-RateLimit-Remaining": "some"}, RateLimitBudget{}, false},
 		{"a negative remaining count", map[string]string{"X-RateLimit-Remaining": "-1"}, RateLimitBudget{}, false},
@@ -83,7 +87,7 @@ func TestRateLimitBudgetOf(t *testing.T) {
 			hdr.Set(k, v)
 		}
 		got, ok := RateLimitBudgetOf(hdr, now)
-		if ok != c.ok || got.Remaining != c.want.Remaining || got.Limit != c.want.Limit || !got.ResetAt.Equal(c.want.ResetAt) {
+		if ok != c.ok || got.Remaining != c.want.Remaining || got.Limit != c.want.Limit || got.Resource != c.want.Resource || !got.ResetAt.Equal(c.want.ResetAt) {
 			t.Errorf("%s: RateLimitBudgetOf = %+v, %v; want %+v, %v", c.name, got, ok, c.want, c.ok)
 		}
 	}
