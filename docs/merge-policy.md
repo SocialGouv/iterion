@@ -31,7 +31,16 @@ green.
   lone PR still merges after `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
-  `nats-conformance` once an admin adds it to ruleset 18857412. `fmt-check` is
+  `nats-conformance` once an admin adds it to ruleset 18857412.
+  `test` and `race` are AGGREGATOR CONTEXTS, not test-running jobs: the work
+  lives in the gated legs (`test-unit`, `test-e2e`, `studio`, the
+  `race-shard` matrix) that run in the queue behind them, and each aggregator
+  re-verifies every leg's conclusion under `if: ${{ !cancelled() }}`. The
+  required NAMES stay stable — a PR that renamed one could never pass its own
+  queue build — while work scales sideways (shards, new legs). The legs
+  themselves carry no `if:` of any kind, a contract `internal/ciguard`'s
+  `gatedJobs` enforces: a skipped leg reports Success on the pull request
+  while reddening its queue entry forever. `fmt-check` is
   STAGED: it reports on the pull request AND in the queue, so the context is
   already there the day the ruleset names it, and `internal/ciguard`'s
   `requiredChecks` carries it. Editing that ruleset from the API needs
@@ -89,7 +98,11 @@ green.
   > goes back to GitHub-hosted runners on the next run. A variable rather than
   > an edit to `tests.yml`, deliberately: repairing by merging does not work
   > when merging is what is broken. Unset means on. Alerting on the scale set
-  > itself is still missing — SocialGouv/iterion#983.
+  > itself is still missing — SocialGouv/iterion#983. Since the mega-job split,
+  > one queue entry holds ~12 concurrent GitHub-hosted jobs on this lane (the
+  > gated legs plus the race-shard matrix): the escape hatch still works, but
+  > it now spends 12 of the org's 20 shared slots per entry — one fork PR from
+  > another repository can starve it, so expect slowness, not silence.
 
 - No required human approval (`required_approving_review_count: 0`) — the bot
   factory's own adversarial review + the checks are the gate; a reviewer still
