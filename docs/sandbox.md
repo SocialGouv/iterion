@@ -893,6 +893,28 @@ binary in (subject to architecture matching) via `runArgs`:
 }
 ```
 
+**What crosses into the runner.** The runner rebuilds its model
+registry from the environment the launcher forwards, and from nothing
+else of the host's: the provider keys, the endpoints they are spent on
+(`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
+`XAI_BASE_URL`, …), the spend and client-identity settings, and the
+knobs its own loop reads (`ITERION_CLAW_STREAM_COLD_TIMEOUT` /
+`_IDLE_TIMEOUT`) — each when the host sets it. A name the host leaves
+unset is whatever the container's own environment says — its image, a
+`containerEnv` key the deny class above lets through — and the
+workspace's `.env`, which the runner loads at start as the CLI does: a
+repository's `.env` can thereby choose where a forwarded key is spent
+when the host does not set its endpoint, so set the endpoints you rely
+on, and keep the run on an allowlist. The retry budget the launcher
+resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
+task envelope instead: it bounds billed attempts, so the container's own
+environment never sets it — a runner image older than that field keeps its built-in
+budget (3 attempts, 6 for a transient failure) until the image carries
+this release. A forwarded endpoint is dialled from inside the container:
+a URL on the host's loopback (`127.0.0.1`, `localhost`) names the
+container itself there, and under `network: allowlist` its host must be
+allowed.
+
 **V2-1+ wire format**: bidirectional NDJSON envelopes between
 launcher and runner (see `pkg/backend/delegate/envelope.go`). Each
 line is one envelope of typed payload (`task`, `tool_call`,

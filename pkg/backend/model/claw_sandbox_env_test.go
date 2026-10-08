@@ -2,11 +2,16 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -322,6 +327,151 @@ func TestForwardableProviderEnv_CarriesTheStreamUsageKnob(t *testing.T) {
 		t.Error("in-container openAIStreamUsage = false with the knob set — the sandboxed lane stays blind to its own usage")
 	}
 }
+
+// #2292, the Moonshot shape on the xai provider: both xai factories spend
+// XAI_API_KEY on whatever xaiBaseURL answers — an operator proxy, a regional
+// host. Without the base URL across, the sandboxed node keeps working, against
+// api.x.ai, while the host talks to the operator's endpoint.
+func TestForwardableProviderEnv_CarriesTheXAIRoute(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-platform-key")
+	t.Setenv("XAI_BASE_URL", "https://xai-proxy.operator.example/v1")
+	hostBase := xaiBaseURL()
+
+	env, err := forwardableProviderEnv(context.Background(), "xai/grok-4")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+
+	// The container sees ONLY what crossed: rebuild that view and ask the
+	// registry's own resolver, rather than reading the list back to itself.
+	t.Setenv("XAI_API_KEY", env["XAI_API_KEY"])
+	t.Setenv("XAI_BASE_URL", env["XAI_BASE_URL"])
+	if got := xaiBaseURL(); got != hostBase {
+		t.Errorf("in-container xAI endpoint = %q, host = %q — the same node spends its key on two endpoints", got, hostBase)
+	}
+}
+
+// The stream-silence watchdog runs where the provider call runs, and for a
+// sandboxed node that is the runner: callAndAggregate is every in-process
+// call's funnel. An operator who widened a tier for a slow endpoint, or
+// turned one off with 0, must get the same watchdog on both sides.
+func TestForwardableProviderEnv_CarriesTheStreamWatchdog(t *testing.T) {
+	t.Setenv("ITERION_CLAW_STREAM_COLD_TIMEOUT", "12m")
+	t.Setenv("ITERION_CLAW_STREAM_IDLE_TIMEOUT", "0")
+	hostCold, hostIdle := resolveClawStreamColdTimeout(), resolveClawStreamIdleTimeout()
+
+	env := envFor(t, context.Background())
+
+	t.Setenv("ITERION_CLAW_STREAM_COLD_TIMEOUT", env["ITERION_CLAW_STREAM_COLD_TIMEOUT"])
+	t.Setenv("ITERION_CLAW_STREAM_IDLE_TIMEOUT", env["ITERION_CLAW_STREAM_IDLE_TIMEOUT"])
+	if got := resolveClawStreamColdTimeout(); got != hostCold {
+		t.Errorf("in-container cold timeout = %s, host = %s", got, hostCold)
+	}
+	if got := resolveClawStreamIdleTimeout(); got != hostIdle {
+		t.Errorf("in-container idle timeout = %s, host = %s — a tier the operator turned off is back on when sandboxed", got, hostIdle)
+	}
+}
+
+// The runner's claw backend retries the provider calls made in the
+// container with the launcher's budget, which crosses in the task envelope,
+// resolved: it bounds billed attempts, so neither the container's env — a
+// repository's devcontainer can set it — nor the runner's own defaults stand
+// in for the launcher's. The workspace's settings hooks cross the same way.
+// Both are read off the wire of the real dispatch: the "runner" is
+// `head -n 1`, which keeps the task envelope. The budgets are the ones a
+// launcher builds from its env, every field but one left to the defaults.
+func TestExecuteViaSandboxRunner_SendsTheLaunchersBudgetAndHooks(t *testing.T) {
+	work := t.TempDir()
+	hooks := `{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"true"}]}]}`
+	if err := os.MkdirAll(filepath.Join(work, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".claude", "settings.json"), []byte(`{"hooks":`+hooks+`}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromEnv := func(retries, transient string) RetryPolicy {
+		t.Setenv("ITERION_NODE_MAX_RETRIES", retries)
+		t.Setenv("ITERION_NODE_MAX_TRANSIENT_RETRIES", transient)
+		return RetryPolicyFromEnv()
+	}
+	for _, tc := range []struct {
+		name     string
+		launcher RetryPolicy
+	}{
+		{name: "the defaults", launcher: fromEnv("", "")},
+		{name: "fail-fast", launcher: fromEnv("0", "")},
+		{name: "a wider transient budget", launcher: fromEnv("", "19")},
+		{name: "every field set", launcher: RetryPolicy{MaxAttempts: 1, MaxAttemptsTransient: 4, BackoffBase: 7 * time.Millisecond}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Whatever reads the budget from this env instead of the
+			// launcher's policy sends nine retries.
+			t.Setenv("ITERION_NODE_MAX_RETRIES", "9")
+			t.Setenv("ITERION_NODE_MAX_TRANSIENT_RETRIES", "9")
+			crossed := dispatchCapturingTheTask(t, NewClawBackend(NewRegistry(), EventHooks{}, tc.launcher), work)
+
+			w := crossed.Retry
+			if w == nil || w.MaxAttempts <= 0 || w.MaxAttemptsTransient <= 0 || w.BackoffBase <= 0 {
+				t.Fatalf("the budget on the wire = %+v, want every field resolved", w)
+			}
+			got, want := RetryPolicyFromWire(w), tc.launcher
+			if got.maxAttempts() != want.maxAttempts() || got.maxAttemptsTransient() != want.maxAttemptsTransient() || got.backoffBase() != want.backoffBase() {
+				t.Errorf("the runner spends %d attempts (%d transient) backing off from %s, the launcher %d (%d) from %s",
+					got.maxAttempts(), got.maxAttemptsTransient(), got.backoffBase(), want.maxAttempts(), want.maxAttemptsTransient(), want.backoffBase())
+			}
+			if got := string(crossed.SettingsHooks); got != hooks {
+				t.Errorf("the runner's settings hooks = %s, the workspace's = %s", got, hooks)
+			}
+		})
+	}
+	// A launcher that predates the field: the runner keeps its built-in
+	// defaults, never the budget its own env names.
+	t.Setenv("ITERION_NODE_MAX_RETRIES", "0")
+	t.Setenv("ITERION_NODE_MAX_TRANSIENT_RETRIES", "0")
+	if got := RetryPolicyFromWire(nil); got != (RetryPolicy{}) {
+		t.Errorf("no budget on the wire = %+v, want the zero policy", got)
+	}
+}
+
+// dispatchCapturingTheTask sends one task through b's real sandbox dispatch
+// to a runner that keeps the first envelope and never answers, and returns
+// the task that envelope carried.
+func dispatchCapturingTheTask(t *testing.T, b *ClawBackend, workDir string) delegate.IOTask {
+	t.Helper()
+	captured := filepath.Join(t.TempDir(), "task.ndjson")
+	_, err := b.executeViaSandboxRunner(context.Background(), delegate.Task{
+		NodeID: "n", Model: "openai/gpt-5", WorkDir: workDir, Sandbox: &taskCaptureSandbox{path: captured},
+	})
+	if err == nil {
+		t.Fatal("a runner that never answers must fail the dispatch")
+	}
+	line, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatalf("read what the runner received: %v", err)
+	}
+	var envelope delegate.Envelope
+	if err := json.Unmarshal(line, &envelope); err != nil || envelope.Type != delegate.EnvelopeTask {
+		t.Fatalf("the runner's first envelope = %q (%v), want the task", line, err)
+	}
+	var crossed delegate.IOTask
+	if err := json.Unmarshal(envelope.Data, &crossed); err != nil {
+		t.Fatalf("decode the task envelope: %v", err)
+	}
+	return crossed
+}
+
+// taskCaptureSandbox runs the claw runner as `head -n 1 > path`: it keeps the
+// first envelope the launcher sends, then exits without answering.
+type taskCaptureSandbox struct{ path string }
+
+func (s *taskCaptureSandbox) Driver() string { return "task-capture" }
+func (s *taskCaptureSandbox) Command(ctx context.Context, _ []string, _ sandbox.ExecOpts) *exec.Cmd {
+	return exec.CommandContext(ctx, "sh", "-c", `head -n 1 > "$0"`, s.path)
+}
+func (s *taskCaptureSandbox) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	return sandbox.ExecResult{}, nil
+}
+func (s *taskCaptureSandbox) Cleanup(context.Context) error { return nil }
 
 // The run's own key still beats the ambient one across the seam — the whole
 // point of the boundary is that a tenant's credential is what pays.

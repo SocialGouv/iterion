@@ -157,9 +157,10 @@ func TestClawDeclaresNoForfaitFirst(t *testing.T) {
 
 // In process and in the sandbox, claw spends the SAME openai credential for
 // every combination of the run's default key, a key pinned for the route, a
-// ChatGPT forfait, the ITERION_OPENAI_USE_OAUTH=0 refusal and an
-// OPENAI_BASE_URL — the container rebuilt from exactly what
-// forwardableProviderEnv hands it, the seeded forfait in its CODEX_HOME.
+// ChatGPT forfait, the host's ITERION_OPENAI_USE_OAUTH (unset, the "0"
+// refusal, a host-wide "1") and an OPENAI_BASE_URL — the container rebuilt
+// from exactly what forwardableProviderEnv hands it, the seeded forfait in
+// its CODEX_HOME.
 func TestClawOpenAICredentialParity(t *testing.T) {
 	type choice struct {
 		failed     bool
@@ -175,16 +176,13 @@ func TestClawOpenAICredentialParity(t *testing.T) {
 	for _, defKey := range []bool{false, true} {
 		for _, pinned := range []bool{false, true} {
 			for _, forfait := range []bool{false, true} {
-				for _, refuse := range []bool{false, true} {
+				for _, useOAuth := range []string{"", "0", "1"} {
 					for _, gateway := range []bool{false, true} {
-						name := fmt.Sprintf("default=%v pinned=%v forfait=%v refuse=%v gateway=%v", defKey, pinned, forfait, refuse, gateway)
+						name := fmt.Sprintf("default=%v pinned=%v forfait=%v oauth=%q gateway=%v", defKey, pinned, forfait, useOAuth, gateway)
 						t.Run(name, func(t *testing.T) {
 							installRunLookups(t)
 							blob := writeCodexAuth(t)
-							useOAuth, baseURL := "", ""
-							if refuse {
-								useOAuth = "0"
-							}
+							baseURL := ""
 							if gateway {
 								baseURL = "http://gateway.parity.example/v1"
 							}
@@ -229,6 +227,54 @@ func TestClawOpenAICredentialParity(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The ITERION_OPENAI_USE_OAUTH=0 refusal crosses when the run carries no
+// credentials too — a local run of a bot without a secrets: block: a ChatGPT
+// forfait on the container's own disk (a devcontainer mount) is spent by
+// neither side.
+//
+// Only the exact refusal crosses there: a host-wide "1" forces the host's own
+// forfait, which crosses only in a run's credentials — it never orders the
+// container to spend one its disk holds — and any other value refuses nothing,
+// on either side.
+func TestClawOpenAIRefusalParityWithoutRunCredentials(t *testing.T) {
+	for _, useOAuth := range []string{"0", " 0", "1", ""} {
+		t.Run(fmt.Sprintf("oauth=%q", useOAuth), func(t *testing.T) {
+			t.Setenv("OPENAI_API_KEY", "")
+			t.Setenv("OPENAI_BASE_URL", "")
+			t.Setenv("CODEX_HOME", writeCodexAuth(t))
+			t.Setenv("ITERION_OPENAI_USE_OAUTH", useOAuth)
+			hostClient, hostErr := NewRegistry().ResolveWithContext(context.Background(), "openai/gpt-6")
+
+			env, err := forwardableProviderEnv(context.Background(), "openai/gpt-6")
+			if err != nil {
+				t.Fatalf("forwardableProviderEnv: %v", err)
+			}
+			want := ""
+			if useOAuth == "0" {
+				want = "0"
+			}
+			if got := env["ITERION_OPENAI_USE_OAUTH"]; got != want {
+				t.Errorf("the host's ITERION_OPENAI_USE_OAUTH=%q crossed as %q without run credentials, want %q", useOAuth, got, want)
+			}
+			for _, name := range []string{"OPENAI_API_KEY", "ITERION_OPENAI_USE_OAUTH", "OPENAI_BASE_URL"} {
+				t.Setenv(name, env[name])
+			}
+			boxClient, boxErr := NewRegistry().Resolve("openai/gpt-6")
+
+			spent := func(client any, err error) bool {
+				if err != nil {
+					return false
+				}
+				_, token := openAIClientAuth(t, client)
+				return token != ""
+			}
+			if host, box := spent(hostClient, hostErr), spent(boxClient, boxErr); host != box {
+				t.Errorf("forfait spent in process = %v, in the sandbox = %v — the operator's setting did not cross as the host applies it", host, box)
+			}
+		})
 	}
 }
 

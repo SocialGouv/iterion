@@ -1869,7 +1869,10 @@ OpenAI-compatible client always appends `/v1/chat/completions`.
 In cloud mode the same key can be stored as a per-org BYOK record with
 `provider: xai` (see [byok.md](byok.md)). Sandboxed runs with
 `network: allowlist` already include `api.x.ai` in the `iterion-default`
-preset.
+preset. A custom `XAI_BASE_URL` crosses into the sandbox with the key and
+is dialled from inside the container, so under `network: allowlist` its
+host must be allowed too, and a loopback URL does not reach the host
+([what crosses](sandbox.md#claw-backend-in-sandbox)).
 
 For web search & fetch on claw (the `web_search`/`web_fetch` tools, the
 SearXNG → Brave → DuckDuckGo backend ladder, `ITERION_WEB_SEARCH`, and the
@@ -1918,6 +1921,12 @@ export ITERION_OPENAI_USE_OAUTH=0
 # disables OAuth so masquerading codex_cli_rs headers don't reach an
 # unintended backend.
 ```
+
+A sandboxed claw node honours the refusal (`0`) whatever the run holds,
+but not a host-wide `1`: the forfait it would force is the host's own
+`~/.codex`, which reaches the container only as a run's connected
+forfait. Without one, the sandboxed node spends `OPENAI_API_KEY` where an
+in-process node spends the forfait.
 
 **Stream usage through a gateway.** On the OpenAI chat wire, token usage
 travels only when the request asks for it
