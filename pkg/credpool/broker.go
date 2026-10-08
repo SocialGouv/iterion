@@ -704,6 +704,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		PledgeID:        p.ID,
 		PoolID:          pool.ID,
 		DonorID:         p.UserID,
+		Fingerprint:     cred.fingerprint,
 		TenantID:        req.TenantID,
 		RequesterID:     req.UserID,
 		BotID:           req.BotID,
@@ -1027,7 +1028,15 @@ func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
 // boundary leaves this package a pure domain — stores, limits, fairness —
 // with no dependency on the execution stack.
 type Outcome struct {
-	CostUSD float64
+	// ByFingerprint carries the attempt's spend split per credential
+	// fingerprint (the runner's by-route table grouped by the credential
+	// that served each route). NON-NIL means the runner does fine
+	// attribution: the lease books only the slice that ran on ITS
+	// credential's fingerprint, and the rest of the attempt — spend on the
+	// run's own credentials — stays off the donor's ledger. NIL (an older
+	// runner) keeps the coarse whole-attempt booking.
+	ByFingerprint []FingerprintSpend
+	CostUSD       float64
 	// InputTokens / OutputTokens carry an observed split; AggregateTokens
 	// carries a CLI delegate's unsplittable total. A donor's ledger reads
 	// zero as "not observed", so the aggregate must not be filed under a
@@ -1222,6 +1231,11 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 		return nil
 	}
 	now := b.now()
+
+	// The fine attribution resolves ONCE, against THIS lease's credential:
+	// everything below - the superseded stamp, the interim add, the close,
+	// the ledger debit - books the resolved slice, never the raw aggregate.
+	out = out.effectiveCharge(lease.Fingerprint)
 
 	outcome := "ok"
 	switch out.Condition {
@@ -1443,4 +1457,44 @@ func (b *Broker) markUnhealthy(ctx context.Context, pledgeID string, h Health, d
 	if err := b.pledges.Upsert(ctx, p); err != nil {
 		b.logger.Warn("credpool: cannot mark pledge %s as %s: %v", pledgeID, h, err)
 	}
+}
+
+// FingerprintSpend is one credential's slice of an attempt's consumption
+// (ADR-121 § Delivery 2, #2255): what the routes served by that
+// fingerprint consumed.
+type FingerprintSpend struct {
+	Fingerprint     string
+	CostUSD         float64
+	InputTokens     int64
+	OutputTokens    int64
+	AggregateTokens int64
+}
+
+// effectiveCharge resolves what THIS lease books from the report: with a
+// fine table, only the slice matching the lease credential's fingerprint
+// (zero when the fallback never fired on it); without one, the coarse
+// whole-attempt charge. The condition and cooldown fields ride unchanged —
+// they describe the credential's health, not its bill.
+func (out Outcome) effectiveCharge(fingerprint string) Outcome {
+	if out.ByFingerprint == nil {
+		return out
+	}
+	if fingerprint == "" {
+		// A lease stamped before the field existed carries no identity to
+		// slice by: keep the coarse booking it was acquired under, never
+		// zero a donor's charge on a missing stamp.
+		return out
+	}
+	eff := out
+	eff.CostUSD, eff.InputTokens, eff.OutputTokens, eff.AggregateTokens = 0, 0, 0, 0
+	for _, fs := range out.ByFingerprint {
+		if fs.Fingerprint == fingerprint {
+			eff.CostUSD = fs.CostUSD
+			eff.InputTokens = fs.InputTokens
+			eff.OutputTokens = fs.OutputTokens
+			eff.AggregateTokens = fs.AggregateTokens
+			break
+		}
+	}
+	return eff
 }
