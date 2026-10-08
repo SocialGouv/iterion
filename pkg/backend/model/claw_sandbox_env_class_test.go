@@ -177,15 +177,18 @@ var envWrites = map[string]string{
 	"OPENAI_COMPATIBLE_API_KEY":          whyCrossingSets,
 	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE": whyCrossingSets,
 	"ITERION_OPENAI_COMPATIBLE_RESOLVED": whyCrossingSets,
-	"CODEX_HOME":                         whyForfaitDir,
-	"CLAUDE_CONFIG_DIR":                  whyForfaitDir,
-	"HOOK_EVENT":                         whyHookEnv,
-	"HOOK_TOOL_NAME":                     whyHookEnv,
-	"HOOK_TOOL_INPUT":                    whyHookEnv,
-	"HOOK_USER_PROMPT":                   whyHookEnv,
-	"HOOK_MESSAGE_COUNT":                 whyHookEnv,
-	"ITERION_ARTIFACT_FILES_DIR":         whyToolEnv,
-	"ITERION_ENGINE_BIN":                 whyToolEnv,
+	// The engine-owned sandbox proxy channel: this package only sets it in
+	// the runner env it hands on; the reader is pkg/backend/compatgw.
+	"ITERION_SANDBOX_PROXY_ENDPOINT": whyCrossingSets,
+	"CODEX_HOME":                     whyForfaitDir,
+	"CLAUDE_CONFIG_DIR":              whyForfaitDir,
+	"HOOK_EVENT":                     whyHookEnv,
+	"HOOK_TOOL_NAME":                 whyHookEnv,
+	"HOOK_TOOL_INPUT":                whyHookEnv,
+	"HOOK_USER_PROMPT":               whyHookEnv,
+	"HOOK_MESSAGE_COUNT":             whyHookEnv,
+	"ITERION_ARTIFACT_FILES_DIR":     whyToolEnv,
+	"ITERION_ENGINE_BIN":             whyToolEnv,
 }
 
 // crossingSpellings: where this package spells a name that crosses other than

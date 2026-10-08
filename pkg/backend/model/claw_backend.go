@@ -1184,6 +1184,21 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if err != nil {
 		return delegate.Result{}, err
 	}
+	// A policy-isolated sandbox only lets egress through the run's network
+	// proxy — and the gateway client (openai_compatible/*) NEVER trusts an
+	// ambient HTTPS_PROXY by design: it dials direct unless the engine
+	// hands it the endpoint under its own name. Every exec of this call
+	// does inherit the container env, but that channel speaks for the image
+	// and the operator, not the engine — so the endpoint crosses under the
+	// engine-owned variable the compatgw transport honours, and a gateway
+	// route dials through the proxy the sandbox's policy allows instead of
+	// dropping on it (measured in prod, 2026-10-08: every honorabilite
+	// review parked on `dial tcp 79.137.10.7:443: i/o timeout` while the
+	// same pod's own curls succeeded). A run without a proxied sandbox
+	// (noop, an open network) keeps the env as-is.
+	for k, v := range sandboxProxyEnv(task.Sandbox) {
+		runnerEnv[k] = v
+	}
 	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
 		KeepStdinOpen: true,
 		Env:           runnerEnv,
@@ -1473,6 +1488,28 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderZAI:       "ZAI_API_KEY",
 	secrets.ProviderMoonshot:  "MOONSHOT_API_KEY",
 	secrets.ProviderXAI:       "XAI_API_KEY",
+}
+
+// sandboxProxyEnv returns the single engine-owned entry the in-container
+// runner needs when its sandbox is policy-isolated: the network proxy is
+// the ONLY egress the sandbox's network policy allows, and the gateway
+// client never trusts an ambient HTTPS_PROXY — the endpoint crosses under
+// compatgw.SandboxProxyEndpointEnv, the name only the engine sets. A run
+// that is NOT proxied UNSETS the name: an exec env rides the container's
+// own env, and a hostile image or spec env could otherwise forge the
+// engine's voice and route a gateway credential through an attacker proxy.
+// (The exec-env prefix wins over the container env; the empty value is
+// honoured as an unset.)
+func sandboxProxyEnv(handle sandbox.Run) map[string]string {
+	proxied, ok := handle.(sandbox.ProxiedRun)
+	if !ok {
+		return map[string]string{compatgw.SandboxProxyEndpointEnv: ""}
+	}
+	endpoint := proxied.ProxyEndpoint()
+	if endpoint == "" {
+		return map[string]string{compatgw.SandboxProxyEndpointEnv: ""}
+	}
+	return map[string]string{compatgw.SandboxProxyEndpointEnv: endpoint}
 }
 
 // forwardableProviderEnv builds the env map ClawBackend hands to
