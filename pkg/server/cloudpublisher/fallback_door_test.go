@@ -407,15 +407,15 @@ func TestAcquireDoorGrant_guards(t *testing.T) {
 	_ = args
 
 	// A whole-bundle grant: the whole-bundle tier's case, never the door's.
-	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &bundle, &credpool.Grant{}, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &bundle, &credpool.Grant{}, false, false, map[secrets.Provider]string{}, sealable); g != nil {
 		t.Fatal("the door fired behind a whole-bundle grant")
 	}
 	// An env-funded run acquires nothing at all (#2038).
-	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &bundle, nil, true, map[secrets.Provider]string{}, sealable); g != nil {
+	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &bundle, nil, true, false, map[secrets.Provider]string{}, sealable); g != nil {
 		t.Fatal("the door fired on an env-funded run")
 	}
 	// An empty bundle belongs to the whole-bundle tier.
-	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &secrets.RunBundle{}, nil, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &secrets.RunBundle{}, nil, false, false, map[secrets.Provider]string{}, sealable); g != nil {
 		t.Fatal("the door fired on an empty bundle")
 	}
 }

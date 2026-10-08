@@ -145,6 +145,26 @@ The isolation chain, in the order a run meets it:
     caller. The families stay auditable by grepping the two helpers;
     a new site outside these shapes owes its own justification in its
     comment.
+12. **A team's LLM fallback policy closes the platform fallback at the
+    root**: `Team.LLMFallback` (the super-admin route
+    `PUT /api/admin/teams/{id}/llm-fallback`, the only writer — the same
+    boundary discipline as the pool mapping) names how the credential
+    walk falls back for the team's runs. Empty or `platform` keeps the
+    shared tiers as always. `none` is the sovereign posture: the walk
+    consults only the team's own credentials (its BYOK keys, its OAuth
+    forfaits), no shared tier (org, pool, platform) ever seals into the
+    team's bundle, and an LLM route nothing of the team's funds REFUSES
+    the launch by name — every pinned provider must hold a credential
+    of the team's own, and a workflow whose routes cannot be attributed
+    still refuses when the team holds NO credential at all (the pod's
+    platform env would be the only funding left). Read FRESH at every
+    resolution; a store error or an unknown value refuses (fail closed).
+    Env-funded runs (every route on the runner's gateway) answer to the
+    read's fail-closed gate only; a tool-only run spends nothing.
+    Deployment order matters: a publisher that predates the field
+    ignores it, so set the policy AFTER the release is everywhere; and
+    loosening `none` back to `platform` lets a resumed run re-seal
+    shared credentials — audited, and by design.
 
 ## Operations
 

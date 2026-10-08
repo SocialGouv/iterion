@@ -507,6 +507,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/teams/{id}/llm-fallback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/admin/teams/{id}/llm-fallback */
+        put: operations["putAdminTeamsByIdLlmFallback"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/teams/{id}/runner-pool": {
         parameters: {
             query?: never;
@@ -7778,6 +7797,7 @@ export interface components {
             created_at?: string;
             id: string;
             launch_rate_per_min?: number;
+            llm_fallback?: string;
             max_concurrent_runs?: number;
             name: string;
             org_id?: string;
@@ -8724,6 +8744,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["usageCapsView"];
                 };
+            };
+        };
+    };
+    putAdminTeamsByIdLlmFallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
