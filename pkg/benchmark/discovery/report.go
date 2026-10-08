@@ -230,6 +230,7 @@ func RenderMarkdown(c Corpus, profiles []*RunProfile, opts RenderOptions) string
 			share = 100 * float64(c.SplitBeforeTokens) / float64(total)
 		}
 		fmt.Fprintf(&b, "\nOrientation is %.0f%% of the split spend across %d mutating nodes with recorded turns. A turn mixing reads and a write counts whole to work — turn granularity is the finest the checkpoints support.\n", share, c.MutatingSplitKnownNodes)
+		fmt.Fprintf(&b, "\n**The split reads the checkpoint summaries, and a claude_code checkpoint may carry none**: its biggest turns can hold their whole spend with no call summarized (measured: a 73 k-token turn, zero calls listed), so those nodes land entirely on the orientation line. The calls exist in the event stream; joining them to turns needs timestamps — the named follow-up (#1481). Read Work=0 as \"this node's turns carried no classifiable call\", never as \"the node wrote nothing\" — the event stream says what the checkpoints don't.\n")
 	} else {
 		b.WriteString("No mutating node recorded turn usage: the split has nothing to attribute.\n")
 	}
