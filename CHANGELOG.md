@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.255.0](https://github.com/SocialGouv/iterion/compare/v3.254.1...v3.255.0) (2026-10-08)
+
+### Features
+
+* **bots:** gitops-warden — the gitops merge gate bundle ([#2235](https://github.com/SocialGouv/iterion/issues/2235) slice 2) ([#2248](https://github.com/SocialGouv/iterion/issues/2248)) ([c0622da](https://github.com/SocialGouv/iterion/commit/c0622da82d62ef1ffbcfb245cdcccaa065d3fe57))
+
+    <details><summary>why</summary>
+
+    A gating bot's deterministic verdict can now act: the publish endpoint gains an optional `verdict` block executed by the server after the review and the gate status land — approve → request reviewers → arm merge-when-pipeline-succeeds, arm skipped on a failed approval.
+
+    </details>
+
 ## [3.254.1](https://github.com/SocialGouv/iterion/compare/v3.254.0...v3.254.1) (2026-10-08)
 
 ### Bug Fixes
