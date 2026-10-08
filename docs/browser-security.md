@@ -229,10 +229,10 @@ one it harvests `""`, keeps the previous token and replays it — which the
 server reads as theft and answers by revoking **every session that user
 holds**.
 
-So for this release the refresh cookie is **written under both names** (same
-value; reads still prefer the prefixed one, so a tossed bare cookie cannot
-win), and read under both. `ITERION_LEGACY_REFRESH_COOKIE=0` ends the write
-early for a deployment with no desktop clients.
+For the migration release the refresh cookie was **written under both names**
+(same value; reads still prefer the prefixed one, so a tossed bare cookie
+cannot win), and read under both. `ITERION_LEGACY_REFRESH_COOKIE=0` ended the
+write early for a deployment with no desktop clients.
 
 **Removing it — both halves together, behind TWO conditions.** They are not
 the same condition, and an earlier version of this section gated both on the
@@ -249,17 +249,18 @@ first, which would have caused the very outage the write exists to prevent:
    sends no distinguishing User-Agent, so "old builds are gone" cannot be
    checked, only assumed.
 
-   So do not assume it: set `ITERION_LEGACY_REFRESH_COOKIE=0` in production
-   and leave it. That stops the write while keeping the read, which is the
-   one combination that is instantly reversible — flip it back and older
-   desktops resume harvesting. Watch for the signature (users reporting
-   being signed out everywhere at once; `RevokeUserSessions` in the auth
-   logs). A quiet soak is the evidence the code deletion needs.
+   So do not assume it: the knob below was set in production and left —
+   that stopped the write while keeping the read, the one combination
+   that was instantly reversible at the time. Watch for the signature
+   (users reporting being signed out everywhere at once;
+   `RevokeUserSessions` in the auth logs).
 
 **Removed 2026-10** on those two conditions: the legacy write in
 `setAuthCookies`, the legacy read in `sessionCookie`, and the pairing test
-that pinned the two halves moving together all went in one deletion. The
-reasoning the migration carried is kept above because it is the template
+that pinned the two halves moving together all went in one deletion — the
+knob and its env gone with them, so the reversal of THIS deletion is
+`git revert` of its commit, not a knob. The reasoning the migration carried
+is kept above because it is the template
 for any future dual-name rollout: each half-removal fails differently and
 neither is loud — drop the **write** alone and an older desktop harvests
 nothing, replays its previous token, and has every one of its sessions

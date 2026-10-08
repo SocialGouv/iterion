@@ -66,7 +66,7 @@ func TestTossedAgentBindingCookieIsRefused(t *testing.T) {
 	for _, name := range []string{oidcAgentBindingCookie, forgeAgentBindingCookie} {
 		r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/x/callback", nil)
 		r.AddCookie(&http.Cookie{Name: name, Value: "attacker-binding"})
-		if got := s.sessionCookie(r, name, false); got != "" {
+		if got := s.sessionCookie(r, name); got != "" {
 			t.Errorf("%s: a tossed bare cookie read back as %q — the login-CSRF guard is defeated", name, got)
 		}
 	}
