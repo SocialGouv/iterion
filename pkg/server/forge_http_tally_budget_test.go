@@ -592,7 +592,7 @@ func TestForgeRequestTally_AnotherResourcesBudgetGetsItsOwnEntry(t *testing.T) {
 	tally, reports := newTestTally(clock)
 	for _, a := range []tallyAnswer{
 		{installation: 5, url: "https://api.github.com/repos/o/r/pulls/1", remaining: "4000", limit: "5000", resource: "core", reset: at(50), sent: at(1), seen: at(1)},
-		{installation: 5, url: "https://api.github.com/search/repositories?q=iterion", remaining: "28", limit: "30", resource: "search", reset: at(50), sent: at(2), seen: at(2)},
+		{installation: 1, url: "https://api.github.com/search/repositories?q=iterion", remaining: "28", limit: "30", resource: "search", reset: at(50), sent: at(2), seen: at(2)},
 		{installation: 5, url: "https://api.github.com/repos/o/r/issues", remaining: "3900", limit: "5000", reset: at(50), sent: at(3), seen: at(3)},
 	} {
 		a.feed(t, tally, clock)
@@ -600,10 +600,10 @@ func TestForgeRequestTally_AnotherResourcesBudgetGetsItsOwnEntry(t *testing.T) {
 	clock.set(time.Date(2026, 9, 30, 15, 0, 1, 0, time.UTC))
 	tally.flush()
 	want := []string{
-		"forge HTTP: 3 requests in the hour ending 2026-09-30T15:00Z — api.github.com rest installation 5 other=3",
+		"forge HTTP: 3 requests in the hour ending 2026-09-30T15:00Z — api.github.com rest installation 5 other=2, api.github.com rest installation 1 other=1",
 		"forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
 			"api.github.com rest installation 5: 3900 of 5000 at 14:03:00Z (resets 14:50:00Z), " +
-			"api.github.com rest/search installation 5: 28 of 30 at 14:02:00Z (resets 14:50:00Z)",
+			"api.github.com rest/search installation 1: 28 of 30 at 14:02:00Z (resets 14:50:00Z)",
 	}
 	if got := reports(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("reports =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

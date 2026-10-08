@@ -324,10 +324,10 @@ func formatForgeTally(hour, start, until time.Time, counts map[forgeTallyKey]int
 }
 
 // formatForgeBudgets renders one hour's budgets: for each installation's REST
-// or GraphQL budget, the lowest remaining the hour saw, out of how much, when
-// it was seen and when its window resets, ordered by host, API and
-// installation. A limit or a reset the forge did not report is left out,
-// never guessed.
+// or GraphQL budget — or a named resource's — the lowest remaining the hour
+// saw, out of how much, when it was seen and when its window resets, ordered
+// by host, API, resource and installation. A limit or a reset the forge did
+// not report is left out, never guessed.
 func formatForgeBudgets(hour, start, until time.Time, budgets map[forgeBudgetKey]forgeBudget) string {
 	keys := make([]forgeBudgetKey, 0, len(budgets))
 	for k := range budgets {
