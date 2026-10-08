@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.257.0](https://github.com/SocialGouv/iterion/compare/v3.256.0...v3.257.0) (2026-10-08)
+
+### Features
+
+* **cloudpublisher:** a team's LLM fallback policy — the sovereign posture ([#2309](https://github.com/SocialGouv/iterion/issues/2309)) ([81d3fd3](https://github.com/SocialGouv/iterion/commit/81d3fd3343a59470a2038f3d2f0b09ee43e6c0bb))
+
+    <details><summary>why</summary>
+
+    Team.LLMFallback names how the credential walk falls back for the team's runs. Empty or 'platform' keeps the shared tiers as always; 'none' is the sovereign posture: the walk consults only the team's own credentials (its BYOK keys, its OAuth forfaits), no shared tier (org, pool, platform) ever seals into the team's bundle, and an LLM route nothing of the team's funds refuses the launch by name — every pinned provider must hold a credential of the team's own, because the shared tiers would have…
+
+    </details>
+
+### Bug Fixes
+
+* **sandbox:** a repo's devcontainer.json can no longer re-route LLM egress or shadow operator env ([#2310](https://github.com/SocialGouv/iterion/issues/2310)) ([c53c25e](https://github.com/SocialGouv/iterion/commit/c53c25ebf13317eca57ebfa4404c1bc2d5ade520)), references [#2303](https://github.com/SocialGouv/iterion/issues/2303)
+
+    <details><summary>why</summary>
+
+    In sandbox auto mode the target repository's devcontainer containerEnv/ remoteEnv reached the container unfiltered, beat the operator's env overlay, and the found-devcontainer branch dropped the workflow's own network:/env: blocks — a repo under review could re-route every LLM call to its own collector. Now: an env deny class removed at the single repo-to-spec seam (sandbox_env_denied event), the workflow's sandbox block carries over field-by-field, the operator's overlay overwrites…
+
+    </details>
+
 ## [3.256.0](https://github.com/SocialGouv/iterion/compare/v3.255.0...v3.256.0) (2026-10-08)
 
 ### Features
