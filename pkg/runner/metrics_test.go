@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -632,5 +633,138 @@ func TestMetricsEmitter_delegateBackground_countsPerPhase(t *testing.T) {
 		if got := counterValue(t, c); got != 1 {
 			t.Errorf("phase %s = %v, want 1", phase, got)
 		}
+	}
+}
+
+// A delegation that DIES books its cost and tokens in RunTotals exactly
+// like a finished one — the org's monthly bucket and the credential-pool
+// ledger read that number, and a failed attempt burned the credential all
+// the same. The event here is produced by the PRODUCTION hook
+// (model.NewStoreEventHooks -> OnDelegateError), not hand-assembled, so the
+// test fails if either side of the join drifts. Mutation: delete the
+// EventDelegateError case in the metrics switch and this test reddens on
+// its RunTotals assertion.
+func TestMetricsEmitter_delegateErrorBooksItsCost(t *testing.T) {
+	inner := &recordingEmitter{}
+	usage := newMetricsEmitter(inner, metrics.New())
+
+	hooks := model.NewStoreEventHooks(
+		context.Background(), usage, "run-e", iterlog.New(iterlog.LevelError, nil), nil, nil,
+	)
+	hooks.OnDelegateError("n-e", model.DelegateInfo{
+		BackendName: "claude_code",
+		Tokens:      310,
+		CostUSD:     0.42,
+		RouteModel:  "anthropic/claude-opus-4-7",
+		Fingerprint: "fp-1",
+		Error:       errors.New("context deadline exceeded"),
+	})
+
+	if len(inner.events) != 1 {
+		t.Fatalf("inner emitter received %d events, want 1", len(inner.events))
+	}
+	evt := inner.events[0]
+	if evt.Type != store.EventDelegateError {
+		t.Fatalf("event type = %v, want delegate_error", evt.Type)
+	}
+	if got := evt.Data["cost_usd"]; got != 0.42 {
+		t.Errorf("emitted cost_usd = %v, want 0.42 — the hook is dropping the failed delegation's cost", got)
+	}
+	if got := evt.Data["fingerprint"]; got != "fp-1" {
+		t.Errorf("emitted fingerprint = %v, want fp-1 — the ledger cannot key the route without it", got)
+	}
+
+	costUSD, in, out, aggregate := usage.RunTotals()
+	if costUSD != 0.42 {
+		t.Errorf("RunTotals cost = %v, want 0.42 — a delegate_error is unbilled", costUSD)
+	}
+	if aggregate != 310 {
+		t.Errorf("RunTotals aggregate tokens = %d, want 310", aggregate)
+	}
+	if in != 0 || out != 0 {
+		t.Errorf("RunTotals in/out = %d/%d, want 0/0 — the delegate reports ONE count", in, out)
+	}
+
+	// The Prometheus counters agree: aggregate direction, never input, and
+	// the cost counter carries the failed attempt too.
+	c, err := usage.reg.LLMTokensTotal.GetMetricWithLabelValues("claude_code", "anthropic/claude-opus", "aggregate")
+	if err != nil {
+		t.Fatalf("GetMetricWithLabelValues: %v", err)
+	}
+	if got := counterValue(t, c); got != 310 {
+		t.Errorf("aggregate direction = %v, want 310", got)
+	}
+	costC, err := usage.reg.LLMCostUSDTotal.GetMetricWithLabelValues("claude_code", "anthropic/claude-opus")
+	if err != nil {
+		t.Fatalf("cost counter: %v", err)
+	}
+	if got := counterValue(t, costC); got != 0.42 {
+		t.Errorf("LLMCostUSDTotal = %v, want 0.42", got)
+	}
+
+	// The per-credential ledger books the failed route too — the fingerprint
+	// the error event carries is the route source, as on finished.
+	routes := usage.RouteTotals()
+	found := false
+	for k, r := range routes {
+		if k.backend == "claude_code" && k.source == "fp-1" && r.costUSD == 0.42 && r.aggregateTokens == 310 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("the failed route never reached the per-credential ledger: %+v", routes)
+	}
+}
+
+// The claw summarised guard crosses to the error path: a claw loop whose
+// llm_step_finished steps were already priced must NOT be charged again
+// when its aggregate then errors — the same double-billing the finished
+// branch guards against. The steps price through the real rate table
+// (claude-opus-5 is in it), so the steps alone book a measurable cost.
+func TestMetricsEmitter_delegateError_clawSummarisedNotDoubleCharged(t *testing.T) {
+	m := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+
+	// The loop registers its model, then its steps price on arrival.
+	_, _ = m.AppendEvent(context.Background(), "run-c", store.Event{
+		Type:   store.EventLLMRequest,
+		RunID:  "run-c",
+		NodeID: "n-c",
+		Data:   map[string]any{"model": "claude-opus-5"},
+	})
+	_, _ = m.AppendEvent(context.Background(), "run-c", store.Event{
+		Type:   store.EventLLMStepFinished,
+		RunID:  "run-c",
+		NodeID: "n-c",
+		Data: map[string]any{
+			"input_tokens":  float64(100),
+			"output_tokens": float64(50),
+		},
+	})
+	stepCost, _, _, _ := m.RunTotals()
+	if stepCost == 0 {
+		t.Fatal("the steps booked $0 — the rate table no longer knows the model; this test's premise is gone")
+	}
+
+	// The aggregate then dies. stepsSeen[n-c] makes this a summary of
+	// already-priced steps — the error event must add nothing.
+	_, _ = m.AppendEvent(context.Background(), "run-c", store.Event{
+		Type:   store.EventDelegateError,
+		RunID:  "run-c",
+		NodeID: "n-c",
+		Data: map[string]any{
+			"backend":  "claw",
+			"tokens":   float64(150),
+			"cost_usd": stepCost,
+			"error":    "killed",
+		},
+	})
+
+	cost, _, _, agg := m.RunTotals()
+	if cost != stepCost {
+		t.Errorf("RunTotals cost = %v, want %v — the errored aggregate re-charged the priced steps", cost, stepCost)
+	}
+	if agg != 0 {
+		t.Errorf("RunTotals aggregate tokens = %d, want 0 — same rule", agg)
 	}
 }
