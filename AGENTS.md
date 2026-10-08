@@ -91,7 +91,7 @@ as a sub-issue **and** through the `Epic` field ([mechanics](docs/board-epics.md
   ([dogfood](docs/agents/workflow/dogfood.md)), never impose it; otherwise
   code directly — in a dedicated worktree, never the shared primary checkout
   ([worktrees](docs/agents/workflow/worktrees.md); bot runs are out of
-  scope: the engine owns their workspace). 4d654a0dc (wip(agents): slice 2 - the domain tree)
+  scope: the engine owns their workspace).
 - **C — close.** Link the evidence (PR, commit, bilan), update the status and
   release the claim: Done, or Planned with a state-of-work comment. An In
   progress ticket nobody holds is a board bug — fix it.
