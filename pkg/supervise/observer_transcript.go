@@ -137,6 +137,33 @@ type transcriptRecord struct {
 	Message          json.RawMessage `json:"message"`
 }
 
+// messageUsage is the per-message token accounting the claude_code
+// transcript carries on every assistant message — the intra-node split
+// the turn-boundary step events dropped (nil data), which a bench read
+// needs to attribute spend INSIDE a node (#1481). Field names on the
+// emitted event match the model hooks' step events.
+type messageUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+// decodeUsage reads the message object's usage, nil when the record
+// carries none.
+func decodeUsage(message json.RawMessage) *messageUsage {
+	if len(message) == 0 {
+		return nil
+	}
+	var m struct {
+		Usage *messageUsage `json:"usage"`
+	}
+	if err := json.Unmarshal(message, &m); err != nil || m.Usage == nil {
+		return nil
+	}
+	return m.Usage
+}
+
 type contentBlock struct {
 	Type      string `json:"type"`
 	Text      string `json:"text"`
@@ -190,7 +217,18 @@ func (o *TranscriptObserver) handleLine(line []byte, seen, toolNames map[string]
 		}
 		// Turn boundary: the model produced final text and is yielding.
 		if hasText && !hasToolUse {
-			if !emit(store.EventLLMStepFinished, ts, nil) {
+			data := map[string]any{}
+			if u := decodeUsage(rec.Message); u != nil {
+				data["input_tokens"] = u.InputTokens
+				data["output_tokens"] = u.OutputTokens
+				if u.CacheReadInputTokens > 0 {
+					data["cache_read_tokens"] = u.CacheReadInputTokens
+				}
+				if u.CacheCreationInputTokens > 0 {
+					data["cache_write_tokens"] = u.CacheCreationInputTokens
+				}
+			}
+			if !emit(store.EventLLMStepFinished, ts, data) {
 				return false
 			}
 		}
