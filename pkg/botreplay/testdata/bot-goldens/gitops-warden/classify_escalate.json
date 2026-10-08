@@ -1,0 +1,31 @@
+{
+  "_note": "Hand-authored seed fixture — see classify_clean. This one freezes the ESCALATE shape: a new chart component self-hosting a service the platform offers managed, plus the honest per-file split (the values bump itself was simple).",
+  "bot": "gitops-warden",
+  "scenario": "classify_escalate",
+  "node": "classify",
+  "backend": "claude_code",
+  "model": "claude-opus-5-5",
+  "recorded_at": "2026-10-06T00:00:00Z",
+  "vars": {"workspace_dir": "/ws"},
+  "input": {
+    "files": "[{\"path\":\"charts/valkey/d.yaml\",\"status\":\"A\",\"ext\":\"yaml\",\"added\":40,\"removed\":0,\"key_paths\":[],\"candidate\":false},{\"path\":\"apps/x/values.yaml\",\"status\":\"M\",\"ext\":\"yaml\",\"added\":4,\"removed\":1,\"key_paths\":[\"image\",\"resources\"],\"candidate\":true}]",
+    "changed_files": "2",
+    "policy_body": "",
+    "policy_source": "default",
+    "scope_notes": "add a cache",
+    "source_branch": "feat/cache",
+    "pr_author": "dev-produit"
+  },
+  "output": {
+    "verdict": "escalate",
+    "files": [
+      {"path": "charts/valkey/d.yaml", "cls": "escalate", "rule": "managed-datastore", "reason": "new chart component self-hosting valkey — the platform offers OvhValkey as a managed resource; a datastore needs a devops decision"},
+      {"path": "apps/x/values.yaml", "cls": "auto_approvable", "rule": "resources", "reason": "resource values moved but stay inside the LimitRange (ratio 1.6, within bounds)"}
+    ],
+    "platform_findings": [
+      {"path": "charts/valkey/d.yaml", "rule": "managed-datastore", "detail": "the platform provisions OvhValkey as a managed resource; self-hosting it in a product chart duplicates a managed service and its backups/auth — escalate for a devops decision", "severity": "blocking"}
+    ],
+    "doubts": "",
+    "summary": "The values tweak alone would be auto-approvable, but the merge request also adds a chart component self-hosting valkey, which the platform offers managed (OvhValkey). Adding a component and self-hosting a managed service are structural: devops review needed."
+  }
+}

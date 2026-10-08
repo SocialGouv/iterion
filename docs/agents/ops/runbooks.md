@@ -29,6 +29,8 @@ in the commands/paths that actually worked.
 
 ## Merge, CI & gate
 
+- [gitops-warden-rollout](../../gitops-warden-rollout.md) — binding the gitops merge gate to a repository, authoring the per-repo policy, the dry-run calibration criteria, flipping to enforce and the emergency disarm. Read when binding gitops-warden, before flipping any repo to enforce, or when a warden verdict looks wrong.
+
 - [merge-policy](../../merge-policy.md) — the queue, required checks, admin bypass; on "nobody can merge", first try the `CI_SELF_HOSTED=off` repo variable. See also [measuring the queue](../../merge-policy.md#measuring-the-queue) (`task ci:queue-stats`) and [releases and the queue](../../merge-policy.md#releases-and-the-queue).
 - [merge-gate](../../merge-gate.md) — the required check's full life; read when a gate looks stuck or a repair posts nothing.
 - [revi-billy-loop](../../revi-billy-loop.md) — the Revi → Billy loop, **paused on this repo** ([why](../workflow/billy.md)); read before a deliberate pass or a re-arm.
