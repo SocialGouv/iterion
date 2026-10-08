@@ -220,7 +220,6 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_REQUIRE_ORIGIN":              true,
 	"ITERION_REQUIRE_WS_ORIGIN":           true,
 	"ITERION_SECURITY_HEADERS":            true,
-	"ITERION_LEGACY_REFRESH_COOKIE":       true,
 	"ITERION_CANONICAL_REDIRECT":          true,
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK": true,
 	// Private-network reach (SSRF) and host allowlists.

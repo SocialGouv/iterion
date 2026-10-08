@@ -290,7 +290,6 @@ func clearAuthCookiesCase(t *testing.T, secure bool, domain string) {
 // died with it; docs/browser-security.md records the two conditions the
 // removal waited on.)
 func TestLegacyRefreshCookieIsGone(t *testing.T) {
-	t.Setenv("ITERION_LEGACY_REFRESH_COOKIE", "")
 	s := newAuthCookieServer(true, "")
 	w := httptest.NewRecorder()
 	s.setAuthCookies(w, "access", time.Now().Add(time.Minute), "refresh", time.Now().Add(time.Hour))

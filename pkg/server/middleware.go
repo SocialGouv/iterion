@@ -270,7 +270,7 @@ func (s *Server) extractBearer(r *http.Request) string {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
 	// No legacy fallback for the ACCESS cookie — see sessionCookie.
-	if v := s.sessionCookie(r, authCookieName, false); v != "" {
+	if v := s.sessionCookie(r, authCookieName); v != "" {
 		return v
 	}
 	// Browsers can't attach Authorization headers to a WS upgrade,
