@@ -50,10 +50,13 @@ func (k forgeTallyKey) less(o forgeTallyKey) bool {
 }
 
 // forgeBudgetKey names one rate-limit budget: an installation's REST or
-// GraphQL budget on one host. The lane is no part of it — every lane spends
-// the same budget.
+// GraphQL budget on one host — or, when the forge says the answer draws on a
+// budget beyond the API's default one (a GitHub search budget behind a REST
+// path), that resource's. The lane is no part of it — every lane spends the
+// same budget.
 type forgeBudgetKey struct {
 	host, api    string
+	resource     string
 	installation int64
 }
 
@@ -108,8 +111,9 @@ const (
 //
 // The budget line is what the count cannot say: how close an installation
 // came to running out. GitHub reports the budget on every answer, 2xx
-// included, so each hour keeps, per installation and API, the lowest remaining
-// any answer reported, when it was seen and when that window resets. Only a
+// included, so each hour keeps, per installation, API and named resource, the
+// lowest remaining any answer reported, when it was seen and when that window
+// resets. Only a
 // request sent with an installation's token is read: an answer to any other
 // credential — a PAT, a user token, the App's own JWT, a bot's forge_token
 // binding whose installation the sender cannot name — reports a budget the
@@ -205,7 +209,7 @@ func (t *forgeRequestTally) observeBudget(req *http.Request, hdr http.Header) {
 		return
 	}
 	reading := forgeBudget{remaining: b.Remaining, limit: b.Limit, seen: now, reset: b.ResetAt}
-	key := forgeBudgetKey{host: req.URL.Host, api: forgeAPIOf(req.URL.Path), installation: installation}
+	key := forgeBudgetKey{host: req.URL.Host, api: forgeAPIOf(req.URL.Path), resource: b.Resource, installation: installation}
 
 	t.mu.Lock()
 	done := t.turnLocked(now)
@@ -337,6 +341,9 @@ func formatForgeBudgets(hour, start, until time.Time, budgets map[forgeBudgetKey
 		if a.api != b.api {
 			return a.api < b.api
 		}
+		if a.resource != b.resource {
+			return a.resource < b.resource
+		}
 		return a.installation < b.installation
 	})
 	parts := make([]string, 0, len(keys))
@@ -346,7 +353,11 @@ func formatForgeBudgets(hour, start, until time.Time, budgets map[forgeBudgetKey
 		if b.limit > 0 {
 			level += " of " + strconv.FormatInt(b.limit, 10)
 		}
-		entry := fmt.Sprintf("%s %s installation %d: %s at %s", k.host, k.api, k.installation, level, b.seen.UTC().Format("15:04:05Z"))
+		api := k.api
+		if k.resource != "" {
+			api += "/" + k.resource
+		}
+		entry := fmt.Sprintf("%s %s installation %d: %s at %s", k.host, api, k.installation, level, b.seen.UTC().Format("15:04:05Z"))
 		if !b.reset.IsZero() {
 			entry += " (resets " + b.reset.UTC().Format("15:04:05Z") + ")"
 		}
