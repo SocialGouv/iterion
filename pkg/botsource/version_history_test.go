@@ -188,8 +188,8 @@ func assertVersionHistoryContract(t *testing.T, st Store, ctx context.Context, t
 	}
 	// A snapshot's created_at is its WRITE time (the TTL expires on it):
 	// later writes carry later stamps, whatever the row's own age.
-	if v2snap.CreatedAt.Before(got1.CreatedAt) {
-		t.Errorf("v2's snapshot stamp (%v) predates v1's (%v) — the snapshot ages with the row, and the TTL would sweep live versions", v2snap.CreatedAt, got1.CreatedAt)
+	if !v2snap.CreatedAt.After(got1.CreatedAt) {
+		t.Errorf("v2's snapshot stamp (%v) is not after v1's (%v) — the snapshot ages with the row, and the TTL would sweep live versions", v2snap.CreatedAt, got1.CreatedAt)
 	}
 	if _, err := st.GetVersionAtOrBefore(scoped, tenantID, v2.ID, 0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a ceiling below every snapshot: %v, want ErrNotFound", err)

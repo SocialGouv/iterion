@@ -129,7 +129,12 @@ func (m *MemoryStore) Update(_ context.Context, s BotSource) (BotSource, error) 
 	s.Version = prev.Version + 1
 	s.UpdatedAt = time.Now().UTC()
 	m.byID[s.ID] = s
-	m.history[botSourceVersionKey{s.TenantID, s.ID, s.Version}] = s
+	// The snapshot's created_at is the WRITE time — the TTL semantics
+	// (#1517): the row's own created_at stays its creation, and a snapshot
+	// that carried it would age with the row, not with itself.
+	hist := s
+	hist.CreatedAt = s.UpdatedAt
+	m.history[botSourceVersionKey{s.TenantID, s.ID, s.Version}] = hist
 	return s, nil
 }
 
