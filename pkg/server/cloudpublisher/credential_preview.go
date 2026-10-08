@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -53,6 +54,23 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	if spec.LLMRoutePolicy != nil {
 		x.policy = x.policy.withSlotWhitelist(spec.LLMRoutePolicy.PairOrder)
 	}
+	// The team's credential-fallback policy, the same fresh read the launch
+	// applies — UNCONDITIONALLY, like the launch: a failed or invalid read
+	// refuses even an env-funded run there, so the preview warns on it
+	// everywhere. The preview never refuses (it observes), so a failed read
+	// walks the shared tiers with a warning saying the live launch is the
+	// one that decides; "none" only shapes the shared tiers below.
+	sovereignPreview := false
+	policy, ferr := p.llmFallbackForTeam(ctx, spec.Context.TeamID)
+	switch {
+	case ferr != nil:
+		x.warn("The team's llm_fallback policy could not be read; the live launch refuses on this error and this preview is conditional.")
+	case policy == identity.LLMFallbackNone:
+		sovereignPreview = true
+		if !envFunded {
+			x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
+		}
+	}
 	if envFunded {
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
 	} else {
@@ -93,6 +111,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.oauthStage("user", spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), false, true)
 			x.oauthStage("team", secrets.OrgOwnerKey(spec.Context.TeamID), usagecap.TenantScope(spec.Context.TeamID), false, true)
 		case credentialTierOrg:
+			if sovereignPreview {
+				x.warn("Org tier not consulted: the team runs with llm_fallback=none.")
+				return nil
+			}
 			if p.orgCredentialAudience(ctx, x.orgID, spec.Context.TeamID) {
 				// The live tier's own order (the policy snapshot): a preview
 				// filling in another order names a credential the launch
@@ -108,6 +130,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				x.warn("Org tier not available to this team under the current audience or its metadata could not be read.")
 			}
 		case credentialTierPool:
+			if sovereignPreview {
+				x.warn("Pool not consulted: the team runs with llm_fallback=none.")
+				return nil
+			}
 			// The live walk's own filter: a provider a key sealed for its
 			// routes already funds is not asked of the pool.
 			poolWants := withoutFundedProviders(wants, func(prov string) bool {
@@ -148,6 +174,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				}
 			}
 		case credentialTierPlatform:
+			if sovereignPreview {
+				x.warn("Platform tier not consulted: the team runs with llm_fallback=none.")
+				return nil
+			}
 			if p.platformAudienceAllows(ctx, "", x.orgID, spec.Context.TeamID) {
 				x.policy.inOrder(func() {
 					x.oauthStage("platform", secrets.PlatformOwnerKey, usagecap.ScopePlatform, true, active)
@@ -293,7 +323,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// own credential, no whole-bundle grant predicted, not env-funded,
 	// and a policy whose ladder can dispatch a missing kind.
 	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
-		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil {
+		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sovereignPreview {
 		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, wf, buildModelOverrides(spec.Launch.ModelOverrides), doorServesMetadata(x))
 		if !ok {
 			x.out.Pool.DoorReason = "no_dispatchable_wants"

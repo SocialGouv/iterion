@@ -782,6 +782,45 @@ clears it the same way.
   credential fails at its first LLM call with a provider error and nothing
   downstream would say the audience was why.
 
+## A team's LLM fallback policy
+
+The audience gate above decides WHO may draw on the platform tier. The
+per-team policy decides WHETHER the shared tiers are the fallback chain at
+all: `Team.LLMFallback`, written only through the super-admin route
+
+```sh
+iterion remote api PUT /api/admin/teams/<team-id>/llm-fallback \
+  '{"llm_fallback":"none"}'
+```
+
+- `""` or `"platform"` (the default) — the shared tiers (org, pool,
+  platform) stay the fallback chain, exactly as before.
+- `"none"` — the sovereign posture: the launch consults ONLY the team's own
+  credentials (its BYOK keys, its OAuth forfaits); no shared tier ever seals
+  into the team's bundle; and an LLM route nothing of the team's funds
+  REFUSES at launch, naming the providers to provision. One funded provider
+  does not excuse another pinned route — the shared tiers would have been
+  its only other funding, and the policy exists to make that impossible.
+
+Unlike the audience gate, this policy fails CLOSED: the launch reads the
+team FRESH at every resolution, and a store error — or an unknown value —
+refuses naming it. A typo'd boundary field must not silently re-open the
+shared tiers. Env-funded runs (every route on the runner's gateway) and
+unattributable routes answer to no policy; a tool-only run spends nothing.
+
+The setting is a boundary, not a preference: it is audited on every write
+(`team.llm_fallback_set`, tenant trail + org mirror), and survives the other
+team writers because it is a `PatchTeam $set` like the pool mapping. See
+also [sovereign pools](sovereign-pools.md).
+
+Two ordering facts worth naming. **Deploy first, then set**: a publisher
+older than this field ignores the unknown BSON key, so a team set to `none`
+before every publisher is upgraded walks the shared tiers in silence — flip
+the teams after the release lands. And the policy is read FRESH at every
+resolution including resumes: loosening `none` back to `platform` is
+audited, but a resume of a run launched under `none` may then re-seal
+shared credentials into its bundle — by design, and now said out loud.
+
 ## The routing block — adaptive routing's platform level
 
 The same record carries the platform level of the adaptive-routing policy

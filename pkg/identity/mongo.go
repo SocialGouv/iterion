@@ -295,6 +295,9 @@ func (s *MongoStore) PatchTeam(ctx context.Context, id string, p TeamPatch) (Tea
 	if p.RunnerPool != nil {
 		set["runner_pool"] = *p.RunnerPool
 	}
+	if p.LLMFallback != nil {
+		set["llm_fallback"] = *p.LLMFallback
+	}
 	if p.OrgID != nil {
 		set["org_id"] = *p.OrgID
 	}

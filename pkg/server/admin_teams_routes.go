@@ -15,6 +15,7 @@ import (
 
 func (s *Server) registerAdminTeamRoutes() {
 	s.mux.Handle("PUT /api/admin/teams/{id}/runner-pool", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminSetTeamRunnerPool)))
+	s.mux.Handle("PUT /api/admin/teams/{id}/llm-fallback", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminSetTeamLLMFallback)))
 	s.registerRunnerPoolRoutes()
 }
 
@@ -103,6 +104,54 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 	if cur.OrgID != "" {
 		s.auditOrg(r, cur.OrgID, "team.runner_pool_set", "team", teamID, map[string]any{
 			"runner_pool": pool, "previous": cur.RunnerPool,
+		})
+	}
+	writeJSON(w, toTeamSummaryView(updated))
+}
+
+// handleAdminSetTeamLLMFallback sets (or resets) a team's credential-fallback
+// policy. The ONLY writer of Team.LLMFallback, the same rule as the pool
+// mapping above: any other writer is a whole-document replace whose stale
+// read would silently reset the policy. Body: {"llm_fallback": "none"} for
+// the sovereign posture (the team's own credentials only, an unfunded route
+// refuses the launch), "" or "platform" for the shared tiers (the default).
+// Audited on every write.
+func (s *Server) handleAdminSetTeamLLMFallback(w http.ResponseWriter, r *http.Request) {
+	teamID := r.PathValue("id")
+	var req struct {
+		LLMFallback *string `json:"llm_fallback"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.LLMFallback == nil {
+		httpError(w, http.StatusBadRequest, `llm_fallback is required (empty or "platform" for the shared tiers, "none" for the sovereign posture)`)
+		return
+	}
+	policy := *req.LLMFallback
+	if !identity.ValidLLMFallback(policy) {
+		httpError(w, http.StatusUnprocessableEntity, `llm_fallback %q invalid (want empty, "platform", or "none")`, policy)
+		return
+	}
+	cur, err := s.authStore().GetTeam(r.Context(), teamID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	updated, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{LLMFallback: &policy})
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	// Same dual-scope trail as the pool mapping: the tenant row keyed by the
+	// team, the org mirror keyed by the org, each carrying the previous
+	// value.
+	s.auditTenant(r, teamID, "team.llm_fallback_set", "team", teamID, map[string]any{
+		"llm_fallback": policy, "previous": cur.LLMFallback,
+	})
+	if cur.OrgID != "" {
+		s.auditOrg(r, cur.OrgID, "team.llm_fallback_set", "team", teamID, map[string]any{
+			"llm_fallback": policy, "previous": cur.LLMFallback,
 		})
 	}
 	writeJSON(w, toTeamSummaryView(updated))

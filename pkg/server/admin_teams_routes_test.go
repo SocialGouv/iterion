@@ -115,6 +115,72 @@ func TestAdminSetTeamRunnerPool(t *testing.T) {
 	}
 }
 
+// The only writer of the credential-fallback policy: set the sovereign
+// posture, reset to the default, grammar-refuse the rest — audited in both
+// scopes, and refused for a team that does not exist.
+func TestAdminSetTeamLLMFallback(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+
+	call := func(body string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/t1/llm-fallback", body, "t1")
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamLLMFallback(w, req)
+		return w
+	}
+
+	s.auditStore = audit.NewMemoryStore()
+	if w := call(`{"llm_fallback":"none"}`); w.Code != http.StatusOK {
+		t.Fatalf("set none: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.LLMFallback != identity.LLMFallbackNone {
+		t.Fatalf("the sovereign posture did not stick: %+v %v", tm, err)
+	}
+	var rows, orgRows []audit.Event
+	for i := 0; i < 100; i++ {
+		rows, _ = s.auditStore.ListByTenant(context.Background(), "t1", audit.Page{Action: "team.llm_fallback_set"})
+		orgRows, _ = s.auditStore.ListByTenant(context.Background(), "o1", audit.Page{Action: "team.llm_fallback_set"})
+		if len(rows) > 0 && len(orgRows) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(rows) != 1 || len(orgRows) != 1 {
+		t.Fatalf("the trail must land in BOTH scopes: tenant=%d org=%d", len(rows), len(orgRows))
+	}
+	if got := rows[0].Meta["previous"]; got != "" {
+		t.Fatalf("the trail must answer what the policy WAS, got previous=%v", got)
+	}
+
+	if w := call(`{"llm_fallback":"platform"}`); w.Code != http.StatusOK {
+		t.Fatalf("reset to platform: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.LLMFallback != identity.LLMFallbackPlatform {
+		t.Fatalf("the platform reset did not stick: %+v %v", tm, err)
+	}
+
+	if w := call(`{"llm_fallback":""}`); w.Code != http.StatusOK {
+		t.Fatalf("clear: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.LLMFallback != "" {
+		t.Fatalf("the clear did not stick: %+v %v", tm, err)
+	}
+
+	if w := call(`{"llm_fallback":"sovereign"}`); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unknown policy must 422: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call(`{}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("a missing llm_fallback must 400: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/ghost/llm-fallback", `{"llm_fallback":"none"}`, "ghost")
+	w := httptest.NewRecorder()
+	s.handleAdminSetTeamLLMFallback(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("an unknown team must 404: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 // The mapping route consults the REGISTRY: a pool it does not know is
 // refused (422) even though the grammar is fine — mapping to a pool that
 // does not exist would refuse every launch forever. Wiring a registry on
@@ -188,5 +254,21 @@ func TestAdminSetTeamRunnerPool_OneTeamPerPool(t *testing.T) {
 	}
 	if w := call("t2", `{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
 		t.Fatalf("map after the pool frees: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The llm-fallback route is registered behind requireSuperAdmin; this pins
+// the middleware wiring through the PRODUCTION route stack: a plain team
+// member gets 403 before the handler speaks, and a super-admin reaches the
+// handler (404 on a team that does not exist — the handler's answer, not
+// the gate's).
+func TestAdminSetTeamLLMFallback_SuperAdminOnly(t *testing.T) {
+	_, _, _, _, hs, adminTok, userTok := newAdminLLMServerWith(t)
+
+	if code, _ := llmDo(t, hs, http.MethodPut, "/api/admin/teams/t1/llm-fallback", userTok, `{"llm_fallback":"none"}`); code != http.StatusForbidden {
+		t.Fatalf("member PUT = %d, want 403 — the gate must speak before the handler", code)
+	}
+	if code, _ := llmDo(t, hs, http.MethodPut, "/api/admin/teams/t1/llm-fallback", adminTok, `{"llm_fallback":"none"}`); code == http.StatusForbidden {
+		t.Fatal("super-admin PUT = 403 — the gate ate the super-admin")
 	}
 }

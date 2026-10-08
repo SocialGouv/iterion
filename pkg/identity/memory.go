@@ -365,6 +365,9 @@ func (m *MemoryStore) PatchTeam(_ context.Context, id string, p TeamPatch) (Team
 	if p.RunnerPool != nil {
 		cur.RunnerPool = *p.RunnerPool
 	}
+	if p.LLMFallback != nil {
+		cur.LLMFallback = *p.LLMFallback
+	}
 	if p.OrgID != nil {
 		cur.OrgID = *p.OrgID
 	}

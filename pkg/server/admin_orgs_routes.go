@@ -89,7 +89,10 @@ type teamSummaryView struct {
 	// an operator sets through the admin route; reading it back is how the
 	// write is confirmed and audited.
 	RunnerPool string `json:"runner_pool,omitempty"`
-	CreatedAt  string `json:"created_at,omitempty"`
+	// LLMFallback is the team's credential-fallback policy — the same
+	// boundary class: read back to confirm and audit the write.
+	LLMFallback string `json:"llm_fallback,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 }
 
 func toTeamSummaryView(t identity.Team) teamSummaryView {
@@ -103,6 +106,7 @@ func toTeamSummaryView(t identity.Team) teamSummaryView {
 		MaxConcurrentRuns: t.MaxConcurrentRuns,
 		LaunchRatePerMin:  t.LaunchRatePerMin,
 		RunnerPool:        t.RunnerPool,
+		LLMFallback:       t.LLMFallback,
 		CreatedAt:         t.CreatedAt.Format(time.RFC3339),
 	}
 }

@@ -376,6 +376,30 @@ func (p *Publisher) runnerPoolForTeam(ctx context.Context, teamID string) (strin
 	return t.RunnerPool, nil
 }
 
+// llmFallbackForTeam names the team's credential-fallback policy, read FRESH
+// — the same boundary discipline as the pool mapping above: a stale or
+// guessed answer would seal platform credentials into a sovereign team's
+// runs. A store error refuses (fail closed); so does an unknown value, which
+// is never read as the default.
+func (p *Publisher) llmFallbackForTeam(ctx context.Context, teamID string) (string, error) {
+	if teamID == "" || p.identity == nil {
+		return "", nil
+	}
+	t, err := p.identity.GetTeam(ctx, teamID)
+	if errors.Is(err, identity.ErrNotFound) {
+		// A definitive answer: no team row, no policy — the platform
+		// default applies (the CI smoke launches under exactly this shape).
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cloudpublisher: resolve llm fallback for team %s: %w (refusing the launch — the policy must be known, never guessed)", teamID, err)
+	}
+	if !identity.ValidLLMFallback(t.LLMFallback) {
+		return "", fmt.Errorf("cloudpublisher: team %s carries an unknown llm_fallback policy %q — refusing the launch (set a valid policy with PUT /api/admin/teams/%s/llm-fallback)", teamID, t.LLMFallback, teamID)
+	}
+	return t.LLMFallback, nil
+}
+
 // New builds a Publisher.
 func New(cfg Config) (*Publisher, error) {
 	if cfg.NATS == nil {
@@ -543,6 +567,17 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 		return credResolution{}, nil
 	}
+	// The team's credential-fallback policy, read fresh at every resolution
+	// (launch and resume alike): "none" walks only the team's own tiers and
+	// arms the strict per-provider refusal below. A second fresh GetTeam
+	// after the caller's pool read: the policy rides the same boundary
+	// discipline, and the indexed _id read costs less than threading
+	// another parameter through every walk caller.
+	llmFallback, err := p.llmFallbackForTeam(ctx, tenantID)
+	if err != nil {
+		return credResolution{}, err
+	}
+	sovereign := llmFallback == identity.LLMFallbackNone
 	// The BYOK audience — and ONLY it — compares canonical spellings.
 	//
 	// A previous revision folded `botID` itself. That was a defect: the same
@@ -638,21 +673,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// a team that scopes its keys at all.
 	defer func() { withheld.warn(p, runID) }()
 	res := credResolution{}
-	err := walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
+	err = walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
 		func() bool { return res.grant != nil }, func(tier credentialTier) error {
 			if envFunded && tier != credentialTierGeneric {
 				// Nothing on this tier funds an openai_compatible route.
 				return nil
 			}
-			if runnerPool != "" {
+			if runnerPool != "" || sovereign {
 				switch tier {
 				case credentialTierOrg, credentialTierPool, credentialTierPlatform:
-					// D13: a pool team's bundle never carries shared-tier
-					// credentials — the pod would hold other tenants' keys.
-					// The team's own tiers (BYOK, workflow secrets, its OAuth
-					// forfaits) and the restore of its own prior bundle walk
-					// as usual; a route nothing of the team's funds refuses
-					// the launch with the remedy named.
+					// D13 (a pool team) and llm_fallback=none (the sovereign
+					// posture): the team's bundle never carries shared-tier
+					// credentials — a pool pod would hold other tenants'
+					// keys, and a sovereign team lends nothing from the
+					// platform. The team's own tiers (BYOK, workflow secrets,
+					// its OAuth forfaits) and the restore of its own prior
+					// bundle walk as usual; a route nothing of the team's
+					// funds refuses the launch with the remedy named.
 					return nil
 				}
 			}
@@ -1155,7 +1192,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// untouched: this runs only after it declined (res.grant == nil), and
 	// never on an env-funded run or an empty bundle (the pool tier's own
 	// condition — a run with nothing acquires through it, not the door).
-	res.doorGrant = p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, routePolicy, &bundle, res.grant, envFunded, apiKeyFPs, policy.sealableSlot)
+	res.doorGrant = p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, routePolicy, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, policy.sealableSlot)
 
 	// The adaptive-routing ladder (ADR-121 §1, slice 3): the held pairs in
 	// policy order, materialized onto the program through the SAME screen
@@ -1327,8 +1364,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway; no LLM credential acquired", runID)
 		}
 	} else if noLLMCred && (wf == nil || wf.UsesLLM()) {
-		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, org, pool, platform; the runner falls back to its env or fails at the first LLM call",
-			runID, tenantID)
+		tiersConsulted := "byok, oauth-forfait, org, pool, platform"
+		if sovereign {
+			tiersConsulted = "byok, oauth-forfait (llm_fallback=none — the shared tiers were not consulted)"
+		}
+		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: %s; the runner falls back to its env or fails at the first LLM call",
+			runID, tenantID, tiersConsulted)
 	}
 	// The deployment may REFUSE what the Warn only reports. Per route, on
 	// the walk the stamp above reads: refused only when every LLM route
@@ -1342,6 +1383,30 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		if unfunded := unfundedPinnedProviders(spend, bundle); len(unfunded) > 0 {
 			return res, fmt.Errorf("cloudpublisher: %w: every LLM route of run %s pins %s and no tier (byok, oauth-forfait, pool, platform) holds a credential for any of them — provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
 				runview.ErrNoLLMCredential, runID, strings.Join(unfunded, ", "), tenantID)
+		}
+	}
+	// The sovereign policy arms the same refusal STRICTLY, without the
+	// deployment knob: under llm_fallback=none every pinned provider must be
+	// funded by the team's own credentials — one funded provider does not
+	// excuse another pinned route, whose only remaining funding would be the
+	// runner pod's platform env. Env-funded runs acquire nothing and answer
+	// to no policy; an unattributable route stays unrefused (the same
+	// compromise the knob above makes).
+	if sovereign && !envFunded && wf != nil && wf.UsesLLM() {
+		if unfunded := pinnedUnfundedProviders(spend, bundle); len(unfunded) > 0 {
+			return res, fmt.Errorf("cloudpublisher: %w: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every pinned provider must hold a credential of the team's own; provision: %s",
+				runview.ErrNoLLMCredential, tenantID, strings.Join(unfunded, ", "))
+		}
+		// The attribution compromise is narrower under the policy than under
+		// the knob: a workflow whose routes the walk cannot attribute still
+		// REFUSES when the team holds no credential at all — the pod's
+		// platform env would be the only funding left, which is what the
+		// policy exists to make impossible. A team that holds its own
+		// credentials keeps the knob's compromise: the run starts, and its
+		// routes spend the team's.
+		if spend.pinned == nil && noLLMCred {
+			return res, fmt.Errorf("cloudpublisher: %w: tenant %s runs with llm_fallback=none and holds no credential of its own, and this workflow's model routes cannot be attributed to a provider — provision a team credential, or pin a model route the policy can check",
+				runview.ErrNoLLMCredential, tenantID)
 		}
 	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {
@@ -1640,6 +1705,22 @@ func fundedAPIKeySlots(bundle secrets.RunBundle) []secrets.Provider {
 // an unattributable route (a nil spendable set allows everything) or when at
 // least one pinned provider is funded: such a run can start.
 func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string {
+	strict := pinnedUnfundedProviders(spend, bundle)
+	// The deployment knob is permissive: one funded pinned provider lets the
+	// run start — the other route's failure is the run's to report. Only a
+	// run whose EVERY pinned provider is unfunded cannot start at all.
+	if len(strict) > 0 && len(strict) == len(spend.pinned) {
+		return strict
+	}
+	return nil
+}
+
+// pinnedUnfundedProviders lists every pinned provider the bundle funds
+// nothing of, sorted. Unlike unfundedPinnedProviders it does not stop at the
+// first funded provider: the sovereign policy needs the FULL list. Nil when
+// the run has an unattributable route (a nil spendable set allows
+// everything).
+func pinnedUnfundedProviders(spend spendable, bundle secrets.RunBundle) []string {
 	if spend.pinned == nil {
 		return nil
 	}
@@ -1658,10 +1739,9 @@ func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string
 	}
 	out := make([]string, 0, len(spend.pinned))
 	for prov := range spend.pinned {
-		if funded[prov] {
-			return nil
+		if !funded[prov] {
+			out = append(out, prov)
 		}
-		out = append(out, prov)
 	}
 	sort.Strings(out)
 	return out
@@ -2902,10 +2982,19 @@ func (p *Publisher) acquireDoorGrant(
 	bundle *secrets.RunBundle,
 	wholeGrant *credpool.Grant,
 	envFunded bool,
+	sharedTiersBlocked bool,
 	apiKeyFPs map[secrets.Provider]string,
 	sealable func(slot string) bool,
 ) *credpool.Grant {
 	if p.credPool == nil || routePolicy == nil || wf == nil || len(routePolicy.Triggers) == 0 || len(routePolicy.PairOrder) == 0 {
+		return nil
+	}
+	if sharedTiersBlocked {
+		// D13 (a pool team) and llm_fallback=none: the pool tier itself is
+		// skipped for these launches, and the door is the pool tier wearing
+		// another coat — a donor's consent does not un-block the shared
+		// tiers, and a sealed donation would both contradict the policy and
+		// fund the pinned providers the strict refusal is there to name.
 		return nil
 	}
 	if wholeGrant != nil || envFunded || !holdsDefaultLLMCredential(*bundle) {
