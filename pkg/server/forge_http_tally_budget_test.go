@@ -159,7 +159,7 @@ func TestForgeRequestTally_ReportsEachInstallationsLowestBudgetOfTheHour(t *test
 		host + " rest other=2, " +
 		host + " rest installation 101 other=2, " +
 		host + " rest installation 202 other=2"
-	wantBudget := "forge rate limit: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
+	wantBudget := "forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
 		host + " rest installation 101: 4989 of 5000 at 14:20:20Z (resets 14:45:00Z), " +
 		host + " rest installation 202: 11949 of 12500 at 14:20:30Z (resets 14:58:00Z)"
 	reportsMu.Lock()
@@ -271,7 +271,7 @@ func TestForgeRequestTally_TheLowestBudgetDoesNotDependOnArrivalOrder(t *testing
 		reversed[len(answers)-1-i] = a
 	}
 	forward, backward := run(answers), run(reversed)
-	want := "forge rate limit: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
+	want := "forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
 		"api.github.com rest installation 101: 700 of 5000 at 14:20:00Z (resets 14:50:00Z), " +
 		"api.github.com rest installation 202: 40 of 5000 at 14:15:00Z (resets 14:54:00Z)"
 	for name, got := range map[string][]string{"in order": forward, "reversed": backward} {
@@ -300,7 +300,7 @@ func TestForgeRequestTally_EveryLaneSpendsTheInstallationsOneBudget(t *testing.T
 	want := []string{
 		"forge HTTP: 3 requests in the hour ending 2026-09-30T15:00Z — " +
 			"api.github.com rest installation 7 merge-gate-sweeper=2, api.github.com rest installation 7 other=1",
-		"forge rate limit: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
+		"forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z — " +
 			"api.github.com rest installation 7: 250 of 5000 at 14:06:00Z (resets 14:59:00Z)",
 	}
 	if got := reports(); strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -338,7 +338,7 @@ func TestForgeRequestTally_OnlyAnInstallationsTokenReportsABudget(t *testing.T) 
 	(tallyAnswer{installation: 9, url: "https://api.github.com/graphql", remaining: "4999", sent: at(62), seen: at(62)}).feed(t, tally, clock)
 	clock.set(time.Date(2026, 9, 30, 16, 0, 1, 0, time.UTC))
 	tally.flush()
-	wantBudget := "forge rate limit: lowest remaining in the hour ending 2026-09-30T16:00Z — api.github.com graphql installation 9: 4999 at 15:02:00Z"
+	wantBudget := "forge budget: lowest remaining in the hour ending 2026-09-30T16:00Z — api.github.com graphql installation 9: 4999 at 15:02:00Z"
 	if got := reports(); len(got) != 3 || got[2] != wantBudget {
 		t.Errorf("reports = %q, want a third %q — no limit or reset said, none printed", got, wantBudget)
 	}
@@ -363,7 +363,7 @@ func TestForgeRequestTally_AnAnswerAfterTheHourTurnedIsReadInTheNextHour(t *test
 	tally.flush()
 	want := []string{
 		"forge HTTP: 1 requests in the hour ending 2026-09-30T15:00Z — api.github.com rest installation 3 other=1",
-		"forge rate limit: lowest remaining in the hour ending 2026-09-30T16:00Z — " +
+		"forge budget: lowest remaining in the hour ending 2026-09-30T16:00Z — " +
 			"api.github.com rest installation 3: 12 of 5000 at 15:00:02Z (resets 15:30:00Z)",
 		"forge HTTP: 1 requests in the hour ending 2026-09-30T17:00Z (until 16:10:00Z, stopping) — api.github.com rest installation 3 other=1",
 	}
@@ -445,7 +445,7 @@ func TestForgeHTTPClient_ReadsTheBudgetOnEveryAnswer(t *testing.T) {
 	host := srv.Listener.Addr().String()
 	want := []string{
 		"forge HTTP: 2 requests in the hour ending 2026-09-30T15:00Z — " + host + " rest installation 77 other=2",
-		"forge rate limit: lowest remaining in the hour ending 2026-09-30T15:00Z — " + host + " rest installation 77: 0 of 5000 at 14:21:00Z (resets 14:40:00Z)",
+		"forge budget: lowest remaining in the hour ending 2026-09-30T15:00Z — " + host + " rest installation 77: 0 of 5000 at 14:21:00Z (resets 14:40:00Z)",
 	}
 	reportsMu.Lock()
 	defer reportsMu.Unlock()

@@ -1106,7 +1106,7 @@ them — each redirect hop, each answer whatever its status, a rate-limited 403
 included — so it is close to the budget spent, not identical: a token mint is
 counted and spends no REST budget.
 
-The same hour's budget level follows on a line of its own, `forge rate limit:
+The same hour's budget level follows on a line of its own, `forge budget:
 lowest remaining in the hour ending 2026-09-30T15:00Z — <host> <rest|graphql>
 installation <id>: <remaining> of <limit> at <seen> (resets <reset>), …`: for
 each installation and API, the lowest `X-RateLimit-Remaining` any answer to that
