@@ -9,10 +9,11 @@ name: 🍺 Brew Tap Update
 # A scheduled run resolves the NEWEST v* tag newer than what the tap
 # formula already carries (intermediate releases never need tap entries —
 # the formula points at the latest), downloads that release's artefacts,
-# and opens ONE tap PR carrying the day's update. The artefacts of a
-# release whose pipeline completed after the last scheduled run are
-# picked up by the NEXT run: the lag is bounded by the cadence, and the
-# skip logic tolerates partial artefacts either way.
+# and opens ONE tap PR carrying the day's update. The skip only fires
+# when BOTH the formula and the cask already carry the tag: a release
+# whose desktop artefacts landed after the last run re-taps its formula
+# side the next day, and update-brew-tap.sh's all-or-nothing guard keeps
+# a partial download from advancing anything.
 #
 # `workflow_dispatch` stays for backfill (replay an old tag with `tag`,
 # or force a run without one to process the latest pending).
@@ -80,10 +81,24 @@ jobs:
           fi
           echo "resolved tag=$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          current="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' Formula/iterion.rb | head -n1 || true)"
+          current_formula="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' Formula/iterion.rb | head -n1 || true)"
+          current_cask="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' Cask/iterion-desktop.rb | head -n1 || true)"
           vtag="${tag#v}"
-          if [ -n "$current" ] && [ "$vtag" = "$current" ]; then
-            echo "the tap already carries $current; nothing to update"
+          # Downgrade guard: a maintenance tag created AFTER a newer
+          # release (a hotfix cut from an older branch) must not walk the
+          # tap backwards. sort -V compares semver, not strings.
+          newest="$(printf '%s\n%s\n' "${current_formula:-0}" "$vtag" | sort -V | tail -n1)"
+          if [ "$newest" != "$vtag" ]; then
+            echo "tag $tag is not newer than the tap's $current_formula — nothing to update"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Skip only when BOTH files carry the tag: skipping on the
+          # formula alone froze the desktop cask for a whole release
+          # cycle once (measured). A release without the desktop ZIP
+          # costs a no-op run, never a stale cask.
+          if [ "$vtag" = "$current_formula" ] && { [ -z "$current_cask" ] || [ "$vtag" = "$current_cask" ]; }; then
+            echo "the tap already carries $vtag (formula and cask); nothing to update"
             echo "skip=1" >> "$GITHUB_OUTPUT"
           fi
 
