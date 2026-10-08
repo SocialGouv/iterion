@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.254.1](https://github.com/SocialGouv/iterion/compare/v3.254.0...v3.254.1) (2026-10-08)
+
+### Bug Fixes
+
+* **server,docs:** the legacy knob's runbook says it is gone; the dead seams go with it ([#2298](https://github.com/SocialGouv/iterion/issues/2298)) ([c53f235](https://github.com/SocialGouv/iterion/commit/c53f2351d4cf0a22170a8c691af578d2919e5204))
+
+    <details><summary>why</summary>
+
+    The round's findings, all non-behavioral: browser-security.md still documented the env knob in the present tense as the instant reversal, when this deletion removed its reader — the reversal is `git revert` of the commit, and the doc says so now; the truncated comment remnant at the deletion site is gone; the acceptLegacy parameter — always false since its last true caller died — is removed from sessionCookie and its six callers (the host-prefixed branch refuses the bare name outright); and the…
+
+    </details>
+
 ## [3.254.0](https://github.com/SocialGouv/iterion/compare/v3.253.0...v3.254.0) (2026-10-08)
 
 ### Features
