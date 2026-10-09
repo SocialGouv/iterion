@@ -96,6 +96,22 @@ type IOTask struct {
 	CompressMode           string                `json:"compress_mode,omitempty"`
 	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
 	SettingsHooks          json.RawMessage       `json:"settings_hooks,omitempty"`
+	// Retry is the launcher's claw retry budget, which is the backend's
+	// rather than the task's: no Task field carries it. The runner retries
+	// with it instead of reading its own env, so a variable a repository's
+	// devcontainer declares cannot set how many attempts are billed. Nil
+	// from a launcher that predates it: the runner keeps the built-in
+	// defaults.
+	Retry *IORetryPolicy `json:"retry,omitempty"`
+}
+
+// IORetryPolicy is model.RetryPolicy on the wire (this package cannot
+// import model), resolved by the launcher: every field is set. A zero field
+// would mean the default, as it does there.
+type IORetryPolicy struct {
+	MaxAttempts          int           `json:"max_attempts,omitempty"`
+	MaxAttemptsTransient int           `json:"max_attempts_transient,omitempty"`
+	BackoffBase          time.Duration `json:"backoff_base,omitempty"`
 }
 
 // IOToolDef is the wire form of a [ToolDef]. The Execute closure is

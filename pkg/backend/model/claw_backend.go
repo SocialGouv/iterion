@@ -1258,16 +1258,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}
 
 	// Send the task envelope. The runner blocks on its
-	// EnvelopeReader.Read() until this arrives. The workspace's
-	// .claude/settings.json hooks ride along: the launcher reads them on the
-	// host and the in-container runner registers the document instead of
-	// re-reading a WorkDir that may not exist inside the container (a
-	// workspace not mounted at its host path would otherwise fire NO hooks
-	// in silence — the parity gap of #1715). An old runner ignores the
-	// unknown field and falls back to its own WorkDir read.
-	ioTask := delegate.ToIOTask(task)
-	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
-	taskEnv, err := delegate.NewTaskEnvelope(ioTask)
+	// EnvelopeReader.Read() until this arrives.
+	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task))
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -1321,6 +1313,23 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	return res, nil
 }
 
+// runnerIOTask is the task envelope's payload for the in-container runner.
+// The workspace's .claude/settings.json hooks ride along: the launcher reads
+// them on the host and the runner registers the document instead of
+// re-reading a WorkDir that may not exist inside the container (a workspace
+// not mounted at its host path would otherwise fire NO hooks in silence —
+// the parity gap of #1715). So does this backend's retry budget: the
+// runner's loop spends the launcher's, never one read from its own env, so
+// a variable a repository's devcontainer declares cannot set how many
+// attempts are billed. An old runner ignores both unknown fields — it
+// reads its own WorkDir and keeps its defaults.
+func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
+	ioTask := delegate.ToIOTask(task)
+	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
+	ioTask.Retry = b.retry.wire()
+	return ioTask
+}
+
 // settingsHooksForWire reads the host's .claude/settings.json hooks document
 // for the sandbox crossing and emits every diagnostic on the LAUNCHER side —
 // the in-container registration's warnings go to the container's stderr,
@@ -1353,15 +1362,17 @@ func settingsHooksForWire(workDir, nodeID string, iteration int, logger *iterlog
 }
 
 // providerCredentialEnvVars enumerates the env-var names the in-runner
-// model registry consults to authenticate against each provider. Listed
-// explicitly (rather than forwarding the full host env) so the sandbox
-// stays isolated from the operator's shell — only the keys the runner
-// actually needs cross the boundary.
+// model registry consults to authenticate against each provider, and the
+// operator knobs the runner's own code reads. Listed explicitly (rather
+// than forwarding the full host env) so the sandbox stays isolated from
+// the operator's shell — only the keys the runner actually needs cross
+// the boundary.
 //
-// Keep this in sync with pkg/backend/model/registry.go's per-provider
-// auth code: any new provider whose Resolve() reads os.Getenv(...) for
-// credentials must append its env-var name here, otherwise the runner
-// inside the sandbox will surface "API key required for <provider>".
+// Keep this in sync with every env read of this package the runner
+// reaches: a credential missing here surfaces as "API key required for
+// <provider>", a knob missing here is silently ignored by the sandboxed
+// node. TestEveryEnvReadIsClassifiedForTheSandbox fails on a read that is
+// neither listed here nor declared host-side.
 var providerCredentialEnvVars = []string{
 	"OPENAI_API_KEY",
 	"AZURE_OPENAI_API_KEY",
@@ -1407,6 +1418,10 @@ var providerCredentialEnvVars = []string{
 	// channel into the container — and the pool can grant a donated xai
 	// key, which is METERED and billed to its lender.
 	"XAI_API_KEY",
+	// …and the endpoint that key is spent on (xaiBaseURL: an operator
+	// proxy, a regional host). Without it the sandboxed node keeps
+	// working, against api.x.ai, while the host talks to the operator's.
+	"XAI_BASE_URL",
 	"ANTHROPIC_AUTH_TOKEN",
 	"ANTHROPIC_BASE_URL",
 	"GEMINI_API_KEY",
@@ -1436,6 +1451,11 @@ var providerCredentialEnvVars = []string{
 	// refuses for newer models ("gpt-5.6-sol requires a newer codex-cli").
 	// The operator override must therefore cross the boundary.
 	"ITERION_CODEX_VERSION",
+	// The stream-silence watchdog runs where the provider call runs
+	// (callAndAggregate, every in-process call): in the container for a
+	// sandboxed node, which must wait as long as the host's would.
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
 }
 
 // hostCodexVersion resolves the codex-cli version on the HOST side of the
@@ -1537,6 +1557,18 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			env[codexHostVersionEnv] = v
 		}
 	}
+	// The refusal crosses whatever the run holds, no credentials at all
+	// included — the in-container factory would otherwise spend a forfait
+	// the host was told never to, the run's own or one on the container's
+	// disk. Only the refusal: a host-wide "1" forces the host's own forfait
+	// over the ENV key, and that forfait crosses only in the run's
+	// credentials, below, where the run's own key crosses as that env key —
+	// never as an order to spend whatever forfait the container's disk holds.
+	// Without run credentials the sandboxed node thus spends the env key where
+	// the host spends its forfait (docs/backends.md).
+	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
+		env["ITERION_OPENAI_USE_OAUTH"] = "0"
+	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
 		return env, nil
@@ -1597,13 +1629,6 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		if nodeOwnKey == "" && openAIOAuthAllowed() {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
-	}
-	// The refusal crosses whatever the run holds — the in-container factory
-	// would otherwise spend the forfait the host was told never to. Only the
-	// refusal: a host-wide "1" forces the forfait over the ENV key, and here
-	// the run's own key crosses as that env key.
-	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
-		env["ITERION_OPENAI_USE_OAUTH"] = "0"
 	}
 	// The Anthropic twin (#736), and only for a node the forfait can actually
 	// serve: a claude model on claw's anthropic provider. A z.ai/GLM model

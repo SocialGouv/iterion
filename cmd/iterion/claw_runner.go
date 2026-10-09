@@ -190,9 +190,14 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// metered, auditable and forkable like an in-process one. The logger
 	// carries the warnings EventHooks has no channel for (settings-hooks
 	// diagnostics, subscription-spend notices) to stderr, which the
-	// launcher captures into the node's error when the run fails.
+	// launcher captures into the node's error when the run fails. The
+	// retry budget is the launcher's, carried by the task: this backend's
+	// loop retries the provider calls made in here, as the host's claw
+	// backend retries them for an unsandboxed node, and the budget bounds
+	// billed attempts — so it is never read from this process's env, where
+	// a variable a repository's devcontainer declares would set it.
 	registry := model.NewRegistry()
-	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicy{},
+	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicyFromWire(ioTask.Retry),
 		model.WithClawLogger(iterlog.NewFromEnv(stderr)))
 
 	start := time.Now()
