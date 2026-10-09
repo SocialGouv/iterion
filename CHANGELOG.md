@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.257.2](https://github.com/SocialGouv/iterion/compare/v3.257.1...v3.257.2) (2026-10-09)
+
+### Bug Fixes
+
+* **backend:** the gateway dials a policy-isolated sandbox through its proxy ([#2313](https://github.com/SocialGouv/iterion/issues/2313)) ([a6bb0f9](https://github.com/SocialGouv/iterion/commit/a6bb0f9be4fb1c52c4bcb7802f66b0b49da047fe))
+
+    <details><summary>why</summary>
+
+    Measured in prod (2026-10-08): every honorabilite review — routed to openai_compatible/scaleway/glm-5.2 — parked on `dial tcp 79.137.10.7:443: i/o timeout` while the same runner pod's own curls to the same endpoint succeeded 30/30. The chain: the sandboxed review runs in a per-run pod whose NetworkPolicy only allows egress through the runner's network proxy, and the gateway client (pkg/backend/compatgw) builds its transport with Proxy nil BY DESIGN — an ambient HTTPS_PROXY is never trusted for…
+
+    </details>
+
 ## [3.257.1](https://github.com/SocialGouv/iterion/compare/v3.257.0...v3.257.1) (2026-10-09)
 
 ### Bug Fixes
