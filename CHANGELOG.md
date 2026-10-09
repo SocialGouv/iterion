@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.257.1](https://github.com/SocialGouv/iterion/compare/v3.257.0...v3.257.1) (2026-10-09)
+
+### Bug Fixes
+
+* **claw:** the sandboxed runner reads the host's xAI endpoint, stream watchdog and retry budget ([#2311](https://github.com/SocialGouv/iterion/issues/2311)) ([5773150](https://github.com/SocialGouv/iterion/commit/5773150d650299ea64f6d08a1fffa24a1556d56b)), references [#2292](https://github.com/SocialGouv/iterion/issues/2292) [#2292](https://github.com/SocialGouv/iterion/issues/2292)
+
+    <details><summary>why</summary>
+
+    A sandboxed claw node runs its provider calls in `iterion __claw-runner`, which rebuilds its registry and claw backend from the env forwardableProviderEnv hands it and from the task envelope, nothing else. Three of the host's settings never reached it, so the host honoured them and the sandboxed twin silently did not:
+
+    </details>
+
 ## [3.257.0](https://github.com/SocialGouv/iterion/compare/v3.256.0...v3.257.0) (2026-10-08)
 
 ### Features
