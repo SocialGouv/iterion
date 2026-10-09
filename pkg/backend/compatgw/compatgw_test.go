@@ -96,7 +96,10 @@ func TestNewClient_RefusesARedirect(t *testing.T) {
 
 // The transport trusts no ambient proxy and keeps the header floor.
 func TestGuardedTransport(t *testing.T) {
-	tr := guardedTransport(true)
+	tr, err := guardedTransport(true)
+	if err != nil {
+		t.Fatalf("guardedTransport with no engine proxy set: %v", err)
+	}
 	if tr.Proxy != nil {
 		t.Error("an ambient proxy reached the gateway transport")
 	}

@@ -848,6 +848,10 @@ type Run struct {
 // Driver returns "kubernetes".
 func (r *Run) Driver() string { return "kubernetes" }
 
+// ProxyEndpoint returns the network-proxy URL injected into this sandbox's
+// container (RunInfo.ProxyEndpoint), empty when the run is policy-less.
+func (r *Run) ProxyEndpoint() string { return r.info.ProxyEndpoint }
+
 // RefreshSecretFile re-applies the per-run file-secrets Secret with the
 // named key's value updated, so a rotated short-lived token reaches the
 // mounted projected volume. Implements [sandbox.SecretFileRefresher].

@@ -541,6 +541,10 @@ type Run struct {
 // Driver returns the runtime name — "docker" or "podman".
 func (r *Run) Driver() string { return string(r.driver.rt) }
 
+// ProxyEndpoint returns the network-proxy URL injected into this sandbox's
+// container (RunInfo.ProxyEndpoint), empty when the run is policy-less.
+func (r *Run) ProxyEndpoint() string { return r.info.ProxyEndpoint }
+
 // RefreshSecretFile rewrites the host file backing a mounted file
 // secret's bind-mount so a rotated short-lived token propagates into the
 // running container (docker bind-mounts follow the host inode, so a

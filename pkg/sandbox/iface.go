@@ -80,6 +80,15 @@ type HostRun interface {
 	HostExecutesCommands() bool
 }
 
+// ProxiedRun is a Run whose driver injected the iterion network proxy into
+// the sandbox: ProxyEndpoint returns the HTTPS_PROXY URL processes inside
+// the sandbox must use for egress the sandbox's network policy only allows
+// through that proxy. A Run that does not implement it (the noop
+// passthrough, a policy-less docker run) dials egress directly.
+type ProxiedRun interface {
+	ProxyEndpoint() string
+}
+
 // Run is a live sandbox handle.
 //
 // Each Run corresponds to one iterion run; the engine creates it once
