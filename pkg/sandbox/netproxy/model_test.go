@@ -88,8 +88,10 @@ func TestAModelRequestIsRecognisedByItsHostOrItsPath(t *testing.T) {
 
 // An operator's model host that is not a host pattern is refused, never
 // ignored: an ignored gateway would have its conversation substituted.
+// ("!gw.corp" is NOT in the refused list: an exclusion is valid since
+// v3.7-era #2050 — it lifts the model detection for that host.)
 func TestAMalformedModelHostIsRefused(t *testing.T) {
-	for _, bad := range []string{"gw.corp/v1", "a*b.corp", "*.*.corp", "https://", "!", "http:gw.corp", "user:pass@gw.corp", "gw corp", "**", "*", "!gw.corp", ".llm.corp", "a..b.corp", "**..corp"} {
+	for _, bad := range []string{"gw.corp/v1", "a*b.corp", "*.*.corp", "https://", "!", "http:gw.corp", "user:pass@gw.corp", "gw corp", "**", "*", ".llm.corp", "a..b.corp", "**..corp"} {
 		if _, err := modelHostPolicy([]string{bad}); err == nil {
 			t.Errorf("modelHostPolicy(%q) accepted it", bad)
 		}
@@ -169,5 +171,43 @@ func TestTheInspectionBoundIsTheOperatorsWhenSet(t *testing.T) {
 	}
 	if px, err := New(Options{Policy: pol, MaxInspectedBody: 1 << 30}); err != nil || px.maxBody != 1<<30 {
 		t.Errorf("New with a bound: %v, maxBody %d", err, px.maxBody)
+	}
+}
+
+// An operator's `!host` exclusion lifts the model detection for that host:
+// a tool API whose path ends like a model API's is inspected and
+// substituted like any other request. A host that IS a built-in model
+// provider cannot be excluded — refused when the run's proxy starts.
+func TestModelHostExclusionLiftsTheModelDetection(t *testing.T) {
+	pol, err := modelHostPolicy([]string{"!tools.corp"})
+	if err != nil {
+		t.Fatalf("an exclusions-only list is valid: %v", err)
+	}
+	if !pol.Unmodeled("tools.corp") || !pol.Unmodeled("TOOLS.CORP.") {
+		t.Error("the excluded host is not un-modeled (case- and trailing-dot insensitive)")
+	}
+	if pol.Unmodeled("other.corp") {
+		t.Error("an unexcluded host reads as un-modeled")
+	}
+	if modelRequest("tools.corp", "/v1/messages", pol) {
+		t.Error("a lifted host whose path ends like a model API is still treated as a model request")
+	}
+	if !modelRequest("api.anthropic.com", "/v1/messages", pol) {
+		t.Error("a built-in provider host must stay a model request")
+	}
+	if _, err := modelHostPolicy([]string{"!api.anthropic.com"}); err == nil ||
+		!strings.Contains(err.Error(), "built-in model provider") {
+		t.Errorf("excluding a built-in provider host: err = %v, want a refusal naming it", err)
+	}
+	// Mixed: positive entries keep their allow semantics beside the lift.
+	pol, err = modelHostPolicy([]string{"gw.corp", "!tools.corp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !modelRequest("gw.corp", "/v1/messages", pol) {
+		t.Error("a positive entry stopped granting model status")
+	}
+	if modelRequest("tools.corp", "/whatever", pol) {
+		t.Error("an excluded host reads as a model request on any path")
 	}
 }
