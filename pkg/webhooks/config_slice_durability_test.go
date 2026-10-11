@@ -41,6 +41,17 @@ func TestConfigHoldAndAllowlistKeepExplicitEmptyOnMongo(t *testing.T) {
 		if strings.Contains(f.Tag.Get("bson"), "omitempty") {
 			t.Errorf("Config.%s bson tag %q carries omitempty: a deliberate [] write collapses to never-set on Mongo, and the cleared value is resurrected from the integration at the next silent re-provision", field, f.Tag.Get("bson"))
 		}
+		// Pin the KEY, not just the missing omitempty: a renamed bson key
+		// passes the round-trip suite (it writes and reads through the same
+		// struct) while orphaning every production document's field.
+		wantKey := map[string]string{
+			"HoldLabels":      "hold_labels",
+			"LabelAllowlist":  "label_allowlist",
+			"AuthorAllowlist": "author_allowlist",
+		}[field]
+		if f.Tag.Get("bson") != wantKey {
+			t.Errorf("Config.%s bson tag is %q, want %q — a renamed key orphans every stored document's field", field, f.Tag.Get("bson"), wantKey)
+		}
 		if !strings.Contains(f.Tag.Get("json"), "omitempty") {
 			t.Errorf("Config.%s json tag lost omitempty — the API shape must stay as it was", field)
 		}
@@ -90,7 +101,7 @@ func onConfigStoreTwins(t *testing.T, run func(*testing.T, ConfigStore)) {
 func TestConfigStoreAuthorAllowlistClearRoundTrips(t *testing.T) {
 	onConfigStoreTwins(t, func(t *testing.T, st ConfigStore) {
 		ctx := context.Background()
-		cfg := Config{ID: "wh-author-clear", TenantID: "t1", AuthorAllowlist: []string{"dependabot[bot]"}}
+		cfg := Config{ID: "wh-author-clear", TenantID: "t1", TokenHash: "hash-clear", AuthorAllowlist: []string{"dependabot[bot]"}}
 		if err := st.Create(ctx, cfg); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -118,7 +129,10 @@ func TestConfigStoreAuthorAllowlistClearRoundTrips(t *testing.T) {
 func TestConfigStoreAuthorAllowlistZeroValueIsAllowAll(t *testing.T) {
 	onConfigStoreTwins(t, func(t *testing.T, st ConfigStore) {
 		ctx := context.Background()
-		neverSet := Config{ID: "wh-author-never", TenantID: "t1"}
+		// Distinct token hashes: token_hash carries a non-sparse UNIQUE
+		// index, so two fixtures sharing the zero value collide on the
+		// second Create — the contract would die before its assertions.
+		neverSet := Config{ID: "wh-author-never", TenantID: "t1", TokenHash: "hash-never"}
 		if err := st.Create(ctx, neverSet); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -133,7 +147,7 @@ func TestConfigStoreAuthorAllowlistZeroValueIsAllowAll(t *testing.T) {
 			t.Fatal("a never-set AuthorAllowlist must read as allow-all")
 		}
 
-		cleared := Config{ID: "wh-author-cleared", TenantID: "t1", AuthorAllowlist: []string{"dependabot[bot]"}}
+		cleared := Config{ID: "wh-author-cleared", TenantID: "t1", TokenHash: "hash-cleared", AuthorAllowlist: []string{"dependabot[bot]"}}
 		if err := st.Create(ctx, cleared); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
