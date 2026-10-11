@@ -1490,6 +1490,19 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderXAI:       "XAI_API_KEY",
 }
 
+// providerEndpointEnvVars is the endpoint subset of providerCredentialEnvVars
+// — the names that decide WHICH infrastructure a forwarded credential is
+// spent on. Unlike keys, an empty endpoint value is safe downstream (every
+// registry reads empty as "use the published default"), so these may cross
+// as explicit empties.
+var providerEndpointEnvVars = []string{
+	"AZURE_OPENAI_ENDPOINT",
+	"MOONSHOT_BASE_URL",
+	"OPENAI_BASE_URL",
+	"XAI_BASE_URL",
+	"ANTHROPIC_BASE_URL",
+}
+
 // sandboxProxyEnv returns the single engine-owned entry the in-container
 // runner needs when its sandbox is policy-isolated: the network proxy is
 // the ONLY egress the sandbox's network policy allows, and the gateway
@@ -1531,6 +1544,23 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	for _, name := range providerCredentialEnvVars {
 		if v := os.Getenv(name); v != "" {
 			env[name] = v
+		}
+	}
+	// Endpoint names the host leaves unset cross as EXPLICIT empties, not
+	// absent names: the runner auto-loads the workspace .env, which only
+	// fills names missing from the process env (applyDotEnv honours
+	// LookupEnv), so an absent name lets the repository under review pick
+	// which infrastructure a forwarded credential dials. The empty also
+	// outranks container-level env for these names (docker exec --env
+	// precedence): an operator endpoint set through the sandbox spec no
+	// longer reaches the runner — the host env is the supported channel,
+	// and in-process nodes never read the spec's env anyway. Downstream
+	// every registry reads empty as "use the published default". Keys keep
+	// the skip above: an empty key reads as "auth attempted, invalid", not
+	// "no auth" (the endpoint twin of sandboxProxyEnv's explicit-unset).
+	for _, name := range providerEndpointEnvVars {
+		if _, ok := env[name]; !ok {
+			env[name] = ""
 		}
 	}
 	// A gateway-served node carries the gateway env, and ONLY a gateway
