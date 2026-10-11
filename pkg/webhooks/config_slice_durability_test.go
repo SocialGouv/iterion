@@ -25,14 +25,17 @@ import (
 //
 // The third field's failure mode differs only in the consequence: a cleared
 // AuthorAllowlist reading back nil is still allow-all to every reader (the
-// forge orchestrator's len==0 path), so nothing resurrects a narrowing — but
-// the explicit-empty property is what the store contract owes, and the
-// round-trip proof lives in TestConfigStoreAuthorAllowlistClearRoundTrips
-// below.
+// provider handlers' MatchAuthor gate and author_trust — nil and [] are the
+// same empty set), so nothing resurrects a narrowing — but the
+// explicit-empty property is what the store contract owes, and the round-trip
+// proof lives in TestConfigStoreAuthorAllowlistClearRoundTrips below.
+//
+// This test is pure reflection — the Mongo proofs are the two round-trip
+// tests further down, which is why its name does not say Mongo.
 //
 // Mutation that reddens this test: re-adding omitempty to any bson tag,
 // or renaming either key of any field below.
-func TestConfigHoldAndAllowlistKeepExplicitEmptyOnMongo(t *testing.T) {
+func TestConfigHoldAndAllowlistTagsStayPinned(t *testing.T) {
 	// ONE table owns the contract: the bson key must be exact (a renamed
 	// key passes a write/read-through-the-same-struct round-trip while
 	// orphaning every production document's field), omitempty must be OFF
@@ -121,11 +124,10 @@ func TestConfigStoreAuthorAllowlistClearRoundTrips(t *testing.T) {
 
 // Zero-value guard-rail: never-set (nil) and cleared ([]) must stay
 // indistinguishable to every READER. The zero-value semantics are allow-all
-// either way — MatchAuthor's empty-allowlist path, and the forge
-// orchestrator's len==0 → authorOpen read (pkg/forge/orchestrator.go) that
-// keeps a co-enabled bot from having its human PRs silently dropped. Dropping
-// the bson omitempty makes [] DURABLE; it must never make nil-vs-[] a
-// meaningful distinction downstream.
+// either way — MatchAuthor's empty-allowlist path, which the provider
+// handlers (webhooks_github/webhooks_gitlab) and author_trust all go through.
+// Dropping the bson omitempty makes [] DURABLE; it must never make nil-vs-[]
+// a meaningful distinction downstream.
 func TestConfigStoreAuthorAllowlistZeroValueIsAllowAll(t *testing.T) {
 	onConfigStoreTwins(t, func(t *testing.T, st ConfigStore) {
 		ctx := context.Background()

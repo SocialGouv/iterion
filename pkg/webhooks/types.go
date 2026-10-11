@@ -124,10 +124,14 @@ type Config struct {
 	// omitempty would drop the empty slice on write — MongoConfigStore.Update
 	// is a full-document replace, so a deliberate clear would read back nil,
 	// indistinguishable from never-set. Both spellings read as allow-all to
-	// every reader (len==0 / range — see MatchAuthor and the forge
-	// orchestrator), so the store contract owes only that the explicit-empty
-	// gesture round-trips; documents written before this tag change simply
-	// have the field absent and read nil, exactly as before.
+	// every reader (len==0 / range — MatchAuthor through the provider
+	// handlers and author_trust; the forge orchestrator only WRITES the
+	// field, derived from the co-enabled bots' manifests), so the store
+	// contract owes only that the explicit-empty gesture round-trips.
+	// Documents written before this tag change simply have the field absent
+	// and read nil, exactly as before; every replace written SINCE stores
+	// the key even for a never-set nil (as BSON null) — do not query on
+	// presence.
 	AuthorAllowlist []string `bson:"author_allowlist" json:"author_allowlist,omitempty"`
 	// LabelAllowlist restricts which freshly-applied issue label triggers a
 	// launch on the GitHub/Forgejo `issues` (labeled) path (e.g.

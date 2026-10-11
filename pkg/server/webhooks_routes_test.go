@@ -526,7 +526,9 @@ func TestWebhookHoldLabelsRoundTrip(t *testing.T) {
 // pkg/webhooks/config_slice_durability_test.go; THIS half pins the only
 // producer of the gesture: without it a cleanup of the PATCH applier's
 // nil-check would kill the clear at the API while every store test stays
-// green.
+// green. The composed chain (this applier → the Mongo store) is covered
+// half-and-half: each layer's test is mutation-guarded in its own file, and
+// the conformance job runs the store half against a real server.
 func TestWebhookAuthorAllowlistPatchRoundTrip(t *testing.T) {
 	s := newWebhookTestServer(t)
 	ctx := superAdminCtx()
