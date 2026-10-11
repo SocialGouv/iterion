@@ -219,6 +219,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/webhooks/prforge` | decodes pull_request webhook payloads from PR-over-forge providers — GitHub and Forgejo/Gitea — which share the same wire shape for the… | — |
 | `pkg/workspacetrack` | versions a run's workspace: it captures what the files look like at a point in execution and can put them back. | `Tracker` |
 | `pkg/worktreepool` | the safety classifier for the per-run git worktrees iterion parks under `<store>/worktrees/`. | — |
+| `scripts/ci/testshards` | Command testshards prints the Go test packages of one deterministic shard, the mechanism the CI matrix legs use to split `./...` across runners (the… | — |
 | `scripts/docslinks` | Command docslinks checks every relative link and `#anchor` in the repository's tracked markdown against the real tree, the way GitHub resolves them… | — |
 | `scripts/modelsnapshot` | Command modelsnapshot regenerates the embedded models.dev snapshot (pkg/backend/modelspecs/snapshot/models-dev.json): fetch, parse, render… | — |
 | `third_party/codex-agent-sdk-go` | provides a Go SDK for interacting with the Codex CLI agent. | `Client`, `Tool` |
