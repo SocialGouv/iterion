@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -87,7 +89,7 @@ func TestACloudScheduleGuardNeverRunsInTheServer(t *testing.T) {
 	t.Setenv(envCloudScheduleGuards, "allow")
 	w := httptest.NewRecorder()
 	s.handleCreateSchedule(w, scheduleReq(ctx, "POST", "/api/teams/t1/schedules",
-		`{"bot_id":"a","cron":"0 * * * *","guard":"touch `+marker+`"}`, "t1", ""))
+		guardedScheduleBody(t, "touch "+shellquote.Quote(marker)), "t1", ""))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("seed a guarded schedule = %d %s", w.Code, w.Body.String())
 	}
@@ -119,4 +121,42 @@ func TestACloudScheduleGuardNeverRunsInTheServer(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("with the deployment's opt-in the guard did not run (%v): the refusal above proves nothing", err)
 	}
+}
+
+// A guard runs `sh -lc`, a login shell that reads its profile from $HOME:
+// under test that home is the one TestMain made, never the operator's (#2231).
+func TestACloudScheduleGuardRunsUnderTheTestBinarysHome(t *testing.T) {
+	s := newCloudScheduleTestServer(t)
+	ctx := superAdminCtx()
+	homeFile := filepath.Join(t.TempDir(), "home")
+
+	t.Setenv(envCloudScheduleGuards, "allow")
+	w := httptest.NewRecorder()
+	s.handleCreateSchedule(w, scheduleReq(ctx, "POST", "/api/teams/t1/schedules",
+		guardedScheduleBody(t, `printf '%s' "$HOME" > `+shellquote.Quote(homeFile)), "t1", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create a guarded schedule = %d %s", w.Code, w.Body.String())
+	}
+	var created cloudsched.ScheduledBot
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	s.cloudScheduleGate(context.Background(), created)
+	data, err := os.ReadFile(homeFile)
+	if err != nil {
+		t.Fatalf("the guard did not report the HOME it ran under: %v", err)
+	}
+	hometest.RequireNoOperatorProfile(t, string(data))
+}
+
+// guardedScheduleBody is the create body of an hourly schedule whose guard is
+// the given shell command. A path in that command is shell-quoted by the
+// caller: it comes from t.TempDir(), which may hold spaces.
+func guardedScheduleBody(t *testing.T, guard string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"bot_id": "a", "cron": "0 * * * *", "guard": guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }
