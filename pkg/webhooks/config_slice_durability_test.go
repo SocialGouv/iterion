@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"os"
 	"reflect"
-	"strings"
 	"testing"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -31,29 +30,30 @@ import (
 // round-trip proof lives in TestConfigStoreAuthorAllowlistClearRoundTrips
 // below.
 //
-// Mutation that reddens this test: re-adding omitempty to any bson tag.
+// Mutation that reddens this test: re-adding omitempty to any bson tag,
+// or renaming either key of any field below.
 func TestConfigHoldAndAllowlistKeepExplicitEmptyOnMongo(t *testing.T) {
-	for _, field := range []string{"HoldLabels", "LabelAllowlist", "AuthorAllowlist"} {
-		f, ok := reflect.TypeOf(Config{}).FieldByName(field)
+	// ONE table owns the contract: the bson key must be exact (a renamed
+	// key passes a write/read-through-the-same-struct round-trip while
+	// orphaning every production document's field), omitempty must be OFF
+	// the bson tag, and the json tag must be exact WITH omitempty (the API
+	// shape — the studio type reads these keys).
+	for _, c := range []struct {
+		field, wantBson, wantJSON string
+	}{
+		{"HoldLabels", "hold_labels", "hold_labels,omitempty"},
+		{"LabelAllowlist", "label_allowlist", "label_allowlist,omitempty"},
+		{"AuthorAllowlist", "author_allowlist", "author_allowlist,omitempty"},
+	} {
+		f, ok := reflect.TypeOf(Config{}).FieldByName(c.field)
 		if !ok {
-			t.Fatalf("Config.%s is gone — the adopt in pkg/forge depends on it", field)
+			t.Fatalf("Config.%s is gone — the adopt in pkg/forge depends on it", c.field)
 		}
-		if strings.Contains(f.Tag.Get("bson"), "omitempty") {
-			t.Errorf("Config.%s bson tag %q carries omitempty: a deliberate [] write collapses to never-set on Mongo, and the cleared value is resurrected from the integration at the next silent re-provision", field, f.Tag.Get("bson"))
+		if f.Tag.Get("bson") != c.wantBson {
+			t.Errorf("Config.%s bson tag is %q, want %q — a renamed key orphans every stored document's field; omitempty on it collapses a deliberate [] into never-set", c.field, f.Tag.Get("bson"), c.wantBson)
 		}
-		// Pin the KEY, not just the missing omitempty: a renamed bson key
-		// passes the round-trip suite (it writes and reads through the same
-		// struct) while orphaning every production document's field.
-		wantKey := map[string]string{
-			"HoldLabels":      "hold_labels",
-			"LabelAllowlist":  "label_allowlist",
-			"AuthorAllowlist": "author_allowlist",
-		}[field]
-		if f.Tag.Get("bson") != wantKey {
-			t.Errorf("Config.%s bson tag is %q, want %q — a renamed key orphans every stored document's field", field, f.Tag.Get("bson"), wantKey)
-		}
-		if !strings.Contains(f.Tag.Get("json"), "omitempty") {
-			t.Errorf("Config.%s json tag lost omitempty — the API shape must stay as it was", field)
+		if f.Tag.Get("json") != c.wantJSON {
+			t.Errorf("Config.%s json tag is %q, want %q — the API shape must stay as it was", c.field, f.Tag.Get("json"), c.wantJSON)
 		}
 	}
 }
@@ -103,7 +103,7 @@ func TestConfigStoreAuthorAllowlistClearRoundTrips(t *testing.T) {
 		ctx := context.Background()
 		cfg := Config{ID: "wh-author-clear", TenantID: "t1", TokenHash: "hash-clear", AuthorAllowlist: []string{"dependabot[bot]"}}
 		if err := st.Create(ctx, cfg); err != nil {
-			t.Fatalf("Create: %v", err)
+			t.Fatalf("Create %s: %v", cfg.ID, err)
 		}
 		cfg.AuthorAllowlist = []string{}
 		if err := st.Update(ctx, cfg); err != nil {
@@ -134,7 +134,7 @@ func TestConfigStoreAuthorAllowlistZeroValueIsAllowAll(t *testing.T) {
 		// second Create — the contract would die before its assertions.
 		neverSet := Config{ID: "wh-author-never", TenantID: "t1", TokenHash: "hash-never"}
 		if err := st.Create(ctx, neverSet); err != nil {
-			t.Fatalf("Create: %v", err)
+			t.Fatalf("Create %s: %v", neverSet.ID, err)
 		}
 		gotNever, err := st.Get(ctx, neverSet.ID)
 		if err != nil {
@@ -149,7 +149,7 @@ func TestConfigStoreAuthorAllowlistZeroValueIsAllowAll(t *testing.T) {
 
 		cleared := Config{ID: "wh-author-cleared", TenantID: "t1", TokenHash: "hash-cleared", AuthorAllowlist: []string{"dependabot[bot]"}}
 		if err := st.Create(ctx, cleared); err != nil {
-			t.Fatalf("Create: %v", err)
+			t.Fatalf("Create %s: %v", cleared.ID, err)
 		}
 		cleared.AuthorAllowlist = []string{}
 		if err := st.Update(ctx, cleared); err != nil {
