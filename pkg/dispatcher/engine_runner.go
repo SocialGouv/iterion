@@ -88,6 +88,11 @@ type EngineRunner struct {
 	// engine. nil keeps today's direct-engine path (the default).
 	launcher RunLauncher
 	runEnv   []string
+	// bundleCacheRoot, when set, is where a `.botz` config extracts instead
+	// of bundle.Open's default under os.UserCacheDir. Empty (the default)
+	// keeps the operator's shared content-addressed cache; a test wires a
+	// temp dir so the suite never writes the host's cache (#2080).
+	bundleCacheRoot string
 }
 
 // EngineRunnerOption configures an EngineRunner at construction time.
@@ -101,6 +106,14 @@ func WithRunLauncher(l RunLauncher) EngineRunnerOption {
 // WithProjectRunEnv wires the owning project's child-process environment.
 func WithProjectRunEnv(env []string) EngineRunnerOption {
 	return func(r *EngineRunner) { r.runEnv = append([]string(nil), env...) }
+}
+
+// WithBundleCacheRoot pins where a `.botz` config extracts, instead of
+// bundle.Open's default under os.UserCacheDir. A test-owned runner points it
+// at a temp dir so the suite never writes the operator's cache (#2080); the
+// empty default keeps the shared cache production has always used.
+func WithBundleCacheRoot(root string) EngineRunnerOption {
+	return func(r *EngineRunner) { r.bundleCacheRoot = root }
 }
 
 // NewEngineRunner pre-compiles the workflow at workflowPath. The
@@ -132,7 +145,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 	}
 	switch kind {
 	case bundle.KindBundle:
-		opened, cleanup, openErr := bundle.Open(workflowPath, "")
+		opened, cleanup, openErr := bundle.Open(workflowPath, r.bundleCacheRoot)
 		if openErr != nil {
 			return nil, fmt.Errorf("engine runner: open bundle %s: %w", workflowPath, openErr)
 		}
