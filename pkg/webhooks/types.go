@@ -118,7 +118,17 @@ type Config struct {
 	// (empty = any author). Case-insensitive; entries may be bot logins like
 	// "dependabot[bot]" / "renovate[bot]". Lets a webhook react ONLY to a
 	// dependency-bot's PRs while ignoring human PRs on the same repo.
-	AuthorAllowlist []string `bson:"author_allowlist,omitempty" json:"author_allowlist,omitempty"`
+	//
+	// NO omitempty on the bson tag: the webhook PATCH distinguishes an ABSENT
+	// field (keep) from a non-nil EMPTY one (clear → allow-all), and
+	// omitempty would drop the empty slice on write — MongoConfigStore.Update
+	// is a full-document replace, so a deliberate clear would read back nil,
+	// indistinguishable from never-set. Both spellings read as allow-all to
+	// every reader (len==0 / range — see MatchAuthor and the forge
+	// orchestrator), so the store contract owes only that the explicit-empty
+	// gesture round-trips; documents written before this tag change simply
+	// have the field absent and read nil, exactly as before.
+	AuthorAllowlist []string `bson:"author_allowlist" json:"author_allowlist,omitempty"`
 	// LabelAllowlist restricts which freshly-applied issue label triggers a
 	// launch on the GitHub/Forgejo `issues` (labeled) path (e.g.
 	// ["implement"] so only that label dispatches the bot). Empty = any

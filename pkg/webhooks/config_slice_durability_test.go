@@ -11,13 +11,20 @@ import (
 // Mongo round-trip as EXPLICIT-empty ([]), not collapse into never-set:
 // omitempty on the bson tag drops an empty slice on write, and a read-back
 // nil is indistinguishable from "never set", so the provision-time adopt
-// would resurrect the cleared value from the integration. These two fields
+// would resurrect the cleared value from the integration. These fields
 // therefore carry NO omitempty on their bson tags (the JSON tags keep it —
 // the API shape is unchanged).
 //
-// Mutation that reddens this test: re-adding omitempty to either bson tag.
+// The third field's failure mode differs only in the consequence: a cleared
+// AuthorAllowlist reading back nil is still allow-all to every reader (the
+// forge orchestrator's len==0 path), so nothing resurrects a narrowing — but
+// the explicit-empty property is what the store contract owes, and the
+// round-trip proof lives in TestConfigStoreAuthorAllowlistClearRoundTrips
+// below.
+//
+// Mutation that reddens this test: re-adding omitempty to any bson tag.
 func TestConfigHoldAndAllowlistKeepExplicitEmptyOnMongo(t *testing.T) {
-	for _, field := range []string{"HoldLabels", "LabelAllowlist"} {
+	for _, field := range []string{"HoldLabels", "LabelAllowlist", "AuthorAllowlist"} {
 		f, ok := reflect.TypeOf(Config{}).FieldByName(field)
 		if !ok {
 			t.Fatalf("Config.%s is gone — the adopt in pkg/forge depends on it", field)
