@@ -103,16 +103,72 @@ func TestOriginsPerPolicy(t *testing.T) {
 	}
 }
 
-func TestEnforcesNamesTheTranslatingBackends(t *testing.T) {
-	for _, b := range []string{"claude_code", "claw", "codex", "pi"} {
-		if !Enforces(b) {
-			t.Errorf("Enforces(%q) = false", b)
+func TestSupportOfRecordsEachBackendsVerdict(t *testing.T) {
+	const H, R, U = Honoured, Refused, Unmeasured
+	every := [4]Support{Workspace: H, None: H, Operator: H, All: H}
+	cases := map[string][4]Support{
+		"claude_code": every,
+		"claw":        every,
+		"codex":       every,
+		"pi":          every,
+		"kimi":        {Workspace: H, None: R, Operator: R, All: H},
+		"opencode":    {Workspace: R, None: R, Operator: R, All: H},
+		"grok":        {Workspace: U, None: R, Operator: R, All: U},
+		"":            {U, U, U, U},
+		"unknown":     {U, U, U, U},
+	}
+	for backend, want := range cases {
+		for _, p := range []Policy{Workspace, None, Operator, All} {
+			got, reason := SupportOf(backend, p)
+			if got != want[p] {
+				t.Errorf("SupportOf(%q, %v) = %v, want %v", backend, p, got, want[p])
+			}
+			if (got == Refused) != (reason != "") {
+				t.Errorf("SupportOf(%q, %v) reason %q: a refusal says why, nothing else does", backend, p, reason)
+			}
+			if got := Enforces(backend, p); got != (want[p] == H) {
+				t.Errorf("Enforces(%q, %v) = %v", backend, p, got)
+			}
 		}
 	}
-	for _, b := range []string{"opencode", "kimi", "grok", "", "unknown"} {
-		if Enforces(b) {
-			t.Errorf("Enforces(%q) = true", b)
+}
+
+func TestEnforcingBackendsAndHonouredByAgreeWithTheVerdicts(t *testing.T) {
+	if got, want := EnforcingBackends(None), []string{"claude_code", "claw", "codex", "pi"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("EnforcingBackends(none) = %v, want %v", got, want)
+	}
+	if got, want := EnforcingBackends(All), []string{"claude_code", "claw", "codex", "kimi", "opencode", "pi"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("EnforcingBackends(all) = %v, want %v", got, want)
+	}
+	for backend, want := range map[string][]string{
+		"kimi":     {"workspace", "all"},
+		"opencode": {"all"},
+		"grok":     nil,
+		"codex":    Values,
+	} {
+		if got := HonouredBy(backend); !reflect.DeepEqual(got, want) {
+			t.Errorf("HonouredBy(%q) = %v, want %v", backend, got, want)
 		}
+	}
+}
+
+func TestDeclaredExcludesOnlyTheDefault(t *testing.T) {
+	for source, want := range map[string]bool{"": false, "default": false, "env": true, "workflow": true, "node": true, "run_override": true} {
+		if got := Declared(source); got != want {
+			t.Errorf("Declared(%q) = %v, want %v", source, got, want)
+		}
+	}
+}
+
+func TestRemedyNamesTheWaysOut(t *testing.T) {
+	got := Remedy("kimi", None, "kimi reads the walk")
+	for _, want := range []string{"kimi reads the walk", "workspace, all", "claude_code, claw, codex, pi", "ADR-119"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Remedy = %q, missing %q", got, want)
+		}
+	}
+	if got := Remedy("grok", None, "r"); !strings.Contains(got, "drop the declared value") {
+		t.Errorf("Remedy for a backend that applies no policy = %q, want it to suggest dropping the value", got)
 	}
 }
 

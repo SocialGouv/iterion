@@ -746,7 +746,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1284,7 +1284,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -2361,7 +2361,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },

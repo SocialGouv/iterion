@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 )
 
 func TestIOTaskRoundTrip(t *testing.T) {
@@ -43,6 +45,8 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		InteractionEnabled:    true,
 		ResumeAnswer:          "yes please",
 		SettingsHooks:         json.RawMessage(`{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}`),
+		AmbientContext:        ambient.None,
+		AmbientContextSource:  "workflow",
 	}
 
 	ioTask := ToIOTask(original)
@@ -127,6 +131,9 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if string(got.SettingsHooks) != string(original.SettingsHooks) {
 		t.Errorf("SettingsHooks = %s, want %s", got.SettingsHooks, original.SettingsHooks)
+	}
+	if got.AmbientContext != original.AmbientContext || got.AmbientContextSource != original.AmbientContextSource {
+		t.Errorf("ambient context = %v (from %q), want %v (from %q)", got.AmbientContext, got.AmbientContextSource, original.AmbientContext, original.AmbientContextSource)
 	}
 	if got.Sandbox != nil {
 		t.Errorf("Sandbox should be nil after round-trip; runner is inside the sandbox")

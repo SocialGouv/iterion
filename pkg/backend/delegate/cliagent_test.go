@@ -29,9 +29,15 @@ type recordingRun struct {
 	allOpts []sandbox.ExecOpts
 	allArgv [][]string // argv of every call, so lifecycle commands are assertable
 	script  string     // sh -c body the fake "container" runs
+	driver  string     // Driver(); "" reads as a container driver ("recording")
 }
 
-func (r *recordingRun) Driver() string { return "recording" }
+func (r *recordingRun) Driver() string {
+	if r.driver != "" {
+		return r.driver
+	}
+	return "recording"
+}
 func (r *recordingRun) Command(ctx context.Context, argv []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(r.allOpts) == 0 {
 		r.gotOpts = opts
@@ -198,6 +204,10 @@ printf '%s\n' '{"role":"meta","type":"session.resume_hint","session_id":"s9"}'
 		t.Fatal(err)
 	}
 
+	// The default ambient policy resolves the kimi home and ~/.agents: keep
+	// both off the developer's own.
+	isolateUserHome(t)
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
 	b := &CLIAgentBackend{Protocol: kimiProtocol, Command: fake, Logger: testLogger()}
 	task := Task{
 		NodeID:       "n1",

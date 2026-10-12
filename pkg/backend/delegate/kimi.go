@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -42,8 +43,62 @@ var kimiProtocol = CLIAgentProtocol{
 		ExcludedEntries:   []string{"config.toml"},
 		WriteRegistration: writeKimiPermissionHook,
 	},
+	// kimi-code 2.1.1 reads the operator's $KIMI_CODE_HOME/AGENTS.md and
+	// ~/.agents/AGENTS.md, then the workspace's AGENTS.md, agents.md and
+	// .kimi-code/AGENTS.md from the git root down to the working directory —
+	// never above the root (TestCLILiveKimiAmbientPolicies). The workspace
+	// policy is served a home without its AGENTS.md; no switch skips the
+	// walk, so none and operator are refused (pkg/backend/ambient).
+	Ambient: &CLIAgentAmbient{
+		HomeEnv:          "KIMI_CODE_HOME",
+		DefaultHome:      ".kimi-code",
+		InstructionFiles: []string{"AGENTS.md"},
+		HostInstructions: kimiHostInstructions,
+	},
 	// MapEffort nil: kimi-code has no reasoning-effort dial.
 	// ResolveEnv nil: kimi reads its own credentials from the host env/config.
+}
+
+// kimiGenericInstructionNames are the files kimi reads from ~/.agents, the
+// first one found winning.
+var kimiGenericInstructionNames = []string{"AGENTS.md", "agents.md"}
+
+// kimiHostInstructions reports the instruction files kimi would read from
+// outside the workspace walk for this task: it resolves the user's home from
+// HOME, the spawn's own value first, so no overlay of its home can withhold
+// those files. When the workspace's repo root IS the home (dotfiles repos, CI
+// images whose HOME sits in a repository), kimi's walk starts at the home and
+// its root-level files load too — operator files as far as the policy is
+// concerned, so they are reported as well.
+func kimiHostInstructions(task Task) []string {
+	home := taskEnv(task, "HOME")
+	if home == "" {
+		var err error
+		if home, err = os.UserHomeDir(); err != nil {
+			return nil
+		}
+	}
+	var files []string
+	for _, name := range kimiGenericInstructionNames {
+		path := filepath.Join(home, ".agents", name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			files = append(files, path)
+			break
+		}
+	}
+	if root := ambient.RepoRoot(task.WorkDir); root != "" && filepath.Clean(root) == filepath.Clean(home) {
+		if info, err := os.Stat(filepath.Join(home, ".kimi-code", "AGENTS.md")); err == nil && !info.IsDir() {
+			files = append(files, filepath.Join(home, ".kimi-code", "AGENTS.md"))
+		}
+		for _, name := range kimiGenericInstructionNames {
+			path := filepath.Join(home, name)
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				files = append(files, path)
+				break
+			}
+		}
+	}
+	return files
 }
 
 func writeKimiPermissionHook(realHome, shadowHome, command string) error {

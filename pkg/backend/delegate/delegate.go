@@ -634,6 +634,13 @@ type Task struct {
 	// built outside the executor still gets the default.
 	AmbientContext ambient.Policy
 
+	// AmbientContextSource is the precedence level AmbientContext came from
+	// (ambient.ResolveSourced): "run_override", "node", "workflow" or "env"
+	// for a declared value, "default" or "" for the default. A backend that
+	// finds, on this host, a file it cannot keep out refuses a declared
+	// policy and applies the default as far as it can (ambient.Declared).
+	AmbientContextSource string
+
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the
 	// (possibly sandboxed, IPC) claw runner can rebuild the rewrite.Chain. Each

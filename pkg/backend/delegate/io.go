@@ -93,6 +93,7 @@ type IOTask struct {
 	AutoMemoryDir          string                `json:"auto_memory_dir,omitempty"`
 	AutoMemoryPrompt       string                `json:"auto_memory_prompt,omitempty"`
 	AmbientContext         string                `json:"ambient_context,omitempty"`
+	AmbientContextSource   string                `json:"ambient_context_source,omitempty"`
 	CompressMode           string                `json:"compress_mode,omitempty"`
 	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
 	SettingsHooks          json.RawMessage       `json:"settings_hooks,omitempty"`
@@ -213,6 +214,7 @@ func ToIOTask(t Task) IOTask {
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
 		AmbientContext:         t.AmbientContext.String(),
+		AmbientContextSource:   t.AmbientContextSource,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,
@@ -275,6 +277,7 @@ func FromIOTask(t IOTask) Task {
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
 		AmbientContext:         ambientFromIO(t.AmbientContext),
+		AmbientContextSource:   t.AmbientContextSource,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,
