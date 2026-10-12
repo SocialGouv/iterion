@@ -40,7 +40,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
-| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
+| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
@@ -111,7 +111,7 @@ from a plausible one (#1417). The cells:
 | `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unwired (gap) |
 | `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
 | `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
-| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+| `opencode` | unknown | refused (C176) | proven (resume · fork) · unwired (persist) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
 
 The citations, per cell that is not self-evident from the table:
 
@@ -280,10 +280,17 @@ The citations, per cell that is not self-evident from the table:
   never pauses — the interaction protocol is prompt text only). Sandbox is `unwired (no image)`:
   the stock image ships no opencode binary, so a sandboxed node dies at
   `exec: not found` with nothing refusing it earlier — see
-  [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork:
-  the CLI has `-s/--session` and reports a session id, but
-  `SessionResumeCapability` does not list opencode, so `session: persist`
-  logs `cannot resume; running fresh`.
+  [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork is
+  proven by `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the
+  real opencode 1.19.0 CLI, driven through iterion's own `Execute`, against
+  a scripted model on `127.0.0.1` — the resumed turn's request carries the
+  earlier turn, a fork answers under a new id with the whole history, and an
+  unknown id fails with `Session not found`. No credential and no model
+  spend: what is proven is the CLI's rehydration, not a model's use of it.
+  `session: persist` stays unwired: opencode keeps its sessions in one
+  SQLite database, with no per-session file for the packer, so
+  `SessionResumeCapability` does not list it and a persist node logs
+  `cannot resume; running fresh`.
 - **kimi / grok.** The gate is **deny-only** — an external `PreToolUse`
   hook can hard-block but cannot pause the run — so `ask` is refused at
   compile time (C176). The deny half *is* proven live with a filesystem
@@ -320,7 +327,8 @@ The citations, per cell that is not self-evident from the table:
   codex/kimi/grok/opencode (C267).
 
 The open parity gaps, in one list: codex/kimi/grok/opencode MCP
-servers; kimi/grok/opencode session resume/fork (silent, unguarded); pi's print-mode
+servers; kimi/grok session resume/fork (silent, unguarded); opencode's
+`session: persist` (no packer for its SQLite session store); pi's print-mode
 runtime refusals without diagnostic codes; and every `unknown` cell,
 which is one live e2e away from proven.
 
@@ -2322,7 +2330,7 @@ backend. That is **distinct** from calling the xAI HTTP API via
 mode is a **subcommand**, and iterion drives it as:
 
 ```
-opencode --format json [-m <provider/model>] [--variant <effort>] run
+opencode --format json [-m <provider/model>] [--variant <effort>] [--session <id> [--fork=true]] run
 ```
 
 with the composed prompt on **stdin**.
@@ -2352,6 +2360,20 @@ agent implement:
   options — so iterion passes its level through verbatim and lets opencode
   refuse an unknown one explicitly. `xhigh` and `ultracode` collapse onto
   `high` before argv.
+- **Session resume and fork** for `session: inherit`, `inherit_if_available`
+  and `fork`. Every event of the stream carries the session id; iterion hands
+  it back as `--session <id>` (plus `--fork=true` for a fork, which opencode
+  branches into a new id — spelled with its value because a bare boolean
+  right before `run` makes the parser take `run` as that value and print its
+  help), and a schema re-ask continues the session it failed in rather than
+  restarting the turn. Proven against the real opencode 1.19.0 CLI by
+  `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the model is a
+  scripted server on `127.0.0.1`, and the authority is what the CLI sends it
+  — a resumed turn's request carries the earlier turn. An id opencode no
+  longer holds is version-dependent: 1.19 exits 1 with `Session not found`
+  (measured), so the call fails (and `inherit_if_available` degrades to a
+  fresh session, loudly); 2.x creates a session under that id instead (read
+  from its source), so there it resumes as an empty conversation.
 
 #### What it does NOT bring
 
@@ -2372,10 +2394,12 @@ moves fast, so re-measure before trusting a claim against another build.
 - **No async questions.** `interaction: async` is refused by **C267**;
   `interaction:` in its synchronous form is inert, as on every CLI-agent
   backend, and **C271** now says so at compile time.
-- **No session resume or fork.** The CLI has `-s/--session` and every event
-  carries a `sessionID`, so the pieces exist, but nothing is wired: a
-  `session: persist` node logs `backend "opencode" cannot resume; running
-  fresh` and runs fresh.
+- **No `session: persist`.** Persist carries a conversation across visits
+  by packing the CLI's session files after each one, and opencode keeps
+  every session in one SQLite database (`<XDG data>/opencode/opencode.db`,
+  1.19 and 2.x alike) with no file per session to pack. A `session: persist`
+  node therefore logs `backend "opencode" cannot resume; running fresh` and
+  runs fresh; packing would take opencode's own `export` / `import`.
 - **No MCP forwarding, and `tools:` does not constrain it.** opencode runs
   its own tool set: the list never reaches the CLI
   (`toolcatalog.ReceivesToolList`), so a `tools:` line on such a node is
