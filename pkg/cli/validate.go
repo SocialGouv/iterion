@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -972,6 +973,14 @@ func (o ValidateOptions) wantsDryRun() bool {
 // errors, said as such — under the dry run's silent logger the engine's
 // own warning would reach no one, and the death would read as the bot's.
 // A null is no value: the var keeps its default, or is shaped.
+//
+// Each value is read AS WRITTEN (ir.ResolveVarTextAsWritten), the reading a
+// published contract takes: `${MODE:-fast}` is "fast" and `${LIST:-a,b}` the
+// list ["a","b"] — the shell's own environment is not consulted, so the
+// verdict and the walk are the same on a laptop and in CI. A value that
+// still holds a reference once its defaults resolve — `${PROJECT_DIR}/x`,
+// a list of such paths — has no answer here: it is handed to the dry run's
+// engine as the text, which reads it as a run does.
 func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error) {
 	vars, err := ParseVarFlags(opts.Vars)
 	if err != nil {
@@ -1006,14 +1015,29 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 		if decl == nil {
 			return nil, fmt.Errorf("%s %q, which names no var of the workflow (declared: %s)", from[k], k, strings.Join(declaredVars(wf), ", "))
 		}
-		typed, err := ir.CoerceVarValue(v, decl.Type)
+		typed, err := ir.ResolveVarTextAsWritten(v, decl.Type)
 		if err != nil {
 			return nil, fmt.Errorf("%s %q: %v is no %s: %v", from[k], k, v, decl.Type, err)
+		}
+		// A reading that kept a reference is handed on as the text, for the
+		// engine to read as a run does: it passes a list or a document
+		// through as it is, so their elements would keep `${PROJECT_DIR}`
+		// where a run resolves it. The reading kept one exactly when it
+		// differs from the reading that resolves every reference to "".
+		bare, err := ir.ResolveVarText(v, decl.Type, noEnvironment)
+		if err != nil {
+			return nil, fmt.Errorf("%s %q: %v is no %s with its references unset: %v", from[k], k, v, decl.Type, err)
+		}
+		if !reflect.DeepEqual(typed, bare) {
+			continue
 		}
 		inputs[k] = typed
 	}
 	return inputs, nil
 }
+
+// noEnvironment answers every reference with the empty string.
+func noEnvironment(string) string { return "" }
 
 // joinErrors lists errors on one line, for a result field.
 func joinErrors(errs []error) string {

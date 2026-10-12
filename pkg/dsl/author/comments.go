@@ -16,12 +16,12 @@ import (
 // only some of them (one right after the opening bracket is dropped) and
 // hangs the one after the closing bracket on the collection: a flow
 // collection's comments are read off its source, in order, that one last.
-// The writer keeps none of them (Write renders the program, not the
-// document), so a rewrite of a document that carries one would lose it:
-// `iterion fmt` asks here before it rewrites a document in its canonical
-// form, and refuses when the answer is not empty; `fmt --to bot` counts
-// them and names the first. A source that is not YAML has no comments to
-// report.
+// Write renders the program, not the document, and keeps none of them;
+// WriteKeepingComments carries them onto the nodes it writes, and `iterion
+// fmt` compares this list for the source and the written form before it
+// rewrites a document in its canonical form, refusing when one would be
+// lost; `fmt --to bot` counts them and names the first. A source that is
+// not YAML has no comments to report.
 func Comments(src []byte) []string {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(src, &doc); err != nil {

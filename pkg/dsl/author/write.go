@@ -23,17 +23,42 @@ import (
 // its key — mappings keyed by name for the declarations the .bot names,
 // sequences for the ones whose order is meaning (groups, uses, nodes,
 // fallback routes, edges) — each body's keys in the registry's order, and
-// every value in YAML's native form. Comments other than the frontmatter
-// are not carried: the document is a draft, the .bot the truth.
+// every value in YAML's native form. The .bot's comments other than the
+// frontmatter are not carried: the document is a draft, the .bot the truth.
+// A document rewritten in place keeps its own YAML comments through
+// WriteKeepingComments.
 //
 // An AST the document cannot say — two workflows, a with map or a params
 // block naming a key twice, a prompt whose name YAML cannot write plain —
 // is refused by name rather than written otherwise.
 func Write(f *ast.File) ([]byte, error) {
+	return write(f, nil)
+}
+
+// WriteKeepingComments is Write for a document rewritten in place: the YAML
+// comments of src — the document f was read from — ride the node they hang
+// on in src to the node at the same path in the document written (see
+// keepComments). A comment whose node the written document does not hold at
+// that path is not carried; Comments of the two texts says which, and a
+// caller that must not lose one compares them.
+func WriteKeepingComments(f *ast.File, src []byte) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return nil, fmt.Errorf("author: the document's comments cannot be read: %w", err)
+	}
+	return write(f, &doc)
+}
+
+// write renders f, with the comments of the document from when it is not nil.
+func write(f *ast.File, from *yaml.Node) ([]byte, error) {
 	w := &writer{inline: inlineBodies(f.Prompts)}
 	root := w.file(f)
 	if w.err != nil {
 		return nil, w.err
+	}
+	if from != nil {
+		root = &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}
+		keepComments(from, root)
 	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
