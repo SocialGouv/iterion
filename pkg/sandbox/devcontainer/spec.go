@@ -1,8 +1,8 @@
 package devcontainer
 
 import (
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -47,22 +47,22 @@ func ToSandboxSpec(f *File) (sandbox.Spec, []string) {
 	}
 
 	// Merge remoteEnv first, then containerEnv (containerEnv wins on
-	// collision because it is the spec-canonical field). Both maps may
-	// be nil — append to a fresh map and the zero-len cases are no-ops.
-	// Nothing denied or malformed leaves this function: it is the one
-	// seam where repo-authored env becomes spec.Env, so it is the one
-	// place the removal has to live. A malformed name would fail the
-	// docker driver's --env guard and kill the run outright, while the
+	// collision because it is the spec-canonical field), then screen the
+	// winners: a refused containerEnv value removes the name rather than
+	// letting the remoteEnv value it overrode ride in its place. Both
+	// maps may be nil — the zero-len cases are no-ops. Nothing denied or
+	// malformed leaves this function: it is the one seam where
+	// repo-authored env becomes spec.Env, so it is the one place the
+	// removal has to live. A malformed name would fail the docker
+	// driver's --env guard and kill the run outright, while the
 	// kubernetes driver drops it silently — refusing here makes both
 	// drivers agree, with the removal named in the event.
-	if len(f.RemoteEnv) > 0 || len(f.ContainerEnv) > 0 {
-		spec.Env = make(map[string]string, len(f.RemoteEnv)+len(f.ContainerEnv))
-		for k, v := range f.RemoteEnv {
-			if usableRepoEnvEntry(k, v) {
-				spec.Env[k] = v
-			}
-		}
-		for k, v := range f.ContainerEnv {
+	repoEnv := make(map[string]string, len(f.RemoteEnv)+len(f.ContainerEnv))
+	maps.Copy(repoEnv, f.RemoteEnv)
+	maps.Copy(repoEnv, f.ContainerEnv)
+	if len(repoEnv) > 0 {
+		spec.Env = make(map[string]string, len(repoEnv))
+		for k, v := range repoEnv {
 			if usableRepoEnvEntry(k, v) {
 				spec.Env[k] = v
 			}
@@ -84,19 +84,18 @@ func ToSandboxSpec(f *File) (sandbox.Spec, []string) {
 		spec.PostCreate = strings.TrimSpace(f.PostCreateCommand.AsShell())
 	}
 
-	// Report what was removed — once per name even when both env maps
-	// carried it — sorted so event payloads and test expectations are
-	// stable regardless of map iteration order.
-	denied := make([]string, 0, len(f.RemoteEnv)+len(f.ContainerEnv))
-	for _, env := range []map[string]string{f.RemoteEnv, f.ContainerEnv} {
-		for k := range env {
-			if !usableRepoEnvEntry(k, env[k]) {
-				denied = append(denied, k)
-			}
+	// Report what spec.Env goes without — every name the repository
+	// wrote that the final map lacks, so the report never names a
+	// repository value that rides in the container — sorted so event
+	// payloads and test expectations are stable regardless of map
+	// iteration order.
+	denied := make([]string, 0, len(repoEnv))
+	for k := range repoEnv {
+		if _, kept := spec.Env[k]; !kept {
+			denied = append(denied, k)
 		}
 	}
-	sort.Strings(denied)
-	denied = slices.Compact(denied)
+	slices.Sort(denied)
 	return spec, denied
 }
 
@@ -116,43 +115,227 @@ func usableRepoEnvEntry(name, value string) bool {
 
 // DeniedEnvKey reports whether an env key from a target repository's
 // devcontainer.json is in the deny class — names a reviewed repo must
-// not plant into the sandbox environment (#2303). The container's env
-// is what the LLM backends forward verbatim, so a planted
-// *_BASE_URL (and its sibling spellings OPENAI_API_BASE /
-// AZURE_OPENAI_ENDPOINT) re-routes every model call to the planter's
-// collector, a planted *_API_KEY/*_TOKEN/*_SECRET leaks whatever the
-// backends inject, *_PROXY/NO_PROXY re-routes everything else, and
-// the exact names execute the planter's code or redirect the run's
-// own tooling before any prompt is read: LD_PRELOAD, NODE_OPTIONS,
-// PATH, BASH_ENV, ENV (shell startup files), GOFLAGS (-toolexec runs
-// at every go build), GIT_CONFIG_COUNT / GIT_CONFIG_GLOBAL /
-// GIT_CONFIG_SYSTEM and GIT_ASKPASS (a planted gitconfig rewrites
-// every git URL, an askpass helper intercepts git credentials — the
-// GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n pair variables are not denied
-// because the runtime's own GIT_CONFIG_COUNT seeding overwrites
-// whatever a planted pair activates), CLAUDE_CONFIG_DIR / CODEX_HOME
-// (a planted settings.json speaks with the operator's ambient
-// credentials), ANTHROPIC_CUSTOM_HEADERS (the codebase itself
-// neutralises it on funded routes because a foreign credential rides
-// them).
+// not plant into the sandbox environment (#2303). The container's env is
+// the env of every process iterion runs there for the operator — the
+// in-container claw runner, the agent CLIs and the commands they spawn,
+// git — and a variable iterion does not set for such a process keeps the
+// planted value: the runner is forwarded a host variable only when the
+// host has one. So:
 //
-// The suffixes match case-insensitively (http_proxy routes as much as
-// HTTP_PROXY); the exact names are the load-bearing uppercase forms.
-// A key outside the class still configures the repo's own sandbox —
-// the denylist removes trust, it does not review content.
+//   - a planted *_BASE_URL (and its sibling spellings OPENAI_API_BASE,
+//     ANTHROPIC_UNIX_SOCKET, AZURE_OPENAI_ENDPOINT) re-routes every model
+//     call to the planter's collector, *_API_KEY / *_TOKEN / *_SECRET
+//     leak whatever the backends inject, *_PROXY / NO_PROXY re-routes
+//     everything else;
+//   - a planted cloud-provider switch (CLAUDE_CODE_USE_BEDROCK, _VERTEX,
+//     _FOUNDRY, …), which the claude CLI reads before any token, with the
+//     planter's AWS, Google or Azure credentials sends every prompt the
+//     CLI sends to the planter's cloud account; the planter's credentials
+//     alone do it under a switch, or a bedrock/vertex model, the operator
+//     chose;
+//   - the agents' and the runner's configuration namespaces and config
+//     homes are the operator's settings: a planted settings file or
+//     session script speaks with the operator's ambient credentials, and
+//     a planted telemetry destination receives what the CLI records;
+//   - git's configuration is the operator's too: a planted variable
+//     rewrites its URLs, runs its transport or credential helper, points
+//     it at other objects or another repository, or names its commits;
+//   - the rest execute the planter's code or redirect the run's own
+//     tooling before any prompt is read: the dynamic loader and the
+//     modules glibc and OpenSSL load, the node and bun runtimes, the shell
+//     the claude CLI picks and bash's, sh's and zsh's startup variables,
+//     PATH, `go build -toolexec`, and the TLS trust of the connections
+//     that carry credentials.
+//
+// Suffixes and namespaces match case-insensitively (http_proxy routes as
+// much as HTTP_PROXY); the exact names are the load-bearing forms, matched
+// as written, so a lower-case spelling a consumer reads is its own entry.
+//
+// Where the class STOPS, and why — the claude CLI carries Anthropic's own
+// 192-name list of environment that executes code (its `f$` set), which is
+// the reference table this class was swept against. The class takes the
+// names that steer a process ITERION starts for the operator; it
+// deliberately leaves out:
+//
+//   - the toolchain variables NO process iterion starts reads — compilers
+//     and their flags, build systems, language runtimes, version managers
+//     (CC, CFLAGS, MAVEN_OPTS, RUSTC*, PYTHON*, GEM_HOME, JAVA_HOME,
+//     PYENV_ROOT, …): they configure builds of the repository's own code,
+//     which already runs in that container (its postCreateCommand, its
+//     tests), and a devcontainer that sets them is doing its job. That
+//     question, not the family, is the membership test: GOFLAGS, PATH and
+//     NIX_* are toolchain variables too, and they are denied because
+//     iterion's own nodes and provisioning run under them;
+//   - what needs a terminal nobody has there (PAGER, MANPAGER, LESSOPEN,
+//     BROWSER, PROMPT_COMMAND);
+//   - HOME and the XDG_* dirs, whose own road — a planted git config, an
+//     agent's credential store — is #2318's subject.
+//
+// A key outside the class still configures the repo's own sandbox — the
+// denylist removes trust, it does not review content.
 func DeniedEnvKey(name string) bool {
-	switch name {
-	case "LD_PRELOAD", "NODE_OPTIONS", "PATH",
-		"BASH_ENV", "ENV", "GIT_CONFIG_COUNT",
-		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_ASKPASS", "GOFLAGS",
-		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
-		"ANTHROPIC_CUSTOM_HEADERS", "AZURE_OPENAI_ENDPOINT", "OPENAI_API_BASE":
+	if deniedEnvNames[name] {
 		return true
 	}
 	upper := strings.ToUpper(name)
-	return strings.HasSuffix(upper, "_BASE_URL") ||
-		strings.HasSuffix(upper, "_API_KEY") ||
-		strings.HasSuffix(upper, "_TOKEN") ||
-		strings.HasSuffix(upper, "_SECRET") ||
-		strings.HasSuffix(upper, "_PROXY")
+	for _, suffix := range deniedEnvSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	for _, prefix := range deniedEnvNamespaces {
+		if strings.HasPrefix(upper, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// deniedEnvSuffixes route a call or carry a credential under any prefix.
+var deniedEnvSuffixes = []string{"_BASE_URL", "_API_KEY", "_TOKEN", "_SECRET", "_PROXY"}
+
+// deniedEnvNamespaces are the configuration namespaces of the agents
+// iterion runs for the operator, of the SDKs their providers
+// authenticate through, and of the code loaders that start them.
+var deniedEnvNamespaces = []string{
+	// The in-container runner: every knob and switch it is forwarded; the
+	// HOOK_* payload its settings hooks — the permission gate among them —
+	// are told about; and claw-code-go's own CLAWD_ namespace, which CLAW_
+	// does not prefix: the payload a plugin tool is given (CLAWD_TOOL_NAME,
+	// CLAWD_TOOL_INPUT, CLAWD_PLUGIN_*) and its telemetry knobs.
+	"ITERION_", "CLAW_", "CLAWD_", "HOOK_",
+	// The claude CLI: its cloud-provider switches and their auth skips,
+	// its shell override, session-environment script, config dir and
+	// certificate store, its telemetry switch; its remote mode's agent
+	// proxy and token file; the ANT_ twins of its telemetry variables.
+	"CLAUDE_", "CCR_", "ANT_OTEL_", "ANT_CLAUDE_CODE_",
+	// The Anthropic client of the claude CLI: ANTHROPIC_UNIX_SOCKET, the
+	// Foundry resource and the Vertex project a call is spent in, and
+	// ANTHROPIC_CUSTOM_HEADERS, which claw applies too — last, so it rides
+	// a funded route.
+	"ANTHROPIC_",
+	// opencode: its config file, config dir, inline config, permissions.
+	// (Its credential STORE is under XDG_DATA_HOME, which the HOME/XDG
+	// family owns — #2318, not this class.)
+	"OPENCODE_",
+	// The AWS SDK chain Bedrock authenticates through: credentials,
+	// profiles and their files, the container and instance credential
+	// endpoints, the region, AWS_ENDPOINT_URL_<SERVICE>.
+	"AWS_",
+	// azidentity and Azure OpenAI: credentials, authority host, endpoint.
+	"AZURE_",
+	// Google ADC, which Vertex authenticates through: the service-account
+	// file, project and region, the metadata server, gcloud's credential
+	// dir — and the claude CLI's per-model Vertex region.
+	"GOOGLE_", "GCE_METADATA_", "CLOUDSDK_", "VERTEX_REGION_",
+	// Where an OpenTelemetry exporter ships what it records: the claude
+	// CLI's telemetry carries the prompts once the operator opts in.
+	"OTEL_",
+	// Error tracking: the iterion binary is its own in-container runner and
+	// calls errtrack.Init for every command but the permission hook, so a
+	// planted SENTRY_DSN is not a redirection of the operator's reporting —
+	// it switches an outbound channel ON (pkg/errtrack).
+	"SENTRY_",
+	// The forge CLIs a tool node runs for the operator: their config dir
+	// chooses the identity `gh`/`glab` speak with, GH_HOST the API they
+	// speak to.
+	"GH_", "GLAB_",
+	// nix, which iterion's own provisioning step drives (devbox install, run
+	// as the container's post-create): NIX_CONFIG carries a whole nix.conf,
+	// and a `plugin-files` in it makes nix dlopen the file it names on any
+	// invocation, before any build — the repository's shared object would
+	// load into iterion's own step. NIX_SSL_CERT_FILE (nix does not honour
+	// SSL_CERT_FILE) and the store's NIX_PATH/NIX_REMOTE ride along.
+	"NIX_",
+	// git and its forge siblings: its config (GIT_CONFIG_*), transport (GIT_SSH_COMMAND,
+	// GIT_PROXY_COMMAND, GIT_EXEC_PATH, GIT_ALLOW_PROTOCOL), credential
+	// prompt (GIT_ASKPASS) and TLS trust, the repository and object store
+	// it acts on, its trace files, its identity.
+	"GIT_",
+	// The dynamic loader (LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH) loads the
+	// planter's shared object into every process, OpenSSL's configuration
+	// (a provider or engine module) into every OpenSSL-linked one; a
+	// non-root bash imports a function from every BASH_FUNC_<name>%% — a
+	// planted `git` function runs in place of git in every `bash -c`; the
+	// bun runtime the claude CLI is built on takes its options from
+	// BUN_OPTIONS, where --preload runs the planter's script inside the
+	// CLI's own process; and npm turns NPM_CONFIG_NODE_OPTIONS /
+	// NPM_CONFIG_SCRIPT_SHELL into the options and the shell of every node
+	// child it spawns — `npx <server>`, the documented way an MCP server
+	// starts, runs the planter's module in that server's own process.
+	"LD_", "OPENSSL_", "BASH_FUNC_", "BUN_", "NPM_CONFIG_",
+}
+
+// deniedEnvNames are the exact names outside the families above.
+var deniedEnvNames = map[string]bool{
+	// The node runtime's options and module path, glibc's iconv modules,
+	// the shell the claude CLI picks, bash's startup file and options (in a
+	// non-root bash, SHELLOPTS=xtrace runs a planted PS4's command
+	// substitutions), sh's and zsh's startup files, the command search
+	// path, `go build -toolexec`, ssh's askpass helper.
+	"NODE_OPTIONS": true, "NODE_PATH": true, "GCONV_PATH": true,
+	"SHELL": true, "BASH_ENV": true, "SHELLOPTS": true, "BASHOPTS": true, "PS4": true,
+	"ENV": true, "ZDOTDIR": true, "PATH": true, "GOFLAGS": true,
+	"SSH_ASKPASS": true, "SSH_ASKPASS_REQUIRE": true,
+	// git's editor chain is GIT_EDITOR (denied by GIT_), core.editor,
+	// VISUAL, EDITOR: the last two run the planter's program in a `git
+	// commit` an agent makes with no message of its own.
+	"EDITOR": true, "VISUAL": true,
+	// GNU tar prepends TAR_OPTIONS to its own arguments, and
+	// --checkpoint-action=exec= is one: the planter's program runs in each
+	// of the tar steps ITERION starts in the container — the kubernetes
+	// driver's workspace populate and export, the scratch bank and its
+	// restore.
+	"TAR_OPTIONS": true,
+	// The go command a bot's build step runs: GOENV names a file that sets
+	// every go variable the env leaves unset — GOFLAGS included, so it
+	// re-opens that one — GOTOOLCHAIN downloads and runs another toolchain,
+	// GOROOT picks the one in use, GOAUTH names a program run for module
+	// credentials. (GOPROXY and GOPRIVATE stay out: they point the
+	// repository's own dependency fetch, which a devcontainer legitimately
+	// configures.)
+	"GOENV": true, "GOTOOLCHAIN": true, "GOROOT": true, "GOAUTH": true,
+	// The cluster and daemon an operator-authored deploy step talks to, and
+	// the credential programs they run: a kubeconfig's `exec` plugin runs on
+	// every kubectl invocation, a docker config's `credsStore` names a
+	// docker-credential-<name> binary.
+	"KUBECONFIG": true, "DOCKER_HOST": true, "DOCKER_CONFIG": true,
+	// The agents' config homes (CLAUDE_CONFIG_DIR rides CLAUDE_).
+	"CODEX_HOME": true, "KIMI_CODE_HOME": true, "PI_CODING_AGENT_DIR": true,
+	// Endpoints, projects and regions off the suffix rule; the claude
+	// CLI's agent proxy and beta tracing.
+	"OPENAI_API_BASE": true, "BEDROCK_REGION": true, "CLOUD_ML_REGION": true,
+	// The claude CLI reads BOTH spellings of the gcloud project, and this
+	// table is case-SENSITIVE on purpose: lower-case `path` names no
+	// variable the container's processes read, and a repository may use it.
+	"GCLOUD_PROJECT": true, "gcloud_project": true,
+	"AGENT_PROXY_URL": true, "BETA_TRACING_ENDPOINT": true,
+	"ENABLE_BETA_TRACING_DETAILED": true, "ENABLE_ENHANCED_TELEMETRY_BETA": true,
+	// The endpoint the claude CLI falls back to when no ANTHROPIC_BASE_URL
+	// is set — the usual case on a forfait run, where it then IS the API
+	// base — and reads first at its session-ingress origin check; and the
+	// binaries it spawns by a path env alone names: its guest-vitals
+	// emitter, the agent SDK's native binary, a skill's browser.
+	"SESSION_INGRESS_URL": true,
+	"VITALS_EMITTER_BIN":  true, "SDK_NATIVE_BIN": true, "DS_CHROMIUM_PATH": true,
+	// Azure's managed-identity chain, which azidentity's
+	// DefaultAzureCredential authenticates a foundry node through when no
+	// Azure key is set: these name the server that mints its token, and
+	// the Arc leg reads a file that server's answer names. Off the AZURE_
+	// prefix, so one entry each.
+	"IDENTITY_ENDPOINT": true, "IDENTITY_HEADER": true, "IDENTITY_SERVER_THUMBPRINT": true,
+	"IMDS_ENDPOINT": true, "MSI_ENDPOINT": true, "DEFAULT_IDENTITY_CLIENT_ID": true,
+	"MSAL_FORCE_REGION": true,
+	// The TLS trust of the connections that carry credentials: node for the
+	// CLIs, OpenSSL and Go's crypto/x509 for the runner, grpc-js (which
+	// REPLACES its root set, where NODE_EXTRA_CA_CERTS appends), and the
+	// bundles the drivers themselves point at the per-run CA in inspection
+	// mode (sandbox/docker caInjection) — that set, not every runtime's:
+	// another language's bundle configures the repository's own tooling.
+	"NODE_EXTRA_CA_CERTS": true, "NODE_TLS_REJECT_UNAUTHORIZED": true,
+	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
+	"CURL_CA_BUNDLE": true, "REQUESTS_CA_BUNDLE": true,
+	// grpc-js REPLACES its root set from this one, where NODE_EXTRA_CA_CERTS
+	// only appends, and takes its cipher list from its twin.
+	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH": true, "GRPC_SSL_CIPHER_SUITES": true,
 }

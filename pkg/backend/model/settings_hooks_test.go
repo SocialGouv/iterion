@@ -94,6 +94,101 @@ func TestRegisterSettingsHooksJSON_BridgesAllExportedEvents(t *testing.T) {
 	}
 }
 
+// A settings hook — the permission gate among them — is told about its
+// event through HOOK_* variables, and about nothing else: on an event that
+// carries no prompt and no history size, those names arrive EMPTY, not
+// inherited. In a sandboxed run the inherited environment is the
+// container's, which a reviewed repository contributes to (its
+// devcontainer's containerEnv, its image's ENV, the workspace .env), so a
+// gate that reads HOOK_USER_PROMPT would otherwise decide a tool call on a
+// value the repository wrote.
+func TestRegisterSettingsHooksJSON_HookPayloadIsNeverInherited(t *testing.T) {
+	for _, name := range []string{"HOOK_USER_PROMPT", "HOOK_MESSAGE_COUNT", "HOOK_TOOL_OUTPUT", "HOOK_TOOL_IS_ERROR"} {
+		t.Setenv(name, "planted by the repository")
+	}
+	marker := filepath.Join(t.TempDir(), "seen.txt")
+	doc := json.RawMessage(`{
+		"PreToolUse": [{"hooks": [{"type": "command", "command": "printf '[%s][%s][%s][%s]' \"$HOOK_USER_PROMPT\" \"$HOOK_MESSAGE_COUNT\" \"$HOOK_TOOL_OUTPUT\" \"$HOOK_TOOL_IS_ERROR\" > ` + marker + `"}]}]
+	}`)
+	r := hooks.NewRunner()
+	if n := registerSettingsHooksJSON(r, doc, nil); n != 1 {
+		t.Fatalf("registerSettingsHooksJSON wired %d events, want 1", n)
+	}
+	if _, err := r.Fire(context.Background(), hooks.Context{
+		Event:     hooks.PreToolUse,
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "true"},
+	}); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("PreToolUse hook did not run: %v", err)
+	}
+	if string(data) != "[][][][0]" {
+		t.Errorf("hook saw %s, want [][][][0]: a tool call carries no prompt, no message count and no result yet, and it has not failed — the hook must read none of the ambient values", data)
+	}
+}
+
+// The PostToolUse pair is where the tool's own outcome travels, under the
+// names claw's runner uses: a hook that branches on HOOK_TOOL_IS_ERROR must
+// read THIS call's outcome, never a planted one.
+func TestRegisterSettingsHooksJSON_ToolOutcomeIsTheCallsOwn(t *testing.T) {
+	t.Setenv("HOOK_TOOL_OUTPUT", "planted output")
+	t.Setenv("HOOK_TOOL_IS_ERROR", "1")
+	marker := filepath.Join(t.TempDir(), "outcome.txt")
+	doc := json.RawMessage(`{
+		"PostToolUse": [{"hooks": [{"type": "command", "command": "printf '[%s][%s]' \"$HOOK_TOOL_OUTPUT\" \"$HOOK_TOOL_IS_ERROR\" > ` + marker + `"}]}]
+	}`)
+	r := hooks.NewRunner()
+	if n := registerSettingsHooksJSON(r, doc, nil); n != 1 {
+		t.Fatalf("registerSettingsHooksJSON wired %d events, want 1", n)
+	}
+	if _, err := r.Fire(context.Background(), hooks.Context{
+		Event:      hooks.PostToolUse,
+		ToolName:   "Bash",
+		ToolInput:  map[string]any{"command": "true"},
+		ToolResult: "the real tool output",
+	}); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("PostToolUse hook did not run: %v", err)
+	}
+	if string(data) != "[the real tool output][0]" {
+		t.Errorf("hook saw %s, want [the real tool output][0]: the call succeeded and produced that output", data)
+	}
+
+	t.Run("a failed call is reported as failed", func(t *testing.T) {
+		t.Setenv("HOOK_TOOL_IS_ERROR", "0")
+		marker := filepath.Join(t.TempDir(), "failure.txt")
+		doc := json.RawMessage(`{
+			"PostToolUseFailure": [{"hooks": [{"type": "command", "command": "printf '[%s][%s]' \"$HOOK_TOOL_OUTPUT\" \"$HOOK_TOOL_IS_ERROR\" > ` + marker + `"}]}]
+		}`)
+		r := hooks.NewRunner()
+		if n := registerSettingsHooksJSON(r, doc, nil); n != 1 {
+			t.Fatalf("registerSettingsHooksJSON wired %d events, want 1", n)
+		}
+		if _, err := r.Fire(context.Background(), hooks.Context{
+			Event:      hooks.PostToolUseFailure,
+			ToolName:   "Bash",
+			ToolInput:  map[string]any{"command": "false"},
+			ToolResult: "Error: boom",
+			ToolError:  errors.New("boom"),
+		}); err != nil {
+			t.Fatalf("Fire: %v", err)
+		}
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			t.Fatalf("PostToolUseFailure hook did not run: %v", err)
+		}
+		if string(data) != "[Error: boom][1]" {
+			t.Errorf("hook saw %s, want [Error: boom][1]: the call failed, whatever the ambient value says", data)
+		}
+	})
+}
+
 // TestRegisterSettingsHooksJSON_UnmappedEventWarns: an event claw does not
 // export (SessionStart) wires nothing AND is named in a warning — never
 // dropped in silence.

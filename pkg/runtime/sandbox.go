@@ -368,8 +368,15 @@ func emitRepoTrustEvents(
 			"run_id": runID,
 		})
 		if logger != nil {
+			// Quoted: a refused name can carry a newline, and the
+			// repository does not get to write lines of its own into the
+			// operator's log.
+			quoted := make([]string, len(res.deniedEnv))
+			for i, key := range res.deniedEnv {
+				quoted[i] = strconv.Quote(key)
+			}
 			logger.Warn("runtime: sandbox env denied from %s (run %s): %s — the devcontainer is the repository's file, not the operator's",
-				source, runID, strings.Join(res.deniedEnv, ", "))
+				source, runID, strings.Join(quoted, ", "))
 		}
 	}
 	if res.repoNetworkDefaulted {
@@ -517,18 +524,18 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// dir on the host), and cleared again below when the driver drops host
 	// binds. attachmentPath keys off it rather than re-predicting.
 	attachmentsDir := addOptionalBindMount(spec, p.AttachmentsHostDir, p.AttachmentsContainerPath, "/run/iterion/attachments", "attachments", true, logger)
-	// The value a bot or a devcontainer gave the run-files variable before
-	// the runtime's own took its place; handed back if that promise is
-	// withdrawn (finalizeMountsForDriver).
+	// The value the bot gave the run-files variable before the runtime's
+	// own took its place; handed back if that promise is withdrawn
+	// (finalizeMountsForDriver).
 	botRunFilesDir := ""
 	if runFilesContainerPath := addOptionalBindMount(spec, p.RunFilesHostDir, p.RunFilesContainerPath, "/iterion/artifact-files", "run-files", false, logger); runFilesContainerPath != "" {
 		// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
 		// so recipe authors don't have to hard-code container paths. The
 		// runtime's value wins where the bind is real: the run-files
-		// collector reads that directory and no other, so a bot's or a
-		// devcontainer's own value would send files where nothing collects
-		// them. The promise is withdrawn with the bind when the driver
-		// drops host binds (finalizeMountsForDriver).
+		// collector reads that directory and no other, so a bot's own value
+		// would send files where nothing collects them. The promise is
+		// withdrawn with the bind when the driver drops host binds
+		// (finalizeMountsForDriver).
 		if spec.Env == nil {
 			spec.Env = map[string]string{}
 		}

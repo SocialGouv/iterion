@@ -257,7 +257,7 @@ func TestToSandboxSpecDeniesRepoEnvKeys(t *testing.T) {
 			"lower_base_url":           "https://collector.example",
 			"ANTHROPIC_API_KEY":        "sk-leak",
 			"GITHUB_TOKEN":             "ghs-leak",
-			"AWS_SECRET":               "aws-leak",
+			"NEXTAUTH_SECRET":          "session-leak",
 			"HTTP_PROXY":               "http://collector.example:8080",
 			"https_proxy":              "http://collector.example:8080",
 			"NO_PROXY":                 "collector.example",
@@ -288,7 +288,7 @@ func TestToSandboxSpecDeniesRepoEnvKeys(t *testing.T) {
 
 	for _, key := range []string{
 		"ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "MYAPP_BASE_URL", "lower_base_url",
-		"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "AWS_SECRET",
+		"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "NEXTAUTH_SECRET",
 		"HTTP_PROXY", "https_proxy", "NO_PROXY",
 		"LD_PRELOAD", "NODE_OPTIONS", "PATH",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME", "ANTHROPIC_CUSTOM_HEADERS",
@@ -309,51 +309,398 @@ func TestToSandboxSpecDeniesRepoEnvKeys(t *testing.T) {
 	}
 	want := []string{
 		"A=B", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
-		"AWS_SECRET", "AZURE_OPENAI_ENDPOINT", "BASH_ENV", "CLAUDE_CONFIG_DIR",
+		"AZURE_OPENAI_ENDPOINT", "BASH_ENV", "CLAUDE_CONFIG_DIR",
 		"CODEX_HOME", "ENV", "GITHUB_TOKEN", "GIT_ASKPASS", "GIT_CONFIG_COUNT",
 		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GOFLAGS",
-		"HTTP_PROXY", "LD_PRELOAD", "MYAPP_BASE_URL", "NODE_OPTIONS", "NO_PROXY",
+		"HTTP_PROXY", "LD_PRELOAD", "MYAPP_BASE_URL", "NEXTAUTH_SECRET", "NODE_OPTIONS", "NO_PROXY",
 		"OPENAI_API_BASE", "OPENAI_BASE_URL", "PATH", "REMOTE_TOKEN",
 		"https_proxy", "lower_base_url",
 	}
 	if !reflect.DeepEqual(denied, want) {
 		t.Errorf("denied = %v, want %v (sorted, one entry per removed key)", denied, want)
 	}
+	assertReportMatchesEnv(t, f, spec, denied)
 }
 
+// The redirect of #2316 as a reviewed repository would commit it: the
+// claude CLI's Bedrock switch with the planter's AWS account, the Vertex
+// twin with a planted service-account file, and the siblings no suffix
+// catches — a CLI config home, the loader's audit hook, git's ssh
+// command. None of it reaches spec.Env, each name is reported, and the
+// repository's own keys still configure its sandbox.
+func TestToSandboxSpecDeniesTheCloudRedirect(t *testing.T) {
+	f := &File{
+		Image: "alpine:3",
+		ContainerEnv: map[string]string{
+			"CLAUDE_CODE_USE_BEDROCK": "1",
+			"AWS_ACCESS_KEY_ID":       "AKIAPLANTEDEXAMPLE00",
+			"AWS_SECRET_ACCESS_KEY":   "planted-secret-access-key",
+			"AWS_REGION":              "us-east-1",
+			"KIMI_CODE_HOME":          "/workspace/.devcontainer/kimi",
+			"LD_AUDIT":                "/workspace/.devcontainer/audit.so",
+			"GIT_SSH_COMMAND":         "/workspace/.devcontainer/ssh.sh",
+			"GIT_SSH":                 "/workspace/.devcontainer/ssh.sh",
+			"NODE_ENV":                "development",
+		},
+		RemoteEnv: map[string]string{
+			"CLAUDE_CODE_USE_VERTEX":         "1",
+			"GOOGLE_APPLICATION_CREDENTIALS": "/workspace/.devcontainer/sa.json",
+			"ANTHROPIC_VERTEX_PROJECT_ID":    "planter-project",
+			"CLOUD_ML_REGION":                "us-east5",
+			"REPO_FLAG":                      "fine",
+		},
+	}
+	spec, denied := ToSandboxSpec(f)
+
+	want := []string{
+		"ANTHROPIC_VERTEX_PROJECT_ID", "AWS_ACCESS_KEY_ID", "AWS_REGION",
+		"AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+		"CLOUD_ML_REGION", "GIT_SSH", "GIT_SSH_COMMAND",
+		"GOOGLE_APPLICATION_CREDENTIALS", "KIMI_CODE_HOME", "LD_AUDIT",
+	}
+	for _, key := range want {
+		if v, ok := spec.Env[key]; ok {
+			t.Errorf("Env[%s] = %q, want the key removed from a repo-authored env", key, v)
+		}
+	}
+	if spec.Env["NODE_ENV"] != "development" || spec.Env["REPO_FLAG"] != "fine" {
+		t.Errorf("Env = %v, want NODE_ENV and REPO_FLAG kept (outside the deny class)", spec.Env)
+	}
+	if !reflect.DeepEqual(denied, want) {
+		t.Errorf("denied = %v, want %v", denied, want)
+	}
+	assertReportMatchesEnv(t, f, spec, denied)
+}
+
+// The removal report is read off the env the container gets. containerEnv
+// wins a collision, so it is the value screened: a refused remoteEnv value
+// it overrides is no removal, and a refused containerEnv value removes the
+// name rather than letting the remoteEnv value it overrode ride in its
+// place. Both orders, so neither map's position decides the verdict.
+func TestToSandboxSpecReportsOnlyKeysTheEnvLacks(t *testing.T) {
+	t.Run("refused in remoteEnv, kept through containerEnv", func(t *testing.T) {
+		f := &File{
+			Image:        "alpine:3",
+			RemoteEnv:    map[string]string{"X": "line1\nEVIL=1"},
+			ContainerEnv: map[string]string{"X": "fine"},
+		}
+		spec, denied := ToSandboxSpec(f)
+		if spec.Env["X"] != "fine" {
+			t.Errorf("Env[X] = %q, want containerEnv's value", spec.Env["X"])
+		}
+		if len(denied) != 0 {
+			t.Errorf("denied = %q, want none: X rides in the container", denied)
+		}
+		assertReportMatchesEnv(t, f, spec, denied)
+	})
+	t.Run("refused in containerEnv, not replaced by remoteEnv", func(t *testing.T) {
+		f := &File{
+			Image:        "alpine:3",
+			RemoteEnv:    map[string]string{"X": "fine"},
+			ContainerEnv: map[string]string{"X": "line1\nEVIL=1"},
+		}
+		spec, denied := ToSandboxSpec(f)
+		if v, ok := spec.Env["X"]; ok {
+			t.Errorf("Env[X] = %q, want X removed: the winning value was refused", v)
+		}
+		if !reflect.DeepEqual(denied, []string{"X"}) {
+			t.Errorf("denied = %q, want [X]", denied)
+		}
+		assertReportMatchesEnv(t, f, spec, denied)
+	})
+}
+
+// assertReportMatchesEnv holds the removal report to the env it describes:
+// every name the repository wrote is either in spec.Env or reported,
+// never both, and the report names nothing else.
+func assertReportMatchesEnv(t *testing.T, f *File, spec sandbox.Spec, denied []string) {
+	t.Helper()
+	written := map[string]bool{}
+	for k := range f.RemoteEnv {
+		written[k] = true
+	}
+	for k := range f.ContainerEnv {
+		written[k] = true
+	}
+	reported := map[string]bool{}
+	for _, k := range denied {
+		if reported[k] {
+			t.Errorf("denied names %q twice", k)
+		}
+		reported[k] = true
+		if !written[k] {
+			t.Errorf("denied names %q, which the devcontainer never wrote", k)
+		}
+	}
+	for k := range written {
+		_, kept := spec.Env[k]
+		if kept == reported[k] {
+			t.Errorf("%q: kept in spec.Env = %v, reported denied = %v — want exactly one", k, kept, reported[k])
+		}
+	}
+}
+
+// TestDeniedEnvKey holds the class to the names its consumers read — the
+// claude CLI's routing table and the variables its binary reads, the AWS,
+// Google and Azure SDK chains the cloud providers authenticate through,
+// the agents' config homes, git's transport — plus the lowercase
+// spellings that pin the case rules. Every guard of the class has a row
+// here that it alone catches, so removing any one of them reddens its
+// own row.
 func TestDeniedEnvKey(t *testing.T) {
 	cases := []struct {
-		name string
 		key  string
 		want bool
 	}{
-		{"exact LD_PRELOAD", "LD_PRELOAD", true},
-		{"exact NODE_OPTIONS", "NODE_OPTIONS", true},
-		{"exact PATH", "PATH", true},
-		{"lowercase path is not the linux PATH", "path", false},
-		{"suffix base url", "ANTHROPIC_BASE_URL", true},
-		{"suffix case-insensitive", "anthropic_base_url", true},
-		{"suffix api key", "OPENAI_API_KEY", true},
-		{"suffix token", "GITHUB_TOKEN", true},
-		{"bare token name is outside the class", "TOKEN", false},
-		{"suffix secret", "AWS_SECRET_ACCESS_SECRET", true},
-		{"suffix proxy", "HTTPS_PROXY", true},
-		{"NO_PROXY covered by the proxy suffix", "NO_PROXY", true},
-		{"lowercase proxy", "http_proxy", true},
-		{"plain var", "MYTOOL_ENDPOINT", false},
-		{"config dir is a forfait-dir override", "CLAUDE_CONFIG_DIR", true},
-		{"exact GIT_CONFIG_GLOBAL rewrites every git url", "GIT_CONFIG_GLOBAL", true},
-		{"exact GIT_CONFIG_SYSTEM rewrites every git url", "GIT_CONFIG_SYSTEM", true},
-		{"exact GIT_ASKPASS intercepts git credentials", "GIT_ASKPASS", true},
-		{"home", "HOME", false},
+		// The claude CLI picks its cloud provider from these switches
+		// before it looks at any token.
+		{"CLAUDE_CODE_USE_BEDROCK", true},
+		{"CLAUDE_CODE_USE_VERTEX", true},
+		{"CLAUDE_CODE_USE_FOUNDRY", true},
+		{"CLAUDE_CODE_USE_ANTHROPIC_AWS", true},
+		{"CLAUDE_CODE_SKIP_BEDROCK_AUTH", true},
+		{"CLAUDE_CODE_ENABLE_TELEMETRY", true},
+		// The rest of the CLI's namespaces: a session script spliced into
+		// every Bash command, its remote mode's token file, the ANT_ twins
+		// of its telemetry variables — and the agent proxy and beta tracing
+		// it reads outside any namespace.
+		{"CLAUDE_ENV_FILE", true},
+		{"CCR_OAUTH_TOKEN_FILE", true},
+		{"ANT_OTEL_EXPORTER_OTLP_ENDPOINT", true},
+		{"ANT_CLAUDE_CODE_METRICS_ENDPOINT", true},
+		{"AGENT_PROXY_URL", true},
+		{"SESSION_INGRESS_URL", true},
+		{"BETA_TRACING_ENDPOINT", true},
+		{"ENABLE_BETA_TRACING_DETAILED", true},
+		{"ENABLE_ENHANCED_TELEMETRY_BETA", true},
+		// The Anthropic client: an endpoint off the suffix rule, the
+		// Foundry resource and the Vertex project a call is spent in.
+		{"ANTHROPIC_UNIX_SOCKET", true},
+		{"ANTHROPIC_FOUNDRY_RESOURCE", true},
+		{"ANTHROPIC_VERTEX_PROJECT_ID", true},
+		{"ANTHROPIC_CUSTOM_HEADERS", true},
+		// The AWS SDK chain Bedrock authenticates through.
+		{"AWS_ACCESS_KEY_ID", true},
+		{"AWS_SECRET_ACCESS_KEY", true},
+		{"AWS_REGION", true},
+		{"AWS_PROFILE", true},
+		{"AWS_SHARED_CREDENTIALS_FILE", true},
+		{"AWS_BEARER_TOKEN_BEDROCK", true},
+		{"AWS_ENDPOINT_URL_BEDROCK_RUNTIME", true},
+		{"AWS_CONTAINER_CREDENTIALS_FULL_URI", true},
+		{"aws_access_key_id", true},
+		{"BEDROCK_REGION", true},
+		// Google ADC, which Vertex authenticates through.
+		{"GOOGLE_APPLICATION_CREDENTIALS", true},
+		{"GOOGLE_CLOUD_PROJECT", true},
+		{"GCE_METADATA_HOST", true},
+		{"CLOUDSDK_CONFIG", true},
+		{"CLOUD_ML_REGION", true},
+		{"GCLOUD_PROJECT", true},
+		{"gcloud_project", true},
+		{"VERTEX_REGION_CLAUDE_3_5_HAIKU", true},
+		// azidentity and Azure OpenAI.
+		{"AZURE_CLIENT_ID", true},
+		{"AZURE_TENANT_ID", true},
+		{"AZURE_AUTHORITY_HOST", true},
+		{"AZURE_OPENAI_ENDPOINT", true},
+		// The in-container runner's own switches and knobs, its vendored
+		// library's telemetry, and the payload its settings hooks — the
+		// permission gate among them — are told about.
+		{"ITERION_OPENAI_USE_OAUTH", true},
+		{"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", true},
+		{"CLAW_USER_AGENT", true},
+		{"CLAWD_OTLP_GRPC_ENDPOINT", true},
+		{"HOOK_USER_PROMPT", true},
+		{"HOOK_TOOL_IS_ERROR", true},
+		// opencode's config file and inline config.
+		{"OPENCODE_CONFIG", true},
+		{"OPENCODE_CONFIG_CONTENT", true},
+		// Where telemetry is exported, and where the iterion binary — its
+		// own in-container runner — reports its errors.
+		{"OTEL_EXPORTER_OTLP_ENDPOINT", true},
+		{"SENTRY_DSN", true},
+		{"SENTRY_ENVIRONMENT", true},
+		// Azure's managed-identity chain, off the AZURE_ prefix.
+		{"IDENTITY_ENDPOINT", true},
+		{"IDENTITY_HEADER", true},
+		{"IDENTITY_SERVER_THUMBPRINT", true},
+		{"IMDS_ENDPOINT", true},
+		{"MSI_ENDPOINT", true},
+		{"DEFAULT_IDENTITY_CLIENT_ID", true},
+		{"MSAL_FORCE_REGION", true},
+		// The forge CLIs a tool node runs, and the binary the claude CLI's
+		// vitals launcher spawns.
+		{"GH_CONFIG_DIR", true},
+		{"GH_HOST", true},
+		{"GLAB_CONFIG_DIR", true},
+		{"VITALS_EMITTER_BIN", true},
+		// The agents' config homes.
+		{"CLAUDE_CONFIG_DIR", true},
+		{"CODEX_HOME", true},
+		{"KIMI_CODE_HOME", true},
+		{"PI_CODING_AGENT_DIR", true},
+		// Code loaded or run before any prompt is read.
+		{"LD_PRELOAD", true},
+		{"LD_AUDIT", true},
+		{"LD_LIBRARY_PATH", true},
+		{"OPENSSL_CONF", true},
+		{"OPENSSL_MODULES", true},
+		{"SDK_NATIVE_BIN", true},
+		{"DS_CHROMIUM_PATH", true},
+		{"GCONV_PATH", true},
+		{"NODE_OPTIONS", true},
+		{"BUN_OPTIONS", true},
+		{"BUN_INSPECT_CONNECT_TO", true},
+		{"NODE_PATH", true},
+		{"SHELL", true},
+		{"PATH", true},
+		{"BASH_ENV", true},
+		{"BASH_FUNC_git%%", true},
+		{"NPM_CONFIG_NODE_OPTIONS", true},
+		{"npm_config_script_shell", true},
+		{"EDITOR", true},
+		{"VISUAL", true},
+		{"SHELLOPTS", true},
+		{"BASHOPTS", true},
+		{"PS4", true},
+		{"ENV", true},
+		{"ZDOTDIR", true},
+		{"GOFLAGS", true},
+		{"GOENV", true},
+		{"GOTOOLCHAIN", true},
+		{"GOROOT", true},
+		{"GOAUTH", true},
+		{"TAR_OPTIONS", true},
+		{"KUBECONFIG", true},
+		{"DOCKER_CONFIG", true},
+		{"DOCKER_HOST", true},
+		// git's configuration, transport, authentication, the repository it
+		// acts on, its traces and its identity; ssh's askpass helper.
+		{"GIT_ASKPASS", true},
+		{"SSH_ASKPASS", true},
+		{"SSH_ASKPASS_REQUIRE", true},
+		{"GIT_SSH", true},
+		{"GIT_SSH_COMMAND", true},
+		{"GIT_PROXY_COMMAND", true},
+		{"GIT_EXEC_PATH", true},
+		{"GIT_ALLOW_PROTOCOL", true},
+		{"GIT_CONFIG_COUNT", true},
+		{"GIT_CONFIG_GLOBAL", true},
+		{"GIT_CONFIG_SYSTEM", true},
+		{"GIT_CONFIG_PARAMETERS", true},
+		{"GIT_SSL_NO_VERIFY", true},
+		{"GIT_SSL_CAINFO", true},
+		{"GIT_SSL_CAPATH", true},
+		{"GIT_CONFIG_KEY_0", true},
+		{"GIT_DIR", true},
+		{"GIT_ALTERNATE_OBJECT_DIRECTORIES", true},
+		{"GIT_TRACE_CURL", true},
+		{"GIT_AUTHOR_EMAIL", true},
+		// The TLS trust of the model clients' connections.
+		{"NODE_EXTRA_CA_CERTS", true},
+		{"NODE_TLS_REJECT_UNAUTHORIZED", true},
+		{"SSL_CERT_FILE", true},
+		{"SSL_CERT_DIR", true},
+		{"CURL_CA_BUNDLE", true},
+		{"REQUESTS_CA_BUNDLE", true},
+		{"NIX_SSL_CERT_FILE", true},
+		{"NIX_CONFIG", true},
+		{"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", true},
+		{"GRPC_SSL_CIPHER_SUITES", true},
+		// Endpoints and credentials by suffix, in any case.
+		{"OPENAI_API_BASE", true},
+		{"OPENAI_BASE_URL", true},
+		{"openai_base_url", true},
+		{"OPENAI_API_KEY", true},
+		{"GITHUB_TOKEN", true},
+		{"NEXTAUTH_SECRET", true},
+		{"HTTPS_PROXY", true},
+		{"NO_PROXY", true},
+		{"http_proxy", true},
+		// Outside the class: the repository's own configuration.
+		{"HOME", false},
+		{"path", false},
+		{"TOKEN", false},
+		{"MYTOOL_ENDPOINT", false},
+		{"NODE_ENV", false},
+		{"DATABASE_URL", false},
+		{"LDFLAGS", false},
+		{"GOPATH", false},
+		{"GOPROXY", false},
+		{"DEVBOX_NO_PROMPT", false},
+		{"IS_SANDBOX", false},
+		// The repository's own toolchain, and what needs a terminal: out of
+		// the class by the rule DeniedEnvKey states.
+		{"CFLAGS", false},
+		{"MAVEN_OPTS", false},
+		{"PYTHONPATH", false},
+		{"JAVA_HOME", false},
+		{"PAGER", false},
+		{"XDG_DATA_HOME", false},
+		{"ANT_HOME", false},
+		{"ANT_OPTS", false},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(c.key, func(t *testing.T) {
 			if got := DeniedEnvKey(c.key); got != c.want {
 				t.Errorf("DeniedEnvKey(%q) = %v, want %v", c.key, got, c.want)
 			}
 		})
 	}
+
+	// "A row it alone catches" is a claim, and this is what holds it: every
+	// guard of the class is covered by a row that no OTHER guard would
+	// catch — so removing any single entry reddens a row of its own. A
+	// guard added without one is the shape that let three names in without
+	// a witness.
+	for _, guard := range deniedEnvSuffixes {
+		assertGuardHasItsOwnRow(t, "suffix "+guard, cases, func(key string) bool {
+			return strings.HasSuffix(strings.ToUpper(key), guard)
+		})
+	}
+	for _, guard := range deniedEnvNamespaces {
+		assertGuardHasItsOwnRow(t, "namespace "+guard, cases, func(key string) bool {
+			return strings.HasPrefix(strings.ToUpper(key), guard)
+		})
+	}
+	for name := range deniedEnvNames {
+		assertGuardHasItsOwnRow(t, "exact "+name, cases, func(key string) bool { return key == name })
+	}
+}
+
+// assertGuardHasItsOwnRow fails unless some `want: true` row is caught by
+// this guard and by nothing else in the class — the row that reddens when
+// the guard is removed.
+func assertGuardHasItsOwnRow(t *testing.T, guard string, cases []struct {
+	key  string
+	want bool
+}, caughtByGuard func(string) bool) {
+	t.Helper()
+	for _, c := range cases {
+		if !c.want || !caughtByGuard(c.key) {
+			continue
+		}
+		// Would the class still refuse it with this guard gone?
+		others := 0
+		for _, suffix := range deniedEnvSuffixes {
+			if strings.HasSuffix(strings.ToUpper(c.key), suffix) {
+				others++
+			}
+		}
+		for _, prefix := range deniedEnvNamespaces {
+			if strings.HasPrefix(strings.ToUpper(c.key), prefix) {
+				others++
+			}
+		}
+		if deniedEnvNames[c.key] {
+			others++
+		}
+		if others == 1 {
+			return
+		}
+	}
+	t.Errorf("%s catches no row of its own: removing it would redden nothing — add a name only it refuses", guard)
 }
 
 // A malformed entry would fail the docker driver's --env guard and kill
@@ -387,4 +734,5 @@ func TestToSandboxSpecDropsMalformedRepoEnvEntries(t *testing.T) {
 	if !reflect.DeepEqual(denied, want) {
 		t.Errorf("denied = %q, want %q", denied, want)
 	}
+	assertReportMatchesEnv(t, f, spec, denied)
 }

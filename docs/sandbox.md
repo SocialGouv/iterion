@@ -497,23 +497,92 @@ never lets the repository speak for the operator:
   environment) overwrites a repo-contributed one (the same authority
   rule a project `.env` lives under). The devcontainer's own keys are
   additionally screened against a deny class, and denied keys are
-  removed outright with a `sandbox_env_denied` event naming each one:
-  the case-insensitive suffixes `*_BASE_URL`, `*_API_KEY`, `*_TOKEN`,
-  `*_SECRET`, `*_PROXY` (covering `NO_PROXY`), plus the exact
-  case-sensitive names `LD_PRELOAD`, `NODE_OPTIONS`, `PATH`,
-  `BASH_ENV`, `ENV`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_GLOBAL`,
-  `GIT_CONFIG_SYSTEM`, `GIT_ASKPASS`, `GOFLAGS`,
-  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `ANTHROPIC_CUSTOM_HEADERS`,
-  `AZURE_OPENAI_ENDPOINT` and `OPENAI_API_BASE`. A planted
-  `ANTHROPIC_BASE_URL` would re-route every LLM call the container
-  makes to the planter's collector; `LD_PRELOAD`, `PATH`, `BASH_ENV`
-  and `GOFLAGS` would execute the planter's code before any prompt is
-  read. The same names in the workflow's `sandbox.env:` or the launch
-  environment are the operator's and pass untouched. Malformed
-  entries (a name carrying `=`, a newline or a NUL; a value carrying
-  a newline) are dropped the same way — the docker driver would
-  refuse the run outright and the kubernetes driver would drop them
-  silently.
+  removed outright with a `sandbox_env_denied` event naming each key
+  whose repository value the screen refused (`containerEnv` wins a
+  collision with `remoteEnv`, so a refused `containerEnv` value
+  removes the name). The class, matched case-insensitively except for
+  the exact names:
+  - the suffixes `*_BASE_URL`, `*_API_KEY`, `*_TOKEN`, `*_SECRET`,
+    `*_PROXY` (covering `NO_PROXY`);
+  - the configuration namespaces of the agents iterion runs, of the
+    cloud SDKs their providers authenticate through, of git and of the
+    code loaders: `ITERION_*`, `CLAW_*`, `CLAWD_*` and `HOOK_*` (the
+    in-container runner, the payload its settings hooks — the
+    permission gate among them — are told about, and claw's own
+    namespace: a plugin tool's payload and its telemetry knobs),
+    `CLAUDE_*` (the claude CLI, whose cloud-provider switches
+    `CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, … it reads before
+    any token), `CCR_*`, `ANT_OTEL_*`, `ANT_CLAUDE_CODE_*`,
+    `ANTHROPIC_*`, `OPENCODE_*`, `AWS_*`, `AZURE_*`, `GOOGLE_*`,
+    `GCE_METADATA_*`, `CLOUDSDK_*`, `VERTEX_REGION_*`, `OTEL_*`,
+    `SENTRY_*` (the iterion binary is its own in-container runner and
+    wires error tracking at startup: unset the package is off, so a
+    planted DSN switches an outbound channel on), `GIT_*`, the forge
+    CLIs' `GH_*` and `GLAB_*`, the dynamic loader's `LD_*`,
+    `OPENSSL_*`, nix's `NIX_*` (a `plugin-files` in `NIX_CONFIG` is
+    dlopened by the `devbox install` iterion itself runs), bash's
+    exported functions `BASH_FUNC_*`, the bun
+    runtime's `BUN_*` (`BUN_OPTIONS=--preload` runs a script inside
+    the claude CLI's own process) and `NPM_CONFIG_*` (npm turns
+    `NPM_CONFIG_NODE_OPTIONS` / `_SCRIPT_SHELL` into the options and
+    the shell of every node child it spawns, `npx`-launched MCP
+    servers included);
+  - the exact names `NODE_OPTIONS`, `NODE_PATH`,
+    `GCONV_PATH`, `SHELL`, `BASH_ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
+    `ENV`, `ZDOTDIR`, `PATH`, `GOFLAGS`, `SSH_ASKPASS`,
+    `SSH_ASKPASS_REQUIRE`, `EDITOR`, `VISUAL`, `TAR_OPTIONS` (GNU tar
+    prepends it to its own arguments, and `--checkpoint-action=exec=`
+    is an option), `GOENV` / `GOTOOLCHAIN` / `GOROOT` / `GOAUTH` (the
+    first names a file that sets `GOFLAGS` itself), `KUBECONFIG` /
+    `DOCKER_HOST` / `DOCKER_CONFIG` (a kubeconfig's `exec` plugin and a
+    docker `credsStore` are programs); the agents' config homes `CODEX_HOME`,
+    `KIMI_CODE_HOME`, `PI_CODING_AGENT_DIR`; `OPENAI_API_BASE`,
+    `BEDROCK_REGION`, `CLOUD_ML_REGION`, `GCLOUD_PROJECT` (and the
+    lower-case `gcloud_project` the CLI also reads),
+    `AGENT_PROXY_URL`, `SESSION_INGRESS_URL` (the claude CLI's API base
+    when no `ANTHROPIC_BASE_URL` is set — the usual case),
+    `BETA_TRACING_ENDPOINT`,
+    `ENABLE_BETA_TRACING_DETAILED`, `ENABLE_ENHANCED_TELEMETRY_BETA`;
+    the binaries a path variable alone names — `VITALS_EMITTER_BIN`,
+    `SDK_NATIVE_BIN`, `DS_CHROMIUM_PATH`; Azure's managed-identity chain off the
+    `AZURE_*` prefix — `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`,
+    `IDENTITY_SERVER_THUMBPRINT`, `IMDS_ENDPOINT`, `MSI_ENDPOINT`,
+    `DEFAULT_IDENTITY_CLIENT_ID`, `MSAL_FORCE_REGION`; and the TLS
+    trust `NODE_EXTRA_CA_CERTS`,
+    `NODE_TLS_REJECT_UNAUTHORIZED`, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+    `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+    `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`, `GRPC_SSL_CIPHER_SUITES`.
+
+  **Where the class stops.** It takes the names that steer a process
+  *iterion* starts for the operator, swept against the claude CLI's own
+  192-name list of code-executing environment. Deliberately outside:
+  the toolchain variables no process iterion starts reads (compilers
+  and their flags, build systems, language runtimes, version managers —
+  they configure builds of the repository's code, which already runs in
+  that container; that question, not the family, is the membership
+  test: `GOFLAGS`, `PATH` and `NIX_*` are toolchain variables too, and
+  they are denied because iterion's own nodes and provisioning run
+  under them), what
+  needs a terminal nobody has there (`PAGER`, `LESSOPEN`, `BROWSER`),
+  and `HOME` / the `XDG_*` dirs, whose own road is tracked separately.
+
+  A planted `ANTHROPIC_BASE_URL` would re-route every LLM call the
+  container makes to the planter's collector; a planted
+  `CLAUDE_CODE_USE_BEDROCK` with the planter's `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` would send every prompt of the run's
+  `claude_code` nodes to the planter's AWS account — an allowlist that
+  lets the run reach the provider lets the redirect through — and the
+  planted credentials alone do it under a switch, or a Bedrock model,
+  the operator chose; a planted `BASH_FUNC_git%%` would run the
+  planter's function in place of `git` in every `bash -c`, and
+  `LD_PRELOAD`, `PATH`, `BASH_ENV` and `GOFLAGS` would execute the
+  planter's code before any prompt is read. The same names in the
+  workflow's `sandbox.env:` or the launch environment are the
+  operator's and pass untouched: a repository whose own tooling needs,
+  say, `AWS_REGION` gets it from the workflow. Malformed entries (a
+  name carrying `=`, a newline or a NUL; a value carrying a newline)
+  are dropped the same way — the docker driver would refuse the run
+  outright and the kubernetes driver would drop them silently.
 - **Network.** The workflow's `network:` block is carried into a
   found-devcontainer run exactly as into a default-image run. When
   the workflow declares none, the run does not inherit the
@@ -910,13 +979,17 @@ else of the host's: the provider keys, the endpoints they are spent on
 (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
 `XAI_BASE_URL`, …), the spend and client-identity settings, and the
 knobs its own loop reads (`ITERION_CLAW_STREAM_COLD_TIMEOUT` /
-`_IDLE_TIMEOUT`) — each when the host sets it. A name the host leaves
-unset is whatever the container's own environment says — its image, a
-`containerEnv` key the deny class above lets through — and the
-workspace's `.env`, which the runner loads at start as the CLI does: a
-repository's `.env` can thereby choose where a forwarded key is spent
-when the host does not set its endpoint, so set the endpoints you rely
-on, and keep the run on an allowlist. The retry budget the launcher
+`_IDLE_TIMEOUT`) — each when the host sets it. The endpoints on that
+list (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
+`XAI_BASE_URL`, `AZURE_OPENAI_ENDPOINT`) cross as explicit EMPTIES when
+the host leaves them unset, and the exec env outranks the container's,
+so nothing inside — the image's `ENV`, the workflow's `sandbox.env:`,
+the workspace's `.env` — re-points a forwarded credential: the host env
+is the supported channel for them. Any OTHER name the host leaves unset
+is whatever the container's own environment says — its image, a
+`containerEnv` key the deny class above lets through, and the
+workspace's `.env`, which the runner loads at start as the CLI does —
+so set what you rely on, and keep the run on an allowlist. The retry budget the launcher
 resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
 task envelope instead: it bounds billed attempts, so the container's own
 environment never sets it — a runner image older than that field keeps its built-in

@@ -506,8 +506,12 @@ func devboxInstallSnippet(projects []devboxProject) string {
 	// refuse de demarrer sur un « Your version is . » qui ne ressemble en rien
 	// a sa cause.
 	//
-	// Pose seulement si l'appelant n'a rien decide : un depot ou un bot qui
-	// declare son propre NIX_CONFIG garde la main.
+	// Pose seulement si l'appelant n'a rien decide : un bot, ou le workflow
+	// par son `sandbox.env:`, qui declare son propre NIX_CONFIG garde la
+	// main. Le devcontainer d'un depot relu, lui, n'en pose plus : NIX_CONFIG
+	// porte un nix.conf entier, dont un `plugin-files` que nix dlopen des la
+	// premiere invocation — la classe NIX_* le refuse
+	// (devcontainer.DeniedEnvKey, #2316).
 	b.WriteString("if [ -z \"${NIX_CONFIG:-}\" ]; then NIX_CONFIG=\"build-users-group =\"; export NIX_CONFIG; fi\n")
 	b.WriteString("if command -v devbox >/dev/null 2>&1; then\n")
 	// devbox prompts before writing a lockfile on some paths; a
