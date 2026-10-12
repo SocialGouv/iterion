@@ -3,6 +3,46 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.258.0](https://github.com/SocialGouv/iterion/compare/v3.257.4...v3.258.0) (2026-10-12)
+
+### Features
+
+* **ambient:** ambient_context applies or refuses on opencode, kimi and grok ([#2327](https://github.com/SocialGouv/iterion/issues/2327)) ([6d5705e](https://github.com/SocialGouv/iterion/commit/6d5705e1ac34302063d89ca7a6ac48dacb4a7058))
+
+    <details><summary>why</summary>
+
+    One verdict per (backend, policy) in pkg/backend/ambient — Honoured requires a live measure, Refused may rest on the source; a declared value is applied or refused, never ignored (new compiler error C187, per route, fallback defaults included); refusal sits at the top of buildTask before any effect, terminal and classified. codex's home overlay generalises to the three backends and the shadow permission builds from it without a special case; the precedence level travels through IOTask. ADR-119…
+
+    </details>
+* **docs-refresh:** coverage audit — the reference PDFs become a measured goal ([#2139](https://github.com/SocialGouv/iterion/issues/2139)) ([9e89ba2](https://github.com/SocialGouv/iterion/commit/9e89ba2d28ebdafd3da1d6a2ec566ae44330f76e))
+
+    <details><summary>why</summary>
+
+    When the run carries reference context, the reference PDFs' sections are extracted into a deterministic inventory (coverage_inventory — the goal as data), and a cheap read-only second-model auditor (coverage_audit) measures the produced docs against it: every inventory section gets a covered / partial / gap verdict by reading the files, never by taking the campaign's word. Gaps route back through the campaign (coverage_loop, bounded 2) with an actionable gap list; the MR body carries the audit…
+
+    </details>
+* **dsl:** fmt keeps a document's comments; validate reads launch vars as written; braced-env expansion is linear ([#2328](https://github.com/SocialGouv/iterion/issues/2328)) ([43fc603](https://github.com/SocialGouv/iterion/commit/43fc603e655c3488a000b0e129825c21a00ba639)), references [#1603](https://github.com/SocialGouv/iterion/issues/1603) [#1607](https://github.com/SocialGouv/iterion/issues/1607) [#1760](https://github.com/SocialGouv/iterion/issues/1760)
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 local (announced 7, ceiling 20) Adversarial-Model: claude-opus-5[1m]
+
+    </details>
+* **launch:** a constrained var outside its constraint is refused at launch, before the run exists ([#2329](https://github.com/SocialGouv/iterion/issues/2329)) ([cfd9ff3](https://github.com/SocialGouv/iterion/commit/cfd9ff36001a9e37891a2b0574273e33295a58df)), references [#1757](https://github.com/SocialGouv/iterion/issues/1757)
+
+    <details><summary>why</summary>
+
+    runview.GateLaunchVars judges the literal launch values with the engine's own predicate at both entry points — cloud SubmitLaunch (after topology injection, before any line or publish) and in-process starts — and leaves environment-dependent values to the runner, which alone can read them. The refusal is a typed 400, the same contract as the #1757 gate next to it.
+
+    </details>
+* **opencode:** session resume — inherit, fork and schema re-asks resume the tour ([#2332](https://github.com/SocialGouv/iterion/issues/2332)) ([bcf642c](https://github.com/SocialGouv/iterion/commit/bcf642c3ec71c499848a6de73f401bd121d5b53f))
+
+    <details><summary>why</summary>
+
+    opencode joins the session-resume backends: --session <id> on inherit, inherit_if_available and fork; an unknown id fails loudly (1.19) and the documented degrade arms through ClassifyFallback. A bare --fork before `run` swallows the subcommand (yargs) — emitted as --fork=true, measured on 6 argv shapes. The composed system prompt rides the resumed tour. Proven against the real opencode 1.19.0 (clilive, no network, no credential), red-first, 7/7 mutations killed. session: persist stays unwired:…
+
+    </details>
+
 ## [3.257.4](https://github.com/SocialGouv/iterion/compare/v3.257.3...v3.257.4) (2026-10-12)
 
 ### Bug Fixes
