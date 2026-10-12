@@ -549,6 +549,28 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		}
 	})
 
+	// The slot goes back ONCE. launchAdmission.rollback is not idempotent —
+	// each call releases a monthly unit and refunds a rate token — and the
+	// counter clamps at zero, so a launch that releases twice is invisible
+	// from an empty month: it shows only against a run already counted.
+	t.Run("the denial releases its own slot and no other", func(t *testing.T) {
+		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+		if _, err := s.orgUsage.AllowRun(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC(), 0, 0); err != nil {
+			t.Fatalf("seed a counted run: %v", err)
+		}
+		if rec := launch(t, s, ctx, "o/hungry"); rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402: %s", rec.Code, rec.Body.String())
+		}
+		u, err := s.orgUsage.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
+		if err != nil {
+			t.Fatalf("usage: %v", err)
+		}
+		if u.Runs != 1 {
+			t.Errorf("monthly runs = %d, want 1 — the run counted before the denied launch", u.Runs)
+		}
+	})
+
 	t.Run("another repository is untouched by it", func(t *testing.T) {
 		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
 		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)

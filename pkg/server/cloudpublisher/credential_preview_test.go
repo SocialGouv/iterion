@@ -61,7 +61,7 @@ type unopenedPreviewSealer struct{ secrets.Sealer }
 type unwrittenPreviewBundle struct{ secrets.RunSecretsStore }
 
 func previewReadOnly(p *Publisher) *Publisher {
-	q := &Publisher{runSecrets: unwrittenPreviewBundle{}, sealer: unopenedPreviewSealer{}, identity: p.identity, logger: p.logger, credPool: p.credPool, usageProbe: p.usageProbe, capPolicy: p.capPolicy, trust: p.trust, platformAudience: p.platformAudience}
+	q := &Publisher{runSecrets: unwrittenPreviewBundle{}, sealer: unopenedPreviewSealer{}, identity: p.identity, logger: p.logger, credPool: p.credPool, usageProbe: p.usageProbe, capPolicy: p.capPolicy, budgetFloor: p.budgetFloor, trust: p.trust, platformAudience: p.platformAudience}
 	if p.apiKeys != nil {
 		q.apiKeys = previewOnlyKeys{inner: p.apiKeys}
 	}

@@ -2,13 +2,17 @@ package cloudpublisher
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -192,12 +196,19 @@ func TestBudgetFloor_TwoReservationsCompose(t *testing.T) {
 // cannot see the walk's tail — and the tail is where a skip is undone.
 func resolveFloorBundle(t *testing.T, p *Publisher, runID, tenant, botID string) secrets.RunBundle {
 	t.Helper()
+	return resolveFloorBundleIn(t, p, runID, "", tenant, botID)
+}
+
+// resolveFloorBundleIn is resolveFloorBundle for a team of `orgID`, so the
+// walk can reach the org tier.
+func resolveFloorBundleIn(t *testing.T, p *Publisher, runID, orgID, tenant, botID string) secrets.RunBundle {
+	t.Helper()
 	rs, ok := p.runSecrets.(*secrets.MemoryRunSecretsStore)
 	if !ok {
-		t.Fatal("resolveFloorBundle needs a MemoryRunSecretsStore")
+		t.Fatal("resolveFloorBundleIn needs a MemoryRunSecretsStore")
 	}
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, "owner1", botID, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenant, "owner1", botID, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -344,5 +355,164 @@ func TestBudgetFloor_ADisarmedWindowStaysDisarmed(t *testing.T) {
 		if !p.apiKeyUsable(context.Background(), scope, "run", bot, nil)(key) {
 			t.Errorf("bot %q was refused on a window the operator disarmed — the reservation re-armed the kill switch", bot)
 		}
+	}
+}
+
+// floorWalk is ONE shared credential at `utilization` of its five-hour window
+// under an 80% hard cap, with the given reservations: the 2026-09-08
+// deployment, as the walk and the preview both see it. forfait seeds a
+// team subscription instead of a team API key.
+func floorWalk(t *testing.T, utilization float64, forfait bool, res ...budgetfloor.Reservation) *Publisher {
+	t.Helper()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	p := &Publisher{
+		usageCaps: usagecap.NewMemStore(), runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
+		logger: iterlog.New(iterlog.LevelError, nil),
+		capPolicy: usagecap.StaticPolicy{
+			FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeHard},
+		},
+		budgetFloor: budgetfloor.Static{Reservations: res},
+	}
+	fp := "fp-shared"
+	if forfait {
+		p.oauthForfait = secrets.NewMemoryOAuthStore()
+		seedOAuth(t, p.oauthForfait, sealer, secrets.OrgOwnerKey("team1"), "sk-shared-forfait")
+		fp = seededFP(secrets.OrgOwnerKey("team1"))
+	} else {
+		p.apiKeys = secrets.NewMemoryApiKeyStore()
+		seedKeyFP(t, p.apiKeys, sealer, "team1", secrets.ProviderAnthropic, "sk-shared", fp)
+	}
+	if err := p.usageCaps.Record(context.Background(),
+		usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team1"), fp),
+		usagecap.Reading{Window: usagecap.WindowFiveHour, Status: usagecap.StatusAllowed,
+			Utilization: utilization, ObservedAt: time.Now(), ResetsAt: time.Now().Add(2 * time.Hour)}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	return p
+}
+
+// The credential preview is held to the walk it describes (the parity
+// doctrine credential_preview.go states): a preview that ignores the floor
+// tells the operator that the unreserved bot gets the shared subscription —
+// "restored" — on the exact deployment the floor exists for, where the walk
+// keeps it held for the reviewer.
+func TestBudgetFloor_ThePreviewAnswersWhatTheWalkDoes(t *testing.T) {
+	reviewer := budgetfloor.Reservation{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}}
+	wholeWindow := budgetfloor.Reservation{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 80}}
+	for _, tc := range []struct {
+		name        string
+		utilization float64
+		forfait     bool
+		res         budgetfloor.Reservation
+		bot         string
+		// sealed is what the walk must seal on the anthropic wire.
+		sealed bool
+		// reason is what the preview must say about the credential it holds back.
+		reason string
+	}{
+		// 65%: over the unreserved ceiling (80 - 20), under the deployment cap.
+		{name: "a held-back key is not restored", utilization: 0.65, res: reviewer, bot: "feature-dev", reason: "spoken for"},
+		{name: "the reserved bot keeps the key", utilization: 0.65, res: reviewer, bot: "review-pr", sealed: true},
+		{name: "a held-back forfait is not restored", utilization: 0.65, forfait: true, res: reviewer, bot: "feature-dev", reason: "spoken for"},
+		{name: "the reserved bot keeps the forfait", utilization: 0.65, forfait: true, res: reviewer, bot: "review-pr", sealed: true},
+		// 10%: no reading refuses anything — only the reservation, which
+		// takes the whole 80% cap, holds the key back from feature-dev.
+		{name: "a window reserved whole is refused without a reading", utilization: 0.10, res: wholeWindow, bot: "feature-dev", reason: "entirely reserved for other workloads"},
+		{name: "a window reserved whole stays open to its holder", utilization: 0.10, res: wholeWindow, bot: "review-pr", sealed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := floorWalk(t, tc.utilization, tc.forfait, tc.res)
+			bundle := resolveFloorBundle(t, p, "run-"+tc.bot, "team1", tc.bot)
+			if sealed := len(bundle.APIKeys)+len(bundle.OAuthCredentials) > 0; sealed != tc.sealed {
+				t.Fatalf("walk sealed a credential = %v, want %v (bundle %v)", sealed, tc.sealed, bundleDescriptions(bundle))
+			}
+			spec := runview.CredentialPreviewSpec{
+				Context: runview.CredentialPreviewContext{TeamID: "team1", BotID: tc.bot, Source: runview.CredentialPreviewSource{Kind: "personal"}},
+				OwnerID: "owner1",
+			}
+			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, nil)
+			if err != nil {
+				t.Fatalf("preview: %v", err)
+			}
+			if got, want := selectedDescriptions(preview), bundleDescriptions(bundle); !reflect.DeepEqual(got, want) {
+				t.Fatalf("preview selects %v, the walk sealed %v", got, want)
+			}
+			if tc.reason == "" {
+				return
+			}
+			for _, c := range preview.Candidates {
+				if c.State == "restored" {
+					t.Errorf("candidate %s:%s is predicted restored — the walk keeps it for another workload", c.Source, c.Provider)
+				}
+				if !strings.Contains(c.Reason, tc.reason) {
+					t.Errorf("candidate %s:%s reason = %q, want it to say %q", c.Source, c.Provider, c.Reason, tc.reason)
+				}
+			}
+		})
+	}
+}
+
+// The shared tiers fold the bot id for ONE reader: the BYOK audience, whose
+// write edge folds too (botregistry.NormalizeName). The budget floor matches
+// the id as stored, so the walk hands it the RAW id at every tier: judged on
+// the folded spelling, a reservation for `my_bot` would count as another
+// workload's at the org and platform tiers, and hold its own holder back.
+func TestBudgetFloor_TheSharedTiersJudgeTheRawBotID(t *testing.T) {
+	const orgID = "org-1"
+	reservation := budgetfloor.Reservation{BotID: "my_bot", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}}
+	for _, tier := range []string{"org", "platform"} {
+		t.Run(tier, func(t *testing.T) {
+			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			if err != nil {
+				t.Fatalf("sealer: %v", err)
+			}
+			p := &Publisher{
+				apiKeys: secrets.NewMemoryApiKeyStore(), usageCaps: usagecap.NewMemStore(),
+				runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
+				logger: iterlog.New(iterlog.LevelError, nil),
+				capPolicy: usagecap.StaticPolicy{
+					FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeHard},
+				},
+				budgetFloor: budgetfloor.Static{Reservations: []budgetfloor.Reservation{reservation}},
+			}
+			owner, meter, org := secrets.PlatformTenantID, usagecap.ScopePlatform, ""
+			if tier == "org" {
+				owner, meter, org = secrets.OrgTierTenantID(orgID), usagecap.OrgScope(orgID), orgID
+				p.identity = &fakeTeamResolver{
+					orgs:    map[string]string{"team1": orgID},
+					orgDocs: map[string]identity.Org{orgID: {ID: orgID, CredentialAudience: identity.CredentialAudience{Teams: []string{"team1"}}}},
+				}
+			}
+			seedKeyFP(t, p.apiKeys, sealer, owner, secrets.ProviderAnthropic, "sk-"+tier, "fp-"+tier)
+			// 65%: under my_bot's own ceiling (80), over everyone else's (60).
+			if err := p.usageCaps.Record(context.Background(),
+				usagecap.Key(delegate.BackendClaudeCode, meter, "fp-"+tier),
+				usagecap.Reading{Window: usagecap.WindowFiveHour, Status: usagecap.StatusAllowed,
+					Utilization: 0.65, ObservedAt: time.Now(), ResetsAt: time.Now().Add(2 * time.Hour)}); err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			bundle := resolveFloorBundleIn(t, p, "run-raw", org, "team1", "my_bot")
+			if got := bundle.APIKeys[secrets.ProviderAnthropic]; got != "sk-"+tier {
+				t.Fatalf("%s key = %q for my_bot inside its own reserved band, want sk-%s — the %s tier judged the reservation on a spelling it was not stored under", tier, got, tier, tier)
+			}
+			// The preview reads the same id the walk does.
+			spec := runview.CredentialPreviewSpec{
+				Context: runview.CredentialPreviewContext{TeamID: "team1", BotID: "my_bot", Source: runview.CredentialPreviewSource{Kind: "personal"}},
+				OwnerID: "owner1",
+			}
+			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, nil)
+			if err != nil {
+				t.Fatalf("preview: %v", err)
+			}
+			if got, want := selectedDescriptions(preview), bundleDescriptions(bundle); !reflect.DeepEqual(got, want) {
+				t.Fatalf("preview selects %v for my_bot, the walk sealed %v", got, want)
+			}
+			if got := resolveFloorBundleIn(t, p, "run-other", org, "team1", "feature-dev").APIKeys[secrets.ProviderAnthropic]; got != "" {
+				t.Fatalf("%s key = %q for an unreserved bot inside my_bot's band, want none", tier, got)
+			}
+		})
 	}
 }

@@ -2392,9 +2392,10 @@ func (p *Publisher) staleReadingsSuggestClosed(ctx context.Context, readings []u
 	}
 	if p.capPolicy != nil {
 		// The bot's LOWERED ceiling, never its reservation: a bot held out of
-		// the window entirely was already refused by refusedUntil, which is
-		// the only way this function is reached — deciding it a second time
-		// here would be a second place for the two answers to drift.
+		// the window entirely was already refused by heldOutUntil before this
+		// function is reached — through refusedUntil on a launch, directly in
+		// the preview — and deciding it a second time here would be a second
+		// place for the two answers to drift.
 		if usagecap.Preflight(stale, p.capPolicyFor(ctx, botID).effective, now, unbounded).Blocked {
 			return true
 		}
@@ -2525,16 +2526,24 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 	if until, why, floor := p.refusedByEvidence(ctx, backend, scope, fingerprint, label, botID); !until.IsZero() {
 		return until, why, floor
 	}
-	if reserved := p.capPolicyFor(ctx, botID).heldOut; reserved != "" {
-		// This bot is allowed no share of the window at all, so no reading
-		// can make the credential usable for it: refuse it and let the walk
-		// fall through to the next tier. Bounded by the trust window like
-		// every other synthesised refusal, so an edited reservation is picked
-		// up without a restart and the run's own retry lands after the same
-		// delay.
-		return time.Now().Add(p.trust.Normalized().MaxAge), reserved, true
+	if until, why := p.heldOutUntil(ctx, botID, time.Now()); !until.IsZero() {
+		return until, why, true
 	}
 	return time.Time{}, "", false
+}
+
+// heldOutUntil is the reservation's own refusal: the other workloads'
+// reserves take this bot's whole window, so no reading can make the
+// credential usable for it, and the walk falls through to the next tier.
+// Bounded by the trust window like every other synthesised refusal, so an
+// edited reservation is picked up without a restart and the run's own retry
+// lands after the same delay. ONE decision point, read by refusedUntil and by
+// the credential preview, so the two cannot disagree about it.
+func (p *Publisher) heldOutUntil(ctx context.Context, botID string, now time.Time) (time.Time, string) {
+	if reserved := p.capPolicyFor(ctx, botID).heldOut; reserved != "" {
+		return now.Add(p.trust.Normalized().MaxAge), reserved
+	}
+	return time.Time{}, ""
 }
 
 // meteredWindow reports whether this credential has a window ledger at all.
