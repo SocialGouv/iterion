@@ -349,7 +349,7 @@ func isJSONNull(raw json.RawMessage) bool {
 // `["${LIST:-a", "b}"]` for a var the run seeds as `["a","b"]` — and C300
 // then refused the author's correct default.
 func seededDefault(v *Var) any {
-	seeded, err := resolveVarTextAsWritten(v.Default, v.Type)
+	seeded, err := ResolveVarTextAsWritten(v.Default, v.Type)
 	if err != nil {
 		return v.Default
 	}
