@@ -843,16 +843,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	// The subject comes from the RUN, so the run is read first — and its
-	// error is deliberately NOT answered yet: the gate's denial has to come
-	// out ahead of any 404, or this lookup (which is not tenant-filtered)
-	// would turn the suspend check into a run-existence probe. Passing the
-	// subject matters in the direction nobody expects: judged as ordinary
-	// work, a RESERVED bot faces the ceiling its own reservation lowered, so
-	// resuming it by hand could be refused on the band held for it — and
-	// where the reserves take a whole cap, no run could be resumed at all.
-	// The automated twin (the retry sweeper) reads the same doc and passes
-	// the same subject.
+	// The subject comes from the RUN, so the run is read first; its error is
+	// answered after the gate, so a run this read cannot answer for is still
+	// gated. That order hides nothing: run existence is not a secret on this
+	// route (ADR-103) — on every authenticated request the run-by-id choke
+	// point (run_scope.go) has already answered 404 for a run that is missing
+	// or that the caller has no standing in, before this handler runs; under
+	// DisableAuth the synthesized super-admin bypasses the gate, so the order
+	// is moot there. Passing the subject matters in the direction nobody
+	// expects: judged as ordinary work, a RESERVED bot faces the ceiling its
+	// own reservation lowered, so resuming it by hand could be refused on the
+	// band held for it — and where the reserves take a whole cap, no run could
+	// be resumed at all. The automated twin (the retry sweeper) reads the same
+	// doc and passes the same subject.
 	id := r.PathValue("id")
 	if id == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
@@ -909,10 +912,6 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// The run read for the gate's subject above, answered HERE: one load
 	// serves both. Its persisted FilePath is the fallback when the body omits
 	// one, and its TenantID scopes the resume's Mongo queries (see below).
-	// LoadRunCtx looks a run up by id without a tenant filter, which is why
-	// its failure is reported only now — after the admission gate has had its
-	// say, so a caller the gate refuses learns nothing about which run ids
-	// exist.
 	runMeta, err := gateMeta, gateMetaErr
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)

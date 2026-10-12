@@ -684,9 +684,8 @@ func TestHandleResumeRun_TakesItsSubjectFromTheRun(t *testing.T) {
 	})
 
 	t.Run("a run the store cannot answer for is still gated", func(t *testing.T) {
-		// The subject is best-effort; admission is not. The gate's denial must
-		// also come out AHEAD of the 404, or the (not tenant-filtered) lookup
-		// becomes a run-existence probe for a caller the gate refuses.
+		// The subject is best-effort; admission is not: a run the handler's
+		// read cannot answer for costs the subject, never the gate.
 		s, ctx, _ := newSrv(t, "review-pr")
 		rec := httptest.NewRecorder()
 		s.handleResumeRun(rec, orgReq(ctx, http.MethodPost, "/api/runs/nope/resume", `{}`, "nope"))
