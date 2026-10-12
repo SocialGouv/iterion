@@ -1,0 +1,9 @@
+{
+  "standard": "rgaa",
+  "sample": {
+    "pages": [
+      { "id": "accueil", "name": "Accueil", "url": "http://127.0.0.1:1/index.html", "sources": ["index.html"] },
+      { "id": "contact", "name": "Contact", "url": "http://127.0.0.1:1/contact.html", "sources": ["contact.html"] }
+    ]
+  }
+}

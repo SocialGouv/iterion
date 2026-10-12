@@ -84,6 +84,28 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
 
 ## Testing Patterns
 
+- **An external CLI a bot delegates to is tested against the REAL pinned
+  binary, offline, never a stub kinder than the real thing.**
+  [`bots/rgaa_audit_engine_contract_test.go`](../../../bots/rgaa_audit_engine_contract_test.go)
+  runs the pinned ultra11y on a planted fixture (`bots/testdata/rgaa-audit-site/`)
+  and asserts the exit codes, JSON shapes and counters the rgaa-audit bot
+  reads. The pin has two layers: `scripts/ultra11y-engine/package-lock.json`
+  fixes the whole dependency closure at install time (`npm ci`, integrity
+  checked by npm — the engine's own dependencies are caret ranges), and
+  `bots/rgaa-audit/ultra11y.pin` fixes the entry file's size + sha256 and
+  version at load time (`scripts/ultra11y-engine.sh` fingerprints a candidate
+  before running it and never substitutes another engine for an explicit
+  `ULTRA11Y_BIN`). The load-time hash covers the verdict path (`audit`,
+  `verify`, `report`, `check`, `tickets` open only that file); `status
+  --browser` and `scan` also run Playwright resolved from `--cwd` first, so
+  `--cwd` must never point at an untrusted tree. The tests skip without
+  `ULTRA11Y_BIN` locally and **fail** in CI (every job that runs `./bots`
+  installs the pin first), so a green CI always ran the engine. Known upstream
+  defects are encoded as subtests that fail the day upstream fixes them — the
+  signal to lift the bot's workarounds — and every `--json` call must print
+  JSON, so an engine crash can never read as a refusal. Compare with deepsec in
+  sec-audit-source, whose tests could only run stub CLIs: that is where a
+  2.0→2.3 drift went unseen.
 - `tmpStore()` — creates temp directory-backed RunStore for test isolation
 - `compileFixture()` — loads and compiles .bot files from `examples/` directory
 - **Scenario executor** (`e2e/e2e_test.go`) — configurable stub with `.on(nodeID, handler)` for per-node behavior
