@@ -3,6 +3,9 @@ import { useRef, useState, type KeyboardEvent } from "react";
 interface Props {
   value: string[];
   onChange: (next: string[]) => void;
+  /** id of the draft input, so a sibling `<label htmlFor>` names it. Without
+   *  it such a label points at nothing and the field has no accessible name. */
+  id?: string;
   placeholder?: string;
   disabled?: boolean;
   /** Optional max length per tag (chars). Tags exceeding this length
@@ -31,6 +34,7 @@ interface Props {
 export function TagInput({
   value,
   onChange,
+  id,
   placeholder = "Add tag…",
   disabled = false,
   maxTagLength = 64,
@@ -97,6 +101,7 @@ export function TagInput({
       ))}
       <input
         ref={inputRef}
+        id={id}
         type="text"
         value={draft}
         disabled={disabled}

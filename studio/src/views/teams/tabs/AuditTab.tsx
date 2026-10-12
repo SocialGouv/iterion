@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
+import { studioRoute } from "@/lib/scope";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -139,7 +140,11 @@ export default function AuditTab({ teamID, orgID, platform, canManage }: Props) 
           <button
             type="button"
             className="text-accent-text hover:underline"
-            onClick={() => navigate(`/orgs/${containingOrgID}?tab=audit`)}
+            // studioRoute, not a plain path: this tab also mounts inside the
+            // /admin console's nested router, whose base would turn
+            // "/orgs/x" into /admin/orgs/x. Under the studio base it
+            // resolves to the same address.
+            onClick={() => navigate(studioRoute(`/orgs/${containingOrgID}?tab=audit`))}
           >
             organization audit log
           </button>
