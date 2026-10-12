@@ -3301,6 +3301,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}
 	}
 
+	// The var constraints, judged on the values the RunMessage carries —
+	// the injection above applied — before a row exists or anything is
+	// queued: a value outside its `[enum: …]` or `[matching: …]` is refused
+	// on the request, not by the runner pod after the operator has gone. The
+	// runner's engine judges them again, and alone judges a value only its
+	// environment can read.
+	if err := runview.GateLaunchVars(wf, inputs); err != nil {
+		return 0, err
+	}
+
 	// 2. Resolve what the RunMessage carries BEFORE the run row exists, so a
 	//    failure here leaves no row at all. We marshal the AST inline;
 	//    p.publish then offloads it out-of-band via an IRRef (T-42) if it
