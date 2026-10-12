@@ -128,7 +128,8 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagGatewayCrossing:           {"Gateway route on a non-claw backend", "Gateway routes (`openai_compatible/…`) run on the claw backend only: drop the explicit `backend:` (or set it to `claw`), drop the vendor `provider:` hint, or pick a model the named backend serves — the route is refused at dispatch as written."},
 	DiagAutoMemoryNotSupported:    {"auto_memory on an unsupported backend", "Use `claude_code`, `claw` or `pi`, or drop `auto_memory:`."},
 	DiagInvalidAmbientContext:     {"Invalid ambient_context value", "Use `none`, `workspace`, `operator` or `all`, or drop the field to inherit (default `workspace`)."},
-	DiagAmbientContextNotEnforced: {"ambient_context not enforced on this backend", "Run the node on `claude_code`, `claw`, `codex` or `pi`, or drop `ambient_context:` — opencode, kimi and grok keep their own instruction-file conventions (ADR-119)."},
+	DiagAmbientContextNotEnforced: {"ambient_context not enforced on this backend", "Run the node on `claude_code`, `claw`, `codex` or `pi`, or drop `ambient_context:` — what grok loads for this policy has not been measured, so it keeps its own instruction-file conventions (ADR-119)."},
+	DiagAmbientContextRefused:     {"ambient_context refused on this backend", "Declare a policy the backend applies (`all` or `workspace` on kimi, `all` on opencode), drop the value to let the backend apply the default as far as it can, or run the node on `claude_code`, `claw`, `codex` or `pi` — the backend loads, whatever iterion passes it, instruction files this policy excludes, and the engine refuses the node at dispatch (ADR-119)."},
 	DiagInvalidLoopBudgetGuard:    {"Invalid loop_budget_guard value", "Use `on` or `off`, or drop the field to inherit."},
 	DiagInvalidRepoDevbox:         {"Invalid repo_devbox value", "Use `on` or `off`, or drop the field to inherit."},
 

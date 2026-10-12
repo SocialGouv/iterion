@@ -73,4 +73,7 @@ test("shows that the ambient-context default is the repository, not the operator
   expect(container.textContent).toContain(
     "effective: workspace · from default",
   );
+  expect(container.textContent).toContain(
+    "A chosen value a node's backend cannot apply refuses that node",
+  );
 });

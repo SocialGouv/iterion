@@ -151,6 +151,35 @@ type CLIAgentProtocol struct {
 	// adds only iterion's permission hook registration. nil means this CLI
 	// cannot enforce an enabled permission policy.
 	PermissionHook *CLIAgentPermissionHook
+
+	// Ambient describes how the CLI withholds the operator's instruction
+	// files when the node's ambient-context policy keeps the operator out
+	// (ADR-119). Which policies a backend honours, refuses or has not been
+	// measured against is recorded in pkg/backend/ambient (SupportOf) and
+	// enforced by the executor; this is the mechanism behind an honoured
+	// one. nil means iterion leaves the CLI's own loading alone.
+	Ambient *CLIAgentAmbient
+}
+
+// CLIAgentAmbient is the mechanism a CLI that reads operator instruction
+// files gets for a policy without the operator origin: the CLI is pointed at
+// an overlay of its home that serves everything but those files
+// (homeWithoutInstructions). Host-side only: a containerised CLI reads the
+// image's home, not the operator's.
+type CLIAgentAmbient struct {
+	// HomeEnv names the CLI's home directory; DefaultHome is where it lives,
+	// relative to the user's home, when HomeEnv is unset (as for
+	// CLIAgentPermissionHook without ParentHomeLayout).
+	HomeEnv     string
+	DefaultHome string
+	// InstructionFiles are the operator instruction files the CLI reads from
+	// that home whatever the working directory.
+	InstructionFiles []string
+	// HostInstructions returns the operator instruction files the CLI reads
+	// from outside its home that exist for this task — which no overlay of
+	// the home can withhold. Such a file refuses a declared policy and is
+	// reported, once, under the default. nil means the CLI reads none.
+	HostInstructions func(task Task) []string
 }
 
 // CLIAgentPermissionHook describes how one CLI discovers a PreToolUse hook.
@@ -302,6 +331,14 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	if backendName == "" {
 		backendName = "cli_agent"
 	}
+
+	// Before the permission shadow: a gated node's shadow home is built from
+	// the home the policy serves, so it never links a withheld file back in.
+	task, releaseAmbient, err := b.applyAmbient(task, backendName)
+	if err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+	defer releaseAmbient()
 
 	permissionEnv, permissionCleanup, err := b.preparePermissionHook(ctx, task, proto, backendName)
 	if err != nil {
@@ -535,15 +572,7 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		// Grok discovers ~/.grok through HOME, not through GROK_HOME. Give it a
 		// private parent home so every HOME/XDG fallback lookup in its process
 		// tree is isolated, while the inner .grok shadow retains linked auth.
-		operatorHome := ""
-		for _, kv := range task.ExtraEnv {
-			if key, value, ok := strings.Cut(kv, "="); ok && key == hook.HomeEnv {
-				operatorHome = strings.TrimSpace(value)
-			}
-		}
-		if operatorHome == "" {
-			operatorHome = strings.TrimSpace(os.Getenv(hook.HomeEnv))
-		}
+		operatorHome := taskEnv(task, hook.HomeEnv)
 		if operatorHome == "" {
 			cleanup()
 			return nil, nil, fmt.Errorf("delegate: %s: %s is required for a parent-home permission shadow", backendName, hook.HomeEnv)
@@ -555,22 +584,12 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 			return nil, nil, fmt.Errorf("delegate: %s: create permission shadow state home: %w", backendName, err)
 		}
 	} else {
-		for _, kv := range task.ExtraEnv {
-			if key, value, ok := strings.Cut(kv, "="); ok && key == hook.HomeEnv {
-				realHome = strings.TrimSpace(value)
-			}
+		home, homeErr := cliHomeDir(task, hook.HomeEnv, hook.DefaultHome)
+		if homeErr != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("delegate: %s: %w", backendName, homeErr)
 		}
-		if realHome == "" {
-			realHome = strings.TrimSpace(os.Getenv(hook.HomeEnv))
-		}
-		if realHome == "" {
-			operatorHome, homeErr := os.UserHomeDir()
-			if homeErr != nil {
-				cleanup()
-				return nil, nil, fmt.Errorf("delegate: %s: resolve operator home: %w", backendName, homeErr)
-			}
-			realHome = filepath.Join(operatorHome, hook.DefaultHome)
-		}
+		realHome = home
 	}
 	if abs, absErr := filepath.Abs(realHome); absErr == nil {
 		realHome = abs

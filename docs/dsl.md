@@ -376,9 +376,12 @@ repository's instruction files (`workspace`, the default — `CLAUDE.md`,
 the files above the repository root (`operator`), both (`all`) or nothing
 (`none`). Declared on the node or the workflow, with a run override
 (`--ambient-context`) and `ITERION_AMBIENT_CONTEXT` below it. Enforced on
-`claude_code`, `claw`, `codex` and `pi`; an explicit value on another
-backend warns (C185). An invalid value is a compile error (C184). Review
-bots that judge a checkout they do not control usually want `none`. See
+`claude_code`, `claw`, `codex` and `pi`; `kimi` applies `workspace` and
+`all`, `opencode` `all`. A declared value a node's backend cannot apply is
+refused — a compile error (C187) and a refusal at dispatch — and one it has
+not been measured against warns (C185); the default is applied as far as
+each backend can. An invalid value is a compile error (C184). Review bots
+that judge a checkout they do not control usually want `none`. See
 [backends.md](backends.md#ambient-context-adr-119--what-a-node-inherits-besides-its-prompt) and
 [ADR-119](adr/119-ambient-context-policy.md).
 

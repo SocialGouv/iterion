@@ -1089,6 +1089,10 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 			return delegate.Task{}, &delegate.ErrCapabilityUnsupported{NodeID: f.id, Backend: backendName, Capability: "interaction: async"}
 		}
 	}
+	ambientPolicy, ambientSource, err := e.ambientContextPolicy(f, backendName)
+	if err != nil {
+		return delegate.Task{}, err
+	}
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
@@ -1137,7 +1141,8 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	task := delegate.Task{
 		NodeID:                f.id,
-		AmbientContext:        e.ambientContextPolicy(f, backendName),
+		AmbientContext:        ambientPolicy,
+		AmbientContextSource:  ambientSource,
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,

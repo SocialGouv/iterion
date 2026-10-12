@@ -347,7 +347,9 @@ or the workflow, with a run override (`--ambient-context`, launch
 | `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on | the walk above the root + the user scope | everything |
 | `pi` | `--no-context-files` | `--no-context-files` + iterion supplies the allowed files, rendered in pi's own shape | the same, operator files | pi's native loading |
 | `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without its `AGENTS.md` | the same home | `project_doc_max_bytes=0` | unchanged |
-| `opencode`, `kimi`, `grok` | not enforced (C185 on an explicit value) | | | |
+| `kimi` | refused (C187) | a home without its `AGENTS.md` (`KIMI_CODE_HOME` overlay) — refused when declared, warned when defaulted, if `~/.agents/AGENTS.md` exists | refused (C187) | kimi's native loading |
+| `opencode` | refused (C187) | refused when declared (C187); the default is not applied | refused (C187) | opencode's native loading, Claude-Code compatibility layer off |
+| `grok` | refused (C187) | not measured (C185 on a declared value) | refused (C187) | not measured (C185 on a declared value) |
 
 Measured on Claude Code CLI 2.1.282 and codex-cli 0.156.1, each cell checked
 against the real tool with planted markers and an invalid key (no cost):
@@ -376,6 +378,56 @@ against the real tool with planted markers and an invalid key (no cost):
 The structured-output pass of a `claude_code` node follows its policy too;
 before ADR-119 it passed no `--setting-sources` at all, and so loaded every
 scope, `local` included.
+
+**Declared or defaulted.** A value somebody chose — the node's, the
+workflow's, a run override or `ITERION_AMBIENT_CONTEXT` — is applied or
+refused, never ignored: a backend that loads, whatever iterion passes it,
+instruction files the value excludes refuses the node before it runs
+(`delegate.ErrCapabilityUnsupported`, classified
+`CAPABILITY_UNSUPPORTED`, so it is not retried), and the compiler refuses
+the same where it can see the backend (C187, the node's own value, a
+workflow value it inherits, and every fallback route). The default is never
+refused: each backend applies it as far as it can, as the table says. A
+policy nothing has measured on a backend is warned instead (C185).
+
+**kimi, measured on kimi-code 2.1.1** (`TestCLILiveKimiAmbientPolicies`,
+`-tags clilive`: kimi's env-model variables point it at an in-process
+server that records the request — no network, no cost). kimi reads the
+operator's `$KIMI_CODE_HOME/AGENTS.md` (`~/.kimi-code` by default) and the
+first of `~/.agents/AGENTS.md` and `agents.md`, then, from the git root down
+to the working directory, each directory's `.kimi-code/AGENTS.md` and first
+of `AGENTS.md` and `agents.md` — never a file above the root, never a
+`CLAUDE.md`, and nothing of a nested worktree's main checkout. `workspace`
+serves kimi an overlay of its home without its `AGENTS.md` (the mechanism
+`codex` uses for `CODEX_HOME`; a file kimi replaces there by rename is
+carried back), and a permission shadow home is built from that overlay. kimi
+resolves `~/.agents` from `HOME`, so no overlay withholds it: when it exists a
+declared `workspace` is refused and the default is warned once per process.
+No switch skips the repository walk, so `none` and `operator` are refused.
+On a containerised run kimi reads the image's home, and iterion leaves it
+alone.
+
+**opencode, read from source** (1.19.0, the `opencode-ai` package, and
+2.0.26, `@opencode/cli`; no live measurement). opencode reads its global
+`AGENTS.md` from its config directory, every file its global configuration
+lists under `instructions`, and — 2.x — every `AGENTS.md` from the working
+directory up to the home directory, past the repository root: nothing keeps
+the operator out, so a declared `workspace` is refused and the default stays
+opencode's own loading. Its read tool adds the `AGENTS.md` of every directory
+it reads a file in, whatever `OPENCODE_DISABLE_PROJECT_CONFIG` says, so
+`none` and `operator` are refused too. `all` is its native loading, minus the
+Claude-Code compatibility layer iterion always pins off
+(`OPENCODE_DISABLE_CLAUDE_CODE`).
+
+**grok, read from source** (`xai-org/grok-build@2bdd1d6`; no live
+measurement). Grok Build reads `AGENTS.md`, `CLAUDE.md` and the `.grok`,
+`.claude` and `.cursor` rules from the git root down to the working
+directory whenever it trusts the folder, and it trusts any repository that
+carries no hook or MCP configuration without asking — iterion cannot make it
+skip them, so `none` and `operator` are refused. What it reads from
+`GROK_HOME`, the vendor homes and `[paths] extra_rule_dirs` has not been
+measured (and a permission-gated grok runs with a private `HOME`), so
+`workspace` and `all` stay warned (C185).
 
 ## TL;DR
 

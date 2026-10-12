@@ -334,16 +334,26 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 // a typo would otherwise read as "inherit" and hand the node the default, so
 // an invalid value is an ERROR (C184). Empty means unset.
 //
-// It then warns (C185) when an EXPLICIT per-node value meets a backend that
-// does not translate the policy: the node's effective backend and every
-// backend its fallback chain may route to. The workflow default reaches every
-// node, so a mixed-backend workflow would warn on each node that cannot honour
-// it; the workflow-level value is only reported once, when no node at all can
-// honour it. An unresolved backend is left alone: the resolver falls through
-// to env and host detection, so the compiler cannot know.
+// It then checks every DECLARED value against the backends it reaches — the
+// node's effective backend and every backend its fallback chain may route
+// to — with the verdicts of pkg/backend/ambient (SupportOf):
 //
-// Both the accepted values and the backend list come from pkg/backend/ambient,
-// so the compiler and the engine cannot disagree.
+//   - a refused policy is an error (C187), the node's own value and a
+//     workflow value it inherits alike: the engine refuses both at dispatch,
+//     since running the node would hand the agent the very files the policy
+//     excludes;
+//   - an unmeasured one is a warning (C185) on the node's own value. The
+//     workflow value reaches every node, so a mixed-backend workflow would
+//     warn on each node that cannot honour it; it is only reported once, when
+//     no node inheriting it runs on a backend that applies it.
+//
+// The default (nothing declared) is never diagnosed: each backend applies it
+// as far as it can, as documented. An unresolved backend is left alone: the
+// resolver falls through to env and host detection, so the compiler cannot
+// know.
+//
+// Both the accepted values and the verdicts come from pkg/backend/ambient, so
+// the compiler and the engine cannot disagree.
 func (c *compiler) validateAmbientContext(w *Workflow) {
 	valid := func(v string) bool {
 		if strings.TrimSpace(v) == "" {
@@ -358,6 +368,7 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 			"workflow %q has invalid ambient_context %q; valid values are %s",
 			w.Name, w.AmbientContext, accepted)
 	}
+	wfPolicy, wfDeclared := ambient.Parse(w.AmbientContext)
 	honouring, ignoring := 0, 0
 	for _, n := range w.Nodes {
 		nn, ok := n.(LLMNode)
@@ -371,39 +382,80 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 				kind, n.NodeID(), value, accepted)
 			continue
 		}
+		policy, own := ambient.Parse(value)
+		if !own {
+			if !wfDeclared {
+				continue
+			}
+			policy = wfPolicy
+		}
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
-		if backend == "" || ambient.Enforces(backend) {
-			honouring++
-		} else {
-			ignoring++
+		if !own {
+			switch support, _ := ambient.SupportOf(backend, policy); {
+			case backend == "" || support == ambient.Honoured:
+				honouring++
+			case support == ambient.Unmeasured:
+				ignoring++
+			}
 		}
-		if strings.TrimSpace(value) == "" {
-			continue
+		at := ambientRoute{kind: kind, node: n.NodeID(), policy: policy, inheritedFrom: ""}
+		if !own {
+			at.inheritedFrom = w.Name
 		}
-		if backend != "" && !ambient.Enforces(backend) {
-			c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
-				"%s %q: ambient_context: %s is not enforced on backend=%q — it keeps its own conventions; claude_code, claw, codex and pi apply the policy",
-				kind, n.NodeID(), strings.TrimSpace(value), backend)
-		}
+		c.diagnoseAmbientRoute(at, backend, "")
 		for _, f := range nn.GetFallbacks() {
 			if f.Action == FallbackActionSkip {
 				continue
 			}
-			routeBackend := f.Backend
-			if routeBackend == "" {
-				routeBackend = backend
-			}
-			if routeBackend != "" && routeBackend != backend && !ambient.Enforces(routeBackend) {
-				c.warnfAt(DiagAmbientContextNotEnforced, n.NodeID(), "",
-					"%s %q: ambient_context: %s is not enforced if fallback route %q runs on backend=%q",
-					kind, n.NodeID(), strings.TrimSpace(value), f.Name, routeBackend)
+			if routeBackend := sourceBackend.routeName(f.Backend); routeBackend != "" && routeBackend != backend {
+				c.diagnoseAmbientRoute(at, routeBackend, f.Name)
 			}
 		}
 	}
-	if strings.TrimSpace(w.AmbientContext) != "" && valid(w.AmbientContext) && ignoring > 0 && honouring == 0 {
+	if wfDeclared && ignoring > 0 && honouring == 0 {
 		c.warnfAtSpan(DiagAmbientContextNotEnforced, c.workflowSpan(w.Name),
-			"workflow %q sets ambient_context: %s but no agent/judge node runs on a backend that enforces it (claude_code, claw, codex, pi)",
-			w.Name, strings.TrimSpace(w.AmbientContext))
+			"workflow %q sets ambient_context: %s but no agent/judge node inheriting it runs on a backend that enforces it (%s)",
+			w.Name, wfPolicy, strings.Join(ambient.EnforcingBackends(wfPolicy), ", "))
+	}
+}
+
+// ambientRoute is the node a declared ambient_context is checked for.
+type ambientRoute struct {
+	kind, node string
+	policy     ambient.Policy
+	// inheritedFrom names the workflow the value comes from, "" for the
+	// node's own value.
+	inheritedFrom string
+}
+
+// diagnoseAmbientRoute checks one backend a node may run on — its own, or
+// the backend of fallback route `route` — against the node's declared policy.
+func (c *compiler) diagnoseAmbientRoute(at ambientRoute, backend, route string) {
+	if backend == "" {
+		return
+	}
+	where := fmt.Sprintf("backend=%q", backend)
+	if route != "" {
+		where = fmt.Sprintf("fallback route %q (backend=%q)", route, backend)
+	}
+	switch support, reason := ambient.SupportOf(backend, at.policy); support {
+	case ambient.Refused:
+		if at.inheritedFrom != "" {
+			c.errorfAt(DiagAmbientContextRefused, at.node, "",
+				"%s %q inherits ambient_context: %s from workflow %q, which %s cannot honour: %s",
+				at.kind, at.node, at.policy, at.inheritedFrom, where, reason)
+			return
+		}
+		c.errorfAt(DiagAmbientContextRefused, at.node, "",
+			"%s %q: ambient_context: %s cannot be honoured on %s: %s",
+			at.kind, at.node, at.policy, where, reason)
+	case ambient.Unmeasured:
+		if at.inheritedFrom != "" {
+			return
+		}
+		c.warnfAt(DiagAmbientContextNotEnforced, at.node, "",
+			"%s %q: ambient_context: %s is not enforced on %s — what it loads has not been measured, so it keeps its own conventions; %s apply the policy",
+			at.kind, at.node, at.policy, where, strings.Join(ambient.EnforcingBackends(at.policy), ", "))
 	}
 }
 
