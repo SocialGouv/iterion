@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.259.0](https://github.com/SocialGouv/iterion/compare/v3.258.1...v3.259.0) (2026-10-12)
+
+### Features
+
+* **budgetfloor:** capacity can be RESERVED for a workload, not only capped ([#1099](https://github.com/SocialGouv/iterion/issues/1099)) ([fe32101](https://github.com/SocialGouv/iterion/commit/fe3210180b88f09e8d7e0c4352e2d024da40b2c0)), references [#950](https://github.com/SocialGouv/iterion/issues/950) [#950](https://github.com/SocialGouv/iterion/issues/950)
+
+    <details><summary>why</summary>
+
+    Every budget mechanism in iterion is a ceiling. max_cost_usd, the org monthly caps, the per-credential meters, the window caps, the team concurrency and launch-rate caps, a pool pledge's spend/day — all answer "how much may this stop at?", none answers "how much is reserved for this, whatever else runs?".
+
+    </details>
+
+### Bug Fixes
+
+* **modernize:** a lot's contract is a directory, judged on every tree that lands ([#2124](https://github.com/SocialGouv/iterion/issues/2124)) ([db152fd](https://github.com/SocialGouv/iterion/commit/db152fd94468d2589c5b389683e7638af2890b23))
+
+    <details><summary>why</summary>
+
+    lot_verify refused a lot that rewrote the plan and nothing else. The contract a lot is judged against is wider: the outcomes file (each `check` is the command the programme verdict runs), the brief (goals, owner decisions, permitted and forbidden changes), the arbitration doctrine a separate judge applies, and the defects register. A lot that rewrote an outcome's check to `true` and renamed a brief goal converged green.
+
+    </details>
+* **studio:** the admin console is nest-aware, sectioned and gate-tested ([#2365](https://github.com/SocialGouv/iterion/issues/2365)) ([77f5030](https://github.com/SocialGouv/iterion/commit/77f5030146b036380f0ee2053acfb9981f9a337b)), closes [#1448](https://github.com/SocialGouv/iterion/issues/1448) [#1449](https://github.com/SocialGouv/iterion/issues/1449)
+
+    <details><summary>why</summary>
+
+    The `/admin` route group is nested (`<Route path="/admin" nest>`, 55a331b2c), which makes wouter report a location relative to `/admin` and resolve every href against it. Nothing inside the console was written for that. Measured against real wouter 3.10 with the real `<Router base="/studio">` and the real nest: at `/studio/admin/users` AdminNav highlighted "Organizations", clicking "Audit" navigated to `/studio/admin/admin/audit` — a blank page, the inner Switch matching nothing — and…
+
+    </details>
+* **test:** the resume and node-deadline tests witness facts, not a wall clock ([#2361](https://github.com/SocialGouv/iterion/issues/2361)) ([59ac333](https://github.com/SocialGouv/iterion/commit/59ac333c09401bf984428ad2aab9bc1c817a4980)), closes [#2161](https://github.com/SocialGouv/iterion/issues/2161) [#2160](https://github.com/SocialGouv/iterion/issues/2160), references [#1471](https://github.com/SocialGouv/iterion/issues/1471)
+
+    <details><summary>why</summary>
+
+    TestResume_doesNotWaitOnAnotherRunsNode asserted `elapsed <= 2s` against a `resumeRefusalGrace` of 1s — one second of slack for scheduling, which a loaded runner closes (the ticket measured 2.782s). The wall clock is gone from the premise: the competing run's node now waits on a release file only the test writes, and the assertion is the happens-before the test always meant, that Resume came back while that node was still executing. Resume runs behind a 30s bound, so the forbidden behaviour…
+
+    </details>
+
 ## [3.258.1](https://github.com/SocialGouv/iterion/compare/v3.258.0...v3.258.1) (2026-10-12)
 
 ### Bug Fixes
