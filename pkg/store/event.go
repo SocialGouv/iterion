@@ -620,13 +620,14 @@ const (
 	//     proceeds, the named packages are absent
 	EventSandboxDevboxProvisioned EventType = "sandbox_devbox_provisioned"
 	// EventSandboxEnvDenied fires when the target repository's
-	// devcontainer.json (containerEnv/remoteEnv) declares env keys in
-	// the deny class and the runtime removes them instead of copying
-	// them into the sandbox env (#2303). The devcontainer is the
-	// reviewed repository's file, not the operator's: a planted
-	// *_BASE_URL re-routes every LLM call the container makes, a
-	// planted LD_PRELOAD or PATH executes the planter's code, and a
-	// repo-authored value does not speak for the operator. Data:
+	// devcontainer.json (containerEnv/remoteEnv) declares env keys the
+	// runtime refuses — the deny class, or an entry no driver would
+	// accept — and removes instead of copying into the sandbox env
+	// (#2303). The devcontainer is the reviewed repository's file, not
+	// the operator's: a planted *_BASE_URL re-routes every LLM call the
+	// container makes, a planted LD_PRELOAD or PATH executes the
+	// planter's code, and a repo-authored value does not speak for the
+	// operator. Data:
 	//   - keys: []string of the removed names, sorted
 	//   - source: the resolution source label (names the
 	//     devcontainer.json path)

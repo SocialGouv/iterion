@@ -185,6 +185,8 @@ var envWrites = map[string]string{
 	"HOOK_EVENT":                     whyHookEnv,
 	"HOOK_TOOL_NAME":                 whyHookEnv,
 	"HOOK_TOOL_INPUT":                whyHookEnv,
+	"HOOK_TOOL_OUTPUT":               whyHookEnv,
+	"HOOK_TOOL_IS_ERROR":             whyHookEnv,
 	"HOOK_USER_PROMPT":               whyHookEnv,
 	"HOOK_MESSAGE_COUNT":             whyHookEnv,
 	"ITERION_ARTIFACT_FILES_DIR":     whyToolEnv,
