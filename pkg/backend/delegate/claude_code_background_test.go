@@ -6629,6 +6629,63 @@ func TestBackground_TheRestClockRestartsAtTheDeliverysClose(t *testing.T) {
 	}
 }
 
+func TestBackground_AResultOnItsWayIsTimedOnTheTrackersClock(t *testing.T) {
+	// The lifecycleAt twin of the resultOnItsWay path: a held result on its
+	// way to the CLI's queue holds the grace's rest bound for resultWait,
+	// counted from when the tracker saw it leave — its end with no idle since
+	// (pendingAt), or its task gone from the CLI's set before its
+	// notification (awaitedAt). The harness's clock runs an hour off the wall
+	// in either direction: a stamp taken on the wall clock is then on its way
+	// forever (behind) or never (ahead), and one of the two closes below
+	// reddens.
+	ways := []struct {
+		name string
+		left []string
+	}{
+		{"its end reported with no idle since", []string{lnSnapshot(), lnTaskNotif("t1", "tuA")}},
+		{"its task gone from the set before its notification", []string{lnSnapshot()}},
+	}
+	for _, way := range ways {
+		for _, skew := range []time.Duration{-time.Hour, time.Hour} {
+			t.Run(fmt.Sprintf("%s, clock %s off the wall", way.name, skew), func(t *testing.T) {
+				h := newLifecycleAt(t, backgroundLifecycleConfig{wait: time.Hour, autoTurnGrace: 2 * time.Second,
+					resultWait: 10 * time.Second, finalizeTimeout: time.Minute, idleSettle: time.Hour}, 0)
+				t0 := time.Now().Add(skew)
+				h.feedAt(t0, launchAgent()...)
+				h.feed(lnAssistant("m2", "", cText("waiting")))
+				if act := h.close(t0, "waiting"); act != bgReenter {
+					t.Fatalf("close 1: action %v, want the wave's wait", act)
+				}
+				// t1's result leaves at t0+0.3s: on its way until t0+10.3s.
+				// The close after it is at rest; the rest clock arms there.
+				h.feedAt(t0.Add(300*time.Millisecond), append(way.left, lnInit("2.1.280"), lnAssistant("m3", "", cText("t1 interim")))...)
+				if act := h.close(t0.Add(400*time.Millisecond), "t1 interim"); act != bgReenter {
+					t.Fatalf("close 2: action %v", act)
+				}
+				if !h.tr.onItsWayWithin(t0.Add(400*time.Millisecond), time.Second) {
+					t.Fatalf("no held result on its way 0.1s after t1 left at %v (stamps: pending %v, awaited %v)",
+						t0.Add(300*time.Millisecond), h.tr.pendingAt, h.tr.awaitedAt)
+				}
+				// The CLI keeps running turns of its own. Past the grace
+				// (restSince+2s = t0+2.4s) but within resultWait, the close
+				// keeps reading: the result may still reach the agent.
+				h.feedAt(t0.Add(5*time.Second), lnRunning(), lnInit("2.1.280"), lnAssistant("m4", "", cText("polishing")))
+				if act := h.close(t0.Add(5100*time.Millisecond), "polishing"); act != bgReenter {
+					t.Fatalf("close 3: action %v past the grace but within resultWait of t1 leaving (stamps: pending %v, awaited %v)",
+						act, h.tr.pendingAt, h.tr.awaitedAt)
+				}
+				// Past resultWait the grace's rest bound acts: no idle proved
+				// t1's result delivered, so the report is asked for.
+				h.feedAt(t0.Add(11*time.Second), lnRunning(), lnInit("2.1.280"), lnAssistant("m5", "", cText("still polishing")))
+				if act := h.close(t0.Add(11100*time.Millisecond), "still polishing"); act != bgReenterAfterSend {
+					t.Fatalf("close 4: action %v past resultWait of t1 leaving, want the grace's rest bound asking for the report (stamps: pending %v, awaited %v)",
+						act, h.tr.pendingAt, h.tr.awaitedAt)
+				}
+			})
+		}
+	}
+}
+
 func TestBackground_TheCeilingCountsFromWhenATurnSourceStarts(t *testing.T) {
 	// An MCP task (no turn source) keeps the CLI busy past the wait budget,
 	// then the turn its end starts launches a Monitor half a second before its

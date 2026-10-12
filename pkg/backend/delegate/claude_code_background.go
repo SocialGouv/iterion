@@ -318,8 +318,8 @@ type backgroundTracker struct {
 	// something, or by that result (a teammate is stopped by its agent ID or
 	// name, the result names its task). sourceSince: since when turn sources have
 	// run past the node's first result (results counts them), zero when none
-	// does; sourceRun: how long they ran before. clock stamps both (time.Now
-	// when nil).
+	// does; sourceRun: how long they ran before. clock stamps both, and
+	// awaitedAt and pendingAt (time.Now when nil).
 	sources       map[string]bool
 	wasSource     map[string]bool
 	sourceRan     bool
@@ -671,7 +671,7 @@ func (t *backgroundTracker) observeTaskLocked(subtype string, ev claudesdk.TaskE
 			t.parkedAt[id] = t.seq
 			if t.mainTasks[id] && holdsSession(task.Type) {
 				t.awaited[id] = task
-				t.awaitedAt[id] = time.Now()
+				t.awaitedAt[id] = t.now()
 			}
 		}
 		t.snapshot = snap
@@ -734,7 +734,7 @@ func (t *backgroundTracker) observeTaskLocked(subtype string, ev claudesdk.TaskE
 			t.undelivered = append(t.undelivered, undeliveredTask{task: task, seq: t.seq})
 			t.lastEndSeq = t.seq
 			if holdsSession(task.Type) {
-				t.pendingAt[ev.TaskID] = time.Now()
+				t.pendingAt[ev.TaskID] = t.now()
 			} else {
 				t.otherEnds++
 			}
