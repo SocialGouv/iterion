@@ -62,20 +62,23 @@ func NewClient(cfg Config, modelID string, strict bool) (api.APIClient, error) {
 	return client, nil
 }
 
-// guardedTransport dials only the host the operator's env named, pinned to
-// an address validated at every new connection (DNS-rebinding-proof). By
-// default it uses no proxy: an ambient HTTPS_PROXY is never trusted for the
-// gateway. The ONE exception is engine-owned — a policy-isolated sandbox
-// only lets egress through the run's network proxy, and the engine hands
-// that endpoint to the in-container runner under SandboxProxyEndpointEnv
-// (a name only the engine sets; the container image and the operator's
-// shell never speak for it). With it, the transport dials the VALIDATED
-// gateway host through that proxy — the host check runs exactly as the
-// direct dial would, so the proxy is a path, never an authority that
-// bypasses the guard. The proxy's own address is private by nature (the
-// runner pod IP, the docker host gateway): a proxified transport dials it
-// plainly — the SafeTransport guard is the DIRECT dial's guard, and the
-// request-level host validation carries the boundary.
+// guardedTransport is httpdial.SafeTransport: by default it dials only the
+// host the operator's env named, pinned to an address validated at every
+// new connection (DNS-rebinding-proof), and uses no proxy — an ambient
+// HTTPS_PROXY is never trusted for the gateway. The ONE exception is
+// engine-owned — a policy-isolated sandbox only lets egress through the
+// run's network proxy, and the engine hands that endpoint to the
+// in-container runner under SandboxProxyEndpointEnv (a name only the engine
+// sets; the container image and the operator's shell never speak for it).
+// With it, every request crosses that proxy once its gateway host has
+// passed the guard (sandboxProxyFunc, which names what the guard still
+// guarantees there), so the proxy is a path, never an authority that
+// bypasses the guard. The proxy road is SafeTransport too, every bound
+// included (connect timeout, TLS handshake, idle reap), save the guard on
+// its dial: the proxy's own address is private by nature — the runner pod
+// IP, the docker host gateway — so it is dialed through SafeTransport's
+// dialer without the guard. The CONNECT exchange itself keeps net/http's
+// own one-minute bound, which no Transport field sets.
 //
 // No client Timeout: a generation is long by design and the caller's
 // cold-stream watchdog bounds pre-header silence. ResponseHeaderTimeout
@@ -99,24 +102,39 @@ func guardedTransport(strict bool) (*http.Transport, error) {
 		return nil, fmt.Errorf("openai_compatible: %s is set but is not a usable proxy URL — refusing to fall back to a direct dial the sandbox policy would drop; fix the engine value",
 			SandboxProxyEndpointEnv)
 	}
-	return &http.Transport{
-		Proxy:                 sandboxProxyFunc(strict, proxyURL),
-		ResponseHeaderTimeout: 60 * time.Second,
-	}, nil
+	t.Proxy = sandboxProxyFunc(strict, proxyURL)
+	t.DialContext = httpdial.PlainDialer().DialContext
+	return t, nil
 }
 
 // SandboxProxyEndpointEnv is set by the ENGINE on a sandboxed in-container
 // runner: the run's network-proxy URL, the only egress the sandbox's
 // network policy allows. An ambient value (the container image, the
 // operator's shell) is refused — this name is the runtime's channel, and
-// the dial guard validates the gateway host exactly as it would without a
-// proxy.
+// the gateway host still passes the guard before any byte reaches the
+// proxy (sandboxProxyFunc).
 const SandboxProxyEndpointEnv = "ITERION_SANDBOX_PROXY_ENDPOINT"
 
-// sandboxProxyFunc returns the transport's Proxy resolution: the validated
-// gateway host crosses through the engine-provided proxy. The host is
-// resolved and validated per request, before any byte is handed to the
-// proxy.
+// sandboxProxyFunc returns the transport's Proxy resolution: every request
+// crosses the engine-provided proxy once its gateway host has passed the
+// guard as the runner resolves it — a refused host never reaches the proxy.
+//
+// The direct road's pin does not cross the proxy. The proxy matches its
+// policy on the gateway's NAME — an allowlist refuses an IP literal no rule
+// names, so a CONNECT pinned to the validated address would be refused —
+// and connects where its own answer for that name points: a fresh
+// resolution, or a connection it already holds for any client of the run.
+// It refuses a loopback, link-local (169.254.169.254) or unspecified
+// destination itself, whatever the answer — save the host.docker.internal
+// alias, which it dials on its own loopback — but not a private one
+// (RFC 1918, ULA, CGNAT — the 100.100.100.200 and fd00:ec2::254 metadata
+// endpoints among them). So a gateway name whose resolver answers the
+// proxy differently (DNS rebinding) can land the connection on the proxy
+// host's private network: over https the gateway's certificate check fails
+// there and no request is sent; over plain http the request, its
+// credential included, is. Only the proxy, which owns the connection, can
+// pin: the runner's clone-guard proxy dials through this same guard
+// (pkg/runner/gitproxy.go); the run's network proxy does not.
 func sandboxProxyFunc(strict bool, proxyURL *url.URL) func(*http.Request) (*url.URL, error) {
 	return func(req *http.Request) (*url.URL, error) {
 		if _, err := httpdial.ResolvePublicHost(req.Context(), req.URL.Hostname(), strict); err != nil {

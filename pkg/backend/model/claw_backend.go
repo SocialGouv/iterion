@@ -1521,7 +1521,10 @@ var providerEndpointEnvVars = []string{
 // runner needs when its sandbox is policy-isolated: the network proxy is
 // the ONLY egress the sandbox's network policy allows, and the gateway
 // client never trusts an ambient HTTPS_PROXY — the endpoint crosses under
-// compatgw.SandboxProxyEndpointEnv, the name only the engine sets. A run
+// compatgw.SandboxProxyEndpointEnv, the name only the engine sets. Through
+// it the run's proxy, not the gateway client, picks the gateway's address:
+// the client's SSRF guard judges the runner's own resolution and its pin
+// does not cross (compatgw's sandboxProxyFunc names what remains). A run
 // that is NOT proxied UNSETS the name: an exec env rides the container's
 // own env, and a hostile image or spec env could otherwise forge the
 // engine's voice and route a gateway credential through an attacker proxy.

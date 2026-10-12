@@ -1172,7 +1172,15 @@ like `OPENAI_BASE_URL`:
 
 The endpoint is the operator's choice, but the dial is guarded: a public
 address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` for a
-self-hosted gateway on private infrastructure. A gateway route runs on the
+self-hosted gateway on private infrastructure. When the sandbox's egress
+runs through the run's [network proxy](sandbox.md#network-policy), the call
+crosses it too: the runner checks the gateway's address as it resolves the
+name, then the proxy connects where its own answer for the name points —
+refusing loopback and link-local destinations itself (save the
+`host.docker.internal` alias), not private ones. The direct dial's pin
+against a DNS answer that changes in between does not hold there: serve the
+gateway over https, where a host such an answer points to cannot present the
+gateway's certificate. A gateway route runs on the
 **`claw` backend only**: an explicit `backend:` naming a CLI backend, or a
 vendor `provider:` hint beside a gateway model, is refused when the node is
 dispatched, and warning **C186** says the same at `iterion validate` time

@@ -122,14 +122,23 @@ func SafeTransport(strict bool) *http.Transport {
 			if err != nil {
 				return nil, err
 			}
-			d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
-			return d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			return PlainDialer().DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		},
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 		IdleConnTimeout:       30 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
+}
+
+// PlainDialer returns the dialer SafeTransport connects through, WITHOUT the
+// guard: it bounds the connect and keeps the connection alive, and dials
+// whatever address it is handed. It serves a transport that keeps
+// SafeTransport's bounds while connecting where the guard refuses by design
+// — a proxy's own private address — its caller validating the request's
+// host before any byte reaches that proxy.
+func PlainDialer() *net.Dialer {
+	return &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
 }
 
 // SafeClient wraps SafeTransport in an *http.Client that does NOT auto-follow
