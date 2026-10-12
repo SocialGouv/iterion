@@ -287,7 +287,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `await_answers` — description str · from str|id · timeout str
 - `fail` — description str · code str|id · message str · resumable bool
 - `workflow` — entry id.id · contract id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async|human_or_host
-- `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int
+- `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int · on_exceeded fail|pause
 - `resources` (`resources:` in workflow) — entries `<name>: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
 - `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool (profile ≤1) · visibility "bot|project|cross_project|user|org|global"

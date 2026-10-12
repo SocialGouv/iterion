@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -259,6 +260,47 @@ func TestCLIAgentExecuteNoBinary(t *testing.T) {
 	_, err := b.Execute(context.Background(), Task{UserPrompt: "hi"})
 	if err == nil {
 		t.Fatal("expected error when no binary configured")
+	}
+}
+
+// TestCLIAgentRunWithRetry_StackTraceNotTransient: a JavaScript crash dump
+// quoting a network signature (measured on opencode 1.1.19: a
+// credential-less host dies with "JSON Parse error: Unexpected EOF", which
+// substring-matches "unexpected eof") is a DETERMINISTIC failure. The
+// retry loop must surface it after ONE invocation, as the raw error —
+// not burn maxCLIAgentRetries attempts and wrap it in *ErrTransient for
+// the executor's classifier to retry again above.
+func TestCLIAgentRunWithRetry_StackTraceNotTransient(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "invocations")
+	fake := filepath.Join(dir, "fakeagent")
+	script := "#!/bin/sh\n" +
+		"echo x >> '" + counter + "'\n" +
+		"printf '%s\\n' 'error: JSON Parse error: Unexpected EOF' '      at /$bunfs/root/opencode:2:20' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+
+	proto := CLIAgentProtocol{Name: "fakeagent", DefaultBinary: "fakeagent", PromptFlag: "-p"}
+	b := &CLIAgentBackend{Protocol: proto, Command: fake, Logger: testLogger()}
+	_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "hi"})
+	if err == nil {
+		t.Fatal("expected the CLI's failure to surface")
+	}
+	var trans *ErrTransient
+	if errors.As(err, &trans) {
+		t.Fatalf("deterministic stack-trace failure wrapped in *ErrTransient: %v", err)
+	}
+	raw, readErr := os.ReadFile(counter)
+	if readErr != nil {
+		t.Fatalf("invocation counter: %v", readErr)
+	}
+	if n := strings.Count(strings.TrimSpace(string(raw)), "\n") + 1; n != 1 {
+		t.Fatalf("CLI invoked %d times, want 1 — a deterministic failure must not burn the retry budget", n)
 	}
 }
 

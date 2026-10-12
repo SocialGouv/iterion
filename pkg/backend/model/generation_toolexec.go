@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"os"
 	"strings"
 	"time"
 
@@ -372,7 +375,35 @@ func diagnosticShellFailureOutput(toolName, output string, err error) (string, b
 // route has none, and gets claw's unknown-model threshold rather than a
 // vendor's window matched on the alias's spelling.
 func compactionConfig(model string, ratio float64, preserveRecent int) clawrt.CompactionConfig {
-	return clawrt.DefaultCompactionConfigForModel(modelroute.Parse(model).CapabilityID(), ratio, preserveRecent)
+	route := modelroute.Parse(model)
+	if route.Gateway() {
+		return gatewayCompactionConfig(route.Wire, ratio, preserveRecent)
+	}
+	return clawrt.DefaultCompactionConfigForModel(route.CapabilityID(), ratio, preserveRecent)
+}
+
+// gatewayCompactionConfig sizes a gateway route's compaction from its
+// catalog window: the trigger sits at window × effectiveRatio (the authored
+// ratio when > 0, else 0.85), in the normal and pause paths alike — they
+// both come through compactionConfig. An unknown window keeps claw's
+// default floor: a guess the catalog's provenance admits to, never a
+// vendor's window borrowed by name.
+func gatewayCompactionConfig(wireModel string, ratio float64, preserveRecent int) clawrt.CompactionConfig {
+	if ratio <= 0 {
+		ratio = 0.85
+	}
+	if preserveRecent <= 0 {
+		preserveRecent = clawrt.DefaultCompactionPreserveRecent
+	}
+	cfg := clawrt.CompactionConfig{
+		PreserveRecentMessages: preserveRecent,
+		MaxEstimatedTokens:     clawrt.DefaultCompactionConfig().MaxEstimatedTokens,
+	}
+	res := compatgw.ResolveCatalog(wireModel, modelspecs.Default(), os.Getenv)
+	if res.Known() && res.Spec.ContextWindow > 0 {
+		cfg.MaxEstimatedTokens = int(float64(res.Spec.ContextWindow) * ratio)
+	}
+	return cfg
 }
 
 // maybeCompact runs claw's pure-function compactor with a config sized

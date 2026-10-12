@@ -157,6 +157,12 @@ const (
 	// asked. Distinct from paused so the UI never tells a willing
 	// contributor their contribution is off.
 	StatusBotFiltered Status = "bot_filtered"
+	// StatusNoFallbackConsent — the donor shares, but only with runs that
+	// have no credential of their own (the whole-bundle tier); the
+	// routing fallback door needs the explicit `fallback_use` mark, so a
+	// door consult over an unmarked pool names THIS rather than a
+	// generic abstention. Never produced on the normal path.
+	StatusNoFallbackConsent Status = "no_fallback_consent"
 )
 
 // Limits are the ceilings a donor sets on their own contribution. Every
@@ -325,6 +331,17 @@ type Pledge struct {
 	// Bots optionally restricts which bot ids this credential may run.
 	// Empty means any bot the pool serves.
 	Bots []string `bson:"bots,omitempty" json:"bots,omitempty"`
+	// FallbackUse consents this credential to serve a FALLBACK rung of a
+	// run that holds its own credential — the routing policy's ladder
+	// needing a kind the run lacks (ADR-121 § The per-family pool
+	// fallback door). Off (the default) keeps the pledge in the
+	// whole-bundle tier only; the mark ADDS a lane and removes none. An
+	// armed door holds a runs/day unit and a concurrency slot until the
+	// run publishes even when the fallback never fires, and the ATTEMPT'S
+	// WHOLE SPEND books against your ledger's ceilings (the spend report
+	// is per attempt, not per credential) — zero spend is not zero cost,
+	// and the consent UI says so.
+	FallbackUse bool `bson:"fallback_use,omitempty" json:"fallback_use,omitempty"`
 	// CooldownUntil holds the pledge out of the pool until the provider's
 	// quota window resets. Set from ErrRateLimited.ResetAt.
 	CooldownUntil *time.Time `bson:"cooldown_until,omitempty" json:"cooldown_until,omitempty"`
@@ -456,6 +473,12 @@ type Lease struct {
 	TenantID    string `bson:"tenant_id,omitempty" json:"tenant_id,omitempty"`
 	RequesterID string `bson:"requester_id,omitempty" json:"requester_id,omitempty"`
 	BotID       string `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
+	// Fingerprint is the granted credential's stable audit identity (the
+	// grant's own stamp) — the key a fine spend report slices by: a
+	// door-served run's report carries per-fingerprint totals, and the
+	// lease books only the slice that ran on THIS credential (ADR-121 §
+	// Delivery 2, #2255).
+	Fingerprint string `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
 	// GrantedCostUSD is the allowance handed to this run (what remained of
 	// the donor's daily cap). It is not only for display: while the lease
 	// is open this is the donor's COMMITTED but unspent exposure, and the
@@ -477,6 +500,10 @@ type Lease struct {
 	Outcome    string     `bson:"outcome,omitempty" json:"outcome,omitempty"`
 	AcquiredAt time.Time  `bson:"acquired_at" json:"acquired_at"`
 	ClosedAt   *time.Time `bson:"closed_at,omitempty" json:"closed_at,omitempty"`
+	// SupersededByPublishedAt carries the publication a GRANTLESS takeover
+	// was published at (SupersedeRun): a report carrying exactly it is the
+	// takeover's own, and stays silent on this lease.
+	SupersededByPublishedAt *time.Time `bson:"superseded_by_published_at,omitempty" json:"superseded_by_published_at,omitempty"`
 	// ExpiresAt bounds an abandoned lease. A pod killed mid-run never
 	// reports, so without this the donor would lose a concurrency slot
 	// permanently; the sweeper closes anything past this instant.
@@ -492,6 +519,19 @@ const (
 	OutcomeAbandoned = "abandoned"
 	// OutcomeSuperseded — a later attempt of the same run took over.
 	OutcomeSuperseded = "superseded"
+	// OutcomeSupersededReported — a superseded lease its own attempt later
+	// reported against: the supersede charged nothing, the stamp's CAS let
+	// exactly one report charge, and the lease no longer reads as a plain
+	// supersede (Reopen's CAS misses it). HasServedAttempt reads it as
+	// SERVED — the attempt did run and pay — so a later acquisition of the
+	// run RENEWS the donor's allowance instead of reserving a unit, which
+	// is the renewal doctrine's own reading.
+	OutcomeSupersededReported = "superseded_reported"
+	// OutcomeSupersededGrantless — the run was taken over by a publication
+	// that held no pool grant (SupersedeRun): the attempt they served is
+	// over, and the takeover holds no lease of its own, so a report of the
+	// takeover must never charge this lease (ReportAttempt stays silent).
+	OutcomeSupersededGrantless = "superseded_grantless"
 	// OutcomeNotLaunched — the grant was returned; the run never started.
 	OutcomeNotLaunched = "not_launched"
 )

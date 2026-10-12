@@ -100,3 +100,54 @@ func TestForkSessionLedgerTellsASharedLabelOnce(t *testing.T) {
 		t.Fatalf("fork ledger = %+v, want %+v", got, want)
 	}
 }
+
+// The frozen pool stamp travels with the fork: the child executes where the
+// parent would, and a child doc reading unmapped would hit the resume
+// refusal (team mapping ≠ child stamp) with no recovery path (rva F2). Red
+// when the field-by-field copy drops the stamp again.
+func TestFork_TheFrozenPoolStampTravelsToTheChild(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	st, err := store.New(dir, store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const parentID = "run-fork-pool"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	parent, err := st.LoadRun(ctx, parentID)
+	if err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	parent.RunnerPool = "honorabilite"
+	parent.Status = store.RunStatusCancelled
+	parent.Checkpoint = &store.Checkpoint{NodeID: "step2"}
+	if err := st.SaveRun(ctx, parent); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+	if err := st.WriteTurn(ctx, &store.TurnCheckpoint{
+		RunID: parentID, NodeID: "step2", TurnIndex: 0, Backend: "claude_code", SessionID: "sess-1",
+		WrittenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("write turn: %v", err)
+	}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	res, err := svc.Fork(ctx, ForkSpec{RunID: parentID, NodeID: "step2", TurnIndex: 0})
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	child, err := st.LoadRun(ctx, res.NewRunID)
+	if err != nil {
+		t.Fatalf("load child: %v", err)
+	}
+	if child.RunnerPool != "honorabilite" {
+		t.Fatalf("the fork dropped the frozen pool stamp: %+v", child)
+	}
+	if child.TenantID != parent.TenantID {
+		t.Fatalf("sanity: the fork's tenant copy is broken too: %+v", child)
+	}
+}

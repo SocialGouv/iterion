@@ -112,8 +112,9 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 	// this claim and the next checkpoint boundary would leave the stale
 	// InteractionID live, and Resume's `queued` router would send the
 	// re-entry straight back into the review dialogue (an approved,
-	// already-merged gate re-pausing with an empty human turn).
-	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman); err != nil {
+	// already-merged gate re-pausing with an empty human turn). The claim
+	// comes before any write here, whoever resumes (claimPause).
+	if err := e.claimPause(ctx, r, cp, nil); err != nil {
 		return err
 	}
 	// A review interaction may itself be resumed against edited source. Keep

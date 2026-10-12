@@ -329,6 +329,50 @@ func TestNATSBus_SubscribeCancelConcurrentPublishNoWGRace(t *testing.T) {
 	_ = callbackCount.Load()
 }
 
+// schedOvershoot is this runner's scheduling delay, measured rather than
+// named: the raw worst lateness of a short timer across a few probes. It
+// is read where the caller sits — AFTER the burst it pads — so a load
+// spike during the burst that subsides before probing reads ~0 here.
+// That blind spot is exactly why the SharedBudget verdict (#2020) no
+// longer pads a ceiling with this figure and instead compares in a unit
+// measured over the burst's own window; what remains here is the ceiling
+// of TestBusSubscribeCancelClampsCallerDeadline, where cancelCeilingSlack
+// floors the slack at 200ms so a collapsed reading still leaves the
+// mechanism bound carrying the assertion.
+func schedOvershoot(t *testing.T) time.Duration {
+	t.Helper()
+	const (
+		probe  = 10 * time.Millisecond
+		rounds = 3
+	)
+	var worst time.Duration
+	for i := 0; i < rounds; i++ {
+		start := time.Now()
+		time.Sleep(probe)
+		if over := time.Since(start) - probe; over > worst {
+			worst = over
+		}
+	}
+	return worst
+}
+
+// cancelCeilingSlack sizes the slack a wall-clock ceiling leaves the
+// scheduler: one measured overshoot per timer wait the burst sits on
+// (waits), floored at the 200ms an idle machine was already granted. The
+// mechanism bounds (joinBudget, overrunPostCheckWindow) are configured and
+// exact; the slack is not, and a bare constant names a machine the merge
+// queue does not have — under a loaded -race runner every timer the cancel
+// path waits on fires late by an amount no constant describes. The ceiling
+// can grow load-tolerant, never weaker than it was (#2149, #1538).
+func cancelCeilingSlack(t *testing.T, waits int) time.Duration {
+	t.Helper()
+	const floor = 200 * time.Millisecond
+	if slack := time.Duration(waits) * schedOvershoot(t); slack > floor {
+		return slack
+	}
+	return floor
+}
+
 // TestBusSubscribeCancelSharedBudget is the #1477 medium property: N slow
 // subscribers cancelled under ONE joinCtx cost ONE budget total, not N ×
 // budget. Under the pre-fix per-subscription budget, seven slow-Mongo
@@ -341,6 +385,25 @@ func TestNATSBus_SubscribeCancelConcurrentPublishNoWGRace(t *testing.T) {
 // The nats-async row is the honest test of the property; InProc's per-sub
 // worker also matches (each sub's worker is its own goroutine). Mutation:
 // revert to per-subscription budget → N × budget → red.
+//
+// The verdict that discriminates the two shapes is SCALE-FREE (#2020). An
+// absolute ceiling names a machine the merge queue does not have: #2156's
+// load-measured slack still flaked at 554.9ms against a 420ms ceiling,
+// because the overshoot probe runs AFTER the burst — a spike that stretches
+// the burst and subsides before probing reads ~0 there. So the burst is
+// compared against the midpoint of the two shapes expressed in a unit
+// measured on THIS runner OVER THE SAME WINDOW: the handlers' own unwind
+// sleep, a timer of the same kind the cancel path waits on, started by the
+// first cancel's signal and outlasting the burst. A spike that stretches
+// the burst stretches the unit with it; the ratio of the two is the shape,
+// and the shape does not move with load:
+//
+//	shared:   (joinBudget + N×overrunPostCheckWindow) × s = 220ms × s
+//	per-sub:  (N×perSubBudget + N×overrunPostCheckWindow) × s = 500ms × s
+//
+// (one post-check window per cancel in both rows: the in-flight handler
+// never closes its done channel inside the window, so the nats row never
+// reaches its second post-check).
 func TestBusSubscribeCancelSharedBudget(t *testing.T) {
 	for _, c := range busCases {
 		if c.name == "nats" {
@@ -364,6 +427,13 @@ func TestBusSubscribeCancelSharedBudget(t *testing.T) {
 			// per-subscription wait would have to expire, not short-circuit
 			// on handler exit — that's what makes N × budget observable.
 			unwindDelay := 3 * perSubBudget
+			// unwindDur[i] is how long handler i's unwind sleep ACTUALLY
+			// took on this runner — the measured unit the verdict below is
+			// expressed in. Written before unwound.Done, read after
+			// unwound.Wait: the WaitGroup is the happens-before edge.
+			unwindDur := make([]time.Duration, N)
+			var unwound sync.WaitGroup
+			unwound.Add(N)
 			for i := 0; i < N; i++ {
 				entered[i] = make(chan struct{})
 				idx := i
@@ -373,7 +443,10 @@ func TestBusSubscribeCancelSharedBudget(t *testing.T) {
 					// Simulate a slow store-write unwind: the handler
 					// keeps running past ctx.Done for longer than the
 					// per-sub budget, so cancel's wait has to time out.
+					sleepStart := time.Now()
 					time.Sleep(unwindDelay)
+					unwindDur[idx] = time.Since(sleepStart)
+					unwound.Done()
 					return nil
 				})
 				if err != nil {
@@ -401,27 +474,63 @@ func TestBusSubscribeCancelSharedBudget(t *testing.T) {
 			defer joinCancel()
 
 			started := time.Now()
-			for _, cancel := range cancels {
-				cancel(joinCtx)
+			burstDone := make(chan struct{})
+			go func() {
+				for _, cancel := range cancels {
+					cancel(joinCtx)
+				}
+				close(burstDone)
+			}()
+			select {
+			case <-burstDone:
+			case <-time.After(30 * time.Second):
+				// Wedge net, not the verdict: every wait the burst composes
+				// is budgeted, so only a cancel whose bounding regressed (or
+				// a runner ~100x slower than anything the merge queue sees)
+				// lands here.
+				t.Fatalf("%s: the cancel burst wedged — a cancel outlived every budget it could compose", c.name)
 			}
 			elapsed := time.Since(started)
-			// Serial per-sub budgets would give N × perSubBudget = 400ms;
-			// the assertion below reddens the pre-#1477 shape by any margin.
-			if elapsed >= time.Duration(N-1)*perSubBudget {
-				t.Errorf("%s: N=%d cancels shared joinCtx took %v; per-subscription composition would give ~%v — the shared budget is not being honoured", c.name, N, elapsed, time.Duration(N)*perSubBudget)
+
+			// Wait for the slow handlers to unwind — exactly, on the
+			// WaitGroup, not on a guessed sleep — so the measured unit is
+			// complete and cleanup can drain the async broker's dispatch
+			// goroutines cleanly.
+			unwoundDone := make(chan struct{})
+			go func() { unwound.Wait(); close(unwoundDone) }()
+			select {
+			case <-unwoundDone:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s: handlers never unwound after the burst", c.name)
 			}
-			// Ceiling includes the overrunPostCheckWindow grace per cancel:
-			// each subscriber, after the shared joinCtx expires, waits up
-			// to overrunPostCheckWindow more for its worker's done signal
-			// so a same-tick coin-flip does not misname a clean sub as an
-			// overrun (#1477 R6aac0e). Total = joinBudget + N*grace + slack.
-			ceiling := joinBudget + N*overrunPostCheckWindow + 200*time.Millisecond
-			if elapsed > ceiling {
-				t.Errorf("%s: N=%d cancels took %v; expected ≤ %v (budget %v + %d×%v grace + slack)", c.name, N, elapsed, ceiling, joinBudget, N, overrunPostCheckWindow)
+			unit := unwindDelay
+			for _, d := range unwindDur {
+				if d > unit {
+					unit = d
+				}
 			}
-			// Wait for the slow handlers to unwind so the cleanup can
-			// drain the async broker's dispatch goroutines cleanly.
-			time.Sleep(unwindDelay + 100*time.Millisecond)
+
+			// Floor: the first cancel waits out the shared joinCtx, and a Go
+			// timer never fires EARLY — under any load the burst takes at
+			// least the join budget, so this verdict cannot be load's. A
+			// burst home faster means the wait on the in-flight handlers was
+			// skipped (#1343's shape). The epsilon covers the gap between
+			// joinCtx's creation and `started`.
+			if elapsed < joinBudget-10*time.Millisecond {
+				t.Errorf("%s: N=%d cancels returned in %v, before the shared budget (%v) was even spent — the wait on the in-flight handlers was skipped", c.name, N, elapsed, joinBudget)
+			}
+			// The shape verdict: closer to one budget than to N budgets,
+			// with both sides scaled by the measured unit (see the test's
+			// doc comment). A run past the midpoint under an EVEN load is
+			// the per-subscription shape; a spike local to the burst window
+			// inflates the numerator past the unit and is load's, not a lost
+			// guarantee — the message says so, because a slow runner must
+			// not be reported as a behavioural regression (#2020).
+			midpoint := (joinBudget+time.Duration(N)*perSubBudget)/2 + time.Duration(N)*overrunPostCheckWindow
+			scaledMidpoint := time.Duration(float64(midpoint) * float64(unit) / float64(unwindDelay))
+			if elapsed > scaledMidpoint {
+				t.Errorf("%s: N=%d cancels took %v against a measured unit of %v (a %v sleep on this runner); the load-scaled midpoint between one shared budget and N budgets is %v. If the runner was spiky during the burst this is LOAD — rerun; on a calm runner it convicts the per-subscription shape — the shared budget is not being honoured (#1477)", c.name, N, elapsed, unit, unwindDelay, scaledMidpoint)
+			}
 		})
 	}
 }
@@ -506,13 +615,15 @@ func TestBusSubscribeCancelClampsCallerDeadline(t *testing.T) {
 
 			// Caller passes a very generous deadline — 30 seconds, the
 			// shape of an HTTP-request ctx. Cancel must return within the
-			// budget regardless (plus the small grace window post-check).
+			// budget regardless (plus the small grace window post-check —
+			// two waits — and a slack measured from this runner's
+			// scheduling delay).
 			generousCtx, gc := context.WithTimeout(context.Background(), 30*time.Second)
 			defer gc()
 			started := time.Now()
 			cancel(generousCtx)
 			elapsed := time.Since(started)
-			ceiling := perSubBudget + overrunPostCheckWindow + 200*time.Millisecond
+			ceiling := perSubBudget + overrunPostCheckWindow + cancelCeilingSlack(t, 2)
 			if elapsed > ceiling {
 				t.Errorf("%s: cancel with 30s deadline took %v; expected clamped to ≤ %v (budget %v + grace + slack)", c.name, elapsed, ceiling, perSubBudget)
 			}

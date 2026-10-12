@@ -289,3 +289,32 @@ func TestRemoteOpenAPIPathPrefixFilter(t *testing.T) {
 		t.Fatalf("wrong path kept: %v", got.Paths)
 	}
 }
+
+// TestRemoteRunsResumeBodyCarriesTheScratchsConsent: an agent's remote resume
+// forwards the consent to the scratch's loss only when given it — force does
+// not imply it.
+func TestRemoteRunsResumeBodyCarriesTheScratchsConsent(t *testing.T) {
+	for _, tc := range []struct {
+		args   string
+		accept bool
+	}{
+		{`{"run_id":"r1","force":true}`, false},
+		{`{"run_id":"r1","force":true,"accept_scratch_loss":true}`, true},
+	} {
+		var gotBody map[string]any
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /api/runs/r1/resume", func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &gotBody)
+			_, _ = w.Write([]byte(`{"status":"resuming"}`))
+		})
+		newRemoteStub(t, mux)
+		s := newTestServer(t)
+		if text, isErr := call(t, s, "remote_runs_resume", tc.args); isErr {
+			t.Fatalf("resume errored: %s", text)
+		}
+		if got := gotBody["accept_scratch_loss"] == true; got != tc.accept || gotBody["force"] != true {
+			t.Fatalf("%s: body %v, want accept_scratch_loss %v and force", tc.args, gotBody, tc.accept)
+		}
+	}
+}

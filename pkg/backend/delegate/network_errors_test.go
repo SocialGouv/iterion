@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -75,6 +76,104 @@ func TestMatchesNetworkSignature(t *testing.T) {
 		t.Run(tc.s, func(t *testing.T) {
 			if got := MatchesNetworkSignature(tc.s); got != tc.want {
 				t.Fatalf("MatchesNetworkSignature(%q) = %v, want %v", tc.s, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMatchesTransportStderr pins the CLI-agent stderr contract: only the
+// CLI's OWN transport error report counts — never a stack frame, a
+// codeframe quoting source, or an application-level error message that
+// happens to contain a signature's prose.
+func TestMatchesTransportStderr(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		want bool
+	}{
+		{
+			// Measured on opencode 1.1.19: a credential-less host dies
+			// DETERMINISTICALLY with this Bun crash; "unexpected eof"
+			// matching was the bug — three retries burned on a config
+			// failure, then an *ErrTransient wrap.
+			"opencode JSON parse crash (measured)",
+			"error: JSON Parse error: Unexpected EOF\n" +
+				"      at /$bunfs/root/opencode:2:20\n" +
+				"      at loadConfig (/$bunfs/root/opencode:9:11)\n",
+			false,
+		},
+		{
+			// A codeframe quotes arbitrary source — even an errno string
+			// in quoted source is not a transport fault.
+			"errno in quoted source only",
+			"  42 |   if (err.code === \"ECONNRESET\") {\n" +
+				"                                ^\n" +
+				"error: Failed to render preview\n" +
+				"      at /x.ts:42:5\n",
+			false,
+		},
+		{
+			// An application-level 5xx render is prose, not a transport
+			// marker: provider errors reach the retry classifiers through
+			// the protocol's structured error event, not a crash dump.
+			"app-rendered 503 prose",
+			"error: API request failed: 503 Service Unavailable\n" +
+				"      at /x.ts:1:1\n",
+			false,
+		},
+		{
+			// The genuine undici crash: the column-0 header carries the
+			// match; the indented [cause]: chain is read too.
+			"undici fetch failed with cause",
+			"TypeError: fetch failed\n" +
+				"    at Object.fetch (node:internal/deps/undici/undici:11576:11)\n" +
+				"  [cause]: Error: connect ECONNREFUSED 140.82.112.5:443\n" +
+				"      at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1636:16)\n",
+			true,
+		},
+		{
+			// An app-wrapped error whose own header names no marker: the
+			// indented [cause]: line still testifies.
+			"errno only in the cause chain",
+			"Error: request to upstream failed\n" +
+				"  [cause]: Error: getaddrinfo ENOTFOUND api.x.ai\n" +
+				"      at GetAddrInfoReqWrap.onlookup (node:dns:118:26)\n",
+			true,
+		},
+		{
+			// Node's uncaught-exception render echoes the throwing SOURCE
+			// line at column 0 (file:line, source verbatim, caret, then the
+			// error header). For a minified single-line bundle that echo
+			// holds nearly every string literal in the program — "fetch
+			// failed" here — and the line-length cap must exclude it. The
+			// echo is built at 520 chars, JUST over the cap, so a cap raise
+			// past 520 (or its deletion) reddens this case.
+			"node minified source echo at column 0",
+			"/app/dist/cli.js:1\n" +
+				"!function(){\"" + strings.Repeat("a", 490) + "fetch failed\"}();\n" +
+				"^\n" +
+				"SyntaxError: Unexpected token\n" +
+				"    at /app/dist/cli.js:1:3\n",
+			false,
+		},
+		{
+			// Boundary: a genuine header of EXACTLY the cap length still
+			// classifies (the skip is strictly-greater), so a cap drop
+			// below a long DNS-name lookup line reddens this case. The 500
+			// is deliberately a literal — building from the constant would
+			// make the line track the cap and the case unfalsifiable.
+			"genuine header at exactly the cap",
+			"Error: getaddrinfo ENOTFOUND " +
+				strings.Repeat("a", 500-len("Error: getaddrinfo ENOTFOUND ")) + "\n",
+			true,
+		},
+		{"empty", "", false},
+		{"self-inflicted cancel", "error: fetch failed: context canceled\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesTransportStderr(tc.s); got != tc.want {
+				t.Fatalf("matchesTransportStderr(%q) = %v, want %v", tc.s, got, tc.want)
 			}
 		})
 	}

@@ -18,16 +18,28 @@ import (
 // sandbox (a sandboxed run mounts them into the container instead). Returns
 // the written files keyed by secret name (for the mid-run refresher) and a
 // cleanup that removes them; both nil when nothing was written.
-func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (map[string]string, func(), error) {
+//
+// repoRoot is the run's repository root as the engine will resolve it
+// (runtime.EngineRepoRoot over the run workspace): the sandbox gate's
+// mode=auto devcontainer lookup must read the same directory the
+// engine's will.
+func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow, repoRoot string) (map[string]string, func(), error) {
 	if wf == nil || len(wf.Secrets) == 0 ||
-		runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault) {
-		// No secrets, or the run RESOLVES to an active sandbox (which mounts
-		// file secrets into the container). The resolved decision — not
-		// wf.Sandbox — is what matters: under ITERION_SANDBOX_OVERRIDE=none a
-		// bot's sandbox block is neutralized and the run executes in this pod,
-		// so its file secrets must be materialized here (run 019f4551's
-		// push_auth_probe found no forge_token exactly because this gate used
-		// to test the static declaration).
+		runtime.RunWillBeSandboxed(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault, repoRoot, r.cfg.SandboxDrivers) {
+		// No secrets, or the run will execute inside a sandbox (which mounts
+		// file secrets into the container). The RESOLVED, driver-aware
+		// decision — not wf.Sandbox, and not the resolved mode alone — is
+		// what matters:
+		//   - under ITERION_SANDBOX_OVERRIDE=none a bot's sandbox block is
+		//     neutralized and the run executes in this pod, so its file
+		//     secrets must be materialized here (run 019f4551's
+		//     push_auth_probe found no forge_token exactly because this gate
+		//     used to test the static declaration);
+		//   - a `sandbox: auto` run on a host with no container runtime
+		//     degrades to unsandboxed at engine start (sandbox_skipped), and
+		//     its secrets must be materialized here too — the mode alone
+		//     still resolves active on that host, and gating on it left the
+		//     agent opening an empty mount path (#1564).
 		return nil, nil, nil
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)

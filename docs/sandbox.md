@@ -49,6 +49,21 @@ deployment measured on 2026-08-05 does NOT: it carries
 get the k8s sandbox. Anything needing a bind-mounted workspace there
 must declare `sandbox: none`.)
 
+**The override does not qualify a deployment to run untrusted
+workspaces.** A run whose `trust` is not the trusted default — today the
+fork review lane's `trust=fork` — is refused at the engine's admission,
+typed, unless its sandbox resolves ACTIVE through the very same
+resolution the run's own start would walk (override, workflow block,
+global default, then driver selection — a degraded `mode=auto` host with
+no container runtime refuses too). Without a per-run sandbox the fork's
+agent executes inside the runner's trust domain, where every pod secret
+(`ITERION_SECRETS_KEY`, `MONGODB_URI`, the LLM keys) is one
+`/proc/self/environ` read away from it. The override keeps meaning what
+it means for trusted runs; a deployment that wants to run the fork lane
+serves it from a runner class whose sandbox resolves active. The durable
+refusal rides the run's `admission` record with code
+`untrusted_without_sandbox`.
+
 ## Quick start
 
 The shortest path to a sandboxed run:
@@ -222,6 +237,7 @@ promise made on it must go with it. On the pod backend:
 | Promise | On docker | On kubernetes |
 |---|---|---|
 | `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
+| `ITERION_ENGINE_BIN` (the engine's own iterion binary, for a bot script that re-enters the CLI; never resolved from the workspace) | set — the container path the bind mount or the image bakes | set — the container path, via per-exec env, so no bind to drop |
 | Attachments path handed to nodes | the container path | the host path, which fails loudly rather than resolving to an empty mount point |
 | The bot's bundle `devbox.json` | provisioned from the mount | provisioned — the config is **carried** into the sandbox by the install prologue, since the bundle itself cannot be read from in-container (see [devbox provisioning](#best-effort-never-silent)) |
 
@@ -336,9 +352,14 @@ ephemeral port). The container receives the proxy URL via standard
 `HTTPS_PROXY` / `HTTP_PROXY` env vars and reaches it via the
 `host.docker.internal` alias.
 
-**Default mode is `open`** — no proxy, full egress. Workflows that
-need the stricter security-first posture opt in by declaring an
-explicit `network:` block:
+**Default mode is `open`** — no proxy, full egress — except on a
+repo-defined sandbox (mode `auto` with a found `devcontainer.json`)
+where the workflow declares no `network:` block: there the default is
+the `iterion-default` allowlist preset, because open egress on such a
+run is the repository's choice, not the operator's (see [the
+devcontainer trust rules](#the-devcontainer-is-the-repositorys-file-not-the-operators)).
+Workflows that need the stricter security-first posture elsewhere opt
+in by declaring an explicit `network:` block:
 
 ```iter fragment:workflow
 sandbox:
@@ -351,12 +372,16 @@ sandbox:
 
 The shipped **`iterion-default`** preset is the recommended
 starting point for allowlist mode: it covers the LLM endpoints
-(anthropic, openai, xAI/Grok, openrouter, bedrock, googleapis,
-azure, mistral, z.ai) plus package registries (npm, PyPI, golang
-proxy) plus code hosts (github, gitlab, bitbucket) plus apt
-mirrors. It is **not** applied implicitly — operators name it
-explicitly so the default-open posture and the curated-allowlist
-posture are unambiguous from the YAML.
+(anthropic, openai and the ChatGPT forfait's chatgpt.com, xAI/Grok,
+openrouter, bedrock, googleapis, azure, mistral, z.ai, moonshot)
+plus package registries (npm, PyPI, golang proxy) plus code hosts
+(github, gitlab, bitbucket) plus apt mirrors. It is **not**
+applied implicitly to a workflow that
+declares `network:` — operators name it explicitly so the
+default-open posture and the curated-allowlist posture are
+unambiguous from the YAML. Its one implicit application is the
+repo-defined sandbox above, which announces itself with the
+`sandbox_network_defaulted` event.
 
 By default the proxy does NOT terminate TLS — only the CONNECT
 host:port is inspected, and the encrypted bytes pass through
@@ -392,6 +417,16 @@ Modes:
 **IP literals are refused by default in allowlist mode** even when
 their hostname is allowed, which closes the cloud-metadata exfiltration
 vector (169.254.169.254 etc.). Add explicit IP rules to relax.
+
+**The proxy never dials its own host.** A destination on the proxy
+host's loopback, the unspecified address (`0.0.0.0`, `::` — a connect
+there lands on the loopback) or a link-local address (169.254.169.254
+among them) is refused whatever the policy and however it is spelt — an
+IP literal, `localhost.`, a hosts-file alias, a DNS answer: the check
+runs on the address the proxy is about to connect to, and the request
+is answered `502` naming the refusal. The one sanctioned way to the
+host is the `host.docker.internal` alias (the per-run MCP listeners),
+which the proxy dials on the host's loopback.
 
 Blocked requests surface to the run as a `network_blocked` event in
 `events.jsonl`:
@@ -444,6 +479,60 @@ workspace if present; otherwise it falls back to the published
 That fallback ships with `git`, Node 24, devbox, and Nix preinstalled,
 so the typical "agent installs deps, edits code, opens a PR" workflow
 runs out of the box. See [Default image](#default-image) below.
+
+#### The devcontainer is the repository's file, not the operator's
+
+A found `devcontainer.json` defines the run's sandbox — and the
+repository under review authored it. iterion therefore trusts the
+workflow over the devcontainer on env and network — the two channels
+where the repository could otherwise speak for the operator — and
+never lets the repository speak for the operator:
+
+- **Env.** The workflow's `sandbox.env:` keys win per key; the
+  devcontainer's `containerEnv`/`remoteEnv` fill what the workflow
+  did not author. Keys the repository contributed never shadow the
+  values the launch environment carried: an env var the operator
+  changed for the run (the overlay carries ONLY the keys the launch
+  environment changed or added relative to iterion's own
+  environment) overwrites a repo-contributed one (the same authority
+  rule a project `.env` lives under). The devcontainer's own keys are
+  additionally screened against a deny class, and denied keys are
+  removed outright with a `sandbox_env_denied` event naming each one:
+  the case-insensitive suffixes `*_BASE_URL`, `*_API_KEY`, `*_TOKEN`,
+  `*_SECRET`, `*_PROXY` (covering `NO_PROXY`), plus the exact
+  case-sensitive names `LD_PRELOAD`, `NODE_OPTIONS`, `PATH`,
+  `BASH_ENV`, `ENV`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_GLOBAL`,
+  `GIT_CONFIG_SYSTEM`, `GIT_ASKPASS`, `GOFLAGS`,
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `ANTHROPIC_CUSTOM_HEADERS`,
+  `AZURE_OPENAI_ENDPOINT` and `OPENAI_API_BASE`. A planted
+  `ANTHROPIC_BASE_URL` would re-route every LLM call the container
+  makes to the planter's collector; `LD_PRELOAD`, `PATH`, `BASH_ENV`
+  and `GOFLAGS` would execute the planter's code before any prompt is
+  read. The same names in the workflow's `sandbox.env:` or the launch
+  environment are the operator's and pass untouched. Malformed
+  entries (a name carrying `=`, a newline or a NUL; a value carrying
+  a newline) are dropped the same way — the docker driver would
+  refuse the run outright and the kubernetes driver would drop them
+  silently.
+- **Network.** The workflow's `network:` block is carried into a
+  found-devcontainer run exactly as into a default-image run. When
+  the workflow declares none, the run does not inherit the
+  repository's implicit "open" posture: the `iterion-default`
+  allowlist preset applies and a `sandbox_network_defaulted` event
+  says so. A block written without a `mode:` (C312 warns at compile)
+  is completed to the allowlist its content is shaped like — and
+  rules without a preset also gain the `iterion-default` base, since
+  a rules-only allowlist would leave out every LLM endpoint and kill
+  the run on its first model call; the event says when the runtime
+  chose that base. Declare `network: {mode: open}` (or any other
+  policy) to choose explicitly.
+
+The devcontainer's image/build, mounts, user, `workspaceFolder` and
+`postCreateCommand` still define the container it describes — that is
+auto mode's contract. The default-image fallback branches (no
+devcontainer, or one the sandbox cannot use) keep the historical
+open-network default: nothing repo-authored survives into those
+specs.
 
 Block form without `mode:` is treated as `mode: inline`. You may also
 write `mode: inline` explicitly. Inline mode must declare exactly one of
@@ -645,13 +734,17 @@ each project's profile bin dir
 container `PATH` at container creation, so every exec inherits it with
 nothing to source.
 
-The prepend never clobbers. A `sandbox.env.PATH:` you declare (or a
-devcontainer `containerEnv.PATH`) is kept as the suffix; when you
-declare none, the base is the FHS default
+The prepend never clobbers. A `sandbox.env.PATH:` you declare is kept
+as the suffix; when you declare none, the base is the FHS default
 (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) that
-the iterion sandbox images ship. An image with a non-standard `PATH`
-should declare `sandbox.env.PATH:` explicitly so its own entries are
-preserved.
+the iterion sandbox images ship. A devcontainer `containerEnv.PATH` is
+not honored — `PATH` is in the env deny class (a repository must not
+choose what binaries its review runs against) — so with devbox
+provisioning the base is the FHS default unless the workflow declares
+one; without devbox provisioning there is no prepend and the image's
+own `PATH` stands. An image with a non-standard
+`PATH` should declare `sandbox.env.PATH:` explicitly so its own entries
+are preserved.
 
 ### Best-effort, never silent
 
@@ -810,6 +903,28 @@ binary in (subject to architecture matching) via `runArgs`:
   ]
 }
 ```
+
+**What crosses into the runner.** The runner rebuilds its model
+registry from the environment the launcher forwards, and from nothing
+else of the host's: the provider keys, the endpoints they are spent on
+(`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
+`XAI_BASE_URL`, …), the spend and client-identity settings, and the
+knobs its own loop reads (`ITERION_CLAW_STREAM_COLD_TIMEOUT` /
+`_IDLE_TIMEOUT`) — each when the host sets it. A name the host leaves
+unset is whatever the container's own environment says — its image, a
+`containerEnv` key the deny class above lets through — and the
+workspace's `.env`, which the runner loads at start as the CLI does: a
+repository's `.env` can thereby choose where a forwarded key is spent
+when the host does not set its endpoint, so set the endpoints you rely
+on, and keep the run on an allowlist. The retry budget the launcher
+resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
+task envelope instead: it bounds billed attempts, so the container's own
+environment never sets it — a runner image older than that field keeps its built-in
+budget (3 attempts, 6 for a transient failure) until the image carries
+this release. A forwarded endpoint is dialled from inside the container:
+a URL on the host's loopback (`127.0.0.1`, `localhost`) names the
+container itself there, and under `network: allowlist` its host must be
+allowed.
 
 **V2-1+ wire format**: bidirectional NDJSON envelopes between
 launcher and runner (see `pkg/backend/delegate/envelope.go`). Each
@@ -1152,7 +1267,7 @@ Running claw's own MCP servers inside the container — parity with
 | `docker`     | host has `docker` on PATH                  | Phase 1 ✅ |
 | `podman`     | host has `podman` on PATH (no `docker`)    | Phase 1 ✅ (shares the docker code path) |
 | `kubernetes` | running in-cluster (`ITERION_MODE=cloud`)  | Phase 5 V1 ✅ + V2-5 NetworkPolicy |
-| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`) | ✅ |
+| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`). The spec's seeded env (`ITERION_TREE_NOISE` pathspecs, the default locale) is folded into its commands like a real driver's, so an engine-compiled script pinned to `noop` still reads what the compiler seeded — key by key, the host passthrough keeps a non-empty value the operator's own environment already carries (an empty ambient export is not a claim — the seed fills the gaps) | ✅ |
 
 `iterion sandbox doctor` reports which driver is selected on the
 current host and what capabilities it advertises.

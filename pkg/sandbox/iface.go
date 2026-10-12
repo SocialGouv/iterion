@@ -62,6 +62,33 @@ type Driver interface {
 	Start(ctx context.Context, prepared PreparedSpec, info RunInfo) (Run, error)
 }
 
+// ProcessIsolated is a Run whose commands execute in a process namespace of
+// their own — a container's — so that a signal sent from one of them to
+// every process reaches only the sandbox's. A Run that does not implement
+// it may execute its commands on the host.
+type ProcessIsolated interface {
+	ProcessIsolated() bool
+}
+
+// HostRun is a Run whose commands execute on the operator's host — the noop
+// passthrough. Answering this correctly is about the FILESYSTEM a command
+// resolves paths against, not the process namespace: a container run with a
+// shared pid namespace (docker --pid=host, ProcessIsolated() false) still
+// resolves paths inside its own filesystem. A Run that does not implement
+// this interface resolves paths inside its own container filesystem.
+type HostRun interface {
+	HostExecutesCommands() bool
+}
+
+// ProxiedRun is a Run whose driver injected the iterion network proxy into
+// the sandbox: ProxyEndpoint returns the HTTPS_PROXY URL processes inside
+// the sandbox must use for egress the sandbox's network policy only allows
+// through that proxy. A Run that does not implement it (the noop
+// passthrough, a policy-less docker run) dials egress directly.
+type ProxiedRun interface {
+	ProxyEndpoint() string
+}
+
 // Run is a live sandbox handle.
 //
 // Each Run corresponds to one iterion run; the engine creates it once

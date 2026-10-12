@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -70,6 +71,21 @@ var reasoningEffortBackends = map[string]bool{
 	"grok":        true,
 	"codex":       true,
 	"opencode":    true,
+}
+
+// EffortDialBackends returns the names of the backends carrying a
+// reasoning-effort dial — the set C177 screens fallback routes against,
+// sorted for stable iteration. Exported so consumers outside the compiler
+// (the studio's /api/effort-capabilities picker) can assert they serve
+// exactly the backends the compiler credits: a 400 on a member of this set
+// contradicts C177 for a legal workflow.
+func EffortDialBackends() []string {
+	names := make([]string, 0, len(reasoningEffortBackends))
+	for name := range reasoningEffortBackends {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // clawBackendName is the literal value of the in-process backend.

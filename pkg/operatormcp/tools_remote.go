@@ -192,7 +192,8 @@ func remoteTools() []Tool {
   "properties": {
     "run_id":  {"type": "string"},
     "answers": {"type": "object", "description": "Answers keyed by question/field id."},
-    "force":   {"type": "boolean", "description": "Allow resume when the workflow source changed."}
+    "force":   {"type": "boolean", "description": "Allow resume when the workflow source changed. It never accepts the loss of the run's scratch."},
+    "accept_scratch_loss": {"type": "boolean", "description": "Allow resume although the run's scratch does not travel (error_code scratch_not_portable): without it, or with an older bank. Give it only once the refusal was shown and the loss accepted."}
   },
   "required": ["run_id"],
   "additionalProperties": false
@@ -639,6 +640,8 @@ func handleRemoteRunsResume(ctx context.Context, s *Server, raw json.RawMessage)
 		RunID   string         `json:"run_id"`
 		Answers map[string]any `json:"answers"`
 		Force   bool           `json:"force"`
+		// AcceptScratchLoss is the consent Force never gives.
+		AcceptScratchLoss bool `json:"accept_scratch_loss"`
 	}
 	if err := s.unmarshalArgs("remote_runs_resume", raw, &args); err != nil {
 		return "", false, err
@@ -652,6 +655,9 @@ func handleRemoteRunsResume(ctx context.Context, s *Server, raw json.RawMessage)
 	}
 	if args.Force {
 		req["force"] = true
+	}
+	if args.AcceptScratchLoss {
+		req["accept_scratch_loss"] = true
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

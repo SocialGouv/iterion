@@ -329,9 +329,10 @@ func FragmentAnchor(path string, b *bundle.Bundle) string {
 }
 
 // bundleForPath is the bundle a path-driven compile reads a workflow
-// against: its bundle when it is a bundle's main.bot, else the nearest
-// enclosing directory bundle of a workflow that lives inside one
-// (workflows/ exports), else nil for a loose file.
+// against: its bundle when it is one of the bundle's root-level entries
+// (main.bot or a sibling of it), else the nearest enclosing directory
+// bundle of a workflow that lives inside one (workflows/ exports), else
+// nil for a loose file.
 func bundleForPath(path string) (*bundle.Bundle, error) {
 	b, err := ResolveBundleFromFilePath(path)
 	if err != nil {
@@ -346,19 +347,24 @@ func bundleForPath(path string) (*bundle.Bundle, error) {
 	return b, nil
 }
 
-// ResolveBundleFromFilePath inspects filePath and, when it is the
-// canonical entrypoint of a directory bundle (named main.bot, in a parent
-// dir that carries `skills/` or `manifest.yaml`), opens the parent as a
-// bundle so the compile sees its prompts/*.md and the engine mirrors
-// skills/, recipes/, attachments/ into the workspace at run time.
+// ResolveBundleFromFilePath inspects filePath and, when it is an entry of
+// a directory bundle — the canonical main.bot, written or not, or a
+// root-level sibling of it (bundle.DirForEntry): the extend.bot a README
+// launches next to main.bot, an entry of its own rather than a fragment —
+// opens the bundle so the compile sees its prompts/*.md and the engine
+// mirrors skills/, recipes/, attachments/ into the workspace at run time.
+// A main.bot opens the bundle with main.bot as its main; a sibling entry
+// opens it with the file ITSELF as the main (bundle.OpenDirWithMain), so
+// `run bots/x/extend.bot` runs extend.bot, with the bundle around it.
 //
-// (nil, nil) when filePath is empty, not the canonical name, or the parent
-// carries no bundle marker — a loose .bot. A parent that IS a bundle by
-// those markers and does not open (a manifest that does not decode) is an
-// ERROR, never a silent fall-through to the bare file: the same state
-// `iterion validate <dir>` refuses, so the file and directory forms give
-// one verdict, and a run never quietly starts without its prompts and
-// skills. What counts as a bundle is pkg/bundle's to decide (DirForMainBot).
+// (nil, nil) when filePath is empty, no entry of a bundle's — a loose
+// .bot, or a fragment under the bundle's lib/, which keeps the bare-file
+// behavior. A directory that IS a bundle by the markers and does not open
+// (a manifest that does not decode) is an ERROR, never a silent
+// fall-through to the bare file: the same state `iterion validate <dir>`
+// refuses, so the file and directory forms give one verdict, and a run
+// never quietly starts without its prompts and skills. What counts as a
+// bundle is pkg/bundle's to decide (DirForMainBot, DirForEntry).
 //
 // Mirrors the auto-promotion the CLI does in pkg/cli/run.go (F-NEW-4).
 // Without this, studio launches of `iterion run bots/whats-next/main.bot`
@@ -368,15 +374,32 @@ func ResolveBundleFromFilePath(filePath string) (*bundle.Bundle, error) {
 	if filePath == "" {
 		return nil, nil
 	}
-	dir := bundle.DirForMainBot(filePath)
-	if dir == "" {
-		return nil, nil
+	if dir := bundle.DirForMainBot(filePath); dir != "" {
+		b, err := bundle.OpenDir(dir)
+		if err != nil {
+			return nil, EntrypointBundleError(filePath+" is", dir, err)
+		}
+		return b, nil
 	}
-	b, err := bundle.OpenDir(dir)
-	if err != nil {
-		return nil, EntrypointBundleError(filePath+" is", dir, err)
+	if dir := bundle.DirForEntry(filePath); dir != "" {
+		b, err := bundle.OpenDirWithMain(dir, filePath)
+		if err != nil {
+			return nil, EntryBundleError(filePath+" is", dir, err)
+		}
+		return b, nil
 	}
-	return b, nil
+	return nil, nil
+}
+
+// EntryBundleError is the refusal of a bundle's sibling ENTRY whose bundle
+// does not open — EntrypointBundleError's twin for a root-level .bot that
+// is not main.bot: the same state, named for what the file is. subject
+// names the entry and how it stands to the bundle — `x/extend.bot is`, or
+// an author document that `stands for` it — and the bundle is named by its
+// directory's base name so a refusal that crosses to a client never
+// carries the server's directory layout (#1970).
+func EntryBundleError(subject, dir string, err error) error {
+	return fmt.Errorf("%s an entry of bundle %q, which does not open: %w (a root-level .bot beside a main.bot with an iterion manifest or a skills/ is that bundle's entry: fix the manifest, or give the file a directory of its own if this is not its bundle)", subject, filepath.Base(dir), err)
 }
 
 // EntrypointBundleError is the refusal of a bundle's entrypoint whose
@@ -547,14 +570,14 @@ func BundleNameForPath(filePath string) string {
 }
 
 // CompileWorkflowPath compiles the workflow at path the way a launch
-// does: a bare main.bot inside a bundle directory is promoted to its
-// bundle (prompts/*.md in scope, the bundle's hash), any other file
-// compiles alone. The promoted bundle is returned (nil for a plain
-// file) so the caller can hand it to the run — the promotion is the
-// WHOLE bundle, skills/ included, not the compile alone. Every surface
-// that derives a run's hash from a PATH — the dispatcher's engine path,
-// rewind, the export, a recipe's file — goes through it, so a run
-// launched on one surface resumes on another without `--force`.
+// does: a root-level entry of a bundle directory — main.bot or a sibling
+// of it — is promoted to its bundle (prompts/*.md in scope, the bundle's
+// hash), any other file compiles alone. The promoted bundle is returned
+// (nil for a plain file) so the caller can hand it to the run — the
+// promotion is the WHOLE bundle, skills/ included, not the compile alone.
+// Every surface that derives a run's hash from a PATH — the dispatcher's
+// engine path, rewind, the export, a recipe's file — goes through it, so
+// a run launched on one surface resumes on another without `--force`.
 func CompileWorkflowPath(path string) (*ir.Workflow, string, *bundle.Bundle, error) {
 	b, err := bundleForPath(path)
 	if err != nil {

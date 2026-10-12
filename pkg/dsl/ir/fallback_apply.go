@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // RunFallbackName is the label the operator's launch-time route is
@@ -41,14 +43,19 @@ const RunFallbackName = "run-fallback"
 //     declared tools would fail exactly when it is needed. A refused
 //     stage is skipped and the caller warns; later stages remain eligible.
 //
-// sandboxed reports whether this run resolves to an ACTIVE sandbox.
-// The caller computes it with runtime.WorkflowSandboxActive — the same
-// pickMode precedence (CLI-strength override → workflow block → global
-// default) the engine itself applies — because the IR cannot know the
-// deployment's tiers, and a hand-rolled resolution here already lied
-// once: it honoured a node-level `sandbox:` tier the engine does not
-// have (one sandbox per run), advertising an escape hatch that
-// re-created the exact dispatch failure it claimed to prevent.
+// sandboxed reports whether this run will EXECUTE inside a sandbox
+// container. The caller computes it with runtime.RunWillBeSandboxed —
+// the same pickMode precedence (CLI-strength override → workflow block →
+// global default) AND the same driver probe the engine itself applies —
+// because the IR cannot know the deployment's tiers, and a hand-rolled
+// resolution here already lied once: it honoured a node-level `sandbox:`
+// tier the engine does not have (one sandbox per run), advertising an
+// escape hatch that re-created the exact dispatch failure it claimed to
+// prevent. The driver probe is the second half of the same honesty: a
+// mode-only reading refuses codex on a `sandbox: auto` run the host
+// degraded to unsandboxed — a run where codex can in fact run (#1564),
+// and where the delegate's own guard (task.Sandbox.Driver()) would
+// allow it.
 //
 // vars carries the launch's `--var` overrides, so a node whose
 // `backend:` is a `{{vars.<name>}}` reference is screened by what THIS
@@ -57,7 +64,11 @@ const RunFallbackName = "run-fallback"
 // field nothing decided. The declared defaults under the overrides come
 // from the workflow itself; a reference neither answers stays undecided,
 // as the compiler reads it.
-func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[string]string) []string {
+// nodeBackendCallback, when given, is the launch override's backend
+// reading — dispatch reads the override first, so the screen MUST too, or
+// a cross-backend stage crosses a session-bearing node unscreened (the
+// same hazard ApplyPolicyLadder's callback closes for the policy ladder).
+func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[string]string, nodeBackend func(LLMNode) string) []string {
 	if w == nil || len(routes) == 0 {
 		return nil
 	}
@@ -81,7 +92,12 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 		// environment IS the route, where the compiler may only read what
 		// the source declares — and the launch's vars decide a `{{vars.x}}`
 		// the source deliberately left open.
-		nodeBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		screenBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if nodeBackend != nil {
+			if ob := nodeBackend(nn); ob != "" {
+				screenBackend = ob
+			}
+		}
 		perm := EffectivePermission(nn.GetPermission(), w.Permission)
 		for stage, route := range routes {
 			if route.Backend == "" && route.Model == "" && route.Provider == "" {
@@ -102,11 +118,11 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 				refuse(reason)
 				continue
 			}
-			if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
+			if reason := toolsInversionReason(screenBackend, routeBackend, nn.GetTools()); reason != "" {
 				refuse(reason)
 				continue
 			}
-			if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
+			if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
 				refuse(reason)
 				continue
 			}
@@ -329,4 +345,170 @@ func ParseRunFallbackFlag(arg string) (Fallback, error) {
 		return Fallback{}, fmt.Errorf("--fallback %q: missing backend (expected <backend>:<model>)", arg)
 	}
 	return Fallback{Name: RunFallbackName, Backend: backend, Model: model}, nil
+}
+
+// providerHintFor maps a policy credential slot onto the provider hint a
+// route carries: <provider>_key strips to the provider; a forfait slot
+// carries no hint (the family's default precedence serves it); pool and
+// unknown slots pass through for the caller to vet.
+func providerHintFor(credential string) string {
+	if strings.HasSuffix(credential, "_key") {
+		return strings.TrimSuffix(credential, "_key")
+	}
+	return ""
+}
+
+// PolicyLadderStage is one rung of the adaptive-routing policy's computed
+// ladder (ADR-121 §1): a held (harness, credential) pair from the
+// resolved policy's pair order. The MODEL is computed per node at
+// materialization — each node's own model is what the crossing maps — so
+// a stage carries the pair, never a run-level model.
+type PolicyLadderStage struct {
+	Harness      string
+	Credential   string
+	On           []string // the resolved policy's trigger set (nil = the chain default)
+	CrossHarness string   // the run's resolved posture: active ("reuse"|"restart") lifts THIS stage's session refusal; empty/"off" = the delivery-1 refusal
+}
+
+// ApplyPolicyLadder materializes the policy's computed ladder onto the
+// compiled workflow through the SAME screen ApplyRunFallback applies —
+// agent nodes only, nodes with routes of their own excluded, every stage
+// through the C176/C135 predicates and the sandboxed-codex refusal — with
+// ONE difference: the stage's model is computed PER NODE through
+// nodeModel (the node's own model is what the crossing maps; a pair with
+// no delivery-1 mapping for this node is skipped for that node, never
+// emitted modelless). The triggers ride the stage's On verbatim — the
+// policy's resolved vocabulary, which includes auth and
+// transient_exhausted, NOT the chain's narrower default set: the
+// launch-time selection exists to fall through the auth-typed
+// no-credential failure the default set would stop.
+//
+// The routes are flagged Policy so the usagecap preflight judges their
+// spend surfaces and the timeline can say "policy-selected". Refusals are
+// returned exactly like ApplyRunFallback's, named for the ladder.
+//
+// The runner re-applies the SAME function on its recompiled workflow (the
+// publish serializes source, not IR): the two screens are the documented
+// twin — the publisher's answer feeds its derivations (advisory), the
+// runner's is authoritative.
+// The backend callback: the launch's model overrides win over the DSL
+// field at DISPATCH — the screen MUST read the same backend or a
+// cross-backend stage crosses a session-bearing node unscreened. nil = the
+// DSL reading.
+func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string, classes llmroute.ClassTable) []string {
+	if w == nil || len(stages) == 0 {
+		return nil
+	}
+	run := runBackend.withVars(launchVarsView(w, vars))
+
+	var refusals []string
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok || nn.NodeKind() != NodeAgent {
+			continue
+		}
+		// Eligibility is AUTHOR-declared routes only: the operator's
+		// launch-time stages (RunStageSet — applied moments earlier by
+		// ApplyRunFallback on the same workflow) COMPOSE with the ladder,
+		// they do not veto it. An author who wrote a chain vetted where
+		// it may go, and the ladder takes nothing of theirs.
+		hasAuthored := false
+		stageBase := 0
+		for _, fb := range nn.GetFallbacks() {
+			if fb.RunStageSet {
+				stageBase++
+			} else {
+				hasAuthored = true
+			}
+		}
+		if hasAuthored {
+			continue
+		}
+		agent, ok := n.(*AgentNode)
+		if !ok {
+			continue
+		}
+		screenBackend := run.effective(nn.GetLLMFields().Backend, w.DefaultBackend)
+		if nodeBackend != nil {
+			if ob := nodeBackend(nn); ob != "" {
+				screenBackend = ob
+			}
+		}
+		perm := EffectivePermission(nn.GetPermission(), w.Permission)
+		for i, st := range stages {
+			stage := stageBase + i
+			routeBackend := run.routeName(st.Harness)
+			nodeMdl := ""
+			if nodeModel != nil {
+				nodeMdl = nodeModel(nn)
+			}
+			refuse := func(reason string) {
+				refusals = append(refusals, fmt.Sprintf(
+					"agent %q: policy ladder stage %d (%s) %s", nn.NodeID(), stage+1, st.Harness, reason))
+			}
+			// The crossing's model, mapped per node from the pair. A pair
+			// with no mapping is skipped for THIS node — named, never
+			// emitted modelless (ApplyRunFallback's portability refusal
+			// would drop it anyway, later and less precisely). The reason
+			// distinguishes the structural no-mapping (the pair cannot
+			// serve the family) from the class table's cell resolving
+			// nowhere (a model_classes cell fixes that one).
+			mdl, ok, mapReason := llmroute.StageModel(st.Harness, st.Credential, nodeMdl, classes)
+			if !ok {
+				refuse(mapReason + " — stage skipped")
+				continue
+			}
+			route := Fallback{
+				Name:         RunFallbackName,
+				Backend:      st.Harness,
+				Model:        mdl,
+				CrossHarness: st.CrossHarness,
+				// The stage's PROVIDER HINT, not its policy slot: the hint
+				// steers the credential at dispatch ("anthropic", "zai") —
+				// the slot spelling ("anthropic_key") would be read as a
+				// garbage hint. A forfait slot carries no hint: the family's
+				// default precedence already serves it.
+				Provider:    providerHintFor(st.Credential),
+				On:          st.On,
+				RunStage:    stage,
+				RunStageSet: true,
+				Policy:      true,
+			}
+			if reason := UngatedCrossingReasonForAskRules(routeBackend, perm, EffectiveAskRules(nn, w)); reason != "" {
+				refuse(reason)
+				continue
+			}
+			if reason := toolsInversionReason(screenBackend, routeBackend, nn.GetTools()); reason != "" {
+				refuse(reason)
+				continue
+			}
+			// The session contract's THIRD state (ADR-121 § Delivery 2):
+			// an ACTIVE cross-harness posture lifts THIS policy stage's
+			// session-continuity refusal — the crossing lands and is SAID
+			// (the dispatch marks model_fallback), neither kept nor
+			// silently evicted. The gate is the ACTIVE modes, never
+			// emptiness: Normalize answers "off" on every resolved
+			// policy, and an emptiness gate would lift the refusal for
+			// every run under the default (the plan-review critique).
+			// Operator chains (ApplyRunFallback, above) and authored
+			// routes keep the full refusal — relaxation is
+			// policy-stages-only.
+			if !llmroute.CrossHarnessActive(st.CrossHarness) {
+				if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
+					refuse(reason)
+					continue
+				}
+			}
+			if reason := unresolvableToolsReason(routeBackend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
+				refuse(reason)
+				continue
+			}
+			if routeBackend == "codex" && sandboxed {
+				refuse("targets the codex CLI, which cannot run inside the sandbox this run resolves to — set sandbox: none (workflow block or ITERION_SANDBOX_OVERRIDE), or route to claude_code/claw")
+				continue
+			}
+			agent.Fallbacks = append(agent.Fallbacks, route)
+		}
+	}
+	return refusals
 }

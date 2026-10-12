@@ -67,6 +67,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
 		YAMLPath:         runnerConfigPath,
 		DefaultLogFormat: iterconfig.LogFormatJSON,
+		SealerOptional:   true,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: load config: %w", err)
@@ -95,27 +96,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	}()
 
 	// 1. NATS layer — provides the queue + KV lock bucket.
-	// Keep in sync with the natsq.Connect literal in server.go: a field only
-	// one side passes is silently defaulted for the other, and the two then
-	// disagree about the same broker. LockTTL is what just drifted.
-	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
-		URL:                 cfg.NATS.URL,
-		StreamName:          cfg.NATS.Stream,
-		DLQStream:           cfg.NATS.DLQStream,
-		KVBucket:            cfg.NATS.KVBucket,
-		StreamReplicas:      cfg.NATS.StreamReplicas,
-		MaxAckPending:       cfg.NATS.MaxAckPending,
-		AckWait:             cfg.NATS.AckWait,
-		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
-		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
-		RunnerEpoch:         cfg.Rollout.RunnerEpoch,
-		MaxDeliver:          cfg.NATS.MaxDeliver,
-		MaxAge:              cfg.NATS.MaxAge,
-		DLQMaxAge:           cfg.NATS.DLQMaxAge,
-		MaxPayload:          cfg.NATS.MaxPayload,
-		LockTTL:             cfg.Runner.LockTTL,
-		Logger:              logger,
-	})
+	natsConn, err := natsq.Connect(rootCtx, natsConfig(cfg, logger))
 	if err != nil {
 		return fmt.Errorf("runner: connect NATS: %w", err)
 	}
@@ -173,9 +154,29 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// 4b. BYOK / OAuth wire-up. The runner consumes sealed bundles
 	//     keyed by RunMessage.SecretsRef; the master key MUST match
 	//     the publisher's. Phase C.
-	sealer, err := secrets.NewAESGCMSealerFromBase64(cfg.Auth.SecretsKey)
-	if err != nil {
-		return fmt.Errorf("runner: build sealer: %w", err)
+	if cfg.Auth.SecretsKeys != "" && cfg.Auth.SecretsKey != "" {
+		logger.Warn("both ITERION_SECRETS_KEYS and ITERION_SECRETS_KEY are set; the ring wins and the bare key is ignored")
+	}
+	if cfg.Auth.SecretsKeyID != "" && cfg.Auth.SecretsKeys == "" {
+		logger.Warn("ITERION_SECRETS_KEY_ID is set without ITERION_SECRETS_KEYS; the id is ignored")
+	}
+	// ADR-123: the runner opens run bundles under the message's per-run
+	// DEK. The transition ring is built only when the deployment still
+	// mounts key material — it opens the pre-DEK cohort until the 24h
+	// bundle TTL clears it, then the auth secret leaves the pod.
+	var sealer secrets.Sealer
+	if cfg.Auth.SecretsKey != "" || cfg.Auth.SecretsKeys != "" {
+		if cfg.Auth.SecretsKeys != "" && cfg.Auth.SecretsKey != "" {
+			logger.Warn("both ITERION_SECRETS_KEYS and ITERION_SECRETS_KEY are set; the ring wins and the bare key is ignored")
+		}
+		if cfg.Auth.SecretsKeyID != "" && cfg.Auth.SecretsKeys == "" {
+			logger.Warn("ITERION_SECRETS_KEY_ID is set without ITERION_SECRETS_KEYS; the id is ignored")
+		}
+		ring, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
+		if err != nil {
+			return fmt.Errorf("runner: build sealer: %w", err)
+		}
+		sealer = ring
 	}
 	runSecretsStore := secrets.NewMongoRunSecretsStore(st.DB())
 	if err := runSecretsStore.EnsureSchema(rootCtx); err != nil {
@@ -288,14 +289,32 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	// Prove the durable consumer can be created before advancing the rollout
 	// high-water mark. The handle is inert until Runner.Run starts fetching.
-	preparedConsumer, err := natsConn.PrepareConsumer(rootCtx)
-	if err != nil {
-		return fmt.Errorf("runner: prepare queue consumer: %w", err)
+	// A POOL runner ATTACHES the consumer its server reconciler created —
+	// fail closed on a missing or mis-pointed consumer; it never creates
+	// topology (plan v2.1 D4').
+	var preparedConsumer *natsq.Consumer
+	if cfg.Runner.Pool != "" {
+		preparedConsumer, err = natsConn.AttachPoolConsumer(rootCtx, cfg.Runner.Pool)
+		if err != nil {
+			return fmt.Errorf("runner: attach pool consumer: %w", err)
+		}
+		logger.Info("runner: serving sovereign pool %q (admission: only runs stamped for this pool execute)", cfg.Runner.Pool)
+	} else {
+		// The shared path KEEPS its pre-claim preparation: PrepareConsumer
+		// proves the durable consumer before the epoch claim advances (a
+		// NewConsumer after the claim fails ErrRunnerEpochUnclaimed on
+		// every shared pod — the boot break revi R442ad9 caught).
+		preparedConsumer, err = natsConn.PrepareConsumer(rootCtx)
+		if err != nil {
+			return fmt.Errorf("runner: prepare queue consumer: %w", err)
+		}
+		logger.Info("runner: serving the shared default pool (ITERION_RUNNER_POOL is empty)")
 	}
 
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:                natsConn,
+		RunnerPool:          cfg.Runner.Pool,
 		PreparedConsumer:    preparedConsumer,
 		Events:              eventsBus,
 		Store:               st,

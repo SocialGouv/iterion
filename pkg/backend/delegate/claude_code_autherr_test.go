@@ -172,3 +172,36 @@ func TestAuthFailureFast_redactsTheQuotedCredential(t *testing.T) {
 		t.Fatalf("Detail should keep the identifying prefix: %q", err.Error())
 	}
 }
+
+// A node PINNED to a facade provider dies naming that provider and the env
+// var that would have funded it — the unpinned wording indicts the forfait
+// and the Anthropic key, channels the pin took out of the path. An unpinned
+// node keeps the legacy wording: there those ARE the channels. Mutation:
+// drop the facadeEnvKey branch in authFailureFast and the pinned case
+// reddens on its detail.
+func TestAuthFailureFast_FacadeHintNamesTheProviderAndItsEnvVar(t *testing.T) {
+	res := "Failed to authenticate. API Error: 401 Invalid bearer token"
+
+	task := Task{ProviderHint: "zai"}
+	err := authFailureFast(&res, task)
+	var auth *ErrAuthFailed
+	if !errors.As(err, &auth) {
+		t.Fatalf("err = %v, want ErrAuthFailed", err)
+	}
+	if !strings.Contains(auth.Detail, `no working zai credential`) || !strings.Contains(auth.Detail, "ZAI_API_KEY") {
+		t.Errorf("pinned detail = %q, want the provider and its env var named", auth.Detail)
+	}
+	if strings.Contains(auth.Detail, "forfait CLAUDE_CODE_OAUTH_TOKEN") {
+		t.Errorf("pinned detail still indicts the forfait: %q", auth.Detail)
+	}
+
+	// Unpinned: the legacy wording stands.
+	err2 := authFailureFast(&res, Task{})
+	var auth2 *ErrAuthFailed
+	if !errors.As(err2, &auth2) {
+		t.Fatalf("err = %v, want ErrAuthFailed", err2)
+	}
+	if !strings.Contains(auth2.Detail, "check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key") {
+		t.Errorf("unpinned detail = %q, want the legacy wording", auth2.Detail)
+	}
+}

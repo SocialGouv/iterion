@@ -41,7 +41,7 @@ that cannot save resumable state can also end as plain `failed`.
 
 Common resumable failures: transient LLM errors (rate limit, timeout), budget exceeded (increase budget + resume), schema validation errors (fix workflow + `--force`), context timeout/cancellation, fan-out branch failures, router failures.
 
-**`--force` flag**: allows resume even when the `.bot` source has changed (e.g., bug fix). Without `--force`, a hash mismatch produces an error.
+**`--force` flag**: allows resume even when the `.bot` source has changed (e.g., bug fix). Without `--force`, a hash mismatch produces an error. It never accepts the loss of the run's scratch (`SCRATCH_NOT_PORTABLE`): `--accept-scratch-loss` does ([ADR-106](../../adr/106-resume-restores-the-scratch-banked-at-teardown.md)).
 
 See `docs/resume.md` for the current status, checkpoint, and override semantics.
 

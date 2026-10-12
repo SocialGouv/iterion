@@ -92,10 +92,29 @@ type ForgePublishGrant struct {
 	// posted, without reading the forge. It names the grant, not the run: it
 	// speaks for the run only while the grant is not Shared.
 	Verdict *gateVerdict `json:"verdict,omitempty"`
+	// Refusal is a verdict the gate REFUSED to post (recordGateRefusal): the
+	// audited pin was stale or unreadable, so nothing was written — not
+	// success, not failure, not pending. The run then finishes CLEANLY, and
+	// without this record no lane can tell "the run left no verdict because
+	// it died" from "the gate declined its verdict": the reconciler would
+	// paint "review died — push again" over a refusal, or stand down on a
+	// moved head nothing else will ever answer (#1632). Same attribution rule
+	// as Verdict: it is this run's only while the grant is not Shared.
+	Refusal *gateRefusal `json:"refusal,omitempty"`
 	// Deferred is a verdict whose post the forge refused for a rate limit or a
 	// transient failure, kept for the reconciler to post once the wait is over
 	// (deferGateVerdict).
 	Deferred *gateDeferral `json:"deferred,omitempty"`
+	// Capabilities are the merge-gate GESTURES this grant may execute through
+	// the publish endpoint's verdict block: a subset of
+	// {publishCapApprove, publishCapMerge, publishCapReviewers}. Minted at
+	// launch from the bot's manifest forge.token_scopes (the matching merge-
+	// gate scope at write level), stripped wholesale by the operator pin
+	// forge_publish_mutations != true — the per-repo disarm that needs no
+	// release. Empty = a comment-and-gate grant: the verdict verbs answer
+	// in-band refused, nothing mutates. Fail-closed by construction: an
+	// unresolvable manifest mints none.
+	Capabilities []string `json:"capabilities,omitempty"`
 	// Shared marks a grant a second run publishes with — a launch that pinned
 	// the token, a fork (shareGrant) — so no one run's verdict or end may cut
 	// it back to the post-run grace (the end of a gating run that names its
@@ -117,6 +136,19 @@ type gateVerdict struct {
 	Context string    `json:"context"`
 	State   string    `json:"state"`
 	At      time.Time `json:"at"`
+}
+
+// gateRefusal is one verdict the publish endpoint REFUSED to post: the pin it
+// was audited against, the head that made it stale, the check, a short reason
+// fit for a status description, and when. The reconciler reads it to answer
+// the head the refusal left bare — with the refusal's own diagnosis, never
+// with "review died".
+type gateRefusal struct {
+	AuditedSHA string    `json:"audited_sha"`
+	HeadSHA    string    `json:"head_sha"`
+	Context    string    `json:"context"`
+	Reason     string    `json:"reason"`
+	At         time.Time `json:"at"`
 }
 
 // grantTenantMismatchReason is the typed refusal a publish grant earns when
@@ -336,6 +368,10 @@ type publishReviewRequest struct {
 	// Gate, when present and enabled, drives the deterministic merge-gate
 	// commit status posted onto the PR head SHA (see publishReviewGate).
 	Gate *publishReviewGate `json:"gate,omitempty"`
+	// Verdict, when present and enabled, carries the gating bot's deterministic
+	// merge gestures (approve / arm MWPS / request reviewers), executed by the
+	// server on the head the gate posted onto. See publishReviewVerdict.
+	Verdict *publishReviewVerdict `json:"verdict,omitempty"`
 }
 
 // publishReviewGate carries the reviewer bot's DETERMINISTIC gate verdict:
@@ -372,6 +408,81 @@ type publishReviewGate struct {
 	Note string `json:"note,omitempty"`
 }
 
+// The verdict-block capability vocabulary, one per merge-gate gesture. These
+// are GRANT capabilities, minted from the bot's manifest scopes — never a
+// request parameter: a body asking for a verb the grant does not carry is
+// refused in-band, whatever the payload says.
+const (
+	publishCapApprove   = "approve"
+	publishCapMerge     = "merge"
+	publishCapReviewers = "reviewers"
+)
+
+// publishReviewVerdict carries the gating bot's DETERMINISTIC merge
+// gestures, executed by the server after the review and the gate status have
+// landed on the SAME head: cast the approval, add reviewers (escalation),
+// arm merge-when-pipeline-succeeds. Every verb is ordered through the gate
+// decision the gate status claimed — a superseded or refused gate carries
+// the verbs down with it — and pinned to audited_sha: mutations are never
+// unpinned (stricter than the gate status, whose legacy unpinned post is a
+// measured compatibility). The gate status is the audit + ordering anchor BY
+// DESIGN: verdict gestures without an enabled gate are refused, so a merge
+// a bot armed always has a check on the forge saying whose verdict armed it.
+type publishReviewVerdict struct {
+	// Enabled gates the whole block; a present-but-disabled verdict acts not.
+	Enabled bool `json:"enabled"`
+	// Approve casts the connection account's approval on the MR.
+	Approve bool `json:"approve"`
+	// ArmMergeWhenPipelineSucceeds arms the forge's own merge-on-green. It is
+	// never a merge-now: the forge merges when ITS conditions hold.
+	ArmMergeWhenPipelineSucceeds bool `json:"arm_merge_when_pipeline_succeeds"`
+	// MergeMethod is the arming's integration method: "merge" (default) or
+	// "squash". Rebase is not an auto-merge method on any provider.
+	MergeMethod string `json:"merge_method,omitempty"`
+	// RemoveSourceBranch deletes the source branch after the merge.
+	RemoveSourceBranch bool `json:"remove_source_branch"`
+	// RequestReviewers names the accounts to ADD to the reviewer set — the
+	// escalation gesture. Additive by contract: it can never drop a reviewer.
+	RequestReviewers []string `json:"request_reviewers,omitempty"`
+	// AuditedSHA is REQUIRED whenever any verb is set: the revision the bot
+	// read. Refused against a moved head, never retargeted.
+	AuditedSHA string `json:"audited_sha,omitempty"`
+	// Mode is an informational echo ("dry_run" | "enforce" today), logged and
+	// audited with the verbs so the operator reads which posture acted. The
+	// server does NOT enforce it — dry-run enforcement lives in the bot's
+	// fold; a bot claiming dry_run that still sends verbs is a bundle bug the
+	// audit exposes.
+	Mode string `json:"mode,omitempty"`
+}
+
+// verdictResult reports what the verdict block actually did — one field per
+// verb, plus the in-band refusal that explains a gesture not taken. A
+// refusal NEVER fails the publish or the gate: the check is already on the
+// forge, and a bot whose verbs were refused has its publish_health banner to
+// say so.
+type verdictResult struct {
+	// Requested is true when a verdict block with verbs arrived at all, so a
+	// caller distinguishes "not asked" from "asked and refused".
+	Requested bool `json:"requested"`
+	// Mode echoes the request's posture claim (audited with the verbs).
+	Mode string `json:"mode,omitempty"`
+	// ApprovePosted / ApproveError report the approval gesture.
+	ApprovePosted bool   `json:"approve_posted"`
+	ApproveError  string `json:"approve_error,omitempty"`
+	// ReviewersAdded lists the accounts actually added (already-present
+	// accounts are not "added"); ReviewersError the refusal otherwise.
+	ReviewersAdded []string `json:"reviewers_added,omitempty"`
+	ReviewersError string   `json:"reviewers_error,omitempty"`
+	// MergeArmed / MergeState ("mwps" | "merged") / MergeError report the
+	// arming. Skipped when the approval was requested and failed.
+	MergeArmed bool   `json:"merge_armed"`
+	MergeState string `json:"merge_state,omitempty"`
+	MergeError string `json:"merge_error,omitempty"`
+	// Refused is why NO gesture ran (stale pin, gate not posted, capability
+	// missing). Per-verb errors are the verb's own fields.
+	Refused string `json:"refused,omitempty"`
+}
+
 type publishReviewResponse struct {
 	Published         bool   `json:"published"`
 	Provider          string `json:"provider"`
@@ -396,6 +507,8 @@ type publishReviewResponse struct {
 	// says when refusing an unpinned gate outright becomes safe: while any
 	// bundle in the fleet still omits the pin, this is true somewhere.
 	GateSHAUnpinned bool `json:"gate_sha_unpinned,omitempty"`
+	// Verdict reports the merge-gate gestures (nil: none requested).
+	Verdict *verdictResult `json:"verdict,omitempty"`
 	// SkippedReason explains a publish that did not land (a forge error).
 	// Present with published=false; the gate may still have been posted.
 	SkippedReason string `json:"skipped_reason,omitempty"`
@@ -443,6 +556,13 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 	}
 	if mode != "inline" && mode != "summary" {
 		httpError(w, http.StatusBadRequest, "mode must be \"inline\" or \"summary\" (got %q)", req.Mode)
+		return
+	}
+	// The verdict block is validated before anything is posted: a payload
+	// carrying verbs must be fully well-formed, or the caller learns it as a
+	// 400 rather than as a gate status whose gestures silently never ran.
+	if err := validatePublishVerdict(req.Verdict); err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
 	host, repo, number, err := forge.ParsePullURL(req.PRURL)
@@ -534,10 +654,17 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			s.releaseGateDecision(r.Context(), gate.markKey, decision)
 		}
 		s.recordGateVerdict(token, gate, decision)
+		s.recordGateRefusal(token, gate)
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %s %s#%d review failed (%v); gate posted=%v state=%q",
 				conn.Provider, grant.Repo, number, reviewErr, gate.posted, gate.state)
 		}
+		// The verdict comment IS the review body — a review that did not land
+		// means the human-facing explanation never reached the MR. Executing
+		// merge gestures with no comment explaining them is the silent-merge
+		// shape; the verbs are refused in-band and the caller's publish_health
+		// says so.
+		verdict := refuseVerdict(req.Verdict, "the review did not publish: "+reviewErr.Error())
 		writeJSONStatus(w, http.StatusBadGateway, publishReviewResponse{
 			Published:       false,
 			Provider:        string(conn.Provider),
@@ -549,6 +676,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			GateSHA:         gate.sha,
 			GateError:       gate.errText,
 			GateSHAUnpinned: gate.shaUnpinned,
+			Verdict:         verdict,
 		})
 		return
 	}
@@ -566,6 +694,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		s.releaseGateDecision(r.Context(), gate.markKey, decision)
 	}
 	s.recordGateVerdict(token, gate, decision)
+	s.recordGateRefusal(token, gate)
 	if s.logger != nil && gate.requested {
 		if gate.posted {
 			s.logger.Info("forge gate: %s %s#%d @%s → %s (%q)", conn.Provider, grant.Repo, number, gate.sha, gate.state, gate.context)
@@ -573,6 +702,12 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			s.logger.Warn("forge gate: %s %s#%d → not posted: %s", conn.Provider, grant.Repo, number, gate.errText)
 		}
 	}
+
+	// The verdict block: the gating bot's deterministic merge gestures,
+	// executed on the head the gate just posted onto, ordered by the gate
+	// decision that claimed the check. In-band refusals, never a failed
+	// publish — the check and the comment are already on the forge.
+	verdict := s.applyPublishVerdict(r.Context(), conn, grant, number, req.Verdict, req.Gate, gate)
 
 	writeJSON(w, publishReviewResponse{
 		Published:         true,
@@ -589,6 +724,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		GateSHA:           gate.sha,
 		GateError:         gate.errText,
 		GateSHAUnpinned:   gate.shaUnpinned,
+		Verdict:           verdict,
 	})
 
 	// Reviewer bookkeeping — the two halves of the re-request gesture, one
@@ -836,6 +972,10 @@ func (s *Server) recordGateVerdict(token string, gate gateOutcome, decision gate
 	v := &gateVerdict{SHA: gate.sha, Context: gate.context, State: gate.state, At: time.Now().UTC()}
 	_, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
 		g.Verdict = v
+		// A posted verdict retires any earlier refusal: the run DID certify
+		// in the end, and a refusal is episode-scoped — no later reconcile
+		// may diagnose one that is moot (clearGateRefusal's twin).
+		g.Refusal = nil
 		if d := g.Deferred; d != nil && gateContextOf(&d.Gate) == gate.context && !d.Decision.newerThan(decision) {
 			g.Deferred = nil
 		}
@@ -855,7 +995,64 @@ func (s *Server) recordGateVerdict(token string, gate gateOutcome, decision gate
 	s.logger.Warn("forge gate: %s posted on %s but not recorded on its grant — the reconciler will read the forge for it: %v", gate.state, shortSHA(gate.sha), err)
 }
 
-// gateOutcome is the internal result of posting the gate status.
+// recordGateRefusal writes a REFUSED verdict on the grant that carried it, so
+// the reconciler can answer the head the refusal left bare — the refusal
+// itself posted nothing, and the run finishing cleanly is exactly why no
+// other lane ever learns of it (#1632). Best-effort like recordGateVerdict:
+// a record that fails leaves the reconciler on the pre-#1632 behaviour (a
+// moved head stands down, an unmoved one reads "review died"), which is wrong
+// but never unsafe — so it is a Warn, not a failed publish.
+func (s *Server) recordGateRefusal(token string, gate gateOutcome) {
+	if gate.refusal == nil || s.forgePublishTokens == nil {
+		return
+	}
+	if _, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
+		g.Refusal = gate.refusal
+	}); err != nil && s.logger != nil {
+		s.logger.Warn("forge gate: %s was refused (%s) but the refusal could not be recorded on its grant: %v — the reconciler cannot tell it from a death",
+			gate.context, gate.errText, err)
+	}
+}
+
+// clearGateRefusal retires a recorded refusal once the reconciler has
+// consumed or settled the episode it belongs to. A refusal is episode-scoped
+// state on an episode-blind store: the endpoint that records it knows no run
+// (the token is the authority), so the record cannot be stamped with the
+// episode — clearing at consumption is what keeps a later dead episode of
+// the same run from inheriting a diagnosis it never earned. The clear is a
+// compare-and-swap on the CONSUMED refusal's identity (like replaceDeferral):
+// a refusal recorded after it — a fresher episode, inside the post→clear
+// window — is not this pass's to retire, or "honored at most once" degrades
+// into "possibly zero". Best-effort: a failed clear costs a wrong diagnosis
+// on one later reconcile, never a wrong write.
+func (s *Server) clearGateRefusal(token string, consumed *gateRefusal) {
+	if s.forgePublishTokens == nil || consumed == nil {
+		return
+	}
+	if _, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
+		if g.Refusal != nil && g.Refusal.At.Equal(consumed.At) &&
+			strings.EqualFold(g.Refusal.AuditedSHA, consumed.AuditedSHA) &&
+			strings.EqualFold(g.Refusal.Context, consumed.Context) {
+			g.Refusal = nil
+		}
+	}); err != nil && s.logger != nil {
+		s.logger.Warn("forge gate: a consumed refusal could not be cleared from its grant: %v — a later episode of the run may inherit the diagnosis", err)
+	}
+}
+
+// boundedRunes truncates s to at most n runes, ellipsis included — the
+// status-description budget the refusal reason feeds. n <= 0 yields "".
+func boundedRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
 type gateOutcome struct {
 	requested bool   // a gate was requested (enabled)
 	posted    bool   // the status landed on the forge
@@ -877,6 +1074,10 @@ type gateOutcome struct {
 	// superseded reports a verdict not posted because a newer one owns the
 	// head (claimGateDecision).
 	superseded bool
+	// refusal records a verdict the gate REFUSED to post for its pin — stale
+	// or unreadable audited_sha — so the reconciler can answer the head the
+	// refusal left bare with the right diagnosis (#1632). Nil otherwise.
+	refusal *gateRefusal
 	// markKey is the verdict-order mark this decision claimed (set once the
 	// claim was granted), for the caller that must release it again.
 	markKey string
@@ -960,12 +1161,22 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		// reader diffing two revisions, or hunting a push that never happened.
 		out.errText = "audited_sha " + strconv.Quote(audited) + " is not a commit id (7-40 hex) — " +
 			"refusing to certify on a pin that cannot be read"
+		out.refusal = &gateRefusal{
+			AuditedSHA: audited, HeadSHA: head, Context: out.context,
+			Reason: "its audited_sha " + strconv.Quote(boundedRunes(audited, 24)) + " is not a commit id",
+			At:     s.gateNow(),
+		}
 		return out
 	case !equalSHA(head, audited):
 		// Full SHAs on both sides: this message's whole job is to tell two
 		// revisions apart, and abbreviating both is how it names one twice.
 		out.errText = "the head moved since the audit (audited " + audited +
 			", head is now " + head + ") — no status on a revision nobody audited"
+		out.refusal = &gateRefusal{
+			AuditedSHA: audited, HeadSHA: head, Context: out.context,
+			Reason: "it audited " + shortSHA(audited) + " but the head moved to " + shortSHA(head),
+			At:     s.gateNow(),
+		}
 		return out
 	}
 	out.sha = head
@@ -1030,6 +1241,43 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 			out.context, repo, out.sha)
 	}
 	return out
+}
+
+// postApproveGateStatus writes the operator's manual force-green through the
+// same verdict-order authority every other gate-status writer crosses
+// (#1590): the approve is a DECISION taken at click time, claimed before the
+// write — so a reconciler's synthetic failure anchored at the run's death
+// (before the click) is refused the claim and can never paint over it, and a
+// deferred replay reusing its ORIGINAL decision is likewise superseded.
+// releaseGateDecision on a failed write, reassertNewerVerdict after a landed
+// one (which can never re-post a synthetic — the guard there). superseded
+// means a newer decision claimed the check between the click and the claim:
+// nothing was written, and the caller must say so rather than report an
+// approval that is not on the forge.
+func (s *Server) postApproveGateStatus(ctx context.Context, conn forge.Connection, gc forgeGateClient, repo, sha, gateCtx, desc, targetURL string) (superseded bool, err error) {
+	decision := newGateDecision(s.gateNow())
+	markKey := gateDecisionKey(conn, repo, sha, gateCtx)
+	mark := gateMark{Decision: decision, Status: gateMarkStatus{
+		State: string(forge.CommitStateSuccess), Description: desc, TargetURL: targetURL,
+	}}
+	switch ok, claimErr := s.claimGateDecision(ctx, markKey, mark); {
+	case claimErr != nil:
+		return false, fmt.Errorf("order the approval against newer verdicts: %w", claimErr)
+	case !ok:
+		return true, nil
+	}
+	if err := gc.SetCommitStatus(ctx, repo, sha, forge.CommitStatus{
+		State:       forge.CommitStateSuccess,
+		Context:     gateCtx,
+		Description: desc,
+		TargetURL:   targetURL,
+	}); err != nil {
+		// The approval will neither post nor wait: free its claim.
+		s.releaseGateDecision(ctx, markKey, decision)
+		return false, err
+	}
+	s.reassertNewerVerdict(ctx, gc, markKey, repo, sha, gateCtx, decision)
+	return false, nil
 }
 
 // reviewClientFor resolves a connection's forge.ReviewClient. The
@@ -1224,7 +1472,15 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	if token == "" {
 		return vars, "", nil
 	}
-	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo}); err != nil {
+	caps := s.forgePublishCapabilitiesFor(ctx, teamID, botID)
+	if ks := strings.TrimSpace(vars[publishMutationKillSwitchVar]); ks != "" && ks != "true" && len(caps) > 0 {
+		if s.logger != nil {
+			s.logger.Info("forge verdict: %s/%s: merge-gesture capabilities stripped by operator pin %s=%q",
+				host, repo, publishMutationKillSwitchVar, ks)
+		}
+		caps = nil
+	}
+	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo, Capabilities: caps}); err != nil {
 		// A launch that reaches here has a connection covering the PR: it is
 		// gating-shaped, and the caller is about to claim the repo's gate
 		// context on this head. Proceeding without a grant is the "pending

@@ -160,10 +160,15 @@ The citations, per cell that is not self-evident from the table:
     second node invoking the same command with a broader `tools:` set is a
     different exposure. Documenting it was never enough.
   - `$1`, `$2`, … (any index, not just the single digits) are **one-based**
-    on `claw` (`$1` is the first argument),
-    which is Claude Code's documented contract; the CLI itself resolves
-    them off by one (`/x alpha beta gamma` on `[$1][$2][$3]` expands to
-    `[beta][gamma][$3]`).
+    on `claw` (`$1` is the first argument) and **zero-based** on
+    `claude_code`, whose docs define `$N` as shorthand for `$ARGUMENTS[N]`
+    with `$0` the first argument — and whose CLI measures that way on
+    2.1.220 and 2.1.282 alike (`/x alpha beta gamma` on `[$1][$2][$3]`
+    expands to `[beta][gamma][$3]`). `claw` keeps the CLI's earlier "like
+    shell scripts" reading, which the docs have since replaced; flipping
+    it would rewrite bodies already written against `claw`, so the
+    divergence stays named
+    ([the re-measure record](upstream/claude-code-positional-args-2-1-220.md)).
   - `` !`cmd` ``, ` ```! ` shell substitution, `$0`, `$ARGUMENTS[n]`,
     `\$` escapes and the `${CLAUDE_PROJECT_DIR}` / `${CLAUDE_SESSION_ID}` /
     `${CLAUDE_EFFORT}` placeholders are not evaluated. A body using any of these — or the
@@ -1089,6 +1094,73 @@ mode `deny`).
 > travel with them:
 > [sandbox.md](sandbox.md#mcp-servers-under-a-sandbox).
 
+## The OpenAI-compatible gateway (`openai_compatible/…`)
+
+A model spec of the form `openai_compatible/<gateway model id>` is served by
+an OpenAI-compatible gateway the deployment's environment names — a regional
+LiteLLM gateway, a vLLM endpoint, a router in front of a provider no other
+prefix carries. The id after the prefix travels to the wire **verbatim**
+(slashes included): it is the gateway's own id, not one iterion resolves, so
+the capability tables, the effort matrices and the price catalog have no
+opinion on it. Two environment variables configure the route, read exactly
+like `OPENAI_BASE_URL`:
+
+- `OPENAI_COMPATIBLE_BASE_URL` — the gateway root (no trailing `/v1`
+  required);
+- `OPENAI_COMPATIBLE_API_KEY` — optional; a gateway may sit behind network
+  auth alone.
+
+The endpoint is the operator's choice, but the dial is guarded: a public
+address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` for a
+self-hosted gateway on private infrastructure. A gateway route runs on the
+**`claw` backend only**: an explicit `backend:` naming a CLI backend, or a
+vendor `provider:` hint beside a gateway model, is refused when the node is
+dispatched, and warning **C186** says the same at `iterion validate` time
+([diagnostics](references/diagnostics.md)).
+
+Until the catalog slice prices the gateway's ids, a gateway route is an
+unpriced route: spend is still metered in tokens and bounded by
+`max_tokens`, but `max_cost_usd` bounds priced routes only, and the budget
+raises its single `cost_usd_unpriced` advisory — plus `usage_unreported`
+when a call's usage never arrives — as for any unpriced route.
+
+> **What cannot see a gateway route today.** The machine usage-cap
+> pre-flight ([usage-caps.md](usage-caps.md)) meters the anthropic wire
+> only, so a gateway route's spend is invisible to it — bound gateway spend
+> with the gateway's own quotas for now. And on a gateway node the gateway
+> key rides the runner process env (claw's bash reads the whole forwarded
+> env), so on a multi-tenant runner, bind it with the egress allowlist
+> ([pkg/sandbox/netproxy](../pkg/sandbox/netproxy/proxy.go)) and rotate it;
+> the host-side relay — the key never entering the container — is the known
+> follow-up.
+
+### What a gateway model costs and how big it is (ADR-122)
+
+The catalog resolves a gateway id with whole-entry precedence — fields are
+never merged across sources, and an answer carries its provenance:
+
+1. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
+   `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
+   "input_usd_per_mtok": F, "output_usd_per_mtok": F}}`. Strict decoding
+   (unknown fields refused); prices arrive as a pair or not at all; a
+   declared 0/0 means unpriced, not free.
+2. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
+   models.dev table (the live table when loaded, else the embedded
+   snapshot). The gateway serves BARE ids, and `<q>` is the upstream
+   provider key those ids live under in models.dev (`scaleway`, in the
+   measured deployment). Exact means exact after lower-casing — no
+   bare-id, suffix, vendor or cross-provider-consensus fallback exists.
+3. Otherwise unknown, said out loud: the node's `_gateway_spec` records
+   `"source":"unknown"`, the estimator prices nothing, and compaction keeps
+   the unknown-model floor.
+
+The snapshot is regenerated with `task models:snapshot` (the committed diff
+is the review; it carries the source digest and an as-of date, and an answer
+older than 180 days logs a warning). A sandboxed gateway node receives the
+host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`), which answers
+before the container's local sources — the image's snapshot can be older
+than the host's, and the two never disagree across the IPC.
+
 ## Transient-error & network resilience
 
 A brief internet/API outage should not abort a whole run. Every backend
@@ -1105,10 +1177,14 @@ retryable:
   a cancelled or timed-out run never thrashes the retry budget.
 - **`claude_code` silent exits**: a connectivity drop surfaces as an opaque
   `session ended without result message (cli_exit_code=N)`, with the real
-  cause only on the CLI's stderr. The delegate re-types it as
-  `ErrTransient` when stderr shows a network marker (one explicit
-  `network connectivity issue detected` warn), so the loop retries instead
-  of failing the node.
+  cause on the CLI's stderr or its `API Error: …` result render. The
+  delegate re-types it as `ErrTransient` when the error text matches the
+  full network-signature list, or stderr carries a **transport-level**
+  marker (`matchesTransportStderr` — same tier as the shared CLI-agent
+  loop: a crash dump quoting arbitrary source must not read as network
+  evidence; the prose markers stay on the CLI's own error text and result
+  render). One explicit `network connectivity issue detected` warn, so the
+  loop retries instead of failing the node.
 - **Adaptive budget**: network/transient errors get a larger attempt
   budget (`MaxAttemptsTransient`, default **6**) than ordinary retryable
   errors (`MaxAttempts`, default **3**), so the backoff spans roughly a
@@ -1536,7 +1612,13 @@ work runs — is answered by the turn the
 CLI's replay shows took it — not by turns the CLI had queued before it —
 only a report written after that is kept, and its bound
 (`ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT`; past it, a retryable
-error) runs from then. A subagent streaming meanwhile does not count as the main
+error) runs from then. The take itself is bounded too, by
+`ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT` from the moment the request
+went out: the bound slides with the CLI's turn activity — each message of a
+turn it had queued, and each turn's close — so it only ever bounds idle
+opportunity, and a CLI that never takes the request ends the call on a
+named retryable error ("the CLI never took the wrap-up") instead of parking
+the session to the silence watchdog. A subagent streaming meanwhile does not count as the main
 agent moving on, and the consecutive tool-error breaker keeps one streak per
 agent. The session's results merge into one: per-query usage, turns and
 wall-clock durations add up; the figures the CLI keeps per process (cost, API
@@ -1787,7 +1869,10 @@ OpenAI-compatible client always appends `/v1/chat/completions`.
 In cloud mode the same key can be stored as a per-org BYOK record with
 `provider: xai` (see [byok.md](byok.md)). Sandboxed runs with
 `network: allowlist` already include `api.x.ai` in the `iterion-default`
-preset.
+preset. A custom `XAI_BASE_URL` crosses into the sandbox with the key and
+is dialled from inside the container, so under `network: allowlist` its
+host must be allowed too, and a loopback URL does not reach the host
+([what crosses](sandbox.md#claw-backend-in-sandbox)).
 
 For web search & fetch on claw (the `web_search`/`web_fetch` tools, the
 SearXNG → Brave → DuckDuckGo backend ladder, `ITERION_WEB_SEARCH`, and the
@@ -1836,6 +1921,43 @@ export ITERION_OPENAI_USE_OAUTH=0
 # disables OAuth so masquerading codex_cli_rs headers don't reach an
 # unintended backend.
 ```
+
+A sandboxed claw node honours the refusal (`0`) whatever the run holds,
+and a host-wide `1` too. When the run holds no OpenAI credential of its
+own (no key, none pinned for the route, no connected forfait that
+serves), each dispatch of an `openai/…` node writes the host's ChatGPT
+login (`$CODEX_HOME/auth.json`, else `~/.codex/auth.json`) into a
+directory of its own in the container, points that node's runner at it
+with the forfait forced over `OPENAI_API_KEY`, and removes it when the
+node is done: the sandboxed node spends the forfait an in-process one
+spends (a long-lived process — studio, desktop — keeps the client it
+resolved first, so a codex login or logout since reaches its in-process
+nodes only after a restart, where each dispatch reads the codex home
+anew). Under a network allowlist the node dials `chatgpt.com`: an
+allowlist of your own must name it, as `iterion-default` does. The copy
+holds the access token and the account alone — no
+refresh token, id token or API key — so it renews nothing and expires,
+but anything running in the sandbox while the node does can read it:
+leave the switch unset where sandboxed code is not trusted with that
+token. A switch, a `CODEX_HOME` or a home directory set by a project
+`.env` sends nothing (a warning says so), and with the switch unset claw
+sends nothing at all. Neither is what keeps the login out of a sandbox:
+under the default `host_state: auto` the whole `~/.codex` is bound into
+the container read-write whatever the switch says, `host_state: none` is
+what keeps it out, and a `pi` node on `openai-codex/…` carries its own
+copy across through pi's bridge (below).
+
+**Stream usage through a gateway.** On the OpenAI chat wire, token usage
+travels only when the request asks for it
+(`stream_options.include_usage`). api.openai.com is asked whatever the
+setup; an endpoint set through `OPENAI_BASE_URL` is not — providers that
+reject the `stream_options` parameter must not see it unasked. When your
+gateway accepts it, opt in with `ITERION_OPENAI_STREAM_USAGE=1`: streaming
+calls then report their usage instead of counting against the run's
+`usage_unreported` floor. The ChatGPT forfait never carries the
+parameter, and the `openai_compatible/` gateway factory asks
+unconditionally — a gateway that rejects `stream_options` breaks that
+path regardless of this knob.
 
 The studio status pill renders both detected sources, with the
 inactive one struck-through and labelled `(overridden by …)`.
@@ -2262,10 +2384,19 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
 - **Not in the stock sandbox image.** The published image bakes claude-code,
   pi and codex only; a sandboxed `opencode` node dies at `exec: not found`.
 - **Its stderr is a JavaScript stack trace.** The shared CLI-agent retry
-  classifier substring-matches stderr for network signatures, and an
-  opencode trace can contain one (a `JSON Parse error: Unexpected EOF` from
-  a malformed JSON file it reads matches `unexpected eof`), so a *deterministic* failure
-  can still be retried up to three times before it surfaces.
+  classifier reads only the CLI's OWN transport-level error lines out of
+  that dump — short, unindented error headers and Node's `[cause]:`
+  chains. Stack frames, application error prose and quoted source are not
+  evidence; quoted source shows up indented in Bun's codeframes but Node
+  echoes the throwing source line at column 0, so a line-length cap
+  excludes minified-bundle echoes. Not airtight: a SHORT column-0 source
+  echo, or an app's own error header naming an errno, still matches —
+  indistinguishable from the genuine article for any text classifier, and
+  the cost is a bounded, backed-off retry. A
+  `JSON Parse error: Unexpected EOF` from a malformed JSON file it reads
+  once matched the `unexpected eof` signature and burned all three retries
+  on a deterministic configuration failure; that class of false positive
+  is now excluded by construction (`matchesTransportStderr`).
 - **The prompt goes on stdin, never in argv.** opencode takes its message as
   a variadic positional, which silently swallows a prompt beginning with `-`
   (it prints its help text instead of running) — an iterion prompt routinely

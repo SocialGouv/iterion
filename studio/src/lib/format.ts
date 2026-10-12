@@ -69,7 +69,7 @@ export function formatContextUsage(
   return {
     pct,
     label: `${formatTokens(used)}/${formatTokens(window)}`,
-    title: `context: ${used.toLocaleString()} / ${window.toLocaleString()} tokens (${Math.round(pct)}%)`,
+    title: `context: ${used.toLocaleString("en-US")} / ${window.toLocaleString("en-US")} tokens (${Math.round(pct)}%)`,
   };
 }
 

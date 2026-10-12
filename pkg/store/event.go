@@ -128,6 +128,11 @@ const (
 	//   - code: the failure code that decided it (EXPRESSION_FAILED,
 	//     SCHEMA_VALIDATION, AUTH_FAILED, …)
 	//   - error: the engine's own words, so the offending step is named
+	//   - hint: what to do about it — the failure's own remedy when it names
+	//     one (runtime.RemedyOf), never --force for a scratch that did not
+	//     travel
+	//   - also_needs_force: the resume needs --force besides
+	//   - status: the status a resume refused before its claim is back to
 	EventRunRetrySkipped EventType = "run_retry_skipped"
 	// EventUsageCap marks the provider's subscription telemetry crossing a
 	// cap the OPERATOR set, below the provider's own wall (see
@@ -541,6 +546,21 @@ const (
 	//   - driver: the sandbox driver
 	//   - error: the export failure
 	EventSandboxWorkspaceExportFailed EventType = "sandbox_workspace_export_failed"
+	// EventSandboxScratchBanked fires at the teardown of a sandbox whose
+	// ${PROJECT_SCRATCH_DIR} dies with it (kubernetes; docker without the
+	// host bind), when the run may resume (ADR-106). Data:
+	//   - banked: the scratch was streamed into the run's scratch bank
+	//   - empty: there was nothing to keep
+	//   - bytes: the bank's size (banked only)
+	//   - reason: why a scratch that held something was NOT banked (over
+	//     the cap, a tar or upload failure) — a resume is then refused
+	//     SCRATCH_NOT_PORTABLE before it claims the run
+	EventSandboxScratchBanked EventType = "sandbox_scratch_banked"
+	// EventSandboxScratchRestored fires when a resumed run's new sandbox
+	// got the scratch banked at the last teardown back, before its first
+	// node. Data:
+	//   - bytes: the bank's size
+	EventSandboxScratchRestored EventType = "sandbox_scratch_restored"
 	// EventSandboxClawRoutedViaRunner fires when a sandboxed run
 	// contains a node using backend=claw — the engine forwards the
 	// call to iterion __claw-runner inside the container. Data:
@@ -599,6 +619,31 @@ const (
 	//     (devbox binary missing, staging or install failures); the run
 	//     proceeds, the named packages are absent
 	EventSandboxDevboxProvisioned EventType = "sandbox_devbox_provisioned"
+	// EventSandboxEnvDenied fires when the target repository's
+	// devcontainer.json (containerEnv/remoteEnv) declares env keys in
+	// the deny class and the runtime removes them instead of copying
+	// them into the sandbox env (#2303). The devcontainer is the
+	// reviewed repository's file, not the operator's: a planted
+	// *_BASE_URL re-routes every LLM call the container makes, a
+	// planted LD_PRELOAD or PATH executes the planter's code, and a
+	// repo-authored value does not speak for the operator. Data:
+	//   - keys: []string of the removed names, sorted
+	//   - source: the resolution source label (names the
+	//     devcontainer.json path)
+	//   - run_id: the run scope
+	EventSandboxEnvDenied EventType = "sandbox_env_denied"
+	// EventSandboxNetworkDefaulted fires when a repo-defined sandbox
+	// (mode auto and a devcontainer.json found) runs on an
+	// iterion-default base the runtime chose because the workflow
+	// named none: no network: block, an empty one, or rules without a
+	// preset (#2303). Open egress on such a run is the repository's
+	// choice, not the operator's; a workflow block naming a preset (or
+	// a mode) is the override and never triggers this event. Data:
+	//   - mode: "allowlist"
+	//   - preset: "iterion-default"
+	//   - source: the resolution source label
+	//   - run_id: the run scope
+	EventSandboxNetworkDefaulted EventType = "sandbox_network_defaulted"
 	// EventNetworkBlocked fires every time the iterion CONNECT proxy
 	// rejects a request. Data:
 	//   - host: blocked hostname

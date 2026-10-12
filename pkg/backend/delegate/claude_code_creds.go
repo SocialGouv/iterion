@@ -686,6 +686,15 @@ func facadeRouteEnv(slot secrets.Provider, baseURL, key string) map[string]strin
 	env := clearedAnthropicChannels()
 	env["ANTHROPIC_BASE_URL"] = baseURL
 	env["ANTHROPIC_AUTH_TOKEN"] = key
+	// An ambient ANTHROPIC_CUSTOM_HEADERS — applied LAST by the CLI (claw
+	// identity.go) — would ride the funded route: an ambient
+	// "Authorization: Bearer …" hands the facade's gateway a foreign
+	// credential on a route the engine owns. The routing pin copies the
+	// var into the CLI's settings, it does not remove it, so the route
+	// clears it itself. Deliberately NOT in clearedAnthropicChannels: on a
+	// bound-direct route the header is the operator's gateway config and
+	// stays theirs (claude_code_routing.go:172).
+	env["ANTHROPIC_CUSTOM_HEADERS"] = ""
 	env[FacadeSlotEnvKey] = string(slot)
 	return env
 }
@@ -781,6 +790,7 @@ func suppressAnthropicWireEnv() map[string]string {
 	env := clearedAnthropicChannels()
 	env["ANTHROPIC_BASE_URL"] = ""
 	env["ANTHROPIC_AUTH_TOKEN"] = ""
+	env["ANTHROPIC_CUSTOM_HEADERS"] = ""
 	env["CLAUDE_CONFIG_DIR"] = suppressedForfaitDir
 	// Marker every iterion-internal reader of CLAUDE_CONFIG_DIR tests
 	// before treating it as a real OAuth forfait — providerFingerprint

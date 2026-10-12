@@ -303,7 +303,7 @@ An LLM node's answer is held to its `output:` schema at the end of its turn. Whe
 | `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
 
-`{{outputs.<node>.<field>}}` is readable from **any** node that runs after the producer — in a prompt, a command, an expression or a fail message — with no `with` threading; `{{input.<field>}}` only carries what the node's own `input:` schema declares and the incoming edge `with` mapped. Thread through `with` when a value must travel under a chosen name (a loop feedback field, a fan-out item); read `outputs.*` directly otherwise.
+`{{outputs.<node>.<field>}}` is readable from **any** node that runs after the producer — in a prompt, a command, an expression or a fail message — with no `with` threading; `{{input.<field>}}` only carries what the node's own `input:` schema declares and the incoming edge `with` mapped. Thread through `with` when a value must travel under a chosen name (a loop feedback field, a fan-out item); read `outputs.*` directly otherwise. An `{{input.X}}` **no** incoming edge maps is a compile-time warning (**C308**, the field is empty on every path); one another incoming edge maps — a loop's back-edge, a sibling `when` path — is legitimate and empty on those other paths only, which the dry run names as its own `unmapped_on_path` finding (a warning) while the never-mapped case stays `unresolved_ref`.
 
 `fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution. In a tool `command` or `script`, `{{!input.field}}` is the explicit raw-substitution form; ordinary `{{input.field}}` is shell-escaped. Use the raw form only when the value is intentionally executable shell syntax, because it crosses the command-injection boundary.
 
@@ -1152,8 +1152,9 @@ provider did not report in full is counted apart. Two causes:
 
 - A provider that sends no usage at all. On the OpenAI chat wire, usage
   is sent only when requested, and claw requests it from api.openai.com
-  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked,
-  so its calls count as unreported unless it sends usage anyway.
+  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked
+  unless the operator opted it in (`ITERION_OPENAI_STREAM_USAGE=1`), so its
+  calls count as unreported unless it sends usage anyway.
 - A call that ended before its final account: a cut, a stall, a failure
   frame carrying none, or a request abandoned unanswered by the cold-stream
   watchdog. A request the provider refused before serving any of it — a
@@ -1319,6 +1320,8 @@ A loop back-edge does not count toward [C010](references/diagnostics.md) (one un
 A bounded loop or foreach may live wholly inside one `fan_out_all`, `fan_out_each`, or `llm` `multi: true` branch. Every branch/item owns independent counters, loop snapshots, outputs, artifact allocations, and a durable cursor; siblings may therefore finish after different numbers of iterations, and a restart or human pause resumes the same local scope without replaying completed iterations. The collector becomes ready only after those local lifecycles terminate, under the existing `wait_all` / `best_effort` policy.
 
 **C244** is reserved for iteration with no unambiguous owner: an iteration edge on the fan-out router, a back-edge from the collector into a body (`join -> a1 as more`), a cycle crossing sibling branches, or a shared-node shape owned by more than one branch. A loop that wraps the fan-out from the join (`join -> router as outer(N)`) remains a normal trunk loop. Use a `subbot` when independent budgets, workspace isolation, or a reusable capability boundary are desired—not merely to obtain per-item counters. See [composition/iteration/sub-bots](groups-iteration-subbots.md).
+
+**A loop cap — or a `foreach` — on a `round_robin` or `llm` router's outgoing edge is refused** at compile time ([C309](references/diagnostics.md)): those routers select their target on their own (`round_robin` alternates over its unconditional edges, `llm` takes the target the model named) without going through the loop-aware evaluator, so `as spin(N)` — or `as foreach spin(item in …)` — on such an edge would silently do nothing. Put the loop on the edge that re-enters the router — that edge does go through the evaluator, honours the cap, and wants the exhaustion exit [C145](references/diagnostics.md) asks for.
 
 Terminal targets `done` and `fail` are reserved and are never declared.
 

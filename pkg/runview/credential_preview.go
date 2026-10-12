@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // CredentialPreviewSource names a real launch surface. Identity and overrides
@@ -18,6 +20,11 @@ type CredentialPreviewSource struct {
 type CredentialPreviewRequest struct {
 	Source CredentialPreviewSource `json:"source"`
 	BotID  string                  `json:"bot_id,omitempty"`
+	// LLMRouting is the RUN level of the adaptive-routing policy the
+	// caller is about to launch with (ADR-121) — folded as the HEAD
+	// Launcher layer so the preview's whitelist answers the launch the
+	// operator shapes, not the launch the defaults would make. Optional.
+	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
 }
 
 type CredentialPreviewContext struct {
@@ -79,6 +86,16 @@ type CredentialPreviewPool struct {
 	Considered bool     `json:"considered"`
 	Reason     string   `json:"reason,omitempty"`
 	Wants      []string `json:"wants"`
+	// DoorWants/DoorReason are the routing fallback door's state
+	// (ADR-121 § Delivery 2, slice 5): the credential kinds the run's
+	// own set lacks that its policy ladder would dispatch, and what the
+	// donor-consented pool answers for them — computed OUTSIDE the tier
+	// walk (the pool block above stays bypassed for these runs by the
+	// plan), by the same derivation the live consult runs. Empty when
+	// the door never arms: no policy, no held credential of its own, or
+	// no missing dispatchable kind.
+	DoorWants  []string `json:"door_wants,omitempty"`
+	DoorReason string   `json:"door_reason,omitempty"`
 }
 
 type CredentialPreview struct {
@@ -96,6 +113,12 @@ type CredentialPreviewSpec struct {
 	Context CredentialPreviewContext
 	OwnerID string
 	Launch  LaunchSpec
+	// LLMRoutePolicy is the launch's RESOLVED adaptive-routing policy
+	// (ADR-121 §1) — resolved by the server exactly as the launch site
+	// would, so the preview's whitelist answers what the launch will seal
+	// (the parity doctrine: fill, restore and preview apply the same
+	// answer). Nil = the launch is unwired; everything is sealable.
+	LLMRoutePolicy *store.RunLLMRoutePolicy
 }
 
 type CredentialPreviewer interface {

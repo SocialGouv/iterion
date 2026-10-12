@@ -24,8 +24,9 @@ import (
 // (per-pod sequential loop + run lock); the store's unique
 // (run_id, offset) index is the safety net.
 //
-// Failure policy: a flush retries a few times with a short backoff and
-// then DROPS the batch loudly (ERROR log + dropped-bytes counter) —
+// Failure policy: a flush retries a few times with a short backoff, each
+// append on its own bound (runLogAppendTimeout), and then DROPS the batch
+// loudly (ERROR log + dropped-bytes counter) —
 // the log stream is a derived observability view of the run, and
 // killing or stalling a paid LLM run because the store hiccuped on a
 // log chunk would be disproportionate. The degradation is explicit,
@@ -53,6 +54,20 @@ const (
 	runLogFlushBytes    = 32 * 1024
 	runLogFlushInterval = 500 * time.Millisecond
 	runLogFlushRetries  = 3
+	// runLogRetryPause is the pause before a flush's second attempt; the
+	// n-th retry waits n of them.
+	runLogRetryPause = 100 * time.Millisecond
+	// runLogAppendTimeout bounds each append of a batch. A store that stops
+	// answering costs the batch its attempts, then the batch is dropped —
+	// never a flusher, or the run's end that waits on its last flush, held
+	// for as long as the store stays silent. Wide enough for a failover.
+	runLogAppendTimeout = 10 * time.Second
+	// runLogFlushBudget bounds one flush: every attempt at its bound, and
+	// the pauses between them.
+	runLogFlushBudget = runLogFlushRetries*runLogAppendTimeout + runLogFlushRetries*(runLogFlushRetries-1)/2*runLogRetryPause
+	// runLogCloseBudget bounds Close: the flush in flight when it is called,
+	// then the flush of the tail.
+	runLogCloseBudget = 2 * runLogFlushBudget
 )
 
 // registerLogWriter exposes the run's writer to the store's
@@ -232,17 +247,24 @@ func (w *runLogWriter) flush() {
 	for attempt := 0; attempt < runLogFlushRetries; attempt++ {
 		if attempt > 0 {
 			select {
-			case <-time.After(time.Duration(attempt) * 100 * time.Millisecond):
+			case <-time.After(time.Duration(attempt) * runLogRetryPause):
 			case <-w.ctx.Done():
 				// Identity ctx cancelled (process shutdown) — one last
 				// immediate attempt below, then drop.
 			}
 		}
-		if err = w.store.AppendRunLog(w.ctx, w.runID, off, data); err == nil {
+		if err = w.append(off, data); err == nil {
 			return
 		}
 	}
 	w.dropped += int64(len(data))
 	w.logger.Error("runner: run %s: DROPPING %d log bytes at offset %d after %d attempts: %v (total dropped this run: %d)",
 		w.runID, len(data), off, runLogFlushRetries, err, w.dropped)
+}
+
+// append persists one batch at off, within runLogAppendTimeout.
+func (w *runLogWriter) append(off int64, data []byte) error {
+	ctx, cancel := context.WithTimeout(w.ctx, runLogAppendTimeout)
+	defer cancel()
+	return w.store.AppendRunLog(ctx, w.runID, off, data)
 }

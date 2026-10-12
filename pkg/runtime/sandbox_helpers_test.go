@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
@@ -14,7 +16,7 @@ import (
 // Complementary coverage for sandbox.go pure helpers not already
 // exercised by sandbox_internal_test.go. Focus: containsClawNode,
 // backendIsClaw, cloneStringMap, fromIRSpec, ResolveNetworkPolicy,
-// engineRepoRoot. End-to-end startSandbox / shutdown remain
+// EngineRepoRoot. End-to-end startSandbox / shutdown remain
 // integration-only because they require docker/k8s.
 
 func TestBackendIsClaw(t *testing.T) {
@@ -273,19 +275,19 @@ func TestResolveNetworkPolicy_CustomPresetReplacesDefault(t *testing.T) {
 }
 
 func TestEngineRepoRoot_NonEmptyWorkDirPassesThrough(t *testing.T) {
-	// engineRepoRoot returns workDir verbatim when non-empty (and not
+	// EngineRepoRoot returns workDir verbatim when non-empty (and not
 	// inside a worktree subdirectory — that fallback is exercised when
 	// .git is a file pointing into a worktrees subdir, which we don't
 	// stage here).
 	tmp := t.TempDir()
-	got := engineRepoRoot(tmp)
+	got := EngineRepoRoot(tmp)
 	if got != tmp {
 		t.Errorf("got %q, want %q", got, tmp)
 	}
 }
 
 func TestEngineRepoRoot_EmptyWorkDirFallsBackToCwd(t *testing.T) {
-	got := engineRepoRoot("")
+	got := EngineRepoRoot("")
 	// Either matches the current working directory, or empty when os.Getwd
 	// itself fails — but in a healthy test environment we expect cwd.
 	cwd, err := os.Getwd()
@@ -298,37 +300,27 @@ func TestEngineRepoRoot_EmptyWorkDirFallsBackToCwd(t *testing.T) {
 }
 
 func TestEngineRepoRoot_WorktreeLayoutResolvesToOriginRepo(t *testing.T) {
-	// Build a minimal worktree-layout fixture:
-	//   <tmp>/origin/.git/worktrees/feat-x/
-	//   <tmp>/origin/.git/HEAD                  ← marks origin as a repo
-	//   <tmp>/feat-x/.git                       ← gitdir-pointer file
+	// A real worktree layout — git(1) builds it, because the pointer walk
+	// behind EngineRepoRoot sanity-checks the origin with `git rev-parse`,
+	// which a hand-written .git skeleton does not survive.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on PATH")
+	}
 	tmp := t.TempDir()
 	origin := filepath.Join(tmp, "origin")
 	worktree := filepath.Join(tmp, "feat-x")
-	originGitWorktreeDir := filepath.Join(origin, ".git", "worktrees", "feat-x")
-	if err := os.MkdirAll(originGitWorktreeDir, 0o755); err != nil {
+	if err := os.MkdirAll(origin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(worktree, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Origin .git/HEAD anchors the repo discovery.
-	if err := os.WriteFile(filepath.Join(origin, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// The worktree's .git is a file pointing into the origin's
-	// .git/worktrees/<name> directory — git's stable layout.
-	pointer := []byte("gitdir: " + originGitWorktreeDir + "\n")
-	if err := os.WriteFile(filepath.Join(worktree, ".git"), pointer, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	gittest.InitRepo(t, origin)
+	gittest.Run(t, origin, "worktree", "add", "--quiet", worktree)
 
-	got := engineRepoRoot(worktree)
-	// If the implementation walks the pointer to reach origin, we get
-	// origin. Otherwise the function returns the worktree as-is — both
-	// are valid implementations of "where should devcontainer.json
-	// lookup happen?", so accept either.
-	if got != worktree && got != origin {
-		t.Errorf("got %q, want %q or %q", got, worktree, origin)
+	got := EngineRepoRoot(worktree)
+	// The engine's own worktree path resolves to the origin repo
+	// (wtCtx.repoRoot is gitlib.FindMainRepoRoot); this helper must agree,
+	// because the runner's secret gate and runview's fallback screen call
+	// it to predict what the engine will do.
+	if got != origin {
+		t.Errorf("got %q, want origin repo %q", got, origin)
 	}
 }

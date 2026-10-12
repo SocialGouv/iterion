@@ -340,10 +340,7 @@ type RunBudgetOverridesPatcher interface {
 }
 
 func AsRunBudgetOverridesPatcher(s RunStore) RunBudgetOverridesPatcher {
-	if p, ok := s.(RunBudgetOverridesPatcher); ok {
-		return p
-	}
-	return nil
+	return capability[RunBudgetOverridesPatcher](s)
 }
 
 // QueuedAttemptStore is the optional atomic guard used when a queue delivery
@@ -368,11 +365,7 @@ type QueuedAttemptStore interface {
 // for third-party stores. Callers must fail safe when it is absent rather
 // than falling back to a status-only write that can clobber a newer attempt.
 func AsQueuedAttemptStore(s RunStore) QueuedAttemptStore {
-	if s == nil {
-		return nil
-	}
-	q, _ := s.(QueuedAttemptStore)
-	return q
+	return capability[QueuedAttemptStore](s)
 }
 
 // QueuedResumeReleaser puts a resume nobody claimed back where it came from.
@@ -390,11 +383,114 @@ type QueuedResumeReleaser interface {
 // AsQueuedResumeReleaser returns the release capability, or nil for a store
 // that has none: the run then stays queued, as it did before the capability.
 func AsQueuedResumeReleaser(s RunStore) QueuedResumeReleaser {
-	if s == nil {
-		return nil
+	return capability[QueuedResumeReleaser](s)
+}
+
+// QueuedFlip is a resume's flip of a run to queued: the attempt marker it
+// stamped, and what the run was before it — what a resume refused before
+// its publication puts back.
+type QueuedFlip struct {
+	// At is the QueuedAt the flip stamped (QueuedFlipAt): this flip's own
+	// marker, which its revert matches so it never reverts another flip.
+	At time.Time
+	// Prior is what the flip replaced, read in the same atomic operation.
+	Prior QueuedFlipPrior
+}
+
+// QueuedFlipPrior is what a flip to queued, and the resume behind it,
+// replace on a run: its status, the previous attempt's marker, the outcome
+// bookkeeping of the state it leaves — the failure, its code and end reason,
+// the episode, the continuation, the end time — and the recorded source the
+// resume stamps before its publication (the rewind baseline).
+type QueuedFlipPrior struct {
+	Status            RunStatus
+	QueuedAt          *time.Time
+	Error             string
+	FailureCode       FailureCode
+	EndReason         RunEndReason
+	OutcomeSeq        int64
+	ContinuationState ContinuationState
+	FinishedAt        *time.Time
+	WorkflowSource    string
+	WorkflowSources   []WorkflowSourceFile
+	WorkflowHash      string
+}
+
+// QueuedFlipAt is the attempt marker a flip stamps at t: UTC, to the
+// millisecond — the precision every store reads back exactly as it wrote
+// it, so a revert's match on it is exact.
+func QueuedFlipAt(t time.Time) time.Time { return t.UTC().Truncate(time.Millisecond) }
+
+// NextQueuedAt is the marker a newly queued attempt takes: its flip's
+// instant, but never at or before the attempt it replaces — the first
+// millisecond a run's prior marker occupies is that attempt's, and a
+// revert's match on its own marker can then never match a later flip's.
+// The marker keeps QueuedFlipAt's precision; prior is the marker being
+// replaced, nil when the run has none.
+func NextQueuedAt(at time.Time, prior *time.Time) time.Time {
+	m := QueuedFlipAt(at)
+	if prior != nil {
+		if next := prior.Truncate(time.Millisecond).Add(time.Millisecond); next.After(m) {
+			m = next
+		}
 	}
-	q, _ := s.(QueuedResumeReleaser)
-	return q
+	return m
+}
+
+// PublishAt is a message's published_at for an attempt whose identity
+// instant is notBefore — the run's marker, or the instant the lease its
+// grant opened was acquired: now, but never inside notBefore's
+// millisecond. What the publication follows is then strictly earlier at
+// the precision every store keeps, and the identity comparisons that read
+// the pair — a delivery against its run's marker, a spend report against
+// its lease — never meet a tie.
+func PublishAt(now, notBefore time.Time) time.Time {
+	if floor := notBefore.Truncate(time.Millisecond).Add(time.Millisecond); floor.After(now) {
+		return floor
+	}
+	return now
+}
+
+// QueuedFlipper flips a run to queued for a resume, and undoes that flip —
+// that one only — when the resume is refused before its publication.
+type QueuedFlipper interface {
+	// FlipToQueued moves the run from `from` to queued, its attempt marker
+	// stamped at NextQueuedAt(at, the marker it replaces), and returns what
+	// the run was before, read in the same atomic operation. changed=false
+	// when the run is not `from`.
+	FlipToQueued(ctx context.Context, id string, from RunStatus, at time.Time) (flip QueuedFlip, changed bool, err error)
+	// RevertQueuedFlip puts flip.Prior back — only while the run is still
+	// queued with flip.At as its marker: a run claimed, cancelled, or queued
+	// again by another resume since is left alone. Only a publication makes
+	// a queue attempt, so a delivery of the previous attempt still in flight
+	// must not read as superseded by a flip nothing published, and the run's
+	// episode and continuation are the prior state's, not a new outcome.
+	// runErr, when not empty, replaces the prior error: why the resume was
+	// refused.
+	RevertQueuedFlip(ctx context.Context, id string, flip QueuedFlip, runErr string) (changed bool, err error)
+}
+
+// AsQueuedFlipper returns the flip capability, or nil for a store that has
+// none.
+func AsQueuedFlipper(s RunStore) QueuedFlipper {
+	return capability[QueuedFlipper](s)
+}
+
+// QueuedAttemptClaimer claims a queued run for one delivery's attempt.
+type QueuedAttemptClaimer interface {
+	// ClaimQueuedRunIfAttempt moves a queued run to running — a resume's
+	// claim — only when its current QueuedAt is not newer than the
+	// delivery's PublishedAt: the same attempt identity, in the same atomic
+	// operation, as ReleaseQueuedRunIfAttempt. A run queued again after the
+	// delivery was published is the newer delivery's, with its own
+	// parameters.
+	ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishedAt time.Time) (changed bool, err error)
+}
+
+// AsQueuedAttemptClaimer returns the claim capability, or nil for a store
+// that has none.
+func AsQueuedAttemptClaimer(s RunStore) QueuedAttemptClaimer {
+	return capability[QueuedAttemptClaimer](s)
 }
 
 // PIDStore is an optional interface implemented only by
@@ -413,11 +509,7 @@ type PIDStore interface {
 // files, or nil otherwise. Always check the return for nil before
 // dereferencing — local stores satisfy it, cloud stores do not.
 func AsPIDStore(s RunStore) PIDStore {
-	if s == nil {
-		return nil
-	}
-	p, _ := s.(PIDStore)
-	return p
+	return capability[PIDStore](s)
 }
 
 // QueuedRunCreator is the optional interface for stores that can persist
@@ -439,11 +531,7 @@ type QueuedRunCreator interface {
 // AsQueuedRunCreator returns s as QueuedRunCreator when the backend can
 // persist queued run docs, or nil otherwise. Check for nil before use.
 func AsQueuedRunCreator(s RunStore) QueuedRunCreator {
-	if s == nil {
-		return nil
-	}
-	q, _ := s.(QueuedRunCreator)
-	return q
+	return capability[QueuedRunCreator](s)
 }
 
 // ParentedRunCreator is the optional interface for stores that can persist
@@ -467,11 +555,7 @@ type ParentedRunCreator interface {
 // persist ParentRunID in the create write, or nil otherwise. Check for nil
 // before use.
 func AsParentedRunCreator(s RunStore) ParentedRunCreator {
-	if s == nil {
-		return nil
-	}
-	p, _ := s.(ParentedRunCreator)
-	return p
+	return capability[ParentedRunCreator](s)
 }
 
 // RunFilesStore is an optional interface implemented by stores that
@@ -526,11 +610,7 @@ type RunFileInfo struct {
 // per-run file artifacts, or nil otherwise. Filesystem and Mongo (cloud)
 // stores both satisfy it; third-party stores may not.
 func AsRunFilesStore(s RunStore) RunFilesStore {
-	if s == nil {
-		return nil
-	}
-	f, _ := s.(RunFilesStore)
-	return f
+	return capability[RunFilesStore](s)
 }
 
 // RunFilesUploader is an optional companion to RunFilesStore implemented
@@ -555,11 +635,7 @@ type RunFilesUploader interface {
 // a scratch→durable bridge for artifact files, or nil otherwise (the
 // common case — filesystem stores serve straight from the scratch dir).
 func AsRunFilesUploader(s RunStore) RunFilesUploader {
-	if s == nil {
-		return nil
-	}
-	u, _ := s.(RunFilesUploader)
-	return u
+	return capability[RunFilesUploader](s)
 }
 
 // ToolBlobStore is an optional interface implemented by stores that
@@ -593,11 +669,7 @@ type ToolBlobStore interface {
 // per-tool-call blob persistence, or nil otherwise. Callers MUST
 // nil-check (cloud stores return nil today).
 func AsToolBlobStore(s RunStore) ToolBlobStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(ToolBlobStore)
-	return t
+	return capability[ToolBlobStore](s)
 }
 
 // BackendSessionStore persists packed CLI session files for session: persist
@@ -611,11 +683,24 @@ type BackendSessionStore interface {
 
 // AsBackendSessionStore returns s as BackendSessionStore, or nil.
 func AsBackendSessionStore(s RunStore) BackendSessionStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(BackendSessionStore)
-	return t
+	return capability[BackendSessionStore](s)
+}
+
+// ScratchBankStore keeps a parked run's scratch directory (ADR-106): one
+// gzip'd tar per run, streamed both ways so a large scratch never sits in
+// the runner's memory. Filesystem: runs/<id>/scratch-bank.tgz. Cloud: S3
+// under sessions/<runID>/scratch.tgz, swept with the run's sessions.
+// OpenScratchBank answers an error wrapping os.ErrNotExist when the run
+// has no bank.
+type ScratchBankStore interface {
+	PutScratchBank(ctx context.Context, runID string, body io.Reader, size int64) error
+	OpenScratchBank(ctx context.Context, runID string) (io.ReadCloser, error)
+	DeleteScratchBank(ctx context.Context, runID string) error
+}
+
+// AsScratchBankStore returns s as ScratchBankStore, or nil.
+func AsScratchBankStore(s RunStore) ScratchBankStore {
+	return capability[ScratchBankStore](s)
 }
 
 // RunLogStore is an optional interface implemented by stores that
@@ -645,11 +730,7 @@ type RunLogStore interface {
 // AsRunLogStore returns s as RunLogStore when the backend persists run
 // logs, or nil otherwise. Callers MUST nil-check.
 func AsRunLogStore(s RunStore) RunLogStore {
-	if s == nil {
-		return nil
-	}
-	l, _ := s.(RunLogStore)
-	return l
+	return capability[RunLogStore](s)
 }
 
 // TurnStore is an optional interface implemented by stores that
@@ -700,11 +781,7 @@ type TurnStore interface {
 // AsTurnStore returns s as TurnStore when the backend supports
 // per-LLM-turn checkpointing, or nil otherwise.
 func AsTurnStore(s RunStore) TurnStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(TurnStore)
-	return t
+	return capability[TurnStore](s)
 }
 
 // SpendStore is an optional interface implemented by stores that can
@@ -729,9 +806,5 @@ type SpendStore interface {
 // spend ledger, or nil otherwise. Filesystem stores satisfy it; cloud
 // (Mongo) stores currently do not.
 func AsSpendStore(s RunStore) SpendStore {
-	if s == nil {
-		return nil
-	}
-	sp, _ := s.(SpendStore)
-	return sp
+	return capability[SpendStore](s)
 }

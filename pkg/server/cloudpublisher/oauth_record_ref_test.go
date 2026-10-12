@@ -19,7 +19,7 @@ import (
 var rotatedClaude = map[string]bool{string(secrets.OAuthKindClaudeCode): true}
 
 func TestResolveOAuth_UserAndTeamSlotsNameTheirRecord(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	oauth := secrets.NewMemoryOAuthStore()
 	seedOAuth(t, oauth, sealer, "alice", "sk-ant-personal")
 	seedOAuth(t, oauth, sealer, secrets.OrgOwnerKey("team1"), "sk-ant-team")
@@ -45,7 +45,7 @@ func TestResolveOAuth_UserAndTeamSlotsNameTheirRecord(t *testing.T) {
 }
 
 func TestPlatformTier_oauthSlotNamesItsRecord(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	oauth := secrets.NewMemoryOAuthStore()
 	seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
 	rs := secrets.NewMemoryRunSecretsStore()
@@ -63,7 +63,7 @@ func TestPlatformTier_oauthSlotNamesItsRecord(t *testing.T) {
 
 func TestOrgTier_oauthSlotNamesItsRecord(t *testing.T) {
 	const orgID = "org-1"
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	oauth := secrets.NewMemoryOAuthStore()
 	seedOAuth(t, oauth, sealer, secrets.OrgTierOwnerKey(orgID), "sk-ant-org")
 	p := &Publisher{
@@ -115,7 +115,7 @@ func TestPoolTier_grantNamesTheDonorsRecord(t *testing.T) {
 // record: a run following a record nobody rotates would never renew its
 // token. The runner then refreshes its own copy.
 func TestResolveOAuth_aKindNoWorkerRotatesNamesNoRecord(t *testing.T) {
-	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	oauth := secrets.NewMemoryOAuthStore()
 	seedOAuth(t, oauth, sealer, "alice", "sk-ant-personal")
 	rs := secrets.NewMemoryRunSecretsStore()

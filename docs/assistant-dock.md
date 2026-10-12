@@ -208,7 +208,10 @@ workflow**. Only that second operator gesture sends `force: true`; a model-
 supplied `force` argument is discarded at validation. The intermediate hash
 refusal is not delivered to Copi as a failed action, because waking the chat
 would replace the offer before that second gesture; this remains an operator
-gate even when ordinary resume actions are otherwise auto-authorized.
+gate even when ordinary resume actions are otherwise auto-authorized. `force`
+never accepts the loss of the run's scratch: that refusal
+(`scratch_not_portable`) needs its own consent, `accept_scratch_loss`, which
+no assistant action sends.
 
 `run.rewind` is available as a separate destructive action, with **Always
 ask** as its default policy. Copi must select exactly one target: `auto:true`

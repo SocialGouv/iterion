@@ -98,7 +98,7 @@ func TestExecuteRun_UnloadableIRWritesTheVerdictBeforeReturning(t *testing.T) {
 	}
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.New(iterlog.LevelDebug, nil)}}
 	msg := &queue.RunMessage{RunID: "run-skew-2", WorkflowHash: "e7e2f6e6", IRCompiled: []byte("not json")}
-	execErr := r.executeRun(ctx, msg, nil)
+	execErr := r.executeRun(ctx, msg, nil, nil)
 	if !errors.Is(execErr, ErrIRUnloadable) {
 		t.Fatalf("executeRun err = %v, want ErrIRUnloadable", execErr)
 	}

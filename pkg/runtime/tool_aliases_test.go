@@ -202,6 +202,10 @@ func TestToolAliasesReachClawFallbackAndRecoveryAgent(t *testing.T) {
 		}
 	})
 	t.Run("recovery agent_tools", func(t *testing.T) {
+		// The recovery rung refuses an unfunded DEFAULT model before
+		// dispatching (the funding probe reads the host); this fixture's
+		// backend is a stub, so fund the wire nominally.
+		t.Setenv("ANTHROPIC_API_KEY", "test-funding")
 		workspace, st := aliasFixtureStore(t)
 		backend := &aliasToolBackend{repair: true}
 		const source = `tool repair:

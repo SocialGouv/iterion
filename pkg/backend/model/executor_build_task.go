@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -183,6 +184,24 @@ func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Pol
 		slices.Concat(ir.EffectivePermissionRules(f.permAsk, e.wfPermAsk), e.permAskRules),
 		slices.Concat(ir.EffectivePermissionRules(f.permDeny, e.wfPermDeny), e.permDenyRules),
 	)
+}
+
+// GateCanAsk reports whether the permission gate this executor arms for node
+// can pause the run to ask a human: the policy it builds for the node's task
+// (resolvePermissionPolicy — the run's override, the node's and the
+// workflow's declarations, ITERION_PERMISSION, the run's rules) asked
+// CanAsk. A node the gate does not govern, or whose policy does not build
+// (the node then fails before asking), cannot ask.
+func (e *ClawExecutor) GateCanAsk(node ir.Node) bool {
+	if _, ok := node.(ir.LLMNode); !ok {
+		return false
+	}
+	f, err := extractBackendFields(node)
+	if err != nil {
+		return false
+	}
+	p, err := e.resolvePermissionPolicy(f)
+	return err == nil && p.CanAsk()
 }
 
 // stampDelegateOutputMeta writes per-call observability keys onto the
@@ -954,6 +973,14 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	if strings.TrimSpace(text) == "" {
 		return delegate.Result{}, delegate.Result{}, false
 	}
+	// A gateway-served node's recovery would be a VENDOR call the
+	// deployment never asked for: the detector picks a vendor default,
+	// silently crossing the gateway node's spend to another provider — the
+	// leak #2028 exists to close. Skip, named.
+	if modelroute.Parse(task.Model).Gateway() {
+		e.logger.Warn("[%s] structured-output recovery skipped: the node is served by the OpenAI-compatible gateway, and the recovery would spend a vendor default", nodeID)
+		return delegate.Result{}, delegate.Result{}, false
+	}
 	modelSpec := e.detectorSuggestedModel()
 	if modelSpec == "" {
 		e.logger.Warn("[%s] structured-output recovery skipped: no claw provider detected", nodeID)
@@ -1003,6 +1030,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	}
 	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
+	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
 	return out, meteredFailure(recoveryTask, obj.TotalUsage), true

@@ -981,7 +981,16 @@ func matchOutputNode(wf *ir.Workflow, outputs map[string]map[string]any, path []
 // Coercion is what makes an override usable at all: without it "--var
 // loop_count=3" stores the string "3", and "input.count >= vars.loop_count"
 // aborts the run with an opaque "cannot compare X >= string".
+// ResolveVars is resolveVars for a caller beside the run: the launch
+// surfaces spawn the declared supervisors there, and a supervisor model's
+// {{vars.…}} refs must see the same values the run's nodes see — the
+// defaults and coercions included, not the raw launch overrides.
+func (e *Engine) ResolveVars(inputs map[string]any) map[string]any {
+	return e.resolveVars(inputs)
+}
+
 func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
+
 	vars := make(map[string]any)
 	expandFn := e.varExpandFn()
 	read := func(origin, name string, raw any, vt ir.VarType) any {
@@ -1165,8 +1174,9 @@ func (e *Engine) projectScratchDirVarValue() string {
 	// later as "not enough results" (observed on app-concept: four
 	// topic syntheses written to
 	// /tmp/iterion-scratch/<parent>/topics, none visible at fan-in).
-	// It also makes scratch survive the container, so a crashed run
-	// resumes from its own working state.
+	// It also makes scratch survive the container when the driver can
+	// bind it; where it cannot (kubernetes), the teardown banks it and the
+	// resume restores it instead (ADR-106).
 	if e.containerWorkspace != "" {
 		return sandboxScratchContainerPath
 	}

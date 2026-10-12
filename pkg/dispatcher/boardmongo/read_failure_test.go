@@ -1,7 +1,6 @@
 package boardmongo_test
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // unreachableStore is a real Mongo board whose client is closed: every read
@@ -22,14 +22,20 @@ import (
 // remembered to give it.
 func unreachableStore(t *testing.T) *boardmongo.Store {
 	t.Helper()
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
 	cli, err := mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:1/"))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if err := cli.Disconnect(context.Background()); err != nil {
+	if err := cli.Disconnect(ctx); err != nil {
 		t.Fatalf("disconnect: %v", err)
 	}
-	t.Cleanup(func() { _ = cli.Disconnect(context.Background()) })
+	t.Cleanup(func() {
+		c, cc := mongotest.TeardownCtx()
+		defer cc()
+		_ = cli.Disconnect(c)
+	})
 	return boardmongo.New(cli.Database("iterion_read_failure"), "t1")
 }
 

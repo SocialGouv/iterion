@@ -108,3 +108,18 @@ func TestReapRunnerComparesPid(t *testing.T) {
 		t.Fatalf("own .pid should be removed after reap: pid=%d err=%v", pid, err)
 	}
 }
+
+// TestBuildRunnerArgsResumeCarriesTheScratchsConsent: an agent's resume
+// forwards the consent to the scratch's loss only when given it; force does
+// not imply it.
+func TestBuildRunnerArgsResumeCarriesTheScratchsConsent(t *testing.T) {
+	for _, accept := range []bool{false, true} {
+		args, err := buildRunnerArgs(runnerSpec{Command: runnerCommandResume, RunID: "rid", FilePath: "/w/main.bot", Force: true, AcceptScratchLoss: accept})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(strings.Join(args, " "), "--accept-scratch-loss"); got != accept {
+			t.Fatalf("accept=%v: argv %q carries --accept-scratch-loss = %v", accept, args, got)
+		}
+	}
+}

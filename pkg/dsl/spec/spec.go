@@ -295,28 +295,27 @@ var (
 
 // Properties shared by every node kind that produces or consumes data.
 var (
-	pInput           = prop("input", Ident, "Schema the node's input is validated against")
-	pOutput          = prop("output", Ident, "Schema the node's structured output must match")
-	pPublish         = prop("publish", Ident, "Artifact name the output is published under (read back as {{artifacts.<name>}})")
-	pArtifactLabels  = prop("artifact_labels", ToolList, "Labels stamped on the published artifact; a quoted element is the literal label")
-	pAwait           = enum("await", "Convergence rule when several incoming branches reach the node", "wait_all", "best_effort")
-	pDescription     = prop("description", String, "Free-text description shown by the studio and the reports")
-	pNeeds           = prop("needs", IdentOrList, "Resource(s) leased from the workflow's resources: block for the node's duration")
-	pModel           = word(prop("model", String, "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
-	pBackend         = word(prop("backend", String, "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
-	pProvider        = word(prop("provider", String, "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
-	pSupervisorModel = word(prop("model", String, "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars"))
-	pSystem          = prop("system", PromptRef, "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)")
-	pUser            = prop("user", PromptRef, "The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)")
-	pTimeout         = word(prop("timeout", String, "Duration the node may run, e.g. \"20m\""))
-	pCompress        = checked("compress", "Command-output compression: on, ultra or off (C102)", "on", "ultra", "off")
-	pPermission      = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
-	pAutoMemory      = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
-	pAmbientContext  = checked("ambient_context", "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)", "none", "workspace", "operator", "all")
-	pInteraction     = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
-	pInteractionP    = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
-	pInteractionM    = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
-	pReasoning       = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"},
+	pInput          = prop("input", Ident, "Schema the node's input is validated against")
+	pOutput         = prop("output", Ident, "Schema the node's structured output must match")
+	pPublish        = prop("publish", Ident, "Artifact name the output is published under (read back as {{artifacts.<name>}})")
+	pArtifactLabels = prop("artifact_labels", ToolList, "Labels stamped on the published artifact; a quoted element is the literal label")
+	pAwait          = enum("await", "Convergence rule when several incoming branches reach the node", "wait_all", "best_effort")
+	pDescription    = prop("description", String, "Free-text description shown by the studio and the reports")
+	pNeeds          = prop("needs", IdentOrList, "Resource(s) leased from the workflow's resources: block for the node's duration")
+	pModel          = word(prop("model", String, "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pBackend        = word(prop("backend", String, "Execution backend: claw, claude_code, codex, pi, kimi, grok or opencode; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pProvider       = word(prop("provider", String, "Provider hint for credential resolution, e.g. \"anthropic\"; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pSystem         = prop("system", PromptRef, "The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)")
+	pUser           = prop("user", PromptRef, "The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body)")
+	pTimeout        = word(prop("timeout", String, "Duration the node may run, e.g. \"20m\""))
+	pCompress       = checked("compress", "Command-output compression: on, ultra or off (C102)", "on", "ultra", "off")
+	pPermission     = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
+	pAutoMemory     = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
+	pAmbientContext = checked("ambient_context", "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)", "none", "workspace", "operator", "all")
+	pInteraction    = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
+	pInteractionP   = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
+	pInteractionM   = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pReasoning      = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"},
 		Doc: "Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
 	pSandbox = Property{Name: "sandbox", Form: BlockOrIdent, Body: "sandbox", Values: []string{"none", "auto"},
 		Doc: "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"}
@@ -386,10 +385,10 @@ var Kinds = append([]Kind{
 	{Name: "cursor.bands", Role: BlockRole, Opener: "bands", Hosts: []string{"cursor"}, Doc: "The numeric bands of a cursor.",
 		Entries: &Entries{Key: String, KeyName: "lo..hi", Doc: "The range is parsed by the compiler (C085 when malformed)",
 			Fields: []Field{field("prompt", String, `"prompt fragment"`, "The fragment appended to the system prompt when the position falls in the band")}}},
-	{Name: "supervisor", Role: Declaration, Doc: "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+	{Name: "supervisor", Role: Declaration, Doc: "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
 		Properties: []Property{
 			prop("watches", IdentList, "Agent nodes the supervisor is armed for"),
-			pSupervisorModel,
+			pModel,
 			pSystem,
 			word(prop("cooldown", String, "Minimum delay between two evaluations, e.g. \"2m\"")),
 			prop("max_evals", Int, "Upper bound on evaluations per run"),
@@ -606,6 +605,7 @@ var Kinds = append([]Kind{
 			prop("max_tokens", Int, "Total token cap"),
 			prop("warn_tokens", Int, "Advisory: crossing it emits budget_warning"),
 			prop("max_iterations", Int, "Total node executions; also the fuel of an unbounded loop (C097)"),
+			enum("on_exceeded", "What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word)", "fail", "pause"),
 		}},
 	{Name: "resources", Role: BlockRole, Opener: "resources", Hosts: []string{"workflow"}, Doc: "Named resources nodes lease with needs:.",
 		Entries: &Entries{Key: Ident, Doc: "A count is a semaphore; a quoted list is a pool whose members are leased one at a time",

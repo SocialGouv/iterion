@@ -309,7 +309,7 @@ func projectDiagnosticDetails(data map[string]any) map[string]string {
 	keys := []string{
 		"code", "error", "phase", "reason", "resumable", "interrupted",
 		"retry_after", "attempt", "max_attempts", "delay_ms", "reset_source",
-		"kind", "axis", "budget_pct", "detail",
+		"kind", "axis", "budget_pct", "detail", "hint", "also_needs_force",
 	}
 	out := make(map[string]string, len(keys))
 	for _, key := range keys {

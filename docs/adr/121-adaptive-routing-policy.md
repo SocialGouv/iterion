@@ -25,7 +25,7 @@ The operator's decision (2026-09-30, on epic #2000): routing becomes a **policy,
 
 - **platform** — the settings record the facade and keys-first knobs already ride;
 - **the shipped `.bot`** — a `routing:` block in the manifest (orchestration, not workflow semantics — the same rule ADR-087's alternative 6 set for `retry:`). Written by the AUTHOR, who may have tuned and tailored the bot to a model: this level is settable **and lockable by the author**;
-- **the bot binding** — the provisioned instance of that bot on a team/repo. Written by whoever provisions it, it overrides every UNLOCKED field of the shipped bot: deployment context outranks shipped content, and the author's lock is what stops it (the same gesture as `strict`). It rides the EXISTING bot-bindings store — no new collection;
+- **the bot binding** — the provisioned instance of that bot on a team/repo. Written by whoever provisions it, it overrides every UNLOCKED field of the shipped bot: deployment context outranks shipped content, and the author's lock is what stops it (the same gesture as `strict`). it rides the EXISTING provisioning records — no new collection. *(Carrier amended 2026-10-04, slice 2: the "bot-bindings store" named here is in the code the bot-SECRET-binding credentials record, which holds no policy; the binding level rides the launch-surface records the retry chain already called binding-level — the schedule row, the trigger subscription, the webhook config — so one bot on one team may hold one binding policy per provisioning surface, and each launch reads the record that launched it.)*
 - **run** — launch fields;
 - org and team are **delivery 2**: they are greenfield — `identity` records are directory entries, admission lists are not settings, and each level means a new collection, API routes, an RBAC answer to "who is an org admin", tenancy threading, CAS and preview support. Named, costed, sequenced — not smuggled into "four of them new".
 
@@ -84,7 +84,7 @@ Resume classifies every policy field as **identity or volatile**: identity field
 - **Cost is automatic by default** — every allowed fallback is attempted, a subscription may spend as extra usage (claw on a Claude forfait), and the governing tool is the lock, not an opt-in. The operator's explicit stance, recorded.
 - **Every switch is said**: audit lines at launch selection and at each in-run de-order, the resolved pair and its provenance in the run document, the spend on the serving credential.
 - **The fold is pure; the walk is not**: the policy fold is table-testable; the resolution is tested by properties over injected probes — fill/restore/preview/launch-gate agreement, and `spendableProviders`/`wantsFor`/`derivePinnedProviders` reading the same rewritten program.
-- **Delivery 1 is platform + the shipped bot + the bot binding + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are. The binding level rides the existing bot-bindings store.
+- **Delivery 1 is platform + the shipped bot + the bot binding + run.** Org and team are delivery 2 with their stores, API, RBAC and audit named as the cost they are. The binding level rides the existing provisioning records (see the § Decision levels carrier amendment).
 - **Testing obligation**: fold tables; pair-selection tests against seeded bundles; switch tests against window states; the parity property asserted for the policy-resolved answer; mutation-checked like #1998/#2038.
 
 ## Arbitrated (the operator, 2026-10-02)
@@ -104,4 +104,95 @@ Resume classifies every policy field as **identity or volatile**: identity field
 
 ## Out of scope (later deliveries)
 
-Cross-harness relaunch with transcript handoff (delivery 2 on this foundation: the pair order, the triggers and the levels are its vocabulary). Org and team levels (delivery 2, costed above).
+Delivery 2 — org and team levels, per-level model classes, cross-harness relaunch with transcript handoff, and the re-dated pool door — has its contract in § Delivery 2 (below).
+
+## Delivery 2 (amended 2026-10-05, slice 1 of #2210)
+
+The § Out of scope items land under this section's contract, which their tests
+cite. Shipped when the section says so; described here so each slice's
+arbitration is named where the flipped tests point.
+
+### Org and team levels
+
+The chain gains the two greenfield levels: platform < org < team < shipped bot
+< bot binding < run. Each level is one policy document per tenant in its own
+collection (`llm_routing_policies`, doc ids `org:<id>` / `team:<id>`), with
+compare-and-set on `updated_at` from day one and its own validated write
+surface (org admin / team admin, audit rows, a 409 on a lost race). The fold
+reads them between the bot and the platform layer.
+
+- **Fail-closed, scoped**: an unreadable ORG or TEAM record refuses the launch
+  (a read failure must never lift cost governance), and so does a team whose
+  org cannot be resolved. The BOT layer keeps its delivered fail-open shape
+  (an unresolvable manifest folds to the levels below) — this posture does not
+  change it. Absence is not failure: a missing record or an org-less team is
+  an absent level.
+- **No resolver, no TTL**: the platform record earns its 30-second resolver
+  because the publisher polls it per launch and serve-stale is the availability
+  trade it chose. The tenant levels are one bounded point read per launch, and
+  an outage refuses instead of serving stale — serve-stale would lift
+  governance on a blip.
+- **Lock doctrine, as delivered** (this is `Resolve`'s semantics, now named):
+  a lock at a level vetoes every MORE SPECIFIC level's setter and answers
+  at-or-below itself. A team lock does NOT bind the org below it — the org's
+  value answers with its own provenance. Only the platform's lock binds every
+  tenant-configurable level, because nothing answers below it. The platform's
+  triggers stay the ceiling: org and team may narrow, never extend.
+- The run snapshot's provenance map gains the `team` and `org` labels; the
+  snapshot, the resume replay and the publisher consumption are unchanged.
+- Named, not changed: a manual retry of a webhook/schedule run folds the
+  RETRYER's tenant policy (the fold is a function of the launching tenant —
+  pre-existing shape, the tenant levels give it weight); and a team moving
+  orgs between the fold's two reads can fold team:X + org:A once, healing at
+  the next launch. No transaction is asked for either.
+
+### Per-level model classes
+
+`model_classes` extends the MODEL REGISTRY's vocabulary (the classes —
+`top`/`standard`/`fast` — and the shipped per-family table live in
+`pkg/llmroute`, beside the crossing default they generalize: the fold is a
+zero-dependency leaf and the table is table-testable because of it;
+modelcatalog's display binding is a named follow-up), and each policy level
+carries OVERRIDES: a
+class → family → model map folded ENTRY-WISE per class×family (the opposite
+of `pair_order`'s wholesale replace — the rule is stated per field, here). A
+cell that resolves nowhere on its family leaves the route as written, warned
+and named at the drop; unknown family or model spellings are accepted on
+write and warned at consumption. Locks bind the whole block.
+
+### Cross-harness relaunch with transcript handoff
+
+The policy field is `cross_harness: off|reuse|restart` — FLAT, deviating from
+the design ticket's `fallback.cross_harness`: delivery 1 shipped flat keys and
+exact-name locks, and a dotted key would introduce a second namespace
+convention one field before any `fallback.*` sibling exists. First-setter-
+wins like `refused_pinned_key`; lockable; NOT ceilinged (the ceiling stays
+triggers-only — the operator's veto here is the lock, not a prune).
+
+- **The session contract's THIRD state** (this amends §2's "a cross-BACKEND
+  switch evicts the session"): under `reuse` or `restart`, a cross-harness
+  fall-through on a session-bearing node REPLACES the session, said on the
+  `model_fallback` line with the handoff state — it is neither kept (one
+  provider's turns are never replayed into a harness that never issued them)
+  nor silently evicted. Under `off` (the default), delivery 1's refusal
+  stands byte-identical. Every other screen predicate — the C176 ask-rules,
+  tools inversion, unresolvable tools, codex under a sandbox — stands under
+  every value.
+- `reuse` = the fresh harness CONTINUES the node mid-work: the sealed
+  transcript is the continuation's input. `restart` = the node relaunches
+  from its ORIGINAL prompt, transcript as reference (arbitrated 2026-10-05).
+  The transcript is a read-only, harness-neutral rendering of the run's own
+  `assistant_text` / `tool_called` / `llm_step_finished` events, scoped to
+  the failed node, sealed into the run's shared scratch area and attached as
+  `Task.Handoff` where continuity is cleared today. The workspace is
+  unchanged (executor-level by construction).
+
+### The per-family pool fallback door
+
+§ Arbitrated 4 placed the door in the FIRST delivery; it was never coded (the
+delivery-1 slice notes listed it as "pool door (5)", deliberately out, and
+#2126 closed without it). Owned here and RE-DATED: delivery 2, slice 5 — the
+donor-facing fallback-usable consent, the per-family consult on a fired
+trigger when no owned credential serves it, the whole-bundle gate unchanged
+on the non-fallback path. Never silently re-dated; this paragraph is the
+record.

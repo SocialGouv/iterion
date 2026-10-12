@@ -26,10 +26,12 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -122,13 +124,40 @@ type ExecutorSpec struct {
 	// explicitly and win over the node's DSL backend:/model:, so a run can
 	// re-target the bot per node-group without editing the .bot. Empty = no-op.
 	ModelOverrides model.ModelOverrides
+	// PolicyLadder is the adaptive-routing policy's computed ladder
+	// (ADR-121 §1): the held (harness, credential) pairs in policy order,
+	// applied through ir.ApplyPolicyLadder's screen right after
+	// RunFallback's. The stages carry no model — the crossing maps EACH
+	// node's own model at materialization. Cloud only: a local launch
+	// seals no channels, so no ladder exists to apply.
+	PolicyLadder []ir.PolicyLadderStage
+	// LLMRouteTriggers is the run's RESOLVED adaptive-routing trigger set
+	// (ADR-121, the launch-frozen snapshot) — threaded to the executor so
+	// the route cooldown ledger arms the categories the policy names
+	// (auth: run-long) on EVERY node of the run, judges and authored-route
+	// agents included.
+	LLMRouteTriggers []string
+	// LLMRouteClasses is the run's RESOLVED model_classes overrides
+	// (ADR-121 § Delivery 2) — the crossings' class targets. Nil = the
+	// shipped table (ResolveClasses substitutes it; StageModel never sees
+	// an empty table).
+	LLMRouteClasses map[string]map[string]string
+	// LLMRouteCrossHarness is the run's RESOLVED cross-harness posture
+	// (ADR-121 § Delivery 2): "off" (the empty-on-ignore default) or an
+	// active mode. An ACTIVE mode is what constructs the run's handoff
+	// recorder — the run-level consumer the posture waited for — and
+	// wraps the store emitter so the neutral event types buffer for the
+	// crossings to seal. Off constructs nothing.
+	LLMRouteCrossHarness string
 	// SandboxOverride and SandboxDefault are the deployment tiers the
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
 	// ITERION_SANDBOX_DEFAULT snapshot). BuildExecutor feeds them to
-	// runtime.WorkflowSandboxActive so the fallback screen refuses codex
+	// runtime.RunWillBeSandboxed so the fallback screen refuses codex
 	// stages on exactly the runs the engine will sandbox — the same
-	// precedence, never a parallel resolution.
+	// precedence AND the same driver probe, never a parallel resolution
+	// (a mode-only reading refused codex on `sandbox: auto` runs the
+	// host had degraded to unsandboxed — #1564).
 	//
 	// They also arm the MCP manager's launcher-start policy. A spec that
 	// leaves them empty when the run may in fact be sandboxed is not a
@@ -145,6 +174,14 @@ type ExecutorSpec struct {
 	// question fails CLOSED: a surface that did not look must not be
 	// read as one that looked and found no sandbox.
 	SandboxTiersKnown bool
+	// SandboxDrivers is the driver set the fallback screen's sandbox
+	// probe (runtime.RunWillBeSandboxed) selects from. Nil — every
+	// production caller — means the shipped registry, the same default
+	// the engine selects its driver from (runtime.WithSandboxDrivers is
+	// the engine-side twin of this seam). Set it in tests to pin the
+	// host's driver answer, which is otherwise whatever this machine
+	// happens to have installed.
+	SandboxDrivers map[string]sandbox.DriverConstructor
 
 	// RunFallback is the operator's ordered run-level fallback chain
 	// (studio Launch row / CLI --fallback). Empty = none.
@@ -354,12 +391,38 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// existed to survive. The refusal now also lands on the run's timeline
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
-	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback,
-		runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault),
-		spec.Vars)
+	sandboxedHere := runtime.RunWillBeSandboxed(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault,
+		runtime.EngineRepoRoot(spec.WorkDir), spec.SandboxDrivers)
+	overrides := spec.ModelOverrides
+	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
+		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+		return ov.Backend
+	})
 	for _, refusal := range fallbackRefusals {
 		spec.Logger.Warn("run-level fallback not applied — %s", refusal)
 	}
+	// The adaptive-routing policy's computed ladder (ADR-121 §1), through
+	// the SAME screen: the model of each crossing is mapped from the
+	// node's own model, and the stage's On carries the resolved policy's
+	// trigger set — the chain's default set would stop the auth-typed
+	// failure the launch-time selection exists to fall through.
+	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
+		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+		if ov.Model != "" {
+			return ir.ExpandEnvWithDefault(ov.Model)
+		}
+		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
+	}, func(n ir.LLMNode) string {
+		// The dispatch reads the override backend FIRST — the screen reads
+		// the same, or a cross-backend crossing crosses a session-bearing
+		// node unscreened (the review's F2).
+		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+		return ov.Backend
+	}, llmroute.ResolveClasses(spec.LLMRouteClasses))
+	for _, refusal := range policyRefusals {
+		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
+	}
+	fallbackRefusals = append(fallbackRefusals, policyRefusals...)
 
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(spec.Logger)
@@ -396,7 +459,25 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// secrets, then thread it through the event hooks so every sink is
 	// scrubbed before persistence.
 	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
-	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, spec.EventObservers...)
+	// The routing handoff recorder (ADR-121 § Delivery 2) exists only for
+	// a run whose resolved posture is ACTIVE. Its fallback root is the
+	// run's artifact files dir (the shared state dir arrives later, from
+	// the sandbox driver, and upgrades it); the emitter wrapper makes the
+	// hooks observe post-redaction copies of the neutral event types.
+	var handoff *model.HandoffRecorder
+	artifactDir := ""
+	if fs, ok := spec.Store.(store.RunFilesStore); ok {
+		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
+			artifactDir = dir
+		}
+	}
+	if llmroute.CrossHarnessActive(spec.LLMRouteCrossHarness) {
+		handoff = model.NewHandoffRecorder(artifactDir)
+	}
+	// The recorder rides INSIDE the hooks constructor: the capability
+	// detection must see the store's own interfaces, and the wrap lands
+	// between the redaction boundary and the store.
+	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}
@@ -448,6 +529,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	opts := []model.ClawExecutorOption{
 		model.WithBackendRegistry(backendReg),
 		model.WithRetryPolicy(retryPolicy),
+		model.WithLLMRouteTriggers(spec.LLMRouteTriggers),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
 		model.WithLogger(spec.Logger),
@@ -507,10 +589,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// closes the host/sandbox parity gap where a bot writing its outputs
 	// there only worked sandboxed. Best-effort: stores without the files
 	// area (or a mkdir failure) just leave the variable unset, as before.
-	if fs, ok := spec.Store.(store.RunFilesStore); ok {
-		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
-			opts = append(opts, model.WithArtifactFilesDir(dir))
-		}
+	if artifactDir != "" {
+		opts = append(opts, model.WithArtifactFilesDir(artifactDir))
+	}
+	if handoff != nil {
+		opts = append(opts, model.WithHandoffRecorder(handoff))
 	}
 
 	checker := buildToolChecker(spec.Workflow)

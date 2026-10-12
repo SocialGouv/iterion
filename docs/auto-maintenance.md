@@ -142,8 +142,9 @@ JSON
 
 Three rules, each paid for:
 
-- **Send the WHOLE `launch_vars` map and the WHOLE `bot_ids` list.** A partial
-  PATCH drops what it omits.
+- **Send the WHOLE `launch_vars` map.** A non-empty partial one is REFUSED
+  (400, naming the keys to echo — see [merge-gate.md](merge-gate.md#switch-gate));
+  `bot_ids` may be omitted when the bot set does not change.
 - **Pin `gate_context` to one shared name.** A required check applies to
   *every* PR, so on a repository where a reviewer takes the human PRs and Vetty
   takes the bot's, both must post the **same** context — otherwise whichever

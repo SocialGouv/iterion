@@ -271,12 +271,37 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 		// promise a level the backend silently substitutes). Measured on
 		// opencode 1.1.19: a variant the model does not carry is dropped in
 		// silence, so offering a level is never a promise it took effect.
+		// `none` is deliberately absent although opencodeMapEffort passes it
+		// through: whether a model carries a "none" variant is exactly the
+		// per-model fact iterion cannot enumerate, and the silent drop would
+		// turn the offer into an off-switch that quietly no-ops — the same
+		// caution that gates none to known carriers on the codex arm.
 		writeJSON(w, effortCapabilitiesResponse{
 			Supported: []string{"low", "medium", "high", "max"},
 			// No documented default: with no --variant, the model's own
 			// setting applies and iterion has nothing to name.
 			Default: "",
 			Source:  "opencode-variant",
+		})
+	case "grok":
+		// grok's dial is `--reasoning-effort`, passed through verbatim for
+		// every iterion level except ultracode, which collapses onto high
+		// before argv (Grok has no ultracode mode — see grokMapEffort), so
+		// offering ultracode here would promise a level the backend silently
+		// substitutes. Model-independent: the CLI takes the same flag for
+		// every model, so there is nothing to look up. The CLI's own accepted
+		// set is unmeasured — same caveat as the opencode arm. none IS
+		// offered here, unlike that arm: opencode's variants are a per-model
+		// catalogue whose uncarried names drop in silence, so an off-switch
+		// promise could quietly no-op there; grok's dial is a single
+		// model-independent flag, so the whole list iterion can pass is
+		// offered and the unmeasured caveat above covers the rest.
+		writeJSON(w, effortCapabilitiesResponse{
+			Supported: []string{"none", "low", "medium", "high", "xhigh", "max"},
+			// No documented default: with no --reasoning-effort the CLI's own
+			// setting applies and iterion has nothing to name.
+			Default: "",
+			Source:  "grok-reasoning-effort",
 		})
 	case "codex":
 		resp, err := codexCapabilities(r.Context(), model)

@@ -413,6 +413,26 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// An explicit overlap clear IS a deliberate gesture, and it must be a
+	// READABLE one before anything downstream decides on the raw request.
+	// The normalization — "" → "allow", enforcement-identical
+	// (webhooks.Config documents empty = allow; with MaxConcurrent 0
+	// EvaluateOverlap is unlimited) — serves two masters, both load-bearing.
+	// The provision adopt's config-wins rule needs a readable value to win
+	// with: stored "", a scalar's empty reads as never-set, and the next
+	// silent re-provision would resurrect the integration's stale value over
+	// the operator's clear. And it must happen AHEAD of
+	// webhookPatchExpandsSurface precisely so the clear trips the approval
+	// gate exactly like a literal "allow": widening skip/supersede → allow
+	// IS an expansion of the repo's automated surface, and an unreadable ""
+	// would walk straight past the predicate.
+	if req.Overlap != nil {
+		v := strings.TrimSpace(*req.Overlap)
+		if v == "" {
+			v = schedgate.OverlapAllow
+		}
+		*req.Overlap = v
+	}
 	// Org approval-gate parity: a MANAGED (forge-provisioned) config is the
 	// runtime face of a repo integration, and it carries the same automation
 	// switches the provisioning gate parks (bots, hold labels, allowlist,
@@ -470,8 +490,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		cfg.ReviewOnSyncPinned = *req.ReviewOnSyncPinned
 	}
 	if req.Overlap != nil {
-		cfg.Overlap = strings.TrimSpace(*req.Overlap)
-		if err := schedgate.Validate(cfg.OverlapPolicy()); cfg.Overlap != "" && err != nil {
+		// Already trimmed and normalized above (the clear reads "allow").
+		cfg.Overlap = *req.Overlap
+		if err := schedgate.Validate(cfg.OverlapPolicy()); err != nil {
 			httpError(w, http.StatusBadRequest, "%v", err)
 			return
 		}

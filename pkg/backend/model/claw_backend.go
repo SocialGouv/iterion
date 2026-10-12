@@ -16,9 +16,11 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -264,6 +266,17 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	// A gateway-served model resolves its endpoint before anything is
+	// dispatched — the same read the element builder makes for chain walks,
+	// repeated here for the paths that never build through one (a direct
+	// Execute, the sandbox runner below, a continued conversation). The
+	// refusal names the variable, never a value.
+	if modelroute.Parse(task.Model).Gateway() {
+		if err := checkGatewayEnv(!secrets.LLMEndpointAllowPrivate()); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: node %q: %w", task.NodeID, err)
+		}
+	}
+
 	// A continued conversation is the executor's tool-less schema re-ask:
 	// it runs in-process by design (see Task.ContinueConversation) and is
 	// refused rather than forwarded to a runner that may predate the field.
@@ -378,8 +391,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: ctx})
 	}
 
-	// User message.
-	userText := task.UserPrompt
+	// User message. A routing handoff composes here: the original
+	// prompt's bytes stay the prefix (restart) or the closing task
+	// statement (reuse), and the UserContent delta-slicing below gives
+	// the section its own block when content blocks exist.
+	userText := task.HandoffPrompt()
 
 	// When both tools AND output schema are present, inject schema format
 	// instruction into user text (GenerateText supports tool loop,
@@ -424,9 +440,15 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			}
 		}
 		// Surface the schema-injection suffix that buildUserContent
-		// can't emit (it's appended after, not from the prompt body).
+		// can't emit (it's appended after, not from the prompt body) - and
+		// a routing handoff's section the same way: the composed text with
+		// the original prompt removed ONCE, wherever it sits. A prefix
+		// slice would assume the prompt opens the composition, which is
+		// true for restart and false for reuse (revi R-finding on #2237).
 		if userText != "" && task.UserPrompt != userText {
-			blocks = append(blocks, api.ContentBlock{Type: "text", Text: userText[len(task.UserPrompt):]})
+			if extra := delegate.HandoffExtra(userText, task.UserPrompt); extra != "" {
+				blocks = append(blocks, api.ContentBlock{Type: "text", Text: extra})
+			}
 		}
 		if len(blocks) > 0 {
 			opts.Messages = []api.Message{{Role: "user", Content: blocks}}
@@ -608,15 +630,37 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
-	// Dispatch to the appropriate generation strategy.
+	// Dispatch to the appropriate generation strategy. A gateway route's
+	// catalog record is resolved ONCE, HERE, before anything runs, and
+	// carried immutable on everything the invocation produces (ADR-122
+	// §resolution): the provenance rides the output (`_gateway_spec`) and
+	// the window the gateway serves is the one the consumers see — never a
+	// vendor's window borrowed by name.
 	hasSchema := task.OutputSchema != nil
-	if hasSchema && !task.HasTools {
-		return b.generateStructuredWithRetry(ctx, client, task, opts)
+	gwRoute := modelroute.Parse(task.Model)
+	var gwResolved compatgw.Resolved
+	if gwRoute.Gateway() {
+		gwResolved = compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv)
 	}
-	if hasSchema && task.HasTools {
-		return b.generateTextWithToolsAndSchemaRetry(ctx, client, task, opts)
+	var (
+		res    delegate.Result
+		genErr error
+	)
+	switch {
+	case hasSchema && !task.HasTools:
+		res, genErr = b.generateStructuredWithRetry(ctx, client, task, opts)
+	case hasSchema && task.HasTools:
+		res, genErr = b.generateTextWithToolsAndSchemaRetry(ctx, client, task, opts)
+	default:
+		res, genErr = b.generateTextWithRetry(ctx, client, task, opts)
 	}
-	return b.generateTextWithRetry(ctx, client, task, opts)
+	if gwRoute.Gateway() {
+		res.Output = stampGatewaySpec(res.Output, gwResolved)
+		if gwResolved.Known() && gwResolved.Spec.ContextWindow > 0 && res.ContextWindow == 0 {
+			res.ContextWindow = gwResolved.Spec.ContextWindow
+		}
+	}
+	return res, genErr
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,6 +1184,35 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if err != nil {
 		return delegate.Result{}, err
 	}
+	// A policy-isolated sandbox only lets egress through the run's network
+	// proxy — and the gateway client (openai_compatible/*) NEVER trusts an
+	// ambient HTTPS_PROXY by design: it dials direct unless the engine
+	// hands it the endpoint under its own name. Every exec of this call
+	// does inherit the container env, but that channel speaks for the image
+	// and the operator, not the engine — so the endpoint crosses under the
+	// engine-owned variable the compatgw transport honours, and a gateway
+	// route dials through the proxy the sandbox's policy allows instead of
+	// dropping on it (measured in prod, 2026-10-08: every honorabilite
+	// review parked on `dial tcp 79.137.10.7:443: i/o timeout` while the
+	// same pod's own curls succeeded). A run without a proxied sandbox
+	// (noop, an open network) keeps the env as-is.
+	for k, v := range sandboxProxyEnv(task.Sandbox) {
+		runnerEnv[k] = v
+	}
+	// The run's own credentials crossed above; the HOST's ChatGPT forfait,
+	// when the operator's ITERION_OPENAI_USE_OAUTH=1 makes it this node's
+	// instrument in process, is written into the container here.
+	forfaitEnv, releaseForfait, err := deliverHostCodexForfait(ctx, task, b.logger)
+	if err != nil {
+		return delegate.Result{}, err
+	}
+	defer releaseForfait()
+	for k, v := range forfaitEnv {
+		runnerEnv[k] = v
+	}
+	if forfaitEnv != nil && b.logger != nil {
+		b.logger.Info("[%s#%d/claw] the host's ChatGPT forfait (its access token) was written into the sandbox for this node (ITERION_OPENAI_USE_OAUTH=1); the node spends it at chatgpt.com", task.NodeID, task.Iteration)
+	}
 	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
 		KeepStdinOpen: true,
 		Env:           runnerEnv,
@@ -1200,17 +1273,22 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		}
 	}
 
+	// The gateway capability marker, before the task (F19): a runner too
+	// old to know the type fatals on "unexpected envelope before task" —
+	// every gateway node on a stale image fails closed, opaquely no more.
+	// An old host cannot produce gateway tasks at all (no factory), so the
+	// reverse skew is vacuous.
+	if modelroute.Parse(task.Model).Gateway() {
+		if err := mux.Send(delegate.NewGatewayV1Envelope()); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send gateway_v1: %w", err)
+		}
+	}
+
 	// Send the task envelope. The runner blocks on its
-	// EnvelopeReader.Read() until this arrives. The workspace's
-	// .claude/settings.json hooks ride along: the launcher reads them on the
-	// host and the in-container runner registers the document instead of
-	// re-reading a WorkDir that may not exist inside the container (a
-	// workspace not mounted at its host path would otherwise fire NO hooks
-	// in silence — the parity gap of #1715). An old runner ignores the
-	// unknown field and falls back to its own WorkDir read.
-	ioTask := delegate.ToIOTask(task)
-	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
-	taskEnv, err := delegate.NewTaskEnvelope(ioTask)
+	// EnvelopeReader.Read() until this arrives.
+	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task))
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -1264,6 +1342,23 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	return res, nil
 }
 
+// runnerIOTask is the task envelope's payload for the in-container runner.
+// The workspace's .claude/settings.json hooks ride along: the launcher reads
+// them on the host and the runner registers the document instead of
+// re-reading a WorkDir that may not exist inside the container (a workspace
+// not mounted at its host path would otherwise fire NO hooks in silence —
+// the parity gap of #1715). So does this backend's retry budget: the
+// runner's loop spends the launcher's, never one read from its own env, so
+// a variable a repository's devcontainer declares cannot set how many
+// attempts are billed. An old runner ignores both unknown fields — it
+// reads its own WorkDir and keeps its defaults.
+func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
+	ioTask := delegate.ToIOTask(task)
+	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
+	ioTask.Retry = b.retry.wire()
+	return ioTask
+}
+
 // settingsHooksForWire reads the host's .claude/settings.json hooks document
 // for the sandbox crossing and emits every diagnostic on the LAUNCHER side —
 // the in-container registration's warnings go to the container's stderr,
@@ -1296,15 +1391,17 @@ func settingsHooksForWire(workDir, nodeID string, iteration int, logger *iterlog
 }
 
 // providerCredentialEnvVars enumerates the env-var names the in-runner
-// model registry consults to authenticate against each provider. Listed
-// explicitly (rather than forwarding the full host env) so the sandbox
-// stays isolated from the operator's shell — only the keys the runner
-// actually needs cross the boundary.
+// model registry consults to authenticate against each provider, and the
+// operator knobs the runner's own code reads. Listed explicitly (rather
+// than forwarding the full host env) so the sandbox stays isolated from
+// the operator's shell — only the keys the runner actually needs cross
+// the boundary.
 //
-// Keep this in sync with pkg/backend/model/registry.go's per-provider
-// auth code: any new provider whose Resolve() reads os.Getenv(...) for
-// credentials must append its env-var name here, otherwise the runner
-// inside the sandbox will surface "API key required for <provider>".
+// Keep this in sync with every env read of this package the runner
+// reaches: a credential missing here surfaces as "API key required for
+// <provider>", a knob missing here is silently ignored by the sandboxed
+// node. TestEveryEnvReadIsClassifiedForTheSandbox fails on a read that is
+// neither listed here nor declared host-side.
 var providerCredentialEnvVars = []string{
 	"OPENAI_API_KEY",
 	"AZURE_OPENAI_API_KEY",
@@ -1340,10 +1437,20 @@ var providerCredentialEnvVars = []string{
 	// that keeps a ChatGPT forfait off a third-party gateway
 	// (openAIOAuthAllowed) — the host and the container must read the same.
 	"OPENAI_BASE_URL",
+	// The stream-usage knob decides whether the openai factory asks the
+	// gateway for stream_options.include_usage, and the in-container runner
+	// is this same binary reading this same factory: without the knob
+	// across, the host's node reports usage while its sandboxed twin keeps
+	// its tokens unreported.
+	"ITERION_OPENAI_STREAM_USAGE",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
 	// key, which is METERED and billed to its lender.
 	"XAI_API_KEY",
+	// …and the endpoint that key is spent on (xaiBaseURL: an operator
+	// proxy, a regional host). Without it the sandboxed node keeps
+	// working, against api.x.ai, while the host talks to the operator's.
+	"XAI_BASE_URL",
 	"ANTHROPIC_AUTH_TOKEN",
 	"ANTHROPIC_BASE_URL",
 	"GEMINI_API_KEY",
@@ -1373,6 +1480,11 @@ var providerCredentialEnvVars = []string{
 	// refuses for newer models ("gpt-5.6-sol requires a newer codex-cli").
 	// The operator override must therefore cross the boundary.
 	"ITERION_CODEX_VERSION",
+	// The stream-silence watchdog runs where the provider call runs
+	// (callAndAggregate, every in-process call): in the container for a
+	// sandboxed node, which must wait as long as the host's would.
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
 }
 
 // hostCodexVersion resolves the codex-cli version on the HOST side of the
@@ -1390,6 +1502,41 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderZAI:       "ZAI_API_KEY",
 	secrets.ProviderMoonshot:  "MOONSHOT_API_KEY",
 	secrets.ProviderXAI:       "XAI_API_KEY",
+}
+
+// providerEndpointEnvVars is the endpoint subset of providerCredentialEnvVars
+// — the names that decide WHICH infrastructure a forwarded credential is
+// spent on. Unlike keys, an empty endpoint value is safe downstream (every
+// registry reads empty as "use the published default"), so these may cross
+// as explicit empties.
+var providerEndpointEnvVars = []string{
+	"AZURE_OPENAI_ENDPOINT",
+	"MOONSHOT_BASE_URL",
+	"OPENAI_BASE_URL",
+	"XAI_BASE_URL",
+	"ANTHROPIC_BASE_URL",
+}
+
+// sandboxProxyEnv returns the single engine-owned entry the in-container
+// runner needs when its sandbox is policy-isolated: the network proxy is
+// the ONLY egress the sandbox's network policy allows, and the gateway
+// client never trusts an ambient HTTPS_PROXY — the endpoint crosses under
+// compatgw.SandboxProxyEndpointEnv, the name only the engine sets. A run
+// that is NOT proxied UNSETS the name: an exec env rides the container's
+// own env, and a hostile image or spec env could otherwise forge the
+// engine's voice and route a gateway credential through an attacker proxy.
+// (The exec-env prefix wins over the container env; the empty value is
+// honoured as an unset.)
+func sandboxProxyEnv(handle sandbox.Run) map[string]string {
+	proxied, ok := handle.(sandbox.ProxiedRun)
+	if !ok {
+		return map[string]string{compatgw.SandboxProxyEndpointEnv: ""}
+	}
+	endpoint := proxied.ProxyEndpoint()
+	if endpoint == "" {
+		return map[string]string{compatgw.SandboxProxyEndpointEnv: ""}
+	}
+	return map[string]string{compatgw.SandboxProxyEndpointEnv: endpoint}
 }
 
 // forwardableProviderEnv builds the env map ClawBackend hands to
@@ -1413,6 +1560,72 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			env[name] = v
 		}
 	}
+	// Endpoint names the host leaves unset cross as EXPLICIT empties, not
+	// absent names: the runner auto-loads the workspace .env, which only
+	// fills names missing from the process env (applyDotEnv honours
+	// LookupEnv), so an absent name lets the repository under review pick
+	// which infrastructure a forwarded credential dials. The empty also
+	// outranks container-level env for these names (docker exec --env
+	// precedence): an operator endpoint set through the sandbox spec no
+	// longer reaches the runner — the host env is the supported channel,
+	// and in-process nodes never read the spec's env anyway. Downstream
+	// every registry reads empty as "use the published default". Keys keep
+	// the skip above: an empty key reads as "auth attempted, invalid", not
+	// "no auth" (the endpoint twin of sandboxProxyEnv's explicit-unset).
+	for _, name := range providerEndpointEnvVars {
+		if _, ok := env[name]; !ok {
+			env[name] = ""
+		}
+	}
+	// A gateway-served node carries the gateway env, and ONLY a gateway
+	// node does: the endpoint is operator infrastructure, the key to it is
+	// not a vendor credential, and no other node has business seeing
+	// either. The endpoint is validated (the host already refused an
+	// unusable one at Execute's head — this is the same read, on the map
+	// that crosses the IPC), and the in-container factory's guard is told
+	// the operator's choice explicitly rather than left to re-derive it
+	// from whatever the sandbox env happens to carry.
+	if modelroute.Parse(model).Gateway() {
+		cfg, err := compatgw.FromEnv(os.Getenv)
+		if err != nil {
+			return nil, err
+		}
+		allowPrivate := secrets.LLMEndpointAllowPrivate()
+		if err := cfg.Validate(!allowPrivate); err != nil {
+			return nil, err
+		}
+		env[compatgw.BaseURLEnv] = cfg.BaseURL
+		if cfg.APIKey != "" {
+			env[compatgw.APIKeyEnv] = cfg.APIKey
+		}
+		if allowPrivate {
+			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
+		}
+		// The host's OWN catalog resolution rides along, so the in-container
+		// catalog answers with the same record the host answered with — the
+		// image's snapshot can be older than the host's, and a window or a
+		// price quietly differing across the IPC is a lie one side tells the
+		// other. Top precedence container-side (compatgw.ResolvedEnvRecord).
+		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), os.Getenv); resolved.Known() {
+			if raw, merr := json.Marshal(struct {
+				Model            string  `json:"model"`
+				Source           string  `json:"source"`
+				ContextWindow    int     `json:"context_window,omitempty"`
+				MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
+				InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
+				OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
+			}{
+				Model:            modelroute.Parse(model).Wire,
+				Source:           resolved.Source,
+				ContextWindow:    resolved.Spec.ContextWindow,
+				MaxOutputTokens:  resolved.Spec.MaxOutputTokens,
+				InputUSDPerMTok:  resolved.Spec.InputCostPerM,
+				OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
+			}); merr == nil {
+				env["ITERION_OPENAI_COMPATIBLE_RESOLVED"] = string(raw)
+			}
+		}
+	}
 	// No ITERION_CODEX_VERSION override set: forward the HOST-resolved
 	// codex-cli version as a PROBE (ITERION_CODEX_HOST_VERSION), not as the
 	// decision. The in-container runner cannot probe `codex --version`
@@ -1424,6 +1637,17 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		if v := hostCodexVersion(); v != "" {
 			env[codexHostVersionEnv] = v
 		}
+	}
+	// The refusal crosses whatever the run holds, no credentials at all
+	// included — the in-container factory would otherwise spend a forfait
+	// the host was told never to, the run's own or one on the container's
+	// disk. Only the refusal: a host-wide "1" forces the host's own forfait
+	// over the ENV key, and it crosses only beside a forfait the container
+	// was handed — the run's, below, or the host's, which
+	// deliverHostCodexForfait writes at the dispatch — never as an order to
+	// spend whatever forfait the container's disk holds.
+	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
+		env["ITERION_OPENAI_USE_OAUTH"] = "0"
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
@@ -1485,13 +1709,6 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		if nodeOwnKey == "" && openAIOAuthAllowed() {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
-	}
-	// The refusal crosses whatever the run holds — the in-container factory
-	// would otherwise spend the forfait the host was told never to. Only the
-	// refusal: a host-wide "1" forces the forfait over the ENV key, and here
-	// the run's own key crosses as that env key.
-	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
-		env["ITERION_OPENAI_USE_OAUTH"] = "0"
 	}
 	// The Anthropic twin (#736), and only for a node the forfait can actually
 	// serve: a claude model on claw's anthropic provider. A z.ai/GLM model

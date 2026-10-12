@@ -31,6 +31,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Plan §C.2 — every named subject / stream / bucket lives here.
@@ -99,8 +100,8 @@ const (
 	// then drops it (issue #481). 30s stretches the 8-delivery budget over
 	// ~4 minutes of wall clock, which covers a rolling restart of the runner
 	// deployment; if the fleet still hasn't caught up, the exhausted message
-	// is parked on the DLQ with an actionable run status (recoverable via
-	// /api/admin/dlq) rather than silently dropped.
+	// is parked on the DLQ with an actionable run status (recovered by a
+	// resume of the run) rather than silently dropped.
 	SchemaMismatchNakDelay = 30 * time.Second
 	// EpochMismatchNakDelay gives a cold replacement fleet enough time to
 	// become ready before the shared consumer spends its delivery budget.
@@ -135,9 +136,24 @@ type Config struct {
 	// RedeliveryWindow input. Every process that connects must pass the SAME
 	// configured value: the bucket TTL is whatever the last connector wrote,
 	// and the sweeper's cutoff is read off the SERVER's connection.
-	LockTTL    time.Duration // default 60s
-	MaxPayload int           // default 0 → use server's negotiated MaxPayload
-	Logger     *iterlog.Logger
+	LockTTL time.Duration // default 60s
+	// LeaseUnwindCeiling is how long a run's lease may still be held once
+	// the run can be resumed — its engine's teardown, then the runner's
+	// post-engine steps: a delivery that meets a held lock spreads its
+	// retries over it (HeldLockRetryDelay), and RedeliveryWindow counts
+	// them. Every process that connects passes the same value; zero spreads
+	// nothing.
+	LeaseUnwindCeiling time.Duration
+	MaxPayload         int // default 0 → use server's negotiated MaxPayload
+	// Pool is the sovereign runner pool this connection serves. Non-empty,
+	// Connect brings up the POOL's stream pair (exact pool subjects) plus
+	// the shared KV buckets, instead of the shared stream pair — a
+	// shared-subject stream created under a pool's name is exactly the
+	// subjects-overlap failure a pre-existing pool stream then refuses.
+	// The stream/consumer/DLQ names derive from the pool; an explicit
+	// StreamName/DLQStream alongside Pool is refused.
+	Pool   string
+	Logger *iterlog.Logger
 }
 
 // Conn is the wired NATS layer. The publisher + consumer both consume
@@ -180,23 +196,53 @@ func (c *Conn) QueueBacklog(ctx context.Context) (uint64, error) {
 // explicit delay an operator may configure ABOVE AckWait — a schema
 // mismatch, an epoch mismatch, and a delivery that could not take the run
 // lock (which waits one lease interval, LockTTL, for a lease that is not
-// being refreshed to evaporate). The server's orphan sweeper derives its
-// queued-staleness cutoff from the largest of them, so it never flips a
-// message that is still legitimately waiting for redelivery. Every delay
-// must therefore be registered here: one that is not makes the sweeper
-// under-report the worst case by up to MaxDeliver × that delay.
-func (c *Conn) RedeliveryWindow() time.Duration {
-	interval := c.cfg.AckWait
-	if c.cfg.SchemaMismatchDelay > interval {
-		interval = c.cfg.SchemaMismatchDelay
+// being refreshed to evaporate — and, when the lease is held, a delay that
+// depends on the delivery's rank, HeldLockRetryDelay). Each of the
+// MaxDeliver deliveries is counted at the largest delay its rank can take,
+// so the server's orphan sweeper, whose queued-staleness cutoff derives from
+// this window, never flips a message that is still legitimately waiting for
+// redelivery. Every delay must therefore be registered here: one that is not
+// makes the sweeper under-report the worst case by up to MaxDeliver × that
+// delay.
+func (c *Conn) RedeliveryWindow() time.Duration { return c.cfg.RedeliveryWindow() }
+
+// RedeliveryWindow is Conn.RedeliveryWindow for a connection opened with cfg,
+// its defaults already applied.
+func (cfg Config) RedeliveryWindow() time.Duration {
+	interval := max(cfg.AckWait, cfg.SchemaMismatchDelay, cfg.EpochMismatchDelay, cfg.LockTTL)
+	if cfg.MaxDeliver < 1 {
+		return time.Duration(cfg.MaxDeliver) * interval
 	}
-	if c.cfg.EpochMismatchDelay > interval {
-		interval = c.cfg.EpochMismatchDelay
+	window := interval
+	for delivered := 1; delivered < cfg.MaxDeliver; delivered++ {
+		window += max(interval, HeldLockRetryDelay(cfg.LockTTL, cfg.LeaseUnwindCeiling, cfg.MaxDeliver, delivered))
 	}
-	if c.cfg.LockTTL > interval {
-		interval = c.cfg.LockTTL
+	return window
+}
+
+// HeldLockRetryDelay is the delayed-Nak interval of the delivered-th delivery
+// of a message that could not take the run lock because another holds it.
+// That lease may be held leaseUnwindCeiling once the run became resumable —
+// its engine's teardown, then the runner's post-engine steps — and then take
+// lockTTL to lapse; a resume published meanwhile (a gate answered right after
+// the park, a resume right after a cancel) must outlive the hold instead of
+// landing on the DLQ.
+//
+// The last delivery that may still Nak waits that whole hold, and the ones
+// before it back off towards it by halves, none sooner than lockTTL. So
+// whichever delivery first meets the lock — earlier ones may have been spent
+// elsewhere, an epoch Nak during a rollout — the delivery after the last
+// retry comes once the hold is over, while a lease released in seconds is
+// retried within one lease interval. With deliveries uncapped, lockTTL.
+func HeldLockRetryDelay(lockTTL, leaseUnwindCeiling time.Duration, maxDeliver, delivered int) time.Duration {
+	if maxDeliver < 2 {
+		return lockTTL
 	}
-	return time.Duration(c.cfg.MaxDeliver) * interval
+	delay := leaseUnwindCeiling + lockTTL
+	for rank := max(delivered, 1); rank < maxDeliver-1 && delay > lockTTL; rank++ {
+		delay /= 2
+	}
+	return max(lockTTL, delay)
 }
 
 // Connect opens the NATS connection, pins the stream + DLQ + KV
@@ -226,7 +272,38 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	}
 
 	c := &Conn{nc: nc, js: js, cfg: cfg, logger: cfg.Logger}
-	if err := c.EnsureSchema(ctx); err != nil {
+	if cfg.Pool != "" {
+		// A pool-serving connection brings up the pool's OWN stream pair —
+		// EnsureSchema would create a shared-subject stream under the
+		// pool's name, and the real pool stream (the server registry's
+		// reconciler made it) then refuses the connection with
+		// subjects-overlap — measured in prod on the first pool boot
+		// (2026-10-07). The KV buckets stay shared: the run lease is
+		// per-run, not per-pool.
+		// The pod template stamps the derived names (the chart has done so
+		// since its first pool render) and the unstamped pod is equally
+		// correct — both are accepted; ANY other stream name would point
+		// this pool's deliveries elsewhere and is refused. Merged alone,
+		// this keeps every already-deployed pool pod booting.
+		if cfg.StreamName != StreamRuns && cfg.StreamName != PoolStreamName(cfg.Pool) {
+			nc.Close()
+			return nil, fmt.Errorf("queue/nats: Pool %q with StreamName %q — want the default or the pool's own %s (a pool serves its derived topology)", cfg.Pool, cfg.StreamName, PoolStreamName(cfg.Pool))
+		}
+		if cfg.DLQStream != StreamRunsDLQ && cfg.DLQStream != PoolDLQStreamName(cfg.Pool) {
+			nc.Close()
+			return nil, fmt.Errorf("queue/nats: Pool %q with DLQStream %q — want the default or the pool's own %s", cfg.Pool, cfg.DLQStream, PoolDLQStreamName(cfg.Pool))
+		}
+		if err := ensurePoolSchema(ctx, js, cfg, cfg.Pool); err != nil {
+			nc.Close()
+			return nil, err
+		}
+		res, err := ensureKVs(ctx, js, cfg)
+		if err != nil {
+			nc.Close()
+			return nil, err
+		}
+		c.kv, c.rolloutKV = res.runLocks, res.rollout
+	} else if err := c.EnsureSchema(ctx); err != nil {
 		nc.Close()
 		return nil, err
 	}
@@ -375,6 +452,14 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaReso
 		return schemaResources{}, fmt.Errorf("queue/nats: stream %s: %w", cfg.DLQStream, err)
 	}
 
+	return ensureKVs(ctx, js, cfg)
+}
+
+// ensureKVs brings up the two SHARED KV buckets — the run-lease bucket
+// (per-run keys, pool-agnostic) and the rollout-epoch bucket. Both the
+// shared EnsureSchema and the pool-scoped Connect path need exactly
+// these; the streams differ between the two, the buckets do not.
+func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   cfg.KVBucket,
 		TTL:      cfg.LockTTL,
@@ -456,6 +541,14 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 		headers.Set("iterion-span-id", msg.Trace.SpanID)
 	}
 
+	// Pool routing (plan D2'): the subject derives from the frozen pool
+	// stamp — JetStream picks the per-pool stream by subject, so a pool run
+	// cannot land on the shared stream and vice versa. The pool stream's
+	// existence is the reconciler's guarantee; a missing stream fails the
+	// publish (the launch rollback flips the doc), never a silent fall-back
+	// onto the shared subject.
+	subject := c.publishSubject(msg)
+
 	// Per-publish timeout: the NATS client is configured with
 	// MaxReconnects(-1) so a downed broker leaves PublishMsg blocked
 	// indefinitely waiting for ack — that froze studio handlers
@@ -465,7 +558,7 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return c.js.PublishMsg(pubCtx, &nats.Msg{
-		Subject: SubjectRuns,
+		Subject: subject,
 		Data:    body,
 		Header:  headers,
 	})
@@ -479,18 +572,23 @@ func runMessageID(msg *queue.RunMessage) string {
 }
 
 // CancelRun fires the transient `iterion.cancel.<run_id>` Core NATS
-// subject. The runner subscribes to its in-flight run's subject for
-// the duration of execution; an unsubscribed cancel is a silent
-// no-op, which matches the expectation that a queued (not yet
-// picked up) run is cancelled by deleting the stream message instead.
-func (c *Conn) CancelRun(runID string) error {
+// subject, stamped with the run's admitted identity. The runner
+// subscribes to its in-flight run's subject for the duration of
+// execution; an unsubscribed cancel is a silent no-op, and a queued
+// (not yet picked up) run never sees this subject at all — its cancel
+// is the persisted status flip, which the admission control reads
+// before executing anything.
+func (c *Conn) CancelRun(runID string, admitted store.LeaseIdentity) error {
 	if runID == "" {
 		return fmt.Errorf("queue/nats: cancel requires runID")
 	}
 	if c == nil || c.nc == nil {
 		return fmt.Errorf("queue/nats: connection not initialised")
 	}
-	if err := c.nc.Publish(fmt.Sprintf(SubjectCancelFmt, runID), nil); err != nil {
+	msg := nats.NewMsg(fmt.Sprintf(SubjectCancelFmt, runID))
+	msg.Header = nats.Header{}
+	stampAdmitted(msg.Header, admitted)
+	if err := c.nc.PublishMsg(msg); err != nil {
 		return fmt.Errorf("queue/nats: publish cancel %s: %w", runID, err)
 	}
 	// Core NATS Publish only queues to the client's flusher; force a
@@ -503,10 +601,13 @@ func (c *Conn) CancelRun(runID string) error {
 }
 
 // SubscribeCancel installs a one-shot Core NATS subscriber on
-// `iterion.cancel.<run_id>` and invokes onCancel when a message
-// arrives. The runner uses this for the duration of a single run;
-// the returned subscription is valid until ctx is cancelled.
-func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func()) (*nats.Subscription, error) {
+// `iterion.cancel.<run_id>` and invokes onCancel when a command
+// stamped with the run's admitted identity arrives. Commands carrying
+// another identity — or none — are ignored with an error log: this pod
+// never cancels a run it did not admit under that identity. The runner
+// uses this for the duration of a single run; the returned
+// subscription is valid until ctx is cancelled.
+func (c *Conn) SubscribeCancel(ctx context.Context, runID string, admitted store.LeaseIdentity, onCancel func()) (*nats.Subscription, error) {
 	if c == nil || c.nc == nil {
 		return nil, fmt.Errorf("queue/nats: connection not initialised")
 	}
@@ -516,7 +617,13 @@ func (c *Conn) SubscribeCancel(ctx context.Context, runID string, onCancel func(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sub, err := c.nc.Subscribe(fmt.Sprintf(SubjectCancelFmt, runID), func(_ *nats.Msg) {
+	sub, err := c.nc.Subscribe(fmt.Sprintf(SubjectCancelFmt, runID), func(m *nats.Msg) {
+		if err := verifyAdmitted(m, runID, admitted); err != nil {
+			if c.logger != nil {
+				c.logger.Error("%v — cancel ignored", err)
+			}
+			return
+		}
 		onCancel()
 	})
 	if err != nil {

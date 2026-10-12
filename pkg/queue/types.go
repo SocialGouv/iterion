@@ -28,10 +28,11 @@ import (
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
 //   - Deploy the server (producer) first by default. Both orders can park a
-//     message; only one park is replayable. Old runners rejecting the new
-//     version park messages a DLQ replay fixes once the fleet is upgraded;
-//     new runners rejecting a version below their MinSchemaVersion park
-//     messages a replay can never fix (it re-publishes the same bytes). Roll
+//     run, and a resume recovers it — not at the same moment. Old runners
+//     rejecting the new version park runs a resume recovers as soon as the
+//     fleet is upgraded; new runners rejecting a version below their
+//     MinSchemaVersion park runs a resume recovers only once the server
+//     publishes a version they accept. Roll
 //     the runners first only when nothing below MinSchemaVersion(new) can
 //     still be queued — automatic when the bump leaves MinSchemaVersion
 //     alone, otherwise a check against the queue, never against the old
@@ -138,7 +139,23 @@ import (
 // policies. A stale runner ignores both and applies its own default — for
 // claude_code the operator's whole personal setup — so a run launched or
 // declared with `none` would receive everything: it must reject.
-const SchemaVersion = 21
+// v=22 (2026-10-04): RunFallbackEntry grows On and Policy for the
+// adaptive-routing ladder (ADR-121). Breaking by the additive-field rule:
+// a stale runner ignoring On would run a policy-computed stage on the
+// chain DEFAULT trigger set ([usage_window, unavailable]) — dropping
+// auth and transient_exhausted, the exact failures the launch-time
+// selection exists to fall through — silently reverting operator intent.
+// Server-first rollout; MinSchemaVersion unchanged.
+// v=23: RunnerPool (#2029). A launch mapped to a sovereign runner pool
+// rides the new field on the message and the envelope. A stale runner
+// ignores it and serves the run outside the team's pool — the leak the
+// pool exists to make impossible — so it must reject.
+// v=24: BundleDEK (#2029, ADR-123). Run bundles seal under a per-run
+// DEK that travels in the message; runner pods hold no platform key
+// material. Runner-first rollout: a pre-v24 runner refuses a v24
+// message at the schema check instead of failing later at credential
+// injection with a bundle it cannot open.
+const SchemaVersion = 24
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -203,7 +220,22 @@ type RunMessage struct {
 	// by having been admitted on an older build. False = the check runs.
 	AllowUnknownInputs bool   `json:"allow_unknown_inputs,omitempty"`
 	SecretsRef         string `json:"secrets_ref,omitempty"`
-	TimeoutSec         int    `json:"timeout_sec,omitempty"`
+	// BundleDEK is the per-run 32-byte key the run's sealed credential
+	// bundle encrypts under (ADR-123). It travels only here — the run's
+	// own pool stream — so runner pods hold no platform key material:
+	// the per-run sealer is built from it at claim time. A message that
+	// carries it without a SecretsRef (or a "dek"-stamped record whose
+	// message carries none) is corrupt and refused.
+	BundleDEK  []byte `json:"bundle_dek,omitempty"`
+	TimeoutSec int    `json:"timeout_sec,omitempty"`
+	// PoolGrantless marks a publication that asked the credential pool and
+	// was granted nothing: the attempt runs on env/fallback credentials,
+	// holds no pool lease, and its spend report must never reach the
+	// broker — it would be charged to the lease of the attempt this
+	// publication took the run from. Inverted (grantless, not served) so
+	// publications older than the field read as pool-served, which is what
+	// they were.
+	PoolGrantless bool `json:"pool_grantless,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
@@ -225,6 +257,14 @@ type RunMessage struct {
 	// exhausted usage window never fired on the path where runs park
 	// unattended.
 	Fallback RunFallback `json:"fallback,omitempty"`
+	// FallbackModelClasses is the run's RESOLVED model_classes overrides
+	// (ADR-121 § Delivery 2, the launch-frozen snapshot) — the crossings'
+	// class targets on this run. A message-level sibling of the entries
+	// slice (per-entry would duplicate one map per rung): a stale runner
+	// ignoring it runs the shipped table — never a partial override, the
+	// conservative-on-ignore direction (no RunMessage version bump: a
+	// lost capability, never a wrong execution).
+	FallbackModelClasses map[string]map[string]string `json:"fallback_model_classes,omitempty"`
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
@@ -274,6 +314,16 @@ type RunMessage struct {
 	// OwnerID is the user_id of the principal who initiated the run.
 	// Used for audit logging; runners do NOT gate execution on it.
 	OwnerID string `json:"owner_id,omitempty"`
+	// RunnerPool names the sovereign runner pool the run MUST execute on
+	// (#2029). Empty means the shared default pool. The publisher stamps it
+	// from the team's CURRENT mapping (fresh read, refusal on a store
+	// error); a runner serves a message only when this matches its own
+	// pool and the persisted document — a disagreement is a corrupted or
+	// replayed publish, parked with the run failed, never executed. The
+	// field requires v22 on the wire: a stale runner that dropped it would
+	// execute the run outside the team's pool, which is the leak the pool
+	// exists to make impossible.
+	RunnerPool string `json:"runner_pool,omitempty"`
 	// ParentRunID is set on child runs spawned by a parent workflow
 	// (e.g. by `iterion __scan-shards`). Empty for root runs. When
 	// non-empty, the runner copies it into the persisted Run document
@@ -381,11 +431,28 @@ type ModelOverride struct {
 }
 
 // RunFallbackEntry is one stage of the operator's run-level fallback
-// chain on the wire — the queue twin of runview.FallbackEntry.
+// chain on the wire — the queue twin of runview.FallbackEntry. The On and
+// Policy fields (v=22) carry the ADAPTIVE-ROUTING ladder's stages
+// (ADR-121): On is the resolved policy's trigger set the stage accepts
+// (nil = the chain default — what operator stages carry), Policy marks
+// the stage as policy-computed (the usagecap preflight judges its spend;
+// operator rescue stages stay excluded).
 type RunFallbackEntry struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	// On is never omitempty: a CLAMPED-EMPTY set is the "never switch"
+	// answer, and omitempty would erase it into the chain default on the
+	// way back (the M4 round-trip).
+	On     []string `json:"on"`
+	Policy bool     `json:"policy,omitempty"`
+	// CrossHarness is the run's resolved cross-harness posture (ADR-121
+	// § Delivery 2) riding this policy stage: an active mode lifts the
+	// stage's session refusal at the authoritative screen and marks the
+	// dispatch's model_fallback. omitempty + additive: a stale runner
+	// ignoring it re-refuses at the screen — a lost capability, never a
+	// wrong execution (no schema bump).
+	CrossHarness string `json:"cross_harness,omitempty"`
 }
 
 // RunFallback is the ordered wire chain. Producers marshal it as an array;
@@ -479,6 +546,13 @@ type ResumeSpec struct {
 	// back to failed_resumable. A runner that predates it leaves the run
 	// queued, as it always did, so the field changes no operator intent.
 	PriorStatus store.RunStatus `json:"prior_status,omitempty"`
+	// AcceptScratchLoss is the operator's consent to resume although the
+	// run's scratch does not travel — Force never gives it. It is spent by
+	// the claim of this publication: a runner applies it only while the run
+	// is still queued for this message, never to a redelivery after that
+	// claim or an adoption, whose losses nobody was shown. Absent from an
+	// older publisher: no consent, the safe side.
+	AcceptScratchLoss bool `json:"accept_scratch_loss,omitempty"`
 }
 
 // TraceContext propagates the originating studio span across NATS so
@@ -516,6 +590,19 @@ func (m *RunMessage) Validate() error {
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
+	}
+	// The pool name is grammar-checked, not tenant-checked, and only when
+	// set: an empty pool is the shared default (pre-v22 messages included),
+	// and WHO may map a team to a pool is the publisher resolver's
+	// fail-closed read, not a wire-format question.
+	if m.RunnerPool != "" && !ValidPoolName(m.RunnerPool) {
+		return fmt.Errorf("queue: RunnerPool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", m.RunnerPool)
+	}
+	if m.BundleDEK != nil && m.SecretsRef == "" {
+		return fmt.Errorf("queue: BundleDEK without SecretsRef — corrupt publish")
+	}
+	if len(m.BundleDEK) != 0 && len(m.BundleDEK) != 32 {
+		return fmt.Errorf("queue: BundleDEK must be 32 bytes, got %d", len(m.BundleDEK))
 	}
 	if m.WorkflowName == "" {
 		return fmt.Errorf("queue: WorkflowName required")
@@ -561,12 +648,39 @@ func (m *RunMessage) Validate() error {
 // park the payload on the DLQ and flip only that attempt to an actionable
 // status instead of leaving it `queued` in silence (issue #481).
 type Envelope struct {
-	V              int    `json:"v"`
-	RunnerEpoch    uint64 `json:"runner_epoch,omitempty"`
-	RunID          string `json:"run_id"`
-	TenantID       string `json:"tenant_id"`
-	OwnerID        string `json:"owner_id,omitempty"`
+	V           int    `json:"v"`
+	RunnerEpoch uint64 `json:"runner_epoch,omitempty"`
+	RunID       string `json:"run_id"`
+	TenantID    string `json:"tenant_id"`
+	OwnerID     string `json:"owner_id,omitempty"`
+	// RunnerPool mirrors RunMessage.RunnerPool in the stable identity core:
+	// a consumer that rejects the wire version can still see which pool the
+	// run claims, park it on the right DLQ, and flip the right attempt.
+	RunnerPool     string `json:"runner_pool,omitempty"`
 	PublishedAtRFC string `json:"published_at"`
+}
+
+// ValidPoolName reports whether s is a well-formed runner-pool name:
+// 1–31 chars, lowercase alphanumerics and inner dashes, starting with an
+// alphanumeric. It doubles as the subject/stream suffix grammar, so a name
+// that fails this can never address a pool topic.
+func ValidPoolName(s string) bool {
+	if len(s) == 0 || len(s) > 31 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-':
+			if i == 0 || i == len(s)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // PeekEnvelope extracts the identity envelope from a raw wire payload WITHOUT

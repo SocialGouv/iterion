@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -235,13 +236,19 @@ func (e *Engine) fanOutAwaitAnswers(ctx context.Context, runID, nodeID string, r
 	}
 
 	// Every referenced question must now be answered — resuming with
-	// unanswered questions would hand the agent a partial payload.
+	// unanswered questions would hand the agent a partial payload. This
+	// re-check reads after the claim: a pending question written between
+	// the pre-claim refusal and here would refuse a run already claimed
+	// running. No production writer does — an ask records its question
+	// before its pause, which the pre-claim refusal read; should one
+	// appear, the runner's release puts the run back to its pause with the
+	// refusal, and the next delivery's pre-claim refusal recovers it.
 	pending, err := store.ListPendingAsyncInteractions(ctx, e.store, runID, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: re-check pending async interactions: %w", err)
 	}
 	if len(pending) > 0 {
-		return nil, fmt.Errorf("runtime: cannot resume — %d async question(s) still unanswered: %s (answer each pending question, keyed by its interaction id, or via POST /api/runs/{id}/interactions/{iid}/answer)", len(pending), pendingSummary(pending))
+		return nil, unansweredAwaitError(pending)
 	}
 
 	e.cancelSupersededAnswerMessages(ctx, runID, nodeID)
@@ -252,6 +259,34 @@ func (e *Engine) fanOutAwaitAnswers(ctx context.Context, runID, nodeID string, r
 	}
 	answers[delegate.AskUserQuestionKey] = text
 	return answers, nil
+}
+
+// refuseUnansweredAwait is fanOutAwaitAnswers's refusal read ahead of its
+// writes: the async questions still pending on nodeID that answers does not
+// answer — a pending question among refs that answers carries is answered by
+// the fan-out, any other stays pending.
+func (e *Engine) refuseUnansweredAwait(ctx context.Context, runID, nodeID string, refs []delegate.PendingAsync, answers map[string]any) error {
+	pending, err := store.ListPendingAsyncInteractions(ctx, e.store, runID, nodeID)
+	if err != nil {
+		return fmt.Errorf("runtime: check pending async interactions: %w", err)
+	}
+	carried := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if _, ok := answers[ref.InteractionID]; ok {
+			carried[ref.InteractionID] = true
+		}
+	}
+	still := slices.DeleteFunc(pending, func(in *store.Interaction) bool { return carried[in.ID] })
+	if len(still) > 0 {
+		return unansweredAwaitError(still)
+	}
+	return nil
+}
+
+// unansweredAwaitError is the refusal of an await_answers resume whose
+// questions are not all answered.
+func unansweredAwaitError(pending []*store.Interaction) error {
+	return fmt.Errorf("runtime: cannot resume — %d async question(s) still unanswered: %s (answer each pending question, keyed by its interaction id, or via POST /api/runs/{id}/interactions/{iid}/answer)", len(pending), pendingSummary(pending))
 }
 
 // cancelSupersededAnswerMessages cancels still-queued node-scoped answer

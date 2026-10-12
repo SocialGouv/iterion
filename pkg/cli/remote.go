@@ -282,7 +282,7 @@ func (c *RemoteClient) LoginWithPassword(ctx context.Context, email, password, p
 		return "", err
 	}
 	if code/100 != 2 {
-		return "", fmt.Errorf("login failed (HTTP %d): %s", code, firstLine(body))
+		return "", fmt.Errorf("login failed (HTTP %d): %s", code, describeErrorBody(body))
 	}
 	var lr struct {
 		AccessToken string `json:"access_token"`
@@ -296,7 +296,7 @@ func (c *RemoteClient) LoginWithPassword(ctx context.Context, email, password, p
 		return "", err
 	}
 	if code/100 != 2 {
-		return "", fmt.Errorf("could not mint a token (HTTP %d): %s", code, firstLine(body))
+		return "", fmt.Errorf("could not mint a token (HTTP %d): %s", code, describeErrorBody(body))
 	}
 	var pr struct {
 		Token string `json:"token"`
@@ -307,13 +307,12 @@ func (c *RemoteClient) LoginWithPassword(ctx context.Context, email, password, p
 	return pr.Token, nil
 }
 
+// firstLine is a body's first line, made fit for a terminal and bounded
+// (terminalText).
 func firstLine(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > 300 {
-		s = s[:300] + "…"
-	}
-	return s
+	return terminalText(strings.TrimSpace(s), 300)
 }

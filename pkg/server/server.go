@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -245,16 +247,21 @@ type Server struct {
 	runnerBuilds runnerBuildObserver
 	// botRoles / sandboxCfg are TTL resolvers over the platform settings
 	// families; the *Store fields are the write surfaces of the admin routes.
-	botRoles        *platformcfg.Resolver[platformcfg.BotRoles]
-	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
-	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
-	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
+	botRoles         *platformcfg.Resolver[platformcfg.BotRoles]
+	botRolesStore    platformcfg.Store[platformcfg.BotRoles]
+	runnerPoolsStore platformcfg.Store[platformcfg.RunnerPools]
+	sandboxCfg       *platformcfg.Resolver[platformcfg.Sandbox]
+	sandboxCfgStore  platformcfg.Store[platformcfg.Sandbox]
 	// platformCreds gates who may draw on the deployment's own LLM
 	// credentials; nil (or an unenforced record) admits every tenant.
 	platformCreds      *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	platformCredsStore platformcfg.Store[platformcfg.PlatformCredentials]
-	botVars            *platformcfg.Resolver[platformcfg.BotVars]
-	botVarsStore       platformcfg.Store[platformcfg.BotVars]
+	// routingPolicyStoreFor builds the store for one tenant's routing-
+	// policy document (ADR-121 delivery 2: "org:<id>" / "team:<id>") —
+	// nil in local mode, where no tenant level exists to fold.
+	routingPolicyStoreFor func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord]
+	botVars               *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore          platformcfg.Store[platformcfg.BotVars]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
 	platformBots *platformcfg.Resolver[platformBotSet]
@@ -548,6 +555,12 @@ type Server struct {
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
 
+	// forgeMergeOpsFor is a test seam overriding how the publish-review
+	// handler resolves a connection's merge-gate GESTURE capabilities
+	// (approve / arm auto-merge / add reviewers). Nil → real admin client
+	// via forgeAdminFor, capability-asserted.
+	forgeMergeOpsFor func(ctx context.Context, conn forge.Connection) (forgeMergeOps, error)
+
 	// forgeIssueCommenterFor is a test seam overriding how a connection's
 	// PR-comment client is resolved (the parked-review pause notice).
 	// Nil → real admin client via forgeAdminFor.
@@ -742,6 +755,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		pluginSourceFetcher: cfg.PluginSourceFetcher,
 		botSources:          cfg.BotSources,
 		botRolesStore:       cfg.BotRolesSettings,
+		runnerPoolsStore:    cfg.RunnerPoolsSettings,
 		sandboxCfgStore:     cfg.SandboxSettings,
 		platformCredsStore:  cfg.PlatformCredentialsSettings,
 		botVarsStore:        cfg.BotVarsSettings,
@@ -760,6 +774,17 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		usageCaps:           cfg.UsageCaps,
 		usageCapTrust:       usagecap.DefaultTrust(),
 		credUsage:           cfg.CredUsage,
+	}
+	// The tenant routing-policy levels (ADR-121 delivery 2): per-org and
+	// per-team policy documents in their own collection. No resolver, no
+	// TTL — one bounded point read per launch, and an outage refuses the
+	// launch instead of serving stale (serve-stale would lift cost
+	// governance on a blip).
+	if dbs, ok := cfg.Store.(interface{ DB() *mongo.Database }); ok && dbs.DB() != nil {
+		db := dbs.DB()
+		s.routingPolicyStoreFor = func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord] {
+			return platformcfg.NewMongoScoped[platformcfg.RoutingPolicyRecord](db, platformcfg.ColRoutingPolicies, docID)
+		}
 	}
 	// Platform settings families (bot_roles + sandbox): TTL resolvers over
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
@@ -856,6 +881,16 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.forgePublishTokens = NewForgePublishTokenRegistry()
 			s.gateSettles = newMemoryGateSettleStore(s.logger)
 			s.gateDecisions = newMemoryGateDecisionStore(s.logger)
+			// The same warning leaseStoreFor gives for the sweep's election: a
+			// cloud-shaped store without Valkey means the grant a run's publish
+			// POST authenticates with, and the authority that orders verdicts
+			// on one (sha, context), are per-replica. The POST landing on
+			// another replica is refused (401), and two replicas order the
+			// same check independently — said once at boot, not on every 401.
+			if _, cloud := cfg.Store.(gateSweepLister); cloud {
+				logger.Warn("server: no Valkey wired — forge publish grants and the gate verdict-order authority are per-replica: " +
+					"a run's publish POST landing on another replica is refused, and verdicts decided on different replicas are not ordered against each other")
+			}
 		}
 	}
 	// Auth rate limiter — eagerly built so the lazy `if s.authLimiter == nil`
@@ -936,6 +971,20 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// Repo-targeted runs merge in a server-side clone; the service
 		// needs the forge credential lookup to clone and push.
 		opts = append(opts, runview.WithForgeTokenResolver(s.forgeTokenForRun))
+		// D12 pre-stamp cohort: the conflict resolver refuses an
+		// unstamped run whose tenant is NOW pool-mapped — the current
+		// mapping is the only signal left for runs that predate the
+		// stamp. Same seam the publisher's launch resolver reads.
+		opts = append(opts, runview.WithCurrentPoolForTenant(func(ctx context.Context, tenantID string) (string, error) {
+			t, err := s.authStore().GetTeam(ctx, tenantID)
+			if errors.Is(err, identity.ErrNotFound) {
+				return "", nil
+			}
+			if err != nil {
+				return "", err
+			}
+			return t.RunnerPool, nil
+		}))
 		if cfg.StreamSource != nil {
 			opts = append(opts, runview.WithStreamSource(cfg.StreamSource))
 		}

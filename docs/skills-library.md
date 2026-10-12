@@ -73,6 +73,19 @@ prompt listing only the skills that node references (name + description). The
 skill body is loaded on demand by the agent from `.claude/skills/` — it is not
 inlined into the prompt.
 
+Each resolved skill is mirrored in **both** discovery shapes: the directory
+form `<workspace>/.claude/skills/<name>/SKILL.md` (what `claude_code`'s Skill
+tool discovers, per the Agent Skills spec) AND the flat alias
+`<workspace>/.claude/skills/<name>.md` (what a prompt Reading the skill by
+path resolves; `claw` reads either). This matches the bundle and plugin tiers
+so all three land the same shape and marker layout
+(`<name>.SKILL.md.sha256` + `<name>.md.sha256`). A workspace that predates
+the dual-shape mirror — only the directory form on disk — migrates cleanly:
+the dir-form entry reads as UpToDate (its content still hashes to its
+marker), the flat alias is created fresh, and the pre-existing dir-form file
+is preserved by the pruner (no `iterion-wrote` sidecar means not ours to
+remove).
+
 An unknown reference is **soft**: the compiler emits no error for a
 well-formed-but-absent name (compiles stay portable — CI without the library
 passes), and the runtime logs a warning and skips it. A malformed name (path

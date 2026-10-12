@@ -107,6 +107,7 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureNodeNotFound:        DispositionDeterministic, // the graph does not change between attempts
 	store.FailureLoopExhausted:       DispositionDeterministic, // the counter rides the checkpoint
 	store.FailureResumeInvalid:       DispositionDeterministic, // the resume spec itself is the problem
+	store.FailureScratchNotPortable:  DispositionDeterministic, // the scratch the resume needs is gone
 	store.FailureFailNode:            DispositionDeterministic, // the workflow refused on purpose
 	// The in-node recipe (recovery.ContextLengthRecipe) already compacted
 	// TWICE and gave up with "compaction did not reduce context enough to

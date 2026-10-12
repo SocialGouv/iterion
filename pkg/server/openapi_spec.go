@@ -105,6 +105,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		UsageCaps:                   usagecap.NewMemStore(),
 		BotSources:                  botsource.NewMemoryStore(),
 		BotRolesSettings:            platformcfg.NewMemoryStore[platformcfg.BotRoles](),
+		RunnerPoolsSettings:         platformcfg.NewMemoryStore[platformcfg.RunnerPools](),
 		SandboxSettings:             platformcfg.NewMemoryStore[platformcfg.Sandbox](),
 		BotVarsSettings:             platformcfg.NewMemoryStore[platformcfg.BotVars](),
 		PlatformCredentialsSettings: platformcfg.NewMemoryStore[platformcfg.PlatformCredentials](),

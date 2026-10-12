@@ -51,9 +51,5 @@ type RunRetryStore interface {
 // durable retry state, or nil otherwise. Callers MUST nil-check
 // (filesystem / local stores return nil).
 func AsRunRetryStore(s RunStore) RunRetryStore {
-	if s == nil {
-		return nil
-	}
-	r, _ := s.(RunRetryStore)
-	return r
+	return capability[RunRetryStore](s)
 }

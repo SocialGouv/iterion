@@ -122,6 +122,13 @@
           "minimum": 0,
           "type": "integer"
         },
+        "on_exceeded": {
+          "description": "What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word)",
+          "enum": [
+            "fail",
+            "pause"
+          ]
+        },
         "warn_tokens": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Advisory: crossing it emits budget_warning",
@@ -2237,7 +2244,7 @@
     },
     "supervisor": {
       "additionalProperties": false,
-      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
       "properties": {
         "cooldown": {
           "description": "Minimum delay between two evaluations, e.g. \"2m\"",
@@ -2251,7 +2258,7 @@
           "type": "integer"
         },
         "model": {
-          "description": "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars",
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
@@ -2647,7 +2654,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/supervisor"
       },
-      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
       "propertyNames": {
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       },

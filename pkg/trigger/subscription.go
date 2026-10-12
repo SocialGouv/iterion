@@ -9,6 +9,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
@@ -140,6 +141,10 @@ type Subscription struct {
 	RetryMaxAttempts int    `json:"retry_max_attempts,omitempty" bson:"retry_max_attempts,omitempty"`
 	RetryMaxWait     string `json:"retry_max_wait,omitempty" bson:"retry_max_wait,omitempty"`
 	RetryJitter      string `json:"retry_jitter,omitempty" bson:"retry_jitter,omitempty"`
+	// Routing is the subscription's routing block (ADR-121, pkg/llmroute) —
+	// the binding level for a trigger-provisioned bot, above the bot's
+	// manifest. nil = the level says nothing.
+	Routing *llmroute.Policy `json:"routing,omitempty" bson:"routing,omitempty"`
 	// Origin records where this subscription came from so dedup and cleanup
 	// are possible: "forge:<repo_integration_id>" (orchestrator-generated,
 	// deleted by Origin on deprovision), "operator" (studio), "schedule.yaml"
@@ -193,6 +198,16 @@ func (s Subscription) Policy() schedgate.Policy {
 		GuardVar:      s.GuardVar,
 		StaleAfter:    s.StaleAfter,
 	})
+}
+
+// RoutingPolicy projects the subscription's routing block (ADR-121). Not
+// normalized — one layer of a precedence chain; defaults filled here would
+// masquerade as an explicit binding-level choice.
+func (s Subscription) RoutingPolicy() llmroute.Policy {
+	if s.Routing == nil {
+		return llmroute.Policy{}
+	}
+	return *s.Routing
 }
 
 // RetryPolicy projects the subscription's retry fields. Not normalized —

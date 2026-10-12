@@ -306,6 +306,7 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 		KeyOverrides:    sub.KeyOverrides,
 		SecretOverrides: sub.SecretOverrides,
 		Retry:           sub.RetryPolicy(),
+		Routing:         sub.RoutingPolicy(),
 		Event: Event{
 			ID:         "schedule:" + sub.ID,
 			Source:     SourceSchedule,

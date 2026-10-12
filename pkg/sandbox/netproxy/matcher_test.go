@@ -268,3 +268,20 @@ func TestDefaultRulesAllowEveryAnthropicWireFacade(t *testing.T) {
 		}
 	}
 }
+
+// claw's OpenAI provider dials one of two hosts: api.openai.com with a key,
+// chatgpt.com (its chatgptCodexBaseURL) with a ChatGPT forfait — the run's
+// own, or the host's that ITERION_OPENAI_USE_OAUTH=1 sends into the sandbox.
+// A default allowlist holding only the first refuses every call of a node the
+// forfait serves, where the key alone would have gone through.
+func TestDefaultRulesAllowEveryOpenAIWireHost(t *testing.T) {
+	p, err := Compile(ModeAllowlist, iterionDefaultRules())
+	if err != nil {
+		t.Fatalf("compile the iterion-default preset: %v", err)
+	}
+	for _, host := range []string{"api.openai.com", "chatgpt.com"} {
+		if !p.Allow(host) {
+			t.Errorf("the iterion-default preset refuses %q — a sandboxed claw node spending its credential there fails on egress", host)
+		}
+	}
+}

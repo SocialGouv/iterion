@@ -1,0 +1,274 @@
+package server
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/audit"
+	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
+)
+
+// The F2 core at the route layer: the delegated caps route is a PATCH —
+// mapping the team to a sovereign pool and then PATCHing its caps must
+// leave the mapping standing. On the MEMORY twin this row is behavioural
+// only (value aliasing cannot express a stale-read erase — rva F5); the
+// bite lives in the mongo leg of the identity patch conformance and in
+// TestUpdateTeamHasNoProductionCallers, which makes the whole-doc revert
+// uncommittable.
+func TestOrgTeamCaps_PatchPreservesTheRunnerPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+
+	pool := "honorabilite"
+	if _, err := s.authStore().PatchTeam(context.Background(), "t1", identity.TeamPatch{RunnerPool: &pool}); err != nil {
+		t.Fatalf("map pool: %v", err)
+	}
+
+	req := orgReq(orgAdminCtx(), "PATCH", "/api/orgs/o1/teams/t1/caps", `{"max_concurrent_runs":2}`, "o1")
+	req.SetPathValue("team_id", "t1")
+	w := httptest.NewRecorder()
+	s.handleUpdateOrgTeamCaps(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("caps patch should pass: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	tm, err := s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tm.RunnerPool != "honorabilite" {
+		t.Fatalf("the caps patch erased the pool mapping: %+v", tm)
+	}
+	if tm.MaxConcurrentRuns != 2 {
+		t.Fatalf("the caps patch did not apply: %+v", tm)
+	}
+}
+
+// The only writer of the mapping: the super-admin route. Set, clear, and
+// grammar-refuse — audited, and refused for a team that does not exist.
+func TestAdminSetTeamRunnerPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+
+	call := func(body string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/t1/runner-pool", body, "t1")
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamRunnerPool(w, req)
+		return w
+	}
+
+	s.auditStore = audit.NewMemoryStore()
+	if w := call(`{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("map: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.RunnerPool != "honorabilite" {
+		t.Fatalf("map did not stick: %+v %v", tm, err)
+	}
+	// The trail lands in BOTH scopes (rva-2 F3: both calls could be deleted
+	// and the suite stayed green): the tenant row keyed by the team, the org
+	// mirror keyed by the org — each carrying the previous value.
+	// The insert rides goSafe (async) — poll for the rows instead of
+	// asserting on the tick.
+	var rows, orgRows []audit.Event
+	for i := 0; i < 100; i++ {
+		rows, _ = s.auditStore.ListByTenant(context.Background(), "t1", audit.Page{Action: "team.runner_pool_set"})
+		orgRows, _ = s.auditStore.ListByTenant(context.Background(), "o1", audit.Page{Action: "team.runner_pool_set"})
+		if len(rows) == 1 && len(orgRows) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("tenant trail: want 1 row, got %d", len(rows))
+	}
+	if len(orgRows) != 1 {
+		t.Fatalf("org mirror: want 1 row, got %d", len(orgRows))
+	}
+	if got := orgRows[0].Meta["previous"]; got != "" {
+		t.Fatalf("the trail must answer what the team WAS, got previous=%v", got)
+	}
+
+	if w := call(`{"runner_pool":""}`); w.Code != http.StatusOK {
+		t.Fatalf("unmap: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.RunnerPool != "" {
+		t.Fatalf("unmap did not stick: %+v %v", tm, err)
+	}
+
+	if w := call(`{"runner_pool":"Bad_Name"}`); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a malformed name must 422: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call(`{}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("a missing runner_pool must 400: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/ghost/runner-pool", `{"runner_pool":"p"}`, "ghost")
+	w := httptest.NewRecorder()
+	s.handleAdminSetTeamRunnerPool(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("an unknown team must 404: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The only writer of the credential-fallback policy: set the sovereign
+// posture, reset to the default, grammar-refuse the rest — audited in both
+// scopes, and refused for a team that does not exist.
+func TestAdminSetTeamLLMFallback(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+
+	call := func(body string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/t1/llm-fallback", body, "t1")
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamLLMFallback(w, req)
+		return w
+	}
+
+	s.auditStore = audit.NewMemoryStore()
+	if w := call(`{"llm_fallback":"none"}`); w.Code != http.StatusOK {
+		t.Fatalf("set none: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.LLMFallback != identity.LLMFallbackNone {
+		t.Fatalf("the sovereign posture did not stick: %+v %v", tm, err)
+	}
+	var rows, orgRows []audit.Event
+	for i := 0; i < 100; i++ {
+		rows, _ = s.auditStore.ListByTenant(context.Background(), "t1", audit.Page{Action: "team.llm_fallback_set"})
+		orgRows, _ = s.auditStore.ListByTenant(context.Background(), "o1", audit.Page{Action: "team.llm_fallback_set"})
+		if len(rows) > 0 && len(orgRows) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(rows) != 1 || len(orgRows) != 1 {
+		t.Fatalf("the trail must land in BOTH scopes: tenant=%d org=%d", len(rows), len(orgRows))
+	}
+	if got := rows[0].Meta["previous"]; got != "" {
+		t.Fatalf("the trail must answer what the policy WAS, got previous=%v", got)
+	}
+
+	if w := call(`{"llm_fallback":"platform"}`); w.Code != http.StatusOK {
+		t.Fatalf("reset to platform: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.LLMFallback != identity.LLMFallbackPlatform {
+		t.Fatalf("the platform reset did not stick: %+v %v", tm, err)
+	}
+
+	if w := call(`{"llm_fallback":""}`); w.Code != http.StatusOK {
+		t.Fatalf("clear: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t1"); err != nil || tm.LLMFallback != "" {
+		t.Fatalf("the clear did not stick: %+v %v", tm, err)
+	}
+
+	if w := call(`{"llm_fallback":"sovereign"}`); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unknown policy must 422: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call(`{}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("a missing llm_fallback must 400: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/ghost/llm-fallback", `{"llm_fallback":"none"}`, "ghost")
+	w := httptest.NewRecorder()
+	s.handleAdminSetTeamLLMFallback(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("an unknown team must 404: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The mapping route consults the REGISTRY: a pool it does not know is
+// refused (422) even though the grammar is fine — mapping to a pool that
+// does not exist would refuse every launch forever. Wiring a registry on
+// the test server proves both arms. Red when the existence check is
+// dropped.
+func TestAdminSetTeamRunnerPool_RequiresARegisteredPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	s.runnerPoolsStore = platformcfg.NewMemoryStore[platformcfg.RunnerPools]()
+	if err := s.runnerPoolsStore.Put(context.Background(), platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{
+		{Name: "honorabilite", State: platformcfg.RunnerPoolProvisioning},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(pool string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/t1/runner-pool", `{"runner_pool":"`+pool+`"}`, "t1")
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamRunnerPool(w, req)
+		return w
+	}
+	if w := call("ghost-pool"); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unregistered pool must 422: code=%d body=%s", w.Code, w.Body.String())
+	}
+	// A PROVISIONING pool maps fine — the launch refuses until active, the
+	// mapping itself is the operator's intent and may precede the topology.
+	if w := call("honorabilite"); w.Code != http.StatusOK {
+		t.Fatalf("a registered pool must map: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// D13's one-team-per-pool invariant: a second team mapping onto a held
+// pool is refused (409) with the holder named and nothing sticking;
+// the holder unmapping frees the pool; a team re-mapping itself is
+// fine. Red when the holder check is dropped.
+func TestAdminSetTeamRunnerPool_OneTeamPerPool(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	s.auditStore = audit.NewMemoryStore()
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "t2", Name: "t2", Slug: "t2", OrgID: "o1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed t2: %v", err)
+	}
+
+	call := func(teamID, body string) *httptest.ResponseRecorder {
+		req := orgReq(superAdminCtx(), http.MethodPut, "/api/admin/teams/"+teamID+"/runner-pool", body, teamID)
+		w := httptest.NewRecorder()
+		s.handleAdminSetTeamRunnerPool(w, req)
+		return w
+	}
+
+	if w := call("t1", `{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("holder map: code=%d body=%s", w.Code, w.Body.String())
+	}
+	w := call("t2", `{"runner_pool":"honorabilite"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("second team onto a held pool: code=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "t1") {
+		t.Fatalf("the refusal must name the holder: %s", w.Body.String())
+	}
+	if tm, err := s.authStore().GetTeam(context.Background(), "t2"); err != nil || tm.RunnerPool != "" {
+		t.Fatalf("the refused mapping must not stick: %+v %v", tm, err)
+	}
+	if w := call("t1", `{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("a team re-mapping itself must pass: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call("t1", `{"runner_pool":""}`); w.Code != http.StatusOK {
+		t.Fatalf("unmap: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := call("t2", `{"runner_pool":"honorabilite"}`); w.Code != http.StatusOK {
+		t.Fatalf("map after the pool frees: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The llm-fallback route is registered behind requireSuperAdmin; this pins
+// the middleware wiring through the PRODUCTION route stack: a plain team
+// member gets 403 before the handler speaks, and a super-admin reaches the
+// handler (404 on a team that does not exist — the handler's answer, not
+// the gate's).
+func TestAdminSetTeamLLMFallback_SuperAdminOnly(t *testing.T) {
+	_, _, _, _, hs, adminTok, userTok := newAdminLLMServerWith(t)
+
+	if code, _ := llmDo(t, hs, http.MethodPut, "/api/admin/teams/t1/llm-fallback", userTok, `{"llm_fallback":"none"}`); code != http.StatusForbidden {
+		t.Fatalf("member PUT = %d, want 403 — the gate must speak before the handler", code)
+	}
+	if code, _ := llmDo(t, hs, http.MethodPut, "/api/admin/teams/t1/llm-fallback", adminTok, `{"llm_fallback":"none"}`); code == http.StatusForbidden {
+		t.Fatal("super-admin PUT = 403 — the gate ate the super-admin")
+	}
+}

@@ -222,6 +222,48 @@ type Team struct {
 	// LaunchRatePerMin caps run-launch requests per minute (token
 	// bucket, burst = the same value).
 	LaunchRatePerMin int `bson:"launch_rate_per_min,omitempty" json:"launch_rate_per_min,omitempty"`
+
+	// RunnerPool names the sovereign runner pool (#2029) every run of this
+	// team MUST execute on. Empty = the shared default pool. Written ONLY
+	// through the super-admin runner-pool route (PatchTeam $set): the other
+	// team writers are whole-document replaces whose stale copy would
+	// silently unmap the team — the field survives them only once they are
+	// patches too. The publisher reads it FRESH and refuses the launch on a
+	// store error: an unmapped read must never fail open onto the shared
+	// pool.
+	RunnerPool string `bson:"runner_pool,omitempty" json:"runner_pool,omitempty"`
+
+	// LLMFallback names the team's credential-fallback policy. Empty (or
+	// LLMFallbackPlatform, the default) walks the shared tiers — org, pool,
+	// platform — as always. LLMFallbackNone is the sovereign posture: the
+	// launch consults ONLY the team's own credentials (its BYOK keys, its
+	// OAuth forfaits), and an LLM route nothing of the team's funds refuses
+	// the launch by name — no shared credential is ever sealed into the
+	// team's runs. Written ONLY through the super-admin llm-fallback route
+	// (PatchTeam $set): like RunnerPool, the other team writers are
+	// whole-document replaces that would silently reset the policy. The
+	// publisher reads it FRESH and refuses the launch on a store error or
+	// an unknown value.
+	LLMFallback string `bson:"llm_fallback,omitempty" json:"llm_fallback,omitempty"`
+}
+
+// Credential-fallback policies a team may hold on Team.LLMFallback. The
+// empty value reads as LLMFallbackPlatform: the shared tiers stay the
+// fallback chain.
+const (
+	LLMFallbackPlatform = "platform"
+	LLMFallbackNone     = "none"
+)
+
+// ValidLLMFallback reports whether s is a policy the publisher honours. An
+// unknown value is never read as the default — the launch refuses naming
+// it (a typo'd boundary field must not silently re-open the shared tiers).
+func ValidLLMFallback(s string) bool {
+	switch s {
+	case "", LLMFallbackPlatform, LLMFallbackNone:
+		return true
+	}
+	return false
 }
 
 // EffectiveStatus treats an empty status (legacy rows) as active.
@@ -475,9 +517,13 @@ type OIDCLink struct {
 // translate these to HTTP status codes (Not Found → 404, Conflict
 // → 409, etc.) without leaking internals.
 var (
-	ErrNotFound            = errors.New("identity: not found")
-	ErrEmailAlreadyTaken   = errors.New("identity: email already taken")
-	ErrSlugAlreadyTaken    = errors.New("identity: team slug already taken")
+	ErrNotFound          = errors.New("identity: not found")
+	ErrEmailAlreadyTaken = errors.New("identity: email already taken")
+	ErrSlugAlreadyTaken  = errors.New("identity: team slug already taken")
+	// ErrRunnerPoolHeld is the one-team-per-pool invariant (#2029 D13)
+	// rejecting a mapping at write time — the partial unique index on
+	// teams.runner_pool speaking, or the memory store's own check.
+	ErrRunnerPoolHeld      = errors.New("identity: runner pool already held by another team")
 	ErrOrgSlugAlreadyTaken = errors.New("identity: org slug already taken")
 	ErrInvalidRole         = errors.New("identity: invalid role")
 	ErrInvitationUsed      = errors.New("identity: invitation already accepted")
@@ -534,15 +580,34 @@ func SlugifyTeamName(name string) string {
 type TeamPatch struct {
 	Name *string
 	Slug *string
+	// OrgID, when non-nil, relinks the team to an org (or, pointing at "",
+	// unlinks it — the reverse-migration path).
+	OrgID *string
 	// Status, when non-nil, sets the lifecycle status AND derives the
 	// suspension trio from it: stamped when suspending, cleared otherwise.
 	Status        *TeamStatus
 	SuspendedBy   string
 	SuspendReason string
+	// RunnerPool, when non-nil, sets (or, pointing at "", clears) the
+	// team's sovereign runner pool. A pointer, not a value: "" is a
+	// meaningful write (unmap) and must be distinguishable from "leave
+	// untouched".
+	RunnerPool *string
+	// LLMFallback, when non-nil, sets (or, pointing at "", resets to the
+	// platform default) the team's credential-fallback policy. Same pointer
+	// rule as RunnerPool: "" is a meaningful write.
+	LLMFallback *string
+	// MaxConcurrentRuns / LaunchRatePerMin, when non-nil, set the team's
+	// executor caps (nil = untouched; the caps route is the writer).
+	MaxConcurrentRuns *int
+	LaunchRatePerMin  *int
 }
 
 // Empty reports whether the patch would write nothing.
-func (p TeamPatch) Empty() bool { return p.Name == nil && p.Slug == nil && p.Status == nil }
+func (p TeamPatch) Empty() bool {
+	return p.Name == nil && p.Slug == nil && p.OrgID == nil && p.Status == nil &&
+		p.RunnerPool == nil && p.LLMFallback == nil && p.MaxConcurrentRuns == nil && p.LaunchRatePerMin == nil
+}
 
 // OrgPatch is TeamPatch's org-level twin, for the same reason: the org
 // settings, the credential audience and the super-admin plan fields are

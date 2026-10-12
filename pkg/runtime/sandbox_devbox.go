@@ -88,12 +88,12 @@ const (
 	botDevboxDir = "/tmp/iterion-devbox/bot"
 
 	// fallbackContainerPATH is the base the devbox bin dirs prepend to
-	// when neither the workflow's `sandbox.env:` block nor a
-	// devcontainer's containerEnv declares a PATH. It is the FHS default
-	// every iterion sandbox image (Debian-derived) ships. An image with a
-	// non-standard PATH declares `sandbox.env.PATH:` — that value is kept
-	// as the suffix, so the prepend never drops an entry the author asked
-	// for.
+	// when the workflow's `sandbox.env:` block declares no PATH (a
+	// devcontainer's containerEnv.PATH is denied outright — see
+	// devcontainer.DeniedEnvKey). It is the FHS default every iterion
+	// sandbox image (Debian-derived) ships. An image with a non-standard
+	// PATH declares `sandbox.env.PATH:` — that value is kept as the
+	// suffix, so the prepend never drops an entry the author asked for.
 	fallbackContainerPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 

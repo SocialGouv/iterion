@@ -73,6 +73,34 @@ func Scenarios() []Scenario {
 		"feature_prompt": "add Answer() int returning 42 in answer.go",
 	}
 	campaigns = append(campaigns, featureDev)
+	// gitops-warden: hand-authored classify fixtures (the classify node is a
+	// claude_code judge over a diff; recording it live pays for one verdict
+	// of exactly the shape the fold already exercises in
+	// bots/gitops_warden_gate_test.go). Frozen against classify_output: the
+	// closed verdict vocabulary, per-file classes, platform findings.
+	warden := []Scenario{
+		{
+			Bot: "gitops-warden", Name: "classify_clean", Node: "classify",
+			RequiredNonEmpty: []string{"files", "summary"},
+			Vars:             map[string]string{"workspace_dir": "/ws"},
+			Input: map[string]any{
+				"files":         `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
+				"changed_files": "1", "policy_body": "", "policy_source": "default",
+				"scope_notes": "bump the API image", "source_branch": "chore/bump-image", "pr_author": "dev-produit",
+			},
+		},
+		{
+			Bot: "gitops-warden", Name: "classify_escalate", Node: "classify",
+			RequiredNonEmpty: []string{"files", "summary"},
+			Vars:             map[string]string{"workspace_dir": "/ws"},
+			Input: map[string]any{
+				"files":         `[{"path":"charts/valkey/d.yaml","status":"A","ext":"yaml","added":40,"removed":0,"key_paths":[],"candidate":false},{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":4,"removed":1,"key_paths":["image","resources"],"candidate":true}]`,
+				"changed_files": "2", "policy_body": "", "policy_source": "default",
+				"scope_notes": "add a cache", "source_branch": "feat/cache", "pr_author": "dev-produit",
+			},
+		},
+	}
+	campaigns = append(campaigns, warden...)
 	return append(campaigns,
 		Scenario{
 			Bot:              "copilot",

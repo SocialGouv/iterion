@@ -44,6 +44,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
@@ -163,6 +164,20 @@ type Config struct {
 	// cannot attribute (no model prefix, no provider hint, `auto`, a hint
 	// outside the vocabulary) is never refused, on or off.
 	RequireLLMCredential bool
+	// RunnerPools, when non-nil, is the sovereign-pool registry: a mapped
+	// team's launch routes only when the registry knows the pool AND its
+	// state is active. Nil means no registry exists — no pool can be
+	// mapped, so every team reads as unmapped (the adjusted F10 shape).
+	// A registry read ERROR with a mapped team REFUSES: routing is a
+	// boundary, never served from a stale cache.
+	RunnerPools RunnerPoolResolver
+}
+
+// RunnerPoolResolver is the slice of the sovereign-pool registry the
+// publisher needs: a fresh registry read (never cached — routing is a
+// boundary).
+type RunnerPoolResolver interface {
+	Get(ctx context.Context) (*platformcfg.RunnerPools, error)
 }
 
 // TeamResolver is the slice of the identity store the publisher needs
@@ -180,7 +195,7 @@ type Publisher struct {
 	// publishRetryDelays is nil in production (the bounded default below).
 	// Tests replace it with zero delays while exercising the same choke point.
 	publishRetryDelays []time.Duration
-	cancelRun          func(string) error
+	cancelRun          func(string, store.LeaseIdentity) error
 	// maxPayload reports the NATS server-negotiated max message size so
 	// the offload path can size a RunMessage against it. Nil (the default
 	// in unit tests) disables IR offload — the message is published as-is.
@@ -206,6 +221,7 @@ type Publisher struct {
 	trust                usagecap.Trust
 	usageProbe           UsageProbe
 	identity             TeamResolver
+	pools                RunnerPoolResolver
 	requireLLMCredential bool
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -289,6 +305,101 @@ func (p *Publisher) orgIDForTeam(ctx context.Context, teamID string) string {
 	return t.OrgID
 }
 
+// ErrPoolRemapped marks a resume refused because the team's runner-pool
+// mapping has moved past the run's frozen stamp. It is PERMANENT: the retry
+// sweeper abandons (never re-arms) a resume failing with it — re-arming
+// would flip the doc queued→failed every cycle until the attempt budget
+// burned, on a refusal no retry can cure.
+var ErrPoolRemapped = errors.New("cloudpublisher: the run's runner pool no longer matches its team's mapping")
+
+// poolRoutes decides whether a team's frozen pool may route right now: the
+// registry must know the pool AND its state must be active (the operator's
+// explicit "runners for this pool are deployed and consuming" — plan v2.1
+// D4' lifecycle). A registry read error refuses; an unknown or non-active
+// pool refuses naming its state. No registry wired at all with a mapped
+// team also refuses: routing without an explicit registry is the leak this
+// slice exists to make impossible.
+func (p *Publisher) poolRoutes(ctx context.Context, pool string) error {
+	if pool == "" {
+		return nil
+	}
+	if p.pools == nil {
+		return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but no pool registry is wired — refusing (routing requires an explicit registry entry in state active)", pool)
+	}
+	rec, err := p.pools.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("cloudpublisher: read the runner-pool registry for pool %q: %w (refusing)", pool, err)
+	}
+	if rec == nil {
+		return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but the registry holds no pools — refusing", pool)
+	}
+	for i := range rec.Pools {
+		if rec.Pools[i].Name != pool {
+			continue
+		}
+		if rec.Pools[i].State != platformcfg.RunnerPoolActive {
+			return fmt.Errorf("cloudpublisher: runner pool %q is %q — routing requires state %q (the operator flips it when the pool's runners are deployed and consuming)", pool, rec.Pools[i].State, platformcfg.RunnerPoolActive)
+		}
+		return nil
+	}
+	return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but the registry does not know it — refusing", pool)
+}
+
+// runnerPoolForTeam names the runner pool the team is CURRENTLY mapped to,
+// reading the team FRESH — never the 5-min org cache: a mapping is a
+// security boundary, and a stale "unmapped" answer would route the run
+// onto the shared pool. A store error REFUSES the launch (fail closed);
+// only a definitive answer (mapped or not) lets it proceed.
+func (p *Publisher) runnerPoolForTeam(ctx context.Context, teamID string) (string, error) {
+	if teamID == "" {
+		return "", nil
+	}
+	// p.identity == nil reads as "this deployment has no identity seam at
+	// all" — and therefore NO mapping table: no team can be mapped, so the
+	// only possible answer is the shared default. (The fail-closed case that
+	// matters is a STORE ERROR with the seam wired, refused above; prod
+	// wires the store at cmd/iterion/server.go.)
+	if p.identity == nil {
+		return "", nil
+	}
+	t, err := p.identity.GetTeam(ctx, teamID)
+	if errors.Is(err, identity.ErrNotFound) {
+		// A definitive answer: the team row does not exist, so it cannot be
+		// mapped — the shared default applies. (The CI smoke launches under
+		// exactly this shape.) A store that cannot ANSWER is the different
+		// case below, and it refuses.
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cloudpublisher: resolve runner pool for team %s: %w (refusing the launch — the pool mapping must be known, never guessed)", teamID, err)
+	}
+	return t.RunnerPool, nil
+}
+
+// llmFallbackForTeam names the team's credential-fallback policy, read FRESH
+// — the same boundary discipline as the pool mapping above: a stale or
+// guessed answer would seal platform credentials into a sovereign team's
+// runs. A store error refuses (fail closed); so does an unknown value, which
+// is never read as the default.
+func (p *Publisher) llmFallbackForTeam(ctx context.Context, teamID string) (string, error) {
+	if teamID == "" || p.identity == nil {
+		return "", nil
+	}
+	t, err := p.identity.GetTeam(ctx, teamID)
+	if errors.Is(err, identity.ErrNotFound) {
+		// A definitive answer: no team row, no policy — the platform
+		// default applies (the CI smoke launches under exactly this shape).
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cloudpublisher: resolve llm fallback for team %s: %w (refusing the launch — the policy must be known, never guessed)", teamID, err)
+	}
+	if !identity.ValidLLMFallback(t.LLMFallback) {
+		return "", fmt.Errorf("cloudpublisher: team %s carries an unknown llm_fallback policy %q — refusing the launch (set a valid policy with PUT /api/admin/teams/%s/llm-fallback)", teamID, t.LLMFallback, teamID)
+	}
+	return t.LLMFallback, nil
+}
+
 // New builds a Publisher.
 func New(cfg Config) (*Publisher, error) {
 	if cfg.NATS == nil {
@@ -332,6 +443,7 @@ func New(cfg Config) (*Publisher, error) {
 		trust:                cfg.UsageCapTrust.Normalized(),
 		usageProbe:           cfg.UsageProbe,
 		identity:             cfg.Identity,
+		pools:                cfg.RunnerPools,
 		requireLLMCredential: cfg.RequireLLMCredential,
 	}, nil
 }
@@ -434,7 +546,7 @@ var errUntrustedRequiresSecrets = errors.New("untrusted workspace cannot be give
 // bundle. It is a required parameter rather than a field read from somewhere
 // convenient precisely so a future caller cannot omit it: the compiler asks
 // every call site who wrote the code this bundle is about to be handed to.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry, trust store.RunTrust, pinnedProviders []string) (credResolution, error) {
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID, runnerPool string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry, trust store.RunTrust, pinnedProviders []string, routePolicy *store.RunLLMRoutePolicy) (credResolution, error) {
 	// The launch-frozen pinned set (store.Run.PinnedProviders), passed in
 	// rather than derived here: the resume path must replay the launch's
 	// answer, not re-derive it from a source that may have moved. Only the
@@ -455,6 +567,17 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 		return credResolution{}, nil
 	}
+	// The team's credential-fallback policy, read fresh at every resolution
+	// (launch and resume alike): "none" walks only the team's own tiers and
+	// arms the strict per-provider refusal below. A second fresh GetTeam
+	// after the caller's pool read: the policy rides the same boundary
+	// discipline, and the indexed _id read costs less than threading
+	// another parameter through every walk caller.
+	llmFallback, err := p.llmFallbackForTeam(ctx, tenantID)
+	if err != nil {
+		return credResolution{}, err
+	}
+	sovereign := llmFallback == identity.LLMFallbackNone
 	// The BYOK audience — and ONLY it — compares canonical spellings.
 	//
 	// A previous revision folded `botID` itself. That was a defect: the same
@@ -508,29 +631,41 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// policy's `auto` asks each tier whether it holds an Anthropic-native
 	// credential, lazily — a tier the question never reaches costs no read.
 	policy := p.sharedTierPolicyFor(ctx)
+	// The adaptive-routing whitelist (ADR-121 §1, slice 3): the launch's
+	// RESOLVED policy — the spec's snapshot on a launch, the run doc's
+	// frozen one on a resume — names the (harness, credential) pairs a run
+	// may occupy; a slot no listed pair names is invisible to every tier.
+	// nil (an unwired launch) admits everything: today's behavior.
+	if routePolicy != nil {
+		policy = policy.withSlotWhitelist(routePolicy.PairOrder)
+	}
 	// The probes stay unread for an env-funded run: no tier is consulted.
 	var tenantNative, orgNative, platformNative *tierNative
 	if envFunded {
 		// An env-funded run consults no tier, and the facade question is
 		// theirs: the probes stay unread.
-		policy.runNative = nil
 	} else {
 		tenantOwners := []string{ownerID}
 		if tenantID != "" {
 			tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(tenantID))
 		}
 		tenantNative = p.newTierNative(ctx, "tenant", tenantID, audienceBotID, tenantOwners...)
-		platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
-		if orgID != "" {
-			orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+		// D13: a pool team's launch consults no shared tier — their
+		// natives stay unread exactly like the fill below skips them.
+		if runnerPool == "" {
+			platformNative = p.newTierNative(ctx, "platform", secrets.PlatformTenantID, audienceBotID, secrets.PlatformOwnerKey)
+			if orgID != "" {
+				orgNative = p.newTierNative(ctx, "org", secrets.OrgTierTenantID(orgID), audienceBotID, secrets.OrgTierOwnerKey(orgID))
+			}
 		}
-		// `auto` is the RUN's question, not a tier's (#1998): a native credential
-		// ANY tier holds — the team's own forfait or key, the org tier's, the
-		// platform tier's — keeps every tier's facade key off the wire's default.
-		// The composite is asked through the policy value the fill, the restore
-		// and the platform stage all receive.
-		policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
 	}
+	// `auto` is the RUN's question, not a tier's (#1998): a native credential
+	// ANY tier holds — the team's own forfait or key, the org tier's, the
+	// platform tier's — keeps every tier's facade key off the wire's default.
+	// The composite is asked through the policy value the fill, the restore
+	// and the platform stage all receive.
+	policy.runNative = orNative(orNative(tenantNative, orgNative), platformNative)
+
 	// Deferred, not called after the walk: a walk that returns an error exits
 	// before any trailing statement, and a launch that fails while a key was
 	// withheld is exactly when the reason matters most. Said once, whichever
@@ -538,11 +673,25 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// a team that scopes its keys at all.
 	defer func() { withheld.warn(p, runID) }()
 	res := credResolution{}
-	err := walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
+	err = walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
 		func() bool { return res.grant != nil }, func(tier credentialTier) error {
 			if envFunded && tier != credentialTierGeneric {
 				// Nothing on this tier funds an openai_compatible route.
 				return nil
+			}
+			if runnerPool != "" || sovereign {
+				switch tier {
+				case credentialTierOrg, credentialTierPool, credentialTierPlatform:
+					// D13 (a pool team) and llm_fallback=none (the sovereign
+					// posture): the team's bundle never carries shared-tier
+					// credentials — a pool pod would hold other tenants'
+					// keys, and a sovereign team lends nothing from the
+					// platform. The team's own tiers (BYOK, workflow secrets,
+					// its OAuth forfaits) and the restore of its own prior
+					// bundle walk as usual; a route nothing of the team's
+					// funds refuses the launch with the remedy named.
+					return nil
+				}
 			}
 			switch tier {
 			case credentialTierBYOK:
@@ -569,6 +718,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					usedIDs := make([]string, 0, len(resolved))
 					for prov, r := range resolved {
 						if len(r.Plaintext) == 0 {
+							continue
+						}
+						// The adaptive-routing whitelist: an unlisted slot is
+						// never SEALED by this tier (the resolve above read it —
+						// a refused unlisted key may note a reopening).
+						if !policy.sealableSlot(slotOfProvider(prov)) {
 							continue
 						}
 						bundle.APIKeys[prov] = string(r.Plaintext)
@@ -734,6 +889,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							if _, exists := bundle.OAuthCredentials[string(rec.Kind)]; exists {
 								continue
 							}
+							// The adaptive-routing whitelist: an unlisted slot is
+							// never SEALED by this tier, and remembered by no skip
+							// (the restore is gated by the same predicate). The
+							// store read above still happened — an unlisted slot's
+							// refusal may note a reopening in the skip tracker.
+							if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+								continue
+							}
 							payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 							if err != nil {
 								p.logger.Warn("cloudpublisher: unseal oauth %s/%s: %v", rec.UserID, rec.Kind, err)
@@ -798,17 +961,29 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						// the runner cannot tell a donation from the tenant's own.
 						switch grant.Source {
 						case credpool.SourceOAuth:
-							// The donor's own credential identity, so the borrower's
-							// meter follows the lent subscription rather than the slot
-							// it landed in: a donor who reconnects a fresh one is not
-							// parked by the readings of the account it replaced. The
-							// donor's record rides along: the borrower's runner
-							// follows it instead of exchanging the donor's token.
-							setOAuthCredential(&bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
-							bundle.PoolSourced[grant.Ref] = true
+							// The adaptive-routing whitelist: an unlisted slot
+							// refuses the GRANT (the donation returns to the
+							// pool's own accounting — acquireFromPool leased it,
+							// and the lease's release reads the bundle, so an
+							// unsealed grant releases cleanly).
+							if policy.sealableSlot(slotOfKind(grant.Ref)) {
+								// The donor's own credential identity, so the borrower's
+								// meter follows the lent subscription rather than the slot
+								// it landed in: a donor who reconnects a fresh one is not
+								// parked by the readings of the account it replaced. The
+								// donor's record rides along: the borrower's runner
+								// follows it instead of exchanging the donor's token.
+								setOAuthCredential(&bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
+								bundle.PoolSourced[grant.Ref] = true
+							}
 						case credpool.SourceAPIKey:
 							prov := secrets.Provider(grant.Ref)
-							bundle.APIKeys[prov] = string(grant.Payload)
+							// The adaptive-routing whitelist (same gate as its
+							// OAuth sibling above): an unlisted slot refuses the
+							// grant, and the unsealed lease releases cleanly.
+							if policy.sealableSlot(slotOfProvider(prov)) {
+								bundle.APIKeys[prov] = string(grant.Payload)
+							}
 							// The lent key's own audit identity — the donor record's
 							// stamp, falling back to the hash the runner derives for a
 							// record stored before stamping — so the GRANTED line, the
@@ -902,6 +1077,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							if !ok || restoreTierOf(sk.org, sk.platform) != tier {
 								continue
 							}
+							// The whitelist gates the restore like the fill: an
+							// unlisted slot never comes back.
+							if !policy.sealableSlot(slotOfProvider(prov)) {
+								continue
+							}
 							outcome := sealDefault
 							if tier == restoreTierTenant {
 								if taken[secrets.WireFamily(string(prov))] {
@@ -917,13 +1097,26 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
 									continue
 								}
+								familyTaken := taken[secrets.WireFamily(string(prov))]
 								// The shared tier's own rule, facade policy
 								// included: "nothing else serves the wire"
 								// must not hand back as the default a key the
 								// fill keeps off it.
-								outcome = sealDecision(prov, taken[secrets.WireFamily(string(prov))], pinnedSet[strings.ToLower(string(prov))],
+								outcome = sealDecision(prov, familyTaken, pinnedSet[strings.ToLower(string(prov))],
 									func() bool { return policy.facadeMayDefault(natives[tier]) })
 								if outcome == sealNone {
+									continue
+								}
+								// refused_pinned_key (#1999, ADR-121): under
+								// the default `forfait`, a refused key stays
+								// out of a family another credential holds —
+								// the routes naming its provider spend that
+								// holder instead of parking on the key's own
+								// refusal. Facades are out of the knob's scope
+								// (no forfait alternative) and always come
+								// back; `park` restores as before.
+								if outcome == sealPinnedOnly && policy.restoreRefusedKey(prov, familyTaken) {
+									p.logger.Info("cloudpublisher: refused api-key for run=%s provider=%s stays OUT (refused_pinned_key=forfait): %s serves the routes naming it — set refused_pinned_key=park to restore it", runID, prov, familyHolderName(&bundle, prov))
 									continue
 								}
 							}
@@ -933,6 +1126,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					restoreForfaits := func(tier restoreTier) {
 						for kind, sf := range skippedForfaits {
 							if restoreTierOf(sf.org, sf.platform) != tier || taken[secrets.WireFamily(kind)] {
+								continue
+							}
+							if !policy.sealableSlot(slotOfKind(kind)) {
 								continue
 							}
 							setOAuthCredential(&bundle, kind, sf.payload, sf.fp, sf.id, sf.connectedAt)
@@ -985,6 +1181,93 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		return credResolution{}, err
 	}
 	res.skippedReopensAt = skips.earliest
+
+	// The routing fallback door (ADR-121 § Delivery 2, slice 5): a run
+	// that holds its own credential can still have a policy ladder whose
+	// rungs name a kind the bundle lacks — those rungs would drop at
+	// materialization, silently. When a donor consented (`fallback_use`),
+	// ONE grant of the missing kind seals here, BEFORE HeldPairs reads
+	// the bundle below, so the granted pair becomes HELD and its rungs
+	// materialize like any other. The whole-bundle tier above is
+	// untouched: this runs only after it declined (res.grant == nil), and
+	// never on an env-funded run or an empty bundle (the pool tier's own
+	// condition — a run with nothing acquires through it, not the door).
+	res.doorGrant = p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, routePolicy, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, policy.sealableSlot)
+
+	// The adaptive-routing ladder (ADR-121 §1, slice 3): the held pairs in
+	// policy order, materialized onto the program through the SAME screen
+	// ApplyRunFallback applies. The publisher's answer is ADVISORY — it
+	// feeds the derivations below, which read the node fallbacks this call
+	// lands; the runner re-applies the screen as the authority on its
+	// recompiled program (the publish serializes source, not IR). The
+	// computed stages ride the RunMessage beside the operator's chain
+	// (res.Ladder), flagged Policy so the preflight judges their spend.
+	// envFunded above already read the PRE-ladder program: what it decided
+	// (acquire nothing) is what makes the selection idle.
+	if routePolicy != nil && wf != nil && len(routePolicy.Triggers) > 0 {
+		// A CLAMPED-EMPTY trigger set is the "never switch" answer: no
+		// ladder at all. (The wire's On would otherwise round-trip empty
+		// into the chain DEFAULT set — the ceiling's forbidden triggers
+		// armed, the slice-3 review's M4.)
+		held := llmroute.HeldPairs(routePolicy.PairOrder, doorServes(bundle))
+		if len(held) > 0 {
+			stages := make([]ir.PolicyLadderStage, 0, len(held))
+			for _, pair := range held {
+				if h, c, err := llmroute.ParsePair(pair); err == nil {
+					stages = append(stages, ir.PolicyLadderStage{Harness: h, Credential: c, On: routePolicy.Triggers, CrossHarness: routePolicy.CrossHarness})
+				}
+			}
+			// The OPERATOR chain lands first (the same screen the runner
+			// applies): the ladder's eligibility reads authored routes
+			// only, and the composed program is what the derivations below
+			// must see. Advisory like the ladder — the runner's answer is
+			// authoritative.
+			operatorIR := make([]ir.Fallback, 0, len(runFallbacks))
+			for _, fb := range runFallbacks {
+				operatorIR = append(operatorIR, ir.Fallback{Name: ir.RunFallbackName, Backend: fb.Backend, Model: fb.Model, Provider: fb.Provider})
+			}
+			// The publisher's sandbox reading is the workflow's own block
+			// only — the runner's CLI override and deployment default are
+			// invisible here. A codex stage on a sandbox-default
+			// deployment therefore lands publisher-side and may be refused
+			// runner-side: the named asymmetry, said by the runner's
+			// run_fallback_refused event (the authoritative screen).
+			sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
+			if opRefusals := ir.ApplyRunFallback(wf, operatorIR, sandboxed, nil, func(n ir.LLMNode) string {
+				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+				return ov.Backend
+			}); len(opRefusals) > 0 && p.logger != nil {
+				for _, r := range opRefusals {
+					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)
+				}
+			}
+			if refusals := ir.ApplyPolicyLadder(wf, stages, sandboxed, nil, func(n ir.LLMNode) string {
+				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+				if ov.Model != "" {
+					return ir.ExpandEnvWithDefault(ov.Model)
+				}
+				return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
+			}, func(n ir.LLMNode) string {
+				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+				return ov.Backend
+			}, llmroute.ResolveClasses(routePolicy.ModelClasses)); len(refusals) > 0 && p.logger != nil {
+				for _, r := range refusals {
+					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)
+				}
+			}
+			for _, st := range stages {
+				res.Ladder = append(res.Ladder, queue.RunFallbackEntry{
+					Backend:      st.Harness,
+					Provider:     st.Credential,
+					On:           st.On,
+					Policy:       true,
+					CrossHarness: st.CrossHarness,
+				})
+			}
+			res.ModelClasses = routePolicy.ModelClasses
+
+		}
+	}
 
 	// Record which review families the resolved credentials back — every
 	// tier included (BYOK, oauth-forfait, org, pool grant, platform). This is
@@ -1051,12 +1334,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	tiers := map[string]bool{}
 	for _, prov := range fundedAPIKeySlots(bundle) {
 		if spend.spendsKey(bundle, prov) {
-			tiers[credentialTierForSlot(bundle, res.grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
+			tiers[credentialTierForSlot(bundle, res.poolLease(), string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
 		}
 	}
 	for kind := range bundle.OAuthCredentials {
 		if spend.allows(providerOfOAuthKind(kind)) {
-			tiers[credentialTierForSlot(bundle, res.grant, kind, credpool.SourceOAuth, store.CredentialTierOAuthForfait)] = true
+			tiers[credentialTierForSlot(bundle, res.poolLease(), kind, credpool.SourceOAuth, store.CredentialTierOAuthForfait)] = true
 		}
 	}
 	for tier := range tiers {
@@ -1081,8 +1364,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway; no LLM credential acquired", runID)
 		}
 	} else if noLLMCred && (wf == nil || wf.UsesLLM()) {
-		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, org, pool, platform; the runner falls back to its env or fails at the first LLM call",
-			runID, tenantID)
+		tiersConsulted := "byok, oauth-forfait, org, pool, platform"
+		if sovereign {
+			tiersConsulted = "byok, oauth-forfait (llm_fallback=none — the shared tiers were not consulted)"
+		}
+		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: %s; the runner falls back to its env or fails at the first LLM call",
+			runID, tenantID, tiersConsulted)
 	}
 	// The deployment may REFUSE what the Warn only reports. Per route, on
 	// the walk the stamp above reads: refused only when every LLM route
@@ -1098,6 +1385,30 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				runview.ErrNoLLMCredential, runID, strings.Join(unfunded, ", "), tenantID)
 		}
 	}
+	// The sovereign policy arms the same refusal STRICTLY, without the
+	// deployment knob: under llm_fallback=none every pinned provider must be
+	// funded by the team's own credentials — one funded provider does not
+	// excuse another pinned route, whose only remaining funding would be the
+	// runner pod's platform env. Env-funded runs acquire nothing and answer
+	// to no policy; an unattributable route stays unrefused (the same
+	// compromise the knob above makes).
+	if sovereign && !envFunded && wf != nil && wf.UsesLLM() {
+		if unfunded := pinnedUnfundedProviders(spend, bundle); len(unfunded) > 0 {
+			return res, fmt.Errorf("cloudpublisher: %w: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every pinned provider must hold a credential of the team's own; provision: %s",
+				runview.ErrNoLLMCredential, tenantID, strings.Join(unfunded, ", "))
+		}
+		// The attribution compromise is narrower under the policy than under
+		// the knob: a workflow whose routes the walk cannot attribute still
+		// REFUSES when the team holds no credential at all — the pod's
+		// platform env would be the only funding left, which is what the
+		// policy exists to make impossible. A team that holds its own
+		// credentials keeps the knob's compromise: the run starts, and its
+		// routes spend the team's.
+		if spend.pinned == nil && noLLMCred {
+			return res, fmt.Errorf("cloudpublisher: %w: tenant %s runs with llm_fallback=none and holds no credential of its own, and this workflow's model routes cannot be attributed to a provider — provision a team credential, or pin a model route the policy can check",
+				runview.ErrNoLLMCredential, tenantID)
+		}
+	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {
 		return res, nil
 	}
@@ -1109,10 +1420,25 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// (measured, 2026-09-03). Only fingerprints (never plaintext) and
 	// tier tags — bundle.PlatformSourced already tracks the platform
 	// vs tenant/tier split.
-	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.grant)
+	logGrantedCredentials(p.logger, runID, bundle, apiKeyFPs, res.poolLease())
+	if res.doorGrant != nil {
+		p.logger.Info("cloudpublisher: fallback door credential of run %s: %s (donor %s) — the policy ladder's kind the run lacked",
+			runID, res.doorGrant.String(), res.doorGrant.DonorID)
+	}
 	p.keepFollowableRecordRefs(&bundle)
 
-	sealed, err := secrets.SealRunBundle(p.sealer, runID, bundle)
+	// ADR-123: the bundle seals under a fresh per-run DEK that travels in
+	// the message — runner pods hold no platform key material. The ring
+	// stays server-side, sealing at-rest records only.
+	dek, err := secrets.NewRunBundleDEK()
+	if err != nil {
+		return res, fmt.Errorf("cloudpublisher: dek: %w", err)
+	}
+	dekSealer, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		return res, fmt.Errorf("cloudpublisher: dek sealer: %w", err)
+	}
+	sealed, keyID, err := secrets.SealRunBundle(dekSealer, tenantID, runnerPool, runID, bundle)
 	if err != nil {
 		return res, fmt.Errorf("cloudpublisher: seal bundle: %w", err)
 	}
@@ -1122,6 +1448,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		ID:           ref,
 		TenantID:     tenantID,
 		RunID:        runID,
+		KeyID:        keyID,
 		SealedBundle: sealed,
 		CreatedAt:    now,
 		ExpiresAt:    now.Add(secrets.DefaultRunSecretsTTL),
@@ -1130,6 +1457,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		return res, fmt.Errorf("cloudpublisher: persist run secrets: %w", err)
 	}
 	res.secretsRef = ref
+	res.dek = dek
 	return res, nil
 }
 
@@ -1139,8 +1467,28 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 // it carries the donor's remaining allowance, which must become the run's
 // own cost ceiling.
 type credResolution struct {
-	secretsRef string
-	grant      *credpool.Grant
+	// Ladder is the adaptive-routing policy's computed fallback stages
+	// (ADR-121 §1) — the pairs the sealed bundle serves, in policy order.
+	// The caller composes them onto the RunMessage beside the operator's
+	// chain; the run doc's own Fallback stays the operator's.
+	Ladder []queue.RunFallbackEntry
+	// ModelClasses is the resolved policy's model_classes overrides — the
+	// crossings' class targets, riding the RunMessage message-level (one
+	// map per run, not per rung).
+	ModelClasses map[string]map[string]string
+	secretsRef   string
+	// dek is the per-run bundle key (ADR-123): it rides the RunMessage
+	// beside the ref — the stream split is what carries it, not any
+	// platform key material.
+	dek   []byte
+	grant *credpool.Grant
+	// doorGrant is the routing fallback door's grant (ADR-121 § Delivery
+	// 2, slice 5) — a DONOR-CONSENTED credential sealed for the policy
+	// ladder's needs on a run that holds its own credential. Kept apart
+	// from grant: the tier semantics (platform skip, budget clamp) are
+	// whole-bundle-only, while the LEASE semantics ("a pool lease serves
+	// this attempt") read both via poolLease.
+	doorGrant *credpool.Grant
 	// families is the set of review families the sealed credentials back
 	// (reviewtopology), so the launch can resolve the credential-derived
 	// topology vars for a queued run. Empty = nothing resolved (env
@@ -1181,6 +1529,20 @@ func (c credResolution) stamp() store.RunCredStamp {
 // reach one path and silently miss the other; that unit is the whole promise
 // of RunCredStamp, and assigning the fields one by one here is what would
 // break it.
+// poolLease disambiguates "no pool lease serves this attempt" — the
+// publication plumbing (PoolGrantless, SupersedeRun, the rollback's
+// reopen, publishInstant) reads THIS, never the whole-bundle grant alone:
+// a door-served run is leased exactly like a granted one, and mistaking
+// it for grantless would silence its spend report (the donor's ledger
+// never learns) and close the door lease itself as superseded at
+// publication.
+func (c credResolution) poolLease() *credpool.Grant {
+	if c.grant != nil {
+		return c.grant
+	}
+	return c.doorGrant
+}
+
 func (c credResolution) applyTo(r *store.Run) {
 	s := c.stamp()
 	r.CredFingerprints = s.Fingerprints
@@ -1343,6 +1705,22 @@ func fundedAPIKeySlots(bundle secrets.RunBundle) []secrets.Provider {
 // an unattributable route (a nil spendable set allows everything) or when at
 // least one pinned provider is funded: such a run can start.
 func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string {
+	strict := pinnedUnfundedProviders(spend, bundle)
+	// The deployment knob is permissive: one funded pinned provider lets the
+	// run start — the other route's failure is the run's to report. Only a
+	// run whose EVERY pinned provider is unfunded cannot start at all.
+	if len(strict) > 0 && len(strict) == len(spend.pinned) {
+		return strict
+	}
+	return nil
+}
+
+// pinnedUnfundedProviders lists every pinned provider the bundle funds
+// nothing of, sorted. Unlike unfundedPinnedProviders it does not stop at the
+// first funded provider: the sovereign policy needs the FULL list. Nil when
+// the run has an unattributable route (a nil spendable set allows
+// everything).
+func pinnedUnfundedProviders(spend spendable, bundle secrets.RunBundle) []string {
 	if spend.pinned == nil {
 		return nil
 	}
@@ -1361,10 +1739,9 @@ func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string
 	}
 	out := make([]string, 0, len(spend.pinned))
 	for prov := range spend.pinned {
-		if funded[prov] {
-			return nil
+		if !funded[prov] {
+			out = append(out, prov)
 		}
-		out = append(out, prov)
 	}
 	sort.Strings(out)
 	return out
@@ -1524,6 +1901,10 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 				if !fillable(string(rec.Kind)) {
 					continue
 				}
+				// The adaptive-routing whitelist.
+				if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+					continue
+				}
 				payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 				if err != nil {
 					p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
@@ -1563,6 +1944,10 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 				// tier to fill a slot owns it, and a later tier overwriting it
 				// would move the spend onto its own invoice in silence.
 				if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+					continue
+				}
+				// The adaptive-routing whitelist.
+				if !policy.sealableSlot(slotOfProvider(prov)) {
 					continue
 				}
 				family := secrets.WireFamily(string(prov))
@@ -2460,6 +2845,226 @@ func credentialTierForSlot(bundle secrets.RunBundle, grant *credpool.Grant, slot
 // Tenant and owner identifiers are pulled from ctx (stamped by the
 // server's auth middleware) and propagate to both the persisted Run
 // document and the NATS message so the runner can verify isolation.
+
+// doorServes adapts a bundle to the held-pair predicate the ladder block
+// also uses: does the run's OWN credential set fund this policy slot?
+func doorServes(bundle secrets.RunBundle) func(_, credential string) bool {
+	return func(_, credential string) bool {
+		for prov := range bundle.APIKeys {
+			if slotOfProvider(prov) == credential {
+				return true
+			}
+		}
+		for prov := range bundle.PinnedAPIKeys {
+			if slotOfProvider(prov) == credential {
+				return true
+			}
+		}
+		for kind := range bundle.OAuthCredentials {
+			if slotOfKind(kind) == credential {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// doorWantsFor derives the fallback door's wants — the ONE derivation the
+// live consult and the preview share (they differ in the bundle they see:
+// live post-resolution, preview metadata assuming materialization — that
+// difference is the serves argument, never a second derivation). The
+// missing pairs are the pair order's slots `serves` does not fund; a kind
+// is asked for iff some node's rung CARRIES it after the REAL screen's
+// every refusal (StageModel's mapping is one refusal of five, beside ask
+// rules, tools inversion, session continuity, unresolvable tools and the
+// sandboxed-codex refusal). The probe rungs it lands on wf are stripped
+// before returning — no Policy-flagged fallback exists outside the real
+// ladder block, so the strip restores the program byte-exactly, which is
+// what lets a read-only preview run it.
+func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, wf *ir.Workflow, overrides model.ModelOverrides, serves func(_, credential string) bool) (wants []credpool.Credential, unmapped []string, ok bool) {
+	var missing []ir.PolicyLadderStage
+	for _, pair := range routePolicy.PairOrder {
+		h, c, err := llmroute.ParsePair(pair)
+		if err != nil || serves(h, c) {
+			continue
+		}
+		// The probe runs the SAME screen the real ladder block runs —
+		// including the posture: the session-continuity refusal lifts only
+		// for a stage carrying an active cross_harness, so a probe without
+		// the field would refuse crossings the real screen lands, and the
+		// door would never arm for exactly the posture slice 3 introduced.
+		missing = append(missing, ir.PolicyLadderStage{Harness: h, Credential: c, On: routePolicy.Triggers, CrossHarness: routePolicy.CrossHarness})
+	}
+	if len(missing) == 0 {
+		return nil, nil, false
+	}
+	// One probe PER missing stage: the rung the screen attaches carries the
+	// derived PROVIDER hint, not the slot it came from, so reading the
+	// attachment back cannot say WHICH stage landed. Per-stage probing can:
+	// a stage is dispatchable iff its single-stage probe leaves a Policy
+	// rung on some node, and the strip restores the program byte-exactly
+	// between probes.
+	sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
+	landed := map[string]bool{}
+	for _, st := range missing {
+		_ = ir.ApplyPolicyLadder(wf, []ir.PolicyLadderStage{st}, sandboxed, nil, func(n ir.LLMNode) string {
+			ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+			if ov.Model != "" {
+				return ir.ExpandEnvWithDefault(ov.Model)
+			}
+			return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
+		}, func(n ir.LLMNode) string {
+			ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+			return ov.Backend
+		}, llmroute.ResolveClasses(routePolicy.ModelClasses))
+		stripped := false
+		for _, n := range wf.Nodes {
+			agent, ok := n.(*ir.AgentNode)
+			if !ok {
+				continue
+			}
+			kept := agent.Fallbacks[:0]
+			for _, fb := range agent.Fallbacks {
+				if fb.Policy {
+					stripped = true
+					continue
+				}
+				kept = append(kept, fb)
+			}
+			agent.Fallbacks = kept
+		}
+		if stripped {
+			landed[st.Credential] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, pair := range routePolicy.PairOrder {
+		_, c, err := llmroute.ParsePair(pair)
+		if err != nil || !landed[c] || seen[c] {
+			continue
+		}
+		w, mapped := wantForSlot(c)
+		if !mapped {
+			// A slot the pool vocabulary cannot fund: its rungs stay
+			// dropped (as they are today), named to the caller.
+			unmapped = append(unmapped, c)
+			continue
+		}
+		seen[c] = true
+		wants = append(wants, w)
+	}
+	return wants, unmapped, len(wants) > 0
+}
+
+// acquireDoorGrant is the routing fallback door (ADR-121 § Delivery 2,
+// slice 5): one donor-consented grant sealing a credential kind the run's
+// OWN credential set lacks, so the policy ladder's rungs naming it
+// materialize instead of dropping in silence. It runs AFTER the tier walk
+// declined (wholeGrant == nil) and BEFORE HeldPairs reads the bundle, and
+// never on the whole-bundle tier's own cases: an env-funded run acquires
+// no LLM credential at all (#2038), and an EMPTY bundle belongs to the
+// whole-bundle tier — the door widens a run that HAS its own money, it is
+// not that tier's second chance.
+//
+// The wants come from the REAL screen run on the MISSING pairs (a kind is
+// asked for iff some node's rung carries it after every refusal — the
+// StageModel mapping is one refusal of five, beside ask rules, tools
+// inversion, session continuity, unresolvable tools and the sandboxed
+// codex refusal). The landed probe rungs are stripped before the real
+// ladder block runs: no Policy-flagged fallback exists at this point, so
+// stripping them all restores the pre-probe program exactly.
+func (p *Publisher) acquireDoorGrant(
+	ctx context.Context,
+	runID, orgID, tenantID, ownerID, botID string,
+	wf *ir.Workflow,
+	overrides model.ModelOverrides,
+	routePolicy *store.RunLLMRoutePolicy,
+	bundle *secrets.RunBundle,
+	wholeGrant *credpool.Grant,
+	envFunded bool,
+	sharedTiersBlocked bool,
+	apiKeyFPs map[secrets.Provider]string,
+	sealable func(slot string) bool,
+) *credpool.Grant {
+	if p.credPool == nil || routePolicy == nil || wf == nil || len(routePolicy.Triggers) == 0 || len(routePolicy.PairOrder) == 0 {
+		return nil
+	}
+	if sharedTiersBlocked {
+		// D13 (a pool team) and llm_fallback=none: the pool tier itself is
+		// skipped for these launches, and the door is the pool tier wearing
+		// another coat — a donor's consent does not un-block the shared
+		// tiers, and a sealed donation would both contradict the policy and
+		// fund the pinned providers the strict refusal is there to name.
+		return nil
+	}
+	if wholeGrant != nil || envFunded || !holdsDefaultLLMCredential(*bundle) {
+		return nil
+	}
+
+	wants, unmapped, ok := doorWantsFor(routePolicy, wf, overrides, doorServes(*bundle))
+	if p.logger != nil {
+		for _, slot := range unmapped {
+			p.logger.Info("cloudpublisher: fallback door skips run %s — pair slot %q matches no pool credential kind", runID, slot)
+		}
+	}
+	if !ok {
+		return nil
+	}
+
+	doorReq := credpool.Request{RunID: runID, OrgID: orgID, TenantID: tenantID, UserID: ownerID, BotID: botID, Wants: wants, FallbackOnly: true}
+	if ok, err := p.credPool.HasFallbackDonors(ctx, doorReq); err != nil || !ok {
+		if p.logger != nil {
+			p.logger.Info("cloudpublisher: fallback door NOT CONSULTED for run %s — no opted-in donor serves wants=%s (reason=%v)", runID, wantsSummary(doorReq.Wants), err)
+		}
+		return nil
+	}
+	if p.logger != nil {
+		p.logger.Info("cloudpublisher: fallback door consulted for run %s — wants=%s (donor-consented only)", runID, wantsSummary(doorReq.Wants))
+	}
+	grant, err := p.credPool.Acquire(ctx, doorReq)
+	if err != nil {
+		var nd *credpool.NoDonorError
+		if errors.As(err, &nd) {
+			if p.logger != nil {
+				p.logger.Warn("cloudpublisher: fallback door declined for run %s — reason=%s pledges_considered=%d skips=%s wants=%s",
+					runID, nd.Reason, nd.PledgesConsidered, pledgeSkipSummary(nd.Skips), wantsSummary(doorReq.Wants))
+			}
+			return nil
+		}
+		if p.logger != nil {
+			p.logger.Warn("cloudpublisher: fallback door failed for run %s: %v", runID, err)
+		}
+		return nil
+	}
+	// Seal — the whole-bundle path's mechanics, so the runner cannot tell
+	// a door donation from any other pool-funded slot. The whitelist never
+	// refuses here (a ladder slot is a pair-order slot by construction);
+	// kept as the belt.
+	switch grant.Source {
+	case credpool.SourceOAuth:
+		if sealable(slotOfKind(grant.Ref)) {
+			setOAuthCredential(bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
+			bundle.PoolSourced[grant.Ref] = true
+		}
+	case credpool.SourceAPIKey:
+		prov := secrets.Provider(grant.Ref)
+		if sealable(slotOfProvider(prov)) {
+			bundle.APIKeys[prov] = string(grant.Payload)
+		}
+		fp := grant.Fingerprint
+		if fp == "" {
+			fp = secrets.FingerprintSHA256(string(grant.Payload))
+		}
+		apiKeyFPs[prov] = fp
+		bundle.PoolSourced[string(prov)] = true
+	}
+	if p.logger != nil {
+		p.logger.Info("cloudpublisher: fallback door granted for run %s — %s (donor %s); the granted kind's rungs materialize with the held pairs",
+			runID, grant.String(), grant.DonorID)
+	}
+	return grant
+}
+
 func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (pos int, retErr error) {
 	// 1. Build the run doc (status=queued + workflow_hash + file_path so
 	//    List endpoints see it instantly and Resume can reload the
@@ -2494,6 +3099,25 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		return 0, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
 			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 	}
+	// The team's pool mapping, resolved BEFORE anything persists: the run
+	// document freezes it (a later re-mapping must not move this run), and
+	// a mapped team whose pool dispatch is not wired yet is refused here —
+	// synchronously, so the operator's 202 is never a lie about a run that
+	// would only fail at runner pickup. An identity-store error refuses the
+	// launch too: an unknown mapping must fail closed, not land on the
+	// shared pool.
+	runnerPool, err := p.runnerPoolForTeam(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	if runnerPool != "" {
+		if err := p.poolRoutes(ctx, runnerPool); err != nil {
+			return 0, err
+		}
+	}
+	if runnerPool != "" && !queue.ValidPoolName(runnerPool) {
+		return 0, fmt.Errorf("team %s is mapped to runner pool %q: invalid pool name (want 1–31 chars [a-z0-9-], starting alphanumeric)", tenantID, runnerPool)
+	}
 	r := &store.Run{
 		FormatVersion: store.RunFormatVersion,
 		ID:            runID,
@@ -2519,6 +3143,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		QueuedAt:        &now,
 		TenantID:        tenantID,
 		OwnerID:         ownerID,
+		RunnerPool:      runnerPool,
 		RepoURL:         spec.RepoURL,
 		RepoSHA:         spec.RepoRef,
 		Trust:           spec.Trust,
@@ -2595,6 +3220,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		rp := *spec.RetryPolicy // copy: never share the caller's pointer
 		r.RetryPolicy = &rp
 	}
+	// The adaptive-routing policy rides the same carrier for the same
+	// reason (the RunMessage has no routing field, the launch site is the
+	// only place that sees every level, and the resolved pair plus its
+	// provenance is the audit line the policy owes).
+	if spec.LLMRoutePolicy != nil {
+		lp := *spec.LLMRoutePolicy // copy: never share the caller's pointer
+		r.LLMRoutePolicy = &lp
+	}
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
 	//     configured" — the runner falls back to env. This runs BEFORE the
@@ -2608,7 +3241,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// may have moved. Same doctrine as the model pins and the fallback
 	// chain above.
 	r.PinnedProviders = derivePinnedProviders(wf, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback), spec.Trust, r.PinnedProviders)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback), spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -2621,6 +3254,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		defer func() {
 			if !launched {
 				p.credPool.ReleaseGrant(ctx, creds.grant)
+			}
+		}()
+	}
+	if creds.doorGrant != nil {
+		defer func() {
+			if !launched {
+				p.credPool.ReleaseGrant(ctx, creds.doorGrant)
 			}
 		}()
 	}
@@ -2654,7 +3294,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			inputs = map[string]any{}
 			r.Inputs = inputs
 		}
-		if inj := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); inj.Summary() != "" {
+		if inj, err := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); err != nil {
+			return 0, fmt.Errorf("refusing to launch: %w", err)
+		} else if inj.Summary() != "" {
 			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
 		}
 	}
@@ -2718,6 +3360,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Vars:               inputs,
 		AllowUnknownInputs: spec.AllowUnknownInputs,
 		SecretsRef:         creds.secretsRef,
+		BundleDEK:          creds.dek,
 		// The stored-bundle ref THREADED from the launch surface's own
 		// resolution (never re-fetched here — a push racing the launch must
 		// not pair this compile's IR with newer resources). The runner
@@ -2730,10 +3373,12 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
+		PoolGrantless:   creds.poolLease() == nil,
+		PublishedAtRFC:  publishInstant(time.Now().UTC(), *r.QueuedAt, creds.poolLease()).Format(time.RFC3339Nano),
 		TenantID:        tenantID,
 		OrgID:           orgID,
 		OwnerID:         ownerID,
+		RunnerPool:      runnerPool,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
 		// can group siblings and so a future event-based aggregator
@@ -2768,7 +3413,12 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// a chain only persisted on the doc is display-only, and this one
 		// exists precisely for unattended cloud runs hitting a provider's
 		// usage window.
-		Fallback: queueFallbackOf(spec.Fallback),
+		// The operator's chain first, then the adaptive-routing ladder the
+		// resolution computed (ADR-121 §1) — the runner screens both; the
+		// run DOC's Fallback stays the operator's (the resume recomputes
+		// the ladder from its re-sealed bundle under the frozen policy).
+		Fallback:             append(queueFallbackOf(spec.Fallback), creds.Ladder...),
+		FallbackModelClasses: creds.ModelClasses,
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		// The deferred choke point above flips the row to failed.
@@ -2871,7 +3521,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 		}
 		return nil
 	}
-	if err := p.cancel(runID); err != nil {
+	if err := p.cancel(runID, store.LeaseIdentity{TenantID: r.TenantID, Pool: r.RunnerPool}); err != nil {
 		p.logger.Warn("cloudpublisher: nats cancel %s: %v", runID, err)
 	}
 	return nil
@@ -2892,6 +3542,19 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
 // pattern in SubmitLaunch.
+// publishInstant composes the instants a publication must follow: never
+// inside the run marker's millisecond, never inside the millisecond of the
+// lease the pool grant opened — the identity comparisons that read the
+// pair (a delivery against its marker; a spend report against its lease)
+// never meet a tie.
+func publishInstant(now time.Time, marker time.Time, grant *credpool.Grant) time.Time {
+	pub := store.PublishAt(now, marker)
+	if grant != nil {
+		pub = store.PublishAt(pub, grant.AcquiredAt)
+	}
+	return pub
+}
+
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, cs *runview.CompiledSource) (retErr error) {
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
@@ -2936,9 +3599,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// Claim this resume BEFORE resolving credentials. The status CAS is the
 	// serialization point for double-clicks/client retries: only one request
 	// may create the next queue attempt, so only that request may acquire a
-	// credential-pool lease or publish. Transitioning to queued also refreshes
-	// QueuedAt, the durable attempt marker used to reject stale deliveries.
-	claimed, claimErr := p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+	// credential-pool lease or publish. Transitioning to queued also stamps
+	// QueuedAt, the durable attempt marker used to reject stale deliveries —
+	// and the flip hands back what it replaced, read in the same write, for
+	// the rollback below.
+	flipper := store.AsQueuedFlipper(p.store)
+	var flip store.QueuedFlip
+	var claimed bool
+	var claimErr error
+	if flipper != nil {
+		flip, claimed, claimErr = flipper.FlipToQueued(ctx, spec.RunID, priorStatus, time.Now())
+	} else {
+		claimed, claimErr = p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+	}
 	if claimErr != nil {
 		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, claimErr)
 	}
@@ -2950,28 +3623,51 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: resume raced for %s", spec.RunID)
 	}
 
-	// Any failure before a successful publish restores the exact resumable
-	// source status. The rollback itself is a queued-only CAS, so a concurrent
-	// cancel/runner transition is never overwritten.
+	// Any failure before a successful publish puts back what this resume's
+	// flip replaced — and only while the run is still queued for that flip:
+	// a cancel, a claim, or another resume's flip since is never undone.
+	// The pool grant the resume acquired (below) superseded the previous
+	// attempt's lease: reverted, the flip gives it back to that attempt,
+	// which goes on (credpool ReopenSuperseded); refused, a newer resume
+	// owns the run and the lease stays superseded.
 	republished := false
+	var grant *credpool.Grant
 	defer func() {
 		if republished {
 			return
 		}
-		// Restore the prior failure classification alongside its text —
-		// the queued claim cleared both. A publish failure gets its own
-		// text but keeps the prior code: the run is back in the state
-		// whose cause that code classifies.
-		runErr := prior.Error
+		// The run goes back to the state it was in — its failure code, its
+		// episode, its continuation, the previous attempt's marker (only a
+		// publication makes an attempt, so a delivery of that attempt still
+		// in flight is not superseded by a flip), the rewind baseline the
+		// source stamp below replaced — with the refusal as its text.
+		runErr := ""
 		if retErr != nil {
 			runErr = fmt.Sprintf("queue resume: %v", retErr)
 		}
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rollbackCancel()
+		if flipper != nil {
+			reverted, rbErr := flipper.RevertQueuedFlip(rollbackCtx, spec.RunID, flip, runErr)
+			if rbErr != nil {
+				p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+			}
+			if reverted {
+				p.credPool.ReopenSuperseded(rollbackCtx, grant)
+			}
+			return
+		}
+		if runErr == "" {
+			runErr = prior.Error
+		}
+		p.logger.Warn("cloudpublisher: rollback %s: this store cannot tell its own flip from another resume's, nor restore the attempt marker — a concurrent resume's queued attempt can be reverted, and a delivery of the previous attempt still in flight will read as superseded", spec.RunID)
 		rolledBack, rbErr := p.store.UpdateRunStatusIfCoded(rollbackCtx, spec.RunID, priorStatus, runErr, prior.FailureCode,
 			[]store.RunStatus{store.RunStatusQueued})
 		if rbErr != nil {
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+		}
+		if rolledBack {
+			p.credPool.ReopenSuperseded(rollbackCtx, grant)
 		}
 		// The rewind baseline goes back with the status — and ONLY with it.
 		// The source is stamped just before the publish, so a publish that
@@ -3018,17 +3714,50 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
+	// A resume follows the run's FROZEN pool stamp, never the team's current
+	// mapping: the run's checkpoint, bundle and sealed credentials were bound
+	// to the pool it launched on, and silently following a re-mapping would
+	// move them across the boundary the stamp exists to hold. The current
+	// mapping is still read (fail closed) to NAME the disagreement; a
+	// deliberate move is a new launch.
+	currentPool, err := p.runnerPoolForTeam(ctx, prior.TenantID)
+	if err != nil {
+		return err
+	}
+	if currentPool != prior.RunnerPool {
+		return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, spec.RunID, prior.RunnerPool, currentPool)
+	}
+	// Same dispatch gate the launch carries: a pool-stamped resume routes
+	// only when its pool is registry-active, exactly like a launch.
+	if err := p.poolRoutes(ctx, prior.RunnerPool); err != nil {
+		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", spec.RunID, err)
+	}
 	// prior.PinnedProviders, never a fresh derivation: a resume re-resolves
 	// its source, so re-deriving would let a program the launch never
 	// approved decide which credentials this run is granted. Empty on runs
 	// launched before the field existed — the pre-existing
 	// one-key-per-family fill, which is what those runs already had.
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust, prior.PinnedProviders)
-	// Armed before the error check — see SubmitLaunch.
+	// The resume re-runs the selection under the run doc's FROZEN policy
+	// (ADR-121 §2: pair_order is identity — the resume replays the launch's
+	// answer; the windows it consults are volatile and re-resolve). The
+	// ladder recomputes from the re-sealed bundle and rides THIS attempt's
+	// RunMessage; the doc's own Fallback stays the operator's.
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy)
+	grant = creds.poolLease()
+	// Armed before the error check — see SubmitLaunch. Runs before the
+	// rollback above (defers unwind in reverse): the grant's own lease is
+	// closed before the one it superseded can be reopened.
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
 				p.credPool.ReleaseGrant(ctx, creds.grant)
+			}
+		}()
+	}
+	if creds.doorGrant != nil {
+		defer func() {
+			if !republished {
+				p.credPool.ReleaseGrant(ctx, creds.doorGrant)
 			}
 		}()
 	}
@@ -3070,14 +3799,16 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		ExecutionContext: prior.ExecutionContext.Clone(),
 		IRCompiled:       body,
 		Resume: &queue.ResumeSpec{
-			Answers:        spec.Answers,
-			HostInputs:     spec.HostInputs,
-			Force:          spec.Force,
-			ExpectedStatus: spec.ExpectedStatus,
-			ReceiptID:      spec.ReceiptID,
-			PriorStatus:    priorStatus,
+			Answers:           spec.Answers,
+			HostInputs:        spec.HostInputs,
+			Force:             spec.Force,
+			ExpectedStatus:    spec.ExpectedStatus,
+			ReceiptID:         spec.ReceiptID,
+			PriorStatus:       priorStatus,
+			AcceptScratchLoss: spec.AcceptScratchLoss,
 		},
 		SecretsRef: creds.secretsRef,
+		BundleDEK:  creds.dek,
 		// Re-resolved by the resume surface like credentials are re-sealed:
 		// the resumed attempt runs the CURRENT stored bundle, consistently
 		// across the compile above and the runner-side materialization.
@@ -3103,13 +3834,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// A THIS-RESUME override is also persisted to the run doc below so
 		// a subsequent auto-retry keeps the raised cap rather than
 		// reverting to the launch ask that already killed the run.
-		Budget:         wire,
-		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+		Budget:        wire,
+		BackendConfig: queue.BackendConfig{Default: queue.BackendClaw},
+		PoolGrantless: creds.poolLease() == nil,
+		// Never inside the millisecond of the instant this delivery's
+		// identity follows — the run's marker, or the lease its grant
+		// opened — so the identity comparisons that read the pair never
+		// meet a tie.
+		PublishedAtRFC: publishInstant(time.Now().UTC(), flip.At, creds.poolLease()).Format(time.RFC3339Nano),
 		// The fallback chain is replayed from the doc for the same reason:
 		// the auto-retry that follows a usage-window park is exactly the
 		// publication that must still carry the rescue chain.
-		Fallback: queueFallbackFromRun(prior.Fallback),
+		Fallback:             append(queueFallbackFromRun(prior.Fallback), creds.Ladder...),
+		FallbackModelClasses: creds.ModelClasses,
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
@@ -3119,6 +3856,8 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		TenantID: prior.TenantID,
 		OrgID:    priorOrgID,
 		OwnerID:  prior.OwnerID,
+		// The FROZEN pool stamp, verified equal to the current mapping above.
+		RunnerPool: prior.RunnerPool,
 		// Preserve webhook/cloud source metadata so a resumed runner can
 		// reconstruct the same workspace as the original launch. ProjectPath
 		// is carried by the persisted run doc, not the wire.
@@ -3180,6 +3919,21 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	republished = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
+	}
+	// Published: the previous attempt is over. A pool grant superseded its
+	// lease when it was acquired; without one — no donor, no pool asked —
+	// its lease is superseded now, or it would hold its donor's slot and
+	// allowance until the lease TTL. The close carries this publication's
+	// identity: a report of exactly it is the takeover's own, and stays
+	// silent on the lease.
+	if creds.poolLease() == nil && p.credPool != nil {
+		supersedingPublishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+		if perr != nil {
+			supersedingPublishedAt = time.Time{}
+		}
+		if err := p.credPool.SupersedeRun(context.WithoutCancel(ctx), spec.RunID, prior.TenantID, supersedingPublishedAt); err != nil {
+			p.logger.Warn("cloudpublisher: supersede the previous attempt's pool lease of %s after its resume: %v", spec.RunID, err)
+		}
 	}
 	// E4 (#652 review round 1): persist the MERGED budget ask onto the
 	// run doc, so a subsequent unattended auto-retry (usage-window
@@ -3405,14 +4159,14 @@ func irBackendForName(name string) (queue.IRBackend, error) {
 	}
 }
 
-func (p *Publisher) cancel(runID string) error {
+func (p *Publisher) cancel(runID string, admitted store.LeaseIdentity) error {
 	if p.cancelRun != nil {
-		return p.cancelRun(runID)
+		return p.cancelRun(runID, admitted)
 	}
 	if p.nats == nil {
 		return fmt.Errorf("cloudpublisher: NATS publisher is not configured")
 	}
-	return p.nats.CancelRun(runID)
+	return p.nats.CancelRun(runID, admitted)
 }
 
 // queuePosition counts the runs with status=queued and created_at

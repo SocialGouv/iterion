@@ -200,6 +200,15 @@ curl -X POST "https://iterion.example.com/api/admin/dlq/$SEQ/replay"
 curl -X DELETE "https://iterion.example.com/api/admin/dlq/$SEQ"
 ```
 
+A replay is only a delivery, so it is refused (409, the copy kept) when a
+runner would drop the message on admission: the run cancelled, finished,
+failed, waiting for an answer, rewound for an explicit resume, queued again
+since the message was published, or parked on a code no redelivery changes —
+`DLQ_PARKED` included, the code every park writes. A parked run is recovered
+by **resuming** it (`POST /api/runs/{id}/resume`, `iterion remote runs
+resume`), which re-queues it as a new attempt at the current schema version;
+discard the parked copy afterwards. The refusal names the way out.
+
 Behind the scenes
 ([pkg/queue/nats/dlq.go](../pkg/queue/nats/dlq.go)): each DLQ message
 carries `Iterion-DLQ-Reason`, `Iterion-Run-Id`, `Iterion-Tenant-Id`,
@@ -218,7 +227,8 @@ status"). The orphan sweeper closes that gap
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)):
 
 - Scans every 60s for `queued` past the redelivery window + margin
-  (~90 min with the defaults) or `running > 10 min` AND no current
+  (~2 h 40 with the defaults: a resume that meets a held run lease may
+  wait out the runner's lease ceiling) or `running > 10 min` AND no current
   NATS-KV lease.
 - CAS-flips matched rows to `failed_resumable` so `iterion resume` (or
   the studio Retry button) lights up.

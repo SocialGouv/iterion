@@ -799,7 +799,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// the agent still completes its tool work BEFORE finalizing (verified
 	// against claude 2.1.177), so this does not make it rush its output.
 	told := ledgerTerminated(task.SessionLedger, resumedSessionID(task, currentFingerprint))
-	prompt := terminatedBackgroundNote(told, task.UserPrompt)
+	prompt := terminatedBackgroundNote(told, task.HandoffPrompt())
 	needsTwoPass := len(task.OutputSchema) > 0 && len(task.AllowedTools) > 0
 	if len(task.OutputSchema) > 0 {
 		var schema map[string]any
@@ -1509,6 +1509,21 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 	credEnv, selected := anthropicCredRouteForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
 		return opts, "", forfaitSpawn{}, err
+	}
+	// A facade route clears ANTHROPIC_CUSTOM_HEADERS (the ambient header
+	// rides the route otherwise), and the cleared value is applied AFTER
+	// the task's own ExtraEnv — an operator entry for a gateway header is
+	// dropped here. Said out loud: the channel has documented uses (client
+	// identity on a self-hosted gateway), so a silent drop reads as the
+	// header never having been written.
+	if selected["ANTHROPIC_CUSTOM_HEADERS"] == "" {
+		entries, _ := claudeExtraEnvEntries(task)
+		for _, kv := range entries {
+			if kv[0] == "ANTHROPIC_CUSTOM_HEADERS" && kv[1] != "" {
+				b.Logger.Warn("[%s#%d/claude-code] ExtraEnv sets ANTHROPIC_CUSTOM_HEADERS, which a facade route clears (the ambient header would ride the route otherwise): the entry is ignored on this node",
+					task.NodeID, task.Iteration)
+			}
+		}
 	}
 	opts = append(opts, credEnvToOpts(credEnv)...)
 	currentFingerprint := providerFingerprint(anthropicFingerprintEnvForTask(task, credEnv, selected))

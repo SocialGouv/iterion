@@ -730,6 +730,44 @@ func (e *ClawExecutor) withRunEnv(env map[string]string) map[string]string {
 	return out
 }
 
+// engineBinaryEnvEntry returns the key/value pair a tool command's
+// environment carries for sandbox.EngineBinaryEnvVar, and whether one
+// applies. Inside a sandbox the value is the container path the bind mount
+// (addClawBinaryMount) and the runner image both place the engine's binary
+// at — the host resolution would name a file the container cannot see, and
+// a shared pid namespace does not change which FILESYSTEM resolves the path
+// (sandbox.HostRun marks the one driver that executes on the host).
+// Everywhere else it is the same proc.LocateIterionBinary resolution the
+// MCP helpers get. Neither present, no entry: a reader the variable matters
+// to fails on its own terms.
+func (e *ClawExecutor) engineBinaryEnvEntry() (string, bool) {
+	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+		if hr, ok := e.sandbox.(sandbox.HostRun); ok && hr.HostExecutesCommands() {
+			// fall through to the host resolution: the command runs here.
+		} else {
+			return sandbox.EngineBinaryEnvVar + "=" + sandbox.EngineBinaryContainerPath, true
+		}
+	}
+	if p := proc.LocateIterionBinary(); p != "" {
+		return sandbox.EngineBinaryEnvVar + "=" + p, true
+	}
+	return "", false
+}
+
+// withEngineBinaryEnv applies the engine-binary entry to a per-command env
+// map (the sandbox path's shape), creating the map when the command has no
+// env of its own.
+func (e *ClawExecutor) withEngineBinaryEnv(env map[string]string) map[string]string {
+	if entry, ok := e.engineBinaryEnvEntry(); ok {
+		k, v, _ := strings.Cut(entry, "=")
+		if env == nil {
+			env = map[string]string{}
+		}
+		env[k] = v
+	}
+	return env
+}
+
 // toolNodeScriptCommand returns a configured *exec.Cmd that invokes the
 // interpreter argv (scriptInterpreter) on the script temp file. Mirrors
 // toolNodeCommand for the script-mode path: sandbox-routed if a sandbox
@@ -737,7 +775,7 @@ func (e *ClawExecutor) withRunEnv(env map[string]string) map[string]string {
 func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) *exec.Cmd {
 	argv := append(append([]string{}, interpreter...), script)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{Env: e.withRunEnv(nil)})
+		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(e.withRunEnv(nil))})
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
@@ -761,6 +799,12 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	// the run or the node wins when they set the variable themselves, as
 	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
 	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(nil)...)
+	// The engine's own binary path, engine-owned: appended last so no
+	// inherited or launch-surface value can forge the resolution a bot
+	// script trusts when it re-enters the CLI (#1799).
+	if entry, ok := e.engineBinaryEnvEntry(); ok {
+		cmd.Env = append(cmd.Env, entry)
+	}
 
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
@@ -842,7 +886,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	}
 	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, args, sandbox.ExecOpts{Env: env, Stdin: stdin})
+		return e.sandbox.Command(ctx, args, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env), Stdin: stdin})
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	// A tool node's lifetime is the node's. `bash -c` routinely backgrounds
@@ -871,6 +915,12 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	// the run or the node wins when they set the variable themselves, as
 	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
 	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
+	// The engine's own binary path, engine-owned: appended last so no
+	// inherited or launch-surface value can forge the resolution a bot
+	// script trusts when it re-enters the CLI (#1799).
+	if entry, ok := e.engineBinaryEnvEntry(); ok {
+		cmd.Env = append(cmd.Env, entry)
+	}
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}

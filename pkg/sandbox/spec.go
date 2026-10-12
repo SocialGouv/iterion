@@ -44,6 +44,23 @@ func (m Mode) IsActive() bool {
 	return m == ModeAuto || m == ModeInline
 }
 
+// EngineBinaryContainerPath is the in-container path where the engine's own
+// iterion binary is expected. Two arrangements put it there: addClawBinaryMount
+// (pkg/runtime) bind-mounts the host binary read-only at this target for
+// claw-carrying workflows, and the production runner image bakes the binary at
+// the same path otherwise. Consumers that execute inside a sandbox hand this
+// path to bot scripts rather than the host resolution, which names a file the
+// container cannot see.
+const EngineBinaryContainerPath = "/usr/local/bin/iterion"
+
+// EngineBinaryEnvVar is the environment variable through which the engine
+// hands a tool node the path of ITS OWN iterion binary — the same resolution
+// proc.LocateIterionBinary serves the MCP helpers, or the container path when
+// the command runs sandboxed. A bot script that re-enters the CLI resolves it
+// from here (PATH next), never from the workspace: a fallback there executes
+// the tree under audit (#1799).
+const EngineBinaryEnvVar = "ITERION_ENGINE_BIN"
+
 // Spec is the resolved, driver-agnostic sandbox specification.
 //
 // A Spec is produced by [Resolve] from the precedence chain

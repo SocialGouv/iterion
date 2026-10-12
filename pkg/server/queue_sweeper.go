@@ -11,6 +11,8 @@ import (
 
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -49,12 +51,14 @@ const (
 	sweepInterval = 60 * time.Second
 	// sweepQueuedFallback is the queued-staleness floor when the lease
 	// checker can't report the queue's actual redelivery window (tests,
-	// exotic wiring). Must exceed the shipped defaults' MaxDeliver ×
-	// AckWait (8 × 10m) plus margin — a message still legitimately
-	// bouncing through redeliveries (a deep backlog with every runner
-	// busy) never holds a lease, so a too-short cutoff flips it to
-	// failed_resumable mid-flight.
-	sweepQueuedFallback = 90 * time.Minute
+	// exotic wiring). Must exceed the shipped defaults' redelivery window
+	// (about 2h30: eight deliveries, the last ones waiting out a held run
+	// lease) plus margin — a message still legitimately bouncing through
+	// redeliveries (a deep backlog with every runner busy, a resume
+	// waiting for the previous execution's lease to lapse) holds no lease
+	// of its own, so a too-short cutoff flips it to failed_resumable
+	// mid-flight.
+	sweepQueuedFallback = 2*time.Hour + 45*time.Minute
 	// sweepQueuedMargin pads the reported redelivery window so the
 	// sweeper never races the final delivery attempt.
 	sweepQueuedMargin = 10 * time.Minute
@@ -121,6 +125,78 @@ func (s *Server) queueBacklog(ctx context.Context, leases runLeaseChecker) (uint
 	return n, true
 }
 
+// poolBacklogReader is the optional pool capability: how much work waits
+// on a sovereign pool's consumer. The shared read alone cannot see a pool
+// run legitimately waiting its turn — flipping those queued rows is the
+// false orphaning the skip-pass exists to prevent.
+type poolBacklogReader interface {
+	PoolBacklog(ctx context.Context, pool string) (uint64, error)
+}
+
+// poolBacklogs sums the pending counts of every registry-known pool. The
+// second return is false when nothing is wired (no registry, no capability)
+// or a read failed — an unreadable pool backlog DEFERS the queued verdict
+// (plan D6': an unknown state must not produce an orphan), matching the
+// shared read's fail-safe.
+func (s *Server) poolBacklogs(ctx context.Context, leases runLeaseChecker) (uint64, bool) {
+	pbr, ok := leases.(poolBacklogReader)
+	if !ok || s.runnerPoolsStore == nil {
+		return 0, false
+	}
+	rec, err := s.runnerPoolsStore.Get(ctx)
+	if err != nil {
+		s.logWarn("sweeper: runner-pool registry unreadable (%v) — the queued pass defers", err)
+		return 0, false
+	}
+	if rec == nil {
+		return 0, false
+	}
+	total := uint64(0)
+	for _, p := range rec.Pools {
+		if p.State == platformcfg.RunnerPoolDisabled {
+			continue
+		}
+		n, err := pbr.PoolBacklog(ctx, p.Name)
+		if err != nil {
+			s.logWarn("sweeper: pool %s backlog unreadable (%v) — the queued pass defers", p.Name, err)
+			return 0, false
+		}
+		total += n
+	}
+	return total, true
+}
+
+// dlqGaugeValue sums the shared DLQ depth with every registry-known
+// pool's own DLQ stream. The second return is false when a leg cannot be
+// read — the caller HOLDS the last gauge value instead of publishing a
+// partial sum that reads as a calm during exactly the storm the gauge
+// exists to surface.
+func (s *Server) dlqGaugeValue(ctx context.Context) (uint64, bool) {
+	depth, err := s.queue.DLQDepth(ctx)
+	if err != nil {
+		return 0, false
+	}
+	if s.runnerPoolsStore != nil {
+		rec, rerr := s.runnerPoolsStore.Get(ctx)
+		if rerr != nil {
+			return 0, false
+		}
+		if rec != nil {
+			for _, p := range rec.Pools {
+				if p.State == platformcfg.RunnerPoolDisabled {
+					continue
+				}
+				pd, perr := s.queue.PoolDLQDepth(ctx, p.Name)
+				if perr != nil {
+					return 0, false
+				}
+				depth += pd
+			}
+		}
+	}
+	return depth, true
+}
+
 // runQueueSweeper loops until ctx is cancelled. Started by
 // ListenAndServe in cloud mode when both the Mongo store and the
 // queue connection are wired.
@@ -135,8 +211,13 @@ func (s *Server) runQueueSweeper(ctx context.Context, lister staleRunLister, lea
 			s.sweepOrphanRuns(ctx, lister, leases, time.Now().UTC())
 			// Piggy-back the DLQ depth gauge on the same cadence — the
 			// sweeper only runs in cloud mode where the queue is wired.
+			// The total sums the shared DLQ and every registry-known pool's
+			// own DLQ stream (a pool's parked messages live on their own
+			// stream — shared-only would read a calm zero during a storm).
+			// An unreadable leg HOLDS the last value: zeroing on a broker
+			// error would paint the calm exactly when the broker struggles.
 			if s.queue != nil && s.cfg.Metrics != nil {
-				if depth, err := s.queue.DLQDepth(ctx); err == nil {
+				if depth, ok := s.dlqGaugeValue(ctx); ok {
 					s.cfg.Metrics.DLQDepth.Set(float64(depth))
 				}
 			}
@@ -164,6 +245,13 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	if backlog, ok := s.queueBacklog(ctx, leases); ok && backlog > 0 {
 		if s.logger != nil {
 			s.logger.Debug("sweeper: %d message(s) still waiting on the consumer — skipping the queued pass (those rows are unclaimed for want of a free runner, not orphaned)", backlog)
+		}
+		passes = passes[1:]
+	} else if poolBacklog, ok := s.poolBacklogs(ctx, leases); ok && poolBacklog > 0 {
+		// A pool consumer's pending count is the same signal, pool-scoped:
+		// a sovereign run waiting its turn is not an orphan.
+		if s.logger != nil {
+			s.logger.Debug("sweeper: %d message(s) still waiting on pool consumers — skipping the queued pass", poolBacklog)
 		}
 		passes = passes[1:]
 	}
@@ -305,6 +393,25 @@ type QueueBackend interface {
 	DiscardDLQ(ctx context.Context, seq uint64) error
 	DLQDepth(ctx context.Context) (uint64, error)
 	IsRunLocked(ctx context.Context, runID string) (bool, error)
+
+	// The sovereign-pool variants (#2029): each pool parks on its OWN DLQ
+	// stream — the pool-routed admin surface reads/peeks/discards/replays
+	// there, or a pool's parked messages would be invisible to the operator.
+	ListPoolDLQ(ctx context.Context, pool string, cursorSeq uint64, limit int) ([]natsq.DLQMessage, uint64, error)
+	PeekPoolDLQ(ctx context.Context, pool string, seq uint64) (natsq.DLQMessage, json.RawMessage, error)
+	RepublishPoolDLQ(ctx context.Context, pool string, seq uint64) (string, error)
+	DiscardPoolDLQ(ctx context.Context, pool string, seq uint64) error
+	PoolDLQDepth(ctx context.Context, pool string) (uint64, error)
+}
+
+// dlqPoolFromQuery resolves the optional ?pool= parameter: empty = the
+// shared default DLQ. A malformed name is a 400, not a silent shared read.
+func dlqPoolFromQuery(r *http.Request) (string, error) {
+	pool := r.URL.Query().Get("pool")
+	if pool != "" && !queue.ValidPoolName(pool) {
+		return "", fmt.Errorf("pool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", pool)
+	}
+	return pool, nil
 }
 
 func (s *Server) registerQueueAdminRoutes() {
@@ -326,7 +433,12 @@ func (s *Server) handleDLQList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	cursor, _ := strconv.ParseUint(q.Get("cursor"), 10, 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	msgs, next, err := s.queue.ListDLQ(r.Context(), cursor, limit)
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	msgs, next, err := s.queue.ListPoolDLQ(r.Context(), pool, cursor, limit)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "dlq list: %v", err)
 		return
@@ -340,7 +452,12 @@ func (s *Server) handleDLQPeek(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid seq")
 		return
 	}
-	view, payload, err := s.queue.PeekDLQ(r.Context(), seq)
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	view, payload, err := s.queue.PeekPoolDLQ(r.Context(), pool, seq)
 	if err != nil {
 		httpError(w, http.StatusNotFound, "dlq peek: %v", err)
 		return
@@ -398,18 +515,26 @@ func redactDLQPayload(payload json.RawMessage) json.RawMessage {
 
 // handleDLQReplay re-enqueues a parked message. The run's doc is read
 // first, because a replay is only a delivery: the runner admits it against
-// the doc, and a run an operator cancelled is dropped there (the cancel
-// wins over the message) — so "replayed" would be answered and nothing
-// would happen. The refusal lands at the moment the operator acts, naming
-// the status and the way out. A doc that cannot be read fails CLOSED: a
-// side-effectful act is not performed on an unverifiable premise.
+// the doc (queue.Admit), and a message it drops — a run cancelled, finished,
+// failed or waiting for an answer, parked on a code no redelivery changes
+// (DLQ_PARKED among them), rewound for an explicit resume, or queued again
+// since the message was published — would be answered "replayed" while
+// nothing happens, the DLQ copy gone with it. The refusal lands at the moment
+// the operator acts, naming the status and the way out, and keeps the copy.
+// A doc that cannot be read fails CLOSED: a side-effectful act is not
+// performed on an unverifiable premise.
 func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
 	seq, ok := dlqSeq(r)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "invalid seq")
 		return
 	}
-	view, _, err := s.queue.PeekDLQ(r.Context(), seq)
+	view, payload, err := s.queue.PeekPoolDLQ(r.Context(), pool, seq)
 	if err != nil {
 		httpError(w, http.StatusNotFound, "dlq replay: %v", err)
 		return
@@ -425,26 +550,72 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpError(w, http.StatusBadGateway, "dlq replay: run %s status unreadable, replay refused: %v", view.RunID, err)
 		return
-	case run.Status == store.RunStatusCancelled:
-		httpError(w, http.StatusConflict, "dlq replay: run %s is cancelled — a runner drops the redelivery on admission (the cancel wins over the message); resume the run explicitly instead, which re-queues it", view.RunID)
+	}
+	var msg queue.RunMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		httpError(w, http.StatusConflict, "dlq replay: the parked payload of run %s does not decode as a run message (%v) — a runner cannot execute it; resume the run instead, then discard the message (DELETE /api/admin/dlq/%d)", view.RunID, err, seq)
 		return
 	}
-	runID, err := s.queue.RepublishDLQ(r.Context(), seq)
+	if admission := queue.Admit(&msg, run); !admission.Proceeds() {
+		httpError(w, http.StatusConflict, "dlq replay: %s", dlqReplayRefusal(admission.Drop, run, &msg, seq))
+		return
+	}
+	// The replay publishes onto the payload's derived subject (the frozen
+	// stamp decides) and discards from the SAME stream the message was
+	// peeked from — shared or the pool's own.
+	runID, err := s.queue.RepublishPoolDLQ(r.Context(), pool, seq)
 	if err != nil && runID == "" {
 		httpError(w, http.StatusBadGateway, "dlq replay: %v", err)
 		return
 	}
-	s.auditPlatform(r, "", "dlq.replayed", "run", runID, map[string]any{"seq": seq})
+	s.auditPlatform(r, "", "dlq.replayed", "run", runID, map[string]any{"seq": seq, "pool": pool})
 	writeJSON(w, map[string]any{"status": "replayed", "run_id": runID})
 }
 
+// dlqReplayRefusal says why a runner would drop the replay of msg (drop),
+// and what recovers the run instead.
+func dlqReplayRefusal(drop queue.Drop, run *store.Run, msg *queue.RunMessage, seq uint64) string {
+	discard := fmt.Sprintf("then discard the message (DELETE /api/admin/dlq/%d)", seq)
+	switch drop {
+	case queue.DropSupersededAttempt:
+		if run.Status.IsQueued() {
+			// Inside a refused resume's window (the flip stands) a resume
+			// cannot be acted on: the run's own newer delivery claims it,
+			// or the refused resume's rollback puts the previous attempt
+			// back and this copy is its live redelivery again.
+			return fmt.Sprintf("run %s is queued for a newer attempt (queued again at %s, after this message was published at %s) — the run's own newer delivery claims it, or the refused resume reverts; nothing to do here, the copy stays", run.ID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC)
+		}
+		return fmt.Sprintf("run %s was queued again at %s, after this message was published (%s) — a runner drops it on admission; resume the run instead, %s", run.ID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC, discard)
+	case queue.DropExplicitResumeRequired:
+		return fmt.Sprintf("run %s was rewound and waits for an explicit resume — a runner drops a replayed launch on admission; resume the run instead, %s", run.ID, discard)
+	case queue.DropCancelled:
+		return fmt.Sprintf("run %s is cancelled — a runner drops the redelivery on admission (the cancel wins over the message); resume the run explicitly instead, which re-queues it, %s", run.ID, discard)
+	case queue.DropDeliberateFailure:
+		return fmt.Sprintf("run %s is %s on the code %q — a runner drops the redelivery on admission (the same message would fail identically); resume the run instead, which re-queues it as a new attempt, %s", run.ID, run.Status, run.FailureCode, discard)
+	case queue.DropSettled:
+		switch run.Status {
+		case store.RunStatusPausedWaitingHuman:
+			return fmt.Sprintf("run %s waits for a human answer — a runner drops the redelivery on admission; resume the run with its answers instead, %s", run.ID, discard)
+		case store.RunStatusFinished:
+			return fmt.Sprintf("run %s is finished — a runner drops the redelivery on admission and there is nothing to replay; discard the message (DELETE /api/admin/dlq/%d)", run.ID, seq)
+		}
+		return fmt.Sprintf("run %s is %s — a runner drops the redelivery on admission; relaunch it, %s", run.ID, run.Status, discard)
+	}
+	return fmt.Sprintf("run %s: a runner drops this message on admission (%s)", run.ID, drop)
+}
+
 func (s *Server) handleDLQDiscard(w http.ResponseWriter, r *http.Request) {
+	pool, err := dlqPoolFromQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
 	seq, ok := dlqSeq(r)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "invalid seq")
 		return
 	}
-	if err := s.queue.DiscardDLQ(r.Context(), seq); err != nil {
+	if err := s.queue.DiscardPoolDLQ(r.Context(), pool, seq); err != nil {
 		httpError(w, http.StatusNotFound, "dlq discard: %v", err)
 		return
 	}

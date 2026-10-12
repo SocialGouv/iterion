@@ -87,15 +87,19 @@ func TestAModelRequestIsRecognisedByItsHostOrItsPath(t *testing.T) {
 }
 
 // An operator's model host that is not a host pattern is refused, never
-// ignored: an ignored gateway would have its conversation substituted.
+// ignored: an ignored gateway would have its conversation substituted, and an
+// ignored exclusion would leave a tool API's body in placeholder form. Each
+// malformed entry is refused as an exclusion (`!entry`) too.
 func TestAMalformedModelHostIsRefused(t *testing.T) {
-	for _, bad := range []string{"gw.corp/v1", "a*b.corp", "*.*.corp", "https://", "!", "http:gw.corp", "user:pass@gw.corp", "gw corp", "**", "*", "!gw.corp", ".llm.corp", "a..b.corp", "**..corp"} {
-		if _, err := modelHostPolicy([]string{bad}); err == nil {
-			t.Errorf("modelHostPolicy(%q) accepted it", bad)
-		}
-		pol, _ := Compile(ModeOpen, nil)
-		if _, err := New(Options{Policy: pol, InspectCA: &EphemeralCA{}, ModelHosts: []string{bad}}); err == nil {
-			t.Errorf("New with model host %q: no error", bad)
+	for _, entry := range []string{"gw.corp/v1", "a*b.corp", "*.*.corp", "https://", "!", "http:gw.corp", "user:pass@gw.corp", "gw corp", "**", "*", ".llm.corp", "a..b.corp", "**..corp", "a!b.corp", "a\nb.corp", "a\vb.corp", "a\rb.corp", "a\fb.corp"} {
+		for _, bad := range []string{entry, "!" + entry} {
+			if _, err := modelHostPolicy([]string{bad}); err == nil {
+				t.Errorf("modelHostPolicy(%q) accepted it", bad)
+			}
+			pol, _ := Compile(ModeOpen, nil)
+			if _, err := New(Options{Policy: pol, InspectCA: &EphemeralCA{}, ModelHosts: []string{bad}}); err == nil {
+				t.Errorf("New with model host %q: no error", bad)
+			}
 		}
 	}
 }
@@ -169,5 +173,93 @@ func TestTheInspectionBoundIsTheOperatorsWhenSet(t *testing.T) {
 	}
 	if px, err := New(Options{Policy: pol, MaxInspectedBody: 1 << 30}); err != nil || px.maxBody != 1<<30 {
 		t.Errorf("New with a bound: %v, maxBody %d", err, px.maxBody)
+	}
+}
+
+// An operator's `!` exclusion lifts the model detection for every host it
+// matches — a host, a wildcard, an IP or a CIDR alike — a model API's path
+// included: a tool API whose path ends like a model API's is inspected and
+// substituted like any other request. A list made only of exclusions is
+// valid. A built-in provider host is never lifted, not even by a wildcard
+// spanning it.
+func TestAModelHostExclusionLiftsTheModelDetection(t *testing.T) {
+	pol, err := modelHostPolicy([]string{"!tools.corp", "!*.tools.zone", "!**.svc.corp", "!10.1.2.3", "!10.9.0.0/16", "![fd00::7]", "!tools.example:8443", "!**.com"})
+	if err != nil {
+		t.Fatalf("an exclusions-only list is valid: %v", err)
+	}
+	for _, c := range []struct {
+		host, path string
+		want       bool
+	}{
+		// lifted, whatever the path
+		{"tools.corp", "/v1/messages", false},
+		{"TOOLS.CORP.", "/v1/messages", false},
+		{"build.tools.zone", "/v1/chat/completions", false},
+		{"svc.corp", "/responses", false},
+		{"a.b.svc.corp", "/api/generate", false},
+		{"10.1.2.3", "/v1/messages", false},
+		{"10.9.4.2", "/model/m/invoke", false},
+		{"fd00::7", "/v1/messages", false},
+		{"tools.example", "/v1/messages", false},
+		{"tools.example.com", "/v1/messages", false},
+		// a built-in provider host, though `**.com` spans it
+		{"api.anthropic.com", "/v1/files", true},
+		{"api.openai.com", "/v1/files", true},
+		{"chatgpt.com", "/backend-api/codex/models", true},
+		// matched by no exclusion: the path rule stands
+		{"a.b.tools.zone", "/v1/messages", true},
+		{"other.corp", "/v1/messages", true},
+		{"10.1.2.4", "/v1/messages", true},
+		{"10.10.0.1", "/v1/messages", true},
+		{"other.corp", "/generate-text", false},
+	} {
+		if got := modelRequest(c.host, c.path, pol); got != c.want {
+			t.Errorf("modelRequest(%q, %q) = %v, want %v", c.host, c.path, got, c.want)
+		}
+	}
+}
+
+// Between a pattern and an exclusion the last matching entry decides — the
+// network rules' evaluation: an exclusion carves hosts out of a wildcard
+// listed before it, and a pattern listed after it puts one back. The order
+// is the operator's, so both orders are pinned.
+func TestModelHostEntriesResolveByTheLastMatch(t *testing.T) {
+	pol, err := modelHostPolicy([]string{"**.corp", "!*.tools.corp", "gw.tools.corp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		host string
+		want bool
+	}{
+		{"llm.corp", true},
+		{"tools.corp", true},
+		{"build.tools.corp", false},
+		{"gw.tools.corp", true},
+	} {
+		if got := modelRequest(c.host, "/generate-text", pol); got != c.want {
+			t.Errorf("[**.corp !*.tools.corp gw.tools.corp] modelRequest(%q) = %v, want %v", c.host, got, c.want)
+		}
+	}
+	if modelRequest("build.tools.corp", "/v1/messages", pol) {
+		t.Error("an excluded host whose path ends like a model API's is still a model request")
+	}
+	pol, err = modelHostPolicy([]string{"!*.tools.corp", "**.corp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !modelRequest("build.tools.corp", "/generate-text", pol) {
+		t.Error("[!*.tools.corp **.corp] a wildcard listed after the exclusion does not win")
+	}
+}
+
+// An exclusion lying within the built-in provider hosts is refused when the
+// run's proxy starts, naming why: a model provider's bodies keep their
+// placeholders, and no configuration lifts that.
+func TestAnExclusionOfABuiltInProviderIsRefused(t *testing.T) {
+	for _, entry := range []string{"!api.anthropic.com", "!API.Anthropic.COM.", "!https://api.openai.com/v1", "!europe-west1-aiplatform.googleapis.com", "!*.openai.azure.com", "!bedrock-runtime.eu-west-3.amazonaws.com"} {
+		if _, err := modelHostPolicy([]string{entry}); err == nil || !strings.Contains(err.Error(), "built-in model provider") {
+			t.Errorf("modelHostPolicy(%q): err = %v, want a refusal naming the built-in provider", entry, err)
+		}
 	}
 }

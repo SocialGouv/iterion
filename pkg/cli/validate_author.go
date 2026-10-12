@@ -69,6 +69,13 @@ func openAuthorDocument(path string) (*authorDocument, *bundle.Bundle, error) {
 		if b, err = bundle.OpenDirWithMain(dir, doc.botPath); err != nil {
 			return nil, nil, runview.EntrypointBundleError(path+" stands for", dir, err)
 		}
+	} else if dir := bundle.DirForEntry(doc.botPath); dir != "" {
+		// The twin of a SIBLING entry is the bundle's too, validated as its
+		// .bot would be — `validate bots/x/extend.bot.yaml` gets what
+		// `validate bots/x/extend.bot` gets.
+		if b, err = bundle.OpenDirWithMain(dir, doc.botPath); err != nil {
+			return nil, nil, runview.EntryBundleError(path+" stands for", dir, err)
+		}
 	}
 	return doc, b, nil
 }

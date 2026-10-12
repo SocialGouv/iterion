@@ -469,3 +469,48 @@ func TestEffectiveProviders_OnlyEnvFunded(t *testing.T) {
 		t.Fatalf("a gateway hint over a bare model did not widen: %+v", got)
 	}
 }
+
+// #2121: the gateway classification and the env-deferral answer with the
+// same three rules, each pinned by a row that was seen red.
+//   - a route whose text defers to an environment is UNRESOLVED: never
+//     env-funded, and narrow-UNSAFE (the pool's wants derivation fails open
+//     and drops no donation) — whatever THIS process's env expands it to;
+//   - an unresolvable launch override widens the same way;
+//   - the gateway route is the model's RAW openai_compatible/ prefix — a
+//     gateway hint over any other model widens as an unknown name.
+func TestEffectiveProviders_EnvTemplatedRoutesWidenAndAreNeverEnvFunded(t *testing.T) {
+	nodeOf := func(backend, provider, mdl string) *ir.AgentNode {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: mdl}}
+	}
+	t.Setenv("GW", "openai_compatible")
+	t.Setenv("PROV", "anthropic")
+	rows := []struct {
+		name            string
+		provider, model string
+		ovProvider      string
+		wantEnvFunded   bool
+		wantNarrowSafe  bool
+	}{
+		{"raw gateway prefix: env-funded", "openai_compatible", "openai_compatible/team/m", "", true, true},
+		{"env-templated model: widens", "openai_compatible", "${GW}/m", "", false, false},
+		{"env-templated hint resolving to the gateway: narrow-safe, never env-funded", "${GW}", "openai_compatible/team/m", "", false, true},
+		{"env-set known provider: narrow-safe, never env-funded", "${PROV}", "claude-opus-5", "", false, true},
+		{"an unresolvable launch override widens", "anthropic", "claude-opus-5", "auto", false, false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": nodeOf("claw", row.provider, row.model)}}
+			overrides := ModelOverrides{}
+			if row.ovProvider != "" {
+				overrides.SetProvider("a", row.ovProvider)
+			}
+			got := EffectiveProviders(wf, overrides, nil, knownForTest)
+			if got.OnlyEnvFunded() != row.wantEnvFunded {
+				t.Errorf("OnlyEnvFunded = %v, want %v", got.OnlyEnvFunded(), row.wantEnvFunded)
+			}
+			if got.NarrowSafe != row.wantNarrowSafe {
+				t.Errorf("NarrowSafe = %v, want %v (providers=%v unknown=%v)", got.NarrowSafe, row.wantNarrowSafe, got.Providers, got.Unknown)
+			}
+		})
+	}
+}

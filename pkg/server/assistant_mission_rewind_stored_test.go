@@ -653,3 +653,184 @@ func TestAssistantMissionRewind_NamesAResetWhenTheRowIsGone(t *testing.T) {
 		t.Fatalf("the refused apply must leave the checkpoint untouched, got %#v", rewound.Checkpoint)
 	}
 }
+
+// pinHidingStore simulates what the retention clock or a purge does to ONE
+// snapshot: the version exists in the history but the by-version read
+// misses it, while the fallback read (nearest older) still sees the rest.
+type pinHidingStore struct {
+	botsource.Store
+	hideID      string
+	hideVersion int
+}
+
+func (h *pinHidingStore) GetByVersion(ctx context.Context, tenantID, id string, version int) (botsource.BotSource, error) {
+	if id == h.hideID && version == h.hideVersion {
+		return botsource.BotSource{}, botsource.ErrNotFound
+	}
+	return h.Store.GetByVersion(ctx, tenantID, id, version)
+}
+
+// The fallback the retention clock asked for (#1517): the row has ADVANCED
+// past the pin (cur.Version >= pin — the snapshot existed and was removed)
+// and an older snapshot survives, so the rewind resolves THAT — and the
+// receipt names the substitution (PinnedMissingFrom). Under the strict
+// dial the same receipt refuses, naming the pin it could not resolve.
+func TestAssistantMissionRewind_FallsBackToTheNearestOlderSurvivor(t *testing.T) {
+	srv, _ := newTestServer(t)
+	mem := botsource.NewMemoryStore()
+	srv.botSources = mem
+	srv.cfg.Mode = "cloud"
+	ctx := context.Background()
+
+	const fixture = `schema out:
+  value: string
+agent setup:
+  model: "test"
+  output: out
+agent alpha:
+  model: "test"
+  output: out
+agent beta:
+  model: "test"
+  output: out
+workflow target:
+  entry: setup
+  setup -> alpha
+  alpha -> beta
+  beta -> done
+`
+	live, err := srv.botSources.Create(store.WithTenant(ctx, "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "shared",
+		Files: map[string]string{botsource.MainBotFile: fixture},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.botSources.Update(store.WithTenant(ctx, "t1"), botsource.BotSource{
+		ID: live.ID, TenantID: "t1", Slug: live.Slug, Version: live.Version, Files: map[string]string{botsource.MainBotFile: fixture},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "mission-pin-fallback-target"
+	if _, err := srv.runs.RunStore().CreateRun(ctx, runID, "target", nil); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := srv.runs.RunStore().LoadRun(ctx, runID)
+	target.FilePath = "bots/shared/main.bot"
+	target.BotSourceTier, target.BotSourceTenant = store.BotSourceTierTeam, "t1"
+	target.WorkflowSource, target.Status = fixture, store.RunStatusFailedResumable
+	target.Checkpoint = &store.Checkpoint{NodeID: "beta", Outputs: map[string]map[string]any{
+		"setup": {"value": "ok"}, "alpha": {"value": "ok"}, "beta": {"value": "stale"},
+	}}
+	if err := srv.runs.RunStore().SaveRun(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	seedRun(t, srv, "mission-pin-fallback-assistant", "assistant", store.RunStatusPausedWaitingHuman)
+	now := time.Now().UTC()
+	watch := runwatch.Watch{ID: "mission-pin-fallback-watch", OwnerID: "local", TargetRunID: runID,
+		AssistantRunID: "mission-pin-fallback-assistant", Mode: runwatch.ModePropose, State: runwatch.WatchActive,
+		CreatedAt: now, UpdatedAt: now}
+	if err := srv.assistantWatches.CreateWatch(ctx, watch); err != nil {
+		t.Fatal(err)
+	}
+	mission := assistantmission.Mission{
+		Version: 1, ID: "mission-pin-fallback", InvocationKey: "goal:" + runID, OperatorID: "local",
+		TargetRunID: runID, WatchID: watch.ID, AssistantRunID: watch.AssistantRunID,
+		Policy: assistantmission.Policy{Actions: []string{assistantmission.ActionRewind}, TTLSeconds: 600,
+			ExpiresAt: now.Add(10 * time.Minute), MaxActions: 1, ContractVersion: assistantmission.ContractVersion},
+		State:      assistantmission.StateActive,
+		Activation: &assistantmission.DeliveryReceipt{ID: "activated", Kind: "assistant-mission-started", State: assistantmission.ReceiptSucceeded},
+		// The preview certified version 2 of the LIVE row — a snapshot the
+		// retention clock has since removed (the row is at 3).
+		Receipts: []assistantmission.ActionReceipt{{
+			ID: "mission-pin-fallback-receipt", Action: assistantmission.ActionRewind, Digest: "fallback",
+			AssistantRunID: watch.AssistantRunID, ExpectedPivot: "alpha", SourceVersion: 2,
+			SourceID: live.ID,
+			State:    assistantmission.ReceiptPrepared, CreatedAt: now, UpdatedAt: now,
+		}},
+		ProposalFrontier: map[string]int{}, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := srv.assistantMissions.CreateOrGet(ctx, mission); err != nil {
+		t.Fatal(err)
+	}
+	coord := &assistantMissionCoordinator{server: srv, runs: srv.runs, watches: srv.assistantWatches,
+		missions: srv.assistantMissions, worker: "test-worker"}
+	// Retention/purge happens BEFORE the coordinator dispatches: the row
+	// advances to v3 and the pinned v2's snapshot disappears.
+	if _, err := srv.botSources.Update(store.WithTenant(ctx, "t1"), botsource.BotSource{
+		ID: live.ID, TenantID: "t1", Slug: live.Slug, Version: 2, Files: map[string]string{botsource.MainBotFile: "workflow target:\n  entry: setup\n  setup -> alpha -> beta -> done\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hiding := &pinHidingStore{Store: mem, hideID: live.ID, hideVersion: 2}
+	srv.botSources = hiding
+
+	coord.attempt(ctx, mission.ID) // dispatch: the pin resolves through the fallback
+	coord.attempt(ctx, mission.ID) // the next pass records the rewind's outcome
+
+	got, err := srv.assistantMissions.Get(ctx, assistantmission.Scope{OperatorID: "local", TargetRunID: runID}, mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.Receipts[0]
+	if r.State != assistantmission.ReceiptSucceeded {
+		t.Fatalf("the fallback must honour the receipt on the surviving lineage, got %q: %s", r.State, r.Error)
+	}
+	if r.PinnedMissingFrom != 2 {
+		t.Fatalf("the substitution is not on the receipt: PinnedMissingFrom=%d", r.PinnedMissingFrom)
+	}
+
+	// The strict dial refuses the same shape instead — the pre-#1517
+	// behavior, opt-in. Its own target run: the binding is per target.
+	t.Setenv(BotSourcePinFallbackEnv, "off")
+	const strictRunID = "mission-pin-strict-target"
+	if _, err := srv.runs.RunStore().CreateRun(ctx, strictRunID, "target", nil); err != nil {
+		t.Fatal(err)
+	}
+	starget, _ := srv.runs.RunStore().LoadRun(ctx, strictRunID)
+	starget.FilePath = "bots/shared/main.bot"
+	starget.BotSourceTier, starget.BotSourceTenant = store.BotSourceTierTeam, "t1"
+	starget.WorkflowSource, starget.Status = fixture, store.RunStatusFailedResumable
+	starget.Checkpoint = &store.Checkpoint{NodeID: "beta", Outputs: map[string]map[string]any{
+		"setup": {"value": "ok"}, "alpha": {"value": "ok"}, "beta": {"value": "stale"},
+	}}
+	if err := srv.runs.RunStore().SaveRun(ctx, starget); err != nil {
+		t.Fatal(err)
+	}
+	seedRun(t, srv, "mission-pin-strict-assistant", "assistant", store.RunStatusPausedWaitingHuman)
+	swatch := runwatch.Watch{ID: "mission-pin-strict-watch", OwnerID: "local", TargetRunID: strictRunID,
+		AssistantRunID: "mission-pin-strict-assistant", Mode: runwatch.ModePropose, State: runwatch.WatchActive,
+		CreatedAt: now, UpdatedAt: now}
+	if err := srv.assistantWatches.CreateWatch(ctx, swatch); err != nil {
+		t.Fatal(err)
+	}
+	strict := assistantmission.Mission{
+		Version: 1, ID: "mission-pin-strict", InvocationKey: "goal:" + strictRunID, OperatorID: "local",
+		TargetRunID: strictRunID, WatchID: swatch.ID, AssistantRunID: swatch.AssistantRunID,
+		Policy: assistantmission.Policy{Actions: []string{assistantmission.ActionRewind}, TTLSeconds: 600,
+			ExpiresAt: now.Add(10 * time.Minute), MaxActions: 1, ContractVersion: assistantmission.ContractVersion},
+		State:      assistantmission.StateActive,
+		Activation: &assistantmission.DeliveryReceipt{ID: "activated-strict", Kind: "assistant-mission-started", State: assistantmission.ReceiptSucceeded},
+		Receipts: []assistantmission.ActionReceipt{{
+			ID: "mission-pin-strict-receipt", Action: assistantmission.ActionRewind, Digest: "strict",
+			AssistantRunID: swatch.AssistantRunID, ExpectedPivot: "alpha", SourceVersion: 2,
+			SourceID: live.ID,
+			State:    assistantmission.ReceiptPrepared, CreatedAt: now, UpdatedAt: now,
+		}},
+		ProposalFrontier: map[string]int{}, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := srv.assistantMissions.CreateOrGet(ctx, strict); err != nil {
+		t.Fatal(err)
+	}
+	coord.attempt(ctx, strict.ID) // dispatch under the strict dial
+	coord.attempt(ctx, strict.ID) // the next pass records the refusal's outcome
+	got, err = srv.assistantMissions.Get(ctx, assistantmission.Scope{OperatorID: "local", TargetRunID: strictRunID}, strict.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = got.Receipts[0]
+	if r.State != assistantmission.ReceiptRejected || !strings.Contains(r.Error, "version 2") {
+		t.Fatalf("the strict dial must refuse naming the pin, got %q: %s", r.State, r.Error)
+	}
+}

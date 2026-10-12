@@ -35,6 +35,7 @@
 package cost
 
 import (
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"sort"
 	"strings"
 
@@ -142,7 +143,33 @@ var modelPriceTable = map[string]modelPricing{
 // tenant-prefixed spec like "anthropic/eu/claude-sonnet-4-6" still
 // resolves to "claude-sonnet-4-6" — intentional, since pricing is the
 // same across regions for the providers we track.
+// gatewayPricer prices one gateway id (the wire id after
+// openai_compatible/): the per-mtok pair, and whether the catalog KNOWS the
+// id. Nil until the compatgw package's init wires the catalog in — cost
+// stays a leaf, and an unpriced gateway is 0-that-is-not-a-measured-zero.
+var gatewayPricer func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)
+
+// SetGatewayPricer wires the gateway catalog into the estimator. Called by
+// the compatgw package's init — the catalog's owner — never by a caller.
+func SetGatewayPricer(f func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)) {
+	gatewayPricer = f
+}
+
 func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
+	// FIRST: the gateway branch — a gateway id is whatever the gateway
+	// serves, and must never false-match a vendor table below, not even
+	// claw's live cache. Unknown or unpriced is 0 the budget reads as
+	// unpriced spend (cost_usd_unpriced), never as free.
+	if route := modelroute.Parse(model); route.Gateway() {
+		if gatewayPricer == nil {
+			return 0
+		}
+		inPerM, outPerM, known := gatewayPricer(route.Wire)
+		if !known {
+			return 0
+		}
+		return (float64(inputTokens)*inPerM + float64(outputTokens)*outPerM) / 1_000_000.0
+	}
 	// First: ask claw's live registry cache. When it has a hit, it
 	// reflects the OpenRouter pricing as published — which means new
 	// models picked up since the last static-table update get correct

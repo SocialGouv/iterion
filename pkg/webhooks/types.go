@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -117,20 +118,44 @@ type Config struct {
 	// (empty = any author). Case-insensitive; entries may be bot logins like
 	// "dependabot[bot]" / "renovate[bot]". Lets a webhook react ONLY to a
 	// dependency-bot's PRs while ignoring human PRs on the same repo.
-	AuthorAllowlist []string `bson:"author_allowlist,omitempty" json:"author_allowlist,omitempty"`
+	//
+	// NO omitempty on the bson tag: the webhook PATCH distinguishes an ABSENT
+	// field (keep) from a non-nil EMPTY one (clear → allow-all), and
+	// omitempty would drop the empty slice on write — MongoConfigStore.Update
+	// is a full-document replace, so a deliberate clear would read back nil,
+	// indistinguishable from never-set. Both spellings read as allow-all to
+	// every reader (len==0 / range — MatchAuthor through the provider
+	// handlers and author_trust; the forge orchestrator only WRITES the
+	// field, derived from the co-enabled bots' manifests), so the store
+	// contract owes only that the explicit-empty gesture round-trips.
+	// Documents written before this tag change simply have the field absent
+	// and read nil, exactly as before; every replace written SINCE stores
+	// the key even for a never-set nil (as BSON null) — do not query on
+	// presence.
+	AuthorAllowlist []string `bson:"author_allowlist" json:"author_allowlist,omitempty"`
 	// LabelAllowlist restricts which freshly-applied issue label triggers a
 	// launch on the GitHub/Forgejo `issues` (labeled) path (e.g.
 	// ["implement"] so only that label dispatches the bot). Empty = any
 	// label triggers. Case-insensitive; see MatchLabel. Has no effect on the
 	// pull_request / issue_comment paths.
-	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+	//
+	// NO omitempty on the bson tag: the operator's clear gesture is a non-nil
+	// EMPTY slice (the webhook PATCH distinguishes absent = keep from [] =
+	// clear), and omitempty would drop it on write — a deliberate widening
+	// would read back as never-set and the silent adopt would resurrect the
+	// narrowing from the integration (see the adopt's config-wins rule in
+	// pkg/forge/orchestrator.go). Documents written before this tag change
+	// simply have the field absent and read nil, exactly as before.
+	LabelAllowlist []string `bson:"label_allowlist" json:"label_allowlist,omitempty"`
 	// HoldLabels is a bot-agnostic suppression set: when the triggering PR or
 	// issue carries any of these labels, the auto-launch lanes (PR-open review,
 	// auto-implement-on-open) suppress the launch — whatever bot would have
 	// run. It is the operator's escape hatch to pause automation on one
 	// PR/issue without disabling the webhook. Case-insensitive; empty = off.
 	// Distinct from LabelAllowlist (which selects a bot); this vetoes ALL bots.
-	HoldLabels []string `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
+	// Same no-omitempty rule as LabelAllowlist: a deliberate LIFT ([] ) must
+	// round-trip as explicit-empty, not collapse into never-set.
+	HoldLabels []string `bson:"hold_labels" json:"hold_labels,omitempty"`
 
 	// BranchImproveAsPR changes how the branch-improvement bot (Billy) lands
 	// its hardening on a PR it reviews. Default (false): it commits + pushes
@@ -343,6 +368,10 @@ type Config struct {
 	RetryMaxAttempts int    `bson:"retry_max_attempts,omitempty" json:"retry_max_attempts,omitempty"`
 	RetryMaxWait     string `bson:"retry_max_wait,omitempty" json:"retry_max_wait,omitempty"`
 	RetryJitter      string `bson:"retry_jitter,omitempty" json:"retry_jitter,omitempty"`
+	// Routing is the webhook's routing block (ADR-121, pkg/llmroute) — the
+	// binding level for webhook-provisioned bots. nil = the level says
+	// nothing. BREADTH: one webhook serves every bot its rules fan out to.
+	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
 
 	// AuthorizedRepliers + MinReplierRole gate who may "talk back" to the bot
 	// via a note (a /revi command or a reply): a note author is authorized
@@ -726,6 +755,18 @@ func (c Config) NormalizedReviewRequestLogins() []string {
 		}
 	}
 	return out
+}
+
+// RoutingPolicy projects the webhook's routing block (ADR-121). Not
+// normalized — one layer of a precedence chain. BREADTH, said out loud: a
+// webhook serves every bot its rules fan out to, so one webhook's
+// pair_order REPLACES (never merges) the routing of each of them at once —
+// the authors' locks are what stop it.
+func (c Config) RoutingPolicy() llmroute.Policy {
+	if c.Routing == nil {
+		return llmroute.Policy{}
+	}
+	return *c.Routing
 }
 
 // RetryPolicy projects the webhook's retry fields. Not normalized — this

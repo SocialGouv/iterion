@@ -124,7 +124,7 @@ func TestTheProofCountsDiagnostics(t *testing.T) {
 // PlanFor is the validator's view: the edits for the diagnostics it already
 // holds, and the ones it could not place — no recompile.
 func TestPlanForAnnotatesDiagnostics(t *testing.T) {
-	edits, left := PlanFor("q.bot", []byte(quotedBot), c137(t, quotedBot))
+	edits, left := PlanFor("q.bot", []byte(quotedBot), parser.Parse("q.bot", quotedBot).File, c137(t, quotedBot))
 	if len(edits) != 2 || len(left) != 1 || edits[0].Node != "checkout" || edits[1].Node != "verify" {
 		t.Fatalf("edits %+v left %+v", edits, left)
 	}
@@ -134,9 +134,62 @@ func TestPlanForAnnotatesDiagnostics(t *testing.T) {
 }
 
 // A tool inside a group is instantiated by `use` under a name the source
-// has not: its C137 is left to the author, said as a group member — never
-// "not found".
-func TestAGroupMemberIsSaidAsSuch(t *testing.T) {
+// has not: the id resolves through the AST to the group's own literal, and
+// ONE edit at it remedies the diagnostic of every use — the proof counts
+// the removed diagnostics per (node, reference).
+func TestAGroupMembersOneEditServesEveryUse(t *testing.T) {
+	src := `dsl: 2
+
+vars:
+  base: string = "main"
+
+group g:
+  tool assess:
+    command: "git checkout '{{vars.base}}'"
+
+use g as u1
+use g as u2
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: u1.assess
+  u1.assess -> u2.assess
+  u2.assess -> done
+`
+	if n := len(c137(t, src)); n != 2 {
+		t.Fatalf("the fixture raises %d C137, want 2 (one per use)", n)
+	}
+	res, err := Bytes("g.bot", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || len(res.Applied) != 1 {
+		t.Fatalf("applied %+v, want one edit at the group's literal", res.Applied)
+	}
+	e := res.Applied[0]
+	if e.Node != "g.assess" {
+		t.Fatalf("the edit names %q, want the group-qualified member", e.Node)
+	}
+	if len(e.Nodes) != 2 || e.Nodes[0] != "u1.assess" || e.Nodes[1] != "u2.assess" {
+		t.Fatalf("the edit remedies %+v, want every instantiation", e.Nodes)
+	}
+	if !strings.Contains(string(res.Fixed), `command: "git checkout {{vars.base}}"`) || strings.Contains(string(res.Fixed), `'{{vars.base}}'`) {
+		t.Fatalf("the group literal was not unquoted exactly once:\n%s", res.Fixed)
+	}
+	// Every instantiation's diagnostic is gone, and a second pass is a no-op.
+	if left := c137(t, string(res.Fixed)); len(left) != 0 {
+		t.Fatalf("after the fix C137 remains for %+v", left)
+	}
+	again, err := Bytes("g.bot", res.Fixed)
+	if err != nil || again.Changed {
+		t.Fatalf("a second pass changed the text: %v %+v", err, again.Applied)
+	}
+}
+
+// A dotted id no `use` of the source instantiates resolves to nothing: the
+// diagnostic is left said so, not searched for.
+func TestAnUnresolvableGroupMemberIsSaidAsSuch(t *testing.T) {
 	src := `dsl: 2
 
 vars:
@@ -154,9 +207,51 @@ workflow w:
   entry: u1.assess
   u1.assess -> done
 `
-	edits, left := PlanFor("g.bot", []byte(src), c137(t, src))
-	if len(edits) != 0 || len(left) != 1 || left[0].Node != "u1.assess" || !strings.Contains(left[0].Why, "group") {
+	diags := c137(t, src)
+	diags[0].NodeID = "u9.ghost"
+	edits, left := PlanFor("g.bot", []byte(src), parser.Parse("g.bot", src).File, diags)
+	if len(edits) != 0 || len(left) != 1 || left[0].Node != "u9.ghost" || !strings.Contains(left[0].Why, "cannot be located") {
 		t.Fatalf("edits %+v left %+v", edits, left)
+	}
+}
+
+// The group's literal quotes a PARAMETER the use binds to a reference: the
+// diagnostic names the bound reference while the source declares the
+// parameter, so removing the quotes is not mechanical — said so, and the
+// text is untouched.
+func TestAParamBoundQuoteIsLeftToTheAuthor(t *testing.T) {
+	src := `dsl: 2
+
+vars:
+  base: string = "main"
+
+group g(p):
+  tool assess:
+    command: "git checkout '{{params.p}}'"
+
+use g as u1 with { p: "{{vars.base}}" }
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: u1.assess
+  u1.assess -> done
+`
+	res, err := Bytes("g.bot", []byte(src))
+	if err != nil {
+		t.Fatalf("a fixable file was refused: %v", err)
+	}
+	if res.Changed || len(res.Applied) != 0 {
+		t.Fatalf("applied %+v, want nothing mechanical", res.Applied)
+	}
+	var said bool
+	for _, l := range res.Left {
+		if l.Code == ir.DiagQuotedCommandRef && l.Node == "u1.assess" && strings.Contains(l.Why, "more than the reference") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("the parameter-bound quote was not said left: %+v", res.Left)
 	}
 }
 

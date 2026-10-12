@@ -317,7 +317,7 @@ describe("the buffer across an unmount of the pane", () => {
 // second class — a buffer that survives but is never reached, and an exit
 // from edit mode that deleted it under the author's eyes.
 describe("the buffer when the view turns read-only under it", () => {
-  it("is not deleted in silence when a unit arrives under a whole-file edit", async () => {
+  it("is not deleted in silence when a unit arrives under a whole-file edit — it is held, and the banner answers it", async () => {
     const store = openStore();
     const buffer = await startEditing(store);
     fireEvent.change(buffer, { target: { value: "a repair the author typed" } });
@@ -326,9 +326,10 @@ describe("the buffer when the view turns read-only under it", () => {
     // Built by hand: a real reload replaces the file through
     // `setCurrentFilePath`, which drops the buffer — and only after the
     // author chose "Reload and discard". A unit's view offers one file at a
-    // time and never the whole, so this text can no longer be shown: the
-    // view leaves edit mode, and the text goes with a named warning rather
-    // than vanishing, or staying where nothing can show it.
+    // time and never the whole, so this text can no longer be shown — but it
+    // is the author's text, so it is HELD and the banner names it, rather
+    // than a toast deciding to let it go (#1735). The view leaves edit mode;
+    // Discard is the author's own answer now.
     store.getState().setUnit({
       root: "bots/demo",
       main: "main.bot",
@@ -337,14 +338,21 @@ describe("the buffer when the view turns read-only under it", () => {
     });
 
     await waitFor(() => expect(screen.queryByRole("button", { name: "Apply" })).toBeNull());
+    // Held, not dropped: `hasUnsavedWork` keeps answering for it, and the
+    // banner is the surface the question lights for.
+    expect(store.getState().sourceBuffer).not.toBeNull();
+    expect(store.getState().hasUnsavedWork()).toBe(true);
+    await screen.findByText("Un-applied text is still held for this file");
+    // A whole-file text under a unit has no edit state to restore INTO —
+    // the merged program is read-only — so only Discard is offered.
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     await waitFor(() => expect(store.getState().sourceBuffer).toBeNull());
-    const warning = useUIStore
-      .getState()
-      .toasts.find((t) => t.message.includes("This bot is in several files now"));
-    expect(warning).toMatchObject({ type: "warning", persistent: true });
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
   });
 
-  it("lets go of work no picker can reach again, and says so", async () => {
+  it("holds work no picker can reach any more, and Restore puts it back into the editor", async () => {
     const store = openStore();
     store.getState().setUnit({
       root: "bots/demo",
@@ -360,9 +368,9 @@ describe("the buffer when the view turns read-only under it", () => {
       doc: null,
       session: 1,
     });
-    // The fragment is deleted from the bot. Nothing can select it again, so
-    // the buffer could never be adopted — and holding it would stop this tab
-    // auto-reloading for ever and light `beforeunload` with nothing to show.
+    // The fragment is deleted from the bot. The picker can no longer select
+    // it, so the buffer cannot be adopted on its own — it is held, and the
+    // banner's Restore moves the view back to it (#1735).
     store.getState().setUnit({
       root: "bots/demo",
       main: "main.bot",
@@ -371,16 +379,69 @@ describe("the buffer when the view turns read-only under it", () => {
     });
     mount(store);
 
+    await screen.findByText("Un-applied text is still held for lib/nodes.bot");
+    expect(store.getState().sourceBuffer).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    // The text is back, in edit mode, for the file it was typed for.
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(
+        "typed for the fragment",
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Apply" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    // The picker names the file it is on, held though it is.
+    expect(screen.getByTestId("source-view-file-picker").textContent).toContain("lib/nodes.bot");
+    // And the buffer is the one in the store, not a fresh copy.
+    expect(store.getState().sourceBuffer?.text).toBe("typed for the fragment");
+    expect(store.getState().sourceBuffer?.base).toBe("the fragment as rendered");
+  });
+
+  it("does not let Edit take the held text: the banner's answer comes first", async () => {
+    const store = openStore();
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot" }, { rel: "lib/nodes.bot" }],
+    });
+    store.getState().setSourceBuffer({
+      path: "bots/demo/main.bot",
+      rel: "lib/nodes.bot",
+      text: "typed for the fragment",
+      base: "the fragment as rendered",
+      doc: null,
+      session: 1,
+    });
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r2",
+      files: [{ rel: "main.bot" }],
+    });
+    mount(store);
+
+    // Entering the mode publishes a FRESH buffer over the held one — the
+    // held text would be taken without an answer. Until it is answered,
+    // Edit stands down.
+    const edit = await screen.findByRole("button", { name: "Edit" }, { timeout: 2000 });
+    expect((edit as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     await waitFor(() => expect(store.getState().sourceBuffer).toBeNull());
-    expect(useUIStore.getState().toasts.map((t) => t.message).join(" ")).toContain(
-      "lib/nodes.bot is no longer one of this bot's files",
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
     );
   });
 
-  it("lets go of a FRAGMENT's text once the tab has no unit, and says so", async () => {
+  it("holds a FRAGMENT's text once the tab has no unit, and the banner's Discard answers it", async () => {
     // With no unit the view shows the whole file only, so a buffer typed for
-    // one file of a unit can never be adopted; the release used to skip every
-    // tab without a unit, and the text then kept the tab "unsaved" for good.
+    // one file of a unit can never be adopted. It used to be dropped with a
+    // toast; it is held now, with the banner as its surface — unsaved work
+    // stays true until the author answers (#1735).
     const store = openStore();
     store.getState().setSourceBuffer({
       path: "bots/demo/main.bot",
@@ -393,12 +454,15 @@ describe("the buffer when the view turns read-only under it", () => {
     expect(store.getState().hasUnsavedWork()).toBe(true);
     mount(store);
 
+    await screen.findByText("Un-applied text is still held for lib/nodes.bot");
+    expect(store.getState().sourceBuffer).not.toBeNull();
+    expect(store.getState().hasUnsavedWork()).toBe(true);
+    // A fragment with no unit left has no edit state to restore INTO.
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     await waitFor(() => expect(store.getState().sourceBuffer).toBeNull());
     expect(store.getState().hasUnsavedWork()).toBe(false);
-    const warning = useUIStore
-      .getState()
-      .toasts.find((t) => t.message.includes("lib/nodes.bot is no longer one of this tab's files"));
-    expect(warning).toMatchObject({ type: "warning", persistent: true });
   });
 
   it("comes back on the FRAGMENT it was typed for, not on the main", async () => {

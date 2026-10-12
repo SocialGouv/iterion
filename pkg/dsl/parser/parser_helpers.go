@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -230,74 +231,450 @@ func opensBracket(t Token) bool {
 // to the next line that starts at the list's own indentation — a sibling
 // property — so the remainder is consumed here (a lexer diagnosis it holds
 // is still said, the way skipIndentedBlock says one) and the cursor lands on
-// the sibling. Nothing is consumed when no such line follows: a remainder
-// that runs out of file, or reaches a line an outer block or the top level
-// owns, is left to the ordinary recovery, which needs the dedents as they
-// are. The list's own indentation is propTok's column; a same-column `]` is
-// left for the block loop, which already refuses it in place.
+// the sibling. The list's own indentation is propTok's column; a same-column
+// `]` is left for the block loop, which already refuses it in place.
 //
-// The bail keeps the broken text, it does not rescue it: for a list nested
-// two blocks deep or more whose next property lives in an ANCESTOR block
-// (a `rules:` broken under `network:` with `image:` following under
-// `sandbox:`), the dedents close the blocks as before and that outer
-// property is still lost to the top-level skip. Saving it wants a level the
-// tokens no longer carry — a design decision, not a resync tweak. An
-// off-stack dedent bails for the opposite reason: the lexer pops to a level
-// it does not re-push past its E003, so landing on the sibling there would
-// eat the only DEDENTs the enclosing block can close on, and every
-// declaration after the block would read as its property — the sibling is
-// lost instead, until a lexer-side re-push exists (Error arm below).
+// Two less-indented shapes are rescued too (#2081). A line at an ANCESTOR
+// block's column — a `rules:` broken under `network:` with `image:`
+// following under `sandbox:` — is landed on when the parser still has that
+// column open (openBlockColumns), and each block loop between the list and
+// the ancestor is handed the one closing DEDENT it waits for, spliced ahead
+// of the ancestor line: the broken remainder's own dedents cannot be trusted
+// for the count, because a closer dedented to column 1 over-pops every
+// level. And an off-stack dedent in the remainder is read past rather than
+// bailing: the misaligned line leaves no level behind (the lexer says E003
+// and pushes nothing back, so no DEDENT ever comes at the next outdented
+// line), but the closing DEDENTs the open loops wait for are spliced at the
+// point the loops close (listBlockClosePoint), one per loop the natural
+// pops there do not cover — the same accounting a closer dedented to column
+// 1 needs, since it over-pops every level below the list's own. Every
+// declaration after the block then still reads as itself.
+//
+// A landing line that starts with a keyword naming NO property anywhere
+// (noPropertyKeywords) is rescued the same way only more so: such a line is
+// legal nowhere but the top level, so every open loop closes at once
+// (rescueTopLevelDeclaration) and the parseFile dispatch reads the
+// declaration as itself (#2259).
+//
+// What still bails, consuming nothing: a remainder that runs out of file,
+// reaches the top level, reaches a line whose column no open block owns, or
+// holds an off-stack dedent whose close point is unsafe to compute — the
+// ordinary recovery needs the dedents as they are there.
 func (p *parser) resyncBrokenBracketList(propTok Token) {
 	i := 0
 	lineStart := false
-	dedent := false // a DEDENT since the last line end
+	dedent := false     // a DEDENT since the last line end
+	offStack := false   // an off-stack dedent (Error after pops) in the span
+	declInSpan := false // a declaration starter stands in the span before the landing
+	lineIndent := false // the line now starting opened with an INDENT
+	depth := 0          // levels the span's junk lines pushed and popped, net
+	pending := 0        // DEDENTs of the line now starting, not yet attributed
 	for {
 		t := p.lex.PeekAt(i)
 		switch {
 		case t.Type == TokenEOF:
 			return
 		case lineEnds(t):
-			lineStart, dedent = true, false
+			lineStart, dedent, lineIndent = true, false, false
 			i++
 		case t.Type == TokenIndent:
+			lineIndent = true
+			depth++
 			i++
 		case t.Type == TokenDedent:
+			pending++
 			dedent = true
 			i++
 		case t.Type == TokenError:
+			// A lexer diagnosis — a tab-indented line, an off-stack dedent, a
+			// mid-line one — is not the line's content, and it is said when
+			// the span is consumed below. An off-stack dedent (an Error after
+			// pops) is safe to read past where the landing arms allow it: the
+			// closing DEDENTs its level-loss denied the open loops are
+			// spliced at the close point. Read past, or the sibling the
+			// diagnosis precedes is never found.
 			if dedent {
-				// An off-stack dedent: the lexer popped to a level it does
-				// NOT re-push — no INDENT follows the Error, and no DEDENT
-				// comes before the next top-level line. Landing on a sibling
-				// past this Error would consume the pop-DEDENTs and leave the
-				// enclosing block unclosable (its loop closes on DEDENT/EOF
-				// only): every following declaration would read as a property
-				// of the broken block — strictly worse than losing the
-				// sibling. Bail, keeping main's behavior; the rescue for this
-				// shape wants a lexer-side re-push of the errored level, a
-				// design decision of its own.
-				return
+				offStack = true
 			}
-			// Any other lexer diagnosis — a tab-indented line, a mid-line
-			// one — popped nothing: it is not the line's content, and it is
-			// said when the span is consumed below. Read past it, or the
-			// sibling it precedes is never found.
 			i++
 		case lineStart && t.Column == propTok.Column:
-			for ; i > 0; i-- {
-				if tok := p.next(); tok.Type == TokenError {
-					p.lexerError(tok)
-				}
+			// A sibling of the broken list. When the remainder cannot be
+			// trusted for the closing DEDENT count — more than the list's own
+			// block open below the top level (a closer dedented to column 1
+			// over-pops every level), or an off-stack dedent in the span (the
+			// misaligned line leaves NO level behind: the lexer says E003 and
+			// pushes nothing back, so no DEDENT ever comes at the next
+			// outdented line) — the loops that stay open get their closing
+			// DEDENTs spliced at the point they close, and every declaration
+			// after the block reads as itself.
+			cols, hosts := p.openBlocks()
+			matched := len(cols) >= 2 && cols[len(cols)-1] == propTok.Column
+			if offStack && !matched {
+				// An off-stack dedent with a stack that no longer matches the
+				// list's line: keep the bail.
+				return
 			}
+			if offStack && declInSpan {
+				// The misaligned line behind the Error was a declaration
+				// starter — the remainder is not the plain junk continuation
+				// the read-past covers. Main's bail let the ordinary recovery
+				// route the lines after it to the shallower block that owns
+				// them (a valid list main reads whole, the rescue would hand
+				// to the list's own block, which refuses it); keep the bail.
+				return
+			}
+			if !offStack && matched && noPropertyKeywords[t.Type] &&
+				p.rescueTopLevelDeclaration(i, t, cols, depth, pending, lineIndent) {
+				// A keyword that names no property anywhere is legal only as
+				// a TOP-LEVEL declaration: every open loop closes and the
+				// parseFile dispatch reads it as itself (#2259). On an unsafe
+				// count the landing below keeps main's behavior.
+				return
+			}
+			if matched && (len(cols) > 2 || offStack) {
+				if at, n, ok := p.listBlockClosePoint(i, propTok.Column, cols, hosts); ok {
+					line := p.lex.PeekAt(at).Line
+					p.consumeBrokenListRemainder(i)
+					p.spliceDedents(p.lex.ti+at-i, n, line)
+					return
+				} else if offStack {
+					return
+				}
+				// Without an off-stack dedent the plain landing is main's
+				// behavior: keep it when the close point is unsafe.
+			}
+			p.consumeBrokenListRemainder(i)
 			return
 		case lineStart && t.Column < propTok.Column && tokenAsIdent(t) != "":
-			// A line an outer block or the top level owns.
+			// A less-indented line: an ancestor block's property, or a line
+			// no open block owns. Land only on the former — the column is one
+			// the parser still has open, and the broken list's own block is
+			// the innermost one (its column is propTok's). The loops between
+			// the list and the ancestor get their closing DEDENTs from the
+			// splice ahead of the ancestor line; the ancestor's own loop and
+			// the ones above it from the splice at the point they close, so
+			// every declaration after the block still reads as itself.
+			cols, hosts := p.openBlocks()
+			idx := slices.Index(cols, t.Column)
+			host := ""
+			if idx > 0 {
+				host = hosts[idx]
+			}
+			if offStack {
+				return
+			}
+			if noPropertyKeywords[t.Type] {
+				// A keyword that names no property anywhere is legal only as
+				// a TOP-LEVEL declaration (see rescueTopLevelDeclaration); a
+				// stack that no longer matches the list's line keeps the bail.
+				if len(cols) >= 2 && cols[len(cols)-1] == propTok.Column {
+					p.rescueTopLevelDeclaration(i, t, cols, depth, pending, lineIndent)
+				}
+				return
+			}
+			if p.rescueCannotClaim(t, i, host) {
+				// A line an ancestor rescue must never claim: a declaration
+				// the owning block cannot carry (`agent b:` dedented one
+				// level too many, standing at the ancestor's property column)
+				// would be eaten whole by the ancestor's property loop —
+				// main's bail lets the dedents close the blocks and the top
+				// level read it as itself.
+				return
+			}
+			if idx <= 0 || cols[len(cols)-1] != propTok.Column {
+				// The top level (idx 0), a stranger's column, or a stack that
+				// no longer matches the list's line: keep the bail.
+				return
+			}
+			at, n, ok := p.listBlockClosePoint(i, t.Column, cols[:idx+1], hosts[:idx+1])
+			if !ok {
+				return
+			}
+			line := p.lex.PeekAt(at).Line
+			p.consumeBrokenListRemainder(i)
+			// The farther splice goes first so the nearer index stays valid.
+			p.spliceDedents(p.lex.ti+at-i, n, line)
+			p.spliceDedents(p.lex.ti, len(cols)-1-idx, t.Line)
 			return
 		default:
+			if lineStart {
+				depth -= pending
+				pending = 0
+				lineIndent = false
+				if p.rescueCannotClaim(t, i, "") {
+					declInSpan = true
+				}
+			}
 			lineStart = false
 			i++
 		}
 	}
+}
+
+// rescueTopLevelDeclaration closes every open block loop and leaves the
+// cursor on a mis-indented top-level declaration the broken-list resync
+// landed on — a line starting with a keyword that names no property anywhere
+// (noPropertyKeywords): legal only at the top level, so the loops it
+// outranks get the closing DEDENTs they still wait for and the parseFile
+// dispatch reads it as itself (#2259). The declaration line's own leading
+// DEDENTs (pending) stay in the stream, where the loops they close close on
+// them naturally; depth is what the junk lines walked past popped, net. The
+// rescue says nothing — the give-up already did — and reports whether it
+// landed: false keeps main's refusal, when the count cannot be trusted — a
+// junk line of the remainder popped real levels (negative depth, the same
+// principle as the off-stack bail), the declaration line opened with an
+// INDENT the splice would strand above no open loop, or the count lands
+// negative.
+func (p *parser) rescueTopLevelDeclaration(i int, t Token, cols []int, depth, pending int, lineIndent bool) bool {
+	if lineIndent || pending > i || depth < 0 {
+		return false
+	}
+	n := len(cols) - 1 + depth - pending
+	if n < 0 {
+		return false
+	}
+	p.consumeBrokenListRemainder(i - pending)
+	p.spliceDedents(p.lex.ti, n, t.Line)
+	return true
+}
+
+// consumeBrokenListRemainder eats the n peeked tokens of a broken inline
+// list's remainder, saying each lexer diagnosis the span held once, the way
+// skipIndentedBlock says one.
+func (p *parser) consumeBrokenListRemainder(n int) {
+	for ; n > 0; n-- {
+		if tok := p.next(); tok.Type == TokenError {
+			p.lexerError(tok)
+		}
+	}
+}
+
+// declStartsBlock reports whether the token opens a top-level declaration —
+// the parseFile dispatch's keywords that NEVER name a block property: a
+// less-indented line starting with one is a declaration standing at the
+// wrong indentation, not a property a rescue may claim. The keywords left
+// out of this set (vars, presets, secrets, attachments, prompt, schema,
+// mcp_server, dsl) double as property and block names, so a line starting
+// with one may genuinely be the ancestor's own property.
+func declStartsBlock(t Token) bool {
+	switch t.Type {
+	case TokenWorkflow, TokenAgent, TokenJudge, TokenRouter, TokenHuman,
+		TokenTool, TokenCompute, TokenGroup, TokenUse, TokenEmit, TokenWait,
+		TokenAwaitAnswers, TokenFail, TokenSubbot, TokenContract, TokenCursor,
+		TokenSupervisor:
+		return true
+	}
+	return false
+}
+
+// noPropertyKeywords marks keywords that name no block property anywhere in
+// the grammar (read off the property dispatches, not maintained by hand
+// beyond the grammar — the list-a-keyword drift is paid twice): a line
+// starting with one at a landing column is a mis-indented top-level
+// declaration whatever form follows, and the rescue always refuses it.
+var noPropertyKeywords = map[TokenType]bool{
+	TokenSecrets:   true,
+	TokenPresets:   true,
+	TokenPrompt:    true,
+	TokenMCPServer: true,
+	TokenDSL:       true,
+}
+
+// groupHolds reports whether the keyword is a member declaration a group
+// block carries — the group switch reads agent, judge, router, human, tool
+// and compute declarations, and nothing else, as members.
+func groupHolds(t TokenType) bool {
+	switch t {
+	case TokenAgent, TokenJudge, TokenRouter, TokenHuman, TokenTool, TokenCompute:
+		return true
+	}
+	return false
+}
+
+// rescueCannotClaim reports whether the line at peek index i, starting with
+// t at a column the host block owns, opens a declaration that host cannot
+// carry: the header form (`agent b:` — keyword, name, colon) standing at a
+// block's property column, unless the host is a group and the keyword is
+// one a group holds. A property-form line (`contract: c`) stays claimable —
+// the keyword doubles as the property's name. A keyword that names no
+// property anywhere refuses in any form. The cursor never moves.
+func (p *parser) rescueCannotClaim(t Token, i int, host string) bool {
+	if noPropertyKeywords[t.Type] {
+		return true
+	}
+	if !declStartsBlock(t) {
+		return false
+	}
+	name := p.lex.PeekAt(i + 1)
+	if tokenAsIdent(name) == "" || p.lex.PeekAt(i+2).Type != TokenColon {
+		return false
+	}
+	return host != "group" || !groupHolds(t.Type)
+}
+
+// spliceDedents inserts n synthetic DEDENTs ahead of the token at absolute
+// stream index at, tagged with that token's line. A block loop closes on any
+// DEDENT, so only the count matters: the resync's DEDENT accounting hands
+// each open loop the one closing token the broken list's remainder denied
+// it.
+func (p *parser) spliceDedents(at, n, line int) {
+	if n <= 0 {
+		return
+	}
+	dedents := make([]Token, n)
+	for k := range dedents {
+		dedents[k] = Token{Type: TokenDedent, Line: line, Column: 1}
+	}
+	p.lex.tokens = slices.Insert(p.lex.tokens, at, dedents...)
+}
+
+// listBlockClosePoint scans past a rescued line (at peek index start) for
+// the point where the open block loops above it close: the first line that
+// starts left of col with a property or declaration of its own, or EOF. It
+// returns the peek index of that line's first content token (of the EOF
+// token at end of file) and how many closing DEDENTs the resync must splice
+// ahead of it: one per open loop the point closes, minus the pops the
+// stream already holds there. The pops are counted off the DEDENT run the
+// point opens with, the loops off cols — the columns the parser still has
+// open at and above the rescued line — plus the levels the rescued block's
+// own subtree pushed along the way (their pops sit in the same run, so they
+// join both sides of the count). The count is unsafe — ok is false and the
+// rescue bails — when a line-start lexer diagnosis stands before the point,
+// when the closing line opens a level of its own (an INDENT the splice
+// would have to precede, leaving it with no loop to open), when the line
+// left of col starts with junk no block owns (a second broken list's
+// closer), or when the count goes negative.
+func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string) (at, dedents int, ok bool) {
+	lineStart := false
+	lineIndent := false // the line now starting opened with an INDENT
+	depth := 0          // levels the rescued block's own subtree pushed since start
+	pending := 0        // DEDENTs of the line now starting, not yet attributed
+	for j := start; ; j++ {
+		t := p.lex.PeekAt(j)
+		switch {
+		case t.Type == TokenEOF:
+			n := len(cols) - 1 + depth - pending
+			if n < 0 {
+				return 0, 0, false
+			}
+			return j, n, true
+		case lineEnds(t):
+			lineStart = true
+			lineIndent = false
+		case t.Type == TokenIndent:
+			lineIndent = true
+			depth++
+		case t.Type == TokenDedent:
+			pending++
+		case t.Type == TokenError && lineStart:
+			return 0, 0, false
+		case lineStart && t.Column < col:
+			if lineIndent || tokenAsIdent(t) == "" {
+				return 0, 0, false
+			}
+			if idx := slices.Index(cols, t.Column); idx > 0 && p.rescueCannotClaim(t, j, hosts[idx]) {
+				// A declaration the still-open block at this column cannot
+				// carry: the splice hands the loops above their closing
+				// DEDENTs, and the loop at this column reads the declaration
+				// whole as its property — a mis-indented `judge j3:` main
+				// read at the top level once the earlier refusals closed the
+				// blocks. A declaration at the TOP LEVEL's column reads as
+				// itself after the splice, so only an owned column refuses.
+				return 0, 0, false
+			}
+			loops := 0
+			for _, c := range cols[1:] {
+				if c > t.Column {
+					loops++
+				}
+			}
+			n := loops + depth - pending
+			if n < 0 {
+				return 0, 0, false
+			}
+			return j, n, true
+		default:
+			if lineStart && t.Column == col {
+				if idx := slices.Index(cols, col); idx > 0 && p.rescueCannotClaim(t, j, hosts[idx]) {
+					// A declaration starter at the landing line's own column:
+					// the landing's loop stays open across it and reads it
+					// whole as its property — a mis-indented `workflow w2:`
+					// main read at the top level once the earlier refusals
+					// closed the blocks. The rescue bails; the ordinary
+					// recovery reads it as ever.
+					return 0, 0, false
+				}
+			}
+			if lineStart {
+				// The line started with pops of the subtree's own levels —
+				// a line left of every open level is a case above, so a line
+				// that continues here can only have popped the subtree's.
+				depth -= pending
+			}
+			pending = 0
+			lineStart = false
+		}
+	}
+}
+
+// openBlockColumns replays the consumed stream's INDENT/DEDENT pairs to list
+// the columns at which the parser's open blocks read their lines — the base
+// (top level, column 1) first, the innermost block last. It exists for the
+// broken-list resync, which must tell a line an ancestor owns from a line no
+// open block owns: the tokens carry no level, but the history does. The
+// INDENT carries no column, so the level it pushed is read off the first
+// real token of the line it opens (resync-spliced DEDENTs may sit between).
+// An earlier resync's consumed remainder held INDENT/DEDENT pairs the
+// parser's loops never saw, so the replay can drift from the loops a later
+// resync still has open — it then bails where it could have landed, never
+// the reverse.
+func (p *parser) openBlocks() (cols []int, hosts []string) {
+	cols = []int{1}
+	hosts = []string{""}
+	toks := p.lex.tokens[:p.lex.ti]
+	var lineFirst, lineSecond, lineThird Token
+	prevHeader := "" // the keyword of the declaration header the previous line opened
+	flush := func() {
+		if lineFirst.Type != 0 && declStartsBlock(lineFirst) &&
+			tokenAsIdent(lineSecond) != "" && lineThird.Type == TokenColon {
+			prevHeader = lineFirst.Value
+		} else {
+			prevHeader = ""
+		}
+		lineFirst, lineSecond, lineThird = Token{}, Token{}, Token{}
+	}
+	for i := 0; i < len(toks); i++ {
+		switch toks[i].Type {
+		case TokenIndent:
+			col := 1
+			for j := i + 1; j < len(toks); j++ {
+				if toks[j].Type != TokenIndent && toks[j].Type != TokenDedent {
+					col = toks[j].Column
+					break
+				}
+			}
+			cols = append(cols, col)
+			hosts = append(hosts, prevHeader)
+			lineFirst, lineSecond, lineThird = Token{}, Token{}, Token{}
+		case TokenDedent:
+			if len(cols) > 1 {
+				cols = cols[:len(cols)-1]
+				hosts = hosts[:len(hosts)-1]
+			}
+		case TokenNewline:
+			flush()
+		default:
+			switch {
+			case lineFirst.Type == 0:
+				lineFirst = toks[i]
+			case lineSecond.Type == 0:
+				lineSecond = toks[i]
+			case lineThird.Type == 0:
+				lineThird = toks[i]
+			}
+		}
+	}
+	return cols, hosts
 }
 
 // parseDashList parses the YAML-style form of a list: after the property's

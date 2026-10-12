@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -274,7 +276,7 @@ func TestRecordRetrySkipped_aReleasedRunnerVerdictSaysWhatCuresIt(t *testing.T) 
 	} {
 		st, msg := queuedResume(t, store.RunStatusPausedWaitingHuman, store.RunStatusPausedWaitingHuman)
 		r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
-		r.recordRetrySkipped(msg, tc.code, "refused", store.RunStatusPausedWaitingHuman)
+		r.recordRetrySkipped(msg, tc.code, "refused", nil, store.RunStatusPausedWaitingHuman)
 		evs, err := st.LoadEvents(context.Background(), msg.RunID)
 		if err != nil {
 			t.Fatal(err)
@@ -288,5 +290,74 @@ func TestRecordRetrySkipped_aReleasedRunnerVerdictSaysWhatCuresIt(t *testing.T) 
 		if !strings.Contains(hint, tc.cure) || !strings.Contains(hint, string(store.RunStatusPausedWaitingHuman)) {
 			t.Errorf("%s: hint %q, want it to say %q and the status the run is back to", tc.code, hint, tc.cure)
 		}
+	}
+}
+
+// TestRefusedResume_aGateRefusedBeforeItsClaimWaitsAgainWithItsRefusal: a
+// cloud resume of a paused gate the engine refuses before its claim — the
+// gate's node is gone from the resumed workflow — driven through executeRun
+// and processOne's tail: the run is put back to its pause with the refusal on
+// it, the timeline says it was refused before the claim, and no outcome is
+// announced for a run that is only waiting again.
+func TestRefusedResume_aGateRefusedBeforeItsClaimWaitsAgainWithItsRefusal(t *testing.T) {
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-gate-gone"
+	if _, err := st.CreateRun(ctx, runID, "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteInteraction(ctx, &store.Interaction{ID: runID + "_gate", RunID: runID, NodeID: "gate", RequestedAt: time.Now().UTC(),
+		Questions: map[string]any{"decision": "approve?"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PauseRun(ctx, runID, &store.Checkpoint{NodeID: "gate", InteractionID: runID + "_gate",
+		InteractionQuestions: map[string]any{"decision": "approve?"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("the publisher's queued flip: ok=%v err=%v", ok, err)
+	}
+	pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+	body, err := ast.MarshalFile(pr.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Store: st, WorkDir: t.TempDir(), Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: runID, TenantID: "team-1", OwnerID: "u1", WorkflowName: "main", IRCompiled: body,
+		PublishedAtRFC: time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano),
+		Resume:         &queue.ResumeSpec{Force: true, PriorStatus: store.RunStatusPausedWaitingHuman, Answers: map[string]any{"decision": "yes"}}}
+	execErr := r.executeRun(ctx, msg, nil, nil)
+	if runtimeCodeOf(execErr) != runtime.ErrCodeNodeNotFound {
+		t.Fatalf("engine = %v, want the gate's NODE_NOT_FOUND", execErr)
+	}
+	outcome := classifyExecResult(execErr, runID)
+	var released store.RunStatus
+	if !isNakAction(outcome.action) {
+		released = r.releaseRefusedResume(msg, execErr, iterlog.Nop())
+	}
+	r.recordDeliveryEnd(msg, execErr, outcome.finalStatus, released)
+	doc, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released != store.RunStatusPausedWaitingHuman || doc.Status != store.RunStatusPausedWaitingHuman || !strings.Contains(doc.Error, string(runtime.ErrCodeNodeNotFound)) {
+		t.Fatalf("released %q; run %s with error %q — want it back to its pause, carrying the refusal", released, doc.Status, doc.Error)
+	}
+	if doc.Checkpoint == nil || doc.Checkpoint.InteractionID == "" {
+		t.Fatal("the paused run lost its pending question")
+	}
+	if releasedOutcomeFires(execErr, outcome.action, released) {
+		t.Fatal("a run back to its pause announced an outcome")
+	}
+	skipped := lastEventOf(t, st, runID, store.EventRunRetrySkipped)
+	if skipped == nil {
+		t.Fatal("no run_retry_skipped")
+	}
+	if hint, _ := skipped.Data["hint"].(string); !strings.Contains(hint, "refused before it claimed the run") || skipped.Data["status"] != string(store.RunStatusPausedWaitingHuman) {
+		t.Fatalf("run_retry_skipped %v: want it to say the resume was refused before its claim and where the run waits", skipped.Data)
 	}
 }

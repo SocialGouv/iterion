@@ -98,7 +98,7 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("the token was rejected by %s (HTTP %d)", base, code)
 	}
 	if code/100 != 2 {
-		return fmt.Errorf("%s: HTTP %d", base, code)
+		return fmt.Errorf("%s: %w", base, &cli.APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)})
 	}
 	if err := cli.SaveRemoteConfig(cfg); err != nil {
 		return err
@@ -110,7 +110,9 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 	}
 	_ = json.Unmarshal(body, &me)
 	p, _ := cli.RemoteConfigPath()
-	fmt.Printf("Logged in to %s as %s\n(token saved to %s)\n", base, me.User.Email, p)
+	out := cli.NewPrinter(cli.OutputHuman)
+	out.Line("Logged in to %s as %s", base, me.User.Email)
+	out.Line("(token saved to %s)", p)
 	return nil
 }
 
@@ -201,7 +203,7 @@ var remoteStatusCmd = &cobra.Command{
 			return err
 		}
 		if code/100 != 2 {
-			return fmt.Errorf("HTTP %d", code)
+			return &cli.APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)}
 		}
 		var me struct {
 			User struct {
@@ -214,7 +216,9 @@ var remoteStatusCmd = &cobra.Command{
 		if me.User.IsSuperAdmin {
 			role = " (super-admin)"
 		}
-		fmt.Printf("Instance: %s\nAccount:  %s%s\n", client.BaseURL(), me.User.Email, role)
+		out := cli.NewPrinter(cli.OutputHuman)
+		out.Line("Instance: %s", client.BaseURL())
+		out.Line("Account:  %s%s", me.User.Email, role)
 		return nil
 	},
 }

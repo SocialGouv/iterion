@@ -175,6 +175,14 @@ func RepoRoot(workDir string) string {
 	}
 }
 
+// IsRepoRoot reports whether dir itself carries a `.git` entry — the
+// boundary RepoRoot walks to. A walk that must not leave the repository
+// (the bundle a workflow file belongs to) checks each level with this and
+// stops at the first that answers true.
+func IsRepoRoot(dir string) bool {
+	return isGitEntry(filepath.Join(dir, ".git"))
+}
+
 // isGitEntry accepts a `.git` directory, or a `.git` file that points at one
 // ("gitdir: …"). An empty placeholder file, which some sandboxes plant on
 // paths they deny, is not a repository.

@@ -118,8 +118,8 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
           }
           hint={
             m.inputTokens > 0 || m.outputTokens > 0
-              ? `input ${m.inputTokens.toLocaleString()} · output ${m.outputTokens.toLocaleString()} · total ${m.totalTokens.toLocaleString()}`
-              : `${m.totalTokens.toLocaleString()} tokens (aggregate; backend did not split input/output)`
+              ? `input ${m.inputTokens.toLocaleString("en-US")} · output ${m.outputTokens.toLocaleString("en-US")} · total ${m.totalTokens.toLocaleString("en-US")}`
+              : `${m.totalTokens.toLocaleString("en-US")} tokens (aggregate; backend did not split input/output)`
           }
         />
       )}

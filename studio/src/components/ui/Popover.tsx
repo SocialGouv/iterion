@@ -1,5 +1,6 @@
 import * as RP from "@radix-ui/react-popover";
 import type { ReactNode } from "react";
+import { useHiddenSubtree } from "./hiddenSubtree";
 
 export interface PopoverProps {
   trigger: ReactNode;
@@ -22,9 +23,11 @@ export function Popover({
   contentClassName = "",
   modal = false,
 }: PopoverProps) {
+  const hidden = useHiddenSubtree();
   return (
     <RP.Root open={open} onOpenChange={onOpenChange} modal={modal}>
       <RP.Trigger asChild>{trigger}</RP.Trigger>
+      {!hidden && (
       <RP.Portal>
         <RP.Content
           side={side}
@@ -35,6 +38,7 @@ export function Popover({
           {children}
         </RP.Content>
       </RP.Portal>
+      )}
     </RP.Root>
   );
 }

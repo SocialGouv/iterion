@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -2110,17 +2111,68 @@ func runCoverage(t *testing.T, ws string) coverageOut {
 	t.Helper()
 	var got coverageOut
 	runJSON(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), &got)
-	// The log quotes the oracle dir, whose path carries the RANDOM temp-dir
-	// number — and assertions on the log grep it for SHORT NUMERIC spans
-	// ("999", "250", "404"): a temp dir like ...126250226 named the code
-	// span "250" and ...38999964916 "verified" "999" (measured in CI,
-	// 2026-09-28). Scrub the fixture's plumbing out of the verdict text so
-	// every assertion judges what the gate SAID, not where the fixture
-	// happened to live.
-	if got.OracleUsed != "" {
-		got.Log = strings.ReplaceAll(got.Log, got.OracleUsed, "<oracle>")
-	}
+	got.Log = scrubCoverageVerdict(ws, got.OracleUsed, got.Log)
 	return got
+}
+
+// Hex tokens the verdict quotes from the run's own plumbing: the run base
+// commit (`base_sha[:12]` in every route-table degrade note) and the sha256
+// prefixes the net-fingerprint check prints (`expected[:12]`, `got[:12]`).
+// Twelve hex chars name "404" or "250" one run in ~400 — and under CI load a
+// git timeout takes the degrade path that prints one. A gate token is never
+// twelve hex chars, so scrubbing them judges no verdict text away. No upper
+// bound: a run longer than the cap would end mid-token, match no word
+// boundary, and pass through whole.
+var coverageShaToken = regexp.MustCompile(`\b[0-9a-f]{12,}\b`)
+
+// The throwaway clone a replayed routes_probe runs in: `tempfile.mkdtemp`
+// gives it a RANDOM suffix, whose letters and digits a cleanup or degrade
+// message quotes verbatim.
+var coverageProbeClone = regexp.MustCompile(`product-docs-routes-[A-Za-z0-9_]+`)
+
+// scrubCoverageVerdict removes every NON-DETERMINISTIC token the harness
+// itself injected into the verdict, so assertions on the log judge what the
+// gate SAID, never where the fixture happened to live. Assertions grep the
+// log for SHORT NUMERIC spans ("999", "250", "404"), and each scrubbed token
+// can literally contain one: a temp dir like ...126250226 named the code
+// span "250" and ...38999964916 "verified" "999" (measured in CI,
+// 2026-09-28). Scrubbing only the oracle dir left every other printed
+// random value — the workspace root, a realpath'd variant, the run-base
+// commit, a fingerprint prefix, the probe's throwaway clone and the TMPDIR
+// that prefixes it — a collision surface of its own; the scrub is by
+// CATEGORY now, not one field at a time.
+func scrubCoverageVerdict(ws, oracleUsed, log string) string {
+	real := func(p string) string {
+		if p == "" {
+			return ""
+		}
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return ""
+	}
+	replace := func(p, marker string) {
+		if p != "" {
+			log = strings.ReplaceAll(log, p, marker)
+		}
+	}
+	// Longest first, so the oracle dir keeps its own marker and the TMPDIR
+	// prefix never eats the workspace path ahead of its own replacement; the
+	// symlink-resolved forms cover a TMPDIR that is a link (the gate prints
+	// os.path.realpath of a path it refuses to follow).
+	for _, p := range []string{oracleUsed, real(oracleUsed)} {
+		replace(p, "<oracle>")
+	}
+	for _, p := range []string{ws, real(ws)} {
+		replace(p, "<ws>")
+	}
+	if tmp := os.TempDir(); tmp != "/" {
+		for _, p := range []string{tmp, real(tmp)} {
+			replace(p, "<tmp>")
+		}
+	}
+	log = coverageShaToken.ReplaceAllString(log, "<sha>")
+	return coverageProbeClone.ReplaceAllString(log, "<probe-clone>")
 }
 
 // mutate rewrites a fixture file, refusing to proceed when the anchor it aims
@@ -2786,12 +2838,45 @@ func TestProductDocsCoverageGateReadsCitationsWhereAReaderSeesThem(t *testing.T)
 // only redden by chance.
 func TestProductDocsCoverageGateLogCarriesNoFixturePath(t *testing.T) {
 	requireGitPython(t)
-	got := runCoverage(t, newCoverageFixture(t))
-	if got.OracleUsed == "" {
+	ws := newCoverageFixture(t)
+	var raw coverageOut
+	runJSON(t, coverageCommand(t, ws, "docs/demo", filepath.Join(ws, ".golden-master")), &raw)
+	if raw.OracleUsed == "" {
 		t.Fatalf("oracle_dir_used is empty — the scrub has nothing to key on")
 	}
-	if strings.Contains(got.Log, got.OracleUsed) {
-		t.Fatalf("the log still carries the fixture's temp path %q — assertions on the log substring-match its random digits:\n%s", got.OracleUsed, got.Log)
+	if !strings.Contains(raw.Log, raw.OracleUsed) {
+		t.Fatalf("the raw verdict does not quote the oracle dir %q — the scrub has nothing to remove and this guard proves nothing:\n%s", raw.OracleUsed, raw.Log)
+	}
+	if got := scrubCoverageVerdict(ws, raw.OracleUsed, raw.Log); strings.Contains(got, raw.OracleUsed) {
+		t.Fatalf("the scrubbed log still carries the fixture's temp path %q — assertions on the log substring-match its random digits:\n%s", raw.OracleUsed, got)
+	}
+	// The scrub is by CATEGORY, not one field at a time: every random token
+	// the harness can inject — the workspace path, a realpath'd variant of
+	// it, the run-base commit a degrade note quotes, a fingerprint prefix
+	// (however long the hex run), the probe's throwaway clone and the TMPDIR
+	// that prefixes it — carries digits a span assertion can substring-match
+	// ("250" here, the very span of the merge-queue flake), and every one of
+	// them must be gone, while a span the GATE named in a verdict stays: the
+	// scrub judges plumbing away, never the verdict.
+	t.Setenv("TMPDIR", "/ci/worker2504/tmp")
+	noisy := "net at " + filepath.Join(ws, ".golden-master") + " holds 4 features; " +
+		"the run base 2504beef2504 cannot be read; " +
+		"sha256 404cafe404ca then, " + strings.Repeat("9990dead", 9) + " now; " +
+		"the throwaway checkout /ci/worker2504/tmp/product-docs-routes-250_x could not be fully removed; " +
+		"the reference 404 is CITED and the net holds NOTHING by that name"
+	scrubbed := scrubCoverageVerdict(ws, filepath.Join(ws, ".golden-master"), noisy)
+	for _, tok := range []string{"2504beef2504", "404cafe404ca", strings.Repeat("9990dead", 9), "product-docs-routes-250_x", "/ci/worker2504/tmp", ws} {
+		if strings.Contains(scrubbed, tok) {
+			t.Fatalf("the scrub left the fixture's plumbing %q in the verdict text:\n%s", tok, scrubbed)
+		}
+	}
+	for _, span := range []string{"250", "999"} {
+		if strings.Contains(scrubbed, span) {
+			t.Fatalf("the scrubbed plumbing still names the code span %q:\n%s", span, scrubbed)
+		}
+	}
+	if !strings.Contains(scrubbed, "the reference 404 is CITED and") {
+		t.Fatalf("the scrub ate a span the GATE named — the collision assertions must still convict:\n%s", scrubbed)
 	}
 }
 

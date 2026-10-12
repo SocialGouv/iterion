@@ -599,7 +599,7 @@ func addClawBinaryMount(spec *sandbox.Spec, wf *ir.Workflow, resolver effectiveB
 		return
 	}
 	spec.Mounts = append(spec.Mounts,
-		fmt.Sprintf("source=%s,target=/usr/local/bin/iterion,type=bind,readonly", hostBin),
+		fmt.Sprintf("source=%s,target=%s,type=bind,readonly", hostBin, sandbox.EngineBinaryContainerPath),
 	)
 }
 

@@ -48,7 +48,7 @@ func assertDLQNotice(t *testing.T, bodies []string) {
 	if strings.Contains(body, "quota") || strings.Contains(body, "resume it **automatically") {
 		t.Fatalf("DLQ park announced as a quota pause — the #669 lie:\n%s", body)
 	}
-	for _, want := range []string{"dead-letter queue", "iterion remote admin dlq", "marked **failed**", "relaunches the bot **once**"} {
+	for _, want := range []string{"dead-letter queue", "iterion remote runs resume", "iterion remote admin dlq", "marked **failed**", "relaunches the bot **once**"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("DLQ notice missing %q:\n%s", want, body)
 		}
@@ -162,10 +162,11 @@ func TestNoticeGateDLQParked_SilentForANonGatingRun(t *testing.T) {
 
 // The check is what the developer reads first, and for a DLQ-parked run the
 // dead-review trailer is false advice: a push (or the bot's command) launches
-// a FRESH run while the parked message stays parked, so the check would tell
-// the developer the opposite of what the DLQ comment on the same PR says, and
-// hide the one remedy that reaches the parked message.
-func TestGateReconcile_DLQParkedCheckNamesTheOperatorReplay(t *testing.T) {
+// a FRESH run while the parked run stays parked, so the check would tell the
+// developer the opposite of what the DLQ comment on the same PR says, and hide
+// the one remedy that reaches the parked run — its resume (a replay of its
+// parked message is refused: a runner drops a DLQ_PARKED run's redelivery).
+func TestGateReconcile_DLQParkedCheckNamesTheOperatorResume(t *testing.T) {
 	s, runID, gc, _ := dlqGateFixture(t, nil)
 
 	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
@@ -178,9 +179,9 @@ func TestGateReconcile_DLQParkedCheckNamesTheOperatorReplay(t *testing.T) {
 	if strings.Contains(desc, "push again") || strings.Contains(desc, "comment the bot's command") {
 		t.Fatalf("the DLQ check carries the dead-review trailer — a push wakes no parked message:\n%s", desc)
 	}
-	for _, want := range []string{"DLQ", "iterion remote admin dlq"} {
+	for _, want := range []string{"DLQ", "iterion remote runs resume"} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("the DLQ check must name the remedy that reaches the parked message, missing %q:\n%s", want, desc)
+			t.Fatalf("the DLQ check must name the remedy that reaches the parked run, missing %q:\n%s", want, desc)
 		}
 	}
 	// The reconciler must still read its own repair as its own: the second
@@ -206,8 +207,8 @@ func TestGateInterruptedDescriptionFor_DLQParkOutranksTheRunError(t *testing.T) 
 	if strings.HasPrefix(got, gateDiedDescriptionPrefix) || strings.Contains(got, "push again") {
 		t.Fatalf("a DLQ park must not be described as a dead review: %q", got)
 	}
-	if !strings.Contains(got, "iterion remote admin dlq") {
-		t.Fatalf("a DLQ park must name the operator replay: %q", got)
+	if !strings.Contains(got, "iterion remote runs resume") || strings.Contains(got, "replay") {
+		t.Fatalf("a DLQ park must name the operator's resume — a replay of its message is refused: %q", got)
 	}
 	// A plain interruption keeps the dead-review wording.
 	plain := gateInterruptedDescriptionFor(&store.Run{Error: "boom"})

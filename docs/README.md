@@ -82,6 +82,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [resume.md](resume.md) | Current resume states, checkpoint semantics, overrides, and stale-run safeguards. |
 | [merge-policy.md](merge-policy.md) | Worktree finalization, branch ownership, and merge authority. |
 | [review-merge-gate.md](review-merge-gate.md) | Review-environment conversation and final merge gate. |
+| [merge-gate.md](merge-gate.md) | The deterministic merge-gate check: verdicts, gate contexts, refusal and interruption repair, and the gate-switch procedure. |
 | [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation, bot/repository `devbox.json` tool provisioning, and egress proxy policy. |
 | [scheduling.md](scheduling.md) | Cron schedules, sub-minute keepalive, overlap guards, and audit history. |
 | [dispatcher.md](dispatcher.md) | Tracker polling, leases, retries, hooks, and per-issue bot dispatch. |
@@ -136,6 +137,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [cloud-backup.md](cloud-backup.md) | Mongo/S3 backup and restore. |
 | [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first cloud troubleshooting. |
 | [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | Pre-exposure security and reliability checklist. |
+| [sovereign-pools.md](sovereign-pools.md) | Sovereign runner pools: team→pool mapping, registry, per-pool topology, admission, server-surface refusals, and the admin surface. |
 | [ci-performance-buildkit-operator.md](ci-performance-buildkit-operator.md) | BuildKit operator and CI-cache tuning. |
 
 ## Desktop
@@ -170,3 +172,4 @@ These collections are valuable evidence, but they do not override current code o
 - [reviews/](reviews/) — dated codebase reviews.
 - [security/](security/) — dated security audits.
 - [studio-ux-audit-2026-07.md](studio-ux-audit-2026-07.md) — UX audit snapshot.
+- [upstream/](upstream/) — draft reports and measured evidence for upstream (Anthropic) findings; nothing here is filed without an operator decision.

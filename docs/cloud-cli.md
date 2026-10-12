@@ -95,6 +95,14 @@ iterion remote runs merge "$id" --strategy squash
 (default every 2s, `--interval` to tune) — no WebSocket dependency, so
 it works through any proxy.
 
+What a server relays — a run's error, a title, a body without a table —
+is shown as text: a control character, an escape sequence or a bidi
+override is printed escaped (`\x1b`, `\u202e`), never sent to the
+terminal raw. `--json` passes the server's body as it is, for a machine;
+`runs log` and `runs workflow` print the bytes the run holds, as they are
+(a log keeps its colors). A long run error is clipped on its failure's
+text: the remedy it ends on (`— hint: …`) is kept whole.
+
 Attachments: `--attach name=./file` uploads via `POST /api/runs/uploads`
 and wires the returned id into the launch. `runs upload <path>` does
 the staging step alone and prints the upload id.
@@ -199,9 +207,14 @@ iterion remote api-keys create --provider anthropic --name prod --from-env ANTHR
 
 ## Errors
 
-Any non-2xx response surfaces as `HTTP <code> <METHOD> <path>: <first
-line of the server's message>` and a non-zero exit. Admin commands do
-no client-side role check — a 403 from the server is the answer.
+Any non-2xx response surfaces as `HTTP <code> <METHOD> <path>: <what the
+server said>` and a non-zero exit. A JSON error body is read field by field:
+its message (with `message` / `detail` when the server puts them apart), then
+in parentheses its `error_code`, `also needs --force`, `retryable` and
+`reset_at` when present, then its `hint` — the remedy a refusal names, such as
+the `--accept-scratch-loss` a resume that would lose its scratch needs. Any
+other body prints its first line. Admin commands do no client-side role
+check — a 403 from the server is the answer.
 
 ## Everything else
 

@@ -122,26 +122,25 @@ func (e *Engine) attachmentsDir() string {
 }
 
 // predictAttachmentsDir mirrors resolveAndStartSandbox's own decision
-// chain without touching a daemon or starting anything: the spec must
-// resolve to an active mode, a driver must be selectable for it (this is
-// where a host with no docker/podman drops out — resolveAndStartSandbox
-// degrades to unsandboxed at the very same call), and that driver must
-// support the host bind mount the attachments dir rides on.
+// chain without touching a daemon or starting anything — through
+// [sandboxDriverForRun], the one implementation of that chain: the spec
+// must resolve to an active mode, a driver must be selectable for it
+// (this is where a host with no docker/podman drops out —
+// resolveAndStartSandbox degrades to unsandboxed at the very same
+// call), and that driver must support the host bind mount the
+// attachments dir rides on.
 func (e *Engine) predictAttachmentsDir() string {
 	if e.workflow == nil {
 		return ""
 	}
-	spec, _, _, err := resolveSandboxSpec(
+	driver, err := sandboxDriverForRun(
 		e.workflow,
 		e.repoRoot,
 		e.sandboxOverride,
 		e.sandboxDefault,
 		resolveDefaultSandboxImage(e.sandboxDefaultImage),
+		e.sandboxDrivers,
 	)
-	if err != nil || spec == nil || !spec.Mode.IsActive() {
-		return ""
-	}
-	driver, err := selectSandboxDriver(spec, nil, e.sandboxDrivers)
 	if err != nil || driver == nil {
 		return ""
 	}

@@ -1037,7 +1037,10 @@ else:
         return path.startswith('.claude/')
     def tree_state():
         try:
-            p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+            # The canonical noise list rides the read (the porcelain guard's
+            # contract): a drifted devbox.lock or a hard-killed script's
+            # scratch is the engine's own write, not this pass's leftover.
+            p = subprocess.run(['git', '-C', ws, 'status', '--porcelain', '--', ':/'] + os.environ.get('ITERION_TREE_NOISE', '').split(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
             if p.returncode != 0:
                 return None
             return set(l for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))

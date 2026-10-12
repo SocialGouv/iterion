@@ -804,6 +804,15 @@ func (a *AppClient) clock() time.Time {
 
 func (a *AppClient) apiBase() string { return APIBaseFor(a.WebBaseURL) }
 
+// tokenClient is the REST and GraphQL client for one of the installation's
+// tokens. Every request it sends is labelled with the installation
+// (forge.InstallationClient), so the transport knows whose budget it spends;
+// the mints and App-level reads, signed with the App's JWT rather than an
+// installation token, leave through a.HTTP unlabelled.
+func (a *AppClient) tokenClient(token string) *AdminClient {
+	return &AdminClient{HTTP: forge.InstallationClient(a.HTTP, a.InstallationID), APIBase: a.apiBase(), Token: token}
+}
+
 // rest returns an AdminClient backed by the management token: the baseline
 // grants the connection's recorded grant covers (ManagementPermissionsFor) —
 // never the installation's full set — plus the OPTIONAL statuses:write the
@@ -851,7 +860,7 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 		}
 		a.token, a.exp, a.denied = tok, exp, denied
 	}
-	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: a.token}, nil
+	return a.tokenClient(a.token), nil
 }
 
 // scopedREST returns an AdminClient backed by a token minted for exactly perms,
@@ -878,7 +887,7 @@ func (a *AppClient) scopedREST(ctx context.Context, perms map[string]string) (*A
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if t, ok := a.scoped[key]; ok && a.clock().Before(t.exp.Add(-scopedTokenLeeway)) {
-		return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: t.token}, nil
+		return a.tokenClient(t.token), nil
 	}
 	tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
 		&InstallationTokenOptions{Permissions: perms})
@@ -892,7 +901,7 @@ func (a *AppClient) scopedREST(ctx context.Context, perms map[string]string) (*A
 		a.scoped = map[string]scopedToken{}
 	}
 	a.scoped[key] = scopedToken{token: tok, exp: exp}
-	return &AdminClient{HTTP: a.HTTP, APIBase: a.apiBase(), Token: tok}, nil
+	return a.tokenClient(tok), nil
 }
 
 // withheldGrant turns a scoped mint GitHub refused for want of a grant into

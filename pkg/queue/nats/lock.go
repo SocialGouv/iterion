@@ -17,22 +17,42 @@ import (
 // "skip this delivery" — JetStream will redeliver to a different pod.
 var ErrLockHeld = errors.New("queue/nats: run lock held by another runner")
 
+// ErrLeaseUnattributed is returned by AcquireLock when the context
+// carries no admitted identity. A distributed lease must carry the
+// tenant of the message the holder admitted, so taking one without is
+// a bug — the lease would be unattributable and unverifiable.
+var ErrLeaseUnattributed = errors.New("queue/nats: run lease requires the run's admitted identity in context")
+
+// ErrLeaseIdentityMismatch is returned when the lease stored in the KV
+// bucket no longer carries the identity this Lock was acquired under.
+// The holder refuses to act — no refresh, no release — on a lease that
+// is not its run's.
+var ErrLeaseIdentityMismatch = errors.New("queue/nats: run lease belongs to a different admitted identity")
+
 // LeaseInfo is the JSON payload stored under each run lock key.
-// Plan §C.2 calls out runner_id + started_at + run_status.
+// Plan §C.2 calls out runner_id + started_at + run_status; plan v2
+// §P5-c adds the run's admitted identity — the tenant (and runner
+// pool, when stamped) of the message the holder actually admitted —
+// so every later operation on the lease is checked against it before
+// acting.
 type LeaseInfo struct {
 	RunnerID  string    `json:"runner_id"`
 	StartedAt time.Time `json:"started_at"`
 	Status    string    `json:"run_status"`
+	TenantID  string    `json:"tenant_id,omitempty"`
+	Pool      string    `json:"pool,omitempty"`
 }
 
-// newLeaseBody marshals a fresh "running" lease for runnerID, stamped
-// with the current time. Shared by AcquireLock and Refresh so both
-// write the same lease shape.
-func newLeaseBody(runnerID string) ([]byte, error) {
+// newLeaseBody marshals a fresh "running" lease for runnerID under the
+// admitted identity, stamped with the current time. Shared by
+// AcquireLock and Refresh so both write the same lease shape.
+func newLeaseBody(runnerID string, ident store.LeaseIdentity) ([]byte, error) {
 	return json.Marshal(LeaseInfo{
 		RunnerID:  runnerID,
 		StartedAt: time.Now().UTC(),
 		Status:    "running",
+		TenantID:  ident.TenantID,
+		Pool:      ident.Pool,
 	})
 }
 
@@ -44,8 +64,9 @@ func newLeaseBody(runnerID string) ([]byte, error) {
 type Lock struct {
 	conn     *Conn
 	runID    string
-	runnerID string // identity stamped at acquire time, re-used on every refresh
-	rev      uint64 // last observed revision for CAS Update
+	runnerID string              // pod identity stamped at acquire time, re-used on every refresh
+	ident    store.LeaseIdentity // admitted identity stamped at acquire time, re-verified before every action
+	rev      uint64              // last observed revision for CAS Update
 }
 
 // AcquireLock atomically claims the run lease in the KV bucket. The
@@ -53,13 +74,22 @@ type Lock struct {
 // lease in the same TTL window — that runner is "the" holder until
 // its lease expires or it explicitly releases.
 //
+// The context must carry the run's admitted identity
+// (store.WithLeaseIdentity, stamped by the runner from the message it
+// admitted): the lease is written with it, and it fails closed with
+// ErrLeaseUnattributed otherwise.
+//
 // Returns ErrLockHeld when contention is observed; callers Nak the
 // JetStream delivery so a sibling pod can pick it up later.
 func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, error) {
 	if c.kv == nil {
 		return nil, fmt.Errorf("queue/nats: KV bucket not initialised")
 	}
-	body, err := newLeaseBody(runnerID)
+	ident, ok := store.LeaseIdentityFromContext(ctx)
+	if !ok || ident.TenantID == "" {
+		return nil, ErrLeaseUnattributed
+	}
+	body, err := newLeaseBody(runnerID, ident)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: marshal lease: %w", err)
 	}
@@ -73,31 +103,79 @@ func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, 
 		}
 		return nil, fmt.Errorf("queue/nats: KV create %s: %w", runID, err)
 	}
-	return &Lock{conn: c, runID: runID, runnerID: runnerID, rev: rev}, nil
+	return &Lock{conn: c, runID: runID, runnerID: runnerID, ident: ident, rev: rev}, nil
 }
 
 // Refresh updates the lease (resets the bucket TTL) so a long-running
-// run keeps holding the lock past the default 60s TTL. The CAS
-// Update against the previous revision detects a hijack — a sibling
-// runner that grabbed the lease after a network partition would have
-// bumped the revision and our Update would fail, signalling the
-// caller to abort the run.
+// run keeps holding the lock past the default 60s TTL. The CAS Update
+// against the previous revision detects a hijack — a sibling runner
+// that grabbed the lease after a network partition would have bumped
+// the revision and our Update would fail, signalling the caller to
+// abort the run. On that failure one read classifies it: the one case
+// that means something different from contention is a stored body now
+// carrying another admission's identity (ErrLeaseIdentityMismatch).
 func (l *Lock) Refresh(ctx context.Context) error {
-	body, err := newLeaseBody(l.runnerID)
+	body, err := newLeaseBody(l.runnerID, l.ident)
 	if err != nil {
 		return err
 	}
 	rev, err := l.conn.kv.Update(ctx, l.runID, body, l.rev)
 	if err != nil {
+		if _, foreign := l.classify(ctx); foreign != nil {
+			return foreign
+		}
 		return fmt.Errorf("queue/nats: refresh %s: %w", l.runID, err)
 	}
 	l.rev = rev
 	return nil
 }
 
+// leaseState is what the stored lease says after a CAS write failed.
+type leaseState int
+
+const (
+	// leaseContention: a plain CAS conflict — a sibling took the lease,
+	// or the read could not tell. The CAS error the caller holds is the
+	// honest answer.
+	leaseContention leaseState = iota
+	// leaseGone: the key no longer exists — the lease's TTL won.
+	leaseGone
+	// leaseForeign: the stored body belongs to another admitted
+	// identity; the paired error names it.
+	leaseForeign
+)
+
+// classify reads the stored lease — ON THE FAILURE PATH of a CAS write,
+// never in the nominal path: the revision CAS already refuses every
+// foreign write, so the extra round-trip is paid only when a write
+// failed, to tell apart plain contention from the stored body now
+// belonging to another admission.
+func (l *Lock) classify(ctx context.Context) (leaseState, error) {
+	entry, err := l.conn.kv.Get(ctx, l.runID)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return leaseGone, nil
+		}
+		return leaseContention, nil
+	}
+	var info LeaseInfo
+	if err := json.Unmarshal(entry.Value(), &info); err != nil {
+		return leaseContention, nil
+	}
+	if info.TenantID != l.ident.TenantID || info.Pool != l.ident.Pool {
+		return leaseForeign, fmt.Errorf("queue/nats: lease %s stored under tenant %q pool %q, this holder claims tenant %q pool %q: %w",
+			l.runID, info.TenantID, info.Pool, l.ident.TenantID, l.ident.Pool, ErrLeaseIdentityMismatch)
+	}
+	return leaseContention, nil
+}
+
 // Release deletes the lock so a subsequent run can pick up the
 // run_id immediately. Non-fatal if the lease has already expired —
-// the next Acquire will succeed regardless.
+// the next Acquire will succeed regardless. A delete refused by the
+// revision guard is classified once: a lease already gone is a no-op,
+// a stored body of another admitted identity is reported as
+// ErrLeaseIdentityMismatch (this holder never deletes a lease it does
+// not own the identity of), anything else stays the CAS error.
 func (l *Lock) Release(ctx context.Context) error {
 	// Revision-guarded delete: only remove the lease if its latest
 	// revision still matches the one we last wrote (at Acquire or the
@@ -108,11 +186,18 @@ func (l *Lock) Release(ctx context.Context) error {
 	// same run, i.e. split-brain. LastRevision turns that case into a
 	// surfaced error instead of a stolen lock; a clean release (we still
 	// own the revision) still succeeds.
-	if err := l.conn.kv.Delete(ctx, l.runID, jetstream.LastRevision(l.rev)); err != nil &&
-		!errors.Is(err, jetstream.ErrKeyNotFound) {
+	err := l.conn.kv.Delete(ctx, l.runID, jetstream.LastRevision(l.rev))
+	if err == nil {
+		return nil
+	}
+	switch state, foreign := l.classify(ctx); {
+	case state == leaseGone:
+		return nil
+	case foreign != nil:
+		return foreign
+	default:
 		return fmt.Errorf("queue/nats: release %s: %w", l.runID, err)
 	}
-	return nil
 }
 
 // Unlock satisfies store.RunLock so the Mongo store can return *Lock
@@ -147,7 +232,9 @@ func NewLockProvider(conn *Conn, runnerID string) *LockProvider {
 	return &LockProvider{conn: conn, runnerID: runnerID}
 }
 
-// AcquireLock satisfies the mongo.LockProvider contract.
+// AcquireLock satisfies the mongo.LockProvider contract. The admitted
+// identity is read from ctx (store.WithLeaseIdentity): the runner
+// stamps it from the message it admitted before taking the lease.
 func (p *LockProvider) AcquireLock(ctx context.Context, runID, runnerID string) (store.RunLock, error) {
 	if runnerID == "" {
 		runnerID = p.runnerID

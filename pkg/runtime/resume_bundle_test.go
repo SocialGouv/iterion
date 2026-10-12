@@ -10,7 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-func TestResolveResumeBundleWorkflowUsesAndVerifiesExport(t *testing.T) {
+func TestResumeBundleWorkflowUsesAndVerifiesExport(t *testing.T) {
 	dir := t.TempDir()
 	child := filepath.Join(dir, "workflows", "child.bot")
 	if err := os.Mkdir(filepath.Dir(child), 0o755); err != nil {
@@ -41,19 +41,20 @@ exports:
 		t.Fatal(err)
 	}
 	r := &store.Run{ID: "run-1", BundleName: "shared-planner", BundleVersion: "1.0.0", BundleWorkflow: "child", BundleHash: hash}
-	got, err := ResolveResumeBundleWorkflow(r, b, filepath.Join(dir, "main.bot"), false)
-	if err != nil {
-		t.Fatalf("ResolveResumeBundleWorkflow: %v", err)
+	got, identityErr, err := ResumeBundleWorkflow(r, b, filepath.Join(dir, "main.bot"))
+	if err != nil || identityErr != nil {
+		t.Fatalf("ResumeBundleWorkflow: identity %v, err %v", identityErr, err)
 	}
 	if got != child {
 		t.Fatalf("path = %q, want %q", got, child)
 	}
 
 	r.BundleVersion = "0.9.0"
-	if _, err := ResolveResumeBundleWorkflow(r, b, child, false); !errors.Is(err, ErrWorkflowSourceChanged) {
-		t.Fatalf("error = %v, want ErrWorkflowSourceChanged", err)
+	got, identityErr, err = ResumeBundleWorkflow(r, b, child)
+	if err != nil || !errors.Is(identityErr, ErrWorkflowSourceChanged) {
+		t.Fatalf("identity = %v, err = %v, want ErrWorkflowSourceChanged aside", identityErr, err)
 	}
-	if forced, err := ResolveResumeBundleWorkflow(r, b, child, true); err != nil || forced != child {
-		t.Fatalf("forced path = %q, err = %v", forced, err)
+	if got != child {
+		t.Fatalf("the path beside a changed identity = %q, want %q", got, child)
 	}
 }

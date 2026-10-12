@@ -20,6 +20,11 @@ import { ITER_LANGUAGE_ID as ITER_LANGUAGE } from "@/lib/iterLanguage";
 import { registerIterLanguage } from "@/lib/iterMonaco";
 import { isWorkflowFile } from "@/lib/workflowFile";
 import { toastError } from "@/lib/errorHints";
+import {
+  bundleBufferKey,
+  useEditBuffersStore,
+  type BundleBuffer,
+} from "@/store/editBuffers";
 import { useTabsStore } from "@/store/tabs";
 import { useThemeStore } from "@/store/theme";
 import { useUIStore } from "@/store/ui";
@@ -45,28 +50,21 @@ const samePair = (a: { teamID: string; slug: string }, b: { teamID: string; slug
 // skill) can be added, and non-main files removed.
 //
 // This buffer belongs to "would this take the author's work?" and is one of
-// the members the document store cannot answer for: it is this component's
-// own state, so `hasUnsavedWork()` — which the store-backed members consult
-// — does not see it. (`Runs/FileEditDialog` holds a buffer of the same
-// shape and has no gate at all; that is its own ticket, not this file's.)
+// the members the document store cannot answer for: it is keyed by the bot
+// bundle it edits, not held by a tab. It lives in `store/editBuffers.ts`
+// (#1755) — the drawer is a VIEW of it — so an ancestor's conditional render
+// (the toolbar dropping the drawer with the `botsource://` path, a viewport
+// notice, `expanded`, the tab host swapping the view, a route change) no
+// longer destroys it: the unmount takes nothing, and the next mount adopts
+// the buffer back. A dirty buffer is released only through the gates below,
+// which ask; a clean one is released on unmount, since it holds nothing.
+// `lib/unsavedBuffers` answers for it where the document store cannot — the
+// browser-unload warning. (`Runs/FileEditDialog` holds a buffer of the same
+// shape in the same store.)
 //
 // The drawer owns a gate, `leavingBuffer`, for the exits it can see:
 // closing the drawer (Escape, outside click, Close), Back, and following the
 // props to another bot (#1749). Those three are gated here.
-//
-// The RULE, not a count: **any ancestor that conditionally renders `Toolbar`
-// destroys this buffer**, and no gate in this file can reach one. Measured
-// examples — the parent dropping `bundleRef` when the editor's file stops
-// being a `botsource://` path (which `Toolbar.tsx` latches against),
-// `DesktopOnlyNotice` swapping the grid out on a narrow viewport or a zoom,
-// `expanded` unmounting the toolbar, and `EditorTabHost` replacing the whole
-// view while a tab hydrates or errors. That set is open-ended, so counting it
-// is a claim that goes stale the moment it is written.
-//
-// The class closes only by taking the buffer OUT of component state — keyed
-// by teamID/slug/rel in a store, with the drawer as a view of it, the way the
-// Source view's buffer already works. That is its own change (#1755), and
-// `Runs/FileEditDialog` holds the same shape with no gate at all.
 //
 // `onOpenChange` is a REQUEST, not the close: the parent owns `open`, so the
 // gate withholds it until the author answers — asking first and closing
@@ -93,13 +91,6 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   // a read failed, so it is keyed on one that did: "no bundle" alone is also
   // every render before a read has even started.
   const [failed, setFailed] = useState<{ teamID: string; slug: string } | null>(null);
-  const [editing, setEditing] = useState<{
-    rel: string;
-    value: string;
-    original: string;
-    /** A file that does not exist yet: Save is offered on it even empty. */
-    created?: boolean;
-  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [busyRel, setBusyRel] = useState<string | null>(null);
   // Set when the store refused a write because the bundle moved under this
@@ -124,6 +115,22 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
   // hands out names THIS, not the props: once the author keeps their text the
   // two part, and a delete aimed at the props would hit the wrong bot.
   const shown = bound ?? { teamID, slug };
+
+  // The typed buffer, as a VIEW of the store keyed by the pair on screen.
+  // Every write below keeps its old shape — the functional updates included —
+  // only the backing store moved. Keyed by the pair, a rebind switches which
+  // buffer the view reads without carrying one bot's text into another's
+  // editor, which is what the load effect's reset used to guarantee.
+  const shownKey = bundleBufferKey(shown.teamID, shown.slug);
+  const editing = useEditBuffersStore((s) => s.bundle[shownKey] ?? null);
+  const setEditing = useCallback(
+    (next: BundleBuffer | null | ((cur: BundleBuffer | null) => BundleBuffer | null)) => {
+      const store = useEditBuffersStore.getState();
+      const cur = store.bundle[shownKey] ?? null;
+      store.setBundle(shownKey, typeof next === "function" ? next(cur) : next);
+    },
+    [shownKey],
+  );
 
   // Guarded at both ends. An answer naming a pair the drawer has left is
   // DROPPED at the write (`setBundle`), so it never replaces the bundle on
@@ -174,6 +181,22 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     bufferIsOpenRef.current = bufferIsOpen;
   });
 
+  // The unmount is not an exit from the buffer — it is the drawer leaving,
+  // to any ancestor's conditional render — so it takes nothing the author
+  // typed (#1755). A clean buffer holds nothing and is released, so a
+  // reopened drawer starts from the file list; a dirty one stays in the
+  // store, still counted by the unload warning, and the next mount shows it
+  // again. This is the Source view's own cleanup, for the same reasons.
+  useEffect(
+    () => () => {
+      const store = useEditBuffersStore.getState();
+      const key = bundleBufferKey(shownRef.current.teamID, shownRef.current.slug);
+      const held = store.bundle[key];
+      if (held && held.value === held.original) store.setBundle(key, null);
+    },
+    [],
+  );
+
   /** The one gate on every exit that drops the typed buffer — closing the
    *  drawer, Back, and following the props to another bot. `go` runs when
    *  there is nothing to lose, or once the author has said so.
@@ -222,20 +245,30 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     let cancelled = false;
     let asked = false;
     void (async () => {
-      if (bound && bufferIsDirtyRef.current()) {
-        asked = true;
-        const ok = await confirm({
-          title: "Discard this text?",
-          message:
-            "The editor moved to another bot. You have not saved what you typed here — following it replaces your text with the other bot's files.",
-          confirmLabel: "Discard",
-          confirmVariant: "danger",
-        });
-        if (cancelled) return;
-        if (!ok) {
-          declined.current = key;
-          return;
+      if (bound && bufferIsOpenRef.current()) {
+        if (bufferIsDirtyRef.current()) {
+          asked = true;
+          const ok = await confirm({
+            title: "Discard this text?",
+            message:
+              "The editor moved to another bot. You have not saved what you typed here — following it replaces your text with the other bot's files.",
+            confirmLabel: "Discard",
+            confirmVariant: "danger",
+          });
+          if (cancelled) return;
+          if (!ok) {
+            declined.current = key;
+            return;
+          }
         }
+        // Bound and holding a buffer: following releases what the bundle
+        // being left held — after the ask when it was dirty, freely when it
+        // was clean. The release must land while `shown` still names the
+        // pair the buffer belongs to; the rebind below moves it. A buffer
+        // with no `bound` behind it is one a previous mount left HELD
+        // (#1755): there is no ask to answer and nothing was refused, so
+        // the rebind adopts it instead of taking it.
+        setEditing(null);
       }
       if (cancelled) return;
       declined.current = null;
@@ -248,20 +281,21 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
       // a Radix modal aria-hides and pointer-blocks the whole app.
       if (asked) dismiss();
     };
-  }, [open, teamID, slug, bound, confirm, dirty, buffered, dismiss]);
+  }, [open, teamID, slug, bound, confirm, dirty, buffered, dismiss, setEditing]);
 
   // Load whatever the drawer is BOUND to.
   useEffect(() => {
     if (!open || !bound) return;
     let cancelled = false;
     // The buffer and the refusal belong to the bundle they were read from:
-    // adopting another bundle's version under the old bot's text would write
-    // that text into the new bot under a token the store has no reason to
-    // refuse. The gate above is what makes this reset safe to do silently —
-    // by the time it runs, the buffer holds nothing the author wants.
+    // the refusal is reset here, and the buffer never needs one — the view
+    // reads the store KEYED by the pair on screen, so a rebind switches
+    // buffers instead of carrying one bot's text under another's token, and
+    // a buffer held by an unmounted drawer for THIS pair is adopted, not
+    // dropped (#1755). A release here would destroy a buffer the follow
+    // gate never asked about.
     setLoaded(null);
     setFailed(null);
-    setEditing(null);
     setConflict(false);
     setLoading(true);
     getBotSource(bound.teamID, bound.slug)
@@ -310,7 +344,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
 
   const openFileForEdit = (rel: string) => {
     const content = bundle?.files?.[rel] ?? "";
-    setEditing({ rel, value: content, original: content });
+    setEditing({ rel, value: content, original: content, created: false });
   };
 
   const onNewFile = async () => {
@@ -507,7 +541,10 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
                 variant="primary"
                 size="sm"
                 onClick={() => void onSave()}
-                disabled={saving || (editing.value === editing.original && !editing.created)}
+                // `!bundle`: a buffer adopted from an unmounted drawer shows
+                // while its bundle is still being read, and a write needs
+                // the version that read carries.
+                disabled={saving || !bundle || (editing.value === editing.original && !editing.created)}
                 loading={saving}
               >
                 Save

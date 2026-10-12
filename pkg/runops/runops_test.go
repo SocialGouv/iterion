@@ -117,3 +117,51 @@ func TestRunEventsProjectsDiagnosticsWithoutPayloads(t *testing.T) {
 		t.Fatalf("diagnostic fields missing: %s", text)
 	}
 }
+
+// TestRunGetAndList_aLongErrorKeepsItsRemedy: a run's error bounded for an
+// operator's tool keeps the remedy it ends on — the clip falls on the
+// failure's text.
+func TestRunGetAndList_aLongErrorKeepsItsRemedy(t *testing.T) {
+	ctx := context.Background()
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := rs.CreateRun(ctx, "run-long-error", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remedy := store.RunErrorHintSeparator + "resume it accepting the scratch's loss (--accept-scratch-loss)"
+	run.Status = store.RunStatusFailedResumable
+	run.Error = strings.Repeat("tar: scratch/pack.idx: Cannot open: Permission denied ", 100) + remedy
+	if err := rs.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		tool, args string
+		errorOf    func(map[string]any) any
+	}{
+		{"run_get", `{"run_id":"run-long-error"}`, func(m map[string]any) any { return m["error"] }},
+		{"runs_list", `{}`, func(m map[string]any) any {
+			runs, _ := m["runs"].([]any)
+			if len(runs) != 1 {
+				return nil
+			}
+			r, _ := runs[0].(map[string]any)
+			return r["error"]
+		}},
+	} {
+		raw, err := Call(ctx, rs, NewCapabilities(CapRunsRead), tc.tool, json.RawMessage(tc.args))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.tool, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		shown, _ := tc.errorOf(got).(string)
+		if !strings.HasSuffix(shown, "…"+remedy) || len(shown) >= len(run.Error) {
+			t.Fatalf("%s shows the run's error unbounded or without its remedy: ...%q", tc.tool, shown[max(0, len(shown)-200):])
+		}
+	}
+}

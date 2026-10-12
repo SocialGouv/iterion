@@ -99,11 +99,15 @@ vi.mock("@/components/ui/InlineBanner", async (importOriginal) => {
 });
 
 import BundleFilesDrawer from "./BundleFilesDrawer";
+import { useEditBuffersStore } from "@/store/editBuffers";
 import { useUIStore } from "@/store/ui";
 
 afterEach(() => {
   cleanup();
   useUIStore.setState({ toasts: [] });
+  // The typed buffer now lives in a module store (#1755): one test's leftover
+  // text must not be the next test's adopted buffer.
+  useEditBuffersStore.setState({ bundle: {}, runFiles: {} });
   vi.clearAllMocks();
   keybinding.run = null;
   keybinding.mounted = false;

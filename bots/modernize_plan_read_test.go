@@ -159,21 +159,26 @@ func modernizePlanRead(t *testing.T, script, planYAML, onlyLot string, wantExit 
 	if err := os.WriteFile(scriptPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("python3", scriptPath).Output()
+	cmd := exec.Command("python3", scriptPath)
+	// stderr quoted in every failure message, never merged into the parsed
+	// stream — the blind spot #2232 names, closed for the whole family.
+	var sbuf strings.Builder
+	cmd.Stderr = &sbuf
+	out, err := cmd.Output()
 	exit := 0
 	if err != nil {
 		ee, ok := err.(*exec.ExitError)
 		if !ok {
-			t.Fatalf("plan_read failed to execute: %v (out %q)", err, out)
+			t.Fatalf("plan_read failed to execute: %v (out %q, stderr %q)", err, out, sbuf.String())
 		}
 		exit = ee.ExitCode()
 	}
 	if exit != wantExit {
-		t.Fatalf("plan_read exited %d, want %d (out %q)", exit, wantExit, out)
+		t.Fatalf("plan_read exited %d, want %d (out %q, stderr %q)", exit, wantExit, out, sbuf.String())
 	}
 	var res modernizePlanReadOut
 	if uerr := json.Unmarshal(out, &res); uerr != nil {
-		t.Fatalf("plan_read output is not JSON: %v (out %q)", uerr, out)
+		t.Fatalf("plan_read output is not JSON: %v (out %q, stderr %q)", uerr, out, sbuf.String())
 	}
 	return res
 }

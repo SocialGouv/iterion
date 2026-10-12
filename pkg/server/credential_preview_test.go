@@ -14,6 +14,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -143,5 +145,62 @@ func TestCredentialPreviewRejectsCrossTenantAndInventedOwners(t *testing.T) {
 				t.Fatalf("got %d: %s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// The run-level llm_routing the caller sends rides the preview's resolved
+// policy as the HEAD Launcher layer (Rac01af): the preview's whitelist
+// answers the launch the operator SHAPES, not the launch the defaults
+// would make.
+func TestCredentialPreview_FoldsTheRunLevelRouting(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","llm_routing":{"pair_order":["claw+anthropic_key"]}}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview=%d %s", w.Code, w.Body.String())
+	}
+	if pub.preview.LLMRoutePolicy == nil || len(pub.preview.LLMRoutePolicy.PairOrder) != 1 || pub.preview.LLMRoutePolicy.PairOrder[0] != "claw+anthropic_key" {
+		t.Fatalf("resolved policy = %+v, want the run layer's order — the HEAD Launcher layer outranks the default", pub.preview.LLMRoutePolicy)
+	}
+
+	// Contrast: the same call WITHOUT the run level resolves the DEFAULT
+	// order — the run layer, not the absence of one, is what narrowed it.
+	s2, rs2 := newTeamForkServer(t, &tierPublisher{})
+	pub2 := &credentialPreviewPublisher{}
+	s2.runs = newTestRunviewService(t, "", runview.WithStore(rs2), runview.WithLaunchPublisher(pub2))
+	w2 := callCredentialPreview(s2, `{"source":{"kind":"personal"},"bot_id":"probe"}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w2.Code != http.StatusOK {
+		t.Fatalf("plain preview=%d %s", w2.Code, w2.Body.String())
+	}
+	if pub2.preview.LLMRoutePolicy == nil || len(pub2.preview.LLMRoutePolicy.PairOrder) <= 5 {
+		t.Fatalf("default policy = %+v, want the full enumerated order (more than the five named pairs)", pub2.preview.LLMRoutePolicy)
+	}
+}
+
+// Parity across the tenant levels: with a team routing-policy record
+// present, the preview resolves the SAME snapshot a launch from that
+// team would — the fold is one function of (teamID, botID, higher),
+// and the preview passes the URL team's id. A level the launch would
+// obey but the preview hid would make the operator's "what will this
+// spend on" answer a lie.
+func TestCredentialPreview_FoldsTheTenantLevels(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	// The fixture already seeds team t1 (seedGate).
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("t1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{PairOrder: []string{"claw+zai_key"}},
+	})
+
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe"}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview=%d %s", w.Code, w.Body.String())
+	}
+	if pub.preview.LLMRoutePolicy == nil || pub.preview.LLMRoutePolicy.PairOrder[0] != "claw+zai_key" || pub.preview.LLMRoutePolicy.Sources["pair_order"] != llmroute.SourceTeam {
+		t.Fatalf("resolved policy = %+v, want the team level's order, named team", pub.preview.LLMRoutePolicy)
 	}
 }

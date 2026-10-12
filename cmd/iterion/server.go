@@ -269,27 +269,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		_ = traceShutdown(shutCtx)
 	}()
 
-	// Keep in sync with the natsq.Connect literal in runner.go: a field only
-	// one side passes is silently defaulted for the other, and the two then
-	// disagree about the same broker. LockTTL is what just drifted.
-	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
-		URL:                 cfg.NATS.URL,
-		StreamName:          cfg.NATS.Stream,
-		DLQStream:           cfg.NATS.DLQStream,
-		KVBucket:            cfg.NATS.KVBucket,
-		StreamReplicas:      cfg.NATS.StreamReplicas,
-		MaxAckPending:       cfg.NATS.MaxAckPending,
-		AckWait:             cfg.NATS.AckWait,
-		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
-		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
-		RunnerEpoch:         cfg.Rollout.RunnerEpoch,
-		MaxDeliver:          cfg.NATS.MaxDeliver,
-		MaxAge:              cfg.NATS.MaxAge,
-		DLQMaxAge:           cfg.NATS.DLQMaxAge,
-		MaxPayload:          cfg.NATS.MaxPayload,
-		LockTTL:             cfg.Runner.LockTTL,
-		Logger:              logger,
-	})
+	natsConn, err := natsq.Connect(rootCtx, natsConfig(cfg, logger))
 	if err != nil {
 		return fmt.Errorf("server: connect NATS: %w", err)
 	}
@@ -321,7 +301,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
-	sealer, err := secrets.NewAESGCMSealerFromBase64(cfg.Auth.SecretsKey)
+	if cfg.Auth.SecretsKeys != "" && cfg.Auth.SecretsKey != "" {
+		logger.Warn("both ITERION_SECRETS_KEYS and ITERION_SECRETS_KEY are set; the ring wins and the bare key is ignored")
+	}
+	if cfg.Auth.SecretsKeyID != "" && cfg.Auth.SecretsKeys == "" {
+		logger.Warn("ITERION_SECRETS_KEY_ID is set without ITERION_SECRETS_KEYS; the id is ignored")
+	}
+	sealer, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
 	if err != nil {
 		return fmt.Errorf("server: build sealer: %w", err)
 	}
@@ -394,6 +380,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: %w", err)
 	}
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
+		RunnerPools:                stores.runnerPools,
 		RequireLLMCredential:       requireLLMCredential,
 		NATS:                       natsConn,
 		Store:                      st,
@@ -667,6 +654,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PluginSourceFetcher:         pluginFetcher,
 		BotSources:                  stores.botSources,
 		BotRolesSettings:            stores.botRoles,
+		RunnerPoolsSettings:         stores.runnerPools,
 		BotVarsSettings:             stores.botVars,
 		BotVarsResolver:             botVarsResolver,
 		SandboxSettings:             stores.sandboxCfg,
@@ -752,6 +740,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := iterconfig.ScrubPlatformSecrets(); err != nil {
 		return fmt.Errorf("server: %w", err)
 	}
+	// The sovereign-pool reconciler (#2029): the server owns the per-pool
+	// topology — immediate pass + a tick, idempotent, self-healing; two
+	// replicas reconcile the same registry side by side.
+	go srv.RunRunnerPoolReconciler(rootCtx, natsq.NewPoolTopology(natsConn), 30*time.Second, logger.Warn)
 	return runServerLoop(rootCtx, srv, mreg, cfg.Metrics.Port, cfg.Server.ShutdownTeardown, logger)
 }
 
@@ -790,6 +782,7 @@ type cloudStores struct {
 	audit            *audit.MongoStore
 	usageCapSettings *usagecap.MongoSettingsStore
 	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
+	runnerPools      *platformcfg.MongoStore[platformcfg.RunnerPools]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
 	platformCreds    *platformcfg.MongoStore[platformcfg.PlatformCredentials]
@@ -823,6 +816,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
 		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
+		runnerPools:      platformcfg.NewMongoRunnerPools(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		botVars:          platformcfg.NewMongoBotVars(st.DB()),
 		platformCreds:    platformcfg.NewMongoPlatformCredentials(st.DB()),

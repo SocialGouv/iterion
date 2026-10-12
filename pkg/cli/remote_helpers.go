@@ -10,12 +10,15 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/server"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// APIError is a non-2xx response from the remote instance. Message is
-// the first line of the response body — the server's httpError text.
+// APIError is a non-2xx response from the remote instance. Body is the raw
+// response; Error() says what the server said (describeErrorBody).
 type APIError struct {
 	Status int
 	Method string
@@ -24,11 +27,129 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	msg := firstLine([]byte(e.Body))
-	if msg == "" {
-		msg = "(empty body)"
+	return fmt.Sprintf("HTTP %d %s %s: %s", e.Status, e.Method, e.Path, describeErrorBody([]byte(e.Body)))
+}
+
+// errorBody is the JSON error body the server answers with: the message
+// (error; a refusal that puts a stable token there says it in message or
+// detail), a stable code a client acts on (error_code), the remedy a refusal
+// names (hint — a resume that would lose its scratch names the consent it
+// needs), also_needs_force when the resume needs --force besides, and
+// retryable / reset_at when trying again later helps.
+type errorBody struct {
+	Error          string `json:"error"`
+	ErrorCode      string `json:"error_code"`
+	Message        string `json:"message"`
+	Detail         string `json:"detail"`
+	Hint           string `json:"hint"`
+	AlsoNeedsForce bool   `json:"also_needs_force"`
+	Retryable      bool   `json:"retryable"`
+	ResetAt        string `json:"reset_at"`
+}
+
+// describeErrorBody is what an error response says to an operator: a JSON
+// error body's fields, each in full — the server writes the hint after the
+// message, so a cut of the raw body loses it first — else the body's first
+// line.
+func describeErrorBody(body []byte) string {
+	var b errorBody
+	if err := json.Unmarshal(body, &b); err != nil || (b.Error == "" && b.Message == "" && b.Detail == "") {
+		if msg := firstLine(body); msg != "" {
+			return msg
+		}
+		return "(empty body)"
 	}
-	return fmt.Sprintf("HTTP %d %s %s: %s", e.Status, e.Method, e.Path, msg)
+	var words, facts []string
+	for _, w := range []string{b.Error, b.Message, b.Detail} {
+		if w = strings.TrimSpace(w); w != "" {
+			words = append(words, clipField(w))
+		}
+	}
+	if len(words) == 0 {
+		// Only blanks where the words should be: the body says more than that.
+		if msg := firstLine(body); msg != "" {
+			return msg
+		}
+		return "(empty body)"
+	}
+	if code := strings.TrimSpace(b.ErrorCode); code != "" {
+		facts = append(facts, "error_code: "+clipField(code))
+	}
+	if b.AlsoNeedsForce {
+		facts = append(facts, "also needs --force")
+	}
+	if b.Retryable {
+		facts = append(facts, "retryable")
+	}
+	if at := strings.TrimSpace(b.ResetAt); at != "" {
+		facts = append(facts, "resets at "+clipField(at))
+	}
+	s := strings.Join(words, " — ")
+	if len(facts) > 0 {
+		s += " (" + strings.Join(facts, "; ") + ")"
+	}
+	if hint := strings.TrimSpace(b.Hint); hint != "" {
+		s += store.RunErrorHintSeparator + clipField(hint)
+	}
+	return s
+}
+
+// clipField is one decoded field of a server's answer made fit for a
+// terminal (terminalText), bounded on a rune boundary: a terminal is not a
+// sink for a body of any size.
+func clipField(s string) string {
+	return terminalText(s, 2000)
+}
+
+// terminalText is text a server relayed — a node's error carries the output
+// of processes the run executed — made inert for a terminal, then bounded to
+// limit runes: every control character (C0, DEL, C1: an escape sequence, a
+// bell, a carriage return or newline that forges a line) and every format or
+// separator character (bidi overrides and marks, which reorder what is
+// shown; line and paragraph separators; tag characters) is written as its
+// escape, never sent raw.
+func terminalText(s string, limit int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n == limit {
+			b.WriteString("…")
+			break
+		}
+		n++
+		writeInert(&b, r)
+	}
+	return b.String()
+}
+
+// inertText is s made inert for a terminal by terminalText's rule, unbounded,
+// its layout kept: line feeds and tabs are written as they are.
+func inertText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == '\t' {
+			b.WriteRune(r)
+			continue
+		}
+		writeInert(&b, r)
+	}
+	return b.String()
+}
+
+// writeInert writes r to b as a terminal shows it, escaped when a terminal
+// would act on it instead: a byte that is no character, a control character
+// (C0, DEL, C1), a format or separator character.
+func writeInert(b *strings.Builder, r rune) {
+	switch {
+	case r == utf8.RuneError:
+		b.WriteString(`\ufffd`)
+	case unicode.IsControl(r):
+		fmt.Fprintf(b, `\x%02x`, r)
+	case unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp):
+		fmt.Fprintf(b, `\u%04x`, r)
+	default:
+		b.WriteRune(r)
+	}
 }
 
 // Call performs an authenticated JSON request. A non-nil `in` is

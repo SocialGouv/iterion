@@ -91,6 +91,36 @@ func runPatchSuite(t *testing.T, s Store) {
 		}
 	})
 
+	t.Run("team: the runner pool moves alone and survives an unrelated patch", func(t *testing.T) {
+		pool := "honorabilite"
+		got, err := s.PatchTeam(ctx, "pt1", TeamPatch{RunnerPool: &pool})
+		if err != nil {
+			t.Fatalf("map pool: %v", err)
+		}
+		if got.RunnerPool != "honorabilite" {
+			t.Fatalf("pool not applied: %+v", got)
+		}
+		// The F2 core: a whole-document replace from a stale read would
+		// erase the field. An unrelated patch must leave it standing.
+		name := "Renamed Again"
+		got, err = s.PatchTeam(ctx, "pt1", TeamPatch{Name: &name})
+		if err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+		if got.RunnerPool != "honorabilite" {
+			t.Fatalf("an unrelated patch erased the pool mapping: %+v", got)
+		}
+		// "" is a meaningful write (unmap), distinct from "leave untouched".
+		empty := ""
+		got, err = s.PatchTeam(ctx, "pt1", TeamPatch{RunnerPool: &empty})
+		if err != nil {
+			t.Fatalf("unmap: %v", err)
+		}
+		if got.RunnerPool != "" {
+			t.Fatalf("explicit clear did not unmap: %+v", got)
+		}
+	})
+
 	t.Run("team: a taken slug is refused, not silently applied", func(t *testing.T) {
 		taken := "patch-team-two"
 		if _, err := s.PatchTeam(ctx, "pt1", TeamPatch{Slug: &taken}); !errors.Is(err, ErrSlugAlreadyTaken) {

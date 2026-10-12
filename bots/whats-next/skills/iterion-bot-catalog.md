@@ -373,6 +373,7 @@ dispatcher routes on it), never the persona.
 | Featurly | `feature-dev` | build |
 | Fini | `feature-gap-fill` | build |
 | Vigie | `feed-watch` | operate |
+| Warden | `gitops-warden` | verify |
 | Goldy | `golden-master` | harden |
 | Heartbeat (always-on demo) | `heartbeat` | — |
 | Obsy | `instrument` | harden |
@@ -567,6 +568,31 @@ that does not mean anything.
   campaign, and the first assessment has none.
 - **Vars**: `brief_path` (string), `bundle_skills_dir` (string), `gate_probe_timeout_s` (string), `out_dir` (string), `plan_path` (string), `profile_path` (string), `scratch_dir` (string), `survey_path` (string), `workspace_dir` (string)
 - **Path**: `bots/assessment/main.bot`
+
+### `gitops-warden` — Warden
+
+GitOps merge gate. Classifies a merge request's diff against a policy —
+image-tag bumps, resource values and non-secret config are simple;
+structural changes, secrets, datastores the platform offers managed, CI
+and ArgoCD definitions escalate to human review — and publishes the
+verdict as one comment plus a `gitops/conformance` commit status. In
+enforce mode, a fully-simple verdict ALSO approves the merge request and
+arms merge-when-pipeline-succeeds; any doubt, any unparseable diff, any
+structural change escalates (fail-closed). The platform knowledge ships
+as skills; a repo may tighten or widen the simple class with
+review-policy.md (the policy_path var pins the real path) (read from the target branch — an MR editing
+its own policy escalates).
+
+- **Use when**:
+  Bind to a gitops repository whose merge requests should merge without a
+  human when they only bump image tags, resources or non-secret values
+  within platform guardrails, and must reach a human otherwise. Pairs with
+  review-pr on the same repo (separate gate contexts). Start in dry_run,
+  calibrate against real merge requests, then pin mode=enforce per repo.
+- **Triggers**: gitops-warden, warden
+- **Tags**: code-review, read-only, deploy, git
+- **Vars**: `base_ref` (string), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `head_sha` (string), `max_diff_bytes` (int), `max_diff_files` (int), `merge_method` (string), `mode` (string), `peer_gate_contexts` (string), `policy_path` (string), `post_to_board` (string), `pr_author` (string), `pr_review_mode` (string), `pr_url` (string), `remove_source_branch` (bool), `reviewers` (string), `scope_notes` (string), `source_branch` (string), `workspace_dir` (string)
+- **Path**: `bots/gitops-warden/main.bot`
 
 ### `revi-converse` — Revi (converse)
 
@@ -1216,7 +1242,7 @@ doc-scope-enumeration, anti-facade-fix-rules,
 doc-verification-checklist, forge-mr-create.
 
 - **Use when**:
-  Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
+  Use when README / AGENTS.md / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags
   code↔doc drift — or when parts of the repo (capabilities, whole
   subsystems) are simply UNDOCUMENTED and the docs should converge to
@@ -1433,6 +1459,14 @@ target workspace (an ops repository, never the application's own):
   not), the alerted ones read back by id (sightings, resolution). A
   silent bootstrap per lane identity; issue text is scrubbed like a log
   line and never persisted; no event body is fetched.
+- The Alertmanager built into the configured Grafana: the alerts firing
+  right now, one GET — the rules stay authored in Grafana's own UI and
+  Argus aggregates. Severity from the alert's labels through the
+  config's mapping (default and cap included); label and annotation
+  keys and values are scrubbed like a log line; a whole read that no
+  longer CONTAINS an alerted incident says so (resolved — a silenced
+  or inhibited alert is seen, never resolved); a partial or refused
+  read never concludes.
 - A redaction scan that is the ONLY reader of the raw lines: secrets,
   JWTs, bearer tokens, NIR (key-validated), IBAN (mod-97), card numbers
   (Luhn), emails and phone numbers are replaced before anything is

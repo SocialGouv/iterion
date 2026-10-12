@@ -104,6 +104,23 @@ func forkWith(t *testing.T, svc *Service, parentID string, newInputs map[string]
 	return err
 }
 
+// seedTurnFor writes the anchor turn checkpoint a fork of `id` needs — the
+// seed helper writes it for the parent only, and a fork of a FORKED child
+// reads the child's own turn.
+func seedTurnFor(t *testing.T, svc *Service, id string) {
+	t.Helper()
+	turnStore := store.AsTurnStore(svc.store)
+	if turnStore == nil {
+		t.Fatal("this store cannot hold turn checkpoints")
+	}
+	if err := turnStore.WriteTurn(context.Background(), &store.TurnCheckpoint{
+		RunID: id, NodeID: "noop", LoopIter: 0, TurnIndex: 0,
+		Backend: "claw", WrittenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestForkNewInputsCrossTheSameVarConstraintGateALaunchCrosses(t *testing.T) {
 	t.Run("a value outside the enum is refused, naming var, value and constraint", func(t *testing.T) {
 		svc, id := seedForkGateParent(t, singleFile(), map[string]any{"mode": "fast"})
@@ -213,17 +230,18 @@ func TestForkNewInputsCrossTheSameVarConstraintGateALaunchCrosses(t *testing.T) 
 		if err == nil {
 			t.Fatal("the enum declared in an IMPORTED file did not bound the fork")
 		}
-		if errors.Is(err, ErrForkInputsUnverifiable) {
-			t.Fatalf("the multi-file unit was read as a single file and refused instead of checked: %v", err)
+		if !errors.Is(err, ErrForkInputsRefused) {
+			t.Fatalf("the multi-file unit was read as a single file and admitted instead of checked: %v", err)
 		}
 		if !strings.Contains(err.Error(), `"yolo"`) {
 			t.Errorf("refusal = %q, want the enum violation", err)
 		}
 	})
 
-	// A source-less parent (over the 1 MiB record cap, or a forced cloud resume
-	// that cleared the pair) cannot be checked. The fork WITHOUT new inputs —
-	// the recovery path an operator reaches for by default — must still work.
+	// A source-less parent (over the 1 MiB record cap, a forced cloud resume
+	// that cleared the pair, or a pre-2026-08-04 run) cannot be pre-checked.
+	// The fork WITHOUT new inputs — the recovery path an operator reaches for
+	// by default — must still work, and record nothing.
 	t.Run("a source-less parent forks freely without new inputs", func(t *testing.T) {
 		svc, id := seedForkGateParent(t, nil, map[string]any{"mode": "fast"})
 		if err := forkWith(t, svc, id, nil); err != nil {
@@ -231,19 +249,100 @@ func TestForkNewInputsCrossTheSameVarConstraintGateALaunchCrosses(t *testing.T) 
 		}
 	})
 
-	t.Run("a source-less parent refuses new inputs explicitly", func(t *testing.T) {
+	// The unverifiable case is ADMITTED with a note since the first-resume
+	// floor exists (#1743): the 1 MiB cap stops costing forkability, and the
+	// recorded delta is what makes that admission safe — the child's first
+	// resume judges exactly these keys and refuses the child if they violate
+	// the constraints. The note says so, loudly.
+	t.Run("a source-less parent admits new inputs with a note and records the delta", func(t *testing.T) {
 		svc, id := seedForkGateParent(t, nil, map[string]any{"mode": "fast"})
-		err := forkWith(t, svc, id, map[string]any{"mode": "slow"})
-		if !errors.Is(err, ErrForkInputsUnverifiable) {
-			t.Fatalf("err = %v, want the typed unverifiable refusal naming the escape", err)
+		result, err := svc.Fork(context.Background(), ForkSpec{RunID: id, NodeID: "noop", TurnIndex: 0, NewInputs: map[string]any{"mode": "slow"}})
+		if err != nil {
+			t.Fatalf("an unverifiable fork was refused although the first-resume floor judges it: %v", err)
 		}
-		// A refusal an operator cannot act on is a dead end. It has to say
-		// since WHEN sources are recorded — so the reader can tell an old run
-		// from a broken one — and name both ways on.
-		for _, want := range []string{"2026-08-04", "fork without --new-inputs", "launch the workflow afresh"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("refusal does not carry %q: %v", want, err)
+		if len(result.Notes) == 0 {
+			t.Fatal("the fork was admitted with no note — the operator was not told the values were admitted unchecked")
+		}
+		for _, want := range []string{"first resume", "admitted without a pre-check"} {
+			if !strings.Contains(strings.Join(result.Notes, "; "), want) {
+				t.Errorf("note %q does not carry %q", result.Notes, want)
 			}
+		}
+		child, err := svc.store.LoadRun(context.Background(), result.NewRunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(child.ForkSuppliedInputs, ",") != "mode" {
+			t.Fatalf("child.ForkSuppliedInputs = %v, want [mode] — the first-resume gate is blind without the record", child.ForkSuppliedInputs)
+		}
+		if child.Inputs["mode"] != "slow" {
+			t.Fatalf("child.Inputs[mode] = %v, want slow", child.Inputs["mode"])
+		}
+	})
+
+	// A fork of a forked child carries the parent's UNJUDGED keys forward:
+	// an unchanged re-send is not a verdict, and without the carry the value
+	// would ride an unjudged chain into a run that never judges it.
+	t.Run("a fork of a forked child carries the unjudged keys forward", func(t *testing.T) {
+		svc, id := seedForkGateParent(t, nil, map[string]any{"mode": "fast"})
+		first, err := svc.Fork(context.Background(), ForkSpec{RunID: id, NodeID: "noop", TurnIndex: 0, NewInputs: map[string]any{"mode": "slow"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedTurnFor(t, svc, first.NewRunID)
+		second, err := svc.Fork(context.Background(), ForkSpec{RunID: first.NewRunID, NodeID: "noop", TurnIndex: 0})
+		if err != nil {
+			t.Fatalf("a plain recovery fork of a forked child was refused: %v", err)
+		}
+		grandchild, err := svc.store.LoadRun(context.Background(), second.NewRunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(grandchild.ForkSuppliedInputs, ",") != "mode" {
+			t.Fatalf("grandchild.ForkSuppliedInputs = %v, want [mode] — an unjudged value must not ride an unjudged chain into a run that never judges it", grandchild.ForkSuppliedInputs)
+		}
+	})
+
+	// The union is the point: a fork that changes ANOTHER key on top of an
+	// unjudged chain arms BOTH — the new delta for its own sake, the carried
+	// keys because an unchanged re-send is not a verdict.
+	t.Run("a fork over an unjudged chain arms the union of both", func(t *testing.T) {
+		svc, id := seedForkGateParent(t, singleFile(), map[string]any{"mode": "fast"})
+		first, err := svc.Fork(context.Background(), ForkSpec{RunID: id, NodeID: "noop", TurnIndex: 0, NewInputs: map[string]any{"mode": "slow"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedTurnFor(t, svc, first.NewRunID)
+		second, err := svc.Fork(context.Background(), ForkSpec{RunID: first.NewRunID, NodeID: "noop", TurnIndex: 0, NewInputs: map[string]any{"target": "other-repo"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		grandchild, err := svc.store.LoadRun(context.Background(), second.NewRunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(grandchild.ForkSuppliedInputs, ",") != "mode,target" {
+			t.Fatalf("grandchild.ForkSuppliedInputs = %v, want [mode target] — the carried key and the new delta arm together", grandchild.ForkSuppliedInputs)
+		}
+	})
+
+	// A plain recovery fork — no new inputs, no inherited record — records
+	// NOTHING: an empty delta never meets a gate, at fork time or after.
+	t.Run("a plain recovery fork records nothing", func(t *testing.T) {
+		svc, id := seedForkGateParent(t, singleFile(), map[string]any{"mode": "fast"})
+		result, err := svc.Fork(context.Background(), ForkSpec{RunID: id, NodeID: "noop", TurnIndex: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Notes) != 0 {
+			t.Fatalf("a plain recovery fork produced a note: %v", result.Notes)
+		}
+		child, err := svc.store.LoadRun(context.Background(), result.NewRunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(child.ForkSuppliedInputs) != 0 {
+			t.Fatalf("child.ForkSuppliedInputs = %v, want empty — an empty delta never meets a gate", child.ForkSuppliedInputs)
 		}
 	})
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/spf13/cobra"
@@ -71,6 +72,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		ioTask          delegate.IOTask
 		replaySnapshots [][]byte
 		policyCfg       *permission.PolicyConfig
+		sawGateway      bool
 	)
 	for {
 		env, err := dispatcher.readNextEnvelope()
@@ -90,6 +92,13 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			replaySnapshots = append(replaySnapshots, append([]byte(nil), env.Data...))
 			continue
 		}
+		if env.Type == delegate.EnvelopeGatewayV1 {
+			// Empty capability marker: this host knows the gateway
+			// factory. Values never ride this envelope — the forwarded
+			// env carries them.
+			sawGateway = true
+			continue
+		}
 		if env.Type == delegate.EnvelopePermissionPolicy {
 			// The node's permission gate, in serialisable form. A
 			// malformed payload is fatal BEFORE any model call: a gate
@@ -102,6 +111,14 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			continue
 		}
 		return emitFatal(dispatcher, stderr, fmt.Errorf("unexpected envelope %q before task", env.Type))
+	}
+
+	// The runner-side twin of the fail-closed position: a gateway task
+	// that arrives WITHOUT the marker comes from a host that predates the
+	// gateway — its registry would have no gateway factory either, and the
+	// failure would be an opaque unknown-provider. Name the skew instead.
+	if modelroute.Parse(ioTask.Model).Gateway() && !sawGateway {
+		return emitFatal(dispatcher, stderr, fmt.Errorf("gateway task %q received without the gateway capability marker — the host binary predates gateway support; upgrade the host", ioTask.Model))
 	}
 
 	// start() must run AFTER the synchronous bootstrap loop above:
@@ -173,9 +190,14 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// metered, auditable and forkable like an in-process one. The logger
 	// carries the warnings EventHooks has no channel for (settings-hooks
 	// diagnostics, subscription-spend notices) to stderr, which the
-	// launcher captures into the node's error when the run fails.
+	// launcher captures into the node's error when the run fails. The
+	// retry budget is the launcher's, carried by the task: this backend's
+	// loop retries the provider calls made in here, as the host's claw
+	// backend retries them for an unsandboxed node, and the budget bounds
+	// billed attempts — so it is never read from this process's env, where
+	// a variable a repository's devcontainer declares would set it.
 	registry := model.NewRegistry()
-	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicy{},
+	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicyFromWire(ioTask.Retry),
 		model.WithClawLogger(iterlog.NewFromEnv(stderr)))
 
 	start := time.Now()

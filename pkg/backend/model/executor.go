@@ -186,6 +186,16 @@ type ClawExecutor struct {
 	// branches. Unknown reset instants are never recorded: dispatch stays
 	// fail-open when the provider did not say when the route revives.
 	routeCooldowns routeCooldownLedger
+	// llmRouteTriggers is the run's resolved adaptive-routing trigger set
+	// (nil = no policy — the ledger arms only its typed two categories,
+	// today's behavior).
+	llmRouteTriggers []string
+	// handoff is the run's routing-handoff recorder (ADR-121 § Delivery
+	// 2): fed by the emitter wrapper, sealed at the crossings, attached at
+	// the clearing branch, cleaned up at Close. Nil unless the run
+	// resolved an ACTIVE cross-harness posture — under off (and on every
+	// local run) nothing is recorded and no directory is created.
+	handoff *HandoffRecorder
 	// now is a test seam for cooldown expiry. Nil means time.Now.
 	now func() time.Time
 
@@ -413,6 +423,9 @@ func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 // Must be called before Execute; not safe to call concurrently.
 func (e *ClawExecutor) SetSharedStateDir(dir string) {
 	e.sharedStateDir = dir
+	if e.handoff != nil {
+		e.handoff.SetRoot(dir)
+	}
 }
 
 // SetBoardEndpoint installs the per-run gateway-reachable board MCP URL
@@ -492,6 +505,25 @@ func WithToolPolicy(p tool.ToolChecker) ClawExecutorOption {
 // WithRetryPolicy sets the retry policy for transient LLM errors.
 func WithRetryPolicy(rp RetryPolicy) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.retry = rp }
+}
+
+// WithLLMRouteTriggers sets the run's RESOLVED adaptive-routing trigger set
+// (ADR-121 §1, the launch-frozen snapshot). The route cooldown ledger arms
+// the categories it names beyond its own typed two: an AUTH refusal on a
+// policy run is durable (a refused credential stays refused), so the ledger
+// records it run-long and later nodes skip the doomed spawn instead of
+// paying it again.
+func WithLLMRouteTriggers(triggers []string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.llmRouteTriggers = triggers }
+}
+
+// WithHandoffRecorder attaches the run's routing-handoff recorder. The
+// runview layer constructs it only for a run whose resolved policy carries
+// an ACTIVE cross-harness posture; the executor pushes its state dirs onto
+// it (SetSharedStateDir — the sandbox driver sets it after construction,
+// so the recorder's root arrives late) and clears the directory at Close.
+func WithHandoffRecorder(rec *HandoffRecorder) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.handoff = rec }
 }
 
 // WithConnectors wires the connector catalog a `tool … action:` node resolves
@@ -960,6 +992,9 @@ func (e *ClawExecutor) Close() error {
 	}
 	if e.hostSecretCleanup != nil {
 		e.hostSecretCleanup()
+	}
+	if e.handoff != nil {
+		e.handoff.Cleanup()
 	}
 	return errors.Join(errs...)
 }

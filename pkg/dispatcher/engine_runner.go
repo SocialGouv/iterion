@@ -442,9 +442,6 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	}
 	if superviseHub != nil {
 		opts = append(opts, runtime.WithEventObserver(superviseHub.Publish))
-		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: s},
-			spec.RunID, supervise.SpecsFromWorkflow(r.workflow, runLogger), runLogger)
-		defer stopSup()
 	}
 	if len(r.runEnv) > 0 {
 		opts = append(opts, runtime.WithRunEnv(r.runEnv))
@@ -459,6 +456,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// (failed_resumable / paused_operator); a fresh runID
 	// means a clean start.
 	if spec.ResumeFromRunID != "" {
+		if superviseHub != nil {
+			// The spawn resolves the PRIOR run's stored inputs — the ones
+			// eng.Resume replays — not this dispatch's re-derived spec.Vars:
+			// the config and the issue's bot args may have moved between
+			// attempts, and a supervisor pin reading the new values would
+			// diverge from the nodes it watches.
+			if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, runLogger, eng, s); stopSup != nil {
+				defer stopSup()
+			}
+		}
 		return eng.Resume(ctx, spec.ResumeFromRunID, nil)
 	}
 
@@ -466,14 +473,37 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// (no-op unless the workflow declares review_mode / plan_review /
 	// llm_families). A per-ticket bot_arg wins over auto-detection; no
 	// dispatcher-level flag override, so pass "". Mirrors the CLI and
-	// runview surfaces.
+	// runview surfaces. BEFORE the supervisor spawn: a pin on one of the
+	// injected vars resolves the injected value, not a literal.
 	if spec.Vars == nil {
 		spec.Vars = map[string]any{}
 	}
-	if inj := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), ""); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), ""); err != nil {
+		return fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		r.logger.Info("%s", inj.Summary())
 	}
+	if superviseHub != nil {
+		if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, runLogger, eng, s); stopSup != nil {
+			defer stopSup()
+		}
+	}
 	return eng.Run(ctx, spec.RunID, spec.Vars)
+}
+
+// spawnSupervisors starts the workflow's declared supervisors beside the
+// run, resolving their model pins against the run's OWN inputs — the
+// stored ones when the row already carries them (a re-dispatch: what
+// eng.Resume replays), the launch ones before it exists — so a pin reads
+// the same values its watched nodes resolve. Returns the spawn's stop
+// func, or nil when the workflow declares no supervisor.
+func (r *EngineRunner) spawnSupervisors(ctx context.Context, hub *supervise.EventHub, runID string, launchVars map[string]any, runLogger *iterlog.Logger, eng *runtime.Engine, st store.RunStore) func() {
+	vars := launchVars
+	if run, err := st.LoadRun(ctx, runID); err == nil && run.Inputs != nil {
+		vars = run.Inputs
+	}
+	return supervise.StartDeclared(ctx, hub, &supervise.StoreInjector{Store: st},
+		runID, supervise.SpecsFromWorkflow(r.workflow, eng.ResolveVars(vars), runLogger), runLogger)
 }
 
 // dispatchViaService (ADR-046) runs a fresh dispatch through the shared

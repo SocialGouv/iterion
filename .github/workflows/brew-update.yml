@@ -1,38 +1,39 @@
 name: 🍺 Brew Tap Update
 
-# release-it creates an empty GitHub Release as soon as version.yml runs,
-# which fires `release: published` long before release.yml/desktop-release.yml
-# have uploaded the build artefacts. Listening on that event made
-# `gh release download` find an empty release and fail.
+# The tap update runs ONCE PER DAY on a schedule, not once per release.
+# Measured on #2241 (2026-10): one tap PR per release meant one main commit
+# per release, and the release train's cadence kept evicting the head of
+# the merge queue — a PR sat CLEAN for three days without merging, each
+# tap commit re-running the group behind it.
 #
-# Instead, hook on `workflow_run` so this job runs once each release pipeline
-# completes. Each pipeline's completion fires a separate run; the script is
-# idempotent and tolerates partial artefacts (CLI binaries land first, the
-# desktop ZIP appears on the second pass).
+# A scheduled run resolves the NEWEST v* tag newer than what the tap
+# formula already carries (intermediate releases never need tap entries —
+# the formula points at the latest), downloads that release's artefacts,
+# and opens ONE tap PR carrying the day's update. The skip only fires
+# when BOTH the formula and the cask already carry the tag: a release
+# whose desktop artefacts landed after the last run re-taps its formula
+# side the next day, and update-brew-tap.sh's all-or-nothing guard keeps
+# a partial download from advancing anything.
 #
-# `workflow_dispatch` stays for backfill — replay an old tag without retagging.
+# `workflow_dispatch` stays for backfill (replay an old tag with `tag`,
+# or force a run without one to process the latest pending).
 
 on:
-  workflow_run:
-    workflows:
-      - "📦 Release"
-      - "📦 Desktop Release"
-    types: [completed]
+  schedule:
+    # 04:37 UTC — before the workday, away from the merge queue's busy
+    # hours. The minute is deliberately off the round marks.
+    - cron: "37 4 * * *"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to backfill (e.g. v0.5.0)"
-        required: true
+        description: "Release tag to tap (e.g. v0.5.0). Empty = the newest tag newer than the tap's version."
+        required: false
         type: string
 
 concurrency:
-  # Serialise tap updates: the two release pipelines (release.yml +
-  # desktop-release.yml) each trigger a separate run for the same tag, and
-  # both write the same branch and PR, so concurrent runs would race on the
-  # push. Never cancel — every run carries artefacts that need to land in
-  # the tap. cancel-in-progress: false alone does not keep them: a group
-  # holds ONE pending run and cancels it when a newer one queues (a tag's
-  # second pass, then the next tag's first). queue: max keeps up to 100.
+  # Serialise tap updates: concurrent runs would race on the tap branch
+  # and its PR. Never cancel — a run carries artefacts that need to land
+  # in the tap.
   group: ${{ github.workflow }}
   cancel-in-progress: false
   queue: max
@@ -43,9 +44,6 @@ permissions:
 
 jobs:
   update:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Get GitHub App Token
@@ -59,43 +57,56 @@ jobs:
         with:
           ref: main
           token: ${{ steps.token.outputs.token }}
-          # Need tags for `git tag --points-at` to resolve the release tag
-          # from the workflow_run head SHA.
+          # Need tags to resolve the newest release tag.
           fetch-depth: 0
 
       - name: Resolve tag
         id: tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
+          git fetch --tags origin >/dev/null
           if [ -n "${INPUT_TAG:-}" ]; then
             tag="$INPUT_TAG"
-          elif [[ "${HEAD_BRANCH:-}" == v* ]]; then
-            # workflow_run sometimes exposes the tag name as head_branch
-            # for tag-triggered source workflows.
-            tag="$HEAD_BRANCH"
           else
-            git fetch --tags origin >/dev/null
-            tag="$(git tag --points-at "$HEAD_SHA" | grep '^v' | head -n1 || true)"
+            # The newest v* tag; skipped when the tap formula already
+            # carries it (nothing released since the last update).
+            tag="$(git tag --sort=-creatordate | grep '^v' | head -n1 || true)"
           fi
           if [ -z "$tag" ]; then
-            echo "no v* tag found for sha ${HEAD_SHA:-?} (branch=${HEAD_BRANCH:-?}); the upstream run was probably not a tag release — skipping"
+            echo "no v* tag found; nothing to tap"
             echo "skip=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "resolved tag=$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          current_formula="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' Formula/iterion.rb | head -n1 || true)"
+          current_cask="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' Cask/iterion-desktop.rb | head -n1 || true)"
+          vtag="${tag#v}"
+          # Downgrade guard: a maintenance tag created AFTER a newer
+          # release (a hotfix cut from an older branch) must not walk the
+          # tap backwards. sort -V compares semver, not strings.
+          newest="$(printf '%s\n%s\n' "${current_formula:-0}" "$vtag" | sort -V | tail -n1)"
+          if [ "$newest" != "$vtag" ]; then
+            echo "tag $tag is not newer than the tap's $current_formula — nothing to update"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Skip only when BOTH files carry the tag: skipping on the
+          # formula alone froze the desktop cask for a whole release
+          # cycle once (measured). A release without the desktop ZIP
+          # costs a no-op run, never a stale cask.
+          if [ "$vtag" = "$current_formula" ] && { [ -z "$current_cask" ] || [ "$vtag" = "$current_cask" ]; }; then
+            echo "the tap already carries $vtag (formula and cask); nothing to update"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Prepare the tap branch
         # The tap change lands as its OWN queued PR, not as a push to main:
         # a direct push invalidates the merge group at the head of the queue
         # and makes every PR behind it rebuild (~20-25 min, measured on
-        # #766). Switching branches BEFORE the rewrite is what lets the
-        # second pipeline's pass add the desktop cask to the first pass's
-        # branch instead of starting from main and dropping its formula.
+        # #766).
         if: steps.tag.outputs.skip != '1'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
@@ -111,12 +122,6 @@ jobs:
           # CLI binaries ship with .sha256 sidecars (see release.yml).
           # The desktop ZIP does not — update-brew-tap.sh computes the
           # hash locally when the sidecar is missing.
-          #
-          # Tolerate the partial state: the first workflow_run (whichever
-          # of release.yml / desktop-release.yml finishes first) sees only
-          # its own artefacts; the second sees both. The script skips the
-          # file family it can't find and the diff guard prevents a no-op
-          # commit on the second pass.
           gh release download "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir artifacts \

@@ -260,7 +260,7 @@ func loadAssistantRun(ctx context.Context, id string, runStore store.RunStore) (
 		WorkflowName: truncateRunes(run.WorkflowName, assistantContextMaxTitle),
 		Resumable:    run.Status == store.RunStatusFailedResumable || run.Status == store.RunStatusCancelled || run.Status == store.RunStatusPausedOperator || run.Status == store.RunStatusPausedWaitingHuman,
 		Rewindable:   runview.IsRewindableRun(run),
-		Error:        truncateRunes(run.Error, assistantContextMaxError),
+		Error:        store.ClipRunError(run.Error, assistantContextMaxError),
 	}
 	if run.Status == store.RunStatusFailed || run.Status == store.RunStatusFailedResumable {
 		resolved.Repair = &assistantRepairContext{Repairable: false, Reason: "bot provenance unavailable"}

@@ -67,15 +67,20 @@ func TestWireModelOverridesEmptyStaysEmpty(t *testing.T) {
 	}
 }
 
-// runFallbackFromMsg is the runner-side fold of the wire route into the
-// IR form ir.ApplyRunFallback screens — the run-level fallback twin of
-// modelOverridesFromMsg. The Name is stamped here so every consumer
-// reports the route under the recognisable launch-route label.
+// splitMsgFallback's operator half is the runner-side fold of the wire
+// route into the IR form ir.ApplyRunFallback screens — the run-level
+// fallback twin of modelOverridesFromMsg. The Name is stamped here so
+// every consumer reports the route under the recognisable launch-route
+// label; POLICY-flagged stages split the other way.
 func TestRunFallbackFromMsg(t *testing.T) {
-	chain := runFallbackFromMsg(queue.RunFallback{
+	chain, ladder := splitMsgFallback(queue.RunFallback{
 		{Backend: "codex", Model: "gpt-5.5", Provider: "openai"},
 		{Backend: "claw", Model: "anthropic/claude-opus-5", Provider: "anthropic"},
+		{Backend: "codex", Provider: "chatgpt_forfait", On: []string{"usage_window", "auth"}, Policy: true},
 	})
+	if len(ladder) != 1 || ladder[0].Credential != "chatgpt_forfait" {
+		t.Fatalf("ladder = %+v, want the policy stage split off", ladder)
+	}
 	if len(chain) != 2 {
 		t.Fatalf("folded chain = %+v, want two stages", chain)
 	}
@@ -85,7 +90,7 @@ func TestRunFallbackFromMsg(t *testing.T) {
 	if f := chain[1]; f.Name != ir.RunFallbackName || f.Backend != "claw" || f.Model != "anthropic/claude-opus-5" || f.Provider != "anthropic" {
 		t.Fatalf("second folded stage = %+v, want order preserved", f)
 	}
-	if z := runFallbackFromMsg(nil); z != nil {
-		t.Fatalf("nil wire chain folded to %+v, want nil", z)
+	if z, l := splitMsgFallback(nil); z != nil || l != nil {
+		t.Fatalf("nil wire chain split to %+v / %+v, want nil / nil", z, l)
 	}
 }

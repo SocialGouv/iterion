@@ -629,6 +629,12 @@ var (
 	remotePlatformCredOrgs    string
 	remotePlatformCredKeys    string
 	remotePlatformCredFacade  string
+
+	remotePlatformCredPairOrder    string
+	remotePlatformCredTriggers     string
+	remotePlatformCredRefused      string
+	remotePlatformCredStrict       string
+	remotePlatformCredRoutingClear bool
 )
 
 var remoteAdminPlatformCredsCmd = &cobra.Command{
@@ -712,8 +718,39 @@ The GET shows the stored values and the effective ones.`,
 				return fmt.Errorf("--facade-default wants auto|tier|never|always (or \"\" to clear), got %q", remotePlatformCredFacade)
 			}
 		}
+		routing := map[string]any{}
+		if cmd.Flags().Changed("routing-pair-order") {
+			routing["pair_order"] = splitCSV(remotePlatformCredPairOrder)
+		}
+		if cmd.Flags().Changed("routing-triggers") {
+			routing["triggers"] = splitCSV(remotePlatformCredTriggers)
+		}
+		if cmd.Flags().Changed("routing-refused-pinned-key") {
+			routing["refused_pinned_key"] = strings.TrimSpace(remotePlatformCredRefused)
+		}
+		if cmd.Flags().Changed("routing-strict") {
+			switch v := strings.ToLower(strings.TrimSpace(remotePlatformCredStrict)); v {
+			case "true", "on", "yes":
+				routing["strict"] = true
+			case "false", "off", "no":
+				routing["strict"] = false
+			case "":
+				routing["strict"] = nil // unset: inherit
+			default:
+				return fmt.Errorf("--routing-strict wants true|false (or \"\" to unset), got %q", remotePlatformCredStrict)
+			}
+		}
+		if len(routing) > 0 {
+			body["routing"] = routing
+		}
+		if cmd.Flags().Changed("routing-clear") {
+			if len(routing) > 0 {
+				return fmt.Errorf("--routing-clear and a --routing-* field are opposites; pass one or the other")
+			}
+			body["routing"] = nil // back to the env dials
+		}
 		if len(body) == 0 {
-			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b] [--keys-first true|false] [--facade-default auto|tier|never|always]")
+			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b] [--keys-first true|false] [--facade-default auto|tier|never|always] [--routing-pair-order a+b,c+d] [--routing-triggers t1,t2] [--routing-refused-pinned-key forfait|park] [--routing-strict true|false] [--routing-clear]")
 		}
 		raw, err := json.Marshal(body)
 		if err != nil {
@@ -917,6 +954,11 @@ func init() {
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredFacade, "facade-default", "", "auto|tier|never|always — whether a z.ai/Moonshot key may be the anthropic wire's default in a shared tier (auto: not while ANY tier of the run holds a Claude credential; tier: per tier) (\"\" clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredTeams, "teams", "", "Comma-separated team ids admitted (empty string clears)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredOrgs, "orgs", "", "Comma-separated org ids whose every team is admitted (empty string clears)")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredPairOrder, "routing-pair-order", "", "Comma-separated harness+credential pairs in priority order (e.g. claude_code+claude_forfait,claw+anthropic_key) — replaces the stored order")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredTriggers, "routing-triggers", "", "Comma-separated subset of usage_window,unavailable,transient_exhausted,auth — what may fire a routing switch")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredRefused, "routing-refused-pinned-key", "", "forfait|park — what a launch does with a shared key refused/capped whose family another credential holds (default forfait; park = the pre-policy restore)")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredStrict, "routing-strict", "", "true|false — treat backend pins as requirements (false only lifts it where no level set true) (\"\" unsets)")
+	remoteAdminPlatformCredsCmd.Flags().BoolVar(&remotePlatformCredRoutingClear, "routing-clear", false, "Remove the stored routing block (back to the env dials)")
 
 	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminUsageReadingsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd, remoteAdminPlatformCredsCmd)
 

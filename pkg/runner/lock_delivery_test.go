@@ -371,3 +371,39 @@ func TestHeldLockFinalDeliveryArchivesOnNATS(t *testing.T) {
 		t.Fatalf("owner changed: %+v", after)
 	}
 }
+
+// TestAcquireRunLock_aHeldLockOutlastsTheLongestTeardown: a resume that finds
+// the lease held — the previous execution still unwinding, which may hold it
+// up to LeaseUnwindCeiling once the run could be resumed, then the lease's
+// lapse —
+// is not archived before that hold can be over, whichever delivery first met
+// the lock (earlier ones may have been spent elsewhere — an epoch Nak during
+// a rollout): the deliveries left are spread over it, none sooner than the
+// lease's TTL.
+func TestAcquireRunLock_aHeldLockOutlastsTheLongestTeardown(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "resume-during-teardown"
+	seedRunningRun(t, st, id)
+	deliveries := natsq.DefaultStreamMaxRetry
+	r := &Runner{cfg: Config{Store: lockHeldStore{st}, Logger: iterlog.Nop()}, maxDeliverOverride: deliveries}
+	r.lockFailureDLQ = func(context.Context, jsDelivery, string) error { return nil }
+	for first := 1; first < deliveries; first++ {
+		var before time.Duration
+		for n := first; n < deliveries; n++ {
+			d := &fakeDelivery{delivered: n}
+			if _, ok, _ := r.acquireRunLock(context.Background(), &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1", Resume: &queue.ResumeSpec{}}, d, iterlog.Nop()); ok {
+				t.Fatalf("delivery %d took a held lock", n)
+			}
+			if len(d.nakDelays) != 1 || d.nakDelays[0] < natsq.DefaultLockTTL || d.terms != 0 {
+				t.Fatalf("delivery %d: %+v, want one delayed Nak no sooner than the lease's TTL", n, d)
+			}
+			before += d.nakDelays[0]
+		}
+		if hold := LeaseUnwindCeiling + natsq.DefaultLockTTL; before < hold {
+			t.Errorf("lock first met at delivery %d: the last delivery comes %s after it, before a lease held %s can have lapsed", first, before, hold)
+		}
+	}
+}

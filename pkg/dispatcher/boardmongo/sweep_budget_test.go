@@ -16,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 // A CASCADE (RenameLabel / MergeLabels / DeleteLabel / RenameState /
@@ -29,15 +30,17 @@ import (
 // the wire. The driver renders the context deadline as `maxTimeMS`, so a
 // shared deadline is directly observable: it BURNS DOWN across the walk (the
 // last card's budget is short by the walk's whole duration), while a
-// per-round-trip deadline is the same on every card. Reading the wire instead
-// of racing a stopwatch keeps the assertion exact — a loaded runner's
-// latency spike moves neither figure.
+// per-round-trip deadline sits within mint→dispatch latency of opTimeout on
+// every card. That latency is the one scheduling quantity the wire cannot
+// exclude: a pause between the budget's mint and the command's dispatch
+// lowers one figure, so the spread tolerance scales with the walk (see
+// assertPerCallBudget) instead of reading as an exact constant.
 
-// budgetSpread is the tolerated variation, in milliseconds, between the
-// largest and smallest wire deadline of one cascade. Per-round-trip
-// derivation lands every write within a millisecond or two of opTimeout; a
-// shared deadline burns down by the walk's own duration, seconds over a
-// board of sweepCards.
+// budgetSpread is the floor of the spread tolerance, in milliseconds, that
+// assertPerCallBudget applies between the largest and smallest wire deadline
+// of one cascade. Per-round-trip derivation lands every write within a
+// millisecond or two of opTimeout on an idle host; a shared deadline burns
+// down by the walk's own duration, seconds over a board of sweepCards.
 const budgetSpread = 250
 
 // sweepCards is the fixture size. It only has to make the walk's duration
@@ -84,8 +87,15 @@ func (p *deadlineProbe) watch() {
 }
 
 // assertPerCallBudget fails unless the cascade rewrote every card under a
-// deadline it did not share with the rest of the walk.
-func (p *deadlineProbe) assertPerCallBudget(t *testing.T, wantWrites int) {
+// deadline it did not share with the rest of the walk. walk is the cascade's
+// measured duration: a SHARED budget burns down by exactly that (the last
+// card's wire deadline is short by every card before it), while a per-call
+// budget's spread is the mint→dispatch latency of the slowest write — a
+// scheduling quantity a loaded runner stretches just as it stretches the
+// walk, so the tolerance scales with the walk rather than betting on a fixed
+// wall clock (#1746: a 260 ms spread on a 35 s walk tripped the 250 ms floor
+// with every write correctly carrying its own 10 s budget).
+func (p *deadlineProbe) assertPerCallBudget(t *testing.T, wantWrites int, walk time.Duration) {
 	t.Helper()
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -102,9 +112,10 @@ func (p *deadlineProbe) assertPerCallBudget(t *testing.T, wantWrites int) {
 			hi = ms
 		}
 	}
-	if spread := hi - lo; spread > budgetSpread {
-		t.Fatalf("per-card write deadlines span %d ms over %d writes (%d..%d): the walk shares ONE budget and burns it down — a board large enough exhausts it mid-cascade and half-applies",
-			spread, len(p.seen), lo, hi)
+	tolerance := max(int64(budgetSpread), walk.Milliseconds()/4)
+	if spread := hi - lo; spread > tolerance {
+		t.Fatalf("per-card write deadlines span %d ms over %d writes (%d..%d, tolerance %d ms): the walk shares ONE budget and burns it down — a board large enough exhausts it mid-cascade and half-applies",
+			spread, len(p.seen), lo, hi, tolerance)
 	}
 }
 
@@ -115,7 +126,7 @@ func sweepBudgetStore(t *testing.T, prefix string) (*Store, *deadlineProbe) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	t.Cleanup(cancel)
 	probe := &deadlineProbe{}
 	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetMonitor(probe.monitor()))
@@ -126,7 +137,7 @@ func sweepBudgetStore(t *testing.T, prefix string) (*Store, *deadlineProbe) {
 	_, _ = rand.Read(nonce)
 	db := client.Database(prefix + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 20*time.Second)
+		c, cc := mongotest.TeardownCtx()
 		defer cc()
 		_ = db.Drop(c)
 		_ = client.Disconnect(c)
@@ -157,14 +168,16 @@ func TestRenameLabelSweepBudgetsEachCallSeparately(t *testing.T) {
 	seedCards(t, s, sweepCards, labelled("old"))
 
 	probe.watch()
+	start := time.Now()
 	touched, err := s.RenameLabel("old", "new")
+	walk := time.Since(start)
 	if err != nil {
 		t.Fatalf("RenameLabel touched %d/%d cards and failed: %v", touched, sweepCards, err)
 	}
 	if touched != sweepCards {
 		t.Fatalf("RenameLabel touched %d cards, want %d", touched, sweepCards)
 	}
-	probe.assertPerCallBudget(t, sweepCards)
+	probe.assertPerCallBudget(t, sweepCards, walk)
 }
 
 // DeleteLabel is the cascade a consume_labels trigger depends on: a card that
@@ -174,14 +187,16 @@ func TestDeleteLabelSweepBudgetsEachCallSeparately(t *testing.T) {
 	seedCards(t, s, sweepCards, labelled("retire-me"))
 
 	probe.watch()
+	start := time.Now()
 	touched, err := s.DeleteLabel("retire-me")
+	walk := time.Since(start)
 	if err != nil {
 		t.Fatalf("DeleteLabel touched %d/%d cards and failed: %v", touched, sweepCards, err)
 	}
 	if touched != sweepCards {
 		t.Fatalf("DeleteLabel touched %d cards, want %d", touched, sweepCards)
 	}
-	probe.assertPerCallBudget(t, sweepCards)
+	probe.assertPerCallBudget(t, sweepCards, walk)
 }
 
 func TestMergeLabelsSweepBudgetsEachCallSeparately(t *testing.T) {
@@ -189,14 +204,16 @@ func TestMergeLabelsSweepBudgetsEachCallSeparately(t *testing.T) {
 	seedCards(t, s, sweepCards, labelled("from"))
 
 	probe.watch()
+	start := time.Now()
 	touched, err := s.MergeLabels("from", "into")
+	walk := time.Since(start)
 	if err != nil {
 		t.Fatalf("MergeLabels touched %d/%d cards and failed: %v", touched, sweepCards, err)
 	}
 	if touched != sweepCards {
 		t.Fatalf("MergeLabels touched %d cards, want %d", touched, sweepCards)
 	}
-	probe.assertPerCallBudget(t, sweepCards)
+	probe.assertPerCallBudget(t, sweepCards, walk)
 }
 
 // RenameState drives migrateState, the second walk family.
@@ -205,14 +222,16 @@ func TestRenameStateSweepBudgetsEachCallSeparately(t *testing.T) {
 	seedCards(t, s, sweepCards, func(*native.Issue) {})
 
 	probe.watch()
+	start := time.Now()
 	touched, err := s.RenameState(native.StateReady, "queued")
+	walk := time.Since(start)
 	if err != nil {
 		t.Fatalf("RenameState touched %d/%d cards and failed: %v", touched, sweepCards, err)
 	}
 	if touched != sweepCards {
 		t.Fatalf("RenameState touched %d cards, want %d", touched, sweepCards)
 	}
-	probe.assertPerCallBudget(t, sweepCards)
+	probe.assertPerCallBudget(t, sweepCards, walk)
 }
 
 // DeleteState drives migrateState behind an extra listAll of its own.
@@ -221,14 +240,16 @@ func TestDeleteStateSweepBudgetsEachCallSeparately(t *testing.T) {
 	seedCards(t, s, sweepCards, func(*native.Issue) {})
 
 	probe.watch()
+	start := time.Now()
 	touched, err := s.DeleteState(native.StateReady, native.StateInProgress)
+	walk := time.Since(start)
 	if err != nil {
 		t.Fatalf("DeleteState touched %d/%d cards and failed: %v", touched, sweepCards, err)
 	}
 	if touched != sweepCards {
 		t.Fatalf("DeleteState touched %d cards, want %d", touched, sweepCards)
 	}
-	probe.assertPerCallBudget(t, sweepCards)
+	probe.assertPerCallBudget(t, sweepCards, walk)
 }
 
 // RenameField drives applyFieldRewrite, the third walk family.
@@ -242,14 +263,16 @@ func TestRenameFieldSweepBudgetsEachCallSeparately(t *testing.T) {
 	})
 
 	probe.watch()
+	start := time.Now()
 	touched, err := s.RenameField("sprint", "iteration")
+	walk := time.Since(start)
 	if err != nil {
 		t.Fatalf("RenameField touched %d/%d cards and failed: %v", touched, sweepCards, err)
 	}
 	if touched != sweepCards {
 		t.Fatalf("RenameField touched %d cards, want %d", touched, sweepCards)
 	}
-	probe.assertPerCallBudget(t, sweepCards)
+	probe.assertPerCallBudget(t, sweepCards, walk)
 }
 
 // DeleteField is applyFieldRewrite's second entry point.
@@ -263,14 +286,16 @@ func TestDeleteFieldSweepBudgetsEachCallSeparately(t *testing.T) {
 	})
 
 	probe.watch()
+	start := time.Now()
 	touched, err := s.DeleteField("sprint")
+	walk := time.Since(start)
 	if err != nil {
 		t.Fatalf("DeleteField touched %d/%d cards and failed: %v", touched, sweepCards, err)
 	}
 	if touched != sweepCards {
 		t.Fatalf("DeleteField touched %d cards, want %d", touched, sweepCards)
 	}
-	probe.assertPerCallBudget(t, sweepCards)
+	probe.assertPerCallBudget(t, sweepCards, walk)
 }
 
 // TestSweepErrorNamesItsProgress asserts a cascade that fails reports the
@@ -286,7 +311,7 @@ func TestSweepErrorNamesItsProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 5*time.Second)
+		c, cc := mongotest.TeardownCtx()
 		defer cc()
 		_ = client.Disconnect(c)
 	})

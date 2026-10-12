@@ -482,6 +482,54 @@ integration's launch vars are persisted and re-applied on every provision.
 
 Then require `iterion/review` — one check, whichever bot owns the PR.
 
+### <a name="switch-gate"></a>Switching the gate context (or any pinned launch var)
+
+The integration PATCH (`PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`)
+is the gesture. Its `launch_vars` semantics, pinned by test:
+
+- **Absent** leaves the stored map untouched — provided the two stores
+  *agree*. On a diverged pair (a crashed two-store write, or a legacy repo
+  whose pins live on only one side) a nil-map adopt is REFUSED
+  (`ErrProvisionDiverged`, naming the diverging keys): a deliberate drop is
+  indistinguishable from a stale store, so fail closed and re-run with an
+  explicit `launch_vars` (echo what stays) or `launch_vars_replace`.
+  `bot_ids` is likewise optional —
+  a launch-vars-only patch need not echo the bot set (an *empty* `bot_ids`
+  stays the 400 it always was: removing the last bot is the DELETE).
+- **A non-nil map is the exact desired set.** An *empty* map clears every pin
+  (nobody writes `{}` meaning "change one key"). A non-empty map that would
+  **drop keys the repo pins today is refused** — 400, naming each key to echo
+  and the escape hatch: re-send with them, or with `"launch_vars_replace":
+  true` for a genuine whole-map replacement. A partial write never applies
+  silently.
+- **Both stores move, enforcement first.** The settings live twice — the
+  integration *reports* them, the webhook config *enforces* them. The config
+  is written first so a mid-write failure never leaves the report certifying
+  settings that are not in force; the operator-settings write also reads both
+  stores back, and any divergence — there or on the full rebuild path —
+  fails loudly (`ErrProvisionDiverged`) and converges on re-run.
+
+The PATCH is **not** a migration. Runs already launched keep the context they
+were launched with (the reconciler and the relaunch lane read it from the
+run's own inputs, by design — a relaunch is crash-recovery of a launch already
+decided), and nothing retroactively creates the new context on open PRs or
+closes an orphaned `pending` on the old one. So:
+
+1. **Inventory first.** Open PRs and their head SHAs, and the runs in flight
+   or queued against them.
+2. **Let in-flight runs finish, or cancel them.** A finished run posts its
+   verdict on the old context; a cancelled one gets the reconciler's synthetic
+   failure there. Either way the old context is *answered*, not orphaned.
+3. **PATCH with the full echo** (the refusal names what to echo if you miss
+   one).
+4. **Re-launch the reviews explicitly** — push, or comment the bot's command —
+   so every open PR gets a verdict under the *new* context. Only then require
+   the new context in the ruleset (and drop the old one).
+
+A `pending` that outlives its run's publish grant on the old context is
+cosmetic once the new context is the required one: GitHub keeps statuses
+forever, and any later status post under the same context overwrites it.
+
 ### Two bots on the SAME pull request
 
 Revi and Vetty share the context by owning **disjoint PRs** (`author_scope:
@@ -841,6 +889,27 @@ that from doing harm of its own:
   not share and a restart would lose. A provider iterion cannot read statuses
   back from is left alone: overwriting a real success with a synthetic failure
   is worse than the problem being fixed.
+- **And the write is ORDERED, not just read-checked.** A read-then-write is
+  not atomic: between the reconciler's read of a dead run's `pending` and its
+  synthetic `failure`, a fresh run's verdict can land (#1590). Every writer of
+  a gate verdict — the publish endpoint, a deferred-verdict replay, an
+  operator's `/revi approve`, and this synthetic failure — therefore claims
+  the check in a shared verdict-order store first (Valkey across replicas,
+  in-memory single-process), one mark per (forge, repo, sha, context) naming
+  the newest *decision*. The reconciler's decision is anchored at the run's
+  **terminal instant** (`finished_at`, never the bookkeeping `updated_at`),
+  so a verdict decided after the run died always supersedes it whichever side
+  writes first, and a post that lands under a newer decision puts that verdict
+  back on top (`reassertNewerVerdict` — which never re-posts a *synthetic*
+  status over a real verdict that just landed: the marker is re-derivable on
+  a later pass, a displaced verdict is not). Without Valkey the authority is
+  per-replica — the server says so once at boot. Two stated edges, by design:
+  a real verdict *decided before* the death but posted inside the
+  read-then-write window is lawfully overwritten by the synthetic failure
+  (decision-time ordering is the only ordering a restart survives); and the
+  launch's `pending` claim (`markGateInFlight`) is itself an unguarded
+  read-then-write — self-healing, since the verdict that follows it always
+  claims the authority and lands on top.
 - **It acts only where the operator pinned the gate context.** Holding a
   publish grant is not owing a verdict: the server mints one for ANY bot
   launched with a `pr_url` — the brancher, the docs amender, the implementer —
@@ -889,6 +958,18 @@ that from doing harm of its own:
     the cap being structurally short for that diff). Measured on
     iterion#780: three deaths at 30–36 $ against a 12 $ cap on a seven-file
     pull request, each one telling the developer to reproduce it.
+  - a run whose verdict was **REFUSED for its pin** (#1586: the audited SHA
+    was stale, or unreadable, when the publish arrived) did not die either —
+    and the refusal itself wrote *nothing*, so on a repo that requires the
+    check the PR had no path to merge at all (#1632). The endpoint records the
+    refusal on the run's grant, and the reconciler answers the head with the
+    refusal's own diagnosis — *"review refused to certify (it audited X but
+    the head moved to Y) — push again or comment the bot's command to
+    re-review"*. When the head moved, the **current** head is the one
+    answered: a real verdict or another run's in-flight claim there still
+    stands the repair down (a fresher review owns it), and no relaunch is
+    attempted — it would replay the run's inputs, stale head included, and
+    audit the same superseded revision again at full price.
 
 A paused run is not reconciled: it is expected to resume and post its own
 verdict.
@@ -1014,13 +1095,31 @@ Reading it in production: the replica holding a term logs `merge-gate sweeper:
 the `merge-gate-sweeper` document of the Mongo `leases` collection (`owner`,
 `expires_at`). Every replica logs one line per hour in which it sent forge
 requests — `forge HTTP: N requests in the hour ending 2026-09-30T15:00Z —
-<host> <rest|graphql> <lane>=<n>, …` — when its next request arrives, and
-flushes the hour it was counting when it stops; a partial hour carries `(counted
-from …)` or `(until …, stopping)`. The `merge-gate-sweeper` lane is what the
-sweep spent that hour. The count is of attempts as the forge client sends them
-— each redirect hop, each answer whatever its status, a rate-limited 403
+<host> <rest|graphql> [installation <id>] <lane>=<n>, …` — when its next
+request arrives, and flushes the hour it was counting when it stops; a partial
+hour carries `(counted from …)` or `(until …, stopping)`. The `merge-gate-sweeper`
+lane is what the sweep spent that hour; `installation <id>` names the GitHub App
+installation whose token sent the request, and an entry without it was sent with
+another credential (a PAT, a user token, the App's own JWT for a token mint, a
+bot's `forge_token` binding). The count is of attempts as the forge client sends
+them — each redirect hop, each answer whatever its status, a rate-limited 403
 included — so it is close to the budget spent, not identical: a token mint is
 counted and spends no REST budget.
+
+The same hour's budget level follows on a line of its own, `forge budget:
+lowest remaining in the hour ending 2026-09-30T15:00Z — <host>
+<rest|graphql>[/<resource>] installation <id>: <remaining> of <limit> at <seen>
+(resets <reset>), …`: for each installation, API and named resource, the
+lowest `X-RateLimit-Remaining` any answer to that installation's token
+reported in the hour — GitHub sends it on every answer, 2xx included — when it
+was seen, and when that window resets. The `/resource` suffix appears only
+when an answer draws on a budget beyond the API's default one — GitHub's
+`search` budget behind a REST path — so it never names a separate budget what
+today's calls share. It shows an
+installation approaching exhaustion before the first rate-limited 403, not after.
+Every lane spends the installation's one budget, so the line has no lane; an
+answer to any other credential reports a budget the line cannot name and is left
+out.
 
 The sweep's cadence — interval, lookback, deep-pass frequency — is the
 operator's to set without a release (`ITERION_GATE_SWEEP_*`,
@@ -1276,3 +1375,37 @@ marker, so both are repairable and both are ignored by the lane below.
 The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
 failures: `review died` means there are no findings to fix, so the recovery is
 re-running the REVIEWER (this lane), never launching the fixer.
+
+## <a name="gating-bots"></a>Gating bots — a verdict that acts
+
+The doctrine line: a review advises, a human merges. [ADR-124](adr/124-gating-bot-merge-gestures.md)
+amends it narrowly for gitops repositories, where the reviewer executes a POLICY rather
+than advising a taste call: a **gating bot** may approve the merge request, arm
+merge-when-pipeline-succeeds, and request reviewers — under six conditions, all
+enforced by the engine, none by the bot's good manners:
+
+1. The verdict is a deterministic fold over a closed vocabulary (the LLM classifies; a
+   compute node decides; unknown, doubt and unreadable all fold to escalate).
+2. The gestures cross the publish endpoint's `verdict` block — no forge credential in the
+   run workspace, no provider API spoken from a bundle (the vetty `arm_automerge` pattern
+   is the legacy this retires).
+3. Every mutation is pinned to `verdict.audited_sha`; a moved head is a refusal, never a
+   retarget.
+4. The gate status is the anchor: gestures execute only after the check posted on the
+   same head, under the same decision.
+5. Capability is minted from the manifest (`forge.token_scopes: approvals / merge /
+   reviewers` at write) into the run's publish grant — and stripped wholesale by the
+   operator pin `forge_publish_mutations` set to anything but `true` (the per-repo
+   disarm; no release, no bot redeploy).
+6. The bundle ships in `mode: dry_run` (comment + gate, zero verbs); `enforce` is an
+   operator launch-vars pin, flipped after calibration, reversible the same way.
+
+What the engine refuses, always: verdict gestures without an enabled gate (the check is
+the audit and ordering anchor), gestures on a superseded or refused gate, gestures whose
+approval was requested and failed (never arm on an unconfirmed approval), and an arming
+without a sha (an unpinned arming is refused by contract in the forge layer itself).
+
+The forge gestures are optional capabilities (`forge.MergeApprover`, `forge.AutoMergeArmer`,
+`forge.PullReviewerSetter`, `forge.MergeabilityReader`) — a provider that lacks one
+answers "implements no X capability" in the verdict result, which the bot's publish-health
+check surfaces as loudly as a gate that did not post.

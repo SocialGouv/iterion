@@ -45,12 +45,13 @@ type ProvisionApproval struct {
 	// The optional per-repo settings of the original request, replayed
 	// verbatim on approval (forgeEnableReq semantics: nil leaves stored
 	// values untouched).
-	ScheduleCrons  map[string]string `bson:"schedule_crons,omitempty" json:"schedule_crons,omitempty"`
-	LaunchVars     map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
-	Overlap        string            `bson:"overlap,omitempty" json:"overlap,omitempty"`
-	AutoFix        *bool             `bson:"auto_fix,omitempty" json:"auto_fix,omitempty"`
-	HoldLabels     []string          `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
-	LabelAllowlist []string          `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+	ScheduleCrons     map[string]string `bson:"schedule_crons,omitempty" json:"schedule_crons,omitempty"`
+	LaunchVars        map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
+	LaunchVarsReplace bool              `bson:"launch_vars_replace,omitempty" json:"launch_vars_replace,omitempty"`
+	Overlap           string            `bson:"overlap,omitempty" json:"overlap,omitempty"`
+	AutoFix           *bool             `bson:"auto_fix,omitempty" json:"auto_fix,omitempty"`
+	HoldLabels        []string          `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
+	LabelAllowlist    []string          `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
 
 	RequestedBy string    `bson:"requested_by" json:"requested_by"`
 	CreatedAt   time.Time `bson:"created_at" json:"created_at"`

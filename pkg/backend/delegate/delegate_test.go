@@ -333,6 +333,15 @@ func TestCodexTerminalFailure(t *testing.T) {
 	failedTests := "Failed tests: TestWidget and TestParser"
 	errorDiscussion := "Error: network error handling is documented in recovery.go"
 	quotaDiscussion := "Quota exceeded handling is documented in the operator guide."
+	// #2142 collision class, Rust-shaped: a DETERMINISTIC panic quoting a
+	// session-rollout record whose text carries a prose signature. Codex is
+	// a Rust binary (no JS stack dumps), but its stderr is still free-form
+	// text that can quote arbitrary content — only transport-level lines
+	// may count as network evidence.
+	corruptRollout := "thread 'main' panicked at core/src/rollout.rs:91:33:\n" +
+		"corrupt rollout record: {\"display\":\"discussed the network error handling in recovery.go\"}\n" +
+		"note: run with `RUST_BACKTRACE=1` for a backtrace"
+	resetByPeer := "error: connection reset by peer"
 	tests := []struct {
 		name          string
 		rm            *codexsdk.ResultMessage
@@ -342,6 +351,8 @@ func TestCodexTerminalFailure(t *testing.T) {
 		wantRateLimit bool
 	}{
 		{"empty result with disconnected stderr", &codexsdk.ResultMessage{Result: &empty}, "stream disconnected", true, true, false},
+		{"empty result with transport errno on stderr", &codexsdk.ResultMessage{Result: &empty}, resetByPeer, true, true, false},
+		{"crash dump quoting prose signature is deterministic", &codexsdk.ResultMessage{Result: &empty}, corruptRollout, false, false, false},
 		{"network error text cannot satisfy string schema", &codexsdk.ResultMessage{Result: &errText}, "", true, true, false},
 		{"auth error fails without formatting", &codexsdk.ResultMessage{Result: &authText}, "", true, false, false},
 		{"rate limit is typed", &codexsdk.ResultMessage{Result: &rateText}, "", true, false, true},

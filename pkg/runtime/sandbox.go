@@ -35,6 +35,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -55,6 +56,7 @@ type activeSandbox struct {
 	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
 	attachmentsDir  string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
 	sharedStateDir  string       // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
+	scratchHostDir  string       // host dir bind-mounted onto ${PROJECT_SCRATCH_DIR}; empty when the scratch is container-local and dies with the sandbox — then banked at teardown (ADR-106)
 	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
 	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
 	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
@@ -321,6 +323,69 @@ func workflowMaxDurationSeconds(wf *ir.Workflow) int64 {
 	return int64(d.Seconds())
 }
 
+// mergeEnvironmentOverlay applies the operator's environment delta
+// (ONLY the keys the launch environment changed or added relative to
+// the engine's own environment — equal values are not carried) to the
+// resolved spec. A key the WORKFLOW authored wins — the DSL is the
+// operator's reviewed channel. A key the target repository's
+// devcontainer contributed does not: a planted value does not speak
+// for the operator (the authority rule internal/envtrust documents for
+// a project `.env`, applied to the delta the overlay carries), so
+// repoEnv-named keys are overwritten like unfilled slots. With a nil
+// repoEnv — every spec that did not come from a found devcontainer —
+// this is the plain fill-the-gaps overlay it has always been.
+func mergeEnvironmentOverlay(spec *sandbox.Spec, overlay map[string]string, repoEnv map[string]bool) {
+	if spec == nil || len(overlay) == 0 {
+		return
+	}
+	if spec.Env == nil {
+		spec.Env = make(map[string]string, len(overlay))
+	}
+	for key, value := range overlay {
+		if _, wfAuthored := spec.Env[key]; wfAuthored && !repoEnv[key] {
+			continue
+		}
+		spec.Env[key] = value
+	}
+}
+
+// emitRepoTrustEvents announces what the target repository tried to
+// put in the run: the env keys the deny class removed, and the
+// iterion-default base the runtime chose when the workflow's network
+// stance named no preset of its own. Called after driver selection
+// succeeded — a run that degrades to the host must not claim either;
+// the events describe the resolved spec, not a started container.
+func emitRepoTrustEvents(
+	emit func(store.EventType, map[string]any) error,
+	logger *iterlog.Logger,
+	res resolvedSpec,
+	source, runID string,
+) {
+	if len(res.deniedEnv) > 0 {
+		_ = emit(store.EventSandboxEnvDenied, map[string]any{
+			"keys":   res.deniedEnv,
+			"source": source,
+			"run_id": runID,
+		})
+		if logger != nil {
+			logger.Warn("runtime: sandbox env denied from %s (run %s): %s — the devcontainer is the repository's file, not the operator's",
+				source, runID, strings.Join(res.deniedEnv, ", "))
+		}
+	}
+	if res.repoNetworkDefaulted {
+		_ = emit(store.EventSandboxNetworkDefaulted, map[string]any{
+			"mode":   string(sandbox.NetworkModeAllowlist),
+			"preset": netproxy.PresetIterionDefault,
+			"source": source,
+			"run_id": runID,
+		})
+		if logger != nil {
+			logger.Info("runtime: repo-defined sandbox starts on the %s allowlist default (run %s) — declare a network: block to choose otherwise",
+				netproxy.PresetIterionDefault, runID)
+		}
+	}
+}
+
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
 // active sandbox spec, or (nil, nil) when no sandbox is requested.
 //
@@ -360,10 +425,11 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return err
 	}
 	defaultImage, defaultImageFallback := resolveDefaultSandboxImageWithFallback(p.DefaultImage)
-	spec, source, skipReason, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
+	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
 	if err != nil {
 		return nil, err
 	}
+	spec, source, skipReason := res.spec, res.source, res.skipReason
 	if spec == nil || !spec.Mode.IsActive() {
 		// Explicit opt-out (Mode=none / override none), or the built-in
 		// default degraded because the host can't sandbox — the latter
@@ -378,16 +444,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return nil, nil
 	}
-	if len(p.Environment) > 0 {
-		if spec.Env == nil {
-			spec.Env = make(map[string]string, len(p.Environment))
-		}
-		for key, value := range p.Environment {
-			if _, authored := spec.Env[key]; !authored {
-				spec.Env[key] = value
-			}
-		}
-	}
+	// The operator's env overlay never loses to the target repo's
+	// devcontainer: repo-contributed keys (repoEnv) are exactly the
+	// ones that may be overwritten, workflow-authored keys stay.
+	mergeEnvironmentOverlay(spec, p.Environment, res.repoEnv)
 
 	// Select the driver up front: its capabilities decide which
 	// host-convenience mounts are even possible. selectSandboxDriver keys
@@ -443,6 +503,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return nil, err
 	}
+	// A sandbox that will actually start announces what the repository
+	// tried to put in it — after selection, so a run that degrades to
+	// the host never claims an allowlist it never had.
+	emitRepoTrustEvents(emitEvent, logger, res, source, p.RunID)
 	caps := driver.Capabilities()
 
 	// Configure all mounts BEFORE the driver prepares resources. Each
@@ -493,7 +557,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// work to each other through it. AFTER applyHostStateMounts because it
 	// is the call that resolves spec.HostState, and `host_state: none` must
 	// suppress this bind like every other ~/.iterion one.
-	applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, caps.SupportsHostBindMounts, emitEvent, logger)
+	scratchHostDir := applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, caps.SupportsHostBindMounts, emitEvent, logger)
 	if !caps.SupportsHostBindMounts {
 		// Same rule as attachmentsDir below: a path that was never bind-mounted
 		// names a host location the container cannot read, and a backend that
@@ -586,10 +650,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// not after start — a change to the secret-file path, not to this line.
 	exportForfaitConfigDirs(spec, p.Logger, claudeOAuthMounted, codexOAuthMounted)
 
-	// Optionally start the network proxy. When the workflow has no
-	// explicit network policy, default to the iterion-default
-	// allowlist preset so users get sensible defaults out of the box —
-	// this is the security-first posture the design plan §5 calls for.
+	// Optionally start the network proxy — the spec's resolved policy
+	// decides: open starts nothing, allowlist/denylist enforce through
+	// the host-side CONNECT proxy. A repo-defined sandbox whose
+	// workflow named no network base of its own was already completed
+	// to the iterion-default allowlist at resolution time
+	// (fuseDevcontainerSpec).
 	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
@@ -646,6 +712,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		workspaceFolder: spec.WorkspaceFolder,
 		attachmentsDir:  attachmentsDir,
 		sharedStateDir:  sharedStateDir,
+		scratchHostDir:  scratchHostDir,
 	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
@@ -954,8 +1021,11 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 //	    preset: iterion-default   # or a custom rule list
 //
 // The iterion-default preset is still shipped — it's the recommended
-// starting point for the allowlist mode — but is no longer applied
-// implicitly. ModeAllowlist with an empty rule list is unchanged: it
+// starting point for the allowlist mode. This function itself applies
+// nothing implicitly (a nil Network is open); the one implicit
+// application happens up-stream, when fuseDevcontainerSpec completes
+// a repo-defined sandbox whose workflow named no network base of its
+// own. ModeAllowlist with an empty rule list is unchanged: it
 // blocks everything, surfacing as `network_blocked` events.
 func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 	mode := netproxy.ModeOpen
@@ -1005,19 +1075,46 @@ func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, string, error) {
-	return resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+	if err != nil {
+		return nil, res.source, res.skipReason, err
+	}
+	return res.spec, res.source, res.skipReason, nil
+}
+
+// resolvedSpec is what the sandbox resolution chain hands the run:
+// the spec, where it came from, and the trust metadata the start path
+// needs — which env keys the target repository contributed (the only
+// untrusted source the spec merges) and which keys the repo-env
+// denylist removed (#2303).
+type resolvedSpec struct {
+	spec       *sandbox.Spec
+	source     string
+	skipReason string
+	// repoEnv names the spec.Env keys taken from the target repo's
+	// devcontainer.json. They must not shadow the operator's own env
+	// overlay: a planted value does not speak for the operator.
+	repoEnv map[string]bool
+	// deniedEnv lists the repo env keys removed by the deny class,
+	// sorted; nil when the spec came from any other source.
+	deniedEnv []string
+	// repoNetworkDefaulted records that the iterion-default base in
+	// the resolved network policy was chosen by the runtime, not the
+	// workflow — the workflow declared no network: block, an empty
+	// one, or rules without a preset, on a repo-defined sandbox.
+	repoNetworkDefaulted bool
 }
 
 // resolveSandboxSpecWithFallback carries the registry fallback for a
 // version-pinned built-in image (see resolveDefaultSandboxImageWithFallback)
-// down to the spec the driver receives.
+// down to the spec the driver receives, plus the trust metadata.
 func resolveSandboxSpecWithFallback(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage, defaultImageFallback string,
-) (*sandbox.Spec, string, string, error) {
+) (resolvedSpec, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
-		return nil, source, "", nil
+		return resolvedSpec{source: source}, nil
 	}
 
 	switch mode {
@@ -1029,10 +1126,10 @@ func resolveSandboxSpecWithFallback(
 			// driver: run, and say so — the reason travels as skipReason
 			// and the caller turns it into the sandbox_skipped event.
 			// An embedder's path in practice: `iterion run`, studio and
-			// the runner all resolve a repo root first (engineRepoRoot
+			// the runner all resolve a repo root first (EngineRepoRoot
 			// falls back to the working directory), so a run reaches
 			// this only through a library caller that passes none.
-			return nil, source, "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)", nil
+			return resolvedSpec{source: source, skipReason: "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)"}, nil
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -1050,13 +1147,13 @@ func resolveSandboxSpecWithFallback(
 					spec.Image = defaultImage
 					spec.ImageFallback = defaultImageFallback
 					expandSandboxSpec(&spec, repoRoot)
-					return &spec, source + " (default image: " + defaultImage + ")", "", nil
+					return resolvedSpec{spec: &spec, source: source + " (default image: " + defaultImage + ")"}, nil
 				}
 				// Reached only by a caller that resolves no default image:
 				// every product entry point routes through
 				// resolveDefaultSandboxImage*, which always returns one, so
 				// this guards embedders rather than runs.
-				return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
+				return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
 			}
 			// A devcontainer the sandbox cannot use (parse error,
 			// refused runArgs like --privileged, …) must not disable
@@ -1075,12 +1172,11 @@ func resolveSandboxSpecWithFallback(
 				spec.Image = defaultImage
 				spec.ImageFallback = defaultImageFallback
 				expandSandboxSpec(&spec, repoRoot)
-				return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
+				return resolvedSpec{spec: &spec, source: source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage)}, nil
 			}
-			return nil, source, fmt.Sprintf("devcontainer.json unreadable: %v", err), nil
+			return resolvedSpec{source: source, skipReason: fmt.Sprintf("devcontainer.json unreadable: %v", err)}, nil
 		}
-		spec := devcontainer.ToSandboxSpec(dc)
-		return &spec, source + " (" + path + ")", "", nil
+		return fuseDevcontainerSpec(wf, dc, source+" ("+path+")", repoRoot)
 
 	case string(sandbox.ModeInline):
 		// Inline mode requires the workflow's DSL to carry the spec
@@ -1089,7 +1185,7 @@ func resolveSandboxSpecWithFallback(
 		// parser lands. The IR field still goes through unchanged so
 		// future block-form parsing wires up automatically.
 		if wf == nil || wf.Sandbox == nil {
-			return nil, source, "", fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
+			return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
 		}
 		spec := fromIRSpec(wf.Sandbox)
 		// Expand devcontainer-style host-side variables in the inline
@@ -1099,10 +1195,116 @@ func resolveSandboxSpecWithFallback(
 		// expansion docker run rejects the literal `${localEnv:HOME}`
 		// string with "mount path must be absolute".
 		expandSandboxSpec(&spec, repoRoot)
-		return &spec, source, "", nil
+		return resolvedSpec{spec: &spec, source: source}, nil
 	}
 
-	return nil, source, "", fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
+	return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
+}
+
+// fuseDevcontainerSpec builds the spec for a run whose devcontainer
+// was found: the workflow's own sandbox block (the operator's
+// reviewed channel) carries over exactly as it does on the
+// default-image branches beside it, and the devcontainer — the
+// repository's file, not the operator's (#2303) — fills what the
+// workflow did not author. Field by field:
+//
+//   - Env: workflow keys win per key; repo keys fill the rest, minus
+//     the deny class [devcontainer.DeniedEnvKey] removes outright.
+//     The repo-contributed names travel back in resolvedSpec.repoEnv
+//     so the operator's env overlay can still overwrite them.
+//   - Network: the workflow's block is kept verbatim. When the
+//     workflow declares none, the allowlist default applies — open
+//     egress on a repo-defined sandbox is the repository's choice,
+//     not the operator's — and resolvedSpec.repoNetworkDefaulted
+//     records it for the start event. A mode-less block with content
+//     is completed to allowlist; rules without a preset also gain the
+//     iterion-default base, since a rules-only allowlist would leave
+//     out every LLM endpoint and kill the run on its first model
+//     call — that base is the runtime's choice and the event says so.
+//   - Image/Build are the devcontainer's whenever it declares them —
+//     a found devcontainer always declares one (Parse refuses
+//     neither-only), and "run the repo's dev environment" is auto
+//     mode's contract. Mounts, User, PostCreate and WorkspaceFolder
+//     follow the same devcontainer-wins rule, but a devcontainer
+//     that stays silent on those keeps the workflow's value.
+func fuseDevcontainerSpec(wf *ir.Workflow, dc *devcontainer.File, source, repoRoot string) (resolvedSpec, error) {
+	dcSpec, deniedEnv := devcontainer.ToSandboxSpec(dc)
+	res := resolvedSpec{
+		source:    source,
+		repoEnv:   make(map[string]bool, len(dcSpec.Env)),
+		deniedEnv: deniedEnv,
+	}
+
+	var spec sandbox.Spec
+	if wf != nil && wf.Sandbox != nil {
+		spec = fromIRSpec(wf.Sandbox)
+	}
+	spec.Mode = sandbox.ModeAuto
+
+	if dcSpec.Image != "" || dcSpec.Build != nil {
+		spec.Image = dcSpec.Image
+		spec.Build = dcSpec.Build
+	}
+	if len(dcSpec.Mounts) > 0 {
+		spec.Mounts = dcSpec.Mounts
+	}
+	if dcSpec.User != "" {
+		spec.User = dcSpec.User
+	}
+	if dcSpec.PostCreate != "" {
+		spec.PostCreate = dcSpec.PostCreate
+	}
+	if dcSpec.WorkspaceFolder != "" {
+		spec.WorkspaceFolder = dcSpec.WorkspaceFolder
+	}
+
+	if len(dcSpec.Env) > 0 {
+		if spec.Env == nil {
+			spec.Env = make(map[string]string, len(dcSpec.Env))
+		}
+		for key, value := range dcSpec.Env {
+			if _, wfAuthored := spec.Env[key]; wfAuthored {
+				continue
+			}
+			spec.Env[key] = value
+			res.repoEnv[key] = true
+		}
+	}
+
+	// Host-side ${localEnv:...} expansion for the workflow-sourced
+	// fields; the devcontainer's own values were already expanded by
+	// ExpandLocalVarsInFile, so re-expanding them is a no-op.
+	expandSandboxSpec(&spec, repoRoot)
+
+	// A network: block the workflow wrote but left mode-less resolves
+	// to open at the policy layer — inert as written (C312 warns at
+	// compile). On a repo-defined sandbox the content the author did
+	// write (a preset, rules) is allowlist-shaped, so the safe reading
+	// completes the mode instead of dropping the block. When the
+	// preset the block names resolves to nothing (an unknown name, or
+	// none), the completed allowlist would be exactly the author's
+	// rules — every LLM endpoint absent, the run dead on its first
+	// model call, silently — so the iterion-default base joins them;
+	// repoNetworkDefaulted records that the runtime chose the base.
+	// An empty or absent block gets the default below.
+	if spec.Network != nil && spec.Network.Mode == "" &&
+		(spec.Network.Preset != "" || len(spec.Network.Rules) > 0) {
+		spec.Network.Mode = sandbox.NetworkModeAllowlist
+		if _, known := netproxy.PresetRules(spec.Network.Preset); !known {
+			spec.Network.Preset = netproxy.PresetIterionDefault
+			res.repoNetworkDefaulted = true
+		}
+	}
+	if spec.Network == nil || spec.Network.Mode == "" {
+		spec.Network = &sandbox.Network{
+			Mode:   sandbox.NetworkModeAllowlist,
+			Preset: netproxy.PresetIterionDefault,
+		}
+		res.repoNetworkDefaulted = true
+	}
+
+	res.spec = &spec
+	return res, nil
 }
 
 // ResolveSandboxSpecForDoctor produces the effective sandbox spec a run
@@ -1245,9 +1447,53 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 // never wf.Sandbox directly: under ITERION_SANDBOX_OVERRIDE=none a
 // workflow's static sandbox block is present but neutralized, and the
 // run executes directly in the pod.
+//
+// This is the MODE-only half of the answer. A caller that acts on "will
+// this run execute inside a container" — delivering file secrets to the
+// pod, refusing a codex fallback — needs [RunWillBeSandboxed] instead:
+// an active mode on a host with no container runtime degrades to an
+// unsandboxed run at engine start, and this predicate still answers
+// true for it (#1564).
 func WorkflowSandboxActive(wf *ir.Workflow, cliOverride, globalDefault string) bool {
 	mode, _ := pickMode(wf, cliOverride, globalDefault)
 	return sandbox.Mode(mode).IsActive()
+}
+
+// RunWillBeSandboxed reports whether a run of wf under the given tiers
+// will EXECUTE inside a real sandbox container — not merely whether its
+// mode resolves active. It asks [WorkflowSandboxActive]'s question and
+// then the one the mode alone cannot answer: can this host select a
+// driver for the resolved spec? The chain is the one
+// resolveAndStartSandbox will walk at run start (spec resolution, then
+// driver selection — see sandboxDriverForRun), so a `sandbox: auto` run
+// on a host with no container runtime answers false here exactly where
+// the engine degrades to an unsandboxed run with a sandbox_skipped
+// event.
+//
+// false means "no container will host this run's nodes" — covering three
+// outcomes a consumer must not tell apart: no active sandbox requested,
+// the degraded-auto case above, and a resolution/selection error the
+// engine itself would hard-fail on (an explicit inline sandbox with no
+// driver refuses to start; it never executes unsandboxed either). The
+// noop driver also reads as false — "opted into a sandbox that isn't
+// one": no container starts, and the twin guard in the codex delegate
+// keys on Driver() != "noop" the same way.
+//
+// repoRoot is the run's repository root as the engine resolves it —
+// callers pass EngineRepoRoot(workDir) so the mode=auto devcontainer
+// lookup reads the same directory the engine's will. drivers is the
+// WithSandboxDrivers seam: nil selects from the shipped registry, which
+// is what every production engine does. The default-image FLAG value is
+// deliberately not an input: any non-empty default image yields an
+// active spec for mode=auto and the built-in is always non-empty, so
+// the flag can change WHICH image a sandbox would run, never WHETHER
+// the spec is active.
+func RunWillBeSandboxed(wf *ir.Workflow, cliOverride, globalDefault, repoRoot string, drivers map[string]sandbox.DriverConstructor) bool {
+	driver, err := sandboxDriverForRun(wf, repoRoot, cliOverride, globalDefault, resolveDefaultSandboxImage(""), drivers)
+	if err != nil || driver == nil {
+		return false
+	}
+	return driver.Name() != "noop"
 }
 
 // workflowHostState returns the workflow-scope host_state declaration
@@ -1655,7 +1901,7 @@ func locateHostIterionBinaryCandidate() string {
 	return ""
 }
 
-// engineRepoRoot returns the path the engine should treat as the
+// EngineRepoRoot returns the path the engine should treat as the
 // source-of-truth repository root for this run — the operator's main
 // checkout, NOT the per-run worktree.
 //
@@ -1674,7 +1920,12 @@ func locateHostIterionBinaryCandidate() string {
 //  2. The absolute path of workDir (legacy behaviour for non-git
 //     workspaces).
 //  3. `os.Getwd()` when workDir itself is empty.
-func engineRepoRoot(workDir string) string {
+//
+// Exported so the launch surfaces that must PREDICT the engine's
+// sandbox decision (the cloud runner's file-secret gate, runview's
+// fallback screen) resolve the repo root through the same chain the
+// engine will, instead of growing a second reading of it.
+func EngineRepoRoot(workDir string) string {
 	if workDir == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			return cwd
@@ -1742,7 +1993,7 @@ type askUserMCPSetter interface {
 //
 // repoRoot is the absolute path of the git repo backing the run's
 // workspace (used by sandbox driver to mount .git on worktree-active
-// runs). Pass engineRepoRoot(e.workDir) on resume when no
+// runs). Pass EngineRepoRoot(e.workDir) on resume when no
 // worktreeContext is available.
 //
 // worktreeGitDir, when non-empty, is the absolute host path of the
@@ -1756,6 +2007,9 @@ type askUserMCPSetter interface {
 // The caller is responsible for failing the run; the returned cleanup
 // is a noop in that case but safe to defer.
 func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string, worktreeGitDir string, inputs map[string]any) (func(), error) {
+	// A hold on the scratch bank protects the sandbox a failed restore
+	// started (restoreBankedScratch); a new sandbox starts without one.
+	e.scratchBankHeld = false
 	noopCleanup := func() {}
 	emitForSandbox := func(t store.EventType, data map[string]any) error {
 		return e.emit(ctx, runID, t, "", data)
@@ -1871,6 +2125,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		e.activeShare = &SharedSandbox{
 			Run: active.run, WorkspaceFolder: active.workspaceFolder, SharedStateDir: active.sharedStateDir,
 			BoardEndpoint: active.boardEndpoint, AskUserEndpoint: active.askUserEndpoint, AskUserToken: active.askUserToken,
+			ScratchContainerLocal: active.scratchHostDir == "",
 		}
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
@@ -1920,6 +2175,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active.run != nil {
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
+			e.bankScratchOnCleanup(ctx, runID, active)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), sandboxShutdownTimeout)
 		defer cancel()
@@ -1941,10 +2197,14 @@ const sandboxHeadCaptureTimeout = 30 * time.Second
 const sandboxShutdownTimeout = 30 * time.Second
 
 // SandboxTeardownBudget bounds what the engine still does in a sandbox once
-// its run was cancelled, before it returns: the workspace HEAD capture, the
-// export, the shutdown. The runner holds the run's lease that long past the
-// cancellation, no longer.
-const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxShutdownTimeout
+// its run was cancelled or parked, before it returns: the workspace HEAD
+// capture, the export, the scratch's bank (its archive and upload, its
+// record, the resume of the processes its quiesce stopped — each on a budget
+// of its own), the shutdown. The runner's lease covers that teardown, then
+// its own post-engine steps (runner.LeaseUnwindCeiling).
+const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout +
+	scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget +
+	sandboxShutdownTimeout
 
 // WorkspaceIntegrity is the sandbox-side git truth captured at teardown
 // for export-based drivers (kubernetes), BEFORE ExportWorkspace streams
@@ -2053,9 +2313,9 @@ func sharedSandboxIsCopyBased(run sandbox.Run) bool {
 }
 
 // workflowHasPausingNode reports whether the workflow can park the run
-// for an operator: a human node, or an LLM node with a non-none
-// interaction mode. A parked child is resumed OUTSIDE its parent, in an
-// engine with no parent handle to adopt.
+// for an operator: a human node, an LLM node with a non-none interaction
+// mode, or a node whose permission gate asks. A parked child is resumed
+// OUTSIDE its parent, in an engine with no parent handle to adopt.
 func workflowHasPausingNode(wf *ir.Workflow) bool {
 	if wf == nil {
 		return false
@@ -2064,8 +2324,58 @@ func workflowHasPausingNode(wf *ir.Workflow) bool {
 		if _, ok := n.(*ir.HumanNode); ok {
 			return true
 		}
+		// A permission gate that can ask parks its node whatever its
+		// interaction mode. A launch may impose one the IR does not
+		// declare: the child's own resume refuses that case
+		// (refuseResumeOfSharedChild).
+		if nodeGateCanAsk(n, wf) {
+			return true
+		}
 	}
 	return workflowHasInteractiveNode(wf)
+}
+
+// gateAsker is an executor that can tell whether the permission gate it arms
+// for a node can pause the run to ask — from its own resolution, the run's
+// override included, which a launch may impose on a child whose IR declares
+// no gate.
+type gateAsker interface {
+	GateCanAsk(node ir.Node) bool
+}
+
+// childCanPause is workflowHasPausingNode for this engine's child: its
+// declarations, and any gate its executor arms that can ask.
+func (e *Engine) childCanPause() bool {
+	if workflowHasPausingNode(e.workflow) {
+		return true
+	}
+	ga, ok := e.executor.(gateAsker)
+	if !ok || e.workflow == nil {
+		return false
+	}
+	for _, n := range e.workflow.Nodes {
+		if ga.GateCanAsk(n) {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeGateCanAsk reports whether n's permission gate, as declared, can pause
+// its run to ask — the policy's CanAsk: an LLM node whose resolved mode asks,
+// or whose ask rules apply under a gate that is on (an ask rule takes
+// precedence over deny). A tool node's permission is inert (C112), and a
+// mode the gate cannot parse fails the node before it asks anything.
+func nodeGateCanAsk(n ir.Node, wf *ir.Workflow) bool {
+	nn, ok := n.(ir.LLMNode)
+	if !ok {
+		return false
+	}
+	mode, err := permission.ParseMode(ir.EffectivePermission(nn.GetPermission(), wf.Permission))
+	if err != nil || mode == permission.ModeOff {
+		return false
+	}
+	return mode == permission.ModeAsk || len(ir.EffectiveAskRules(nn, wf)) > 0
 }
 
 // shouldAdoptSharedSandbox decides what a child handed its parent's live
@@ -2100,8 +2410,11 @@ func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, m
 		}
 		return false, nil
 	}
-	if copyBased && workflowHasPausingNode(e.workflow) {
-		return false, fmt.Errorf("subbot child with a human gate or an interactive node cannot execute in its parent's copy-based sandbox (%s): a parked child is resumed outside its parent, in a sandbox of its own, and its work diverges from the parent's tree — declare the gate in the parent, or run the parent unsandboxed", shared.Run.Driver())
+	if copyBased && e.childCanPause() {
+		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's copy-based sandbox (%s): a parked child is resumed outside its parent, in a sandbox of its own, and its work diverges from the parent's tree — declare the gate in the parent, or run the parent unsandboxed", shared.Run.Driver())
+	}
+	if shared.ScratchContainerLocal && e.childCanPause() {
+		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's sandbox (%s), whose ${PROJECT_SCRATCH_DIR} lives in the container: a parked child is resumed outside its parent, in a sandbox of its own, without that scratch — declare the gate in the parent, or give the parent a host-backed scratch", shared.Run.Driver())
 	}
 	return true, nil
 }
@@ -2175,19 +2488,20 @@ func sandboxSpecFields(s *ir.SandboxSpec, prefix string) []string {
 	return f
 }
 
-// refuseResumeOfSharedChild refuses to resume, outside its parent, a child
-// run that executed in its parent's COPY-BASED sandbox: a resume here would
-// start a sandbox of its own — a fresh copy of the workspace — and the
-// child's later commits would die with it while the parent's tree stays
-// unchanged. Bind-mount lineages resume freely (host and container share
-// the tree). Nil when this engine holds a parent handle to adopt.
-func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) error {
-	if r == nil || r.ParentRunID == "" || (e.sharedSandbox != nil && e.sharedSandbox.Run != nil) {
-		return nil
-	}
-	evs, err := e.store.LoadEvents(ctx, r.ID)
+// sharedLineage is what a child's last sandbox_shared record says of the
+// parent's sandbox it executed in.
+type sharedLineage struct {
+	copyBased             bool
+	scratchContainerLocal bool
+}
+
+// readSharedLineage reads runID's last sandbox_shared record. A child whose
+// last record adopted nothing, or that has none, executed in a sandbox of
+// its own.
+func readSharedLineage(ctx context.Context, st store.RunStore, runID string) (sharedLineage, error) {
+	evs, err := st.LoadEvents(ctx, runID)
 	if err != nil {
-		return nil
+		return sharedLineage{}, fmt.Errorf("runtime: resume run %q: the record of the sandbox it executed in cannot be read: %w", runID, err)
 	}
 	for i := len(evs) - 1; i >= 0; i-- {
 		ev := evs[i]
@@ -2195,30 +2509,126 @@ func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) er
 			continue
 		}
 		if adopted, ok := ev.Data["adopted"].(bool); ok && !adopted {
-			return nil
+			return sharedLineage{}, nil
 		}
-		if cb, _ := ev.Data["copy_based"].(bool); cb {
-			if e.forceResume {
-				if e.logger != nil {
-					e.logger.Warn("runtime: run %s executed in its parent run %s's copy-based sandbox; resumed with --force it starts a sandbox of its own — a fresh copy of the workspace — and its later commits will not reach the parent's tree", r.ID, r.ParentRunID)
-				}
-				if err := e.emit(ctx, r.ID, store.EventSandboxShared, "", map[string]any{
-					"adopted": false, "forced": true, "parent_run": r.ParentRunID,
-					"reason": "resumed with --force outside the parent: a sandbox of its own, whose later commits do not reach the parent's tree",
-				}); err != nil && e.logger != nil {
-					e.logger.Warn("runtime: emit sandbox_shared: %v", err)
-				}
-				return nil
-			}
-			return &RuntimeError{
-				Code:    ErrCodeResumeInvalid,
-				Message: fmt.Sprintf("run %s executed in its parent run %s's copy-based sandbox; resumed on its own it would start a fresh copy of the workspace and its work would diverge from the parent's tree", r.ID, r.ParentRunID),
-				Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it in a sandbox of its own, where its later commits do not reach the parent's tree",
-			}
+		var l sharedLineage
+		l.copyBased, _ = ev.Data["copy_based"].(bool)
+		l.scratchContainerLocal, _ = ev.Data["scratch_container_local"].(bool)
+		return l, nil
+	}
+	return sharedLineage{}, nil
+}
+
+// refusalFor is the refusal a resume of child r on its own meets for this
+// lineage given the consents it carries, or nil once it has every one it
+// needs. A copy-based sandbox: a resume elsewhere starts a fresh copy of the
+// workspace, and the child's later commits never reach the parent's tree —
+// force accepts that. A scratch that lives in the parent's container: a
+// child parked for any reason — a declared gate is refused at adoption, but a
+// recovery pause, an operator's pause or a cost cap park it all the same —
+// resumes without it, which only the scratch's own consent accepts, never
+// force. A lineage that is both (a kubernetes parent) needs both: the
+// scratch's loss is refused first, naming the divergence. Bind-mount
+// lineages with a host-backed scratch resume freely.
+func (l sharedLineage) refusalFor(r *store.Run, force, accept bool) error {
+	needForce := l.copyBased && !force
+	needScratch := l.scratchContainerLocal && !accept
+	if needScratch {
+		refusal := &RuntimeError{
+			Code:    ErrCodeScratchNotPortable,
+			Message: fmt.Sprintf("run %s executed in its parent run %s's sandbox, whose ${PROJECT_SCRATCH_DIR} lives in the container; resumed on its own it would start without that scratch", r.ID, r.ParentRunID),
+			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child accepting the scratch's loss (--accept-scratch-loss) to run it without the parent's scratch, where what it writes never reaches the parent's",
 		}
-		return nil
+		if needForce {
+			return withForceableChange(refusal, "and its parent's sandbox was copy-based: resumed on its own it would also start a fresh copy of the workspace, whose later commits do not reach the parent's tree", "that divergence needs --force too", true)
+		}
+		if l.copyBased {
+			// --force was given for the divergence, and still needs giving.
+			refusal.Hint += "; keep --force: the copy-based lineage's divergence still needs it"
+		}
+		return refusal
+	}
+	if needForce {
+		refusal := &RuntimeError{
+			Code:    ErrCodeResumeInvalid,
+			Message: fmt.Sprintf("run %s executed in its parent run %s's copy-based sandbox; resumed on its own it would start a fresh copy of the workspace and its work would diverge from the parent's tree", r.ID, r.ParentRunID),
+			Hint:    "cancel this child and resume the parent: it re-runs the subbot fresh in its sandbox; or resume this child with --force to run it in a sandbox of its own, where its later commits do not reach the parent's tree",
+		}
+		if l.scratchContainerLocal {
+			// The scratch's loss was accepted, and still needs accepting.
+			refusal.Hint += "; keep --accept-scratch-loss: the parent's container-local scratch still does not travel"
+		}
+		return refusal
 	}
 	return nil
+}
+
+// ValidateResumeLineage is the engine's refusal of a subbot child resumed on
+// its own, run by the resume surface before anything moves the run: an
+// operator hears it synchronously, and a cloud resume is refused before the
+// publisher flips the run to queued. Waived as the engine waives it
+// (sharedLineage.refusalFor).
+func ValidateResumeLineage(ctx context.Context, st store.RunStore, r *store.Run, force, accept bool) error {
+	if r == nil || r.ParentRunID == "" {
+		return nil
+	}
+	l, err := readSharedLineage(ctx, st, r.ID)
+	if err != nil {
+		return err
+	}
+	return l.refusalFor(r, force, accept)
+}
+
+// refuseResumeOfSharedChild refuses to resume, outside its parent, a child
+// whose lineage does not travel (sharedLineage.refusalFor). Nil when this
+// engine holds a parent handle to adopt. The consents the lineage needs
+// resume it on its own, and the record says which were given.
+func (e *Engine) refuseResumeOfSharedChild(ctx context.Context, r *store.Run) error {
+	if r == nil || r.ParentRunID == "" || (e.sharedSandbox != nil && e.sharedSandbox.Run != nil) {
+		return nil
+	}
+	l, err := readSharedLineage(ctx, e.store, r.ID)
+	if err != nil {
+		return err
+	}
+	if !l.copyBased && !l.scratchContainerLocal {
+		return nil
+	}
+	if refusal := l.refusalFor(r, e.forceResume, e.acceptScratchLoss); refusal != nil {
+		return refusal
+	}
+	forsake := map[string]any{"adopted": false, "parent_run": r.ParentRunID}
+	var starts []string
+	if l.copyBased {
+		forsake["forced"] = true
+		starts = append(starts, "a sandbox of its own — a fresh copy of the workspace — whose later commits do not reach the parent's tree")
+	}
+	if l.scratchContainerLocal {
+		forsake["accepted"] = true
+		starts = append(starts, "no scratch: the parent's lived in its container, and what this child writes there never reaches the parent's")
+	}
+	forsake["reason"] = "resumed outside the parent, with " + strings.Join(starts, "; and ")
+	if e.logger != nil {
+		e.logger.Warn("runtime: run %s executed in its parent run %s's sandbox; resumed on its own it starts with %s", r.ID, r.ParentRunID, strings.Join(starts, "; and "))
+	}
+	// Recorded once the resume runs (recordPendingForsake): a later check
+	// that still refuses this resume must leave the lineage refusing the
+	// child's next one.
+	e.pendingForsake = forsake
+	return nil
+}
+
+// recordPendingForsake writes the lineage forsake a lone resume of a child
+// decided before its claim, now that the resume runs past its checks.
+func (e *Engine) recordPendingForsake(ctx context.Context, runID string) {
+	if e.pendingForsake == nil {
+		return
+	}
+	data := e.pendingForsake
+	e.pendingForsake = nil
+	if err := e.emit(ctx, runID, store.EventSandboxShared, "", data); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+	}
 }
 
 // adoptSharedSandbox settles this run on a PARENT run's live sandbox: the
@@ -2306,14 +2716,28 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	if e.logger != nil {
 		e.logger.Info("runtime: executing in the parent run's sandbox (driver=%s, workspace=%s, copy_based=%v, files written through=%d)", shared.Run.Driver(), shared.WorkspaceFolder, copyBased, pushed)
 	}
-	if err := emitForSandbox(store.EventSandboxShared, map[string]any{
+	record := map[string]any{
 		"adopted": true, "driver": shared.Run.Driver(), "workspace": shared.WorkspaceFolder,
-		"parent_run": e.parentRunID, "copy_based": copyBased, "skills_written_through": pushed,
-		"file_secrets_declared": fileSecrets, "devbox_declared": devboxDeclared,
+		"parent_run": e.parentRunID, "copy_based": copyBased, "scratch_container_local": shared.ScratchContainerLocal,
+		"skills_written_through": pushed,
+		"file_secrets_declared":  fileSecrets, "devbox_declared": devboxDeclared,
 		"board_endpoint_inherited": shared.BoardEndpoint != "", "ask_user_inherited": shared.AskUserEndpoint != "",
 		"attachments_mounted": false,
-	}); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+	}
+	if !copyBased && !shared.ScratchContainerLocal {
+		if err := emitForSandbox(store.EventSandboxShared, record); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: emit sandbox_shared: %v", err)
+		}
+		return devboxCleanup, nil
+	}
+	// A lone resume of this child is refused from this record
+	// (refuseResumeOfSharedChild): written within its budget, or the child
+	// does not run here — a resume could not tell what it would lose.
+	rctx, cancel := context.WithTimeout(ctx, e.recordWriteBudget())
+	defer cancel()
+	if err := e.emitRecord(rctx, runID, store.EventSandboxShared, record); err != nil {
+		devboxCleanup()
+		return func() {}, fmt.Errorf("runtime: run %s cannot execute in its parent's sandbox: the record a resume of it decides from could not be written: %w", runID, err)
 	}
 	return devboxCleanup, nil
 }

@@ -9,6 +9,7 @@ import ServerUnreachable from "@/components/shared/ServerUnreachable";
 // initial download covers only the shell + AuthGate. The eager imports
 // below are the always-needed shell pieces (Login lives off the auth
 // gate; everything else is conditional on a route match).
+import { RequireSuperAdmin } from "@/auth/RequireSuperAdmin";
 const HomeView = lazy(() => import("@/components/Home/HomeView"));
 const WhatsNextView = lazy(() => import("@/components/WhatsNext/WhatsNextView"));
 const EditorTabsView = lazy(() => import("@/components/Editor/EditorTabsView"));
@@ -40,6 +41,10 @@ const PlatformLlmCredsPage = lazy(() => import("@/views/admin/PlatformLlmCredsPa
 const PlatformBotsPage = lazy(() => import("@/views/admin/PlatformBotsPage"));
 const UsageCapsPage = lazy(() => import("@/views/admin/settings/UsageCapsPage"));
 const CredentialSpendPage = lazy(() => import("@/views/admin/spend/CredentialSpendPage"));
+const BotRolesPage = lazy(() => import("@/views/admin/settings/BotRolesPage"));
+const SandboxPage = lazy(() => import("@/views/admin/settings/SandboxPage"));
+const BotVarsPage = lazy(() => import("@/views/admin/settings/BotVarsPage"));
+const PlatformCredentialsSettingsPage = lazy(() => import("@/views/admin/settings/PlatformCredentialsPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -86,17 +91,16 @@ import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { signInURL } from "@/auth/returnTo";
 import { setUnauthorizedHandler } from "@/api/client";
 import { getOrCreateDocumentStore } from "@/store/document";
-import { useTabsStore } from "@/store/tabs";
+import { editorTabOnScreen } from "@/components/Editor/editorOnScreen";
 import { useServerInfoStore } from "@/store/serverInfo";
 
-// activeEditorDocStore looks up the document store for the editor
-// tab currently shown in /editor. Returns null when no editor tab is
-// open so menu undo/redo shortcuts silently no-op rather than
-// mutating a stale global default.
+// activeEditorDocStore looks up the document store of the editor tab on
+// screen. Null when no editor tab is on screen — another page, or the
+// editor's welcome pane: the menu's Undo / Redo then do nothing rather than
+// change a document the author cannot see.
 function activeEditorDocStore() {
-  const { activeEditorTabId } = useTabsStore.getState();
-  if (!activeEditorTabId) return null;
-  return getOrCreateDocumentStore(activeEditorTabId);
+  const tabId = editorTabOnScreen();
+  return tabId ? getOrCreateDocumentStore(tabId) : null;
 }
 
 export default function App() {
@@ -630,15 +634,29 @@ function AuthedApp() {
               <RepoDetailView />
             </ErrorBoundary>
           </Route>
-          <Route path="/admin" component={OrgsAdminPage} />
-          <Route path="/admin/orgs" component={OrgsAdminPage} />
-          <Route path="/admin/users" component={UsersAdminPage} />
-          <Route path="/admin/llm-credentials" component={PlatformLlmCredsPage} />
-          <Route path="/admin/settings/usage-caps" component={UsageCapsPage} />
-            <Route path="/admin/bots" component={PlatformBotsPage} />
-          <Route path="/admin/audit" component={AuditAdminPage} />
-          <Route path="/admin/dlq" component={DLQAdminPage} />
-          <Route path="/admin/spend" component={CredentialSpendPage} />
+          {/* The whole admin console behind one authorization gate
+              (RequireSuperAdmin). `nest` makes the inner paths relative to
+              /admin; each page keeps its own super-admin/cloud check as
+              defense-in-depth. */}
+          <Route path="/admin" nest>
+            <RequireSuperAdmin>
+              <Switch>
+                <Route path="/" component={OrgsAdminPage} />
+                <Route path="/orgs" component={OrgsAdminPage} />
+                <Route path="/users" component={UsersAdminPage} />
+                <Route path="/llm-credentials" component={PlatformLlmCredsPage} />
+                <Route path="/bots" component={PlatformBotsPage} />
+                <Route path="/settings/usage-caps" component={UsageCapsPage} />
+                <Route path="/settings/bot-roles" component={BotRolesPage} />
+                <Route path="/settings/sandbox" component={SandboxPage} />
+                <Route path="/settings/bot-vars" component={BotVarsPage} />
+                <Route path="/settings/platform-credentials" component={PlatformCredentialsSettingsPage} />
+                <Route path="/audit" component={AuditAdminPage} />
+                <Route path="/dlq" component={DLQAdminPage} />
+                <Route path="/spend" component={CredentialSpendPage} />
+              </Switch>
+            </RequireSuperAdmin>
+          </Route>
           {serverInfo?.native_tracker_enabled ? (
             <Route path="/board/labels">
               <ErrorBoundary area="Board labels view">

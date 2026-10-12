@@ -782,6 +782,89 @@ clears it the same way.
   credential fails at its first LLM call with a provider error and nothing
   downstream would say the audience was why.
 
+## A team's LLM fallback policy
+
+The audience gate above decides WHO may draw on the platform tier. The
+per-team policy decides WHETHER the shared tiers are the fallback chain at
+all: `Team.LLMFallback`, written only through the super-admin route
+
+```sh
+iterion remote api PUT /api/admin/teams/<team-id>/llm-fallback \
+  '{"llm_fallback":"none"}'
+```
+
+- `""` or `"platform"` (the default) — the shared tiers (org, pool,
+  platform) stay the fallback chain, exactly as before.
+- `"none"` — the sovereign posture: the launch consults ONLY the team's own
+  credentials (its BYOK keys, its OAuth forfaits); no shared tier ever seals
+  into the team's bundle; and an LLM route nothing of the team's funds
+  REFUSES at launch, naming the providers to provision. One funded provider
+  does not excuse another pinned route — the shared tiers would have been
+  its only other funding, and the policy exists to make that impossible.
+
+Unlike the audience gate, this policy fails CLOSED: the launch reads the
+team FRESH at every resolution, and a store error — or an unknown value —
+refuses naming it. A typo'd boundary field must not silently re-open the
+shared tiers. Env-funded runs (every route on the runner's gateway) and
+unattributable routes answer to no policy; a tool-only run spends nothing.
+
+The setting is a boundary, not a preference: it is audited on every write
+(`team.llm_fallback_set`, tenant trail + org mirror), and survives the other
+team writers because it is a `PatchTeam $set` like the pool mapping. See
+also [sovereign pools](sovereign-pools.md).
+
+Two ordering facts worth naming. **Deploy first, then set**: a publisher
+older than this field ignores the unknown BSON key, so a team set to `none`
+before every publisher is upgraded walks the shared tiers in silence — flip
+the teams after the release lands. And the policy is read FRESH at every
+resolution including resumes: loosening `none` back to `platform` is
+audited, but a resume of a run launched under `none` may then re-seal
+shared credentials into its bundle — by design, and now said out loud.
+
+## The routing block — adaptive routing's platform level
+
+The same record carries the platform level of the adaptive-routing policy
+(ADR-121, `pkg/llmroute`): which `(harness, credential)` pairs a run may
+occupy and in what order, which failure classes may fire a mid-run switch,
+what a launch does with a shared key whose cap refused it, and whether
+backend pins are requirements.
+
+```sh
+iterion remote admin platform-credentials                                   # show (stored + effective)
+iterion remote admin platform-credentials set --routing-pair-order claude_code+claude_forfait,claw+anthropic_key
+iterion remote admin platform-credentials set --routing-triggers usage_window,auth
+iterion remote admin platform-credentials set --routing-refused-pinned-key park    # the pre-policy restore
+iterion remote admin platform-credentials set --routing-strict true
+iterion remote admin platform-credentials set --routing-clear                      # back to the env dials
+```
+
+A `--routing-*` write REPLACES the stored block wholesale (levels are whole
+records, never merges); the server refuses a block the fold cannot read —
+pairs outside the `harness+credential` vocabulary, triggers outside the
+closed set (`usage_window`, `unavailable`, `transient_exhausted`, `auth`;
+`budget`/`schema` are not categories and `any`/`unclassified` are excluded
+by rule), or an explicitly empty list (omit the field to inherit; a level
+that must not switch locks the field instead).
+
+Defaults come from the env dials — `ITERION_PLATFORM_PAIR_ORDER`,
+`ITERION_PLATFORM_TRIGGERS`, `ITERION_PLATFORM_REFUSED_PINNED_KEY`,
+`ITERION_PLATFORM_ROUTING_STRICT` (refused at boot when unreadable) — and
+the built-in ones rank last. `refused_pinned_key` defaults to **`forfait`**
+(ADR-121 § Arbitrated 1): a shared-tier key refused or capped at launch,
+whose wire family another credential holds, stays out of the bundle — the
+routes naming its provider spend that holder (claw bills the forfait as
+extra usage) instead of parking on the key's own refusal. `park` is the
+pre-policy behavior, kept settable and lockable. Facade keys (z.ai,
+Moonshot) are out of the knob's scope entirely: no forfait alternative
+exists for them, so they always come back.
+
+Every launch snapshots the resolved policy on the run document
+(`llm_route_policy`, with each field's provenance) — "why did this run
+route this way" is answerable without replaying the launch. The bot
+(`routing:` manifest block), the bot binding and the run-level launch
+fields join this fold in the next slices, below the platform level, which
+can lock a field against all of them.
+
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 
 The credential every tenant-less run used to inherit from the runner pod's

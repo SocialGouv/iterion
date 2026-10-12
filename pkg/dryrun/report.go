@@ -95,6 +95,10 @@ func writePass(b *strings.Builder, label string, p Pass) {
 	if p.TimedOut {
 		b.WriteString(" (ran out of time — the dry run's bound, not the program: raise it with --exec-timeout)")
 	}
+	if len(p.LoopsCutShort) > 0 {
+		fmt.Fprintf(b, " (the dry run cut loop(s) %s past its crossing bound — the dry run's doing, not the program: raise it with --exec-loop-crossings)",
+			strings.Join(p.LoopsCutShort, ", "))
+	}
 	if p.Failure != "" {
 		fmt.Fprintf(b, " — %s", p.Failure)
 	}
@@ -169,7 +173,16 @@ func (r *Report) Render() string {
 	}
 	switch {
 	case r.Clean():
-		b.WriteString("  verdict: clean — every pass finished or refused as declared, nothing left as written, no shell text refused, every expression decided\n")
+		b.WriteString("  verdict: clean — every pass finished or refused as declared, nothing left as written")
+		// The path-only input reads warn but do not hold the bot (#1455);
+		// the verdict says so where the stock sentence would deny them.
+		for _, f := range r.Findings {
+			if f.Kind == KindUnmappedOnPath {
+				b.WriteString(" but what another path supplies")
+				break
+			}
+		}
+		b.WriteString(", no shell text refused, every expression decided\n")
 	case r.timedOut():
 		b.WriteString("  verdict: not clean — a pass ran out of time before the run ended (the dry run's bound, --exec-timeout; children share it), and what it met past that point is unknown\n")
 	case !r.Failing():

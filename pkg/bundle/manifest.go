@@ -11,6 +11,7 @@ import (
 
 	"go.yaml.in/yaml/v2"
 
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 )
 
@@ -257,6 +258,16 @@ type Manifest struct {
 	// late: a weekly digest is (retry it after the reset), a "what changed
 	// in the last hour" report is not (usage_window: off).
 	Retry *RetrySpec `yaml:"retry,omitempty"`
+	// Routing is the author's adaptive-routing opinion (ADR-121,
+	// pkg/llmroute): which (harness, credential) pairs this bot's runs may
+	// occupy, which failure classes may fire a mid-run switch, whether
+	// backend pins are requirements — and, the author's own cost
+	// governance, per-field locks. It is the BOT layer of the routing
+	// chain, below the launch's binding and above the platform level;
+	// the binding overrides every UNLOCKED field, and the author's lock
+	// is what stops it. Same placement argument as retry: orchestration,
+	// not workflow semantics.
+	Routing *RoutingSpec `yaml:"routing,omitempty"`
 }
 
 const (
@@ -285,6 +296,48 @@ type RetrySpec struct {
 	MaxAttempts int    `yaml:"max_attempts,omitempty" json:"max_attempts,omitempty"`
 	MaxWait     string `yaml:"max_wait,omitempty" json:"max_wait,omitempty"`
 	Jitter      string `yaml:"jitter,omitempty" json:"jitter,omitempty"`
+}
+
+// RoutingSpec is the manifest shape of an llmroute.Policy, declared as its
+// own type following the RetrySpec convention: the YAML surface stays
+// independent of the shared struct's json/bson tags, so a field added to
+// the platform record (or to a later slice's vocabulary) does not silently
+// become author-writable manifest YAML.
+type RoutingSpec struct {
+	PairOrder        []string `yaml:"pair_order,omitempty" json:"pair_order,omitempty"`
+	Triggers         []string `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	RefusedPinnedKey string   `yaml:"refused_pinned_key,omitempty" json:"refused_pinned_key,omitempty"`
+	Strict           *bool    `yaml:"strict,omitempty" json:"strict,omitempty"`
+	Locks            []string `yaml:"locks,omitempty" json:"locks,omitempty"`
+	// ModelClasses is here BY NAME (delivery 2, #2210 S2): a field added
+	// to the shared struct does not silently become author-writable
+	// manifest YAML — this projection is the author's explicit door to
+	// the class table, for a bot tuned to a model. Same rules as the
+	// shared field: entry-wise per class×family, bare ids.
+	ModelClasses map[string]map[string]string `yaml:"model_classes,omitempty" json:"model_classes,omitempty"`
+}
+
+// policy projects the block onto the shared record. nil-safe.
+func (r *RoutingSpec) policy() llmroute.Policy {
+	if r == nil {
+		return llmroute.Policy{}
+	}
+	return llmroute.Policy{
+		PairOrder:        r.PairOrder,
+		Triggers:         r.Triggers,
+		RefusedPinnedKey: r.RefusedPinnedKey,
+		Strict:           r.Strict,
+		Locks:            r.Locks,
+		ModelClasses:     r.ModelClasses,
+	}
+}
+
+// RoutingPolicy projects the manifest's routing block. A nil block yields
+// the zero Policy, i.e. "this layer sets nothing" — deliberately NOT
+// normalized, since filling defaults here would make the bot appear to pin
+// fields the author left open and mask the platform level.
+func (m *Manifest) RoutingPolicy() llmroute.Policy {
+	return m.Routing.policy()
 }
 
 // RetryPolicy projects the manifest's retry block. A nil block yields the
@@ -576,13 +629,28 @@ func knownForgeEventNames() []string {
 // not follow the head SHA blocks the PR it guards.
 const ForgeScopeStatuses = "statuses"
 
+// The merge-gate gesture scopes. Declaring one does not itself perform
+// anything: it is what mints the matching capability into the run's publish
+// grant (pkg/server forge publish), so an operator reads — and can revoke —
+// exactly which bots may cast approvals, arm merges or request reviewers on
+// a repo. All three are write-or-nothing: a gesture either crosses the
+// deterministic publish surface or the bot does not have it.
+const (
+	ForgeScopeApprovals = "approvals" // cast an MR approval (MergeApprover)
+	ForgeScopeMerge     = "merge"     // arm merge-when-pipeline-succeeds (AutoMergeArmer)
+	ForgeScopeReviewers = "reviewers" // add reviewers (PullReviewerSetter)
+)
+
 var (
 	knownForgeScopeKeys = map[string]bool{
-		"pull_requests":    true,
-		"repository":       true,
-		"issues":           true,
-		"webhooks":         true,
-		ForgeScopeStatuses: true, // commit statuses (the merge gate)
+		"pull_requests":     true,
+		"repository":        true,
+		"issues":            true,
+		"webhooks":          true,
+		ForgeScopeStatuses:  true, // commit statuses (the merge gate)
+		ForgeScopeApprovals: true, // MR approvals (the merge gate's approve)
+		ForgeScopeMerge:     true, // auto-merge arming (the merge gate's arm)
+		ForgeScopeReviewers: true, // reviewer requests (escalation)
 	}
 	knownForgeScopeLevels = map[string]bool{
 		"read":  true,
@@ -600,9 +668,12 @@ type ForgeRequirements struct {
 
 	// TokenScopes is a normalized permission map (key -> "read" |
 	// "write" | "admin"); keys ∈ {pull_requests, repository, issues,
-	// webhooks}. The provisioner always needs webhook-admin regardless
-	// of this map — declaring it is informational. Unioned across
-	// co-enabled bots to size the requested OAuth scope.
+	// webhooks, statuses, approvals, merge, reviewers}. The provisioner
+	// always needs webhook-admin regardless of this map — declaring it is
+	// informational, except the merge-gate scopes (statuses, approvals,
+	// merge, reviewers), which mint the matching capabilities into the
+	// bots' publish grants. Unioned across co-enabled bots to size the
+	// requested OAuth scope.
 	TokenScopes map[string]string `yaml:"token_scopes,omitempty"`
 
 	// Secret is the workflow-secret name the bundle's main.bot
@@ -1103,6 +1174,11 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	// unvalidated it would surface days later as a silently-defaulted
 	// policy on a run nobody is watching.
 	if err := retrypolicy.Validate(m.RetryPolicy()); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	// Same for routing: a typo in the author's routing block must fail the
+	// load, not surface days later as a silently-ignored policy.
+	if err := llmroute.Validate(m.RoutingPolicy()); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	return &m, nil

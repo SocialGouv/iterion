@@ -26,15 +26,16 @@ The bundles under `bots/`, then the skills they carry.
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.7.2 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 2.4.1 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1.6.3 |
+| `gitops-warden` | 🛡 Warden | GitOps merge gate. | 0.1.0 |
 | `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 0.1.6 |
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 0.2.2 |
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.5.1 |
-| `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (a scheduled tick, zero LLM in this slice — the compiled workflow contains no agent or… | 0.2.2 |
+| `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (a scheduled tick, zero LLM in this slice — the compiled workflow contains no agent or… | 0.3.0 |
 | `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.5.0 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.5 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
-| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.12 |
+| `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.13 |
 | `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 2.0.3 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.9 |
@@ -125,6 +126,14 @@ The pair a model sees before it decides to open the file.
 | `feed-watch` | `feed-config` | feed-watch (Vigie) workspace configuration — the config file format (categories, feeds, editorial, sinks), the state layout,… |
 | `feed-watch` | `notify-webhooks` | feed-watch delivery mechanics — Mattermost/Slack incoming-webhook payloads, the webhooks secret map, dry-run, partial-failure… |
 | `feed-watch` | `synthesis-scoring` | Editorial rubric for the feed-watch digest agent — how to group, rank, semantically dedup and write a chat digest that respects… |
+| `gitops-warden` | `ci-and-argocd` | The gitops CD layout: apps/<app>-<env>/ wrappers, main/rendered branches, CI components and ArgoCD definitions — the structural… |
+| `gitops-warden` | `context-and-access` | Platform context: what product teams are given self-service, the vocabulary (PIC, ESO, CNPG, XRD), and a known-good gitops shape… |
+| `gitops-warden` | `gitops-repo-standard` | The gitops repo standard: branch/merge policy, the validate job, OPS-vs-MR modes, the three-repo chart boundary — what an MR on… |
+| `gitops-warden` | `helm-pitfalls` | Verified Helm traps for a merge verdict: renamed values keys dropping config silently, subchart aliases and conditions,… |
+| `gitops-warden` | `platform-conformance` | Atlas v2 platform facts for a merge verdict: managed resources (OvhValkey, OvhPostgresqlCluster, OvhBucket), LimitRange bounds… |
+| `gitops-warden` | `policy-template` | Starter review-policy.md (the policy_path var pins the real path) for a gitops repo: what may widen or tighten the… |
+| `gitops-warden` | `review-policy` | The warden's policy contract — default classes, the override file, the verdict vocabulary, and the invariants the judge may not… |
+| `gitops-warden` | `secrets-and-datastores` | Secrets and datastore rules: no Secret material in charts, ExternalSecret via the local store, reloader conventions, and the… |
 | `golden-master` | `binary-lane` | Capture generated documents (PDF, spreadsheets, CSV) without building a blind judge — the triple assertion, the volatile fields… |
 | `golden-master` | `canonicalization` | Neutralise what is volatile in a captured response without erasing what is business signal — the line between the two, and the… |
 | `golden-master` | `deterministic-fixture` | Freeze the application's world so captures are reproducible AND the surface is actually exercised — seeded data, credentials,… |

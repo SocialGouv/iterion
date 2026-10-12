@@ -100,14 +100,14 @@ Entries: `"<lo..hi>": "prompt fragment"` — The range is parsed by the compiler
 
 ### supervisor
 
-A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.
+A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.
 
 A top-level declaration: `supervisor <name>:`.
 
 | Property | Value | Meaning |
 |---|---|---|
 | `watches` | ident list | Agent nodes the supervisor is armed for |
-| `model` | string | Model id the supervisor evaluates with, e.g. "anthropic/claude-opus-5"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars |
+| `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `system` | prompt name, or its text as a string | The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `cooldown` | string | Minimum delay between two evaluations, e.g. "2m" |
 | `max_evals` | int | Upper bound on evaluations per run |
@@ -576,6 +576,7 @@ A block opened by `budget:` inside `workflow`.
 | `max_tokens` | int | Total token cap |
 | `warn_tokens` | int | Advisory: crossing it emits budget_warning |
 | `max_iterations` | int | Total node executions; also the fuel of an unbounded loop (C097) |
+| `on_exceeded` | one of `fail`, `pause` | What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word) |
 
 ### resources
 

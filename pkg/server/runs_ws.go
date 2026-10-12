@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -692,7 +693,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 			c.sendError(runNotResumableErrorCode, err.Error(), env.AckID)
 			return
 		}
-		c.sendError("resume_failed", err.Error(), env.AckID)
+		c.sendError("resume_failed", runtime.OperatorMessage(err), env.AckID)
 		return
 	}
 	c.sendAck(env.AckID)

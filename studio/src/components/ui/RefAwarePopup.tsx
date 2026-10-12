@@ -10,6 +10,7 @@ import {
 import { useCaretPosition } from "@/hooks/useCaretPosition";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
+import { useHiddenSubtree } from "./hiddenSubtree";
 
 const GROUP_LABELS: Record<string, string> = {
   input: "input",
@@ -78,6 +79,7 @@ export default function RefAwarePopup({
   onSelect,
   onClose,
 }: RefAwarePopupProps) {
+  const hidden = useHiddenSubtree();
   const document = useDocumentStore((s) => s.document);
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
   const measure = useCaretPosition();
@@ -146,7 +148,7 @@ export default function RefAwarePopup({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [element, token, filtered, activeIndex, onClose]);
 
-  if (!element || !token || filtered.length === 0) return null;
+  if (hidden || !element || !token || filtered.length === 0) return null;
 
   const caretPos = measure(element, token.start);
   const grouped = groupRefs(filtered);

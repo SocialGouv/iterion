@@ -286,25 +286,31 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		if s.Name == "" {
 			continue
 		}
-		tmpPath := filepath.Join(tmpDir, s.Name+".SKILL.md")
+		// Route through mirrorFileSkill to land BOTH discovery shapes — the
+		// directory form and the flat alias — matching the bundle / plugin
+		// tiers and the local library path (see mirrorLibrarySkills for the
+		// rationale — #1478). The tmp name is <s.Name>.md so
+		// skillDestDirForm's case-insensitive strip lines up with the write,
+		// and the flat alias lands at <dest>/<s.Name>.md next to the dir
+		// form <dest>/<s.Name>/SKILL.md.
+		mfName := s.Name + ".md"
+		tmpPath := filepath.Join(tmpDir, mfName)
 		if err := os.WriteFile(tmpPath, s.Content, 0o644); err != nil {
 			return nil, nil, err
 		}
-		skillDir := filepath.Join(dest, s.Name)
-		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		outcome, err := mirrorFileSkill(dest, markerDir, tmpPath, mfName, skillTierLibrary, logger)
+		if err != nil {
 			// I/O errors on a declared library skill stay fatal on the
 			// cloud path too. The runner's `.bot` still declared the
 			// skill; silently proceeding without it would let a run
 			// report success while the agent runs blind.
-			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: mkdir %s: %w", s.Name, skillDir, err)
-		}
-		destPath := filepath.Join(skillDir, "SKILL.md")
-		markerPath := filepath.Join(markerDir, s.Name+".SKILL.md.sha256")
-		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierLibrary, logger)
-		if err != nil {
 			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
 		}
-		// The FILE, not skillDir — see mirrorLibrarySkills for why.
+		_, destPath, _, dfErr := skillDestDirForm(dest, markerDir, mfName)
+		if dfErr != nil {
+			return nil, nil, fmt.Errorf("runtime/contrib: resolve dest for library skill %q: %w", s.Name, dfErr)
+		}
+		// The FILE, not the skill dir — see mirrorLibrarySkills for why.
 		if outcome != skillOutcomeShadowed {
 			owned = append(owned, destPath)
 		}

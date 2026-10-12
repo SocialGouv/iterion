@@ -45,6 +45,11 @@ const (
 	// on the check it owes — that one's answer, posted or waiting to be, is
 	// the head's.
 	gateSettledSuperseded = "superseded"
+	// gateSettledRefused: the run's verdict was REFUSED for its pin and the
+	// reconciler answered the head with the refusal's own failure (#1632).
+	// Not a verdict: the auto-fix lane must not read findings into it, so it
+	// is never offered there (the sweep offers only gateSettledVerdictFailure).
+	gateSettledRefused = "refused"
 )
 
 // gateSettleRecheck is how long a reversible settlement holds before the sweep
@@ -57,8 +62,16 @@ const gateSettleRecheck = 6 * time.Hour
 // already gone.
 const gateSettleMargin = time.Hour
 
+// gateSettleReversible reports whether the fact a settlement records can
+// change back, making the repair reachable again: a closed pull request can
+// reopen, a moved head can be force-pushed back to the reviewed commit — and
+// a head answered with a REFUSAL can be restored the same way (the refusal
+// wrote nothing on the old head, so a force-push back to it leaves the check
+// as absent as #1632 found it; the re-offer then answers it). A permanent
+// refusal settlement would regress exactly the case the old head_moved one —
+// reversible — repaired.
 func gateSettleReversible(reason string) bool {
-	return reason == gateSettledClosed || reason == gateSettledHeadMoved
+	return reason == gateSettledClosed || reason == gateSettledHeadMoved || reason == gateSettledRefused
 }
 
 // gateSettlement is one mark. Episode is the run's updated_at, in
@@ -151,6 +164,21 @@ func verdictAnswersRun(run *store.Run, grant ForgePublishGrant, sha, check strin
 	reviewed := runInputString(run, "head_sha")
 	return !grant.Shared && runOwesGateVerdict(run) && reviewed != "" &&
 		strings.EqualFold(sha, reviewed) && strings.EqualFold(check, runInputString(run, gateContextVar))
+}
+
+// refusalAnswersRun reports whether a refusal recorded on the grant is THIS
+// run's, on the check its repo pins: the same attribution rule as
+// verdictAnswersRun (the endpoint knows the grant, not the run, so a shared
+// grant's refusal may be the other run's). Unlike a verdict, a refusal needs
+// no SHA match — it says "this run tried to certify and the gate declined",
+// which is true whatever revision the pin named.
+func refusalAnswersRun(run *store.Run, grant ForgePublishGrant, check string) *gateRefusal {
+	r := grant.Refusal
+	if r == nil || grant.Shared || !runOwesGateVerdict(run) ||
+		!strings.EqualFold(strings.TrimSpace(r.Context), check) {
+		return nil
+	}
+	return r
 }
 
 // cutBackGrant brings a run's grant down to the ordinary post-run grace once

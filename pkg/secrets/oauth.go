@@ -20,7 +20,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // OAuthKind enumerates the third-party CLIs whose OAuth subscription
@@ -675,6 +677,37 @@ func CodexAuthJSONPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".codex", "auth.json")
+}
+
+// CodexAccessTokenLogin returns the Codex auth.json a reader of the access
+// token needs and nothing more: the auth mode, the access token, the account.
+// No refresh token, no id token, no API key — a login reduced to what spends
+// it as it stands (claw's ChatGPT client never refreshes). Whoever holds it
+// can renew nothing, and holds a credential that expires. It is built from
+// the parsed view, so it carries exactly what that view says.
+func CodexAccessTokenLogin(view CodexCredentialsView) ([]byte, error) {
+	var login struct {
+		AuthMode string `json:"auth_mode"`
+		Tokens   struct {
+			AccessToken string `json:"access_token"`
+			AccountID   string `json:"account_id"`
+		} `json:"tokens"`
+	}
+	login.AuthMode = view.AuthMode
+	login.Tokens.AccessToken = view.Tokens.AccessToken
+	login.Tokens.AccountID = view.Tokens.AccountID
+	return json.Marshal(login)
+}
+
+// CodexHomePlanted reports whether a project `.env` chose the codex home
+// CodexAuthJSONPath resolves: it planted CODEX_HOME, or, with CODEX_HOME
+// unset, the home directory the default sits under. The login found there
+// still serves this process; it is not the operator's to hand on.
+func CodexHomePlanted() bool {
+	if envtrust.Planted("CODEX_HOME") {
+		return true
+	}
+	return os.Getenv("CODEX_HOME") == "" && envtrust.Planted(store.HomeEnvName())
 }
 
 // LoadCodexCredentialsFrom reads and parses Codex CLI's auth.json from an

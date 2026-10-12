@@ -448,6 +448,47 @@ colons stay as written. A value is never scanned for placeholders,
 and a message over `max_message_chars` is cut on a line boundary (a
 line ending at the limit is kept).
 
+## Grafana alerts — the Alertmanager's active set
+
+One `GET /api/alertmanager/grafana/api/v2/alerts` on the configured
+Grafana, bearer `grafana_token`: the alerts firing right now, the whole
+set, no cursor. Only `state: active` mints; everything else (suppressed,
+unprocessed, a state word this API version invented) is **held** —
+counted, never read into the handoff, and never mistaken for an absence
+either: their fingerprints (hex only) travel in the walk, and an
+incident whose alert is still held is SEEN, never resolved. The next
+tick reads an unprocessed one once the Alertmanager routed it; a
+silenced one pages again when its silence ends. More active alerts than
+`grafana_alerts.max_alerts` (200) refuses the whole read: nothing is
+handed off, the lane is named in the coverage note — a set that large is
+not walked one by one.
+
+The identity is the alert's **fingerprint** — the Alertmanager's when it
+gives one, else a hash of the raw labels — computed BEFORE the scrub: a
+label value someone pasted a token into must not turn a firing incident
+into a new one the next tick. What reaches the signals is the scrubbed
+labels and annotations (free text from whoever can edit the rules), the
+fingerprint, the start time, and a `generatorURL` kept only when it sits
+on the Grafana's own origin and a closed alphabet — notify renders it as
+the message's one link, its text the `galert_open` label, never the
+server's words.
+
+Severity: the `severity_label` label's value mapped through
+`severity` (defaults critical→critical, warning→medium, info→low),
+`default_severity` for anything unmapped, `max_severity` as the cap —
+the same shape as the Sentry lane's.
+
+Lifecycle: a first sighting posts NEW; an escalation (a severity map
+that moved up) re-posts; a reminder once per `renotify_hours`; and a
+WHOLE read (answered, nothing malformed, nothing refused, everything it
+held fingerprinted) whose response no longer contains an alerted
+incident — gone, not held — posts one `resolved` note at low severity
+and stamps the incident closed; it firing again is news again. A partial
+read (the deadline passed, a malformed record) or a refused one
+(an HTTP error, the cap) concludes nothing, and a held alert is never a
+resolution: the incident keeps its clocks, like every lane's, until a
+whole read says otherwise.
+
 ## Health probes
 
 `GET` on each configured URL, `ok` when the status matches

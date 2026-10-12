@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -817,12 +818,10 @@ func TestResolveDeliveryPreconditions_StaleLaunchOnRequeuedRun(t *testing.T) {
 		if out.proceed {
 			t.Fatalf("the stale delivery proceeded (as a resume) — the run's own resume message is already in flight, so this one must be dropped: %+v", out)
 		}
-		if out.action != actionAck {
-			t.Errorf("action = %v, want actionAck (a stale delivery is dropped, not redelivered)", out.action)
-		}
-		if out.finalStatus != "stale_attempt" {
-			t.Errorf("finalStatus = %q, want stale_attempt", out.finalStatus)
-		}
+		// The run is still queued for the newer attempt, unclaimed: the
+		// stale delivery is re-offered — never run — until that attempt is
+		// claimed, and dropped on its last permitted attempt.
+		assertStaleDisposition(t, store.RunStatusQueued, out)
 	})
 
 	t.Run("the attempt's own resume message proceeds", func(t *testing.T) {
@@ -885,9 +884,29 @@ func TestResolveDeliveryPreconditions_StaleLaunchOnRequeuedRun(t *testing.T) {
 
 const testSealerKeyB64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
+// sealDekFixture seals a bundle under a fresh per-run DEK (ADR-123)
+// and returns the sealed bytes plus the DEK the test's message must
+// carry — the runner opens exactly that, no ring.
+func sealDekFixture(t *testing.T, tenant, run string, b secrets.RunBundle) ([]byte, []byte) {
+	t.Helper()
+	dek, err := secrets.NewRunBundleDEK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, _, err := secrets.SealRunBundle(ds, tenant, "", run, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed, dek
+}
+
 func testSealer(t *testing.T) secrets.Sealer {
 	t.Helper()
-	sealer, err := secrets.NewAESGCMSealerFromBase64(testSealerKeyB64)
+	sealer, err := secrets.NewKeyRingFromConfig(testSealerKeyB64, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -939,18 +958,14 @@ func TestInjectCredentials_UnknownRefFails(t *testing.T) {
 // binding: a sealed bundle stamped for another tenant (or a legacy
 // tenant-less record) must never be served to this run.
 func TestInjectCredentials_TenantMismatchFails(t *testing.T) {
-	sealer := testSealer(t)
 	rs := secrets.NewMemoryRunSecretsStore()
-	sealed, err := secrets.SealRunBundle(sealer, "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sealed, dek := sealDekFixture(t, "team-a", "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
 	for _, recTenant := range []string{"team-other", ""} {
-		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", SealedBundle: sealed}); err != nil {
+		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
 			t.Fatal(err)
 		}
-		r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
-		_, _, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+		r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
+		_, _, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1", BundleDEK: dek})
 		if err == nil || !strings.Contains(err.Error(), "tenant mismatch") {
 			t.Fatalf("rec tenant %q: expected tenant-mismatch error, got %v", recTenant, err)
 		}
@@ -964,7 +979,6 @@ func TestInjectCredentials_TenantMismatchFails(t *testing.T) {
 // redelivery contract — deletion is deleteRunSecrets' job, on
 // terminal-clean outcomes only).
 func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
-	sealer := testSealer(t)
 	rs := secrets.NewMemoryRunSecretsStore()
 	bundle := secrets.RunBundle{
 		APIKeys:           map[secrets.Provider]string{"anthropic": "sk-live-1"},
@@ -975,16 +989,13 @@ func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
 		OAuthCredentials: map[string][]byte{string(secrets.OAuthKindCodex): []byte(`{"tokens":{}}`)},
 		ForgeAppBotLogin: "app[bot]",
 	}
-	sealed, err := secrets.SealRunBundle(sealer, "run-1", bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", SealedBundle: sealed}); err != nil {
+	sealed, dek := sealDekFixture(t, "team-a", "run-1", bundle)
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
 		t.Fatal(err)
 	}
 
-	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
-	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
+	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1", BundleDEK: dek})
 	if err != nil {
 		t.Fatalf("injectCredentials: %v", err)
 	}
@@ -1768,5 +1779,70 @@ func TestResolveDeliveryPreconditions_PRClosedIsReadFromTheTypedEndReason(t *tes
 				t.Fatalf("op = %q, want %q", out.op, c.wantOp)
 			}
 		})
+	}
+}
+
+// THE TRANSPORT OFF-GOLDEN (the review's critique case): the policy the
+// way route_resolve builds it — post-Resolve over the DEFAULT layers —
+// stamped into wire entries the way the publisher does, split by the
+// runner's own partition, screened by ir.ApplyPolicyLadder: the
+// session-continuity refusal STILL fires under the default. A presence
+// gate on cross_harness would lift it for EVERY cloud run — Normalize
+// answers "off" on every resolved policy, so the wire field is
+// non-empty even when inert.
+func TestSplitMsgFallback_TransportOffGolden(t *testing.T) {
+	pol, _ := llmroute.Resolve(
+		llmroute.Layer{Source: llmroute.SourceBot, Policy: llmroute.Policy{}},
+		llmroute.Layer{Source: llmroute.SourcePlatform, Policy: llmroute.Policy{}},
+		llmroute.Layer{Source: llmroute.SourceEnv, Policy: llmroute.FromEnv()},
+	)
+	entries := []queue.RunFallbackEntry{{Backend: "claw", Provider: "anthropic_key", On: pol.Triggers, Policy: true, CrossHarness: pol.CrossHarness}}
+	_, ladder := splitMsgFallback(entries)
+	if len(ladder) != 1 || ladder[0].CrossHarness != pol.CrossHarness || ladder[0].CrossHarness != llmroute.CrossHarnessOff {
+		t.Fatalf("wire round-trip: %+v, want the resolved off riding through", ladder)
+	}
+	w := &ir.Workflow{Nodes: map[string]ir.Node{"implement": &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "implement"},
+		LLMFields: ir.LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
+		Session:   ir.SessionInherit,
+		Tools:     []string{},
+	}}}
+	if r := ir.ApplyPolicyLadder(w, ladder, false, nil, func(n ir.LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 1 {
+		t.Fatalf("transport default: refusals = %v, want the session refusal — an emptiness gate would have lifted it", r)
+	}
+
+	// The active posture rides the same pipe and lands: the partition
+	// copies the field, the screen honours it.
+	entries[0].CrossHarness = llmroute.CrossHarnessRestart
+	_, ladder2 := splitMsgFallback(entries)
+	w2 := &ir.Workflow{Nodes: map[string]ir.Node{"implement": &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "implement"},
+		LLMFields: ir.LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
+		Session:   ir.SessionInherit,
+		Tools:     []string{},
+	}}}
+	if r := ir.ApplyPolicyLadder(w2, ladder2, false, nil, func(n ir.LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 0 {
+		t.Fatalf("transport restart: refused = %v, want the stage to land through the same pipe", r)
+	}
+}
+
+// The run-level posture derivation (ADR-121 § Delivery 2, S4): the FIRST
+// policy entry's value — the publisher stamps every entry from ONE
+// snapshot — feeds ExecutorSpec.LLMRouteCrossHarness, the field that
+// constructs the run's handoff recorder. Operator entries never speak;
+// no policy speaks nothing.
+// Mutants: reading the LAST policy entry → the first-wins case reds;
+// dropping the Policy filter → the operator-first case reds.
+func TestLLMRouteCrossHarnessDerivation(t *testing.T) {
+	msg := &queue.RunMessage{Fallback: []queue.RunFallbackEntry{
+		{Backend: "claude_code", Model: "claude-opus-5-5", On: []string{"auth"}},
+		{Backend: "claw", Provider: "anthropic_key", On: []string{"auth"}, Policy: true, CrossHarness: llmroute.CrossHarnessReuse},
+		{Backend: "codex", Provider: "chatgpt_forfait", On: []string{"auth"}, Policy: true, CrossHarness: llmroute.CrossHarnessRestart},
+	}}
+	if got := llmRouteCrossHarness(msg); got != llmroute.CrossHarnessReuse {
+		t.Fatalf("posture = %q, want the FIRST policy entry's reuse", got)
+	}
+	if got := llmRouteCrossHarness(&queue.RunMessage{}); got != "" {
+		t.Fatalf("no-policy posture = %q, want empty (no recorder constructed)", got)
 	}
 }

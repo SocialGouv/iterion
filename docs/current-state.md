@@ -145,9 +145,13 @@ The security posture is explicit rather than implied:
   host can't sandbox. Opt out per-workflow with `sandbox: none`, or machine-wide
   with `ITERION_SANDBOX_DEFAULT=none`. Embedded `Engine` instances stay neutral
   unless the caller sets a default.
-- When a sandbox is active, its network mode defaults to **`open`**. An
-  `allowlist` or `denylist` starts the CONNECT proxy; the `iterion-default`
-  preset is a curated starting point, not the default policy.
+- When a sandbox is active, its network mode defaults to **`open`** — except
+  on a repo-defined sandbox (auto + a found `devcontainer.json`) whose workflow
+  names no network base of its own (no `network:` block, an empty one, or
+  rules without a preset), where the `iterion-default` allowlist preset
+  applies (a `sandbox_network_defaulted` event says so). An explicit `allowlist`
+  or `denylist` starts the CONNECT proxy; outside that case the preset is a
+  curated starting point, not the default policy.
 - Local containers normally bind the worktree at the same absolute path as the
   host so Claude Code project/session keys stay stable. An explicit
   `workspace_folder` can use a path such as `/workspace`. Kubernetes sandboxes

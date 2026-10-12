@@ -58,7 +58,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 		}}, false, true, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 			if err != nil {
 				t.Fatalf("sealer: %v", err)
 			}
@@ -88,7 +88,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
 			}
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-2038", "", "team1", "webhook:cfg-1", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-2038", "", "team1", "webhook:cfg-1", "", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -102,7 +102,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b, err := secrets.OpenRunBundle(sealer, "run-2038", rec.SealedBundle)
+			b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-2038", rec.KeyID, rec.SealedBundle)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,7 +135,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 // the vocabulary: it is the runner-env fallback the flag describes, not a
 // provisionable run — unchanged either way.
 func TestEnvFundedRun_RequireLLMCredentialDoesNotRefuse(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestEnvFundedRun_RequireLLMCredentialDoesNotRefuse(t *testing.T) {
 		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{}, nil),
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-2038b", "", "team1", "webhook:cfg-1", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-2038b", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("an env-funded run was refused under requireLLMCredential: %v", err)
 	}
 }
@@ -154,7 +154,7 @@ func TestEnvFundedRun_RequireLLMCredentialDoesNotRefuse(t *testing.T) {
 // A closed team forfait beside the gateway route: nothing acquires, and the
 // window skip costs no Warn — the runner env is the plan, not a failure.
 func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-2038c", "", "team1", "webhook:cfg-1", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-2038c", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 	// empty — which is the env-funded contract, not a failure.
 	if res.secretsRef != "" {
 		rec, _ := p.runSecrets.(*secrets.MemoryRunSecretsStore).Get(ctx, res.secretsRef)
-		b, err := secrets.OpenRunBundle(sealer, "run-2038c", rec.SealedBundle)
+		b, err := secrets.OpenRunBundle(mustDEKSealer(t, res.dek), rec.TenantID, "", "run-2038c", rec.KeyID, rec.SealedBundle)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -195,7 +195,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 // The preview answers for an env-funded run the way the live fill does:
 // no candidate selected, and the reason said where the operator reads it.
 func TestCredentialPreviewMatchesTheEnvFundedRun(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,11 +231,57 @@ func TestCredentialPreviewMatchesTheEnvFundedRun(t *testing.T) {
 	}
 
 	// The live resolution agrees: nothing sealed.
-	res, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), team), "run-2038d", "", team, spec.OwnerID, spec.Context.BotID, wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil)
+	res, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), team), "run-2038d", "", team, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if res.secretsRef != "" {
 		t.Fatal("the live fill sealed credentials for an env-funded run")
+	}
+}
+
+// An env-templated route (${GW}/m) is UNRESOLVED in the publisher process:
+// the runner may expand it to any vendor. The pool's wants derivation must
+// fail open — narrowing on the run's resolved peers would drop the very
+// donation the templated route needs when the runner expands it elsewhere.
+func TestWantsFor_AnEnvTemplatedRouteFailsOpen(t *testing.T) {
+	t.Setenv("GW", "openai_compatible")
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"gw": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Provider: "openai_compatible", Model: "${GW}/m",
+		}},
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Provider: "anthropic", Model: "claude-opus-5",
+		}},
+	}}
+	wants, res := wantsFor(wf, model.ModelOverrides{}, nil)
+	if res.NarrowSafe {
+		t.Fatal("narrow-safe on an env-templated route: the pool would narrow on it")
+	}
+	if len(wants) != len(poolWantOrder) {
+		t.Fatalf("wants narrowed to %d of %d — the env-templated route dropped donations", len(wants), len(poolWantOrder))
+	}
+}
+
+// The env-SET spelling (the deployment resolves ${GW} to the gateway here)
+// is not the gateway route either — what ${GW} names on the RUNNER is still
+// the runner's word: on a mixed run the pool's wants must fail open, or the
+// templated route drops the donation its peers need.
+func TestWantsFor_AnEnvSetTemplatedRouteFailsOpen(t *testing.T) {
+	t.Setenv("GW", "openai_compatible")
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"gw": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Model: "${GW}/m",
+		}},
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{
+			Backend: "claw", Provider: "anthropic", Model: "claude-opus-5",
+		}},
+	}}
+	wants, res := wantsFor(wf, model.ModelOverrides{}, nil)
+	if res.NarrowSafe {
+		t.Fatal("narrow-safe on an env-set templated route: the pool would narrow on it")
+	}
+	if len(wants) != len(poolWantOrder) {
+		t.Fatalf("wants narrowed to %d of %d — the env-set templated route dropped donations", len(wants), len(poolWantOrder))
 	}
 }

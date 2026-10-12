@@ -133,50 +133,50 @@ func runSandboxDoctorBasic(p *Printer) error {
 		return nil
 	}
 
-	fmt.Fprintln(p.W, "iterion sandbox — doctor report")
-	fmt.Fprintln(p.W, "===============================")
-	fmt.Fprintf(p.W, "  host                : %s\n", report["host"])
-	fmt.Fprintf(p.W, "  platform            : %s/%s\n", report["os"], report["arch"])
-	fmt.Fprintf(p.W, "  container runtime   : %s\n", report["container_runtime"])
-	fmt.Fprintf(p.W, "  ITERION_SANDBOX_DEFAULT : %s\n", report["sandbox_default"])
-	fmt.Fprintf(p.W, "  available drivers   : %s\n", strings.Join(factory.Available(), ", "))
-	fmt.Fprintf(p.W, "  selected driver     : %s\n", driverName)
+	p.Line("iterion sandbox — doctor report")
+	p.Line("===============================")
+	p.Line("  host                : %s", report["host"])
+	p.Line("  platform            : %s/%s", report["os"], report["arch"])
+	p.Line("  container runtime   : %s", report["container_runtime"])
+	p.Line("  ITERION_SANDBOX_DEFAULT : %s", report["sandbox_default"])
+	p.Line("  available drivers   : %s", strings.Join(factory.Available(), ", "))
+	p.Line("  selected driver     : %s", driverName)
 	if driverErr != nil {
-		fmt.Fprintf(p.W, "  driver error        : %v\n", driverErr)
+		p.Line("  driver error        : %v", driverErr)
 	}
-	fmt.Fprintln(p.W, "  capabilities:")
-	fmt.Fprintf(p.W, "    image          : %v\n", caps.SupportsImage)
-	fmt.Fprintf(p.W, "    build          : %v\n", caps.SupportsBuild)
-	fmt.Fprintf(p.W, "    mounts         : %v\n", caps.SupportsMounts)
-	fmt.Fprintf(p.W, "    network policy : %v\n", caps.SupportsNetworkPolicy)
-	fmt.Fprintf(p.W, "    post create    : %v\n", caps.SupportsPostCreate)
-	fmt.Fprintf(p.W, "    remote user    : %v\n", caps.SupportsRemoteUser)
-	fmt.Fprintf(p.W, "  iterion binary      : %s (%s)\n", binPath, binLink)
+	p.Line("  capabilities:")
+	p.Line("    image          : %v", caps.SupportsImage)
+	p.Line("    build          : %v", caps.SupportsBuild)
+	p.Line("    mounts         : %v", caps.SupportsMounts)
+	p.Line("    network policy : %v", caps.SupportsNetworkPolicy)
+	p.Line("    post create    : %v", caps.SupportsPostCreate)
+	p.Line("    remote user    : %v", caps.SupportsRemoteUser)
+	p.Line("  iterion binary      : %s (%s)", binPath, binLink)
 	if w := staticBinaryWarning(binPath, binLink); w != "" {
-		fmt.Fprintln(p.W)
-		fmt.Fprint(p.W, w)
+		p.Blank()
+		p.write(w)
 	}
-	fmt.Fprintln(p.W)
+	p.Blank()
 	if driverName == "noop" {
 		// State the DRIVER fact, not a host fact: on a cloud host the
 		// preference order is kubernetes → noop, so noop can be
 		// selected with docker sitting on this machine's PATH — the
 		// report prints that runtime two lines above.
-		fmt.Fprintln(p.W, "Note: no container-isolation driver is usable here (selected: noop).")
-		fmt.Fprintln(p.W, "A workflow declaring `sandbox: auto` runs on the host with a")
-		fmt.Fprintln(p.W, "sandbox_skipped event in events.jsonl; one declaring")
-		fmt.Fprintln(p.W, "`sandbox: { mode: inline, … }` is refused and parks with")
-		fmt.Fprintln(p.W, "SANDBOX_DRIVER_UNAVAILABLE.")
+		p.Line("Note: no container-isolation driver is usable here (selected: noop).")
+		p.Line("A workflow declaring `sandbox: auto` runs on the host with a")
+		p.Line("sandbox_skipped event in events.jsonl; one declaring")
+		p.Line("`sandbox: { mode: inline, … }` is refused and parks with")
+		p.Line("SANDBOX_DRIVER_UNAVAILABLE.")
 		if factory.Host() == sandbox.HostCloud {
 			// No "driver error" line accompanies this note: the factory
 			// returns either a driver or an error, so a selected noop
 			// means the walk fell through and the candidates' own
 			// failures were not kept.
-			fmt.Fprintln(p.W, "This host reads as cloud, so the kubernetes driver is the one that")
-			fmt.Fprintln(p.W, "could not be constructed — check the in-cluster config and RBAC.")
+			p.Line("This host reads as cloud, so the kubernetes driver is the one that")
+			p.Line("could not be constructed — check the in-cluster config and RBAC.")
 		} else {
-			fmt.Fprintln(p.W, "Install Docker or Podman locally to enable container isolation, or")
-			fmt.Fprintln(p.W, "run iterion in cloud mode for k8s-native isolation.")
+			p.Line("Install Docker or Podman locally to enable container isolation, or")
+			p.Line("run iterion in cloud mode for k8s-native isolation.")
 		}
 	}
 	return nil

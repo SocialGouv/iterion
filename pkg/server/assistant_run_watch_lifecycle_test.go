@@ -192,6 +192,11 @@ func TestAssistantWatchShutdownBoundsJoinAndStopsFollowOnEffects(t *testing.T) {
 				httpDrained := make(chan struct{})
 				f.srv.server = &http.Server{}
 				f.srv.server.RegisterOnShutdown(sync.OnceFunc(func() { close(httpDrained) }))
+				// Pin the join budget the shutdown gives the worker: the
+				// promise under test is that the wait is BOUNDED by it, and
+				// the bound below reads off this value rather than a
+				// scheduling guarantee no shared runner can keep.
+				f.srv.bgJoinBudget = 500 * time.Millisecond
 				w := runwatch.Watch{ID: "shutdown-watch", TargetRunID: target.ID, AssistantRunID: a.ID, State: runwatch.WatchActive, Kinds: []string{trigger.KindRunFailed}, CreatedAt: time.Now().UTC()}
 				if !later {
 					if err := f.ws.CreateWatch(t.Context(), w); err != nil {
@@ -230,8 +235,17 @@ func TestAssistantWatchShutdownBoundsJoinAndStopsFollowOnEffects(t *testing.T) {
 				if err := f.srv.Shutdown(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				if elapsed := time.Since(start); elapsed > time.Second {
-					t.Fatalf("shutdown blocked for %s", elapsed)
+				// Shutdown must give up on the context-ignoring blocker after
+				// bgJoinBudget and return while it is still parked — the
+				// ignore=true half asserts exactly that below. The wall-clock
+				// guard catches a FINITE overrun: a multiple of the budget,
+				// not an absolute bound, because the runner's scheduling
+				// delay is not the quantity under test (#1982). A join that
+				// regressed to truly unbounded hangs to the go-test timeout
+				// here — the blocker is released only after this assertion —
+				// and the ignore=true assertions make that hang attributable.
+				if elapsed := time.Since(start); elapsed > 20*f.srv.bgJoinBudget {
+					t.Fatalf("shutdown blocked for %s (join budget %s)", elapsed, f.srv.bgJoinBudget)
 				}
 				awaitWatchSignal(t, httpDrained)
 				if ignore {

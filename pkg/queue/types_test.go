@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -78,8 +79,12 @@ func TestRunMessage_FallbackAcceptsObjectAndArray(t *testing.T) {
 				t.Fatalf("fallback = %+v, want %+v", msg.Fallback, tc.want)
 			}
 			for i := range tc.want {
-				if msg.Fallback[i] != tc.want[i] {
-					t.Fatalf("fallback[%d] = %+v, want %+v", i, msg.Fallback[i], tc.want[i])
+				// Field-wise: RunFallbackEntry grew a slice (On) and is no
+				// longer comparable.
+				got, want := msg.Fallback[i], tc.want[i]
+				if got.Backend != want.Backend || got.Model != want.Model || got.Provider != want.Provider ||
+					!slices.Equal(got.On, want.On) || got.Policy != want.Policy {
+					t.Fatalf("fallback[%d] = %+v, want %+v", i, got, want)
 				}
 			}
 			blob, err := json.Marshal(msg)
@@ -252,8 +257,15 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=21 carries the ambient-context policy (ADR-119): dropped, a stale
 	// runner hands a run declared or launched with `none` the operator's whole
 	// setup.
-	if SchemaVersion != 21 {
-		t.Errorf("SchemaVersion = %d, want 21 (bump intentionally)", SchemaVersion)
+	// v=22 carries the adaptive-routing ladder's On+Policy stage fields
+	// (ADR-121): dropped, a stale runner runs a policy-computed stage on
+	// the chain DEFAULT trigger set — dropping auth and
+	// transient_exhausted, the exact failures the launch-time selection
+	// exists to fall through.
+	// v=24 carries BundleDEK (#2029, ADR-123): dropped, a runner without
+	// platform keys cannot open the run's credentials.
+	if SchemaVersion != 24 {
+		t.Errorf("SchemaVersion = %d, want 24 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -474,5 +486,150 @@ func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
 		if out.Permission != want {
 			t.Errorf("Permission = %q after round trip, want %q", out.Permission, want)
 		}
+	}
+}
+
+// The pool name rides the wire and the stable envelope; its grammar is the
+// subject/stream suffix grammar, and the version bump is load-bearing (a
+// stale runner that dropped the field would execute the run outside the
+// team's pool). Red when the Validate check, the Envelope mirror or the
+// bump is reverted.
+func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
+	if SchemaVersion != 24 {
+		t.Fatalf("SchemaVersion = %d, want 24 (the BundleDEK bump)", SchemaVersion)
+	}
+	base := RunMessage{
+		V:            SchemaVersion,
+		RunID:        "run_pool",
+		WorkflowName: "demo",
+		IRCompiled:   json.RawMessage(`{"nodes":[]}`),
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("an unset pool is the shared default and must validate: %v", err)
+	}
+	if !ValidPoolName("honorabilite") || !ValidPoolName("pool-2") {
+		t.Fatal("well-formed pool names refused")
+	}
+	for _, bad := range []string{"-lead", "trail-", "Upper", "a_b", string(make([]byte, 32))} {
+		if ValidPoolName(bad) {
+			t.Fatalf("ValidPoolName(%q) = true, want false", bad)
+		}
+		base.RunnerPool = bad
+		if err := base.Validate(); err == nil || strings.Contains(err.Error(), ErrSchemaVersion.Error()) {
+			t.Fatalf("Validate accepted pool %q: %v", bad, err)
+		}
+	}
+	// A v21 message (pre-pool) with no pool still validates: the field is
+	// additive-with-intent only when set.
+	base.RunnerPool = ""
+	old := base
+	old.V = 21
+	if err := old.Validate(); err != nil {
+		t.Fatalf("a pre-pool message must still validate: %v", err)
+	}
+	// The envelope mirrors the pool so a version-rejecting consumer can park
+	// the message against the right pool without decoding the payload.
+	base.RunnerPool = "honorabilite"
+	b, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := PeekEnvelope(b)
+	if err != nil {
+		t.Fatalf("PeekEnvelope: %v", err)
+	}
+	if env.RunnerPool != "honorabilite" {
+		t.Fatalf("the envelope lost the pool: %+v", env)
+	}
+}
+
+// The crossings' class targets ride MESSAGE-LEVEL, next to the entries
+// slice (one map per run, not per rung), and survive the JSON round-trip
+// — the runner derives ExecutorSpec.LLMRouteClasses from it verbatim.
+// No schema bump: a stale runner ignoring the field runs the shipped
+// table (never a partial override — the conservative-on-ignore record).
+func TestRunMessage_FallbackModelClassesRoundTrip(t *testing.T) {
+	src := RunMessage{
+		V:            SchemaVersion,
+		RunID:        "run_cls",
+		WorkflowName: "demo",
+		WorkflowHash: "sha256:deadbeef",
+		IRCompiled:   json.RawMessage(`{"nodes":[]}`),
+		Fallback: RunFallback{
+			{Backend: "codex", On: []string{"usage_window"}, Policy: true},
+		},
+		FallbackModelClasses: map[string]map[string]string{
+			"top": {"openai": "gpt-6-astra"},
+		},
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dst RunMessage
+	if err := json.Unmarshal(b, &dst); err != nil {
+		t.Fatal(err)
+	}
+	if dst.FallbackModelClasses["top"]["openai"] != "gpt-6-astra" {
+		t.Fatalf("FallbackModelClasses lost on round-trip: %+v", dst.FallbackModelClasses)
+	}
+	if len(dst.Fallback) != 1 || !dst.Fallback[0].Policy {
+		t.Fatalf("the entries slice disturbed: %+v", dst.Fallback)
+	}
+}
+
+// The cross-harness posture rides each policy stage on the wire and
+// survives the JSON round-trip; an entry without it round-trips absent
+// (the stale-runner record: no field, no capability).
+func TestRunMessage_CrossHarnessRoundTrip(t *testing.T) {
+	src := RunMessage{
+		V:            SchemaVersion,
+		RunID:        "run_xh",
+		WorkflowName: "demo",
+		WorkflowHash: "sha256:deadbeef",
+		IRCompiled:   json.RawMessage(`{"nodes":[]}`),
+		Fallback: RunFallback{
+			{Backend: "claw", On: []string{"usage_window"}, Policy: true, CrossHarness: "restart"},
+			{Backend: "codex", On: []string{"usage_window"}, Policy: true},
+		},
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dst RunMessage
+	if err := json.Unmarshal(b, &dst); err != nil {
+		t.Fatal(err)
+	}
+	if dst.Fallback[0].CrossHarness != "restart" {
+		t.Fatalf("entry 0 posture = %q, want restart", dst.Fallback[0].CrossHarness)
+	}
+	if dst.Fallback[1].CrossHarness != "" {
+		t.Fatalf("entry 1 posture = %q, want absent", dst.Fallback[1].CrossHarness)
+	}
+}
+
+// v=24 (ADR-123): the per-run DEK rides the message. It requires a
+// SecretsRef (a key for nothing is a corrupt publish) and exactly 32
+// bytes (the DEK sealer's contract).
+func TestRunMessage_BundleDEKWireContract(t *testing.T) {
+	good := func() *RunMessage {
+		return &RunMessage{V: SchemaVersion, RunID: "r", WorkflowName: "w", SecretsRef: "ref", IRCompiled: []byte("{}")}
+	}
+	m := good()
+	m.BundleDEK = make([]byte, 32)
+	if err := m.Validate(); err != nil {
+		t.Fatalf("valid dek-bearing message refused: %v", err)
+	}
+	m = good()
+	m.BundleDEK = make([]byte, 32)
+	m.SecretsRef = ""
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "without SecretsRef") {
+		t.Fatalf("dek without ref: err = %v", err)
+	}
+	m = good()
+	m.BundleDEK = make([]byte, 16)
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "32 bytes") {
+		t.Fatalf("short dek: err = %v", err)
 	}
 }

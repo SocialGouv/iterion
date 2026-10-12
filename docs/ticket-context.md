@@ -130,6 +130,11 @@ The tenancy model (ADR-048) already carries the governance:
   `GET/PATCH /api/orgs/{id}/settings`. From the terminal:
   `iterion remote orgs settings` and `iterion remote orgs approvals
   [approve|reject <id>]`.
+  A parked request replays verbatim on approval, so one whose
+  `launch_vars` would drop pins the repo gained since park time is
+  REFUSED at replay (400, `ErrLaunchVarsDrop`) on every retry — the
+  exits are **reject and resubmit** with the echo the refusal names,
+  or with `launch_vars_replace` set deliberately.
 - **What the approval is FOR** (`Org.ProvisionApprovalScope`): `all` (the
   default, and every pre-existing org) parks every request; a team spending
   its own credentials answers to nobody for what it runs, so

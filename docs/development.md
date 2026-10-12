@@ -52,6 +52,7 @@ in through ldflags from `package.json` and git.
 Useful narrower gates:
 
 ```bash
+task check:fast           # the fast inner-iteration layer: fmt + vet + golangci --fast-only + bot fmt + dsl + map + positioning (a red here is worth fixing first, but `task check` stays owed)
 task test:race
 task test:bundle
 task test:live:compile     # compile every -tags=live test in the whole repo (`./...`, so any live-tagged file outside ./e2e is covered too) without running/cost; also runs in CI as a step of the required `test` job, so a refactor that breaks the live layer's compilation reddens the PR
@@ -60,6 +61,7 @@ task docs:links            # every relative link and #anchor of the tracked mark
 task sdk:ts:check          # TypeScript SDK build/typecheck/tests
 task desktop:test
 task chart:lint
+task ci:shards -- -n 3 -i 0  # print one deterministic test shard — the mechanism the CI race-shard matrix legs (the #1977 split) divide ./... with (bare, or `-all`, dumps every shard)
 ```
 
 `task test:live` and the narrower `test:live:*` tasks call real backends and require the credentials named in each task description. `test:goldens:record` also calls a real LLM and rewrites fixtures; ordinary verification should use `test:goldens`.
@@ -72,6 +74,19 @@ go test ./...
 ```
 
 Prefer `task build` after editing studio assets or any of the nine embedded dispatcher bots because it runs `studio:build` and `templates:dispatch-bots` first.
+
+Targeted Go tests (the CI suite at full size is minutes; a change usually
+concerns one tree):
+
+```bash
+go test -mod=vendor -count=1 ./bots/                                  # the unit-suite floor — almost ten minutes, everything else finishes long before it
+go test -mod=vendor -count=1 -run 'TestName' ./pkg/<tree>/...          # one test in one tree
+go test -mod=vendor -count=1 -v ./e2e/...                              # the e2e suite, verbose
+go test -race -mod=vendor -count=1 ./pkg/<tree>/...                    # one tree under the race detector
+```
+
+`-count=1` matters whenever a child process builds code (e.g. `cmd/iterion`
+e2e binaries): Go replays cached `ok` results for inputs it cannot see.
 
 ## Running the Mongo conformance harness locally
 
@@ -189,4 +204,4 @@ The labels `schedule-related`, `cloud-related`, and `extensions/state` above are
 - The module vendors [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) for in-process multi-provider execution. Keep `go.mod`, `go.sum`, and `vendor/` consistent.
 - Bump the claw-code-go pin **only** with [`scripts/bump-claw.sh`](../scripts/bump-claw.sh): it pushes the claw commit if needed, then runs `go get @<sha>`, tidy, vendor, verify and commits. Never hand-write the pseudo-version — a locally computed, non-UTC timestamp fails `go mod verify` ("does not match version-control timestamp") and turns `vendor-check` red on `main` and on every PR merge ref (three times on 2026-07-11). claw-code-go is developed by this team (sibling worktrees under `.works/`): improving it while touching a seam that crosses it is in scope.
 
-Before opening a change, run the smallest relevant gates and finish with `devbox run -- task check` when practical. Changes to OpenAPI, the SDK, Helm, desktop, or live-test declarations also need their domain-specific checks above.
+Before opening a change, run the gates your diff concerns (the narrower block above; `task check:fast` covers the cheap cross-cutting layer) and finish with `devbox run -- task check` when practical. Changes to OpenAPI, the SDK, Helm, desktop, or live-test declarations also need their domain-specific checks above.

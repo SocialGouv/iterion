@@ -18,10 +18,12 @@ func TestOpenCodeEffortCapabilities(t *testing.T) {
 	}
 	// Only the levels iterion passes through verbatim. xhigh and ultracode
 	// collapse onto high before argv, so offering them would promise a level
-	// the backend silently substitutes.
+	// the backend silently substitutes. none is excluded just as
+	// deliberately: variants are per-model and dropped in silence when
+	// uncarried, so an offered off-switch would quietly no-op.
 	assertEffortLevels(t, got.Supported,
 		[]string{"low", "medium", "high", "max"}, // required
-		[]string{"xhigh", "ultracode"},           // forbidden
+		[]string{"none", "xhigh", "ultracode"},   // forbidden
 	)
 	// opencode sends no --variant when none is set: the model's own default
 	// applies and iterion has nothing to name.

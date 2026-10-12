@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -116,6 +117,21 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	if lb.Origin == "catalog" {
 		spec.Launch.Source = ""
 	}
+	// The preview's whitelist must answer what the LAUNCH will seal: the
+	// policy resolved exactly as the launch site resolves it — the run
+	// level the caller sent folded as the HEAD Launcher layer, the bot's
+	// manifest layer and the team beneath (a ("","") resolution would
+	// drop them and preview a policy the launch never folds).
+	var runLayers []llmroute.Layer
+	if req.LLMRouting != nil {
+		runLayers = append(runLayers, llmroute.Layer{Source: llmroute.SourceRun, Launcher: true, Policy: *req.LLMRouting})
+	}
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, spec.Context.TeamID, spec.Context.BotID, runLayers...)
+	if routeErr != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", routeErr)
+		return
+	}
+	spec.LLMRoutePolicy = routePolicy
 	out, err := s.runs.PreviewCredentials(ctx, spec)
 	if errors.Is(err, runview.ErrCredentialPreviewUnavailable) {
 		httpError(w, http.StatusServiceUnavailable, "credential preview is unavailable")

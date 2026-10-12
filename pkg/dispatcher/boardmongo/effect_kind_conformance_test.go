@@ -9,6 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -20,7 +21,8 @@ import (
 // and leaves the reflect to the periodic pass with nobody the wiser.
 func runEffectOutboxKindSuite(t *testing.T, ob trigger.EffectOutbox, tenant string) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	const eventID = "board:b:card:42"
 	launchID := trigger.EffectID(eventID, "sub-kind")

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,27 @@ import (
 // FAKE_CLAUDE_STDIN_LOG, until one contains the substring), `@drain` (log
 // stdin until iterion closes it, then exit). It first consumes stdin up to the
 // prompt (the initialize control request precedes it when hooks are set).
+//
+// Pacing rules (#2201): a `@sleep` runs on the fake CLI's clock while the
+// lifecycle's timers — the wave's wait budget while work is held, the
+// idle-settle window at a reported idle, the auto-turn grace between turns,
+// the answer budget once a message of iterion's is out — run on theirs, and
+// on a loaded runner the two stretch differently enough to invert the order
+// a scenario needs. So:
+//   - a sleep whose ordering matters goes INSIDE a turn (after its init): the
+//     lifecycle arms no timer while a turn runs — only the wrap-up's finalize
+//     bound, once a turn took the wrap-up, still ticks; the take's bound runs
+//     from the last turn activity, so a turn in flight silences it — so the
+//     pacing cannot race one;
+//   - a wave of held work whose budget must NOT fire settles at message
+//     speed — no sleep between the close that opened it and the snapshot
+//     that ends it (a budget that must fire is `@wait`ed for instead);
+//   - "idle a moment before the re-kicked turn" is lnIdle() then lnRunning()
+//     back to back: the idle never holds;
+//   - a sleep between turns survives only where nothing armed can spoil the
+//     scenario: the budget is the pinned 30-minute default, the fire is
+//     suppressed (a result on its way), the fire is the point, or the armed
+//     budget is pinned far past the sleep.
 const fakeClaudeScripted = `#!/bin/sh
 log="${FAKE_CLAUDE_STDIN_LOG:-/dev/null}"
 if [ -n "$FAKE_CLAUDE_SPAWN_LOG" ]; then
@@ -194,6 +216,117 @@ func (r bgRun) resultText() string {
 	return *r.rm.Result
 }
 
+// bgSessionSafetyNet sizes the wedge net of a scripted session from the
+// session's OWN timing shape, never from a bare constant. The wall clock a
+// passing run can honestly consume is the script's "@sleep" directives (real
+// `sleep` in the fake CLI) plus the env-configured waits the scenario is
+// calibrated around — and on a loaded merge-queue runner each of those fires
+// LATE by a factor no constant names: #2177 saw the fixed 30s net expire at
+// 30.17s on a session whose honest runtime is 2.7s (an ~11x stretch of the
+// script's sleeps), failing a green test as context.DeadlineExceeded. The
+// budget is
+//
+//	wedgeAllowance + headroom × (Σ @sleep + Σ driver waits)
+//
+// so it stretches with the scenario it guards: a bigger script or bigger
+// configured waits buy a bigger net, and load stretches the same terms the
+// budget sums. A wedge — a session that NEVER returns (a "@wait" on a
+// message iterion never sends, a tracker that stops deciding) — has no
+// honest shape and trips the net at exactly this budget; that is the teeth
+// the fixed 30s had, kept.
+//
+// Driver waits are the knobs the merged env (the harness's short defaults
+// plus the test's own map) SETS to a value: the scenario is calibrated
+// around them and a passing run can honestly burn each of them once (a
+// result wait that lapses, a grace that has to expire). The answer wait is
+// priced even when UNSET: production then derives it as 5× the auto-turn
+// grace (backgroundAnswerWaitFactor), and a scenario whose CLI never
+// answers a nudge honestly lets it lapse to completion — measured at 5.76s
+// of honest runtime in TestBackground_FinishedWorkNeverDeliveredIsAnError,
+// so treating it as a backstop priced the wait at 0 while the run burned
+// it (round-1 finding on this helper). The remaining unset knobs
+// (WAIT=30m, hot idle=15m, FINALIZE=10m, orch stall=4m, cold=90s) ARE
+// backstops: a passing run never lets one fire to completion (that would
+// be a minutes-long honest run, or a behavioural failure the test's own
+// assertions name first), so they are not priced per-knob; the flat
+// wedgeAllowance covers any ONE of them firing once, late. A knob set to 0
+// means what production reads into it (unbounded for WAIT, no grace timer
+// for AUTOTURN_GRACE, an immediately-lapsing deadline for ANSWER_WAIT) —
+// either way it honestly burns nothing and prices as nothing.
+//
+// The derivation is CAPPED: merge-group run 37232043905 (2026-10-04)
+// falsified the unbounded form — TestBackground_TheRestRequestSaysWhatItAsks
+// produced ONE turn and then made no progress for its whole 845.4s derived
+// budget while the rest of the package ran at normal speed: a genuine
+// wedge, not stretch, billed at the fattest scenario's knob values. A
+// wedge's cost must not be priced by the scenario it happens to strike:
+// the slowest honest session in this suite runs ~11s and the worst
+// stretch the queue has produced is ~11x (#2177), so 3 minutes covers a
+// ~16x stretch of the slowest honest shape and bills any wedge at most
+// that. A scenario honestly needing more than the ceiling belongs in a
+// slower harness, not in this one — say so in the test that writes it.
+func bgSessionSafetyNet(t *testing.T, script []string, mergedEnv map[string]string) time.Duration {
+	t.Helper()
+	const (
+		headroom       = 6
+		wedgeAllowance = 30 * time.Second
+		wedgeCeiling   = 3 * time.Minute
+	)
+	var sleeps time.Duration
+	for _, step := range script {
+		if s, ok := strings.CutPrefix(step, "@sleep "); ok {
+			if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+				sleeps += time.Duration(f * float64(time.Second))
+			}
+		}
+	}
+	var drivers time.Duration
+	for _, knob := range []string{
+		"ITERION_CLAUDE_CODE_CLOSE_GRACE",
+		"ITERION_CLAUDE_CODE_CLOSE_TERM",
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE",
+		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE",
+		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT",
+		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT",
+		"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT",
+		"ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT",
+		"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT",
+		"ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT",
+		"ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT",
+		"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT",
+	} {
+		v := mergedEnv[knob]
+		d, err := time.ParseDuration(v)
+		if v != "" && err != nil {
+			// Production's envDurationOr silently falls back on garbage;
+			// pricing it 0 here would blind the net with no signal — a
+			// typo'd knob in a test is a programming error, named loudly.
+			t.Fatalf("bgSessionSafetyNet: %s=%q does not parse as a duration (production would silently use its documented default)", knob, v)
+		}
+		if err == nil && d > 0 {
+			drivers += d
+		}
+	}
+	// The answer wait, set or derived — production's own fallback
+	// (claude_code_background.go: answerWait = autoTurnGrace ×
+	// backgroundAnswerWaitFactor when ANSWER_WAIT is unset). An explicit
+	// set value was summed by the loop above (ParseDuration("") errors, so
+	// the unset case reaches only the derivation below); an explicit 0
+	// lapses the wait immediately in production (the answer deadline is
+	// now.Add(0)), so it honestly burns nothing and prices nothing.
+	if mergedEnv["ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT"] == "" {
+		const answerWaitFactor = 5
+		if g, err := time.ParseDuration(mergedEnv["ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE"]); err == nil && g > 0 {
+			drivers += answerWaitFactor * g
+		}
+	}
+	if net := wedgeAllowance + headroom*(sleeps+drivers); net < wedgeCeiling {
+		return net
+	}
+	return wedgeCeiling
+}
+
 // runBgSession plays script through runSession. env sets iterion's knobs (the
 // test's own values win over the short defaults applied here).
 func runBgSession(t *testing.T, script []string, env map[string]string, task Task) bgRun {
@@ -221,6 +354,14 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 		"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT": "",
 		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":      "",
 		"ITERION_CLAUDE_CODE_BACKGROUND_TASKS":            "",
+		// Same pin for the stream/orch/no-progress knobs: left unpinned, a
+		// host or CI runner exporting one would feed production a wait the
+		// merged map prices at 0 in bgSessionSafetyNet.
+		"ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT":   "",
+		"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT":   "",
+		"ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT":    "",
+		"ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT": "",
+		"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT":   "",
 	}
 	for k, v := range env {
 		defaults[k] = v
@@ -249,7 +390,10 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 		claudesdk.WithEnv("FAKE_CLAUDE_STDIN_LOG", stdinLog),
 		claudesdk.WithEnv("FAKE_CLAUDE_SPAWN_LOG", spawnLog),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The wedge net is derived from this session's own timing shape (script
+	// sleeps + the waits the merged env configures), not a fixed constant —
+	// see bgSessionSafetyNet (#2177).
+	ctx, cancel := context.WithTimeout(context.Background(), bgSessionSafetyNet(t, script, defaults))
 	defer cancel()
 	start := time.Now()
 	rm, meta, err := b.runSession(ctx, "do the work", task, opts)
@@ -260,6 +404,12 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 	mu.Lock()
 	defer mu.Unlock()
 	run.rm, run.meta, run.err, run.stdin, run.spawn = rm, meta, err, string(raw), string(spawn)
+	// A session that burned its whole net left its story in the lifecycle's
+	// warns and background events — without them a wedge is indistinguishable
+	// from stretch (#2197: one turn, then 845s of silence).
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Logf("wedge net fired; lifecycle warns: %q; background events: %+v", run.warns, run.events)
+	}
 	return run
 }
 
@@ -583,8 +733,12 @@ func TestBackground_ASecondNudgeIsNotJudgedOnTheFirstsExpiredBudget(t *testing.T
 		lnSnapshot(),
 		lnTaskNotif("t1", "tuA"),
 		`@wait "type":"user"`,
-		// A tick finds the first nudge unanswered: its deadline is armed.
-		"@sleep 0.8",
+		// A tick finds the first nudge unanswered: its deadline is armed. No
+		// signal of iterion's marks the arming, so the window is calibrated:
+		// the tick falls at one grace (100ms) into the 0.2s window, and the
+		// answer lands far inside the 4s answer budget the tick arms — the
+		// CLI's clock must outrun iterion's ~20× before the two invert.
+		"@sleep 0.2",
 		lnInit("2.1.280"),
 		"@replay",
 		lnAssistant("m3", "", cToolUse("tuB", "Agent", map[string]any{"prompt": "y", "description": "second"})),
@@ -594,12 +748,12 @@ func TestBackground_ASecondNudgeIsNotJudgedOnTheFirstsExpiredBudget(t *testing.T
 		lnAssistant("m4", "", cText("GOT t1; WAITING for t2")),
 		lnResult(resultSpec{text: "GOT t1; WAITING for t2", turns: 2, cost: 0.02}),
 		// t2 is held, so the wave timer governs and no auto-turn tick runs —
-		// meanwhile the first nudge's 1s answer budget goes by.
-		"@sleep 2.5",
+		// meanwhile the first nudge's 4s answer budget goes by.
+		"@sleep 5",
 		lnSnapshot(),
 		lnTaskNotif("t2", "tuB"),
 		`@wait "type":"user"`,
-		"@sleep 0.8",
+		"@sleep 0.2",
 		lnInit("2.1.280"),
 		"@replay",
 		lnAssistant("m5", "", cText("GOT t2")),
@@ -608,8 +762,8 @@ func TestBackground_ASecondNudgeIsNotJudgedOnTheFirstsExpiredBudget(t *testing.T
 		"@drain",
 	)
 	run := runBgSession(t, script, map[string]string{
-		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "400ms",
-		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":    "1s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "100ms",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT":    "4s",
 	}, Task{})
 	if run.err != nil {
 		t.Fatalf("runSession: %v — the second nudge was judged on the first one's expired budget", run.err)
@@ -1138,6 +1292,189 @@ func TestBackground_AWrapUpTurnThatNeverEndsIsAnErrorCarryingTheSpend(t *testing
 	}
 }
 
+func TestBackground_AWrapUpTheCLINeverTakesIsAFastNamedError(t *testing.T) {
+	// The wave's wait budget sends the wrap-up; the CLI reads it off stdin but
+	// never replays it — no turn ever takes it — and says nothing more. The
+	// take runs on the answer wait, so the session ends on a named error well
+	// before the (here 30× longer) silence watchdog it would otherwise park to
+	// (#2202). The error's identity convicts, never the wall clock: a loaded
+	// runner stretches both.
+	script := append(launchAgent(),
+		lnAssistant("m2", "", cText("WAITING")),
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		// The wrap-up is read, never taken: no replay, no turn, no word.
+		"@drain",
+	)
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":        "1s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT": "1s",
+		"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT":    "30s",
+	}, Task{})
+	if !strings.Contains(run.stdin, "background wait budget") {
+		t.Fatalf("no wrap-up on stdin (scenario broken):\n%s", run.stdin)
+	}
+	var transient *ErrTransient
+	if !errors.As(run.err, &transient) || !strings.Contains(run.err.Error(), "never took the wrap-up") {
+		t.Fatalf("err = %v, want a retryable error naming the wrap-up the CLI never took", run.err)
+	}
+	if ph := run.phases(); len(ph) == 0 || ph[len(ph)-1] != BackgroundAbandoned {
+		t.Fatalf("phases = %v, want the lost work reported", ph)
+	}
+	if !lostIncludes(run, "t1") {
+		t.Fatalf("lost work = %v, want the held t1 recorded", run.meta.terminatedBackground)
+	}
+}
+
+func TestBackground_TheWrapUpTakeRunsOnTheAnswerWait(t *testing.T) {
+	// With the wrap-up out and no turn having taken it, the lifecycle arms the
+	// answer wait from the SEND — a bare recompute does not re-arm it; only
+	// the select loop's sight of a turn in flight slides it, the CLI's queued
+	// turns getting a full answer wait of quiet after they close — and its
+	// fire ends the session on a named error; a turn taking the wrap-up flips
+	// the bound to the finalize one, and a 0 answer wait arms nothing, the
+	// documented off-switch (#2202).
+	cfg := backgroundLifecycleConfig{wait: time.Second, answerWait: 2 * time.Second, autoTurnGrace: time.Hour, finalizeTimeout: time.Minute, idleSettle: time.Second}
+	t0 := time.Now()
+	// wrapUpOut drives a wave whose budget spent to the wrap-up's send, then
+	// mirrors what production does around it: sendTagged records the uuid, the
+	// select loop counts the re-entry (timer() answers only from one).
+	wrapUpOut := func(t *testing.T, cfg backgroundLifecycleConfig) *lifecycleAt {
+		h := newLifecycleAt(t, cfg, 0)
+		agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
+		h.feed(lnInit("2.1.280"),
+			lnAssistant("a1", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
+			lnSnapshotOf(agent),
+			lnTaskStarted("t1", "tuA", true, false),
+			lnToolResult("tuA", "Async agent launched successfully.", false, ""),
+			lnAssistant("a2", "", cText("WAITING")))
+		if act := h.close(t0, "WAITING"); act != bgReenter {
+			t.Fatalf("close: action %v, want the wave's wait", act)
+		}
+		if _, send := h.l.waitExpired(t0.Add(time.Second)); !send {
+			t.Fatal("the spent wait budget did not send the wrap-up (scenario broken)")
+		}
+		h.tr.sent("u-wrap")
+		h.l.reentries = 1
+		return h
+	}
+
+	t.Run("armed from the send until a turn takes the wrap-up", func(t *testing.T) {
+		h := wrapUpOut(t, cfg)
+		d, kind, _ := h.l.timer(t0.Add(time.Second), false, false)
+		if kind != bgTimerWrapUpTake || d <= 1900*time.Millisecond || d > 2*time.Second {
+			t.Fatalf("kind = %v, remaining = %s, want the take's bound at ~2s (the full answer wait from the send)", kind, d)
+		}
+		d2, kind2, _ := h.l.timer(t0.Add(1500*time.Millisecond), false, false)
+		if kind2 != bgTimerWrapUpTake || d2 >= d {
+			t.Fatalf("kind = %v, remaining %s then %s: the take's bound re-armed instead of running from the send", kind2, d, d2)
+		}
+		h.feed(lnInit("2.1.280"),
+			jsonLine(map[string]any{"type": "user", "isReplay": true, "uuid": "u-wrap", "session_id": "s1",
+				"message": map[string]any{"role": "user", "content": "report now"}}))
+		if d3, kind3, _ := h.l.timer(t0.Add(2*time.Second), false, false); kind3 != bgTimerFinalize {
+			t.Fatalf("kind = %v (remaining %s) after a turn took the wrap-up, want its finalize bound", kind3, d3)
+		}
+	})
+
+	t.Run("the fire is a named error", func(t *testing.T) {
+		h := wrapUpOut(t, cfg)
+		var transient *ErrTransient
+		if err := h.l.wrapUpTakeExpired(t0.Add(3 * time.Second)); !errors.As(err, &transient) || !strings.Contains(err.Error(), "never took the wrap-up") {
+			t.Fatalf("err = %v, want a retryable error naming the wrap-up the CLI never took", err)
+		}
+	})
+
+	t.Run("a turn in flight slides the bound", func(t *testing.T) {
+		// The CLI may run turns it had queued first, and a turn running at the
+		// send replays the wrap-up only at its NEXT turn: the bound bounds only
+		// idle opportunity, so a turn in flight silences it — it slides to the
+		// loop's last sight of turn activity, never expiring mid-turn into a
+		// 0-clamped refire spin.
+		h := wrapUpOut(t, cfg)
+		if d, kind, _ := h.l.timer(t0.Add(2*time.Second), false, true); kind != bgTimerNone {
+			t.Fatalf("kind = %v, remaining %s: a turn in flight must silence the take's bound, not let it run down mid-turn", kind, d)
+		}
+		if d, kind, _ := h.l.timer(t0.Add(3*time.Second), false, true); kind != bgTimerNone {
+			t.Fatalf("kind = %v, remaining %s: the bound must slide with the turn's activity, not expire into a refire spin", kind, d)
+		}
+		// The turn closed a half second ago: the CLI gets the full answer wait
+		// of quiet from its last activity to pick the wrap-up up.
+		d, kind, _ := h.l.timer(t0.Add(3500*time.Millisecond), false, false)
+		if kind != bgTimerWrapUpTake || d <= 1400*time.Millisecond || d > 1500*time.Millisecond {
+			t.Fatalf("kind = %v, remaining = %s after the turn closed, want ~1.5s — the full answer wait from the last turn activity", kind, d)
+		}
+	})
+
+	t.Run("a close slides the bound too", func(t *testing.T) {
+		// A turn's close IS turn activity: one whose last message is older
+		// than the answer wait must still leave the CLI a full wait of quiet
+		// to take the wrap-up — not recompute an expired deadline that kills
+		// the session just before the take.
+		h := wrapUpOut(t, cfg)
+		h.feedAt(t0.Add(2*time.Second), lnInit("2.1.280"), lnAssistant("q1", "", cText("queued work")))
+		if act := h.close(t0.Add(4*time.Second), "queued work done"); act != bgReenter {
+			t.Fatalf("close: action %v, want to keep reading — the wrap-up is sent, untaken", act)
+		}
+		d, kind, _ := h.l.timer(t0.Add(4*time.Second), false, false)
+		if kind != bgTimerWrapUpTake || d <= 1900*time.Millisecond || d > 2*time.Second {
+			t.Fatalf("kind = %v, remaining = %s after the close, want ~2s — the full answer wait from the close, not the send-anchored deadline (expired 1s ago)", kind, d)
+		}
+	})
+
+	t.Run("a 0 answer wait arms no take bound", func(t *testing.T) {
+		off := cfg
+		off.answerWait = 0
+		h := wrapUpOut(t, off)
+		if d, kind, _ := h.l.timer(t0.Add(time.Second), false, false); kind != bgTimerNone {
+			t.Fatalf("kind = %v, remaining %s: the documented off-switch must leave the take to the silence watchdog", kind, d)
+		}
+	})
+}
+
+func TestBackground_AWrapUpSurvivesATurnTheCLIHadQueued(t *testing.T) {
+	// The wrap-up goes out at the 1s wait budget, but the CLI runs a 7s turn
+	// of its own first — queued before the message landed — and takes the
+	// wrap-up only at the turn after, a half second of quiet in between. The
+	// take's bound must run from the CLI's last turn activity: armed from the
+	// send, it would expire mid-queued-turn, spin on the 0-clamped refire the
+	// dispatch guard drops, and kill the session at that turn's close —
+	// microseconds before the take (#2202, adversarial round 1). The in-turn
+	// sleep sits between the turn's last message and its result so the close,
+	// not the last mid-turn message, is the activity the bound slides to —
+	// otherwise the end-to-end red convicts only the mid-turn slide, never
+	// atClose's (adversarial round 3). In-turn sleeps are watchdog-safe by
+	// the pacing rules; the between-turns one needs the armed bound pinned
+	// far past it — 6s against 0.5s is 12x, past the file's ~11x stretch
+	// regime (#2177).
+	script := append(launchAgent(),
+		lnAssistant("m2", "", cText("WAITING")),
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		`@wait "type":"user"`,
+		lnInit("2.1.280"),
+		lnAssistant("m3", "", cText("finishing what was queued")),
+		"@sleep 7",
+		lnResult(resultSpec{text: "finishing what was queued", turns: 1, cost: 0.01}),
+		"@sleep 0.5",
+		lnInit("2.1.280"),
+		"@replay",
+		lnAssistant("m4", "", cText("REPORT: t1 not verified")),
+		lnResult(resultSpec{text: "REPORT: t1 not verified", turns: 1, cost: 0.02}),
+		"@drain",
+	)
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":        "1s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT": "6s",
+	}, Task{})
+	if run.err != nil || run.resultText() != "REPORT: t1 not verified" {
+		t.Fatalf("err = %v, text = %q: the take did not survive the turn the CLI had queued — the bound killed the session before it", run.err, run.resultText())
+	}
+	// t1 never reported back before the wrap-up turn ended: the ledger names
+	// it, as every wrap-up with unverified work does.
+	if !lostIncludes(run, "t1") {
+		t.Fatalf("lost = %v, want the held t1 recorded", run.meta.terminatedBackground)
+	}
+}
+
 func TestBackground_FinishedWorkNeverDeliveredIsAnError(t *testing.T) {
 	// t1 finishes after the parent's last word, and the CLI starts no turn to
 	// deliver it — not even after iterion's nudge. The answer the session holds
@@ -1404,8 +1741,12 @@ func TestBackground_AWorkingTurnPastTheBudgetIsNeverInterrupted(t *testing.T) {
 		lnToolResult("tuA", "Async agent launched successfully.", false, ""),
 		lnToolResult("tuB", "Async agent launched successfully.", false, ""),
 		lnAssistant("m2", "", cText("WAITING")),
-		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		// t1's runtime, inside the turn that closes on the wave held: the
+		// delivering turn then starts at once and the budget (1s) is spent
+		// inside it — a gap before its init would let the budget's fire race
+		// the turn's start (#2201).
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
 		lnSnapshot("t2"),
 		lnTaskNotif("t1", "tuA"),
 		lnInit("2.1.280"),
@@ -1444,8 +1785,10 @@ func TestBackground_ASecondWaveGetsItsOwnBudget(t *testing.T) {
 	// session's: t2 is waited for, not wrapped up at its first close.
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
-		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		// t1's runtime, inside the turn that closes on it held: the wave it
+		// opens settles at message speed, its 1s budget never near (#2201).
 		"@sleep 0.4",
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
 		lnSnapshot(),
 		lnTaskNotif("t1", "tuA"),
 		lnInit("2.1.280"),
@@ -1455,8 +1798,8 @@ func TestBackground_ASecondWaveGetsItsOwnBudget(t *testing.T) {
 		lnToolResult("tuB", "Async agent launched successfully.", false, ""),
 		"@sleep 1",
 		lnAssistant("m4", "", cText("WAITING FOR T2")),
-		lnResult(resultSpec{text: "WAITING FOR T2", turns: 2, cost: 0.02}),
 		"@sleep 0.4",
+		lnResult(resultSpec{text: "WAITING FOR T2", turns: 2, cost: 0.02}),
 		lnSnapshot(),
 		lnTaskNotif("t2", "tuB"),
 		lnInit("2.1.280"),
@@ -2124,8 +2467,11 @@ func TestBackground_AHeldQueryTurnIsNotTheWaveBudgetWrapUpsAnswer(t *testing.T) 
 		agent("m3", "tuB", "beta"), lnSnapshot("t0", "t1", "t2"), lnTaskStarted("t2", "tuB", true, false), lnToolResult("tuB", "Async agent launched successfully.", false, ""),
 		agent("m4", "tuC", "gamma"), lnSnapshot("t0", "t1", "t2", "t3"), lnTaskStarted("t3", "tuC", true, false), lnToolResult("tuC", "Async agent launched successfully.", false, ""),
 		lnAssistant("m5", "", cText("WAITING")),
-		lnResult(resultSpec{text: "WAITING", turns: 5, cost: 0.01}),
+		// t0's runtime, inside the turn that closes on the wave held: the
+		// working turn then starts at once and the budget (1s) is spent
+		// inside it (#2201).
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING", turns: 5, cost: 0.01}),
 		lnSnapshot("t1", "t2", "t3"), lnTaskNotif("t0", "tu0"),
 		lnInit("2.1.280"),
 		lnAssistant("m6", "", cToolUse("tuW", "Bash", map[string]any{"command": "make"})),
@@ -2203,16 +2549,20 @@ func TestBackground_AFalseIdleThatARunningFollowsIsNotTheEnd(t *testing.T) {
 		lnAssistant("m3", "", cText("the build log shows the tests started")),
 		lnResult(resultSpec{text: "the build log shows the tests started", turns: 1, cost: 0.02}),
 		lnIdle(),
-		"@sleep 0.1",
+		// The running follows an instant later — well inside the 1s settle
+		// window however the two clocks stretch (#2201).
+		"@sleep 0.02",
 		lnRunning(),
-		"@sleep 0.5",
 		lnInit("2.1.280"),
+		// The turn the CLI re-kicks runs its pacing inside itself: between
+		// turns the auto-turn grace would govern the gap (#2201).
+		"@sleep 0.5",
 		lnAssistant("m4", "", cText("GOT t1")),
 		lnResult(resultSpec{text: "GOT t1", turns: 1, cost: 0.03}),
 		lnIdle(),
 		"@drain",
 	)
-	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE": "400ms"}, Task{})
+	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE": "1s"}, Task{})
 	if run.err != nil || run.resultText() != "GOT t1" {
 		t.Fatalf("err = %v, text = %q: the session ended on an idle a turn followed", run.err, run.resultText())
 	}
@@ -2410,8 +2760,10 @@ func TestBackground_TheSecondWaveHasABudgetOfItsOwn(t *testing.T) {
 	// returns: the second wave is wrapped up on a budget of its own.
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
-		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		// t1's runtime inside the turn that closes on it held: the wave
+		// settles at message speed, its 1s budget never near (#2201).
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
 		lnSnapshot(), lnTaskNotif("t1", "tuA"),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuB", "Agent", map[string]any{"prompt": "y", "description": "second"})),
@@ -2468,8 +2820,10 @@ func TestBackground_EachPhaseAtRestGetsAFreshGrace(t *testing.T) {
 		lnAssistant("m2", "", cText("WAITING")),
 		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
 		lnSnapshot(), lnTaskNotif("t1", "tuA"),
-		"@sleep 0.5",
+		// The delivering turn starts within the grace and runs its pacing
+		// inside itself: between turns the grace would govern the gap (#2201).
 		lnInit("2.1.280"),
+		"@sleep 0.5",
 		lnAssistant("m3", "", cToolUse("tuB", "Agent", map[string]any{"prompt": "y", "description": "second"})),
 		lnSnapshot("t2"), lnTaskStarted("t2", "tuB", true, false),
 		lnToolResult("tuB", "Async agent launched successfully.", false, ""),
@@ -2477,8 +2831,8 @@ func TestBackground_EachPhaseAtRestGetsAFreshGrace(t *testing.T) {
 		lnResult(resultSpec{text: "WAITING FOR T2", turns: 2, cost: 0.02}),
 		"@sleep 1.5",
 		lnSnapshot(), lnTaskNotif("t2", "tuB"),
-		"@sleep 0.5",
 		lnInit("2.1.280"),
+		"@sleep 0.5",
 		lnAssistant("m5", "", cText("GOT T2")),
 		lnResult(resultSpec{text: "GOT T2", turns: 1, cost: 0.03}),
 		lnIdle(),
@@ -2630,7 +2984,9 @@ func TestBackground_AnIdleFromBeforeAHeldTasksEndIsNotRest(t *testing.T) {
 	// The resumed t1 ends; the CLI's running comes later than the settle
 	// window (its notification waits on a worktree to finalise). The idle on
 	// record predates t1's end: it vouches for nothing after it.
-	script := resumedAgentStream([]string{"@sleep 0.5"}, "@sleep 1.5")
+	// The resume lands an instant after the idle — well inside the 1s settle
+	// window however the two clocks stretch (#2201).
+	script := resumedAgentStream([]string{"@sleep 0.05"}, "@sleep 1.5")
 	run := runBgSession(t, script, map[string]string{
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "20s",
@@ -2644,10 +3000,12 @@ func TestBackground_TheSettleWindowRestartsAfterHeldWorkCameBack(t *testing.T) {
 	// t1 is resumed within the settle window of the idle before it; after its
 	// end the CLI reports a fresh idle an instant before the turn it re-kicks
 	// (running): the window runs from that idle, not from the stale one.
-	script := resumedAgentStream([]string{"@sleep 0.2"}, "@sleep 0.2")
+	// Same calibration: the resume (0.05s) and the fresh idle's hold (0.02s)
+	// stay well inside the 1s settle window however the clocks stretch (#2201).
+	script := resumedAgentStream([]string{"@sleep 0.05"}, "@sleep 0.2")
 	for i, line := range script {
 		if line == lnRunning() {
-			script = append(script[:i], append([]string{lnIdle(), "@sleep 0.1"}, script[i:]...)...)
+			script = append(script[:i], append([]string{lnIdle(), "@sleep 0.02"}, script[i:]...)...)
 			break
 		}
 	}
@@ -2665,8 +3023,11 @@ func TestBackground_HeldWorkBackWithoutATurnHasABudget(t *testing.T) {
 	// opens is bounded — iterion asks for the report when the budget is spent.
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
-		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
+		// t1's runtime inside the turn that closes on it held: the first wave
+		// settles at message speed, its 1s budget never near — the budget
+		// under test is the resumed wave's (#2201).
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
 		lnSnapshot(),
 		lnTaskNotif("t1", "tuA"),
 		lnInit("2.1.280"),
@@ -2773,14 +3134,17 @@ func monitorStarted(final string) []string {
 }
 
 // monitorEvents: n events, each queued while the previous turn ran — the CLI
-// reports idle, then re-kicks at once.
+// reports idle, then re-kicks at once (the idle never holds: a sleep there
+// would race the settle window — #2201 — so the event's pacing runs inside
+// the turn, where the lifecycle arms no timer).
 func monitorEvents(n int) []string {
 	var out []string
 	for i := range n {
 		text := fmt.Sprintf("monitor event %d noted", i)
 		out = append(out,
-			lnIdle(), "@sleep 0.3", lnRunning(),
+			lnIdle(), lnRunning(),
 			lnInit("2.1.280"),
+			"@sleep 0.3",
 			lnAssistant(fmt.Sprintf("e%d", i), "", cText(text)),
 			lnResult(resultSpec{text: text, turns: 1, cost: 0.01}),
 		)
@@ -3136,11 +3500,14 @@ func TestBackground_NoWrapUpInsideATurnTheCLIStarted(t *testing.T) {
 		lnToolResult("tuB", "Command running in background with ID: b1", false, ""),
 		lnAssistant("m2", "", cText("WAITING")),
 		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
-		"@sleep 0.6",
 		lnSnapshotOf(agent),
 		lnTaskNotif("b1", "tuB"),
+		// The CLI starts the turn at once: the wave budget (1s) is spent
+		// inside it, where no lifecycle timer arms — a gap before the init
+		// would race the budget's fire (#2201) — and the wrap-up waits for
+		// the close.
 		lnInit("2.1.280"),
-		"@sleep 1.4",
+		"@sleep 2",
 		lnAssistant("m3", "", cText("npm test passed; t1 still running")),
 		lnResult(resultSpec{text: "npm test passed; t1 still running", turns: 1, cost: 0.02}),
 		`@wait "type":"user"`,
@@ -3156,7 +3523,7 @@ func TestBackground_NoWrapUpInsideATurnTheCLIStarted(t *testing.T) {
 	}
 	for _, e := range run.events {
 		if e.Phase == BackgroundFinalizing && e.WaitedFor < 1800*time.Millisecond {
-			t.Fatalf("the wrap-up was written %s after the first result — inside the turn the CLI started at 0.6s", e.WaitedFor)
+			t.Fatalf("the wrap-up was written %s after the first result — inside the turn the CLI started", e.WaitedFor)
 		}
 	}
 }
@@ -3194,7 +3561,7 @@ func TestBackground_AWaveRestartsTheRestClock(t *testing.T) {
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
 		lnSnapshotOf(mon, agent),
@@ -3234,21 +3601,24 @@ func TestBackground_AShellsEndRestartsTheRestClock(t *testing.T) {
 		tu, id := fmt.Sprintf("tuB%d", i), fmt.Sprintf("b%d", i)
 		shell := map[string]any{"task_id": id, "task_type": "local_bash", "description": fmt.Sprintf("npm test #%d", i)}
 		if i > 0 {
-			script = append(script, lnIdle(), "@sleep 0.3", lnRunning(), lnInit("2.1.280"))
+			// Idle a moment before the re-kick — never held (#2201).
+			script = append(script, lnIdle(), lnRunning(), lnInit("2.1.280"))
 		}
 		script = append(script,
 			lnAssistant(fmt.Sprintf("m%d", i), "", cToolUse(tu, "Bash", map[string]any{"command": "npm test", "run_in_background": true})),
 			lnSnapshotOf(shell),
 			lnToolResult(tu, "Command running in background with ID: "+id, false, ""),
 			lnAssistant(fmt.Sprintf("w%d", i), "", cText(fmt.Sprintf("fix %d applied, tests running", i))),
-			lnResult(resultSpec{text: fmt.Sprintf("fix %d applied, tests running", i), turns: 2, cost: 0.01}),
+			// The shell's runtime, inside its turn: between turns the grace
+			// would govern the gap (#2201).
 			"@sleep 0.2",
+			lnResult(resultSpec{text: fmt.Sprintf("fix %d applied, tests running", i), turns: 2, cost: 0.01}),
 			lnSnapshot(),
 			lnTaskNotif(id, tu),
 		)
 	}
 	script = append(script,
-		lnIdle(), "@sleep 0.2", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("done", "", cText("ALL TESTS PASS")),
 		lnResult(resultSpec{text: "ALL TESTS PASS", turns: 1, cost: 0.01}),
 		lnIdle(),
@@ -3265,11 +3635,17 @@ func TestBackground_AShellsEndRestartsTheRestClock(t *testing.T) {
 
 func TestBackground_HeldWorkBackWithoutATurnRestartsTheRestClock(t *testing.T) {
 	// The CLI resumed a finished t1 outside its turn loop: that is held work
-	// again, and the close of its delivery starts a rest of its own.
+	// again, and the close of its delivery starts a rest of its own. The
+	// restart itself is pinned directly, close by close with no wall clock,
+	// by the lifecycleAt twin TestBackground_TheRestClockRestartsAtTheDeliverysClose
+	// (#2220); this test keeps the end-to-end shape.
 	script := resumedAgentStream([]string{"@sleep 0.2"}, "@sleep 0.5")
+	// The grace stays out of the resumed wave's way (20s): the half-second
+	// between t1's end and the CLI's re-kick would otherwise race the grace's
+	// nudge — the scenario's clock is the rest clock at the closes (#2201).
 	run := runBgSession(t, script, map[string]string{
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
-		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "1s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "20s",
 	}, schemaTask())
 	if so, _ := run.rm.StructuredOutput.(map[string]any); run.err != nil || so["answer"] != "t1 final: PASS" {
 		t.Fatalf("err = %v, structured = %v", run.err, run.rm.StructuredOutput)
@@ -3322,7 +3698,9 @@ func TestBackground_AWaveIsSettledWhenItComesBack(t *testing.T) {
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
 		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
-		"@sleep 0.2",
+		// t1's runtime: short, so the settled event's WaitedFor stays far
+		// under the 1s the assertion allows however the clocks stretch (#2201).
+		"@sleep 0.05",
 		lnSnapshot(),
 		jsonLine(map[string]any{"type": "system", "subtype": "task_notification", "task_id": "t1", "tool_use_id": "tuA",
 			"status": "stopped", "summary": "stopped t1", "skip_transcript": true, "session_id": "s1"}),
@@ -3333,7 +3711,12 @@ func TestBackground_AWaveIsSettledWhenItComesBack(t *testing.T) {
 		lnIdle(),
 		"@drain",
 	)
-	run := runBgSession(t, script, nil, Task{})
+	// The grace is off: the CLI's 1.5s of silence before its own turn would
+	// otherwise race the grace's quiesced end (#2201). The wave's settle time
+	// is read off the event, not any timer.
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "0",
+	}, Task{})
 	var settled *BackgroundWork
 	for i, e := range run.events {
 		if e.Phase == BackgroundSettled {
@@ -3362,7 +3745,7 @@ func awaitedGapWithMonitor(gap ...string) []string {
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
 		lnSnapshotOf(mon, agent),
@@ -3391,7 +3774,10 @@ func TestBackground_AWaveStartRestartsTheRestClock(t *testing.T) {
 	// The rest clock started at the first close, before t1 was launched; t1
 	// ran past the grace. The monitor turn that closes while t1's result is
 	// on its way is no reason to end: the wave's start restarted the clock.
-	run := runBgSession(t, awaitedGapWithMonitor("@sleep 0.3"), map[string]string{
+	// The gap the monitor's event turn closes in is a message gap, not a
+	// sleep: with t1's result on its way, a sleep there would race the
+	// grace's nudge (#2201).
+	run := runBgSession(t, awaitedGapWithMonitor(), map[string]string{
 		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "1s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
 	}, Task{})
@@ -3406,7 +3792,7 @@ func TestBackground_AWaveInsideOneTurnRestartsTheRestClock(t *testing.T) {
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m2b", "", cText("an error in the log: looking into it")),
 		"@sleep 1.1",
@@ -3416,8 +3802,10 @@ func TestBackground_AWaveInsideOneTurnRestartsTheRestClock(t *testing.T) {
 		lnToolResult("tuA", "Async agent launched successfully.", false, ""),
 		lnSnapshotOf(mon),
 		lnAssistant("m4", "", cText("WAITING for t1")),
-		lnResult(resultSpec{text: "WAITING for t1", turns: 2, cost: 0.02}),
+		// Inside the turn: with t1's result on its way after the close, a
+		// sleep there would race the grace's nudge (#2201).
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING for t1", turns: 2, cost: 0.02}),
 		lnTaskNotif("t1", "tuA"),
 		lnInit("2.1.280"),
 		lnAssistant("m5", "", cText("GOT t1: PASS")),
@@ -3440,7 +3828,8 @@ func TestBackground_AMonitorsTurnsDoNotCutAHeldResultOnItsWay(t *testing.T) {
 	// session.
 	var gap []string
 	for i := range 5 {
-		gap = append(gap, lnIdle(), "@sleep 0.3", lnRunning(), lnInit("2.1.280"),
+		gap = append(gap, lnIdle(), lnRunning(), lnInit("2.1.280"),
+			"@sleep 0.3",
 			lnAssistant(fmt.Sprintf("g%d", i), "", cText(fmt.Sprintf("monitor event %d noted", i))),
 			lnResult(resultSpec{text: fmt.Sprintf("monitor event %d noted", i), turns: 1, cost: 0.01}))
 	}
@@ -3522,17 +3911,20 @@ func monitorEachEventWith(n int, kind string, takeAt int) []string {
 			started = lnTaskStarted(id, tu, true, false)
 		}
 		script = append(script,
-			lnIdle(), "@sleep 0.15", lnRunning(), lnInit("2.1.280"),
+			lnIdle(), lnRunning(), lnInit("2.1.280"),
+			// The event's pacing runs inside its turn: between turns it
+			// would race the settle window and the grace (#2201).
+			"@sleep 0.15",
 			lnAssistant(fmt.Sprintf("ev%d", i), "", call),
 			lnSnapshotOf(mon, reaction),
 			started,
 			lnToolResult(tu, "started "+id, false, ""),
 			lnAssistant(fmt.Sprintf("w%d", i), "", cText(fmt.Sprintf("event %d: reaction started", i))),
 			lnResult(resultSpec{text: fmt.Sprintf("event %d: reaction started", i), turns: 2, cost: 0.01}),
-			"@sleep 0.05",
 			lnSnapshotOf(mon),
 			lnTaskNotif(id, tu),
 			lnInit("2.1.280"),
+			"@sleep 0.05",
 			lnAssistant(fmt.Sprintf("d%d", i), "", cText(fmt.Sprintf("event %d: handled", i))),
 			lnResult(resultSpec{text: fmt.Sprintf("event %d: handled", i), turns: 1, cost: 0.01}),
 		)
@@ -3552,7 +3944,17 @@ func TestBackground_AMonitorAnsweredWithShellsStopsAtTheWaitBudget(t *testing.T)
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":           "2s",
 	}, Task{})
-	if run.err != nil || run.elapsed > 4*time.Second || run.resultText() != "REPORT: the chain stopped" || !restWrapUpAsked(run, "turns on its own") {
+	// restWrapUpAsked is the witness that the wait budget ended the chain;
+	// the clock only convicts a chain that ran far past it. The ceiling is
+	// 4x the wait budget: the scripted @sleeps are sleep(1) in the fake-CLI
+	// shell — OS wall-clock, indifferent to runner load — so the margin
+	// covers only iterion's own line processing around them (~0.5s of Go
+	// scheduling under -race), which is what a starved runner stretches.
+	// The residual false-pass window, stated: a budget inflated up to ~4x
+	// still passes, the witness naming WHICH bound fired, not WHEN; a
+	// budget ignored outright is still convicted — the wrap-up is never
+	// asked for and the scripted @wait leaves run.err non-nil.
+	if run.err != nil || run.elapsed > 8*time.Second || run.resultText() != "REPORT: the chain stopped" || !restWrapUpAsked(run, "turns on its own") {
 		t.Fatalf("err = %v, elapsed = %s, text = %q: the monitor's chain ran past the wait budget", run.err, run.elapsed, run.resultText())
 	}
 }
@@ -3736,7 +4138,7 @@ func TestBackground_ASpentBudgetAsksForTheReportWhenAResultIsQueuedBehindAMonito
 		lnInit("2.1.280"),
 		lnAssistant("e0", "", cText("monitor event noted")),
 		lnResult(resultSpec{text: "monitor event noted", turns: 1, cost: 0.02}),
-		lnIdle(), "@sleep 0.1", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cText("GOT t1: PASS")),
 		lnResult(resultSpec{text: "GOT t1: PASS", turns: 1, cost: 0.03}),
@@ -3923,7 +4325,9 @@ func TestBackground_ACLIThatCrashesAtRestIsAnError(t *testing.T) {
 		lnResult(resultSpec{text: "WAITING", turns: 2, cost: 0.01}),
 	)
 	script = append(script, deliverAgent("GOT: PINEAPPLE", resultSpec{text: "GOT: PINEAPPLE", turns: 1, cost: 0.03})...)
-	script = append(script[:len(script)-1], "@sleep 0.3", "@exit 3")
+	// The crash follows the idle at once: a gap there would race the settle
+	// window — the session would end as a success before the exit (#2201).
+	script = append(script[:len(script)-1], "@exit 3")
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE": "1s"}, Task{})
 	if run.err == nil || !strings.Contains(run.err.Error(), "cli_exit_code=3") {
 		t.Fatalf("err = %v, text = %q: a CLI that crashed at rest ended the node as a success", run.err, run.resultText())
@@ -4027,7 +4431,13 @@ func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 		lnIdle(),
 		"@drain",
 	)
-	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s"}, Task{})
+	// RESULT_WAIT pins the CLI's own patience for a result on its way: the
+	// grace's fire is suppressed while t1's is, so the 1.2s gap never races
+	// a nudge (#2201). The wave's settle time is read off the event.
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s",
+		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":    "10s",
+	}, Task{})
 	var settled *BackgroundWork
 	for i, e := range run.events {
 		if e.Phase == BackgroundSettled {
@@ -4393,7 +4803,7 @@ func TestBackground_AMonitorsTurnsWaitForAResultInItsFinalisation(t *testing.T) 
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
 		lnSnapshotOf(mon, agent),
@@ -4473,8 +4883,12 @@ func TestBackground_APlainOrchestrationNeverArmsTheRestCeiling(t *testing.T) {
 			lnToolResult(tuA, "Async agent launched successfully.", false, ""),
 			lnToolResult(tuB, "Async agent launched successfully.", false, ""),
 			lnAssistant(fmt.Sprintf("W%d", n), "", cText(lead+fmt.Sprintf("WAITING for wave %d", n))),
-			lnResult(resultSpec{text: lead + fmt.Sprintf("WAITING for wave %d", n), turns: 2, cost: 0.01}),
+			// The wave's runtime, inside the turn that closes on it held: it
+			// then settles at message speed and its own budget (WAIT) can
+			// never fire — the orchestration's length past the budget is the
+			// sum of these turns, floors intact (#2201).
 			sleep,
+			lnResult(resultSpec{text: lead + fmt.Sprintf("WAITING for wave %d", n), turns: 2, cost: 0.01}),
 			lnSnapshotOf(ag(b, "fix "+b)), lnTaskNotif(a, tuA),
 			lnInit("2.1.280"),
 			lnAssistant(fmt.Sprintf("D%d", n), "", cText(a+" fixed; waiting for "+b)),
@@ -4505,28 +4919,31 @@ func TestBackground_APlainOrchestrationNeverArmsTheRestCeiling(t *testing.T) {
 }
 
 // ceilingThenWave: a running monitor arms the rest ceiling (WAIT=2s from the
-// first close, ~0s); a monitor event's turn a second later launches t1, whose
-// own wave budget runs to ~3.1s; t1 ends and the CLI empties its set, then a
-// monitor event's turn closes at ~2.4s — past the ceiling — before t1's
-// delivery: a turn takes iterion's request for the report, t1's result
-// delivered with it.
+// first close, ~0s); a monitor event's turn launches t1; t1 ends and the CLI
+// empties its set at once — the wave's own budget can only fire with t1 held,
+// which no sleep in this script straddles (#2201: the settle used to ride a
+// 1.3s sleep against the 2s budget) — then a monitor event's turn closes past
+// the ceiling (its pacing runs inside the turn, where the lifecycle arms no
+// timer) with t1's result still on its way: a turn takes iterion's request
+// for the report, t1's result delivered with it.
 func ceilingThenWave(notifyBeforeTheGapTurn bool) []string {
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
+		"@sleep 0.2",
 		lnAssistant("e0", "", cText("monitor event noted")),
 		lnResult(resultSpec{text: "monitor event noted", turns: 1, cost: 0.01}),
-		lnIdle(), "@sleep 0.9", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
+		"@sleep 0.9",
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
 		lnSnapshotOf(mon, agent),
 		lnTaskStarted("t1", "tuA", true, false),
 		lnToolResult("tuA", "Async agent launched successfully.", false, ""),
 		lnAssistant("m4", "", cText("WAITING for t1")),
 		lnResult(resultSpec{text: "WAITING for t1", turns: 2, cost: 0.02}),
-		"@sleep 1.3",
 		lnSnapshotOf(mon),
 	)
 	if notifyBeforeTheGapTurn {
@@ -4534,6 +4951,9 @@ func ceilingThenWave(notifyBeforeTheGapTurn bool) []string {
 	}
 	script = append(script,
 		lnRunning(), lnInit("2.1.280"),
+		// The gap turn's length, inside it: the monitor has run past the
+		// ceiling when it closes, and no timer can fire mid-turn.
+		"@sleep 1.3",
 		lnAssistant("e1", "", cText("monitor event noted")),
 		lnResult(resultSpec{text: "monitor event noted", turns: 1, cost: 0.03}),
 		"@sleep 0.3",
@@ -4598,15 +5018,18 @@ func TestBackground_TheRestCeilingAsksForTheReportWhenAResultNeverComes(t *testi
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
 		lnSnapshotOf(mon, agent),
 		lnTaskStarted("t1", "tuA", true, false),
 		lnToolResult("tuA", "Async agent launched successfully.", false, ""),
 		lnAssistant("m4", "", cText("WAITING for t1")),
-		lnResult(resultSpec{text: "WAITING for t1", turns: 2, cost: 0.02}),
+		// t1's runtime inside the turn that closes on it held: its wave
+		// budget (WAIT=1s) can only fire with t1 held, which no sleep
+		// straddles — the ceiling alone is under test (#2201).
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING for t1", turns: 2, cost: 0.02}),
 		lnSnapshotOf(mon),
 	)
 	events := monitorEvents(6)
@@ -4718,14 +5141,18 @@ func TestBackground_NoWaitBudgetIsNoRestCeiling(t *testing.T) {
 func TestBackground_AResultThatNeverComesIsBoundedByResultWaitUnderAMonitor(t *testing.T) {
 	var gap []string
 	for i := range 20 {
-		gap = append(gap, lnIdle(), "@sleep 0.3", lnRunning(), lnInit("2.1.280"),
+		// The event's pacing runs inside its turn: between turns it would
+		// race the grace — past RESULT_WAIT its fire is no longer
+		// suppressed (#2201).
+		gap = append(gap, lnIdle(), lnRunning(), lnInit("2.1.280"),
+			"@sleep 0.3",
 			lnAssistant("g"+string(rune('a'+i)), "", cText("monitor event noted")),
 			lnResult(resultSpec{text: "monitor event noted", turns: 1, cost: 0.01}))
 	}
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
 		lnSnapshotOf(mon, agent),
@@ -4760,7 +5187,7 @@ func TestBackground_TheRestCeilingAsksForTheReportWhileALaterWavesResultIsOwed(t
 	t4 := map[string]any{"task_id": "t4", "task_type": "local_agent", "description": "fix four"}
 	script := append(monitorStarted("watching the log"), threeMonitorTurns()...)
 	script = append(script,
-		lnIdle(), "@sleep 0.3", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tu3", "Agent", map[string]any{"prompt": "x", "description": "fix three", "run_in_background": true}),
 			cToolUse("tu4", "Agent", map[string]any{"prompt": "y", "description": "fix four", "run_in_background": true})),
@@ -4771,10 +5198,14 @@ func TestBackground_TheRestCeilingAsksForTheReportWhileALaterWavesResultIsOwed(t
 		lnToolResult("tu4", "Async agent launched successfully.", false, ""),
 		lnAssistant("m4", "", cText("WAITING for t3 and t4")),
 		lnResult(resultSpec{text: "WAITING for t3 and t4", turns: 2, cost: 0.02}),
-		"@sleep 1.5",
+		// The wave settles at message speed: its own budget (2s) can only
+		// fire with t3 or t4 held, which no sleep straddles (#2201).
 		lnSnapshotOf(mon, t4),
 		lnTaskNotif("t3", "tu3"),
 		lnInit("2.1.280"),
+		// The delivery turn's length, inside it: the monitor has run past
+		// the ceiling when it closes, and no timer can fire mid-turn.
+		"@sleep 1.5",
 		lnAssistant("m5", "", cText("GOT t3; t4 pending")),
 		lnSnapshotOf(mon),
 		lnTaskNotif("t4", "tu4"),
@@ -4805,7 +5236,7 @@ func TestBackground_TheRestCeilingAsksForTheReportWhileALaterWavesResultIsOnItsW
 	t4 := map[string]any{"task_id": "t4", "task_type": "local_agent", "description": "fix four"}
 	script := append(monitorStarted("watching the log"), threeMonitorTurns()...)
 	script = append(script,
-		lnIdle(), "@sleep 0.3", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tu3", "Agent", map[string]any{"prompt": "x", "description": "fix three", "run_in_background": true}),
 			cToolUse("tu4", "Agent", map[string]any{"prompt": "y", "description": "fix four", "run_in_background": true})),
@@ -4816,12 +5247,18 @@ func TestBackground_TheRestCeilingAsksForTheReportWhileALaterWavesResultIsOnItsW
 		lnToolResult("tu4", "Async agent launched successfully.", false, ""),
 		lnAssistant("m4", "", cText("WAITING for t3 and t4")),
 		lnResult(resultSpec{text: "WAITING for t3 and t4", turns: 2, cost: 0.02}),
-		"@sleep 1.5",
+		// The wave settles at message speed: its own budget (2s) can only
+		// fire with t3 or t4 held, which no sleep straddles (#2201).
 		lnSnapshotOf(mon),
 		lnTaskNotif("t3", "tu3"),
 		lnInit("2.1.280"),
+		// The delivery turn's length, inside it: the monitor has run past
+		// the ceiling when it closes, and no timer can fire mid-turn.
+		"@sleep 1.5",
 		lnAssistant("m5", "", cText("GOT t3; t4 pending")),
 		lnResult(resultSpec{text: "GOT t3; t4 pending", turns: 1, cost: 0.03}),
+		// t4's notification outlives the delivery turn's close: with the
+		// wrap-up already out, no timer governs this gap.
 		"@sleep 0.5",
 		lnTaskNotif("t4", "tu4"),
 	)
@@ -4898,12 +5335,14 @@ func TestBackground_AnEmptyDescriptionIsReplacedByThePlaceholderCommand(t *testi
 }
 
 // threeMonitorTurns: three monitor events' turns, ~1 s in all, each re-kicked
-// right after an idle (so no idle holds).
+// right after an idle (so no idle holds); the pacing runs inside the turns
+// (#2201).
 func threeMonitorTurns() []string {
 	var out []string
 	for i := range 3 {
 		text := "monitor event noted " + string(rune('0'+i))
-		out = append(out, lnIdle(), "@sleep 0.3", lnRunning(), lnInit("2.1.280"),
+		out = append(out, lnIdle(), lnRunning(), lnInit("2.1.280"),
+			"@sleep 0.3",
 			lnAssistant("ev"+string(rune('0'+i)), "", cText(text)),
 			lnResult(resultSpec{text: text, turns: 1, cost: 0.01}))
 	}
@@ -5007,12 +5446,13 @@ func TestBackground_AForegroundAgentMovedToTheBackgroundIsAwaited(t *testing.T) 
 	var gap []string
 	for i := range 5 {
 		text := "monitor event " + string(rune('0'+i)) + " noted"
-		gap = append(gap, lnIdle(), "@sleep 0.3", lnRunning(), lnInit("2.1.280"),
+		gap = append(gap, lnIdle(), lnRunning(), lnInit("2.1.280"),
+			"@sleep 0.3",
 			lnAssistant("g"+string(rune('0'+i)), "", cText(text)),
 			lnResult(resultSpec{text: text, turns: 1, cost: 0.01}))
 	}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper"})),
 		lnTaskStarted("t1", "tuA", false, false),
@@ -5079,12 +5519,13 @@ func TestBackground_AWaveBackRestartsTheRestClockAfterAWaitOnItsWay(t *testing.T
 	var gap []string
 	for i := range 5 {
 		text := "monitor event " + string(rune('0'+i)) + " noted"
-		gap = append(gap, lnIdle(), "@sleep 0.3", lnRunning(), lnInit("2.1.280"),
+		gap = append(gap, lnIdle(), lnRunning(), lnInit("2.1.280"),
+			"@sleep 0.3",
 			lnAssistant("g"+string(rune('0'+i)), "", cText(text)),
 			lnResult(resultSpec{text: text, turns: 1, cost: 0.01}))
 	}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tu1", "Agent", map[string]any{"prompt": "x", "description": "fix one", "run_in_background": true}),
 			cToolUse("tu2", "Agent", map[string]any{"prompt": "y", "description": "fix two", "run_in_background": true})),
@@ -5408,7 +5849,9 @@ func eventsEndingMidTurn(n int, kind string, takeAt int, bound string) []string 
 			started = lnTaskStarted(id, tu, true, false)
 		}
 		script = append(script,
-			lnIdle(), "@sleep 0.15", lnRunning(), lnInit("2.1.280"),
+			lnIdle(), lnRunning(), lnInit("2.1.280"),
+			// The event's pacing runs inside its turn (#2201).
+			"@sleep 0.15",
 			lnAssistant(fmt.Sprintf("ev%d", i), "", call),
 			lnSnapshotOf(mon, reaction),
 			started,
@@ -5481,11 +5924,14 @@ func TestBackground_ASpentBudgetAsksForTheReportOnceInAChain(t *testing.T) {
 // follows the end of the previous shell — after one monitor event when
 // withMonitor, the monitor running throughout. After shell takeAt (when
 // positive) a turn takes iterion's request for the report on the ceiling.
+// The idles never hold (a sleep there would race the settle window) and each
+// shell's runtime passes inside its turn, where the lifecycle arms no timer
+// (#2201).
 func shellChain(withMonitor bool, takeAt int) []string {
 	var script []string
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	if withMonitor {
-		script = append(monitorStarted("watching the log"), lnIdle(), "@sleep 0.2", lnRunning(), lnInit("2.1.280"))
+		script = append(monitorStarted("watching the log"), lnIdle(), lnRunning(), lnInit("2.1.280"))
 	} else {
 		script = []string{lnInit("2.1.280")}
 	}
@@ -5493,7 +5939,7 @@ func shellChain(withMonitor bool, takeAt int) []string {
 		tu, id := fmt.Sprintf("tuB%d", i), fmt.Sprintf("b%d", i)
 		shell := map[string]any{"task_id": id, "task_type": "local_bash", "description": fmt.Sprintf("npm test #%d", i)}
 		if i > 0 {
-			script = append(script, lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"))
+			script = append(script, lnIdle(), lnRunning(), lnInit("2.1.280"))
 		}
 		snap, after := []map[string]any{shell}, []map[string]any{}
 		if withMonitor {
@@ -5506,8 +5952,8 @@ func shellChain(withMonitor bool, takeAt int) []string {
 				"description": fmt.Sprintf("npm test #%d", i), "task_type": "local_bash", "is_backgrounded": true, "session_id": "s1"}),
 			lnToolResult(tu, "Command running in background with ID: "+id, false, ""),
 			lnAssistant(fmt.Sprintf("w%d", i), "", cText(fmt.Sprintf("fix %d applied, tests running", i))),
-			lnResult(resultSpec{text: fmt.Sprintf("fix %d applied, tests running", i), turns: 2, cost: 0.01}),
 			"@sleep 0.3",
+			lnResult(resultSpec{text: fmt.Sprintf("fix %d applied, tests running", i), turns: 2, cost: 0.01}),
 			lnSnapshotOf(after...),
 			lnTaskNotif(id, tu),
 		)
@@ -5516,7 +5962,7 @@ func shellChain(withMonitor bool, takeAt int) []string {
 		}
 	}
 	return append(script,
-		lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("done", "", cText("ALL TESTS PASS")),
 		lnResult(resultSpec{text: "ALL TESTS PASS", turns: 1, cost: 0.01}),
 		lnIdle(),
@@ -5552,7 +5998,9 @@ func TestBackground_TheRestCeilingBoundsAShellChainWhileAMonitorRuns(t *testing.
 // lateDelivery: a plain orchestration, no monitor — t1 and t2 end together;
 // t2's result is delivered first, t1's once its worktree is finalised (a turn
 // that follows no end since the previous request turn began); then the agent
-// runs a test loop on background shells past the wait budget.
+// runs a test loop on background shells past the wait budget. All pacing runs
+// inside turns: the wave settles at message speed, so its budget (WAIT) can
+// never fire, and no gap between turns races the grace (#2201).
 func lateDelivery(idleBeforeDelivery bool) []string {
 	ag := func(id string) map[string]any {
 		return map[string]any{"task_id": id, "task_type": "local_agent", "description": "fix " + id}
@@ -5566,13 +6014,15 @@ func lateDelivery(idleBeforeDelivery bool) []string {
 		lnToolResult("tu1", "Async agent launched successfully.", false, ""),
 		lnToolResult("tu2", "Async agent launched successfully.", false, ""),
 		lnAssistant("w1", "", cText("WAITING for t1 and t2")),
-		lnResult(resultSpec{text: "WAITING for t1 and t2", turns: 2, cost: 0.01}),
+		// The agents' runtime, inside the turn that closes on them held.
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING for t1 and t2", turns: 2, cost: 0.01}),
 		lnSnapshotOf(), lnTaskNotif("t1", "tu1"), lnTaskNotif("t2", "tu2"),
 		lnInit("2.1.280"),
 		lnAssistant("d2", "", cText("GOT t2; t1 pending")),
-		lnResult(resultSpec{text: "GOT t2; t1 pending", turns: 1, cost: 0.02}),
+		// t1's finalisation, inside its delivery turn.
 		"@sleep 0.4",
+		lnResult(resultSpec{text: "GOT t2; t1 pending", turns: 1, cost: 0.02}),
 	}
 	if idleBeforeDelivery {
 		script = append(script, lnIdle(), lnRunning())
@@ -5582,22 +6032,24 @@ func lateDelivery(idleBeforeDelivery bool) []string {
 		tu, id := fmt.Sprintf("tuB%d", i), fmt.Sprintf("b%d", i)
 		shell := map[string]any{"task_id": id, "task_type": "local_bash", "description": fmt.Sprintf("npm test #%d", i)}
 		if i > 0 {
-			script = append(script, lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"))
+			script = append(script, lnIdle(), lnRunning(), lnInit("2.1.280"))
 		}
 		script = append(script,
 			lnAssistant(fmt.Sprintf("s%d", i), "", cToolUse(tu, "Bash", map[string]any{"command": "npm test", "run_in_background": true})),
 			lnSnapshotOf(shell),
 			lnToolResult(tu, "Command running in background with ID: "+id, false, ""),
 			lnAssistant(fmt.Sprintf("r%d", i), "", cText(fmt.Sprintf("fix %d applied, tests running", i))),
+			// The shell's runtime, inside its turn.
+			"@sleep 0.4",
 			lnResult(resultSpec{text: fmt.Sprintf("fix %d applied, tests running", i), turns: 2, cost: 0.01}),
 		)
 		if i == 0 {
 			script = append(script, lnIdle())
 		}
-		script = append(script, "@sleep 0.4", lnSnapshotOf(), lnTaskNotif(id, tu))
+		script = append(script, lnSnapshotOf(), lnTaskNotif(id, tu))
 	}
 	return append(script,
-		lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("done", "", cText("ALL TESTS PASS")),
 		lnResult(resultSpec{text: "ALL TESTS PASS", turns: 1, cost: 0.01}),
 		lnIdle(),
@@ -5650,34 +6102,37 @@ func TestBackground_ALateDeliveryNeverCutsALaterWaveOfAPlainOrchestration(t *tes
 	script = append(script, started("t1", "t2")...)
 	script = append(script,
 		lnAssistant("w1", "", cText("WAITING for t1 and t2")),
-		lnResult(resultSpec{text: "WAITING for t1 and t2", turns: 2, cost: 0.01}),
+		// Every wave's runtime passes inside the turn that closes on it
+		// held: the wave then settles at message speed and its own budget
+		// (WAIT) can never fire — however the two clocks stretch (#2201).
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "WAITING for t1 and t2", turns: 2, cost: 0.01}),
 		lnSnapshotOf(), lnTaskNotif("t1", "tut1"), lnTaskNotif("t2", "tut2"),
 		lnInit("2.1.280"),
 		lnAssistant("d2", "", cText("GOT t2; t1 finalising")),
-		lnResult(resultSpec{text: "GOT t2; t1 finalising", turns: 1, cost: 0.02}),
 		"@sleep 0.4",
+		lnResult(resultSpec{text: "GOT t2; t1 finalising", turns: 1, cost: 0.02}),
 		lnIdle(), lnRunning(),
 		lnInit("2.1.280"), launch("t3"))
 	script = append(script, started("t3")...)
 	script = append(script,
 		lnAssistant("d1", "", cText("GOT t1; t3 started")),
-		lnResult(resultSpec{text: "GOT t1; t3 started", turns: 1, cost: 0.03}),
 		"@sleep 1.2",
+		lnResult(resultSpec{text: "GOT t1; t3 started", turns: 1, cost: 0.03}),
 		lnSnapshotOf(), lnTaskNotif("t3", "tut3"),
 		lnInit("2.1.280"), launch("t4"))
 	script = append(script, started("t4")...)
 	script = append(script,
 		lnAssistant("d3", "", cText("GOT t3; t4 started")),
-		lnResult(resultSpec{text: "GOT t3; t4 started", turns: 1, cost: 0.04}),
 		"@sleep 1.2",
+		lnResult(resultSpec{text: "GOT t3; t4 started", turns: 1, cost: 0.04}),
 		lnSnapshotOf(), lnTaskNotif("t4", "tut4"),
 		lnInit("2.1.280"), launch("t5", "t6"))
 	script = append(script, started("t5", "t6")...)
 	script = append(script,
 		lnAssistant("d4", "", cText("GOT t4; t5 and t6 started")),
-		lnResult(resultSpec{text: "GOT t4; t5 and t6 started", turns: 1, cost: 0.05}),
 		"@sleep 1.2",
+		lnResult(resultSpec{text: "GOT t4; t5 and t6 started", turns: 1, cost: 0.05}),
 		lnSnapshotOf(ag("t6")), lnTaskNotif("t5", "tut5"),
 		lnInit("2.1.280"),
 		lnAssistant("d5", "", cText("GOT t5; t6 pending")),
@@ -5720,8 +6175,11 @@ func TestBackground_AShellsEndIsNoResultOnItsWay(t *testing.T) {
 		lnToolResult("tuM", "started", false, ""),
 		lnToolResult("tuB", "Command running in background with ID: b1", false, ""),
 		lnAssistant("a2", "", cText("tests running")),
-		lnResult(resultSpec{text: "tests running", turns: 2, cost: 0.01}),
+		// The shell's runtime, inside the turn: between turns the grace
+		// (500ms) would govern the gap and end the session before the
+		// delivery (#2201).
 		"@sleep 0.2",
+		lnResult(resultSpec{text: "tests running", turns: 2, cost: 0.01}),
 		lnSnapshotOf(mcp),
 		lnTaskNotif("b1", "tuB"),
 		lnInit("2.1.280"),
@@ -5746,22 +6204,26 @@ func TestBackground_TheCeilingNeverCutsARestTurnWithNoTurnSource(t *testing.T) {
 	// stopped the monitor may have been the monitor's own: the session still
 	// asks for the report once the CLI is at rest.
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("s1", "", cToolUse("tuStop", "TaskStop", map[string]any{"task_id": "mon1"})),
 		lnSnapshotOf(),
 		lnToolResult("tuStop", "Successfully stopped task: mon1", false, ""),
 		lnAssistant("s2", "", cText("monitor stopped")),
 		lnResult(resultSpec{text: "monitor stopped", turns: 2, cost: 0.01}),
-		lnIdle(), "@sleep 0.1", lnRunning(),
+		lnIdle(), lnRunning(),
 	)
 	chain := shellChain(false, 0)
 	script = append(script, chain[:len(chain)-1]...)
 	script = append(script, takeRestWrapUp("at rest", "ALL TESTS PASS")...)
-	// The monitor ran until the turn that stopped it (~0.2s): the ceiling
-	// disarms a grace past that.
+	// The monitor ran until the turn that stopped it: the ceiling disarms a
+	// grace past that. The grace is OFF: with it, a close of the chain past
+	// the first close's rest clock + grace — any load stretches the gap —
+	// asked for the report mid-loop and wedged the session (#2201, run
+	// 37291529315). What the scenario proves is the ceiling's non-fire: no
+	// turn source runs at those closes, and the one that ended was stopped.
 	run := runBgSession(t, script, map[string]string{
 		"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":           "1s",
-		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "500ms",
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "0",
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
 	}, Task{})
 	for _, e := range run.events {
@@ -5783,7 +6245,7 @@ func TestBackground_ASpentTurnBudgetAsksForTheReportWhileAResultIsInItsFinalisat
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("m3", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
 		lnSnapshotOf(mon, agent),
@@ -5843,7 +6305,7 @@ func monitorWavesSettlingMidTurn(n, takeAt int, withFirstWave bool) []string {
 	for i := first; i < n; i++ {
 		tu, id := fmt.Sprintf("tuR%d", i), fmt.Sprintf("r%d", i)
 		cur := map[string]any{"task_id": id, "task_type": "local_agent", "description": "reaction"}
-		script = append(script, lnIdle(), "@sleep 0.15", lnRunning(), lnInit("2.1.280"))
+		script = append(script, lnIdle(), lnRunning(), lnInit("2.1.280"), "@sleep 0.15")
 		if i > 0 {
 			ptu, pid := fmt.Sprintf("tuR%d", i-1), fmt.Sprintf("r%d", i-1)
 			script = append(script,
@@ -5915,7 +6377,7 @@ func TestBackground_TheCeilingNeverCutsAWaveOnceTheMonitorStopped(t *testing.T) 
 		return map[string]any{"task_id": id, "task_type": "local_agent", "description": "fix " + id}
 	}
 	script := append(monitorStarted("watching the log"),
-		lnIdle(), "@sleep 0.2", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("s1", "", cToolUse("tuStop", "TaskStop", map[string]any{"task_id": "mon1"}),
 			cToolUse("tuw0", "Agent", map[string]any{"prompt": "p", "description": "fix w0", "run_in_background": true})),
 		lnSnapshotOf(ag("w0")),
@@ -5923,12 +6385,16 @@ func TestBackground_TheCeilingNeverCutsAWaveOnceTheMonitorStopped(t *testing.T) 
 		lnToolResult("tuStop", "Successfully stopped task: mon1", false, ""),
 		lnToolResult("tuw0", "Async agent launched successfully.", false, ""),
 		lnAssistant("s2", "", cText("monitor stopped; w0 started")),
+		// Each wave's runtime passes inside the turn that closes on it held:
+		// it settles at message speed and its own budget (WAIT=2s) can never
+		// fire — no close is at rest and none has a turn source involved,
+		// whatever the clocks do (#2201).
+		"@sleep 0.4",
 		lnResult(resultSpec{text: "monitor stopped; w0 started", turns: 2, cost: 0.01}),
 	)
 	for i := 1; i <= 7; i++ {
 		prev, cur := fmt.Sprintf("w%d", i-1), fmt.Sprintf("w%d", i)
 		script = append(script,
-			"@sleep 0.4",
 			lnSnapshotOf(), lnTaskNotif(prev, "tu"+prev),
 			lnInit("2.1.280"),
 			lnAssistant("L"+cur, "", cToolUse("tu"+cur, "Agent", map[string]any{"prompt": "p", "description": "fix " + cur, "run_in_background": true})),
@@ -5936,11 +6402,11 @@ func TestBackground_TheCeilingNeverCutsAWaveOnceTheMonitorStopped(t *testing.T) 
 			lnTaskStarted(cur, "tu"+cur, true, false),
 			lnToolResult("tu"+cur, "Async agent launched successfully.", false, ""),
 			lnAssistant("D"+cur, "", cText("GOT "+prev+"; "+cur+" started")),
+			"@sleep 0.4",
 			lnResult(resultSpec{text: "GOT " + prev + "; " + cur + " started", turns: 2, cost: 0.01}),
 		)
 	}
 	script = append(script,
-		"@sleep 0.4",
 		lnSnapshotOf(), lnTaskNotif("w7", "tuw7"),
 		lnInit("2.1.280"),
 		lnAssistant("done", "", cText("ALL DONE")),
@@ -6004,14 +6470,16 @@ func TestBackground_ATeammatesTurnsEndOnARequestedReportWhenTheCLINeverIdles(t *
 		lnToolResult("tuB", "Command running in background with ID: b1", false, ""),
 		lnAssistant("m2", "", cText("tests running")),
 		lnResult(resultSpec{text: "tests running", turns: 2, cost: 0.01}),
-		"@sleep 0.2",
 		lnSnapshotOf(mate),
 		lnTaskNotif("b1", "tuB"),
 		lnInit("2.1.280"),
+		// The pacing runs inside the turns: between them the grace would
+		// govern the gap (#2201) — after the last close it is the point.
+		"@sleep 0.2",
 		lnAssistant("m3", "", cText("TESTS PASS")),
 		lnResult(resultSpec{text: "TESTS PASS", turns: 1, cost: 0.02}),
-		"@sleep 0.2",
 		lnInit("2.1.280"),
+		"@sleep 0.2",
 		lnAssistant("m4", "", cText("noted the reviewer's message")),
 		lnResult(resultSpec{text: "noted the reviewer's message", turns: 1, cost: 0.01}),
 	}
@@ -6086,6 +6554,79 @@ func (h *lifecycleAt) close(now time.Time, text string) bgCloseAction {
 	h.l.addResult(rm)
 	act, _ := h.l.atClose(now, rm)
 	return act
+}
+
+func TestBackground_TheRestClockRestartsAtTheDeliverysClose(t *testing.T) {
+	// The lifecycleAt twin of TestBackground_HeldWorkBackWithoutATurnRestartsTheRestClock
+	// (#2201's scenario; #2220). There the grace is pinned at 20s to keep it
+	// out of a ~1.5s scenario's way — no close then approaches it, so the
+	// named restart is not observable at that level. Here no clock sleeps:
+	// the rest clock is read directly at each close, and the grace bounds the
+	// closes that follow the delivery.
+	h := newLifecycleAt(t, backgroundLifecycleConfig{wait: time.Hour, autoTurnGrace: 2 * time.Second, finalizeTimeout: time.Minute, idleSettle: time.Hour}, 0)
+	t0 := time.Now()
+	// t1 launches and its turn closes with it held: the wave opens, no rest
+	// clock yet.
+	h.feedAt(t0, launchAgent()...)
+	h.feed(lnAssistant("m2", "", cText("waiting")))
+	if act := h.close(t0, "waiting"); act != bgReenter {
+		t.Fatalf("close 1: action %v, want the wave's wait", act)
+	}
+	if !h.l.restSince.IsZero() {
+		t.Fatalf("restSince = %v with t1 held: the rest clock arms at a close with nothing held running", h.l.restSince)
+	}
+	// t1 ends and its notification reaches a turn: the interim close is at
+	// rest, the rest clock arms there. The close is a beat AFTER the lines
+	// that fed it, here and at the delivery below: the restart is pinned to
+	// the close, not to when the lines were observed.
+	h.feedAt(t0.Add(300*time.Millisecond), lnSnapshot(), lnTaskNotif("t1", "tuA"),
+		lnInit("2.1.280"), lnAssistant("m3", "", cText("t1 interim")))
+	if act := h.close(t0.Add(400*time.Millisecond), "t1 interim"); act != bgReenter {
+		t.Fatalf("close 2: action %v", act)
+	}
+	if armed := t0.Add(400 * time.Millisecond); !h.l.restSince.Equal(armed) || h.l.restMark != h.tr.restEpoch() {
+		t.Fatalf("restSince = %v, restMark = %d (epoch %d): the rest clock did not arm at the interim close (%v)",
+			h.l.restSince, h.l.restMark, h.tr.restEpoch(), armed)
+	}
+	// t1 comes back WITHOUT a turn — the CLI resumed its finished subagent:
+	// held work again, and the rest epoch moves. This is what makes the
+	// restart observable: a clock that never restarted keeps the interim
+	// close's mark and counts the grace from there.
+	h.feedAt(t0.Add(800*time.Millisecond), lnSnapshot("t1"), lnTaskStarted("t1", "tuA", true, false))
+	if epoch := h.tr.restEpoch(); epoch == h.l.restMark {
+		t.Fatalf("restEpoch = %d, still the armed mark: t1 back without a turn must move the epoch", epoch)
+	}
+	// t1 ends again, the CLI re-kicks, and the delivering turn closes: the
+	// rest clock RESTARTS at that close — not still counting from the
+	// interim one, which would cut t1's delivery short once the grace neared.
+	h.feedAt(t0.Add(1300*time.Millisecond), lnSnapshot(), lnTaskNotif("t1", "tuA"),
+		lnRunning(), lnInit("2.1.280"), lnAssistant("m4", "", cText("t1 final: PASS")))
+	if act := h.close(t0.Add(1400*time.Millisecond), "t1 final: PASS"); act != bgReenter {
+		t.Fatalf("close 3: action %v", act)
+	}
+	restarted := t0.Add(1400 * time.Millisecond)
+	if !h.l.restSince.Equal(restarted) || h.l.restMark != h.tr.restEpoch() {
+		t.Fatalf("restSince = %v, restMark = %d (epoch %d): the rest clock did not restart at the delivery's close (%v)",
+			h.l.restSince, h.l.restMark, h.tr.restEpoch(), restarted)
+	}
+	// The observability the wall-clock twin lost: the grace's bound is
+	// restSince+2s = t0+3.4s. The CLI keeps running turns of its own; a close
+	// before the bound keeps reading, one past it acts — restWrapUp, not
+	// restEnd: no idle that held ever proved t1's delivery reached the agent
+	// (the harness runs no settle timer), so that turn's report may predate
+	// it and the report is asked for. A rest clock still counting from
+	// t0+0.4s ends this scenario already at the first of these closes.
+	h.feedAt(t0.Add(3200*time.Millisecond), lnRunning(), lnInit("2.1.280"), lnAssistant("m5", "", cText("polishing")))
+	if act := h.close(t0.Add(3300*time.Millisecond), "polishing"); act != bgReenter {
+		t.Fatalf("close 4: action %v before restSince+grace — a rest clock that never restarted cuts here", act)
+	}
+	if !h.l.restSince.Equal(restarted) {
+		t.Fatalf("restSince = %v after a close with no epoch move, want %v", h.l.restSince, restarted)
+	}
+	h.feedAt(t0.Add(3400*time.Millisecond), lnRunning(), lnInit("2.1.280"), lnAssistant("m6", "", cText("still polishing")))
+	if act := h.close(t0.Add(3500*time.Millisecond), "still polishing"); act != bgReenterAfterSend {
+		t.Fatalf("close 5: action %v, want the grace's rest bound asking for the report", act)
+	}
 }
 
 func TestBackground_TheCeilingCountsFromWhenATurnSourceStarts(t *testing.T) {
@@ -6219,6 +6760,57 @@ func TestBackground_ASpentBudgetAsksEvenPastTheGrace(t *testing.T) {
 	}
 }
 
+func TestBackground_ASpentWaveBudgetFiresOnlyWhileTheWaveRuns(t *testing.T) {
+	// The wait-budget timer is armed at a close with held work running, but
+	// the tracker is fed ahead of the select loop: by the fire the wave may
+	// have come back, or a turn the loop has not seen may have started.
+	// waitExpired re-reads the tracker and sends nothing then (#2197: a stale
+	// fire asked for the report on a settled wave, and the message — never
+	// taken, the work it named gone — parked the session to its wedge net).
+	feed := func(h *lifecycleAt, t0 time.Time) {
+		agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
+		mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "app log"}
+		h.feed(lnInit("2.1.280"),
+			lnAssistant("a1", "", cToolUse("tuA", "Agent", map[string]any{"prompt": "x", "description": "sleeper", "run_in_background": true})),
+			lnSnapshotOf(agent, mon),
+			lnTaskStarted("t1", "tuA", true, false),
+			lnToolResult("tuA", "Async agent launched successfully.", false, ""),
+			lnAssistant("a2", "", cText("WAITING")))
+		if act := h.close(t0, "WAITING"); act != bgReenter {
+			t.Fatalf("close: action %v, want the wave's wait", act)
+		}
+	}
+	cfg := backgroundLifecycleConfig{wait: 2 * time.Second, autoTurnGrace: 20 * time.Second, finalizeTimeout: time.Minute, idleSettle: time.Second}
+
+	t.Run("the wave still runs", func(t *testing.T) {
+		t0 := time.Now()
+		h := newLifecycleAt(t, cfg, 0)
+		feed(h, t0)
+		msg, send := h.l.waitExpired(t0.Add(3 * time.Second))
+		if !send || !strings.Contains(msg, "t1") || !strings.Contains(msg, "the background wait budget (2s) is spent") {
+			t.Fatalf("send = %v, msg = %q: a budget spent with held work running must ask for the report", send, msg)
+		}
+	})
+	t.Run("the wave came back before the fire", func(t *testing.T) {
+		t0 := time.Now()
+		h := newLifecycleAt(t, cfg, 0)
+		feed(h, t0)
+		h.feedAt(t0.Add(time.Second), lnSnapshotOf(map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "app log"}))
+		if msg, send := h.l.waitExpired(t0.Add(3 * time.Second)); send {
+			t.Fatalf("sent %q for a wave the tracker already saw come back", msg)
+		}
+	})
+	t.Run("a turn started before the fire", func(t *testing.T) {
+		t0 := time.Now()
+		h := newLifecycleAt(t, cfg, 0)
+		feed(h, t0)
+		h.feedAt(t0.Add(time.Second), lnInit("2.1.280"))
+		if msg, send := h.l.waitExpired(t0.Add(3 * time.Second)); send {
+			t.Fatalf("sent %q with a turn in flight: its close decides", msg)
+		}
+	})
+}
+
 func TestBackground_TheRestRequestSaysWhatItAsks(t *testing.T) {
 	// Report now, name what depended on work whose result never came —
 	// never the wave wrap-up's "still running" text; the operator is warned,
@@ -6287,10 +6879,10 @@ func heldBehindAShell() []string {
 		lnSnapshotOf(),
 		lnTaskNotif("t1", "tuA"),
 		lnResult(resultSpec{text: "lint clean", turns: 1, cost: 0.02}),
-		lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("e1", "", cText("tests pass")),
 		lnResult(resultSpec{text: "tests pass", turns: 1, cost: 0.03}),
-		lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("d1", "", cText("GOT t1: PASS")),
 		lnResult(resultSpec{text: "GOT t1: PASS", turns: 1, cost: 0.04}),
 	}
@@ -6330,19 +6922,20 @@ func launchAgentAndMonitor() []string {
 // endBehindEvents: a monitor event's turn e0 runs, events queued during it,
 // then t1 ends in it — its result queued behind those events (FIFO; a
 // monitor's event carries no task id, so the two are never coalesced). After
-// e0 the CLI reports idle and re-kicks for each queued event, then t1's
-// delivery turn comes. slowEvent delays the first queued event's turn.
+// e0 the CLI reports idle and re-kicks for each queued event (the idles never
+// hold — #2201), then t1's delivery turn comes. slowEvent delays the first
+// queued event's turn (inside it, where no lifecycle timer arms).
 func endBehindEvents(queued int, slowEvent string) []string {
 	mon := map[string]any{"task_id": "mon1", "task_type": "local_bash", "description": "tail -f app.log"}
 	script := append(launchAgentAndMonitor(),
-		"@sleep 0.2",
 		lnRunning(), lnInit("2.1.280"),
+		"@sleep 0.2",
 		lnAssistant("e0", "", cText("monitor event 0 noted")),
 		lnSnapshotOf(mon), lnTaskNotif("t1", "tuA"),
 		lnResult(resultSpec{text: "monitor event 0 noted", turns: 1, cost: 0.02}),
 	)
 	for i := 1; i <= queued; i++ {
-		script = append(script, lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"))
+		script = append(script, lnIdle(), lnRunning(), lnInit("2.1.280"))
 		if i == 1 && slowEvent != "" {
 			script = append(script, slowEvent)
 		}
@@ -6350,7 +6943,7 @@ func endBehindEvents(queued int, slowEvent string) []string {
 		script = append(script, lnAssistant(fmt.Sprintf("e%d", i), "", cText(text)), lnResult(resultSpec{text: text, turns: 1, cost: 0.03}))
 	}
 	return append(script,
-		lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("d1", "", cText("GOT t1: PASS")),
 		lnResult(resultSpec{text: "GOT t1: PASS", turns: 1, cost: 0.04}),
 	)
@@ -6401,10 +6994,14 @@ func rearmedMonitorChain(cycles, eventsPerCycle, takeAt int) []string {
 	for k := range cycles {
 		tuMon := fmt.Sprintf("tuMon%d", k)
 		if k > 0 {
-			script = append(script, lnIdle(), "@sleep 0.05", lnRunning())
+			script = append(script, lnIdle(), lnRunning())
 		}
 		script = append(script,
 			lnInit("2.1.280"),
+			// All pacing runs inside the turns — between turns it would race
+			// the settle window and the grace (#2201) — and still feeds the
+			// ceiling's floors: each close lands a sleep later.
+			"@sleep 0.05",
 			lnAssistant(fmt.Sprintf("arm%d", k), "", cToolUse(tuMon, "Monitor", map[string]any{"command": "tail -f app.log", "description": "app log"})),
 			lnSnapshotOf(mon(k)),
 			lnMonitorTaskStarted(fmt.Sprintf("mon%d", k), tuMon),
@@ -6416,7 +7013,8 @@ func rearmedMonitorChain(cycles, eventsPerCycle, takeAt int) []string {
 			tu, id := fmt.Sprintf("tuR%d_%d", k, i), fmt.Sprintf("r%d_%d", k, i)
 			shell := map[string]any{"task_id": id, "task_type": "local_bash", "description": "curl health"}
 			script = append(script,
-				lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+				lnIdle(), lnRunning(), lnInit("2.1.280"),
+				"@sleep 0.1",
 				lnAssistant(fmt.Sprintf("ev%d_%d", k, i), "", cToolUse(tu, "Bash", map[string]any{"command": "curl -fsS localhost/health", "run_in_background": true})),
 				lnSnapshotOf(mon(k), shell),
 				jsonLine(map[string]any{"type": "system", "subtype": "task_started", "task_id": id, "tool_use_id": tu,
@@ -6733,10 +7331,14 @@ func rearmedWithALongExpiryTurn(cycles, eventsPerCycle, takeAt int, longTurn str
 	for k := range cycles {
 		tuMon := fmt.Sprintf("tuMon%d", k)
 		if k > 0 {
-			script = append(script, lnIdle(), "@sleep 0.05", lnRunning())
+			script = append(script, lnIdle(), lnRunning())
 		}
 		script = append(script,
 			lnInit("2.1.280"),
+			// All pacing runs inside the turns — between turns it would race
+			// the settle window and the grace (#2201) — and still feeds the
+			// ceiling's floors: each close lands a sleep later.
+			"@sleep 0.05",
 			lnAssistant(fmt.Sprintf("arm%d", k), "", cToolUse(tuMon, "Monitor", map[string]any{"command": "tail -f app.log", "description": "app log"})),
 			lnSnapshotOf(mon(k)),
 			lnMonitorTaskStarted(fmt.Sprintf("mon%d", k), tuMon),
@@ -6748,7 +7350,8 @@ func rearmedWithALongExpiryTurn(cycles, eventsPerCycle, takeAt int, longTurn str
 			tu, id := fmt.Sprintf("tuR%d_%d", k, i), fmt.Sprintf("r%d_%d", k, i)
 			shell := map[string]any{"task_id": id, "task_type": "local_bash", "description": "curl health"}
 			script = append(script,
-				lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+				lnIdle(), lnRunning(), lnInit("2.1.280"),
+				"@sleep 0.1",
 				lnAssistant(fmt.Sprintf("ev%d_%d", k, i), "", cToolUse(tu, "Bash", map[string]any{"command": "curl -fsS localhost/health", "run_in_background": true})),
 				lnSnapshotOf(mon(k), shell),
 				jsonLine(map[string]any{"type": "system", "subtype": "task_started", "task_id": id, "tool_use_id": tu,
@@ -6908,7 +7511,7 @@ func TestBackground_ACleanExitAfterMonitorTurnsKeepsNoMonitorReport(t *testing.T
 	script = append(script, so("0", "DONE: the feature is implemented and tested")...)
 	script = append(script, lnResult(resultSpec{text: `{"answer":"DONE"}`, turns: 2, cost: 0.01, structured: map[string]any{"answer": "DONE: the feature is implemented and tested"}}))
 	for i, note := range []string{"monitor event 0 noted", "monitor event 1 noted"} {
-		script = append(script, lnIdle(), "@sleep 0.3", lnRunning(), lnInit("2.1.280"))
+		script = append(script, lnIdle(), lnRunning(), lnInit("2.1.280"), "@sleep 0.3")
 		script = append(script, so(fmt.Sprintf("e%d", i), note)...)
 		script = append(script, lnResult(resultSpec{text: `{"answer":"` + note + `"}`, turns: 1, cost: 0.01, structured: map[string]any{"answer": note}}))
 	}
@@ -6969,7 +7572,9 @@ func TestBackground_AShellEndingAfterTheIdleIsDeliveredBeforeTheSessionEnds(t *t
 		lnAssistant("m3", "", cText("GOT t1: PASS")),
 		lnResult(resultSpec{text: "GOT t1: PASS", turns: 1, cost: 0.02}),
 		lnIdle(),
-		"@sleep 0.1",
+		// b1's end follows the idle by an instant — well inside the 500ms
+		// settle window however the two clocks stretch (#2201).
+		"@sleep 0.02",
 		lnSnapshotOf(),
 		lnTaskNotif("b1", "tuB"),
 		"@sleep 1",
@@ -6979,7 +7584,13 @@ func TestBackground_AShellEndingAfterTheIdleIsDeliveredBeforeTheSessionEnds(t *t
 		lnIdle(),
 		"@drain",
 	}
-	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE": "500ms"}, Task{})
+	// The grace stays out of the way (20s): the 1s quiet gap before the
+	// delivery turn would otherwise race it — the window under test is the
+	// settle one (#2201).
+	run := runBgSession(t, script, map[string]string{
+		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "500ms",
+		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "20s",
+	}, Task{})
 	if run.err != nil {
 		t.Fatalf("err = %v", run.err)
 	}
@@ -7223,7 +7834,7 @@ func TestBackground_AMonitorThatRanOnlyWithinATurnStillAsksForTheReport(t *testi
 		lnToolResult("tuFg", "build ok", false, ""),
 		lnAssistant("m2", "", cText("DONE: the feature is implemented and tested")),
 		lnResult(resultSpec{text: "DONE: the feature is implemented and tested", turns: 3, cost: 0.01}),
-		lnIdle(), "@sleep 0.3", lnRunning(),
+		lnIdle(), lnRunning(),
 		lnInit("2.1.280"),
 		lnAssistant("e0", "", cText("monitor event noted: the build is ready")),
 		lnResult(resultSpec{text: "monitor event noted: the build is ready", turns: 1, cost: 0.01}),
@@ -7254,7 +7865,7 @@ func TestBackground_AMonitorThatExpiredInTheLastGenerationAsksForTheReport(t *te
 		lnSnapshotOf(), stopped,
 		lnAssistant("m3", "", cText("DONE: the feature is implemented and tested")),
 		lnResult(resultSpec{text: "DONE: the feature is implemented and tested", turns: 3, cost: 0.01}),
-		lnIdle(), "@sleep 0.1", lnRunning(), lnInit("2.1.280"),
+		lnIdle(), lnRunning(), lnInit("2.1.280"),
 		lnAssistant("e1", "", cText("The monitor expired; no need to re-arm it.")),
 		lnResult(resultSpec{text: "The monitor expired; no need to re-arm it.", turns: 1, cost: 0.01}),
 		lnIdle(),
@@ -7281,7 +7892,10 @@ func TestBackground_ACleanExitAfterSourceTurnsKeepsDeliveredResultsOffTheLostLis
 	)
 	events := monitorEvents(2)
 	script = append(script, events[:len(events)-1]...)
-	script = append(script, "@sleep 1.5", "@exit 0")
+	// The exit follows the idle at once: a gap there would race the settle
+	// window (3s) — the request for the report would beat the exit, and t1's
+	// delivery would stay unproven (#2201).
+	script = append(script, "@exit 0")
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE": "3s"}, Task{})
 	if lostIncludes(run, "(local_agent, t1)") || !lostIncludes(run, "mon1") {
 		t.Fatalf("lost = %v: t1, delivered before an idle that held, is recorded lost — or the monitor is not", run.meta.terminatedBackground)
@@ -7464,8 +8078,10 @@ func busyWatchScript(cycles int) []string {
 			lnSnapshotOf(agent, mon),
 			lnInit("2.1.280"),
 			lnAssistant(fmt.Sprintf("d%d", k), "", cText(note)),
-			lnResult(resultSpec{text: note, turns: 1, cost: 0.01}),
+			// The event's pacing, inside the turn: between turns t1 is back
+			// in the set and the wait budget (WAIT) would govern (#2201).
 			"@sleep 0.3",
+			lnResult(resultSpec{text: note, turns: 1, cost: 0.01}),
 		)
 	}
 	return append(script, lnSnapshotOf(mon), lnTaskNotif("t1", "tuT1"),
@@ -7669,9 +8285,10 @@ func TestBackground_AWatchStoppedThroughItsOwnerSparesTheWave(t *testing.T) {
 
 // ownerStopScript: t1 arms a watch and finishes; its watch resumes it
 // every 0.3s, each report prompting a main-agent turn (source time from t1's
-// first park). The last regular close lands ~1.3s in; the next event comes
-// 1s later: in that turn — the first to close past the 2s budget — the main
+// first park). The last regular close lands ~1.3s in; the next event's turn
+// then runs 1s — the first to close past the 2s budget — and in it the main
 // agent stops t1 (its watch dies with it) and launches t2, which delivers.
+// All pacing runs inside turns: no gap races a lifecycle timer (#2201).
 func ownerStopScript() []string {
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "watch the build and fix it"}
 	mon := map[string]any{"task_id": "sm1", "task_type": "local_bash", "description": "tail -f build.log"}
@@ -7697,15 +8314,21 @@ func ownerStopScript() []string {
 			lnSnapshotOf(mon), lnTaskNotif("t1", "tuT1"),
 			lnInit("2.1.280"),
 			lnAssistant("d"+string(rune('0'+k)), "", cText(note)),
-			lnResult(resultSpec{text: note, turns: 1, cost: 0.01}),
+			// The event's pacing, inside its turn: between turns the grace
+			// would govern the gap, and the wait budget the re-registered
+			// t1 (#2201).
 			"@sleep 0.3",
+			lnResult(resultSpec{text: note, turns: 1, cost: 0.01}),
 			lnSnapshotOf(agent, mon),
 		)
 	}
 	return append(script,
-		"@sleep 1.0",
 		lnSnapshotOf(mon), lnTaskNotif("t1", "tuT1"),
 		lnInit("2.1.280"),
+		// The last event's turn closes past the 2s budget (its length, inside
+		// it): in it the main agent stops t1 (its watch dies with it) and
+		// launches t2.
+		"@sleep 1.0",
 		lnAssistant("x1", "", cToolUse("tuStop", "TaskStop", map[string]any{"task_id": "t1"})),
 		lnSnapshotOf(),
 		lnToolResult("tuStop", `{"message":"Successfully stopped task: t1 (watch the build and fix it)","task_id":"t1","task_type":"local_agent","command":"watch the build and fix it"}`, false, ""),
@@ -7714,8 +8337,8 @@ func ownerStopScript() []string {
 		lnTaskStarted("t2", "tuT2", true, false),
 		lnToolResult("tuT2", "Async agent launched successfully.", false, ""),
 		lnAssistant("x3", "", cText("the build is green; t2 writes the release notes")),
-		lnResult(resultSpec{text: "the build is green; t2 writes the release notes", turns: 3, cost: 0.02}),
 		"@sleep 0.3",
+		lnResult(resultSpec{text: "the build is green; t2 writes the release notes", turns: 3, cost: 0.02}),
 		lnSnapshotOf(), lnTaskNotif("t2", "tuT2"),
 		lnInit("2.1.280"),
 		lnAssistant("y1", "", cText("RELEASE NOTES written")),
@@ -7984,9 +8607,13 @@ func refusedOwnerStop(t *testing.T, refused bool) bgCloseAction {
 // stop stops nothing: the wave is cut as it is without the stop.
 func TestBackground_ARefusedStopIsNoStopThroughRunSession(t *testing.T) {
 	for _, refused := range []bool{false, true} {
+		// The grace is off: the 2.5s the monitor runs past the budget is a
+		// quiet gap with nothing held — a grace (the 3s default) would end
+		// the session quiesced mid-gap whenever the two clocks stretched
+		// (#2201). The ceiling alone is under test.
 		run := runBgSession(t, refusedStopScript(refused), map[string]string{
-			"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":     "2s",
-			"ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT": "5s",
+			"ITERION_CLAUDE_CODE_BACKGROUND_WAIT":           "2s",
+			"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "0",
 		}, Task{})
 		var reasons []string
 		for _, e := range run.events {

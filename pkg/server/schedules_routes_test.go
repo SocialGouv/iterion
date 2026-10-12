@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // newScheduleTestServer wires an in-memory ScheduledBots store into a stock
@@ -220,7 +221,8 @@ func TestBuildScheduledLaunchSpec(t *testing.T) {
 		RepoURL: "https://example.com/repo.git",
 		RepoRef: "feat/x",
 	}
-	spec := buildScheduledLaunchSpec(sb, "/tmp/feed-watch/main.bot", "workflow: {}", nil)
+	route := &store.RunLLMRoutePolicy{RefusedPinnedKey: "forfait"}
+	spec := buildScheduledLaunchSpec(sb, "/tmp/feed-watch/main.bot", "workflow: {}", nil, route)
 	if spec.FilePath != "/tmp/feed-watch/main.bot" || spec.Source != "workflow: {}" {
 		t.Errorf("source pass-through: %+v", spec)
 	}
@@ -229,6 +231,12 @@ func TestBuildScheduledLaunchSpec(t *testing.T) {
 	}
 	if spec.RepoURL != "https://example.com/repo.git" || spec.RepoRef != "feat/x" {
 		t.Errorf("repo fields not threaded: %+v", spec)
+	}
+	// The scheduled path snapshots the route policy like every other
+	// launch surface — a cron bot's run doc must answer "why did this run
+	// route this way" too.
+	if spec.LLMRoutePolicy != route {
+		t.Errorf("LLMRoutePolicy = %+v, want the caller's resolution threaded", spec.LLMRoutePolicy)
 	}
 }
 

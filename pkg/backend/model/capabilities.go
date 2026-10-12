@@ -1,6 +1,7 @@
 package model
 
 import (
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +18,14 @@ import (
 // aggregator lacks the model or is unreachable, the curated value wins.
 // Resolution never performs blocking network I/O on this path.
 func capabilitiesForModel(provider, modelID string) ModelCapabilities {
+	// A gateway id resolves to NOTHING here — deliberately, until #2103
+	// gives the flags an unknown state. Plain Lookup's bare-index fallback
+	// would answer a FOREIGN provider's entry for the same bare id (a
+	// single-publisher bare name passes consensus trivially), reporting a
+	// vendor's window and prices as the gateway id's own.
+	if provider == modelroute.OpenAICompatible {
+		return ModelCapabilities{}
+	}
 	curated := curatedCapabilities(provider, modelID)
 	spec, ok := modelspecs.Default().Lookup(provider, modelID)
 	if !ok {

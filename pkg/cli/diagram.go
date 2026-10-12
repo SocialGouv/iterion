@@ -99,7 +99,7 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 		p.KV("Workflow", wf.Name)
 		p.KV("View", opts.View)
 		p.Blank()
-		fmt.Fprint(p.W, mermaid)
+		p.write(mermaid)
 	}
 
 	return nil

@@ -109,8 +109,8 @@ func RemoteForgeAvatar(ctx context.Context, c *RemoteClient, p *Printer, path, v
 	var res remoteForgeAvatarResult
 	raw, err := c.Call(ctx, "POST", path, body, &res)
 	if err != nil {
-		// The generic error line truncates the JSON body, and the field that
-		// matters on a refusal — where to upload by hand — sits last in it.
+		// The generic error line says the refusal's message and hint, not the
+		// fields that matter on this one: where to upload by hand.
 		printAvatarRefusal(p, raw)
 		return err
 	}

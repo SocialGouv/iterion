@@ -383,3 +383,55 @@ func indexOf(h, n string) int {
 	}
 	return -1
 }
+
+// The within-node split (#1481): a mutating node's turns attribute to
+// orientation before its first mutating call and to work from that turn
+// on — the boundary is sticky (a read after the write is still work) —
+// and the corpus carries the split with its coverage.
+func TestTheWithinNodeSplitAttributesTurnUsage(t *testing.T) {
+	s := tmpStore(t)
+	ts := store.AsTurnStore(s)
+	if ts == nil {
+		t.Fatal("the filesystem store no longer satisfies TurnStore")
+	}
+	runID := newRun(t, s)
+	ctx := context.Background()
+	appendEvent(t, s, runID, store.Event{
+		Type: store.EventNodeStarted, NodeID: "writer",
+		Data: map[string]any{"kind": "agent", "iteration": 0},
+	})
+	toolCall(t, s, runID, "writer", "u-edit", "Edit", `{"file_path":"a.go"}`)
+	for _, tc := range []struct {
+		idx    int
+		calls  []store.TurnToolCall
+		tokens int
+	}{
+		{0, []store.TurnToolCall{{Name: "Read"}}, 400},
+		{1, []store.TurnToolCall{{Name: "Edit"}}, 250},
+		{2, []store.TurnToolCall{{Name: "Read"}}, 50},
+	} {
+		if err := ts.WriteTurn(ctx, &store.TurnCheckpoint{
+			RunID: runID, NodeID: "writer", LoopIter: 0, TurnIndex: tc.idx,
+			Backend: "claude_code", ToolCalls: tc.calls,
+			Usage: store.TurnUsage{AggregateTokens: tc.tokens},
+		}); err != nil {
+			t.Fatalf("WriteTurn(%d): %v", tc.idx, err)
+		}
+	}
+
+	prof, err := ParseRun(ctx, s, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := prof.Nodes[0]
+	if !n.Mutated || !n.TokensSplitKnown {
+		t.Fatalf("the node is not a split-known mutator: mutated=%v known=%v", n.Mutated, n.TokensSplitKnown)
+	}
+	if n.TokensBeforeMutation != 400 || n.TokensAfterMutation != 300 {
+		t.Fatalf("the split is wrong: before=%d after=%d, want 400/300", n.TokensBeforeMutation, n.TokensAfterMutation)
+	}
+	c := Aggregate([]*RunProfile{prof})
+	if c.SplitBeforeTokens != 400 || c.SplitAfterTokens != 300 || c.MutatingSplitKnownNodes != 1 {
+		t.Fatalf("the corpus split is wrong: %+v", c)
+	}
+}

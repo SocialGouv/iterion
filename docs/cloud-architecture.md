@@ -131,7 +131,9 @@ Pinned semantics:
   long LLM step doesn't trigger redelivery while it's still healthy.
 - **KV lease**: TTL 60s, refreshed every 20s by the runner's
   `heartbeat` goroutine
-  ([pkg/runner/loop.go](../pkg/runner/loop.go)). If a single lease
+  ([pkg/runner/loop_lock.go](../pkg/runner/loop_lock.go)) — through the
+  engine's teardown and the runner's post-engine steps, within the runner's
+  lease ceiling once the run can be resumed. If a single lease
   refresh fails, the runner self-cancels its own run to avoid split-brain
   (`iterion_runner_heartbeat_errors_total` bumps).
 - **`MaxDeliver = 8`** — the eighth NAK parks a copy on the DLQ stream
@@ -163,8 +165,8 @@ The **orphan sweeper** runs on the server side
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)) and
 catches the failure mode the runner can't — the pod that died before
 even claiming the run, or before its first status write. It scans
-every 60s for `queued` past the redelivery window + margin (~90min with
-the defaults: `MaxDeliver × AckWait` + 10min) or `running > 10min` AND no
+every 60s for `queued` past the redelivery window + margin (~2h40 with
+the defaults: the window described below + 10min) or `running > 10min` AND no
 current NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
 Bumps `iterion_runs_orphan_recovered_total`.
 
@@ -175,10 +177,20 @@ The same sweeper also polls `DLQDepth()` so
 A delivery that cannot take the run lock is retried after one lease interval
 — the configured `ITERION_LOCK_TTL` / `runner.lock_ttl`, 60 seconds by
 default — which is how long a lease nobody refreshes takes to evaporate, so
-the retry either finds the run free or meets a live owner. Raising it above
-`AckWait` stretches the queue's worst-case redelivery window to
-`MaxDeliver × lock_ttl`, which the orphan sweeper's queued-staleness cutoff
-tracks. On its last allowed attempt the original message is archived on
+the retry either finds the run free or meets a live owner. One that finds the
+lease held by another runner backs off towards the longest a lease is held
+once its run can be resumed: the engine's teardown, cancelled or parked, then
+the runner's post-engine steps — the git snapshot, the bank, the artifact
+upload — within the runner's lease ceiling (about 56 minutes, most of it the
+bank's own budget), then the lease's lapse. Its retries double from one lease
+interval to a last one that waits that whole hold (1 min, 1 min 48, 3 min 35
+… 57 min with the defaults), so a resume delivered while the previous
+execution still unwinds outlives it, whichever delivery first met the lock —
+unless no retry is left. The queue's worst-case redelivery window counts each
+of the `MaxDeliver` deliveries at the longest delay its rank can take —
+`AckWait`, the schema and epoch delays, the lease TTL, or that back-off —
+about 2 h 30 with the defaults, and the orphan sweeper's queued-staleness
+cutoff tracks it. On its last allowed attempt the original message is archived on
 the DLQ and `run_delivery_exhausted` lands on the run's timeline. Either way
 the run itself is untouched — without the lock no writer may change its
 outcome or its continuation — so this records a *delivery* failure, never an

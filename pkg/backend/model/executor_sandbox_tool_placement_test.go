@@ -76,6 +76,32 @@ func TestClawExecute_RefusesAToolWithNoSandboxPlacement(t *testing.T) {
 	}
 }
 
+// The control that keeps the placement refusal inside the sandbox branch: an
+// unsandboxed node never meets the table. Its tools execute in the launcher
+// process itself — where the host-coupled halves of lsp, worker_* and friends
+// live anyway — so `lsp` and `repl` must reach the runner-less path untouched
+// and fail later on whatever the launcher genuinely lacks (here: the empty
+// registry resolves no model client), never on placement.
+//
+// Reddens on the mutation that hoists refuseToolsWithNoSandboxPlacement out
+// of the `task.Sandbox != nil` branch.
+func TestClawExecute_UnsandboxedNodeIsNeverPlacementRefused(t *testing.T) {
+	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	task := delegate.Task{
+		NodeID:   "orchestrator",
+		Model:    "openai/gpt-5.6-sol",
+		ToolDefs: []delegate.ToolDef{{Name: "read_file"}, {Name: "lsp"}, {Name: "repl"}},
+	}
+
+	_, err := b.Execute(context.Background(), task)
+	if err == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "sandboxed runner cannot execute in-container") {
+		t.Errorf("an unsandboxed node was refused on sandbox placement: %v", err)
+	}
+}
+
 // A tool no side can serve that the permission policy denies outright could
 // never have been called by the node: it is dropped rather than refused, the
 // way a tool_policy-denied tool is withheld at resolution.

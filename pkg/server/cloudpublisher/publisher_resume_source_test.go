@@ -3,7 +3,9 @@ package cloudpublisher
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -185,3 +187,47 @@ func TestSubmitResume_APublishThatLandedAnywayKeepsTheNewBaseline(t *testing.T) 
 			r.WorkflowHash, r.WorkflowSource)
 	}
 }
+
+// TestSubmitResume_aRefusedResumeLeavesTheAttemptMarkerAlone: the resume's
+// flip to queued refreshes the attempt marker a runner tells a stale delivery
+// by. A resume refused before its publication published nothing, so the
+// marker goes back to the previous attempt's: a delivery of that attempt
+// still in flight must not read as superseded.
+func TestSubmitResume_aRefusedResumeLeavesTheAttemptMarkerAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		prior *time.Time
+	}{{"a run never queued", nil}, {"a run queued before", ptrTime(time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond))}} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			ctx := store.WithIdentity(context.Background(), "team", "alice")
+			const runID = "run-resume-marker"
+			if err := st.SaveRun(ctx, &store.Run{ID: runID, TenantID: "team", OwnerID: "alice", Status: store.RunStatusPausedOperator, QueuedAt: tc.prior}); err != nil {
+				t.Fatalf("seed run: %v", err)
+			}
+			p := &Publisher{store: st, publishRun: func(context.Context, *queue.RunMessage) error {
+				return errors.New("nats unavailable")
+			}}
+			cs := &runview.CompiledSource{Hash: "h", Main: "main.bot", Files: map[string]string{"main.bot": "workflow w:\n  entry: a\n  a -> done\n"}}
+			spec := runview.ResumeSpec{RunID: runID, FilePath: "main.bot", Source: cs.Files["main.bot"]}
+			if err := p.SubmitResume(ctx, spec, &ir.Workflow{Name: "w"}, cs); err == nil || !strings.Contains(err.Error(), "nats unavailable") {
+				t.Fatalf("SubmitResume = %v, want the publish failure: the flip must have happened for its rollback to be judged", err)
+			}
+			r, err := st.LoadRun(ctx, runID)
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			if r.Status != store.RunStatusPausedOperator {
+				t.Fatalf("status = %s, want paused_operator", r.Status)
+			}
+			if (tc.prior == nil) != (r.QueuedAt == nil) || (tc.prior != nil && !r.QueuedAt.Equal(*tc.prior)) {
+				t.Fatalf("queued_at after the refused resume = %v, want the previous attempt's %v: a flip nothing published left its marker", r.QueuedAt, tc.prior)
+			}
+		})
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

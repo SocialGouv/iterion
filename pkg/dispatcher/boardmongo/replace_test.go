@@ -461,8 +461,24 @@ func TestEpochIsMonotoneAcrossAFamilyDrop(t *testing.T) {
 	// Unreachable in production (it needs two family drops on one card
 	// inside 1ms, and round 13 removed the unscoped replace that produced
 	// them) — but this test CAN mint that fast, and mongo-conformance is
-	// a required check: force the tick over.
-	time.Sleep(2 * time.Millisecond)
+	// a required check: poll the SERVER clock — the very one the mint
+	// floors on — until it has moved past the first mint. A wall-clock
+	// sleep only hopes the two clocks agree.
+	clock := boardmongo.NewCoordinator(db)
+	for {
+		now, cerr := clock.ServerNow(ctx)
+		if cerr != nil {
+			t.Fatalf("ServerNow: %v", cerr)
+		}
+		if now.UnixMilli() > first.Epoch {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the server clock never moved past the first mint (epoch %d): %v", first.Epoch, ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
 	second, err := st.Claim(iss.ID, "worker-A")
 	if err != nil {
 		t.Fatalf("Claim second: %v", err)

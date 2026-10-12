@@ -149,6 +149,7 @@ func TestASchemaReaskIsToldWhatTheAnswersProcessLeft(t *testing.T) {
 // A claude_code router keeps the CLI's native tools: its task is a claude
 // session like any other, and goes through the run's ledger.
 func TestTheLLMRouterTaskCarriesTheRunsSessionLedger(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-funding")
 	be := &ledgerBackend{script: []ledgerStep{{res: delegate.Result{Output: map[string]any{"selected_route": "agent_a", "reasoning": "r"}}}}}
 	exec := newDelegateTestExecutor(be, EventHooks{})
 	ledger := delegate.NewSessionLedger(nil)

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -381,6 +382,13 @@ func TestBotsListFollowsProjectSwitch(t *testing.T) {
 		// No Bots.Paths: the catalog derives from the current WorkDir.
 	}, iterlog.New(iterlog.LevelError, nil))
 	srv.handler = srv.mux
+	// The mission sweep (swapWorkDir → restartAssistantMissions) runs in this
+	// test — the watch sweep does not (startAssistantRunWatches only runs
+	// from Serve/StartEmbedded) — and its FS store MkdirAll's its root on
+	// every call, reads included: a sweep parked mid-call past the default
+	// 500ms join on a starved runner lands a write during this test's
+	// TempDir cleanup.
+	srv.bgJoinBudget = 30 * time.Second
 	shutdownOnCleanup(t, srv)
 
 	listNames := func() []string {
@@ -436,6 +444,8 @@ func TestBotsListExplicitPathsPinnedAcrossSwitch(t *testing.T) {
 		Bots:        BotsConfig{Paths: []string{pinned}},
 	}, iterlog.New(iterlog.LevelError, nil))
 	srv.handler = srv.mux
+	// Same mission-sweep join race as TestBotsListFollowsProjectSwitch.
+	srv.bgJoinBudget = 30 * time.Second
 	shutdownOnCleanup(t, srv)
 
 	if err := srv.swapWorkDir(context.Background(), dirB); err != nil {

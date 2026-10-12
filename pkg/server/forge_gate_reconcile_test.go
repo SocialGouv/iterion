@@ -343,6 +343,7 @@ func TestGateReconcile_SyntheticMarker(t *testing.T) {
 		{gateInterruptedDescription, true},
 		{"review died (budget exceeded: duration…) — push again or comment the bot's command to re-run", true},
 		{gateDLQDescription, true},
+		{gateDLQDescriptionReplay, true},
 		{"no blocking findings (≥high); 4 total", false},
 		{"supply-chain audit clean; no alignment needed, build verified", false},
 		{"", false},

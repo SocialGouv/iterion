@@ -59,6 +59,8 @@ import (
 //	  forge.ErrOAuthAppNotFound            0
 //	  forge.ErrBoardBindingNotFound        0
 //	  forge.ErrProvisionApprovalNotFound   0
+//	  forge.ErrLaunchVarsDrop              0  the provisioning route answers 400 itself
+//	  forge.ErrProvisionDiverged           0  the provisioning route answers 500 itself
 //
 //	OUTSIDE it, and never sent at all — the one 0 the caller never sees
 //	  forge.ErrLocalPreflight              0 here; writeForgeUpstreamError reads it through isIterionFault and answers 500
@@ -79,6 +81,8 @@ import (
 //	  forge.ErrSecurityReadMalformed       0
 //	  forge.ErrSecurityReadNoOrgKey        0
 //	  forge/github.ErrInstallationNotOwned  0
+//	  forge.ErrStaleHead                   0  the verdict surface reports it as a refusal, never a retry
+//	  forge.ErrNotMergeable                0  same — the forge stays authoritative on its merge state
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

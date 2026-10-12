@@ -26,6 +26,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -93,15 +94,26 @@ var (
 	}
 )
 
-// tailString returns at most the last n bytes of s — install output can
-// run long and only the tail carries the failure.
+// tailString returns at most the last n bytes of s, cut on a rune boundary —
+// a process's output can run long and only the tail carries the failure,
+// and an error that embeds it whole pushes what follows it (its remedy) out
+// of every reader that bounds a line.
 func tailString(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
 	}
-	return "…" + s[len(s)-n:]
+	i := len(s) - n
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return "…" + s[i:]
 }
+
+// processOutputTailBytes bounds the output of a process the scratch bank
+// runs in the sandbox (tar, the restore, the quiesce) as its records and
+// errors embed it: a kilobyte keeps tar's last refusals.
+const processOutputTailBytes = 1024
 
 // engineExtraEnvSetter is the optional interface ClawExecutor implements
 // so the engine can push its own run-level process-environment additions

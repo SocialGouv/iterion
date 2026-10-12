@@ -123,9 +123,11 @@ func TestRun_OneCandidateServesAndKeepsServing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	const candidates = 5
-	// Renewal every 500ms against a 1.25s step-down: a scheduler stall under
-	// a loaded -race run has to exceed 750ms to end the term.
-	const leaseTTL = 1500 * time.Millisecond
+	// Renewal every 1s against a 2.5s step-down: a scheduler stall under a
+	// loaded -race run has to exceed 1.5s to end the term. The stall budget
+	// is TTL/2 against a renewal pace of TTL/3, so the TTL itself is the
+	// margin — and the 3 TTLs of dead hold below are its price.
+	const leaseTTL = 3 * time.Second
 	for i := 0; i < candidates; i++ {
 		owner := fmt.Sprintf("replica-%d", i)
 		wg.Add(1)

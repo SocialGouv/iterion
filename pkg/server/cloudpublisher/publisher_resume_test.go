@@ -306,3 +306,28 @@ func TestSubmitResume_PublishesTheStatusItMovedTheRunFrom(t *testing.T) {
 		})
 	}
 }
+
+// TestSubmitResume_carriesTheScratchsConsent: the operator's consent to the
+// scratch's loss rides the resume message, and nothing else gives it.
+func TestSubmitResume_carriesTheScratchsConsent(t *testing.T) {
+	for _, accept := range []bool{false, true} {
+		st, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := store.WithIdentity(context.Background(), "team", "alice")
+		const runID = "run-scratch-consent"
+		if err := st.SaveRun(ctx, &store.Run{ID: runID, TenantID: "team", OwnerID: "alice", Status: store.RunStatusFailedResumable}); err != nil {
+			t.Fatal(err)
+		}
+		var published *queue.RunMessage
+		p := &Publisher{store: st, publishRun: func(_ context.Context, msg *queue.RunMessage) error { published = msg; return nil }}
+		spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n", Force: true, AcceptScratchLoss: accept}
+		if err := p.SubmitResume(ctx, spec, &ir.Workflow{Name: "wf"}, &runview.CompiledSource{Hash: "hash"}); err != nil {
+			t.Fatal(err)
+		}
+		if published == nil || published.Resume == nil || published.Resume.AcceptScratchLoss != accept || !published.Resume.Force {
+			t.Fatalf("accept=%v: published resume = %#v, want the consent carried as given, force kept", accept, published)
+		}
+	}
+}

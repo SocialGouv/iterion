@@ -414,39 +414,26 @@ tool plan_read:
 
     # No YAML parser in the standard library, and adding a dependency to read a
     # config file is a poor trade. yq ships in the bundle and converts to JSON.
-    # yq est CHERCHE, pas suppose sur le PATH.
+    # yq is SOUGHT, not assumed on PATH.
     #
-    # Il est declare dans le devbox.json de ce bundle, ce qui dit quelle version
-    # doit servir — pas que l'environnement sera realise pour CE noeud. Mesure :
-    # un run entier s'est termine « FINISHED » sans executer un seul lot parce
-    # que `yq` etait introuvable ici. Le profil du bundle est donc consulte en
-    # second, avant de refuser.
+    # It is declared in this bundle's devbox.json — being declared says which
+    # version should serve, not that the environment was realised for this
+    # node. Measured: a whole run once finished without executing a single lot
+    # because `yq` could not be found here, which is why the absence is a
+    # refusal that names the cause rather than a silent skip.
+    #
+    # PATH ONLY. There is no fallback into the workspace: <ws>/.devbox is the
+    # TARGET repository's own devbox profile, so a binary found there is an
+    # executable the target repo supplied, run with this run's environment
+    # (#1799) — the same defect this bundle refuses for its own skills.
     def find_yq():
         import shutil
-        found = shutil.which("yq")
-        if found:
-            return found
-        # Le profil du DEPOT CIBLE, et non celui du bundle.
-        #
-        # Ce qui sert reellement est l'environnement du depot sur lequel le bot
-        # travaille : c'est ainsi que `golden-master` obtient python3, jq et
-        # poppler — il n'embarque pas ces outils, il tourne dedans. Les paquets
-        # declares dans le devbox.json d'un bundle disent quelle version doit
-        # servir ; rien ne les realise pour autant.
-        #
-        # Meme idiome que `env/baseline/_paths.sh` et `ci/verify-pipeline.sh`
-        # du depot cible, pour la meme raison : rester appelable hors d'un
-        # `devbox run` parent.
-        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-        return ""
+        return shutil.which("yq") or ""
 
     yq = find_yq()
     if not yq:
-        refuse("yq is not on PATH and was not found in this bundle's devbox "
-               "profile, so the contract at %s cannot be read. It is declared in "
-               "the bundle's devbox.json — being declared says which version "
+        refuse("yq is not on PATH, so the contract at %s cannot be read. It is declared in "
+               "this bundle's devbox.json — being declared says which version "
                "should serve, not that the environment was realised for this "
                "node." % plan_path)
     try:
@@ -719,20 +706,17 @@ tool lot_verify:
     #    own — so a `done` the worker wrote is refused HERE, before a single
     #    gate command runs: the revert costs seconds, the gate costs an hour,
     #    and a run interrupted after such a write relaunches as a green no-op.
-    # Same lookup as plan_read and mark_done: yq on PATH, then the TARGET's
-    # devbox profile — declared is not realised, and a verifier that cannot
-    # find its parser must say so, never fall through to a verdict that skips
-    # the checks it could not make (adversarial finding, executed: with yq
-    # off PATH, a worker-written `done` and an amputated gate converged green).
+    # Same lookup as plan_read and mark_done: yq on PATH, ONLY — declared is
+    # not realised, and a verifier that cannot find its parser must say so,
+    # never fall through to a verdict that skips the checks it could not make
+    # (adversarial finding, executed: with yq off PATH, a worker-written
+    # `done` and an amputated gate converged green). There is no fallback
+    # into the workspace: <ws>/.devbox is the TARGET repository's own devbox
+    # profile, so a binary found there is one the target repo supplied
+    # (#1799).
     def find_yq():
         import shutil
-        found = shutil.which("yq")
-        if found:
-            return found
-        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-        return ""
+        return shutil.which("yq") or ""
 
     def unreadable(why):
         """A failure to LOOK is refused, never turned into a verdict: a verdict
@@ -749,8 +733,7 @@ tool lot_verify:
         import tempfile
         yq = find_yq()
         if not yq:
-            unreadable("yq is not on PATH and was not found in the target's devbox "
-                       "profile, so the contract cannot be read (%s)" % what)
+            unreadable("yq is not on PATH, so the contract cannot be read (%s)" % what)
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tf:
             tf.write(text)
             tmp = tf.name
@@ -1464,22 +1447,15 @@ tool mark_done:
         print(json.dumps(out))
         raise SystemExit(0)
 
-    # Same lookup as plan_read: yq is sought on PATH, then in the target's
-    # devbox profile — declared is not realised.
+    # Same lookup as plan_read: yq is sought on PATH, ONLY — a fallback under
+    # <ws>/.devbox would run a binary the target repository supplied (#1799).
     def find_yq():
-        found = shutil.which("yq")
-        if found:
-            return found
-        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-        return ""
+        return shutil.which("yq") or ""
 
     def lots_json(path, what=None):
         yq = find_yq()
         if not yq:
-            refuse("yq is not on PATH and was not found in the target's devbox "
-                   "profile, so the contract cannot be re-read after the write.")
+            refuse("yq is not on PATH, so the contract cannot be re-read after the write.")
         raw = subprocess.run([yq, "-o=json", path], capture_output=True, text=True, timeout=60)
         if raw.returncode != 0:
             refuse("the contract %s does not parse: %s" % (what or ("at " + path), raw.stderr[-400:]))

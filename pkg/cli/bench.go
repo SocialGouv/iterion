@@ -108,7 +108,7 @@ func RunBenchAsymptote(opts BenchAsymptoteOptions, p *Printer) error {
 	})
 
 	if opts.Output == "" || opts.Output == "-" {
-		_, _ = fmt.Fprint(p.W, md)
+		p.write(md)
 		return nil
 	}
 
@@ -208,7 +208,7 @@ func RunBenchDiscovery(opts BenchDiscoveryOptions, p *Printer) error {
 	}
 
 	if opts.Output == "" || opts.Output == "-" {
-		_, _ = fmt.Fprint(p.W, md)
+		p.write(md)
 		return nil
 	}
 	if err := os.WriteFile(opts.Output, []byte(md), 0o644); err != nil {

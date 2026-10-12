@@ -81,6 +81,14 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		err: forge.ErrProvisionApprovalNotFound, wantStatus: 0,
 		why: "an iterion store miss",
 	},
+	"forge.ErrLaunchVarsDrop": {
+		err: forge.ErrLaunchVarsDrop, wantStatus: 0,
+		why: "a partial launch_vars write refused before any forge call — the provisioning route answers 400, naming the pins to echo",
+	},
+	"forge.ErrProvisionDiverged": {
+		err: forge.ErrProvisionDiverged, wantStatus: 0,
+		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 with the converge-on-rerun remedy",
+	},
 
 	// Forge-answered 404s that stay out of the class because their own
 	// caller classifies them. Moving one in is a behaviour change to own.
@@ -138,6 +146,18 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 	"forge/github.ErrInstallationNotOwned": {
 		err: forgegithub.ErrInstallationNotOwned, wantStatus: 0,
 		why: "a forged installation_id in a callback — the connect route answers 403 itself",
+	},
+
+	// Merge-gate gestures. Both are the forge refusing a SHA-pinned mutation
+	// in band; the publish surface reports them as verdict refusals, never
+	// retries, so they classify as nothing an upstream status answers.
+	"forge.ErrStaleHead": {
+		err: forge.ErrStaleHead, wantStatus: 0,
+		why: "the head moved since the audited revision — the verdict is stale and a fresh one must decide",
+	},
+	"forge.ErrNotMergeable": {
+		err: forge.ErrNotMergeable, wantStatus: 0,
+		why: "the merge request cannot take a merge/arming right now — the caller reports it, the forge stays authoritative",
 	},
 }
 

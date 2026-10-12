@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -706,5 +707,68 @@ func TestAParentThatIsItselfASymlinkedBundleStillReachesItsSibling(t *testing.T)
 	}
 	if got != want {
 		t.Errorf("resolved %s, want %s", got, want)
+	}
+}
+
+// The subbot WIRING of the pool stamp is its own witness (rva-2 F2, mutation
+// M4): the engine-level test in pkg/runtime proves the option stamps the
+// doc, but nothing else proves the closure FEEDS it from the child message —
+// dropping runtime.WithRunnerPool here shipped green. Red when the wiring is
+// dropped again.
+func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.New(root)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), SandboxOverride: "none"}}
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent", RunnerPool: "honorabilite"}
+
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	if _, err := run(context.Background(), runtime.SubbotRequest{
+		Source:      "child.bot",
+		Vars:        map[string]any{"ticket": "T-9"},
+		ParentRunID: msg.RunID,
+		NodeID:      "run_ticket",
+		ReattachKey: "run_ticket",
+	}); err != nil {
+		t.Fatalf("subbot runner: %v", err)
+	}
+	// The child run id is minted inside the closure; the only run in this
+	// fresh store is the child (the parent message is never persisted).
+	var raw []byte
+	werr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "run.json" {
+			return err
+		}
+		raw, err = os.ReadFile(path)
+		return err
+	})
+	if werr != nil {
+		t.Fatal(werr)
+	}
+	if raw == nil {
+		t.Fatal("no child run document found under the store root")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		ID          string `json:"id"`
+		ParentRunID string `json:"parent_run_id"`
+		RunnerPool  string `json:"runner_pool"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.ParentRunID != msg.RunID {
+		t.Fatalf("sanity: %s is not the child of %s", doc.ID, msg.RunID)
+	}
+	if doc.RunnerPool != "honorabilite" {
+		t.Fatalf("the child document lost the frozen pool stamp: %+v", doc)
 	}
 }

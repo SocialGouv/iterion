@@ -196,6 +196,10 @@ func (s *blockedWatchList) ListActivePage(ctx context.Context, after *runwatch.W
 
 func TestAssistantWatchInFlightProjectSnapshot(t *testing.T) {
 	f := newArmFixture(t, true)
+	// The swaps below spawn the mission sweep; the fixture's cleanup stops it
+	// (newArmFixture) — this test never calls Shutdown, so a bgJoinBudget
+	// override here would be dead code: the budget is only read by the
+	// shutdown join.
 	a := f.assistant(t, "assistant-old", "card")
 	target := f.target(t, "target-old", "card", a.CreatedAt.Add(time.Minute))
 	f.coord.armWatchesForTarget(t.Context(), target)
@@ -295,6 +299,8 @@ func (s *blockedWatchCreate) CreateWatch(ctx context.Context, w runwatch.Watch) 
 
 func TestAssistantWatchHTTPWakeReconcilesSelectedProject(t *testing.T) {
 	f := newArmFixture(t, true)
+	// Same leaked mission sweep as TestAssistantWatchInFlightProjectSnapshot —
+	// stopped by the fixture's cleanup, not by a (dead) join-budget override.
 	oldRuntime := f.coord.snapshot()
 	a := f.assistant(t, "http-assistant", "card")
 	target := f.target(t, "http-target", "card", a.CreatedAt.Add(time.Minute))
@@ -354,6 +360,8 @@ func TestAssistantWatchHTTPWakeReconcilesSelectedProject(t *testing.T) {
 
 func TestAssistantWatchSwitchPreservesInjectedStore(t *testing.T) {
 	f := newArmFixture(t, true)
+	// Same leaked mission sweep as TestAssistantWatchInFlightProjectSnapshot —
+	// stopped by the fixture's cleanup, not by a (dead) join-budget override.
 	f.srv.cfg.RunWatches = f.ws
 	f.srv.assistantWatch = f.coord
 	if err := f.srv.swapWorkDir(t.Context(), t.TempDir()); err != nil {

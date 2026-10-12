@@ -1,0 +1,596 @@
+## ─── The one LLM node ───────────────────────────────────────────
+
+dsl: 2
+
+agent classify:
+  model: "${ITERION_VIBE_MODEL_WARDEN:-claude-opus-5-5}"
+  backend: "claude_code"
+  ## Same load-bearing anthropic pin as the reviewer fleet: a facade key
+  ## holding the wire would serve GLM under the claude label in silence.
+  provider: "${ITERION_VIBE_PROVIDER_WARDEN:-anthropic}"
+  output: classify_output
+  system: classify_system
+  user: classify_user
+  reasoning_effort: "${ITERION_VIBE_EFFORT_WARDEN:-high}"
+  readonly: true
+  fallbacks:
+    ## The same GLM rescue route the reviewer fleet declares, with one
+    ## warden-specific consequence: a fallback-served CLASSIFY FAILS
+    ## CLOSED at the fold. Revi can afford a degraded review (it reads
+    ## the same diff and emits the same schema); this node's green
+    ## verdict is a merge actuation, and a gate that merges on a judge
+    ## its calibration never measured was never calibrated. The route
+    ## keeps the gate ANSWERING (red, with the reason) instead of
+    ## parking the MR when the forfait diverts.
+    glm:
+      model: "${ITERION_VIBE_MODEL_WARDEN_FALLBACK:-glm-5.3}"
+      provider: "zai"
+      on: [usage_window, auth, unavailable]
+      metered: true
+
+## ─── diff_inventory — the deterministic half of the verdict ─────
+tool diff_inventory:
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} POLICY_PATH={{vars.policy_path}} MAX_FILES={{vars.max_diff_files}} MAX_BYTES={{vars.max_diff_bytes}} DECLARED_HEAD={{vars.head_sha}} python3 -I -c "
+import os, subprocess, json
+os.chdir(os.environ['WS'])
+def git(*a):
+    try:
+        return subprocess.run(['git', *a], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, env=dict(os.environ, GIT_TERMINAL_PROMPT='0'))
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(['git', *a], 1, '', 'timed out')
+def emit(d):
+    print(json.dumps(d)); raise SystemExit(0)
+base = os.environ.get('BASE', 'main').strip()
+policy_path = os.environ.get('POLICY_PATH', '.iterion/review-policy.md').strip()
+max_files = int(os.environ.get('MAX_FILES', '150') or 150)
+max_bytes = int(os.environ.get('MAX_BYTES', '400000') or 400000)
+declared = os.environ.get('DECLARED_HEAD', '').strip()
+head = git('rev-parse', 'HEAD').stdout.strip()
+stale_launch = False
+if declared:
+    looks_sha = 7 <= len(declared) <= 40 and all(c in '0123456789abcdefABCDEF' for c in declared)
+    stale_launch = looks_sha and not head.startswith(declared)
+# Workspace-truth check, same discipline as the reviewer fleet: a TRACKED
+# file with an uncommitted edit means this workspace is not the tree the
+# MR proposes, and a verdict about it would be about nothing. (No
+# backticks anywhere in this body: it rides a backtick-delimited string.)
+noise = os.environ.get('ITERION_TREE_NOISE', '').split()
+porcelain = git('status', '--porcelain', '-z', '--untracked-files=no', '--', ':/', *noise)
+workspace_anomaly = ''
+if porcelain.returncode != 0:
+    workspace_anomaly = '?'
+else:
+    entries = []
+    fields = porcelain.stdout.split(chr(0))
+    i = 0
+    while i < len(fields):
+        e = fields[i]; i += 1
+        if not e:
+            continue
+        entries.append(e)
+        if e[0] in ('R', 'C'):
+            i += 1
+    workspace_anomaly = chr(10).join(entries)
+def unresolved():
+    emit({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': '',
+          'policy_body': '', 'policy_source': 'default', 'policy_sha': '', 'files': [],
+          'diff_too_large': False, 'unparseable': True, 'workspace_anomaly': workspace_anomaly,
+          'stale_launch': stale_launch})
+if git('fetch', '--quiet', 'origin', base).returncode == 0:
+    fetched = git('rev-parse', 'FETCH_HEAD')
+    if fetched.returncode == 0 and fetched.stdout.strip():
+        base = fetched.stdout.strip()
+mb = git('merge-base', base, 'HEAD').stdout.strip()
+if not mb:
+    unresolved()
+names = git('diff', '--name-status', '-z', mb)
+if names.returncode != 0:
+    unresolved()
+# name-status -z: STATUS NUL path NUL; a rename/copy is STATUS NEW NUL OLD
+# NUL and a finding anchors to the NEW path.
+fields = names.stdout.split(chr(0))
+files = []
+i = 0
+while i < len(fields):
+    f = fields[i]; i += 1
+    if not f:
+        continue
+    status = f[0]
+    if status in ('R', 'C'):
+        i += 1  # skip the OLD path
+    path = fields[i]; i += 1
+    if not path:
+        continue
+    ext = path.rsplit('.', 1)[-1].lower() if '.' in path else ''
+    files.append({'path': path, 'status': status, 'ext': ext, 'added': 0, 'removed': 0, 'key_paths': [], 'candidate': False})
+num = git('diff', '--numstat', '-z', mb)
+if num.returncode == 0:
+    nf = num.stdout.split(chr(0))
+    j = 0
+    while j < len(nf):
+        row = nf[j]; j += 1
+        if not row.strip():
+            continue
+        parts = row.split(chr(9))
+        if len(parts) < 2 or not (parts[0].isdigit() or parts[0] == '-') or not (parts[1].isdigit() or parts[1] == '-'):
+            continue
+        a, r = parts[0], parts[1]
+        if len(parts) >= 3 and parts[2]:
+            p = parts[2]
+        else:
+            # A rename row is COUNTS NUL OLD NUL NEW: the path that matches
+            # the inventory is the NEW one.
+            j += 1  # skip OLD
+            p = nf[j] if j < len(nf) else ''; j += 1
+        for fe in files:
+            if fe['path'] == p:
+                fe['added'] = int(a) if a.isdigit() else -1
+                fe['removed'] = int(r) if r.isdigit() else -1
+# Key-path scan on MODIFIED values files: which top-level-ish keys gained
+# or lost lines. A triage aid for the judge — python here has no YAML
+# parser and must not fake one. A REMOVED key with no same-named addition
+# anywhere in the file is the silent-drop shape the fold escalates on.
+keyscan_budget = 40
+scanned = 0
+for fe in files:
+    if scanned >= keyscan_budget:
+        break
+    if fe['status'] != 'M' or fe['ext'] not in ('yaml', 'yml'):
+        continue
+    scanned += 1
+    d = git('diff', '-U0', mb, '--', fe['path'])
+    if d.returncode != 0:
+        continue
+    added_keys, removed_keys = set(), set()
+    for line in d.stdout.splitlines():
+        if not line.startswith('+') and not line.startswith('-'):
+            continue
+        body = line[1:]
+        stripped = body.strip()
+        if not stripped or stripped.startswith('#') or ':' not in body:
+            continue
+        key = stripped.split(':', 1)[0].strip()
+        if key and all(c.isalnum() or c in '_-.' for c in key):
+            (added_keys if line.startswith('+') else removed_keys).add(key)
+    fe['key_paths'] = sorted(added_keys | removed_keys)
+    fe['candidate'] = bool(added_keys or removed_keys) and not (removed_keys - added_keys)
+# The policy override is read from the BASE commit — never from the MR
+# head, so an MR cannot loosen the review it is judged by. The fold
+# escalates when the MR itself modifies the file.
+policy_body = ''
+policy_source = 'default'
+policy_sha = ''
+policy_in_mr = any(fe['path'] == policy_path for fe in files)
+show = git('show', base + ':' + policy_path)
+if show.returncode == 0 and show.stdout.strip():
+    policy_body = show.stdout
+    policy_source = 'override'
+    blob = git('rev-parse', base + ':' + policy_path)
+    if blob.returncode == 0:
+        policy_sha = blob.stdout.strip()
+# Byte cap on the whole diff: a diff too big to read is a diff nobody
+# certified, and the fold escalates instead of guessing.
+full = git('diff', mb)
+total_bytes = len(full.stdout) if full.returncode == 0 else -1
+too_large = len(files) > max_files or total_bytes < 0 or total_bytes > max_bytes
+emit({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head,
+      'base_sha': mb, 'policy_body': policy_body, 'policy_source': ('target-modified' if policy_in_mr else policy_source),
+      'policy_sha': policy_sha, 'files': files, 'diff_too_large': too_large,
+      'unparseable': False, 'workspace_anomaly': workspace_anomaly, 'stale_launch': stale_launch})
+"`
+  output: inventory_output
+  publish: inventory
+
+## ─── publish_verdict — THE FOLD (deterministic) + publish tail ──
+##
+## The LLM classified; this table decides. Every branch that cannot
+## prove its case folds to escalate (fail-closed); the escalation verb —
+## reviewers — is the only gesture a RED verdict carries, and only in
+## enforce mode. ADR-124 is the doctrine; this node is its executable
+## half, driven by bots/gitops_warden_gate_test.go.
+tool publish_verdict:
+  command: `PR_URL={{input.pr_url}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_STATE_URL={{vars.forge_pr_state_url}} MODE={{vars.mode}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} REVIEWERS={{vars.reviewers}} PEER_CONTEXTS={{vars.peer_gate_contexts}} MERGE_METHOD={{vars.merge_method}} REMOVE_BRANCH={{vars.remove_source_branch}} RUN_ID={{run.id}} REVIEWED_SHA={{input.reviewed_sha}} BASE_SHA={{input.base_sha}} DECLARED_HEAD={{input.declared_head_sha}} ROUTE={{input.route}} SENTINEL_REASON={{input.sentinel_reason}} CHANGED_FILES={{input.changed_files}} FILES={{input.files}} DIFF_TOO_LARGE={{input.diff_too_large}} UNPARSEABLE={{input.unparseable}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} STALE_LAUNCH={{input.stale_launch}} POLICY_SOURCE={{input.policy_source}} POLICY_SHA={{input.policy_sha}} VERDICT={{input.verdict}} CLASSIFIED_FILES={{input.classified_files}} PLATFORM_FINDINGS={{input.platform_findings}} DOUBTS={{input.doubts}} JUDGE_SUMMARY={{input.summary}} FALLBACK_USED={{input.fallback_used}} python3 -I -c "
+import os, json, urllib.request, urllib.error, urllib.parse
+
+def emit(d):
+    print(json.dumps(d)); raise SystemExit(0)
+
+def envs(k, dflt=''):
+    return os.environ.get(k, dflt).strip()
+
+route = envs('ROUTE')
+mode = envs('MODE', 'dry_run')
+gate_enabled = envs('GATE_ENABLED', 'true').lower() in ('1', 'true', 'yes', 'on')
+gate_context = envs('GATE_CONTEXT', 'gitops/conformance')
+reviewed = envs('REVIEWED_SHA')
+declared = envs('DECLARED_HEAD')
+reasons = []
+
+# ── the fold ────────────────────────────────────────────────────
+# Order matters for the reader, not the outcome: every branch appends.
+if route == 'empty':
+    # An empty diff is only clean when EVERYTHING ELSE also checks out: a
+    # stale launch head or a drifted workspace makes 'no change against
+    # base' a verdict about nothing, and in enforce mode it would gesture.
+    if envs('STALE_LAUNCH').lower() in ('true', '1', 'yes'):
+        reasons.append('the run woke on a moved head — an empty diff on the wrong revision is not a clean verdict')
+    anomaly = envs('WORKSPACE_ANOMALY')
+    if anomaly and anomaly != '?':
+        reasons.append('the workspace is not the tree under review')
+    elif anomaly == '?':
+        reasons.append('the workspace state could not be read')
+elif route == 'sentinel':
+    reasons.append(envs('SENTINEL_REASON') or 'the diff could not be classified')
+else:
+    if envs('CHANGED_FILES', '0').strip().lstrip('-').isdigit() and int(envs('CHANGED_FILES', '0')) < 0:
+        reasons.append('the diff could not be read')
+    if envs('DIFF_TOO_LARGE').lower() in ('true', '1', 'yes'):
+        reasons.append('the diff exceeds the classification cap')
+    if envs('UNPARSEABLE').lower() in ('true', '1', 'yes'):
+        reasons.append('the diff could not be parsed')
+    anomaly = envs('WORKSPACE_ANOMALY')
+    if anomaly and anomaly != '?':
+        reasons.append('the workspace is not the tree under review')
+    elif anomaly == '?':
+        reasons.append('the workspace state could not be read')
+    if envs('STALE_LAUNCH').lower() in ('true', '1', 'yes'):
+        reasons.append('the run woke on a moved head (the launch named another revision)')
+    if envs('POLICY_SOURCE') == 'target-modified':
+        reasons.append('the MR modifies the review policy — it cannot judge itself')
+    fb = envs('FALLBACK_USED').strip()
+    # The engine passes an edge ref whose producer never ran AS ITS LITERAL
+    # (the _fallback_used stamp exists only when the node was actually
+    # fallback-served): an unresolved template reaching this env is the
+    # ABSENCE of the stamp, never its presence. The two opening braces are
+    # spelled chr(123) twice because a literal pair in this body is the
+    # marker the unsubstituted-ref guards grep for.
+    template_marker = chr(123) * 2
+    if fb and template_marker not in fb:
+        reasons.append('the classifier was served by its fallback route — a degraded judge never enforces')
+    try:
+        judged = json.loads(envs('CLASSIFIED_FILES', '[]') or '[]')
+        if not isinstance(judged, list):
+            reasons.append('the judge file list was unreadable')
+            judged = []
+    except Exception:
+        reasons.append('the judge file list was unreadable')
+        judged = []
+    # COVERAGE — the inventory is authoritative on what CHANGED; the judge
+    # is authoritative on what it MEANS. A verdict about a diff only part
+    # of which was classified is a verdict about nothing: every inventory
+    # path must appear in the judged set, or the fold escalates.
+    try:
+        inv = json.loads(envs('FILES', '[]') or '[]')
+        if not isinstance(inv, list):
+            inv = []
+    except Exception:
+        reasons.append('the diff inventory was unreadable')
+        inv = []
+    inv_paths = {str(f.get('path')) for f in inv if isinstance(f, dict)}
+    judged_paths = {str(f.get('path')) for f in judged if isinstance(f, dict)}
+    unjudged = inv_paths - judged_paths
+    if unjudged:
+        sample = ', '.join(sorted(unjudged)[:3])
+        reasons.append('the judge classified ' + str(len(judged_paths & inv_paths)) + ' of ' + str(len(inv_paths)) + ' changed files (unclassified: ' + sample + ')')
+    # The STRUCTURAL class is deterministic — file status A/D/R/C — so the
+    # fold enforces it itself and no judge output can soften it.
+    for f in inv:
+        if isinstance(f, dict) and str(f.get('status', '')) in ('A', 'D', 'R', 'C'):
+            reasons.append(str(f.get('path', '?')) + ': file ' + str(f.get('status')) + ' (added/removed/renamed — structural)')
+    for fe in judged:
+        # The judge's enums are LLM output over a json field the schema
+        # cannot per-entry validate: normalize case, and let anything
+        # unrecognized fail closed (unknown escalates, unlisted severity
+        # blocks) — 'Escalate'/'Blocking' passing clean is the green-gate
+        # shape this fold exists to prevent.
+        cls = str(fe.get('cls', 'unknown')).strip().lower()
+        if cls not in ('auto_approvable', 'escalate', 'unknown'):
+            cls = 'unknown'
+        if cls in ('escalate', 'unknown'):
+            why = str(fe.get('reason') or cls)
+            reasons.append(str(fe.get('path', '?')) + ': ' + why)
+    try:
+        pf = json.loads(envs('PLATFORM_FINDINGS', '[]') or '[]')
+        if not isinstance(pf, list):
+            pf = []
+    except Exception:
+        reasons.append('the judge platform findings were unreadable')
+        pf = []
+    for f in pf:
+        sev = str(f.get('severity', '')).strip().lower()
+        if sev not in ('blocking', 'advisory'):
+            sev = 'blocking'  # an unlisted severity blocks (fail closed)
+        if sev == 'blocking':
+            reasons.append('platform: ' + str(f.get('rule', '?')) + ' on ' + str(f.get('path', '?')) + ': ' + str(f.get('detail', '')))
+    doubts = [l for l in envs('DOUBTS').splitlines() if l.strip()]
+    if doubts:
+        reasons.append('the judge listed ' + str(len(doubts)) + ' doubt(s)')
+    verdict = envs('VERDICT')
+    if verdict not in ('auto_approvable', 'escalate'):
+        reasons.append('the judge verdict was unreadable')
+    elif verdict == 'escalate' and not reasons:
+        reasons.append('the judge escalated this merge request')
+
+# Clean means ZERO reasons — the route alone decides nothing (the empty
+# route with a sentinel reason is exactly the H2 shape).
+clean = len(reasons) == 0
+blocking = 0 if clean else 1
+reasons_out = chr(10).join(reasons)
+
+# ── the peer-gate read ──────────────────────────────────────────
+# Before arming, read the head's statuses through the publish grant's
+# read twin: a peer check red on the same head holds the arm — the
+# peer's verdict decides that MR, not this one. Fail-closed: a failed
+# read holds the arm too (an unverified peer is not a green peer).
+peer_problem = ''
+armed_after_peers = False
+if clean and mode == 'enforce':
+    state_url = envs('PR_STATE_URL')
+    tok = envs('PUB_TOKEN')
+    pr = envs('PR_URL')
+    if not state_url or not tok:
+        peer_problem = 'no publish grant bound — the gestures cannot cross the deterministic surface'
+    else:
+        try:
+            req = urllib.request.Request(state_url + '?pr_url=' + urllib.parse.quote(pr, safe=''), headers={'X-Iterion-Run': tok})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode('utf-8', 'replace'))
+            if data.get('commit_statuses_error'):
+                peer_problem = 'the peer statuses read failed: ' + str(data.get('commit_statuses_error'))
+            else:
+                peers = [c.strip() for c in envs('PEER_CONTEXTS').split(',') if c.strip()]
+                head_sha = str(data.get('head_sha', ''))
+                # An unverified peer is not a green peer: every pinned peer
+                # must be PRESENT and read success, or the arm is held.
+                # pending / absent / a failed read all hold.
+                if not head_sha:
+                    peer_problem = 'the peer read named no head — treating it as a failed read'
+                elif reviewed and not reviewed.startswith(head_sha[:7]) and not head_sha.startswith(reviewed[:7]):
+                    peer_problem = 'the head moved since the inventory (the read twin names another revision)'
+                else:
+                    states = {}
+                    for st in data.get('commit_statuses', []) or []:
+                        states[str(st.get('context', ''))] = str(st.get('state', ''))
+                    for ctx in peers:
+                        st = states.get(ctx)
+                        if st is None:
+                            peer_problem = 'peer gate ' + ctx + ' has no status on this head — an unverified peer is not a green peer'
+                            break
+                        if st != 'success':
+                            peer_problem = 'peer gate ' + ctx + ' is ' + st + ' on this head'
+                            break
+                    armed_after_peers = peer_problem == ''
+        except Exception as e:
+            peer_problem = 'the peer statuses read failed: ' + str(e)
+
+# ── the comment ─────────────────────────────────────────────────
+def esc(s):
+    return str(s).replace(chr(124), chr(92) + chr(124)).replace(chr(10), ' ')
+
+lines = []
+badge = 'dry-run' if mode != 'enforce' else 'enforce'
+if route == 'empty' and blocking == 0:
+    lines.append('## Warden — nothing to review')
+    lines.append('')
+    lines.append('No change against ' + envs('BASE_SHA', '')[:12] + '. Check posted green.')
+elif route == 'empty':
+    lines.append('## Warden — the empty diff is not a clean verdict')
+    lines.append('')
+    for r in reasons:
+        lines.append('- ' + esc(r))
+    lines.append('')
+    lines.append('The gate posts red: an empty diff on the wrong revision or a drifted workspace is a verdict about nothing.')
+else:
+    verdict_word = 'auto-approvable' if clean else 'needs devops review'
+    lines.append('## Warden — ' + verdict_word + ' (' + badge + ')')
+    lines.append('')
+    if clean:
+        lines.append('Every changed file is in the simple class and inside the platform guardrails.'
+                     + ('' if mode == 'enforce' else ' This run is DRY-RUN: nothing was approved or armed.'))
+    else:
+        lines.append('This merge request needs a devops review:')
+        for r in reasons:
+            lines.append('- ' + esc(r))
+        js = envs('JUDGE_SUMMARY')
+        if js:
+            lines.append('')
+            lines.append('The judge wrote: ' + esc(js))
+        doubts = [l for l in envs('DOUBTS').splitlines() if l.strip()]
+        if doubts:
+            lines.append('')
+            lines.append('Doubts (what the judge was not certain about):')
+            for d in doubts:
+                lines.append('- ' + esc(d))
+    lines.append('')
+    try:
+        judged = json.loads(envs('CLASSIFIED_FILES', '[]') or '[]')
+    except Exception:
+        judged = []
+    try:
+        inv = json.loads(envs('FILES', '[]') or '[]')
+    except Exception:
+        inv = []
+    invmap = {str(f.get('path')): f for f in inv if isinstance(f, dict)}
+    if judged:
+        lines.append('| file | status | class | why |')
+        lines.append('|---|---|---|---|')
+        for fe in judged:
+            p = str(fe.get('path', '?'))
+            meta = invmap.get(p, {})
+            st = str(meta.get('status', '?'))
+            lines.append('| ' + esc(p) + ' | ' + esc(st) + ' | ' + esc(str(fe.get('cls', '?'))) + ' | ' + esc(str(fe.get('reason', ''))) + ' |')
+    try:
+        pf = json.loads(envs('PLATFORM_FINDINGS', '[]') or '[]')
+    except Exception:
+        pf = []
+    if pf:
+        lines.append('')
+        lines.append('### Platform findings')
+        for f in pf:
+            lines.append('- [' + esc(str(f.get('severity', '?'))) + '] ' + esc(str(f.get('rule', '?'))) + ' on ' + esc(str(f.get('path', '?'))) + ' — ' + esc(str(f.get('detail', ''))))
+    psrc = envs('POLICY_SOURCE')
+    if psrc == 'override':
+        lines.append('')
+        lines.append('Policy: repo override @ ' + esc(envs('POLICY_SHA', '?')[:12]))
+    lines.append('')
+    lines.append('<details><summary>run</summary>')
+    lines.append('')
+    lines.append('run ' + esc(envs('RUN_ID')) + ' · head ' + esc(reviewed[:12]) + ' · mode ' + esc(mode))
+    lines.append('')
+    lines.append('</details>')
+summary = chr(10).join(lines)
+
+# ── the verbs the bot actually SENDS ────────────────────────────
+# dry_run sends none (the engine refuses any verdict under it — the
+# posture is declared twice, the engine's half is binding). enforce on a
+# clean verdict sends approve+arm (after the peer read above); an
+# escalation sends the reviewers verb when the pin names anyone.
+want_approve = False
+want_arm = False
+want_reviewers = []
+verdict_note = ''
+if mode == 'enforce':
+    if clean:
+        if peer_problem:
+            verdict_note = peer_problem
+        else:
+            want_approve = True
+            want_arm = True
+    else:
+        want_reviewers = [r for r in envs('REVIEWERS').split() if r]
+        if not want_reviewers:
+            verdict_note = 'no reviewers pinned on the integration — the red gate is the page'
+
+# ── the POST ────────────────────────────────────────────────────
+url = envs('PUB_URL')
+tok = envs('PUB_TOKEN')
+pr = envs('PR_URL')
+if not url or not tok or not pr:
+    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'no forge publish grant bound (forge_publish_url/token/pr_url) — a run without the grant never guesses',
+          'review_url': '', 'gate_requested': gate_enabled, 'gate_posted': False, 'gate_state': '',
+          'gate_skipped_reason': 'no publish grant bound', 'approve_posted': False,
+          'reviewers_added': '', 'merge_armed': False, 'merge_state': '',
+          'escalate_reasons': reasons_out, 'blocking': blocking})
+payload = {
+    'pr_url': pr,
+    'summary': summary,
+    'mode': 'summary',
+    'comments': [],
+    'gate': {'enabled': gate_enabled, 'context': gate_context, 'blocking_count': blocking,
+             'threshold': 'escalate', 'total_findings': len(reasons) if reasons else 0,
+             'audited_sha': reviewed,
+             'note': (('blocked: ' + ' ; '.join(reasons)) if reasons else ('no change against base' if route == 'empty' else 'simple and platform-conformant'))},
+    'verdict': {'enabled': True, 'approve': want_approve,
+                'arm_merge_when_pipeline_succeeds': want_arm,
+                'merge_method': envs('MERGE_METHOD', 'squash') or 'squash',
+                'remove_source_branch': envs('REMOVE_BRANCH').lower() in ('true', '1', 'yes'),
+                'request_reviewers': want_reviewers,
+                'audited_sha': reviewed, 'mode': mode},
+}
+body = json.dumps(payload).encode('utf-8')
+req = urllib.request.Request(url, data=body, method='POST',
+                             headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok})
+try:
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        res = json.loads(resp.read().decode('utf-8', 'replace'))
+except urllib.error.HTTPError as e:
+    detail = ''
+    try:
+        detail = e.read().decode('utf-8', 'replace')[:400]
+    except Exception:
+        pass
+    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'the publish endpoint answered ' + str(e.code) + ': ' + detail,
+          'review_url': '', 'gate_requested': gate_enabled, 'gate_posted': False, 'gate_state': '',
+          'gate_skipped_reason': 'publish failed', 'approve_posted': False, 'reviewers_added': '',
+          'merge_armed': False, 'merge_state': '', 'escalate_reasons': reasons_out, 'blocking': blocking})
+except Exception as e:
+    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'the publish endpoint was unreachable: ' + str(e),
+          'review_url': '', 'gate_requested': gate_enabled, 'gate_posted': False, 'gate_state': '',
+          'gate_skipped_reason': 'publish unreachable', 'approve_posted': False, 'reviewers_added': '',
+          'merge_armed': False, 'merge_state': '', 'escalate_reasons': reasons_out, 'blocking': blocking})
+vr = res.get('verdict') or {}
+# What the server echoed must be read through what THIS run sent. A
+# verb-less verdict (dry_run always; enforce when the arm is held or no
+# reviewers are pinned) gets the server's verb-less echo — that is the
+# contract, not a refusal: mapping it to refused bannered EVERY dry-run
+# verdict and masked the real hold reasons. A refusal is real only when
+# verbs were sent and something did not execute, or when THIS fold holds
+# the gestures itself (peer gate, no reviewers pinned).
+verbs_sent = bool(want_approve or want_arm or want_reviewers)
+if verbs_sent:
+    refusal = vr.get('refused') or verdict_note
+    gesture_landed = bool(vr.get('approve_posted') or vr.get('merge_armed') or vr.get('reviewers_added'))
+    outcome = 'refused' if refusal and not gesture_landed else 'posted'
+    refusal = refusal or ''
+else:
+    refusal = peer_problem or verdict_note or ''
+    outcome = 'refused' if refusal else 'posted'
+emit({'requested': True,
+      'outcome': outcome,
+      'verdict_refused_reason': refusal,
+      'review_url': str(res.get('review_url', '')),
+      'gate_requested': gate_enabled, 'gate_posted': bool(res.get('gate_posted')),
+      'gate_state': str(res.get('gate_state', '')),
+      'gate_skipped_reason': str(res.get('gate_error', '')),
+      'approve_posted': bool(vr.get('approve_posted')),
+      'reviewers_added': chr(10).join(vr.get('reviewers_added') or []),
+      'merge_armed': bool(vr.get('merge_armed')), 'merge_state': str(vr.get('merge_state', '')),
+      'escalate_reasons': reasons_out, 'blocking': blocking})
+"`
+  output: verdict_output
+  publish: verdict
+
+## ─── publish_health — the anti-façade gate ──────────────────────
+##
+## Every failure exit of publish_verdict fills gate_requested; a run
+## whose check never landed must say so with a banner, never read as a
+## quiet success. The verdict-verb half: enforce + clean + gestures
+## skipped is a loud VERDICT NOT ENFORCED; a refusal with no gesture at
+## all names its reason.
+tool publish_health:
+  command: `OUTCOME={{input.outcome}} REFUSED={{input.verdict_refused_reason}} GATE_REQUESTED={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIP={{input.gate_skipped_reason}} BLOCKING={{input.blocking}} APPROVE_POSTED={{input.approve_posted}} MERGE_ARMED={{input.merge_armed}} MODE={{vars.mode}} python3 -I -c "
+import os, json
+
+def emit(ok, banner, degraded):
+    print(json.dumps({'healthy': ok, 'banner': banner, 'degraded': degraded}))
+    raise SystemExit(0)
+
+def truth(v):
+    return str(v).strip().lower() in ('true', '1', 'yes')
+
+gate_requested = truth(os.environ.get('GATE_REQUESTED'))
+gate_posted = truth(os.environ.get('GATE_POSTED'))
+blocking = os.environ.get('BLOCKING', '0').strip()
+refused = os.environ.get('REFUSED', '').strip()
+approved = truth(os.environ.get('APPROVE_POSTED'))
+armed = truth(os.environ.get('MERGE_ARMED'))
+mode = os.environ.get('MODE', 'dry_run').strip()
+
+if gate_requested and not gate_posted:
+    emit(False, 'MERGE GATE NOT POSTED: ' + (os.environ.get('GATE_SKIP', '') or 'the forge refused the status'), True)
+if str(os.environ.get('OUTCOME', '')).strip() == 'refused':
+    emit(False, 'VERDICT REFUSED: ' + (refused or 'the publish surface declined the verdict'), True)
+# A clean ENFORCE verdict that executed no gesture is the silent no-op
+# shape (a mis-wired fold, stripped capabilities, a refused arm): loud,
+# never quiet. Dry-run executes nothing by contract — quiet is correct.
+if blocking == '0' and mode == 'enforce' and not approved and not armed:
+    emit(False, 'VERDICT NOT ENFORCED: a clean enforce verdict executed no gesture', True)
+# A HALF gesture is its own degradation: an approval that landed with no
+# arming behind it (and the reverse) reads as enforcement and is not.
+if blocking == '0' and mode == 'enforce' and approved != armed:
+    emit(False, 'VERDICT PARTIALLY ENFORCED: approve=' + str(approved).lower() + ' armed=' + str(armed).lower(), True)
+# A verdict published WITH a refusal note is not a healthy run either:
+# the comment landed, something the bot asked for did not.
+if str(os.environ.get('OUTCOME', '')).strip() == 'posted' and refused:
+    emit(False, 'VERDICT POSTED WITH A REFUSAL: ' + refused, True)
+emit(True, '', False)
+"`
+  output: health_output
+
+## ─── policy_gate — the deterministic route ──────────────────────
+compute policy_gate:
+  input: inventory_output
+  output: policy_gate_output
+  expr:
+    route: "if(input.is_empty, 'empty', if(input.unparseable or input.diff_too_large or input.changed_files < 0, 'sentinel', 'classify'))"
+    sentinel_reason: "if(input.changed_files < 0, 'the diff could not be read', if(input.unparseable, 'the diff could not be parsed', if(input.diff_too_large, 'the diff exceeds the classification cap — a diff too big to read is a diff nobody certified', 'unclassifiable')))"

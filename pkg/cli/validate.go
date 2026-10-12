@@ -79,6 +79,14 @@ type ValidateOptions struct {
 	// included; zero is a minute. A pass that runs out of time is said so in
 	// the report (`timed_out`), apart from a death of the program.
 	ExecTimeout time.Duration
+	// ExecLoopCrossings bounds how often a pass crosses one bounded loop
+	// before the dry run declines its back-edge (`--exec-loop-crossings`);
+	// zero is the dry run's default (dryrun.DefaultLoopCrossings), a
+	// negative value removes the bound — loops run to their cap, as the
+	// engine does. A loop cut short is said so in the report
+	// (`loops_cut_short`), and a death that follows is the bound's doing,
+	// never the program's — `clean` stays the program's word (#1307).
+	ExecLoopCrossings int
 	// Strict fails the command when the dry run's report is failing — a
 	// pass died, or a reference, shell or fixture finding stands — the
 	// switch a CI gate flips; an expression the dry run could not decide
@@ -475,13 +483,30 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			// main.bot beside it is not read in its place.
 			syntax = bundle.MaxSyntaxRequirementsDirWithMain(bundleHandle.Dir, filepath.Base(doc.botPath), doc.text)
 		}
+		lintWorkflow := cr.Workflow
+		lintFrontmatter := bundle.ParseFrontmatter(frontmatterText(doc, src))
+		lintPath := parsePath
+		if filepath.Base(bundleHandle.IterPath) != bundle.MainBotFile {
+			// The manifest binds to the bundle's CANONICAL main —
+			// dispatch_vars, invocations, the chat surface, the
+			// per-bot-memory name triple — never to a sibling entry run by
+			// path: cross-check it against main.bot's compiled program, as
+			// the directory form does, so the sibling gets the bundle's
+			// findings and never a misreading of its own workflow as the
+			// manifest's main. The floor checks (C250–C253) read every
+			// root-level entry of the bundle either way, the sibling's
+			// included; a main that does not compile to a workflow leaves
+			// the manifest-bound checks silent, as its own invalid form
+			// leaves them.
+			lintWorkflow, lintFrontmatter, lintPath = lintMainOfBundle(bundleHandle)
+		}
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
 			// still run, the manifest-side ones are skipped.
 			Manifest: bundleHandle.Manifest,
-			Workflow: cr.Workflow,
+			Workflow: lintWorkflow,
 			// A .bot's own bytes; for a document, the .bot text it writes as.
-			Frontmatter: bundle.ParseFrontmatter(frontmatterText(doc, src)),
+			Frontmatter: lintFrontmatter,
 			DirName:     bundleDir,
 			Skills:      scanBundleSkills(bundleHandle.SkillsDir),
 			// The engine contract (C250/C251), held against THIS binary — the
@@ -494,7 +519,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			// The children's contracts, for the subbot projection (C255):
 			// each `subbot source:` read within the bundle's collection and
 			// compiled as its own unit.
-			SubbotContracts: subbotcontracts.Read(bundleHandle.Dir, parsePath, cr.Workflow),
+			SubbotContracts: subbotcontracts.Read(bundleHandle.Dir, lintPath, lintWorkflow),
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())
@@ -564,11 +589,12 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				collection = bundleHandle.Dir
 			}
 			report, err := dryrun.Run(ctx, cr.Workflow, dryrun.Options{
-				Fixtures: fixtures,
-				Inputs:   inputs,
-				Path:     parsePath,
-				Children: dryRunChildren(collection),
-				Timeout:  opts.ExecTimeout,
+				Fixtures:      fixtures,
+				Inputs:        inputs,
+				Path:          parsePath,
+				Children:      dryRunChildren(collection),
+				Timeout:       opts.ExecTimeout,
+				LoopCrossings: opts.ExecLoopCrossings,
 			})
 			if err != nil {
 				result.ExecError = "dry run: " + err.Error()
@@ -675,16 +701,25 @@ func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic, 
 		if len(mine) == 0 {
 			continue
 		}
-		edits, _ := fix.PlanFor(f.Name, f.Source, mine)
+		edits, _ := fix.PlanFor(f.Name, f.Source, u.Merged, mine)
 		for i := range edits {
 			e := edits[i]
+			nodes := e.Nodes
+			if len(nodes) == 0 {
+				nodes = []string{e.Node}
+			}
 			for _, ref := range e.Refs {
-				for j := range result.Diagnostics {
-					vd := &result.Diagnostics[j]
-					if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.NodeID == e.Node && vd.File == f.Name &&
-						strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
-						vd.Edit = &e
-						break
+				// One edit remedies one diagnostic per instantiation: each
+				// node of Nodes carries it, not only the first match.
+				for _, node := range nodes {
+					for j := range result.Diagnostics {
+						vd := &result.Diagnostics[j]
+						if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.File == f.Name &&
+							vd.NodeID == node &&
+							strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+							vd.Edit = &e
+							break
+						}
 					}
 				}
 			}
@@ -856,6 +891,36 @@ func validationFailed(p *Printer) error {
 		return fmt.Errorf("validation failed: %w", ErrReported)
 	}
 	return fmt.Errorf("validation failed")
+}
+
+// lintMainOfBundle compiles the bundle's CANONICAL main for the
+// manifest-bound consistency checks when the validated entry is a sibling:
+// the manifest (dispatch_vars, invocations, chat, the memory-name triple)
+// binds to main.bot, so the cross-check reads main.bot's compiled program,
+// its frontmatter and its children's contracts — the directory form's
+// verdict — whatever sibling the operator named. (nil, nil, "") when the
+// main cannot be read or compiled to a workflow: the manifest-bound checks
+// nil-guard themselves out, the floor checks (C250–C253, read off the
+// bundle's sources) still run — the same silence the directory form keeps
+// for a main that does not compile.
+func lintMainOfBundle(b *bundle.Bundle) (*ir.Workflow, *bundle.Frontmatter, string) {
+	mainPath := filepath.Join(b.Dir, bundle.MainBotFile)
+	src, err := os.ReadFile(mainPath)
+	if err != nil {
+		return nil, nil, ""
+	}
+	u := unit.LoadDirWithMain(mainPath, mainPath, src)
+	if u.Merged == nil {
+		return nil, nil, ""
+	}
+	if err := runview.MergeBundlePrompts(u.Merged, b); err != nil {
+		return nil, nil, ""
+	}
+	mcr := ir.Compile(u.Merged)
+	if mcr.Workflow == nil {
+		return nil, nil, ""
+	}
+	return mcr.Workflow, bundle.ParseFrontmatter(src), mainPath
 }
 
 // scanBundleSkills reads a bundle's skills/*.md frontmatter (name +

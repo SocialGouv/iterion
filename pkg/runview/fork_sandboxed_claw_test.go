@@ -60,7 +60,7 @@ func TestFork_SandboxedClawTurnRelayedFromTheContainer(t *testing.T) {
 	if err := json.Unmarshal([]byte(relayed), &payload); err != nil {
 		t.Fatalf("decode relayed payload: %v", err)
 	}
-	hooks := model.NewStoreEventHooks(ctx, st, parentID, logger, nil)
+	hooks := model.NewStoreEventHooks(ctx, st, parentID, logger, nil, nil)
 	handled, err := model.ApplyRelayedEvent(hooks, "campaign", "llm_turn_capture", payload)
 	if err != nil {
 		t.Fatalf("ApplyRelayedEvent: %v", err)

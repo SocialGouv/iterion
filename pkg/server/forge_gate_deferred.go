@@ -256,6 +256,10 @@ func (s *Server) replayGateDeferral(ctx context.Context, run *store.Run, token s
 	if _, err := s.replaceDeferral(token, &next, nil); err != nil {
 		s.logWarn("forge gate: run %s's deferred verdict could not be cleared: %v", run.ID, err)
 	}
+	// A replay refused for its pin left nothing on the head, exactly like the
+	// endpoint's own refusal: record it, or the ordinary repair below paints
+	// "review died" over a verdict the gate declined (#1632).
+	s.recordGateRefusal(token, gate)
 	s.logWarn("forge gate: run %s's deferred verdict was not posted (%s) — answering the run as unanswered", run.ID, gate.errText)
 	s.retireDeferredGrant(run, token)
 	return false

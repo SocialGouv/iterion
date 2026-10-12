@@ -90,7 +90,7 @@ func TestSchemaReaskDeliversTheNodeInsteadOfFailingResumable(t *testing.T) {
 	ctx := context.Background()
 	// The store hooks are what turn the executor's lifecycle hooks into the
 	// run's events — the record this test reads the re-ask back from.
-	hooks := model.NewStoreEventHooks(ctx, st, "run-reask", iterlog.New(iterlog.LevelError, io.Discard), model.BuildSecretGuard(ctx, wf, nil, nil))
+	hooks := model.NewStoreEventHooks(ctx, st, "run-reask", iterlog.New(iterlog.LevelError, io.Discard), model.BuildSecretGuard(ctx, wf, nil, nil), nil)
 	exec := model.NewClawExecutor(model.NewRegistry(), wf,
 		model.WithBackendRegistry(reg),
 		model.WithEventHooks(hooks),

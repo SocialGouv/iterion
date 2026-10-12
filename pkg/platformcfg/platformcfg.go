@@ -34,6 +34,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -179,6 +181,10 @@ var botVarsInfraPrefixes = []string{
 	// Written by the engine for a child: a run's identity and stores, the
 	// ticket it serves — and the bounds on a run's interactive shell.
 	"ITERION_RUN_", "ITERION_ISSUE_",
+	// The sovereign-pool run-stream prefix (#2029) is JetStream topology,
+	// not an environment knob: a stored bot var that could move a run's
+	// stream would route it outside its pool.
+	"ITERION_RUNS_POOL_",
 }
 
 // botVarsInfraExact are single infra names outside those namespaces —
@@ -198,9 +204,13 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_PUBLIC_URL":   true,
 	"ITERION_DISABLE_AUTH": true,
 	"ITERION_SIGNUP_MODE":  true,
-	"ITERION_BIN":          true,
-	"ITERION_PI_BIN":       true,
-	"ITERION_OPENCODE_BIN": true,
+	// The pinned-version fallback dial (#1517): the SERVER's own posture —
+	// whether a missing botsource pin recovers to the nearest older
+	// version or refuses. It configures the process, never a bot's run.
+	"ITERION_BOTSOURCE_PIN_FALLBACK": true,
+	"ITERION_BIN":                    true,
+	"ITERION_PI_BIN":                 true,
+	"ITERION_OPENCODE_BIN":           true,
 	// The two project-trust switches are ENFORCEMENT, not paths: each one
 	// lifts a refusal that stops an agent CLI executing code out of the
 	// repository under review.
@@ -214,11 +224,12 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_REQUIRE_ORIGIN":              true,
 	"ITERION_REQUIRE_WS_ORIGIN":           true,
 	"ITERION_SECURITY_HEADERS":            true,
-	"ITERION_LEGACY_REFRESH_COOKIE":       true,
 	"ITERION_CANONICAL_REDIRECT":          true,
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK": true,
 	// Private-network reach (SSRF) and host allowlists.
 	"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE": true,
+	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":       true,
+	"ITERION_OPENAI_COMPATIBLE_RESOLVED":       true,
 	"ITERION_CONNECTOR_ALLOW_PRIVATE":          true,
 	"ITERION_WEBHOOK_FORGE_HOSTS":              true,
 	// Code loaded from the repository under review or the host: MCP servers,
@@ -246,6 +257,7 @@ var botVarsInfraExact = map[string]bool{
 	// Spend and billing guards.
 	"ITERION_FORBID_SUBSCRIPTION_OAUTH": true,
 	"ITERION_OPENAI_USE_OAUTH":          true,
+	"ITERION_OPENAI_STREAM_USAGE":       true,
 	"ITERION_LOOP_BUDGET_GUARD":         true,
 	// Trust roots, host files and filesystem exposure.
 	"ITERION_JAVA_TRUSTSTORE": true,
@@ -347,6 +359,7 @@ var botVarsInfraExact = map[string]bool{
 	// Written by the engine for a child process; a stored value would forge
 	// the directory, capabilities or provenance the child is promised.
 	"ITERION_ARTIFACT_FILES_DIR": true,
+	"ITERION_ENGINE_BIN":         true,
 	"ITERION_WORKSPACE":          true,
 	"ITERION_TENANT":             true,
 	"ITERION_PARENT_RUN_ID":      true,
@@ -657,6 +670,12 @@ type PlatformCredentials struct {
 	// free, a closed forfait falling through to it). nil = the env default,
 	// else "auto".
 	FacadeDefault *string `bson:"facade_default,omitempty" json:"facade_default"`
+	// Routing is the platform level of the adaptive-routing policy
+	// (ADR-121, pkg/llmroute): the pair order, the switch triggers,
+	// refused_pinned_key (#1999 — default forfait) and strict, with
+	// per-field locks binding the levels below. nil = the platform level
+	// says nothing; the env dials and the built-in defaults answer.
+	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing"`
 
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
@@ -708,6 +727,25 @@ func (p *PlatformCredentials) Facade() FacadePolicy {
 	return FacadeAuto
 }
 
+// RefusedPinned is the effective refused_pinned_key (#1999, ADR-121 §
+// Arbitrated 1): the record's routing block's value, else the env dial,
+// else the arbitrated default. The default is `forfait` — a shared-tier
+// key refused or capped at launch, whose wire family another credential
+// holds, stays OUT of the bundle (the routes naming its provider spend
+// that holder; claw bills the forfait as extra usage) — reversing the
+// pre-policy park behavior, which remains a settable value.
+func (p *PlatformCredentials) RefusedPinned() string {
+	if p != nil && p.Routing != nil && p.Routing.RefusedPinnedKey != "" {
+		return p.Routing.RefusedPinnedKey
+	}
+	if v := strings.TrimSpace(os.Getenv(llmroute.EnvRefusedPinnedKey)); v != "" {
+		if v == llmroute.RefusedPinnedForfait || v == llmroute.RefusedPinnedPark {
+			return v
+		}
+	}
+	return llmroute.RefusedPinnedForfait
+}
+
 // ValidateEnv reports an env default neither knob can read — a deployment
 // that set one meant something, and reading it as the built-in default in
 // silence would decide the opposite of what the operator wrote.
@@ -720,7 +758,7 @@ func ValidateEnv() error {
 	if v := strings.TrimSpace(os.Getenv(EnvFacadeDefault)); v != "" && !FacadePolicy(strings.ToLower(v)).valid() {
 		return fmt.Errorf("platformcfg: %s=%q — want auto, tier, never or always", EnvFacadeDefault, v)
 	}
-	return nil
+	return llmroute.ValidateEnv()
 }
 
 // Enforced reports whether the audience gates anything at all.
@@ -755,6 +793,11 @@ func (p PlatformCredentials) Validate() error {
 	if p.FacadeDefault != nil && !FacadePolicy(*p.FacadeDefault).valid() {
 		return fmt.Errorf("platformcfg: facade_default %q — want auto, tier, never or always", *p.FacadeDefault)
 	}
+	if p.Routing != nil {
+		if err := llmroute.Validate(*p.Routing); err != nil {
+			return err
+		}
+	}
 	if p.Enforce == nil || !*p.Enforce {
 		return nil
 	}
@@ -765,3 +808,97 @@ func (p PlatformCredentials) Validate() error {
 	}
 	return fmt.Errorf("platformcfg: enforcing the platform credential audience with no team and no org would refuse every run that has no credential of its own — name at least one, or leave enforce off")
 }
+
+// RunnerPoolState is a pool entry's lifecycle (#2029, plan v2.1 D4'):
+// provisioning = the topology is being brought up, routing refused;
+// active = the pool's runners are deployed and consuming, routing flows;
+// draining = no new routing, the topology lives until in-flight runs end;
+// disabled = removed from routing and reconciliation.
+type RunnerPoolState string
+
+const (
+	RunnerPoolProvisioning RunnerPoolState = "provisioning"
+	RunnerPoolActive       RunnerPoolState = "active"
+	RunnerPoolDraining     RunnerPoolState = "draining"
+	RunnerPoolDisabled     RunnerPoolState = "disabled"
+)
+
+// RunnerPool is one sovereign runner pool in the platform registry. The
+// registry is the single source of truth for WHICH pools exist and whether
+// they route: a team mapped to a name absent from this registry (or mapped
+// to one not active) has its launches refused — the boundary is the
+// operator's explicit registry, never a guessed default.
+type RunnerPool struct {
+	// Name is the pool identity — also the stream/subject/consumer suffix
+	// (grammar-checked: 1–31 chars [a-z0-9-], starting alphanumeric).
+	Name string `bson:"name" json:"name"`
+	// ProvidersServed names the LLM providers this pool's own env serves
+	// (today: ["openai_compatible"]). The publisher treats a provider the
+	// pool serves as funded for the pool's teams.
+	ProvidersServed []string `bson:"providers_served,omitempty" json:"providers_served,omitempty"`
+	// Note is free text for the operator (which team, which gateway).
+	Note string `bson:"note,omitempty" json:"note,omitempty"`
+	// State is the lifecycle. Entries are created provisioning and route
+	// nothing; active is the operator's explicit "runners are consuming".
+	State RunnerPoolState `bson:"state,omitempty" json:"state,omitempty"`
+
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
+}
+
+// RunnerPools is the registry record — one document, replaced wholesale by
+// the super-admin route (entries are small; a CAS guard covers races).
+type RunnerPools struct {
+	Pools []RunnerPool `bson:"pools" json:"pools"`
+
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
+}
+
+// Active reports whether pool routes: it must exist and be active. A
+// disabled/draining/provisioning entry routes nothing.
+func (r *RunnerPools) Active(pool string) bool {
+	for _, p := range r.Pools {
+		if p.Name == pool {
+			return p.State == RunnerPoolActive
+		}
+	}
+	return false
+}
+
+// Exists reports whether the registry knows pool at all (any state) — the
+// team-mapping route requires it before it will map.
+func (r *RunnerPools) Exists(pool string) bool {
+	for _, p := range r.Pools {
+		if p.Name == pool {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate rejects unknown states, duplicate names, and names outside the
+// pool grammar (the grammar lives in pkg/queue — one source of truth for
+// the subject/stream suffix shape).
+func (r *RunnerPools) Validate() error {
+	seen := map[string]bool{}
+	for i := range r.Pools {
+		p := &r.Pools[i]
+		if !queue.ValidPoolName(p.Name) {
+			return fmt.Errorf("runner pool %d: name %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", i, p.Name)
+		}
+		if seen[p.Name] {
+			return fmt.Errorf("runner pool %q appears twice", p.Name)
+		}
+		seen[p.Name] = true
+		switch p.State {
+		case "", RunnerPoolProvisioning, RunnerPoolActive, RunnerPoolDraining, RunnerPoolDisabled:
+		default:
+			return fmt.Errorf("runner pool %q: state %q invalid (want provisioning|active|draining|disabled)", p.Name, p.State)
+		}
+	}
+	return nil
+}
+
+// TestRow names the grammar edge cases Validate must enforce (documented
+// next to the table that drives them in the platformcfg test file).

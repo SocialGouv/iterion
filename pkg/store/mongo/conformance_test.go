@@ -368,6 +368,40 @@ func (b *inMemoryBlob) DeleteBackendSession(_ context.Context, runID, ref string
 	return nil
 }
 
+// The scratch bank mirrors S3's: the announced size is checked, a failed
+// Put leaves the previous bank, and it lives under the run's sessions/ prefix.
+func (b *inMemoryBlob) PutScratchBank(_ context.Context, runID string, body io.Reader, size int64) error {
+	key, err := blob.BackendSessionKey(runID, blob.ScratchBankRef)
+	if err != nil {
+		return err
+	}
+	got, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if int64(len(got)) != size {
+		return fmt.Errorf("scratch bank %s: %d bytes, announced %d", key, len(got), size)
+	}
+	b.data[key] = got
+	return nil
+}
+
+func (b *inMemoryBlob) OpenScratchBank(_ context.Context, runID string) (io.ReadCloser, error) {
+	key, err := blob.BackendSessionKey(runID, blob.ScratchBankRef)
+	if err != nil {
+		return nil, err
+	}
+	body, ok := b.data[key]
+	if !ok {
+		return nil, blob.ErrArtifactNotFound
+	}
+	return io.NopCloser(bytes.NewReader(append([]byte{}, body...))), nil
+}
+
+func (b *inMemoryBlob) DeleteScratchBank(ctx context.Context, runID string) error {
+	return b.DeleteBackendSession(ctx, runID, blob.ScratchBankRef)
+}
+
 func (b *inMemoryBlob) DeleteRunBackendSessions(_ context.Context, runID string) error {
 	prefix, err := blob.BackendSessionRunPrefix(runID)
 	if err != nil {

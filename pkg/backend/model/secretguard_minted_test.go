@@ -142,6 +142,9 @@ func TestAnAgentMaterializesOnlyTheSecretsItsWorkflowDeclares(t *testing.T) {
 // placeholder unresolved.
 func TestSelfRepairNeverShowsTheModelAMintedToken(t *testing.T) {
 	blankHostCredentials(t)
+	// The self-repair rung refuses an unfunded default before dispatching;
+	// this test's registry is a mock, so fund the wire nominally.
+	t.Setenv("ANTHROPIC_API_KEY", "mock-funding")
 	tok := randomToken(t)
 	dir := t.TempDir()
 	placeholder := secretguard.PlaceholderForName(store.ForgePublishTokenVar)

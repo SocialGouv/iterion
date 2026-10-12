@@ -144,12 +144,14 @@ func ReverseTeamsToOrgs(ctx context.Context, st identity.Store, logger *iterlog.
 			continue
 		}
 		res.Mapping[org.MigratedFromTeamID] = org.ID
-		// Unlink the source team.
+		// Unlink the source team — a patch: this tool predates fields the
+		// team row now carries (the sovereign runner pool among them), and a
+		// whole-document replace from a stale read would erase them.
 		if team, terr := st.GetTeam(ctx, org.MigratedFromTeamID); terr == nil && team.OrgID == org.ID {
-			team.OrgID = ""
+			empty := ""
 			res.Changes = append(res.Changes, fmt.Sprintf("unlink team %s from org %s", team.ID, org.ID))
 			if !dryRun {
-				if err := st.UpdateTeam(ctx, team); err != nil {
+				if _, err := st.PatchTeam(ctx, team.ID, identity.TeamPatch{OrgID: &empty}); err != nil {
 					return res, fmt.Errorf("reverse orgs: unlink team %s: %w", team.ID, err)
 				}
 			}
@@ -183,8 +185,7 @@ func linkTeam(ctx context.Context, st identity.Store, team identity.Team, orgID 
 	if dryRun {
 		return nil
 	}
-	team.OrgID = orgID
-	if err := st.UpdateTeam(ctx, team); err != nil {
+	if _, err := st.PatchTeam(ctx, team.ID, identity.TeamPatch{OrgID: &orgID}); err != nil {
 		return fmt.Errorf("migrate orgs: link team %s -> org %s: %w", team.ID, orgID, err)
 	}
 	return nil

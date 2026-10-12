@@ -353,11 +353,7 @@ type QueuedMessageInsertOnceStore interface {
 }
 
 func AsQueuedMessageInsertOnceStore(s RunStore) QueuedMessageInsertOnceStore {
-	if s == nil {
-		return nil
-	}
-	once, _ := s.(QueuedMessageInsertOnceStore)
-	return once
+	return capability[QueuedMessageInsertOnceStore](s)
 }
 
 // InboxEventFor builds the canonical store.Event payload for one

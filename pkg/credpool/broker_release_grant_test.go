@@ -57,10 +57,16 @@ func TestReleaseGrant_ConcurrentAcquisitionsKeepTheWinnersReservation(t *testing
 				t.Fatalf("premise: both acquisitions must succeed: %v", err)
 			}
 			open, err := h.leases.ListOpenByRun(ctx, "same-run")
-			if err != nil || len(open) != 2 || open[0].ID != winnerLease.ID {
-				t.Fatalf("premise: two open leases, newest is winner: %v (%v)", open, err)
+			if err != nil || len(open) != 2 {
+				t.Fatalf("premise: two open leases: %v (%v)", open, err)
 			}
-			loserID := open[1].ID
+			// The loser finished acquiring after the winner: the
+			// acquisition floor stamps its lease LATER than the winner's —
+			// one strict expectation, not an order the test tolerates.
+			if open[0].ID == winnerLease.ID {
+				t.Fatalf("premise: the winner's lease is the newest (%v), want the loser's (it finished acquiring last)", open[0].ID)
+			}
+			loserID := open[0].ID
 			cancelled, cancel := context.WithCancel(ctx)
 			cancel()
 			for range 2 { // Cleanup is cancellation-immune and idempotent.

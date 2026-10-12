@@ -1543,6 +1543,12 @@ type Foreach struct {
 	Item           string // element binding identifier (informational)
 	CollectionRaw  string // collection template source, e.g. "{{outputs.list.items}}"
 	CollectionRefs []*Ref // pre-parsed refs resolved to a []any at runtime
+	// Body is the set of node IDs on the foreach's cycle — the same shape
+	// Loop.Body carries for a loop: each node that executes once per item
+	// while the back-edge still has elements to deliver. Computed by
+	// computeLoopBodies alongside the loop bodies (the foreach edge is the
+	// same back-edge shape, keyed by ForeachName).
+	Body map[string]bool
 }
 
 // ---------------------------------------------------------------------------
@@ -1559,6 +1565,17 @@ type Budget struct {
 	// (advisory) but never blocks execution. 0 = disabled.
 	WarnTokens    int
 	MaxIterations int
+	// OnExceeded is what a reached cap does on the run's own flow: "" /
+	// "fail" ends the run (checkpoint kept, resume after a raise),
+	// "pause" parks it paused_operator at the cap until an operator
+	// raises the budget. Any other value compiles to C311 and reads as
+	// fail. Branch budget checks keep the fail semantics whatever the
+	// policy: a branch cannot park a run its siblings are running. A
+	// SUBBOT child running under the pause policy parks for itself and
+	// its parent awaits it like any paused child (the human-gate
+	// precedent) — the v1 contract: raising the child is the child run's
+	// operator's act, and the parent's await has no bound of its own.
+	OnExceeded string
 	// CapImposed marks a budget at least one of whose limits was CLAMPED
 	// by an authority outside the run — the platform ceiling, a credential
 	// pool donor's remaining allowance. Set by ClampToCeiling when it
@@ -1729,6 +1746,20 @@ type Fallback struct {
 	// routes; the compiler never sets either field.
 	RunStage    int
 	RunStageSet bool
+	// Policy marks a route the ADAPTIVE-ROUTING policy computed
+	// (ADR-121, a run-ladder stage): the usagecap preflight judges its
+	// spend surfaces (an operator rescue stage stays excluded — the
+	// policy's routes are the run's actual spend plan, not a rescue) and
+	// the timeline can say "policy-selected". Runtime-only, like
+	// RunStageSet: never authored in a .bot, never validated.
+	Policy bool
+	// CrossHarness carries the run's resolved cross-harness posture on
+	// THIS stage (ADR-121 § Delivery 2): an active mode ("reuse" |
+	// "restart") lifts the session-continuity refusal for this stage
+	// only, and the dispatch marks the model_fallback event with it when
+	// the crossing changes backend. Empty = off. Runtime-only, like
+	// Policy.
+	CrossHarness string
 }
 
 // FallbackActionSkip is the `action: skip` terminal route: instead of

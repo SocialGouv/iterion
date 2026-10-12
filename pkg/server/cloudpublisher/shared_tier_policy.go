@@ -2,7 +2,11 @@ package cloudpublisher
 
 import (
 	"context"
+	"sort"
+	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -18,6 +22,24 @@ type sharedTierPolicy struct {
 	// facade says whether a facade key (z.ai, Moonshot) may be the anthropic
 	// wire's default — see platformcfg.PlatformCredentials.FacadeDefault.
 	facade platformcfg.FacadePolicy
+	// slotSealable is the adaptive-routing whitelist (ADR-121 §1, slice 3):
+	// whether a credential SLOT may seal into the bundle — a slot is
+	// sealable when the resolved pair_order names it for some harness ("a
+	// run may occupy" the credential through any harness that can serve
+	// it; the instance follows the tier walk). The fill and restore paths
+	// ask it before sealing, so an unlisted slot is invisible to every
+	// tier — consulted by no store read that a seal would depend on. nil
+	// (no resolved policy — tests, unwired launches) admits everything:
+	// today's behavior.
+	slotSealable func(slot string) bool
+	// refusedPinned is the resolved refused_pinned_key (#1999, ADR-121):
+	// what happens to a shared-tier key refused or capped at launch whose
+	// wire family another credential holds. "forfait" (the default) keeps
+	// it out — the routes naming its provider spend the family's holder,
+	// which for claw is the forfait billed as extra usage; "park" restores
+	// it pinned-only and those routes park on the key's own refusal with a
+	// durable retry.
+	refusedPinned string
 	// runNative is the OR of every tier's native probe of ONE resolution —
 	// the question `auto` asks since #1998: a Claude-native credential any
 	// tier holds, open or closed, keeps every tier's facade key off the
@@ -40,7 +62,69 @@ func (p *Publisher) sharedTierPolicyFor(ctx context.Context) sharedTierPolicy {
 	if p.platformAudience != nil {
 		rec = p.platformAudience.Get(ctx)
 	}
-	return sharedTierPolicy{keysFirst: rec.PrefersKeys(), facade: rec.Facade()}
+	return sharedTierPolicy{keysFirst: rec.PrefersKeys(), facade: rec.Facade(), refusedPinned: rec.RefusedPinned()}
+}
+
+// slotOfProvider is the wire spelling of an API key provider's policy
+// slot: provider "anthropic" ↔ slot "anthropic_key".
+func slotOfProvider(prov secrets.Provider) string { return string(prov) + "_key" }
+
+// slotOfKind is the policy slot of an OAuth forfait kind: claude_code →
+// claude_forfait, codex → chatgpt_forfait.
+func slotOfKind(kind string) string {
+	switch secrets.OAuthKind(kind) {
+	case secrets.OAuthKindClaudeCode:
+		return llmroute.CredClaudeForfait
+	case secrets.OAuthKindCodex:
+		return llmroute.CredChatGPTForfait
+	}
+	return kind
+}
+
+// wantForSlot is the INVERSE of the sealing maps above (slotOfKind /
+// slotOfProvider): the policy slot a fallback rung names → the pool
+// credential that would fund it. Built FROM those tables by reversal — a
+// hand-written switch would be a fourth copy of a vocabulary that already
+// agrees three ways (llmroute's validated pairs, allKnownProviders,
+// poolWantOrder) — and total over the CLOSED vocabulary: an unmapped slot
+// refuses (ok=false) rather than inventing a want, and the derivation
+// NAMES it in the door's log — a vocabulary extension that forgets the
+// inverse is visible, never silent (TestWantForSlot_totalOverTheVocabulary
+// pins the coverage).
+func wantForSlot(slot string) (credpool.Credential, bool) {
+	switch slot {
+	case llmroute.CredClaudeForfait:
+		return credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}, true
+	case llmroute.CredChatGPTForfait:
+		return credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)}, true
+	}
+	if prov, ok := strings.CutSuffix(slot, "_key"); ok {
+		// allKnownProviders is the same list slotOfProvider's inputs come
+		// from — the reversal stays inside one vocabulary.
+		for _, known := range allKnownProviders {
+			if secrets.Provider(prov) == known {
+				return credpool.Credential{Source: credpool.SourceAPIKey, Ref: prov}, true
+			}
+		}
+	}
+	return credpool.Credential{}, false
+}
+
+// withSlotWhitelist returns the policy with the whitelist set. The one
+// construction site for the gate: a nil admits everything (today's
+// behavior for an unwired launch).
+func (pol sharedTierPolicy) withSlotWhitelist(pairOrder []string) sharedTierPolicy {
+	pol.slotSealable = func(slot string) bool { return llmroute.SlotSealable(pairOrder, slot) }
+	return pol
+}
+
+// sealableSlot answers the whitelist for one credential slot. A policy
+// built without the gate admits everything.
+func (pol sharedTierPolicy) sealableSlot(slot string) bool {
+	if pol.slotSealable == nil {
+		return true
+	}
+	return pol.slotSealable(slot)
 }
 
 // inOrder runs one tier's forfait and key passes in the policy's order.
@@ -78,6 +162,21 @@ func (pol sharedTierPolicy) facadeMayDefault(native *tierNative) bool {
 func isFacadeProvider(prov secrets.Provider) bool {
 	return prov != secrets.ProviderAnthropic &&
 		secrets.WireFamily(string(prov)) == secrets.WireFamily(string(secrets.ProviderAnthropic))
+}
+
+// restoreRefusedKey is the ONE judge — fill, restore and preview ask it —
+// of whether the restore keeps a refused shared-tier key OUT of the bundle
+// under the policy: refused_pinned_key=forfait leaves a refused key out of
+// a family another credential holds, and the routes naming its provider
+// spend that holder (claw bills the forfait as extra usage) instead of
+// parking on the key's own refusal. The facade carve-out travels with the
+// knob (ADR-121 § Arbitrated 1): a facade key (z.ai, Moonshot) has no
+// forfait alternative, so it is out of the knob's scope ENTIRELY — it
+// always comes back, in either pinned-only shape.
+func (pol sharedTierPolicy) restoreRefusedKey(prov secrets.Provider, familyTaken bool) bool {
+	return pol.refusedPinned == llmroute.RefusedPinnedForfait &&
+		familyTaken &&
+		!isFacadeProvider(prov)
 }
 
 // sealOutcome is where a shared tier puts one API key.
@@ -201,9 +300,34 @@ func holdsLLMCredential(b secrets.RunBundle) bool {
 
 // holdsDefaultLLMCredential reports whether an UNPINNED route has something
 // to spend. The pool is consulted when it has not: a pinned-only key serves
-// the routes that name its provider and nobody else.
+// the routes that read the wire's default and nobody else.
 func holdsDefaultLLMCredential(b secrets.RunBundle) bool {
 	return len(b.APIKeys) > 0 || len(b.OAuthCredentials) > 0
+}
+
+// familyHolderName names, for the audit line, what holds a refused key's
+// wire family in the bundle — the credential the routes naming its provider
+// will spend instead. Sorted, because a map's "first hit" is whatever Go
+// feels like today: the fact travels with the log, not with iteration
+// order.
+func familyHolderName(bundle *secrets.RunBundle, prov secrets.Provider) string {
+	fam := secrets.WireFamily(string(prov))
+	var holders []string
+	for kind := range bundle.OAuthCredentials {
+		if secrets.WireFamily(kind) == fam {
+			holders = append(holders, "the "+kind+" forfait")
+		}
+	}
+	for p := range bundle.APIKeys {
+		if p != prov && secrets.WireFamily(string(p)) == fam {
+			holders = append(holders, "the "+string(p)+" key")
+		}
+	}
+	sort.Strings(holders)
+	if len(holders) == 0 {
+		return "the credential holding the " + fam + " wire"
+	}
+	return strings.Join(holders, " and ")
 }
 
 // routeOnlyWhy says, for the trace, why a shared key was sealed for its routes

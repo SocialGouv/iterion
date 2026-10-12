@@ -1355,6 +1355,7 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 		b.int("max_tokens", wf.Budget.MaxTokens)
 		b.int("warn_tokens", wf.Budget.WarnTokens)
 		b.int("max_iterations", wf.Budget.MaxIterations)
+		b.str("on_exceeded", wf.Budget.OnExceeded)
 		p.set("budget", b.node())
 	}
 	if wf.Resources != nil {

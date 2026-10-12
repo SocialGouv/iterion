@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -37,23 +38,71 @@ const mergeGitTimeout = 120 * time.Second
 // lives. Stable across calls on purpose: conflict resolution spans several
 // HTTP round-trips and each one must see the same tree. With a
 // filesystem store the clone sits under the store; the cloud service has
-// no local store dir, so it falls back to the OS temp dir — the clone is
-// re-creatable from the forge at any time, so losing it to a pod restart
-// only costs a re-clone.
+// no local store dir, so it falls back to a per-run private temp dir — the
+// clone is re-creatable from the forge at any time, so losing it to a pod
+// restart only costs a re-clone. The temp fallback is os.MkdirTemp —
+// 0700, unpredictable, never a pre-existing path — cached per run for the
+// service's lifetime so the clone materialises once and the later merge
+// attempts reuse it. The fixed `$TMPDIR/iterion-merges/<runID>` it
+// replaced was ADOPTABLE: a local attacker pre-planting the path (a
+// hostile `.git` among other shapes) had the run merge inside their clone.
 func (s *Service) repoTargetedMergeRoot(runID string) string {
 	if runID == "" {
 		return ""
 	}
 	if s.storeDir == "" {
-		return filepath.Join(os.TempDir(), "iterion-merges", runID)
+		return s.tempMergeRoot(runID)
 	}
 	return filepath.Join(s.storeDir, "merges", runID)
+}
+
+// tempMergeRoot is the per-run temp fallback of repoTargetedMergeRoot: one
+// os.MkdirTemp per run, cached for the service's lifetime. MkdirTemp
+// refuses a pre-existing path by construction, so the adoption the fixed
+// name allowed is gone; the unpredictable name is what keeps the
+// pre-plant from reaching the path at all.
+func (s *Service) tempMergeRoot(runID string) string {
+	mergeTempSweep.Do(sweepOrphanMergeTemps)
+	s.mergeTempsMu.Lock()
+	defer s.mergeTempsMu.Unlock()
+	if dir, ok := s.mergeTemps[runID]; ok {
+		return dir
+	}
+	dir, err := os.MkdirTemp("", "iterion-merge-")
+	if err != nil {
+		return ""
+	}
+	if s.mergeTemps == nil {
+		s.mergeTemps = map[string]string{}
+	}
+	s.mergeTemps[runID] = dir
+	return dir
+}
+
+// mergeTempSweep fires the orphan sweep once per process, at the first
+// temp merge root this process creates: any iterion-merge-* directory
+// already in the temp dir predates this process, belongs to no run it
+// knows (the mapping is the in-memory cache), and is a repo-sized clone
+// nothing else will remove. The storeDir roots are operator-owned and
+// never swept.
+var mergeTempSweep sync.Once
+
+func sweepOrphanMergeTemps() {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "iterion-merge-") {
+			_ = os.RemoveAll(filepath.Join(os.TempDir(), e.Name()))
+		}
+	}
 }
 
 // hasRepoTargetedMergeRoot reports whether a materialised merge clone
 // already exists for runID.
 func (s *Service) hasRepoTargetedMergeRoot(runID string) bool {
-	dir := s.repoTargetedMergeRoot(runID)
+	dir := s.knownMergeRoot(runID)
 	if dir == "" {
 		return false
 	}
@@ -61,8 +110,23 @@ func (s *Service) hasRepoTargetedMergeRoot(runID string) bool {
 	return err == nil && st.IsDir()
 }
 
+// knownMergeRoot is the merge root a PREVIOUS call may have materialised,
+// without creating one: the read paths (the existence probe, the removal)
+// must not conjure a directory as a side effect.
+func (s *Service) knownMergeRoot(runID string) string {
+	if runID == "" {
+		return ""
+	}
+	if s.storeDir != "" {
+		return filepath.Join(s.storeDir, "merges", runID)
+	}
+	s.mergeTempsMu.Lock()
+	defer s.mergeTempsMu.Unlock()
+	return s.mergeTemps[runID]
+}
+
 func (s *Service) removeRepoTargetedMergeRoot(runID string) {
-	if dir := s.repoTargetedMergeRoot(runID); dir != "" {
+	if dir := s.knownMergeRoot(runID); dir != "" {
 		_ = os.RemoveAll(dir)
 	}
 }
@@ -146,6 +210,12 @@ func (s *Service) ensureRepoTargetedMergeRoot(ctx context.Context, r *store.Run,
 		"clone", "--no-tags", "--quiet", "--branch", target, r.RepoURL, dir); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", fmt.Errorf("clone %s at %q for the merge: %w", r.RepoURL, target, err)
+	}
+	// git recreates the target at umask perms when it materialises into
+	// the cached path a previous attempt emptied — the clone stays the
+	// private directory MkdirTemp made it.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", fmt.Errorf("privatise the merge clone: %w", err)
 	}
 	if _, err := runMergeGit(ctx, dir, token,
 		"-c", "http.followRedirects=false",

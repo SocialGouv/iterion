@@ -42,11 +42,7 @@ type RunTagStore interface {
 // AsRunTagStore returns s as RunTagStore when the backend persists run
 // tags, or nil otherwise. Both the filesystem and Mongo stores satisfy it.
 func AsRunTagStore(s RunStore) RunTagStore {
-	if s == nil {
-		return nil
-	}
-	t, _ := s.(RunTagStore)
-	return t
+	return capability[RunTagStore](s)
 }
 
 // NormalizeTags cleans and validates a caller-supplied tag list: each tag

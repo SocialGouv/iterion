@@ -526,6 +526,36 @@ type RunRetryPolicy struct {
 	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
 }
 
+// RunLLMRoutePolicy is the launch-time snapshot of the effective
+// adaptive-routing policy (pkg/llmroute), plus where each field came from —
+// the RunRetryPolicy shape, for the same reason: the provenance map is not
+// decoration, and "why did this run route to X" must be answerable without
+// replaying the launch. PairOrder carries the wire spelling
+// ("claude_code+claude_forfait").
+type RunLLMRoutePolicy struct {
+	PairOrder []string `json:"pair_order,omitempty" bson:"pair_order,omitempty"`
+	// Triggers is never omitempty: an empty list is an ANSWER (the
+	// platform ceiling pruned everything the winner named — "never
+	// switch"), not an absence, and omitempty would erase it into
+	// "inherit" on the way back.
+	Triggers         []string `json:"triggers" bson:"triggers"`
+	RefusedPinnedKey string   `json:"refused_pinned_key,omitempty" bson:"refused_pinned_key,omitempty"`
+	Strict           bool     `json:"strict,omitempty" bson:"strict,omitempty"`
+	// ModelClasses carries the RESOLVED model_classes overrides (the
+	// entry-wise fold) — the crossings' class targets on this run. The
+	// shipped table is NOT materialized here: nil means the shipped
+	// cells (the consumer substitutes them), so a snapshot that named no
+	// override stays a snapshot that named no override.
+	ModelClasses map[string]map[string]string `json:"model_classes,omitempty" bson:"model_classes,omitempty"`
+	// CrossHarness is the resolved cross-harness posture ("off" once
+	// normalized — the delivery-1 refusal stands under it).
+	CrossHarness string `json:"cross_harness,omitempty" bson:"cross_harness,omitempty"`
+	// Sources maps each field name to the layer that won it ("platform",
+	// "env", "default", "platform_ceiling", or "<level>_lock" when a lock
+	// pinned the field to the default).
+	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
+}
+
 // RunRetryState is the live retry bookkeeping for a run whose failure is
 // waiting on a provider quota window to reopen.
 //
@@ -779,9 +809,10 @@ type Run struct {
 	//
 	// Best-effort and size-capped (see runtime.maxPersistedWorkflowSource):
 	// an unreadable or oversized source disables auto-targeting, leaving
-	// `--node` to work as before, and makes `fork --new-inputs` refuse —
-	// the fork gate checks operator-supplied values against the var
-	// constraints declared in the source the run executed.
+	// `--node` to work as before, and stops `fork --new-inputs` from
+	// pre-checking the supplied values against the var constraints the
+	// source declares — those values are then admitted with a note and
+	// judged at the child's first resume instead (ForkSuppliedInputs).
 	WorkflowSource string `json:"workflow_source,omitempty" bson:"workflow_source,omitempty"`
 	// WorkflowSources is every file of the unit the run executed — the
 	// main and the fragments its imports reach — by slash path from the
@@ -921,6 +952,15 @@ type Run struct {
 	// never has to query schedules. Nil for runs launched before this
 	// existed; treat nil as the package defaults.
 	RetryPolicy *RunRetryPolicy `json:"retry_policy,omitempty" bson:"retry_policy,omitempty"`
+	// LLMRoutePolicy is the adaptive-routing contract RESOLVED AT LAUNCH
+	// (ADR-121, pkg/llmroute) — the pair order, the switch triggers,
+	// refused_pinned_key (#1999) and strict, each with the level that won
+	// it. Snapshotted beside RetryPolicy for the same reasons: only the
+	// launch site sees every level, the run doc is the carrier every
+	// consumer already loads, and the resolved pair plus its provenance is
+	// the audit line the policy owes. Nil for runs launched before this
+	// existed; treat nil as the package defaults.
+	LLMRoutePolicy *RunLLMRoutePolicy `json:"llm_route_policy,omitempty" bson:"llm_route_policy,omitempty"`
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`
@@ -1221,6 +1261,13 @@ type Run struct {
 	// Empty for local mode (TTY user) and for legacy runs predating
 	// multitenancy.
 	OwnerID string `json:"owner_id,omitempty" bson:"owner_id,omitempty"`
+	// RunnerPool stamps the sovereign runner pool (#2029) this run is
+	// bound to at launch — the team's mapping at that moment, frozen so a
+	// later re-mapping cannot silently move (or, on resume, silently
+	// follow) an in-flight run. Empty = the shared default pool. Resume
+	// compares it against the team's CURRENT mapping and refuses the
+	// difference; a deliberate move is a new launch, never a re-stamp.
+	RunnerPool string `json:"runner_pool,omitempty" bson:"runner_pool,omitempty"`
 
 	// Attachments holds the metadata for binary inputs declared in
 	// the workflow's `attachments:` block and uploaded at launch.
@@ -1273,6 +1320,22 @@ type Run struct {
 	ForkedFrom string      `json:"forked_from,omitempty" bson:"forked_from,omitempty"`
 	ForkAnchor *ForkAnchor `json:"fork_anchor,omitempty" bson:"fork_anchor,omitempty"`
 	SourceHash string      `json:"source_hash,omitempty" bson:"source_hash,omitempty"`
+	// ForkSuppliedInputs names the var keys whose values an OPERATOR
+	// supplied to a fork and which no gate has judged yet: the fork's
+	// `new_inputs` delta over the parent's inputs, plus the keys this run
+	// itself inherited unjudged from the fork it was created from (a fork
+	// of a fork carries them until a resume settles them). The fork path
+	// is the one surface that writes var values into a run without
+	// entering Engine.Run, and Resume deliberately never re-judges stored
+	// values — so without this record the launch-time constraints
+	// (`[enum: …]`, `[matching: …]`) were inert on those values forever.
+	// The engine reads it at the child's FIRST resume, judges exactly
+	// these keys against the workflow the child compiles, and clears the
+	// field when they pass: a declaration tightened after that must never
+	// strand the run (the same invariant that keeps Resume off stored
+	// values). Empty for a plain recovery fork (nothing supplied, nothing
+	// inherited) and for every run that did not begin as a fork.
+	ForkSuppliedInputs []string `json:"fork_supplied_inputs,omitempty" bson:"fork_supplied_inputs,omitempty"`
 
 	// Source records the originating action that produced this run —
 	// today, only "dispatcher" runs carry an Issue back-reference, but

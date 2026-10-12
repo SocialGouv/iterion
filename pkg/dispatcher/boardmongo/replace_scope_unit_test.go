@@ -1,7 +1,6 @@
 package boardmongo
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -27,8 +26,10 @@ import (
 func TestReplace_ClaimOwnedKeyIsRefusedLoudly(t *testing.T) {
 	s := &Store{}
 	iss := &native.Issue{ID: "native:1", Title: "x"}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
 	for _, k := range []string{"claim", "claimepoch", "claimedat", "claimleaseuntil", "claim_epoch", "claim_lease_until"} {
-		err := s.replace(context.Background(), iss, k)
+		err := s.replace(ctx, iss, k)
 		if err == nil || !strings.Contains(err.Error(), "claim-owned") {
 			t.Fatalf("replace(%q) = %v, want a loud claim-owned refusal — a silent skip loses the caller's write", k, err)
 		}
@@ -39,7 +40,9 @@ func TestReplace_ClaimOwnedKeyIsRefusedLoudly(t *testing.T) {
 // lost with no error, worse than the clobber the scoping replaced.
 func TestReplace_UnknownKeyIsRefusedLoudly(t *testing.T) {
 	s := &Store{}
-	err := s.replace(context.Background(), &native.Issue{ID: "native:1"}, "labelz")
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	err := s.replace(ctx, &native.Issue{ID: "native:1"}, "labelz")
 	if err == nil || !strings.Contains(err.Error(), "unknown issue field") {
 		t.Fatalf("replace with a typo'd key = %v, want a loud unknown-field refusal", err)
 	}
