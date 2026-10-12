@@ -75,7 +75,7 @@ import (
 // crossedByItsOwnBranch: names forwardableProviderEnv sets itself, because
 // the value that crosses is a decision, not the host's raw value.
 var crossedByItsOwnBranch = map[string]string{
-	"ITERION_OPENAI_USE_OAUTH":   `crosses as the refusal "0", or as "1" for the run's own ChatGPT forfait; a host-wide "1" stays home, where the run's own key crosses as the env key`,
+	"ITERION_OPENAI_USE_OAUTH":   `crosses as the refusal "0", or as "1" beside a ChatGPT forfait the container was handed: the run's own, or the host's that a host-wide "1" orders, written at the dispatch`,
 	"ITERION_CODEX_HOST_VERSION": "the host's `codex --version` probe, sent when no ITERION_CODEX_VERSION override is set",
 }
 
@@ -168,6 +168,7 @@ var notEnvNames = map[string]string{}
 const (
 	whyCrossingSets = "set in the crossing by forwardableProviderEnv's gateway branch, for the in-container factory"
 	whyForfaitDir   = "set in the crossing to where the run's forfait lands in the container"
+	whyCodexHome    = "set in the crossing to where a ChatGPT forfait lands in the container: the run's own, or the copy of the host's a dispatch writes"
 	whyHookEnv      = "the event a settings hook's command is told about, set in its env"
 	whyToolEnv      = "set in a tool node command's env"
 )
@@ -180,7 +181,7 @@ var envWrites = map[string]string{
 	// The engine-owned sandbox proxy channel: this package only sets it in
 	// the runner env it hands on; the reader is pkg/backend/compatgw.
 	"ITERION_SANDBOX_PROXY_ENDPOINT": whyCrossingSets,
-	"CODEX_HOME":                     whyForfaitDir,
+	"CODEX_HOME":                     whyCodexHome,
 	"CLAUDE_CONFIG_DIR":              whyForfaitDir,
 	"HOOK_EVENT":                     whyHookEnv,
 	"HOOK_TOOL_NAME":                 whyHookEnv,
@@ -200,6 +201,8 @@ var crossingSpellings = map[string]string{
 	"forwardableProviderEnv":        "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
 	"var byokEnvVar":                "the variable a run's own key crosses as, which forwardableProviderEnv sets",
 	"anthropicWireShadowEnv":        "the ambient keys the crossing blanks, so the run's forfait outranks them",
+	"deliverHostCodexForfait":       "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
+	"hostCodexForfait":              "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
 }
 
 // envStateConsults answer for a name from state other than the process env,

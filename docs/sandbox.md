@@ -372,10 +372,11 @@ sandbox:
 
 The shipped **`iterion-default`** preset is the recommended
 starting point for allowlist mode: it covers the LLM endpoints
-(anthropic, openai, xAI/Grok, openrouter, bedrock, googleapis,
-azure, mistral, z.ai) plus package registries (npm, PyPI, golang
-proxy) plus code hosts (github, gitlab, bitbucket) plus apt
-mirrors. It is **not** applied implicitly to a workflow that
+(anthropic, openai and the ChatGPT forfait's chatgpt.com, xAI/Grok,
+openrouter, bedrock, googleapis, azure, mistral, z.ai, moonshot)
+plus package registries (npm, PyPI, golang proxy) plus code hosts
+(github, gitlab, bitbucket) plus apt mirrors. It is **not**
+applied implicitly to a workflow that
 declares `network:` — operators name it explicitly so the
 default-open posture and the curated-allowlist posture are
 unambiguous from the YAML. Its one implicit application is the

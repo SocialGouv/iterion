@@ -236,9 +236,10 @@ func TestClawOpenAICredentialParity(t *testing.T) {
 // neither side.
 //
 // Only the exact refusal crosses there: a host-wide "1" forces the host's own
-// forfait, which crosses only in a run's credentials — it never orders the
-// container to spend one its disk holds — and any other value refuses nothing,
-// on either side.
+// forfait, which crosses beside the copy the dispatch writes into the
+// container (deliverHostCodexForfait) — never as an order to spend one the
+// container's disk holds — and any other value refuses nothing, on either
+// side.
 func TestClawOpenAIRefusalParityWithoutRunCredentials(t *testing.T) {
 	for _, useOAuth := range []string{"0", " 0", "1", ""} {
 		t.Run(fmt.Sprintf("oauth=%q", useOAuth), func(t *testing.T) {
