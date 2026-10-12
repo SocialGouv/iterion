@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -512,6 +513,104 @@ func TestBudgetFloor_TheSharedTiersJudgeTheRawBotID(t *testing.T) {
 			}
 			if got := resolveFloorBundleIn(t, p, "run-other", org, "team1", "feature-dev").APIKeys[secrets.ProviderAnthropic]; got != "" {
 				t.Fatalf("%s key = %q for an unreserved bot inside my_bot's band, want none", tier, got)
+			}
+		})
+	}
+}
+
+// The raw id reaches every credential shape, not only the two shared key
+// tiers above: the tenant tier's keys and forfaits, and the forfaits of the
+// org and platform tiers, which take the reservation through
+// forfaitWindowClosed and note what it holds back for the restore. Each shape
+// is one credential at 65% of its window: inside my_bot's own band, over
+// everyone else's ceiling.
+func TestBudgetFloor_EveryCredentialShapeJudgesTheRawBotID(t *testing.T) {
+	const orgID = "org-1"
+	reservation := budgetfloor.Reservation{BotID: "my_bot", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}}
+	band := usagecap.Reading{Window: usagecap.WindowFiveHour, Status: usagecap.StatusAllowed,
+		Utilization: 0.65, ObservedAt: time.Now(), ResetsAt: time.Now().Add(2 * time.Hour)}
+	for _, shape := range []string{"tenant key", "tenant forfait", "org forfait", "platform forfait"} {
+		t.Run(shape, func(t *testing.T) {
+			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+			if err != nil {
+				t.Fatalf("sealer: %v", err)
+			}
+			p := &Publisher{
+				usageCaps: usagecap.NewMemStore(), runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
+				logger: iterlog.New(iterlog.LevelError, nil),
+				capPolicy: usagecap.StaticPolicy{
+					FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeHard},
+				},
+				budgetFloor: budgetfloor.Static{Reservations: []budgetfloor.Reservation{reservation}},
+			}
+			var meter, fp, org string
+			switch shape {
+			case "tenant key":
+				p.apiKeys = secrets.NewMemoryApiKeyStore()
+				seedKeyFP(t, p.apiKeys, sealer, "team1", secrets.ProviderAnthropic, "sk-team", "fp-team")
+				meter, fp = usagecap.TenantScope("team1"), "fp-team"
+			case "tenant forfait":
+				p.oauthForfait = secrets.NewMemoryOAuthStore()
+				seedOAuth(t, p.oauthForfait, sealer, secrets.OrgOwnerKey("team1"), "tok-team")
+				meter, fp = usagecap.TenantScope("team1"), seededFP(secrets.OrgOwnerKey("team1"))
+			case "org forfait":
+				p.oauthForfait = secrets.NewMemoryOAuthStore()
+				p.identity = &fakeTeamResolver{
+					orgs:    map[string]string{"team1": orgID},
+					orgDocs: map[string]identity.Org{orgID: {ID: orgID, CredentialAudience: identity.CredentialAudience{Teams: []string{"team1"}}}},
+				}
+				seedOAuth(t, p.oauthForfait, sealer, secrets.OrgTierOwnerKey(orgID), "tok-org")
+				meter, fp, org = usagecap.OrgScope(orgID), seededFP(secrets.OrgTierOwnerKey(orgID)), orgID
+			case "platform forfait":
+				p.oauthForfait = secrets.NewMemoryOAuthStore()
+				seedOAuth(t, p.oauthForfait, sealer, secrets.PlatformOwnerKey, "tok-platform")
+				meter, fp = usagecap.ScopePlatform, seededFP(secrets.PlatformOwnerKey)
+			}
+			if err := p.usageCaps.Record(context.Background(), usagecap.Key(delegate.BackendClaudeCode, meter, fp), band); err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			holder := resolveFloorBundleIn(t, p, "run-holder", org, "team1", "my_bot")
+			if len(holder.APIKeys)+len(holder.OAuthCredentials) == 0 {
+				t.Errorf("my_bot sealed nothing inside its own reserved band — the %s judged the reservation on a spelling it was not stored under", shape)
+			}
+			if other := resolveFloorBundleIn(t, p, "run-other", org, "team1", "feature-dev"); len(other.APIKeys)+len(other.OAuthCredentials) != 0 {
+				t.Errorf("an unreserved bot was sealed %v inside my_bot's band — the %s was not held back, or the restore handed it back", bundleDescriptions(other), shape)
+			}
+		})
+	}
+}
+
+// failingUsage is a usage ledger whose every read fails.
+type failingUsage struct{ usagecap.Store }
+
+func (failingUsage) Latest(context.Context, string) ([]usagecap.Reading, error) {
+	return nil, errors.New("ledger down")
+}
+
+// A window reserved whole is held out of every other workload WITHOUT a
+// reading — so a ledger that cannot be read still refuses the unreserved bot
+// at launch, and the preview, which shares that decision (heldOutUntil),
+// answers the same with the ledger down.
+func TestBudgetFloor_AWholeWindowReserveHoldsWithTheLedgerDown(t *testing.T) {
+	wholeWindow := budgetfloor.Reservation{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 80}}
+	for _, bot := range []string{"feature-dev", "review-pr"} {
+		t.Run(bot, func(t *testing.T) {
+			p := floorWalk(t, 0.10, false, wholeWindow)
+			p.usageCaps = failingUsage{Store: p.usageCaps}
+			bundle := resolveFloorBundle(t, p, "run-"+bot, "team1", bot)
+			if sealed, want := len(bundle.APIKeys) > 0, bot == "review-pr"; sealed != want {
+				t.Fatalf("walk for %s sealed a key = %v, want %v", bot, sealed, want)
+			}
+			spec := runview.CredentialPreviewSpec{
+				Context: runview.CredentialPreviewContext{TeamID: "team1", BotID: bot, Source: runview.CredentialPreviewSource{Kind: "personal"}},
+				OwnerID: "owner1",
+			}
+			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, nil)
+			if err != nil {
+				t.Fatalf("preview: %v", err)
+			}
+			if got, want := selectedDescriptions(preview), bundleDescriptions(bundle); !reflect.DeepEqual(got, want) {
+				t.Fatalf("preview selects %v for %s with the ledger down, the walk sealed %v", got, bot, want)
 			}
 		})
 	}
