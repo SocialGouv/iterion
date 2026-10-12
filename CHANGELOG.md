@@ -3,6 +3,46 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.258.1](https://github.com/SocialGouv/iterion/compare/v3.258.0...v3.258.1) (2026-10-12)
+
+### Bug Fixes
+
+* **background:** the pendingAt and waitedAt stamps ride the harness clock ([#2341](https://github.com/SocialGouv/iterion/issues/2341)) ([3c9198f](https://github.com/SocialGouv/iterion/commit/3c9198f98cf90c3f8c927953397961dc5c28a6cc))
+
+    <details><summary>why</summary>
+
+    The background harness stamped pendingAt (and its waitedAt sibling) from the wall clock while every decision around them reads the tracker's clock: under a scaled or paused clock the wait went negative or stale. Both stamps now come from the same clock the decisions use, and the sub-tests split per site (pendingAt and waitedAt redden independently).
+
+    </details>
+* **brew:** a tap run for an older or pre-release tag no longer walks the tap back ([#2340](https://github.com/SocialGouv/iterion/issues/2340)) ([f25a450](https://github.com/SocialGouv/iterion/commit/f25a4508303207409f73961b58d6bbb91661574c))
+
+    <details><summary>why</summary>
+
+    publish compared nothing: any later run for an older tag closed the newer tap PR and armed its own older formula. The run now reads the open tap PRs once, refuses when main already publishes newer (the window between the job's checkout and the publish is closed by the re-fetch), refuses a pre-release tag outright (sort -V orders -rc above its final), and closes only strictly older taps. A missing formula on main means nothing is published yet — the first publication works again.
+
+    </details>
+* **gateway:** the sandbox proxy road keeps SafeTransport's bounds and says what its guard still pins ([#2335](https://github.com/SocialGouv/iterion/issues/2335)) ([654cd30](https://github.com/SocialGouv/iterion/commit/654cd30775ddcad61dbc513b32899dab1ed68ccd)), references [#2313](https://github.com/SocialGouv/iterion/issues/2313) [#2319](https://github.com/SocialGouv/iterion/issues/2319)
+
+    <details><summary>why</summary>
+
+    The gateway's proxy road (#2313) was rebuilt from a bare http.Transport: no dial timeout, no TLS handshake timeout, no idle reap. A proxy that never answers the connect (a rescheduled runner pod's stale IP) or that stalls the tunnel held the request, which carries no deadline of its own, past every bound the direct road keeps (5s to connect, 5s to handshake). The proxy road is now httpdial.SafeTransport itself, with its own Proxy and a dial through httpdial.PlainDialer, SafeTransport's dialer…
+
+    </details>
+* **sandbox:** the devcontainer deny class refuses the cloud switches, their credentials, and the rest of what steers a process iterion starts ([#2339](https://github.com/SocialGouv/iterion/issues/2339)) ([e84ac8d](https://github.com/SocialGouv/iterion/commit/e84ac8de8f9d98f63fc91d673ff67a2a0bfdab0c)), references [#2318](https://github.com/SocialGouv/iterion/issues/2318) [#2316](https://github.com/SocialGouv/iterion/issues/2316)
+
+    <details><summary>why</summary>
+
+    A reviewed repository's devcontainer.json could plant the claude CLI's cloud-provider switches and the cloud credentials they authenticate with: containerEnv {"CLAUDE_CODE_USE_BEDROCK":"1","AWS_ACCESS_KEY_ID":…, "AWS_SECRET_ACCESS_KEY":…,"AWS_REGION":…} passed DeniedEnvKey — no suffix matched — and sent every prompt of the run's claude_code nodes to the planter's AWS account; the Vertex twin rides the iterion-default allowlist, which admits **.googleapis.com. The tests asserted names that match…
+
+    </details>
+* **test:** the dispatcher's bundle cache and the notify SSRF vetting stay off the operator's machine ([#2326](https://github.com/SocialGouv/iterion/issues/2326)) ([cd2dc94](https://github.com/SocialGouv/iterion/commit/cd2dc9417e898d17defa2c5f2ab93c358853083c)), closes [#2080](https://github.com/SocialGouv/iterion/issues/2080), references [#2080](https://github.com/SocialGouv/iterion/issues/2080) [#2231](https://github.com/SocialGouv/iterion/issues/2231) [#2080](https://github.com/SocialGouv/iterion/issues/2080)
+
+    <details><summary>why</summary>
+
+    TestEngineRunnerPromotesBareMainBot opened a `.botz` through NewEngineRunner, whose bundle.Open call hardcoded the default cache root — os.UserCacheDir()/iterion/bundles. Measured before the fix: one run of the test created a content-hash slot under the operator's real ~/.cache/iterion/bundles — the exact class #2016 closed for ~/.iterion, one layer down, in a dir that did not even exist before the suite ran.
+
+    </details>
+
 ## [3.258.0](https://github.com/SocialGouv/iterion/compare/v3.257.4...v3.258.0) (2026-10-12)
 
 ### Features
