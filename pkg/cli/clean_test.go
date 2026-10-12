@@ -289,9 +289,11 @@ func breakGit(t *testing.T, subcommand string) {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	// Match the SUBCOMMAND — the first argument that is not a global flag
-	// — so breaking `status` does not also break `submodule status`.
-	script := "#!/bin/sh\nfor a in \"$@\"; do\n  case \"$a\" in -*) continue ;; esac\n" +
+	// Match the SUBCOMMAND — the first argument that is not a global option
+	// or an option's value (`-c <name>=<value>`, `-C <dir>`) — so breaking
+	// `status` does not also break `submodule status`.
+	script := "#!/bin/sh\nskip=\nfor a in \"$@\"; do\n  if [ -n \"$skip\" ]; then skip=; continue; fi\n" +
+		"  case \"$a\" in -c|-C) skip=1; continue ;; -*) continue ;; esac\n" +
 		"  if [ \"$a\" = \"" + subcommand + "\" ]; then\n    echo 'shim: forced failure' >&2\n    exit 128\n  fi\n" +
 		"  break\ndone\nexec " + real + " \"$@\"\n"
 	shim := filepath.Join(dir, "git")

@@ -169,7 +169,7 @@ func restoreLockBytes(path string, contents []byte, mode os.FileMode) error {
 
 func localBundleGitState(ctx context.Context, bundleDir string) (head string, dirty bool, err error) {
 	runAt := func(dir string, args ...string) ([]byte, error) {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+		cmd := exec.CommandContext(ctx, "git", gitlib.NoRunHooks(append([]string{"-C", dir}, args...)...)...)
 		// Inspecting a source in the consumer's own repository must not
 		// refresh its real index while a dependency update is preparing.
 		cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "GIT_OPTIONAL_LOCKS=0")

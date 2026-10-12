@@ -192,3 +192,12 @@ func TestBuildDefaultConfig_NoSeedHookWhenProjectDirEmpty(t *testing.T) {
 		t.Fatalf("expected no before_remove hook when projectDir is empty, got %+v", cfg.Hooks.BeforeRemove)
 	}
 }
+
+// The workspace is seeded from the host repository, whose hooks directory a
+// run can write: the seeding's `git worktree add` runs none.
+func TestWorkspaceSeedingRunsNoRepositoryHook(t *testing.T) {
+	script := workspaceSeedScript("/srv/project")
+	if !strings.Contains(script, "git -C \"$PROJECT_DIR\" -c core.hooksPath=/dev/null -c core.fsmonitor=false worktree add") {
+		t.Fatalf("the workspace seeding runs the host repository's hooks:\n%s", script)
+	}
+}
