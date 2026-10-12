@@ -137,6 +137,28 @@ func TestAModelRequestsBodyKeepsItsPlaceholders(t *testing.T) {
 	}
 }
 
+// An operator's exclusion lifts the model treatment of a host all the way
+// through the wire: what the upstream then receives on a model API's path is
+// the materialised body, like any tool's API — the witness watches the wire,
+// not just the matcher.
+func TestAnExcludedModelHostGetsItsBodyMaterialised(t *testing.T) {
+	const token = "ghp_R3alV4lu3Fak3T0k3nAbCdEfGhIjKlMn0p"
+	g := secretguard.New([]secretguard.Secret{{Name: "github_token", Value: token, Hosts: []string{"llm.example.org"}}}, secretguard.DefaultConfig())
+	tokenPH := g.Secrets()[0].Placeholder
+	client, seen := inspectingProxy(t, g, []string{"!llm.example.org"})
+	conversation := `{"messages":[{"role":"user","content":"Push with ` + tokenPH + `"}]}`
+	if code := post(t, client, "https://llm.example.org/anthropic/v1/messages", "", conversation); code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	got, ok := seen("llm.example.org/anthropic/v1/messages")
+	if !ok {
+		t.Fatal("the upstream received nothing")
+	}
+	if !strings.Contains(got.body, token) || strings.Contains(got.body, tokenPH) {
+		t.Errorf("the excluded host received the conversation in placeholder form: %s", got.body)
+	}
+}
+
 // Content DLP still applies to a model API's path: a real value bound for a
 // host its secret is not scoped to is refused, whatever the path.
 func TestAModelPathDoesNotExemptAnExfiltration(t *testing.T) {

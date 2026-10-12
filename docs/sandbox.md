@@ -393,6 +393,16 @@ Modes:
 their hostname is allowed, which closes the cloud-metadata exfiltration
 vector (169.254.169.254 etc.). Add explicit IP rules to relax.
 
+**The proxy never dials its own host.** A destination on the proxy
+host's loopback, the unspecified address (`0.0.0.0`, `::` — a connect
+there lands on the loopback) or a link-local address (169.254.169.254
+among them) is refused whatever the policy and however it is spelt — an
+IP literal, `localhost.`, a hosts-file alias, a DNS answer: the check
+runs on the address the proxy is about to connect to, and the request
+is answered `502` naming the refusal. The one sanctioned way to the
+host is the `host.docker.internal` alias (the per-run MCP listeners),
+which the proxy dials on the host's loopback.
+
 Blocked requests surface to the run as a `network_blocked` event in
 `events.jsonl`:
 

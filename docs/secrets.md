@@ -342,16 +342,25 @@ rewrite the plaintext request (Deno-parity secret handling):
   streaming forms, Ollama's `/api/chat` and `/api/generate`, Bedrock's
   `/model/{id}/invoke` and `/converse`), or a host listed in
   `ITERION_SANDBOX_MODEL_HOSTS` (a gateway at a path of its own, in the
-  network rules' syntax — `gw.corp`, `*.corp`, `**.corp`, an IP, a CIDR,
-  `!` to exclude; a base URL or `host:port` names its host; an entry that
-  is none of these, one matching every host (`*`, `**`), or a list of
-  exclusions only, fails the run's start whenever its sandbox starts the
-  proxy, the entry named by its position). Its
+  network rules' syntax — `gw.corp`, `*.corp`, `**.corp`, an IP, a CIDR;
+  a base URL or `host:port` names its host; an entry that is none of
+  these, or one matching every host (`*`, `**`), fails the run's start
+  whenever its sandbox starts the proxy, the entry named by its
+  position). Its
   headers are substituted as usual (an API key a tool gives as a
   placeholder), and content DLP applies to it like to any request. A
   tool that sends a secret in the body of a model API call gets the
   placeholder there: a model sees placeholders, never values
-  ([`model.go`](../pkg/sandbox/netproxy/model.go)).
+  ([`model.go`](../pkg/sandbox/netproxy/model.go)). A `!` entry in
+  `ITERION_SANDBOX_MODEL_HOSTS` is the way out for a tool API whose path
+  ends like a model API's: it lifts the model match for the hosts it
+  matches — a host, a wildcard, an IP or a CIDR — their path included,
+  so their bodies are substituted like any other request's. The last
+  matching entry wins, as in the network rules (`**.corp !*.tools.corp`
+  lifts `build.tools.corp` and keeps `llm.corp`), and a list may hold
+  exclusions only. A provider's own host is never lifted: an exclusion
+  naming one fails the run's start, and one whose wildcard spans one
+  (`!**.com`) leaves it a model host.
 - **A scoped value in the conversation.** A secret scoped with `hosts:`
   whose value a workspace reader showed the agent (Read, Bash — they
   return what the workspace holds) is in the conversation from then on:
@@ -566,7 +575,7 @@ to the LLMs, not what a bot uses inside a run.
 | `ITERION_SECRETS_REDACT_MIN_SCORE` | 0.7 | Heuristic confidence floor (the 0.6 generic high-entropy rule is excluded by default). |
 | `ITERION_SECRETS_PLACEHOLDERS` | on | off renders `{{secrets.X}}` as the real value instead of a placeholder. |
 | `ITERION_SANDBOX_TLS_INSPECT` | on | off disables Layer 2 — TLS inspection and the plain-HTTP content DLP alike (the escape hatch for a pinning client or broken CA injection). |
-| `ITERION_SANDBOX_MODEL_HOSTS` | (none) | Your own model gateways, comma- or space-separated, in the network rules' syntax (a base URL or `host:port` names its host): Layer 2 leaves their request bodies in placeholder form, beside the built-in providers and model API paths. An invalid entry fails the run's start whenever its sandbox starts the proxy. |
+| `ITERION_SANDBOX_MODEL_HOSTS` | (none) | Your own model gateways, comma- or space-separated, in the network rules' syntax (a base URL or `host:port` names its host): Layer 2 leaves their request bodies in placeholder form, beside the built-in providers and model API paths. A `!` entry lifts the model match for the hosts it matches instead — their bodies are substituted even where the path reads like a model API's — save a built-in provider's host. An invalid entry, or an exclusion naming a built-in provider's host, fails the run's start whenever its sandbox starts the proxy. |
 | `ITERION_SANDBOX_INSPECT_MAX_BODY` | 64 MiB | The bound of a request body Layer 2 holds to inspect: a byte count or a KiB/MiB/GiB size (`256MiB`); a larger body is refused (413). It bounds what substitution makes too, and the request line and headers keep net/http's own bound. The proxy holds several times the bound per request in memory (about five with the header budget, more with several distinct secrets), once per request in flight. A value that is no positive size fails the run's start whenever its sandbox starts the proxy. |
 
 ## Diagnostics

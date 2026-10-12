@@ -11,9 +11,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -86,8 +88,11 @@ type Options struct {
 	// `network_blocked` event into events.jsonl.
 	OnBlocked func(host, reason string)
 
-	// Dial overrides the upstream dialer. Tests use this to redirect
-	// CONNECTs to a loopback echo server.
+	// Dial overrides the upstream dialer — and with it the proxy's own
+	// refusal of a loopback, link-local or unspecified destination: the
+	// caller's dialer owns its guard (the runner's clone guard dials through
+	// pkg/secure/httpdial, whose escape hatch admits an internal forge).
+	// Tests use this to redirect CONNECTs to a loopback echo server.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// InspectCA, when non-nil, enables TLS-inspection mode (Layer 2):
@@ -105,7 +110,11 @@ type Options struct {
 	// (a gateway at a path of its own), in the network rules' syntax; a base
 	// URL or host:port names its host. In inspection mode a request's body
 	// to such a host keeps its placeholders, like a request to a provider.
-	// An entry that is not a valid pattern fails New.
+	// A `!` exclusion lifts the model detection for the hosts it matches, a
+	// model API's path included — save a built-in provider host, which no
+	// entry lifts; the last matching entry wins. An entry that is not a
+	// valid pattern, or an exclusion naming a built-in provider host, fails
+	// New.
 	ModelHosts []string
 
 	// MaxInspectedBody bounds the request body the proxy holds to inspect
@@ -122,25 +131,32 @@ type Options struct {
 	InspectUpstreamTLS *tls.Config
 }
 
-// errLoopbackDestination is returned when a request's destination is the
-// proxy host's own loopback or a link-local address: the egress allowlist
-// governs destinations, and the proxy host's local services are not among
-// them (the one sanctioned alias, host.docker.internal, is rewritten to
-// the host gateway before this check would ever see a loopback address).
-var errLoopbackDestination = errors.New("netproxy: dial to a loopback or link-local destination is refused")
+// errLocalDestination is the proxy's refusal to dial its own host: the
+// egress allowlist governs destinations, and the proxy host's local services
+// are not among them.
+var errLocalDestination = errors.New("netproxy: dial refused: a loopback, link-local or unspecified destination is the proxy host's own, not an egress destination")
 
-// loopbackDestinationRefusal returns errLoopbackDestination when host names
-// the proxy host's own loopback or a link-local address.
-func loopbackDestinationRefusal(host string) error {
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			return errLoopbackDestination
-		}
-		return nil
+// localDestination reports whether a connect to ip lands on the proxy host
+// itself: its loopback, the unspecified address (a connect to 0.0.0.0 or ::
+// lands on the loopback), or a link-local address (the cloud metadata
+// endpoints among them). An IPv4-mapped IPv6 address is judged as IPv4.
+func localDestination(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast()
+}
+
+// refuseLocalDestination is the control hook of the proxy's own dialer. It
+// runs on the address the socket is about to connect to, once the name is
+// resolved — so a destination is judged whatever spelling led there (an IP
+// literal, `localhost.`, a hosts-file alias, a DNS answer), with no window
+// between the check and the connect.
+func refuseLocalDestination(_, address string, _ syscall.RawConn) error {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("netproxy: dial refused: the connect address %q is not an IP and port: %w", address, err)
 	}
-	h := strings.ToLower(host)
-	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
-		return errLoopbackDestination
+	if localDestination(ap.Addr()) {
+		return errLocalDestination
 	}
 	return nil
 }
@@ -151,10 +167,10 @@ func New(opts Options) (*Proxy, error) {
 	if opts.Policy == nil {
 		return nil, errors.New("netproxy: New: Policy is required")
 	}
-	dial := opts.Dial
+	dial, hostDial := opts.Dial, opts.Dial
 	if dial == nil {
-		d := &net.Dialer{Timeout: 10 * time.Second}
-		dial = d.DialContext
+		dial = (&net.Dialer{Timeout: 10 * time.Second, Control: refuseLocalDestination}).DialContext
+		hostDial = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	}
 	// host.docker.internal is the container-side alias for the host
 	// gateway. When a sandboxed client routes a call to an iterion host
@@ -165,22 +181,12 @@ func New(opts Options) (*Proxy, error) {
 	// would fail). Rewrite it to 127.0.0.1 so host-gateway services are
 	// reachable whether the client honours NO_PROXY (direct) or not
 	// (proxied). External egress is unaffected — it uses real hostnames.
+	// The alias is the one sanctioned way to the host's loopback, so it
+	// dials on a dialer of its own: the proxy's dialer refuses that address.
 	baseDial := dial
 	dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err == nil {
-			// A destination ON the proxy host's own loopback is never the
-			// sanctioned way out: the allowlist governs destinations, and
-			// the proxy host's local services are not among them. Only the
-			// explicit container alias reaches the host (rewritten below —
-			// the per-run MCP listeners); everything else loopback or
-			// link-local is refused before it dials.
-			if err := loopbackDestinationRefusal(host); err != nil {
-				return nil, err
-			}
-			if host == "host.docker.internal" {
-				addr = net.JoinHostPort("127.0.0.1", port)
-			}
+		if host, port, err := net.SplitHostPort(addr); err == nil && host == "host.docker.internal" {
+			return hostDial(ctx, network, net.JoinHostPort("127.0.0.1", port))
 		}
 		return baseDial(ctx, network, addr)
 	}
