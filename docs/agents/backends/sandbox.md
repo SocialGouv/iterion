@@ -16,3 +16,11 @@ Each **setup phase** between "container up" and "first node" carries its own bou
 
 V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver — BuildKit lives inside the Docker daemon, so no extra service. The kubernetes driver rejects `sandbox.build:` by design; cloud workflows reference pre-built images via `sandbox.image:` with a CI-built digest (production path). See [docs/sandbox.md](../../sandbox.md#buildkit-local-docker-only--v2-6).
 
+## Tests never reach the operator's machine
+
+Two seams keep unit tests hermetic where the sandbox boundary meets the test suite — each seam asserts it was the one consulted, so a host default turns the test red:
+
+- **The bundle cache root.** Opening a `.botz` through `NewEngineRunner` extracts into the default cache — `os.UserCacheDir()/iterion/bundles` — i.e. the operator's real `~/.cache/iterion`. A test pins `dispatcher.WithBundleCacheRoot(t.TempDir())` (#2080, the class #2016 closed for `~/.iterion`).
+- **The SSRF-vetting resolver.** `notify`'s vetting resolves the target hostname; a test injects its lookup with `notify.WithResolver` (backed by `httpdial.ResolvePublicHostWith`) instead of resolving a real name.
+- **The HOME a login shell reads.** A test never runs `sh -lc` / `$SHELL -l` under the operator's HOME: the profile sources (`pyenv init`) and a killed spawn leaves a rehash lock that stalls the next shell up to 60 s (#2231). Wrap `TestMain` in `hometest.IsolateUserHome` (`pkg/dispatcher`, `pkg/server`), set `HOME` per test with `t.Setenv`, and pin the rule with `hometest.RequireNoOperatorProfile`.
+
