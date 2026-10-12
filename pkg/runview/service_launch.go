@@ -449,6 +449,15 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		runLogger.Info("%s", inj.Summary())
 	}
 
+	// The var constraints, on the values the engine will start with, before
+	// the run is spawned: refused on the request, as the cloud publisher
+	// refuses them, rather than by the engine a moment after the launch was
+	// accepted. The engine judges them again.
+	if err := GateLaunchVars(wf, inputs); err != nil {
+		s.dropRunLog(runID)
+		return nil, err
+	}
+
 	runName := store.GenerateRunName(spec.FilePath + ":" + runID)
 	fin := finalizationOpts{
 		mergeInto:     spec.MergeInto,
