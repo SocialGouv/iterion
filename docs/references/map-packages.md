@@ -91,6 +91,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/botscaffold` | renders a new bot bundle (main.bot + manifest.yaml + README.md + the bundle layout directories) from a builder Spec. | — |
 | `pkg/botsource` | persists TEAM-AUTHORED bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image. | `Store` |
 | `pkg/brand` | embeds iterion's bot identity — the mascot avatar of the official `iterion-bot` GitHub account — so the server can upload it onto the accounts it… | — |
+| `pkg/budgetfloor` | holds capacity back from unreserved work so a named workload keeps a shared credential longer — a PREFERENCE at admission, and deliberately not… | — |
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — |
 | `pkg/cli` | implements the iterion command-line interface. | — |
@@ -196,7 +197,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `KeyedSealer`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | `HostResolver` |
 | `pkg/server` | Admin team console: the super-admin surface for team-scoped settings an org admin must not touch. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` |
-| `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `RunnerPoolResolver`, `TeamResolver` |
+| `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `BudgetFloorSource`, `RunnerPoolResolver`, `TeamResolver` |
 | `pkg/server/projects` | manages the studio's per-user project registry. | — |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` |
 | `pkg/skilllib` | implements iterion's first-class skill library: a standalone, operator-curated store of Claude-Code-style SKILL.md skills, stored globally… | — |
