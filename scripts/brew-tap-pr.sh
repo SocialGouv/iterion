@@ -26,6 +26,12 @@ cmd="${1:?usage: brew-tap-pr.sh <branch|publish> <tag>}"
 tag="${2:?usage: brew-tap-pr.sh <branch|publish> <tag>}"
 branch="chore/brew-tap-${tag}"
 
+# version_lt A B: version A sorts strictly before version B under `sort -V`,
+# the order the workflow's downgrade guard compares tags in.
+version_lt() {
+  [ "$1" != "$2" ] && printf '%s\n%s\n' "$1" "$2" | sort -V -C
+}
+
 case "$cmd" in
 branch)
   # Build on this tag's own branch when it already exists (the first
@@ -41,6 +47,42 @@ branch)
   ;;
 
 publish)
+  # A pre-release never takes the tap: `sort -V` orders a `-rc` suffix ABOVE
+  # its own final, so an open rc tap PR would silently block that final's
+  # update. Refuse loudly instead — the final's run publishes normally.
+  case "${tag#v}" in
+    *-*) echo "not tapping ${tag}: pre-release tags do not take the tap; wait for the final"; exit 0 ;;
+  esac
+
+  # Every open tap PR as "<number> <tag>", read once: the guard below and the
+  # close at the end judge the same list.
+  open_taps="$(gh pr list --state open --limit 100 --json number,headRefName \
+    --jq '.[] | select(.headRefName | startswith("chore/brew-tap-")) | "\(.number) \(.headRefName | ltrimstr("chore/brew-tap-"))"')"
+
+  # A run for an older tag — a re-run, a dispatch, a delayed run — can come
+  # after newer tap work was opened or published. Its formula would walk the
+  # tap back, so it ends here: nothing pushed, no PR opened, none closed.
+  git fetch --quiet origin main
+  # An absent formula path means nothing is published yet (first publication,
+  # or a moved formula) — not a fallback for a failed fetch: `set -e` already
+  # killed the run above if the fetch itself failed.
+  formula="$(git show origin/main:Formula/iterion.rb 2>/dev/null || true)"
+  published="$(sed -n '/^[[:space:]]*version[[:space:]]*"/{s/^[[:space:]]*version[[:space:]]*"\([^"]*\)".*/\1/p;q;}' <<<"$formula")"
+  newer=""
+  if [ -n "$published" ] && version_lt "${tag#v}" "$published"; then
+    newer="main publishes ${published}"
+  fi
+  while read -r number other; do
+    [ -n "$number" ] || continue
+    if version_lt "${tag#v}" "${other#v}"; then
+      newer="${newer:+${newer}; }tap PR #${number} is open for ${other}"
+    fi
+  done <<<"$open_taps"
+  if [ -n "$newer" ]; then
+    echo "not publishing ${tag}, older than the tap's newer work: ${newer}"
+    exit 0
+  fi
+
   git add Formula/iterion.rb Cask/iterion-desktop.rb
   if git diff --staged --quiet; then
     # Not an error: the second pipeline's pass sees artefacts the first
@@ -82,14 +124,13 @@ PR behind it rebuild."
 
   # A tap PR for an EARLIER tag is superseded, not to be merged: its formula
   # would downgrade the published version. Close it and drop its branch.
-  gh pr list --state open --json number,headRefName \
-    --jq ".[] | select(.headRefName | startswith(\"chore/brew-tap-\")) | select(.headRefName != \"${branch}\") | .number" |
-    while read -r other; do
-      [ -n "$other" ] || continue
-      echo "closing superseded tap PR #${other}"
-      gh pr close "$other" --delete-branch \
-        --comment "Superseded by the tap update for \`${tag}\`."
-    done
+  while read -r number other; do
+    [ -n "$number" ] || continue
+    version_lt "${other#v}" "${tag#v}" || continue
+    echo "closing superseded tap PR #${number} (${other})"
+    gh pr close "$number" --delete-branch \
+      --comment "Superseded by the tap update for \`${tag}\`."
+  done <<<"$open_taps"
   ;;
 
 *)
