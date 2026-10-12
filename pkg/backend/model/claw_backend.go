@@ -1199,6 +1199,20 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	for k, v := range sandboxProxyEnv(task.Sandbox) {
 		runnerEnv[k] = v
 	}
+	// The run's own credentials crossed above; the HOST's ChatGPT forfait,
+	// when the operator's ITERION_OPENAI_USE_OAUTH=1 makes it this node's
+	// instrument in process, is written into the container here.
+	forfaitEnv, releaseForfait, err := deliverHostCodexForfait(ctx, task, b.logger)
+	if err != nil {
+		return delegate.Result{}, err
+	}
+	defer releaseForfait()
+	for k, v := range forfaitEnv {
+		runnerEnv[k] = v
+	}
+	if forfaitEnv != nil && b.logger != nil {
+		b.logger.Info("[%s#%d/claw] the host's ChatGPT forfait (its access token) was written into the sandbox for this node (ITERION_OPENAI_USE_OAUTH=1); the node spends it at chatgpt.com", task.NodeID, task.Iteration)
+	}
 	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
 		KeepStdinOpen: true,
 		Env:           runnerEnv,
@@ -1628,11 +1642,10 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// included — the in-container factory would otherwise spend a forfait
 	// the host was told never to, the run's own or one on the container's
 	// disk. Only the refusal: a host-wide "1" forces the host's own forfait
-	// over the ENV key, and that forfait crosses only in the run's
-	// credentials, below, where the run's own key crosses as that env key —
-	// never as an order to spend whatever forfait the container's disk holds.
-	// Without run credentials the sandboxed node thus spends the env key where
-	// the host spends its forfait (docs/backends.md).
+	// over the ENV key, and it crosses only beside a forfait the container
+	// was handed — the run's, below, or the host's, which
+	// deliverHostCodexForfait writes at the dispatch — never as an order to
+	// spend whatever forfait the container's disk holds.
 	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
 		env["ITERION_OPENAI_USE_OAUTH"] = "0"
 	}

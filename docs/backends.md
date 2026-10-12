@@ -1923,10 +1923,29 @@ export ITERION_OPENAI_USE_OAUTH=0
 ```
 
 A sandboxed claw node honours the refusal (`0`) whatever the run holds,
-but not a host-wide `1`: the forfait it would force is the host's own
-`~/.codex`, which reaches the container only as a run's connected
-forfait. Without one, the sandboxed node spends `OPENAI_API_KEY` where an
-in-process node spends the forfait.
+and a host-wide `1` too. When the run holds no OpenAI credential of its
+own (no key, none pinned for the route, no connected forfait that
+serves), each dispatch of an `openai/…` node writes the host's ChatGPT
+login (`$CODEX_HOME/auth.json`, else `~/.codex/auth.json`) into a
+directory of its own in the container, points that node's runner at it
+with the forfait forced over `OPENAI_API_KEY`, and removes it when the
+node is done: the sandboxed node spends the forfait an in-process one
+spends (a long-lived process — studio, desktop — keeps the client it
+resolved first, so a codex login or logout since reaches its in-process
+nodes only after a restart, where each dispatch reads the codex home
+anew). Under a network allowlist the node dials `chatgpt.com`: an
+allowlist of your own must name it, as `iterion-default` does. The copy
+holds the access token and the account alone — no
+refresh token, id token or API key — so it renews nothing and expires,
+but anything running in the sandbox while the node does can read it:
+leave the switch unset where sandboxed code is not trusted with that
+token. A switch, a `CODEX_HOME` or a home directory set by a project
+`.env` sends nothing (a warning says so), and with the switch unset claw
+sends nothing at all. Neither is what keeps the login out of a sandbox:
+under the default `host_state: auto` the whole `~/.codex` is bound into
+the container read-write whatever the switch says, `host_state: none` is
+what keeps it out, and a `pi` node on `openai-codex/…` carries its own
+copy across through pi's bridge (below).
 
 **Stream usage through a gateway.** On the OpenAI chat wire, token usage
 travels only when the request asks for it
