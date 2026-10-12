@@ -513,8 +513,10 @@ jobs:
             artefacts/iterion-desktop-*
           fail_on_unmatched_files: false
           # See release.yml: a `GITHUB_TOKEN`-created/edited release does
-          # not fan out `release: published` to other workflows. Using the
-          # token-bureau App token here lets brew-update.yml fire on the
-          # second pass (when the desktop ZIP lands) so the cask SHA gets
-          # patched alongside the CLI formula.
+          # not fan out `release: published` to other workflows; the
+          # token-bureau App token keeps that event available. The cask
+          # catches up with this ZIP on brew-update.yml's next nightly run
+          # when this release's CLI binaries exist too; a desktop-only
+          # release reaches it only through a dispatch with its tag, while
+          # the formula is still below it.
           token: ${{ steps.token.outputs.token }}

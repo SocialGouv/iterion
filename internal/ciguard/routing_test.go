@@ -190,7 +190,9 @@ func skipsMergeGroup(cond string) bool {
 //     SUCCESS, so a required check that never ran satisfies the gate on every
 //     queue entry. Silent, and it merges things nothing verified. The test
 //     refuses the condition rather than judging it, because judging means
-//     matching spellings and the spellings do not run out.
+//     matching spellings and the spellings do not run out. One condition is
+//     admitted, compared byte for byte rather than read: tapSkip, whose
+//     verifier TestTheTapSkipIsVerifiedWhereNothingSkipsIt holds in place.
 //   - ADVISORY without one: the job holds a slot in a queue that shares 20
 //     concurrent runners across the organisation, to produce a verdict nobody
 //     can act on. Measured: the `brand` job shipped that way and had to be
@@ -210,6 +212,10 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 	for name, job := range wf.Jobs {
 		skips := skipsMergeGroup(job.If)
 		switch {
+		case requiredChecks[name] && name != tapVerifierJob && sameExpression(job.If, tapSkip):
+			// The one admitted condition: a Homebrew tap update skips the
+			// heavy jobs, and the verifier that makes it safe lives in a job
+			// that can never carry it.
 		case requiredChecks[name] && strings.TrimSpace(job.If) != "":
 			// Not "does it skip": whether a condition is true inside the
 			// queue is a question this file READS rather than evaluates, and
@@ -217,9 +223,9 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// the advisory spelling with its two spaces removed, legal and
 			// identical in meaning — walks past skipsMergeGroup, and so do an
 			// alternative and a `contains(…)`. A widened matcher finds one
-			// more spelling every round; the set is closed instead. Today all
-			// six required jobs carry no `if:`, so this costs nothing.
-			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check carries no `if:`; if one truly must, teach this test to EVALUATE it before adding it here", name, job.If)
+			// more spelling every round; the set is closed instead, and its
+			// only member is compared byte for byte.
+			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check carries no `if:` other than tapSkip, byte for byte, and %q carries none at all; if another one truly must, teach this test to EVALUATE it before adding it here", name, job.If, tapVerifierJob)
 		case !requiredChecks[name] && !skips:
 			t.Errorf("job %q is advisory and does NOT skip merge_group (if: %q) — it holds a queue slot for a verdict nobody can act on; add `if: github.event_name != 'merge_group'` verbatim, spaces included, or add it to the ruleset and to requiredChecks here", name, job.If)
 		}

@@ -15,6 +15,9 @@
 #
 # Missing artefacts are tolerated: e.g. running with only CLI binaries
 # present updates Formula/ and leaves Cask/ untouched, and vice-versa.
+# Neither file is ever moved to a version below the one it carries: a cask
+# ahead of the formula (a desktop-only release dispatched into it) stays
+# where it is when the formula catches up with an older tag.
 # The final `git diff` line lets the CI step know whether anything moved.
 set -euo pipefail
 
@@ -35,6 +38,15 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FORMULA="$REPO_ROOT/Formula/iterion.rb"
 CASK="$REPO_ROOT/Cask/iterion-desktop.rb"
 
+# older_than FILE: the version FILE carries sorts strictly after $VERSION
+# (sort -V), so writing $VERSION would walk it back.
+older_than() {
+  local current
+  current="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' "$1" | head -n1)"
+  [ -n "$current" ] && [ "$current" != "$VERSION" ] &&
+    [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n1)" = "$current" ]
+}
+
 # Read sha from <file>.sha256 if present, otherwise compute from <file>.
 # Echoes the 64-char hex digest, or empty string if neither is available.
 resolve_sha() {
@@ -50,7 +62,9 @@ resolve_sha() {
 
 # --- CLI formula ---------------------------------------------------------
 
-if [ -f "$FORMULA" ]; then
+if [ -f "$FORMULA" ] && older_than "$FORMULA"; then
+  echo "skipped Formula/iterion.rb (it carries a version above ${VERSION}; the tap never walks back)"
+elif [ -f "$FORMULA" ]; then
   SHA_DARWIN_ARM64="$(resolve_sha "$ARTIFACTS/iterion-darwin-arm64")"
   SHA_DARWIN_AMD64="$(resolve_sha "$ARTIFACTS/iterion-darwin-amd64")"
   SHA_LINUX_ARM64="$(resolve_sha "$ARTIFACTS/iterion-linux-arm64")"
@@ -108,7 +122,9 @@ fi
 
 # --- Desktop cask --------------------------------------------------------
 
-if [ -f "$CASK" ]; then
+if [ -f "$CASK" ] && older_than "$CASK"; then
+  echo "skipped Cask/iterion-desktop.rb (it carries a version above ${VERSION}; the tap never walks back)"
+elif [ -f "$CASK" ]; then
   SHA_DESKTOP="$(resolve_sha "$ARTIFACTS/iterion-desktop-darwin-universal.zip")"
 
   if [ -n "$SHA_DESKTOP" ]; then

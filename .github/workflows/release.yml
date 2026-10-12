@@ -168,9 +168,10 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
           # GITHUB_TOKEN-created releases do not fire `release: published`
-          # for downstream workflows (GitHub blocks the recursion). The
-          # token-bureau App token bypasses that, letting brew-update.yml
-          # pick the release up automatically.
+          # for downstream workflows (GitHub blocks the recursion); the
+          # token-bureau App token keeps that event available. brew-update.yml
+          # does not listen for it: it reads this release's assets after
+          # version.yml's next nightly run.
           token: ${{ steps.token.outputs.token }}
 
   # No `needs:` — chart packaging is independent of the binary build, so

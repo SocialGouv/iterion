@@ -37,7 +37,8 @@ list)
   done
   jq --arg head "$head" '[.[] | select($head == "" or .headRefName == $head)]' "$TAP_OPEN_PRS" | jq -r "$jqexpr"
   ;;
-create|merge|close) ;;
+create) printf '%s\n' "${TAP_GH_CREATE_URL-https://github.com/SocialGouv/iterion/pull/4242}" ;;
+merge|close) ;;
 *) echo "stand-in gh: unexpected 'pr $sub'" >&2; exit 64 ;;
 esac
 `
@@ -166,7 +167,7 @@ func runTap(t *testing.T, w tapWorld, tag string) tapRun {
 // order disagree.
 func TestBrewTap_ARunForTheNewestTagClosesTheOlderTapPR(t *testing.T) {
 	r := runTap(t, tapWorld{published: "3.8.0", open: map[int]string{11: "chore/brew-tap-v3.9.0"}}, "v3.10.0")
-	if r.code != 0 || !r.pushed || !r.called("pr create") || !r.called("pr merge chore/brew-tap-v3.10.0") || !r.called("pr close 11") {
+	if r.code != 0 || !r.pushed || !r.called("pr create") || !r.called("pr merge https://github.com/SocialGouv/iterion/pull/4242 --auto --squash") || !r.called("pr close 11") {
 		t.Fatalf("exit %d, pushed %v, gh calls %q: the newest tag's run must publish its PR and close the older one\n%s", r.code, r.pushed, r.gh, r.out)
 	}
 }

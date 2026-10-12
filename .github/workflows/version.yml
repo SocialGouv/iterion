@@ -23,11 +23,14 @@ on:
     branches: [main]
   schedule:
     # Nightly auto-release: when there are unreleased commits since the last
-    # tag, bump + tag, which cascades to release.yml (binaries + chart) and
-    # brew-update.yml (Homebrew tap). Days with no new commits are skipped by
-    # the guard step below to avoid empty releases.
-    # 22:27 UTC ≈ 00:27 CET — artefacts land before the European morning.
-    # Tune the time to taste; this is the only nightly trigger in the chain.
+    # tag, bump + tag, which cascades to release.yml (binaries + chart).
+    # brew-update.yml (Homebrew tap) follows this run's completion, released
+    # or not. Days with no new commits are skipped by the guard step below to
+    # avoid empty releases.
+    # 22:27 UTC, which GitHub fired between 00:03 and 02:21 UTC on each of
+    # its 27 runs since 2026-09-11 — before the European morning, in the
+    # merge queue's quiet hours. Moving it moves the tap update's pull request with it; this is
+    # the only nightly trigger in the chain.
     - cron: "27 22 * * *"
 
 # One release at a time, whatever the trigger, and none of them cancelled. Two
@@ -213,7 +216,7 @@ jobs:
           # release-it creates carries an App identity. Releases created
           # under the default GITHUB_TOKEN do not fan out `release:
           # published` to other workflows (GitHub blocks the recursion),
-          # which silently breaks brew-update.yml.
+          # which would silently starve any workflow listening for it.
           GITHUB_TOKEN: ${{ steps.token.outputs.token }}
           # Pass the workflow_dispatch input through an env var, never inline
           # GitHub-expression interpolation, so a dispatch value like
