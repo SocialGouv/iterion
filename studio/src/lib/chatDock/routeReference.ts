@@ -478,7 +478,10 @@ const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/teams/:id", build: viewRef("teams", "Team") },
   { path: "/orgs/:id", build: viewRef("orgs", "Organisation") },
   // The wildcard also matches bare /admin (nothing left to consume), so
-  // the family needs one row, not two.
+  // the family needs one row, not two. Spelled out like every other row
+  // here; routeReference.test.ts drives this one from the console's own
+  // ADMIN_BASE, so moving the console reddens a test rather than silently
+  // degrading the whole console to a generic view reference.
   { path: "/admin/*", build: viewRef("admin", "Admin") },
 ];
 

@@ -100,3 +100,55 @@ What *does* need care is code that reads `window.location` directly, since it
 bypasses the router: use `studioBase()` for an absolute studio path, and
 `rootRoute(path)` to address a root side-door from inside the studio (a bare
 `~/login` would also strip a pane's `/x/<id>`).
+
+## Inside a nested route — the `/admin` console
+
+The super-admin console is mounted as `<Route path="/admin" nest>`, which gives
+its subtree a router whose base is `…/studio/admin`. Three consequences, all
+measured on the console itself:
+
+- `useLocation()` reports a path **relative to /admin** (`/users`), and
+  `navigate()` / `<Link href>` resolve against that base. A console path
+  written in full (`/admin/users`) therefore lands on `/admin/admin/users`,
+  which matches no route. Console paths live in
+  `studio/src/views/admin/adminRoutes.ts`, relative, and `adminPath()` spells
+  one for a link written **outside** the console.
+- A link from inside the console to a page outside it (`/orgs/<id>`) needs
+  `studioRoute(path)` (`studio/src/lib/scope.ts`): `~` drops every base, and
+  `studioBase()` re-applies the one the path is written against. A bare
+  `~/orgs/<id>` would strip a workspace pane's `/x/<id>`, like `rootRoute`'s
+  case above.
+- `useLocation()` reports the address as typed, and the route matcher accepts
+  two spellings the table does not hold: the trailing slash a published address
+  can carry (`/users/` — the server's own legacy redirect sends `/admin/users/`
+  to `/studio/admin/users/`) and any case variant (`/USERS`), since wouter
+  compiles its patterns with the `i` flag. Both render the screen, so anything
+  comparing the location against the table goes through `consolePath()`, which
+  folds exactly those two — one slash only, because `/users//` matches no
+  route, and case because every table path is lowercase.
+
+Two mechanisms keep this true, and they cover different halves:
+
+- `source-discipline.test.ts` refuses an **absolute path literal** anywhere
+  under `views/admin/`, whatever consumes it — an `href`, a `navigate()`, a
+  const, a table of `{ value: "/admin/x" }`. The route tables are the licensed
+  homes of a console path, and `studioRoute()`'s own argument is the way out of
+  the nest; `adminPath()` is not, since inside the console it would apply the
+  base twice. A first segment counts whether it is spelled out (`"/orgs/…"`) or
+  interpolated (`` `/${orgId}` ``). The detector is `_adminNestLinks.ts`, run by
+  the guard over the tree and by `adminNestLinks.test.ts` over hand-written
+  bypass spellings — what that file proves refused is what the gate refuses. It
+  has two limits, each with its own case in that file: a target assembled
+  across LINES, and one whose leading slash is its own literal (`"/" + kind`),
+  which is the separator a relative path is joined with everywhere else it
+  appears. `AdminNav.test.tsx`, `UserDrawer.test.tsx` and `AuditTab.test.tsx` —
+  rendering the real routers — are what pin the hrefs for that half.
+- `consoleScreens.test.tsx` mounts every screen the table declares through the
+  console's own routes, with the real pages: each offers the nav — the only way
+  off the screen — and each honours the per-page gate, which is copy-pasted into
+  nine files and so has to be held for all twelve at once.
+- a shared component mounted inside the console carries its own targets, so it
+  cannot assume the studio base: `views/teams/tabs/AuditTab.tsx` renders both
+  on the team page and in the platform console, and its cross-link therefore
+  uses `studioRoute()`, which resolves to the same address under the studio
+  base and to the right one inside the nest.

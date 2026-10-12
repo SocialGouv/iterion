@@ -65,6 +65,19 @@ export function rootRoute(path: string): string {
   return "~" + scopePrefix() + path;
 }
 
+/**
+ * studioRoute builds a wouter target for a studio path reached from INSIDE a
+ * nested router — the /admin console linking to /orgs/<id> or /teams/<id>.
+ *
+ * A `<Route nest>` appends its own segment to the router base, so a plain
+ * "/orgs/<id>" written there resolves to /admin/orgs/<id>. As in rootRoute the
+ * leading "~" drops every base, and studioBase() puts back exactly the one the
+ * path is written against — the studio's, scope prefix included.
+ */
+export function studioRoute(path: string): string {
+  return "~" + studioBase() + path;
+}
+
 
 // apiBase returns the /api prefix for this context: "/x/<id>/api" in a pane,
 // "/api" (or the VITE_API_URL override) otherwise. Captured once at module
