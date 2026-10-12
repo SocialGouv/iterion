@@ -177,7 +177,7 @@ tasks:
       - go test -tags live -count=1 -run '^$' ./...
 
   test:clilive:
-    desc: Free real-CLI proofs of the ADR-119 ambient context, against the installed claude and codex CLIs (each skips when absent). Needs a route to api.anthropic.com / api.openai.com; a deliberately invalid key fails once the CLI has assembled its context, so nothing is spent.
+    desc: Free real-CLI proofs, each skipping when its CLI is absent — the ADR-119 ambient context against the installed claude and codex CLIs (needs a route to api.anthropic.com / api.openai.com; a deliberately invalid key fails once the CLI has assembled its context, so nothing is spent), and opencode session resume/fork against a scripted model on 127.0.0.1 (no network, no credential).
     cmds:
       - go test -tags clilive -count=1 -run TestCLILive -v ./pkg/backend/delegate/...
 
