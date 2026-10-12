@@ -494,6 +494,7 @@ func providerFallbackEligible(backendName string) bool {
 //	claude_code — claudesdk.WithResume(task.SessionID)
 //	codex       — codexsdk.WithResume(task.SessionID)
 //	pi          — `--session-id` / `--fork <id>`
+//	opencode    — `--session <id>` [`--fork=true`]
 //
 // Everyone else only ever REPORTS a session id and never resumes one:
 // claw never mentions Task.SessionID at all (its conversation lives in
@@ -508,6 +509,7 @@ var sessionResumeBackends = map[string]bool{
 	delegate.BackendClaudeCode: true,
 	delegate.BackendCodex:      true,
 	delegate.BackendPi:         true,
+	delegate.BackendOpenCode:   true,
 }
 
 // sessionResumeEligible reports whether dropping Task.SessionID can
