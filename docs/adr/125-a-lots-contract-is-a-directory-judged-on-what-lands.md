@@ -1,4 +1,4 @@
-# ADR-107 — A lot's contract is a directory, judged on what lands
+# ADR-125 — A lot's contract is a directory, judged on what lands
 
 - **Status**: Accepted
 - **Date**: 2026-09-30
