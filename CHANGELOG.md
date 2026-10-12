@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.257.4](https://github.com/SocialGouv/iterion/compare/v3.257.3...v3.257.4) (2026-10-12)
+
+### Bug Fixes
+
+* **netproxy:** the proxy refuses loopback destinations; `!host` lifts the model match ([#2050](https://github.com/SocialGouv/iterion/issues/2050)) ([#2151](https://github.com/SocialGouv/iterion/issues/2151)) ([dcbc965](https://github.com/SocialGouv/iterion/commit/dcbc965d196eda7ca03c7c761141d53a661c2993))
+
+    <details><summary>why</summary>
+
+    A proxied request to a loopback or link-local address dialed the PROXY HOST's own local services — the egress allowlist governs destinations, and the proxy host's local services are not among them. The dial wrapper now refuses them (loopback, link-local, localhost names) before it dials; the one sanctioned alias, host.docker.internal, is rewritten to the host gateway beforehand and unaffected, so the per-run MCP listeners keep working. docs/secrets.md's allowlist promise is now exact.
+
+    </details>
+* **sandbox:** a sandboxed claw node spends the host's ChatGPT forfait ITERION_OPENAI_USE_OAUTH=1 orders ([#2325](https://github.com/SocialGouv/iterion/issues/2325)) ([22c867a](https://github.com/SocialGouv/iterion/commit/22c867a077a99355eab49e8cd6d3b7f7150c1147)), references [#2324](https://github.com/SocialGouv/iterion/issues/2324)
+
+    <details><summary>why</summary>
+
+    ITERION_OPENAI_USE_OAUTH=1 makes claw's in-process OpenAI factory spend the host's ChatGPT forfait over OPENAI_API_KEY; a sandboxed claw node never got that forfait unless the run's own credentials carried one, so the host spent the forfait while its sandboxed twin spent the metered key.
+
+    </details>
+
 ## [3.257.3](https://github.com/SocialGouv/iterion/compare/v3.257.2...v3.257.3) (2026-10-12)
 
 ### Bug Fixes
